@@ -5834,6 +5834,12 @@ const V126_FEEDBACK_TABLES = [
   "feedback_comments",
 ] as const;
 
+const V126_FK_CHECK_TABLES = [
+  ...V126_LEGACY_TABLES,
+  "agent_dispatch_events",
+  ...V126_FEEDBACK_TABLES,
+] as const;
+
 function v126StableId(kind: string, ...parts: string[]): string {
   const digest = createHash("sha256")
     .update(["mandible.feedback.v126", kind, ...parts].join("\u0000"))
@@ -5842,9 +5848,18 @@ function v126StableId(kind: string, ...parts: string[]): string {
 }
 
 function assertV126Checks(db: Db, phase: string): void {
-  const violations = db.pragma("foreign_key_check") as unknown[];
+  const violations: Array<{ table: (typeof V126_FK_CHECK_TABLES)[number] }> = [];
+  for (const table of V126_FK_CHECK_TABLES) {
+    if (!tableExists(db, table)) continue;
+    const tableViolations = db.prepare(`PRAGMA foreign_key_check("${table}")`).all();
+    for (const _violation of tableViolations) violations.push({ table });
+  }
   if (violations.length > 0) {
-    throw new Error(`migration 126 ${phase}: ${violations.length} foreign key violation(s)`);
+    const tables = [...new Set(violations.map((violation) => violation.table))];
+    throw new Error(
+      `migration 126 ${phase}: ${violations.length} cutover-scoped foreign key ` +
+      `violation(s) in ${tables.join(", ")}`,
+    );
   }
   const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {

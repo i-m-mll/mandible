@@ -29,6 +29,10 @@ const FEEDBACK_TABLES = [
   "feedback_submission_answers", "feedback_comments",
 ] as const;
 
+const V126_FK_CHECK_TABLES = [
+  ...LEGACY_TABLES, "agent_dispatch_events", ...FEEDBACK_TABLES,
+] as const;
+
 const FEEDBACK_INDEXES = [
   "uq_feedback_collections_recurring_source", "idx_feedback_collections_kind_created",
   "idx_feedback_ask_sessions_requester", "idx_feedback_ask_sessions_expiry",
@@ -65,6 +69,25 @@ function definitions(target: Db, names: readonly string[]) {
 
 function rows(target: Db, table: string): unknown[] {
   return target.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+}
+
+function tableExists(target: Db, table: string): boolean {
+  return target.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) !== undefined;
+}
+
+function foreignKeyViolations(target: Db, table: string): unknown[] {
+  return target.prepare(`PRAGMA foreign_key_check("${table}")`).all();
+}
+
+function withForeignKeysDisabled(target: Db, mutate: () => void): void {
+  target.pragma("foreign_keys = OFF");
+  try {
+    mutate();
+  } finally {
+    target.pragma("foreign_keys = ON");
+  }
 }
 
 function restoreV125BriefingSchema(target: Db): void {
@@ -357,6 +380,65 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
       .toEqual({ value: "126" });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+  });
+
+  it("tolerates an unrelated pre-existing foreign key violation", () => {
+    seedPopulatedV125(db);
+    withForeignKeysDisabled(db, () => {
+      db.prepare(
+        `INSERT INTO console_session_usage (id, console_session_id, recorded_at)
+         VALUES ('orphan-usage', 'missing-console-session', 1)`,
+      ).run();
+    });
+    const unrelatedViolation = foreignKeyViolations(db, "console_session_usage");
+    expect(unrelatedViolation).toHaveLength(1);
+
+    migrate(db);
+
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
+      .toEqual({ value: "126" });
+    expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
+    expect(db.prepare("SELECT id FROM feedback_items ORDER BY id").all()).toEqual([
+      { id: "candidate-a" }, { id: "candidate-b" },
+    ]);
+    expect(db.prepare("SELECT id FROM agent_dispatch_events").all())
+      .toEqual([{ id: "dispatch-a2" }]);
+    for (const table of V126_FK_CHECK_TABLES) {
+      if (tableExists(db, table)) expect(foreignKeyViolations(db, table)).toEqual([]);
+    }
+    expect(foreignKeyViolations(db, "console_session_usage")).toEqual(unrelatedViolation);
+    expect(db.prepare(
+      "SELECT id, console_session_id FROM console_session_usage WHERE id = 'orphan-usage'",
+    ).get()).toEqual({ id: "orphan-usage", console_session_id: "missing-console-session" });
+    expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+  });
+
+  it("fails before cutover on a cutover-scoped foreign key violation", () => {
+    seedPopulatedV125(db);
+    withForeignKeysDisabled(db, () => {
+      db.prepare(
+        `INSERT INTO candidate_occurrences
+           (id, revision_id, digest_version, batch_key, seen_at)
+         VALUES ('orphan-occurrence', 'missing-revision', 1, 'batch-multi', 1)`,
+      ).run();
+    });
+    expect(foreignKeyViolations(db, "candidate_occurrences")).toHaveLength(1);
+    const dispatchBefore = rows(db, "agent_dispatch_events");
+    const dispatchDefinitionBefore = definitions(db, ["agent_dispatch_events", ...DISPATCH_INDEXES]);
+
+    expect(() => migrate(db)).toThrow(
+      "migration 126 preflight: 1 cutover-scoped foreign key violation(s) in candidate_occurrences",
+    );
+
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
+      .toEqual({ value: "125" });
+    expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES]).map((entry) => entry.name).sort())
+      .toEqual([...LEGACY_TABLES, ...LEGACY_INDEXES].sort());
+    for (const table of FEEDBACK_TABLES) expect(rows(db, table)).toEqual([]);
+    expect(rows(db, "agent_dispatch_events")).toEqual(dispatchBefore);
+    expect(definitions(db, ["agent_dispatch_events", ...DISPATCH_INDEXES]))
+      .toEqual(dispatchDefinitionBefore);
+    expect(foreignKeyViolations(db, "candidate_occurrences")).toHaveLength(1);
   });
 
   it("fails before cutover when strict attribution cannot be preserved", () => {
