@@ -3986,6 +3986,18 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_managed_task_events_task
         ON managed_task_events(task_id, occurred_at, id)`,
     ],
+  },
+  {
+    version: 131,
+    name: "managed_reminder_occurrence_acknowledgement",
+    // Issue c94c6d0 — Inbox acknowledgement dismisses a projected occurrence
+    // without deleting or rewriting the durable delivery record.
+    statements: [
+      `ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_by TEXT`,
+      `ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_at INTEGER`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_task_occurrences_inbox
+        ON managed_task_occurrences(acknowledged_at, created_at DESC, id DESC)`,
+    ],
   }
 ];
 

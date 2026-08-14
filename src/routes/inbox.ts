@@ -18,6 +18,13 @@ import {
 import { sendJson } from "./http.js";
 import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
 import type { ResolvedClientIdentity } from "../server.js";
+import {
+  acknowledgeManagedReminderOccurrence,
+  getManagedReminder,
+  listManagedReminderOccurrences,
+  resolveManagedReminderProject,
+  ManagedReminderError,
+} from "../managed-reminders.js";
 
 // Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
 // primary "needs attention" signal. Auth results and continuations remain.
@@ -256,7 +263,10 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
     repoRoot: null,
     branch: null,
   });
-  return Number(continuation.count) + authResults.length;
+  const reminderOccurrences = db.prepare(
+    "SELECT COUNT(*) AS count FROM managed_task_occurrences WHERE acknowledged_at IS NULL",
+  ).get() as { count: number };
+  return Number(continuation.count) + authResults.length + Number(reminderOccurrences.count);
 }
 
 // Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
@@ -433,6 +443,34 @@ export function registerInboxRoutes(
     return openIssues;
   }
 
+  function reminderOccurrenceItems(projectRef?: string): Array<Record<string, unknown>> {
+    let projectId: string | undefined;
+    if (projectRef) {
+      try {
+        projectId = resolveManagedReminderProject(db, projectRef).id;
+      } catch {
+        return [];
+      }
+    }
+    return listManagedReminderOccurrences(db, { projectId, acknowledged: false }).map((occurrence) => {
+      const reminder = getManagedReminder(db, occurrence.task_id);
+      return {
+        id: occurrence.id,
+        task_id: occurrence.task_id,
+        revision_id: occurrence.revision_id,
+        message: occurrence.message,
+        project_id: reminder.project_id,
+        project_key: reminder.project_key,
+        predicate: reminder.revision.payload.predicate,
+        payload_digest: reminder.revision.payload_digest,
+        created_by_user_id: occurrence.created_by_user_id,
+        fired_by_user_id: occurrence.fired_by_user_id,
+        triggering_evidence: occurrence.triggering_evidence,
+        created_at: occurrence.created_at,
+      };
+    });
+  }
+
   // GET /api/inbox — unified query of pending items for a branch
   server.get("/api/inbox", (req, res) => {
     const branch = getQueryParam(req, "branch");
@@ -494,8 +532,11 @@ export function registerInboxRoutes(
           )
           .all() as WebhookEventRow[]);
 
+    const reminderOccurrences = reminderOccurrenceItems(repo);
+
     const total = continuations.length + authResultTiers.length + openIssues.length
-      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length;
+      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length
+      + reminderOccurrences.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -522,6 +563,7 @@ export function registerInboxRoutes(
         // never contains credential material.
         data: parseWebhookData(row.data_json),
       })),
+      managed_reminder_occurrences: reminderOccurrences,
       total,
     });
   }, { fileRpc: "allow" });
@@ -567,8 +609,11 @@ export function registerInboxRoutes(
       )
       .all() as WebhookEventRow[];
 
+    const reminderOccurrences = reminderOccurrenceItems();
+
     const total = continuations.length + authResultTiers.length + openIssues.length
-      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length;
+      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length
+      + reminderOccurrences.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -596,6 +641,7 @@ export function registerInboxRoutes(
         // never contains credential material.
         data: parseWebhookData(row.data_json),
       })),
+      managed_reminder_occurrences: reminderOccurrences,
       total,
     });
   }, { fileRpc: "allow" });
@@ -729,6 +775,11 @@ export function registerInboxRoutes(
     db.prepare(
       "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
     ).run(ack.value);
+    db.prepare(
+      `UPDATE managed_task_occurrences
+          SET acknowledged_by = ?, acknowledged_at = ?
+        WHERE acknowledged_at IS NULL`,
+    ).run(ack.value, Date.now());
     sendJson(res, 200, { ok: true });
   }, { fileRpc: "deny" });
 
@@ -795,8 +846,21 @@ export function registerInboxRoutes(
         return;
       }
       sendJson(res, 200, { ok: true });
+    } else if (type === "managed_reminder_occurrence") {
+      try {
+        acknowledgeManagedReminderOccurrence(db, id, ack.value);
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        if (error instanceof ManagedReminderError) {
+          sendJson(res, error.status, { error: error.message, code: error.code });
+        } else {
+          throw error;
+        }
+      }
     } else {
-      sendJson(res, 400, { error: "type must be 'continuation' or 'auth_result'" });
+      sendJson(res, 400, {
+        error: "type must be 'continuation', 'auth_result', or 'managed_reminder_occurrence'",
+      });
     }
   }, { fileRpc: "allow" });
 }

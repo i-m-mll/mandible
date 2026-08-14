@@ -1554,7 +1554,8 @@ export type TaskExecutorSummary = {
 };
 
 /** A task as reported by its executor, carrying that executor's view age. */
-export type TaskInventoryView = {
+export type ExecutorTaskInventoryView = {
+  source_kind: 'executor';
   /** `${executor}/${task_id}` — stable across generations, unique in a view. */
   key: string;
   executor: string;
@@ -1563,6 +1564,17 @@ export type TaskInventoryView = {
   observed_age_ms: number;
   task: TaskInventoryEntry;
 };
+
+/** A first-party reminder projected beside executor-owned tasks. */
+export type MandibleTaskInventoryView = {
+  source_kind: 'mandible';
+  /** `mandible-reminder:<id>` — deliberately outside executor/task identity. */
+  key: string;
+  reminder: ManagedReminder;
+};
+
+/** Explicit source discrimination is required; field absence is never a source signal. */
+export type TaskInventoryView = ExecutorTaskInventoryView | MandibleTaskInventoryView;
 
 /**
  * The whole read surface. `executors` is empty exactly when no executor has
@@ -1692,6 +1704,8 @@ export type ManagedReminderOccurrence = {
   created_by_user_id: string;
   fired_by_user_id: string;
   created_at: number;
+  acknowledged_by: string | null;
+  acknowledged_at: number | null;
 };
 
 export type ManagedReminder = {

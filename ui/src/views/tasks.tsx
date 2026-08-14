@@ -35,7 +35,10 @@ import {
   type TaskGuardFacts,
   type TaskInventory,
   type TaskInventoryItem,
+  type ExecutorTaskInventoryItem,
+  type MandibleTaskInventoryItem,
   type TaskCommand,
+  type ManagedReminderPredicate,
   type TaskRunFacts,
   type TaskRunSlot,
 } from '../api';
@@ -53,6 +56,9 @@ const FRESHNESS_LABEL: Record<TaskExecutorFreshness, string> = {
 
 /** How a freshness value reads in a sidebar row's title attribute. */
 export function freshnessTitle(item: TaskInventoryItem): string {
+  if (item.source_kind === 'mandible') {
+    return `Mandible reminder in ${item.reminder.project_key}; lifecycle ${item.reminder.lifecycle}.`;
+  }
   if (item.freshness === 'stale') {
     return `Executor '${item.executor}' last reported ${formatRelativeTime(item.observed_at, { style: 'recent' })} — this picture is stale.`;
   }
@@ -308,7 +314,7 @@ function CommandSection({
   );
 }
 
-function TaskDetail({
+function ExecutorTaskDetail({
   item,
   executor,
   commands,
@@ -318,7 +324,7 @@ function TaskDetail({
   onRequestDisable,
   onCancelDisable,
 }: {
-  item: TaskInventoryItem;
+  item: ExecutorTaskInventoryItem;
   executor: TaskExecutorSummary | null;
   commands: TaskCommand[];
   commandAvailable: boolean;
@@ -386,6 +392,97 @@ function TaskDetail({
   );
 }
 
+function PredicateFacts({ predicate }: { predicate: ManagedReminderPredicate }): JSX.Element {
+  if (predicate.kind === 'at') {
+    return <dl className="tasks-facts"><Fact label="At" value={predicate.at} /></dl>;
+  }
+  if (predicate.kind === 'issue_closed') {
+    return <dl className="tasks-facts"><Fact label="Issue id" value={predicate.issue_id} mono /></dl>;
+  }
+  return (
+    <dl className="tasks-facts">
+      <Fact label="Project id" value={predicate.project_id} mono />
+      <Fact label="Base branch" value={predicate.base_branch ?? 'any'} mono />
+      <Fact
+        label="Canonical message"
+        value={predicate.canonical_message === undefined ? 'either' : predicate.canonical_message}
+      />
+      <Fact label="Threshold" value={predicate.threshold} />
+    </dl>
+  );
+}
+
+function ReminderOccurrenceEvidence({ item }: { item: MandibleTaskInventoryItem }): JSX.Element | null {
+  const occurrence = item.reminder.occurrence;
+  if (!occurrence) return null;
+  const evidence = occurrence.triggering_evidence;
+  return (
+    <section className="tasks-section">
+      <h3 className="tasks-section__title">Occurrence</h3>
+      <dl className="tasks-facts">
+        <Fact label="Occurrence id" value={occurrence.id} mono />
+        <Fact label="Fired" value={occurrence.created_at} format={formatMs} />
+        <Fact label="Fired by" value={occurrence.fired_by_user_id} mono />
+        <Fact label="Evidence kind" value={evidence.kind} />
+        {typeof evidence.at === 'string' ? <Fact label="Scheduled at" value={evidence.at} /> : null}
+        {typeof evidence.evaluated_at === 'number'
+          ? <Fact label="Evaluated" value={evidence.evaluated_at} format={formatMs} /> : null}
+        {typeof evidence.issue_id === 'string' ? <Fact label="Issue id" value={evidence.issue_id} mono /> : null}
+        {typeof evidence.closed_at === 'number'
+          ? <Fact label="Issue closed" value={evidence.closed_at} format={formatMs} /> : null}
+        {typeof evidence.observed_count === 'number'
+          ? <Fact label="Observed merge count" value={evidence.observed_count} /> : null}
+        {typeof evidence.latest_completed_at === 'number'
+          ? <Fact label="Latest merge" value={evidence.latest_completed_at} format={formatMs} /> : null}
+      </dl>
+    </section>
+  );
+}
+
+function MandibleReminderDetail({ item }: { item: MandibleTaskInventoryItem }): JSX.Element {
+  const { reminder } = item;
+  return (
+    <article className="tasks-detail__body">
+      <header className="tasks-detail__header">
+        <h2 className="tasks-detail__title">{reminder.revision.payload.message}</h2>
+        <p className="tasks-detail__subtitle">
+          <span className="tasks-detail__id">{reminder.id}</span>
+          <span className="tasks-detail__sep">·</span>
+          <span>{reminder.project_key}</span>
+          <span className="tasks-detail__sep">·</span>
+          <span>{reminder.lifecycle}</span>
+        </p>
+      </header>
+      <section className="tasks-section">
+        <h3 className="tasks-section__title">Immutable predicate</h3>
+        <PredicateFacts predicate={reminder.revision.payload.predicate} />
+        <p className="tasks-note">Read-only first-party reminder. Mandible records one bounded inbox occurrence and does not execute external effects.</p>
+      </section>
+      <section className="tasks-section">
+        <h3 className="tasks-section__title">Lifecycle</h3>
+        <dl className="tasks-facts">
+          <Fact label="State" value={reminder.lifecycle} />
+          <Fact label="Created" value={reminder.created_at} format={formatMs} />
+          <Fact label="Completed" value={reminder.completed_at ?? 'not completed'} format={reminder.completed_at === null ? undefined : formatMs} />
+          <Fact label="Cancelled" value={reminder.cancelled_at ?? 'not cancelled'} format={reminder.cancelled_at === null ? undefined : formatMs} />
+        </dl>
+      </section>
+      <section className="tasks-section">
+        <h3 className="tasks-section__title">Revision provenance</h3>
+        <dl className="tasks-facts">
+          <Fact label="Revision" value={reminder.revision.revision_no} />
+          <Fact label="Revision id" value={reminder.revision.id} mono />
+          <Fact label="Schema" value={reminder.revision.schema} />
+          <Fact label="Payload digest" value={reminder.revision.payload_digest} mono />
+          <Fact label="Created by" value={reminder.created_by_user_id} mono />
+          <Fact label="Revision created" value={reminder.revision.created_at} format={formatMs} />
+        </dl>
+      </section>
+      <ReminderOccurrenceEvidence item={item} />
+    </article>
+  );
+}
+
 export type TasksViewProps = {
   sidebarHidden?: boolean;
   initialTaskKey?: string | null;
@@ -425,10 +522,13 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     const controller = new AbortController();
     void load(controller.signal);
     const timer = setInterval(() => { void load(); }, TASKS_POLL_INTERVAL_MS);
+    const onManagedReminder = () => { void load(); };
+    window.addEventListener('managed-reminder:sse', onManagedReminder);
     return () => {
       mounted.current = false;
       controller.abort();
       clearInterval(timer);
+      window.removeEventListener('managed-reminder:sse', onManagedReminder);
     };
   }, [load]);
 
@@ -439,13 +539,14 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     () => tasks.find((item) => item.key === selectedKey) ?? tasks[0] ?? null,
     [tasks, selectedKey],
   );
+  const selectedExecutorTask = selected?.source_kind === 'executor' ? selected : null;
   const selectedExecutor = useMemo(
-    () => executors.find((entry) => entry.name === selected?.executor) ?? null,
-    [executors, selected],
+    () => executors.find((entry) => entry.name === selectedExecutorTask?.executor) ?? null,
+    [executors, selectedExecutorTask],
   );
-  const selectedTargetKey = selected?.key ?? null;
-  const selectedTargetExecutor = selected?.executor ?? null;
-  const selectedTargetTaskId = selected?.task.task_id ?? null;
+  const selectedTargetKey = selectedExecutorTask?.key ?? null;
+  const selectedTargetExecutor = selectedExecutorTask?.executor ?? null;
+  const selectedTargetTaskId = selectedExecutorTask?.task.task_id ?? null;
 
   useEffect(() => {
     if (!selectedTargetKey || !selectedTargetExecutor || !selectedTargetTaskId) {
@@ -491,19 +592,24 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
 
   const selectedCommands = useMemo(
     () => commands.filter((command) =>
-      command.executor === selected?.executor && command.task_id === selected?.task.task_id),
-    [commands, selected],
+      command.executor === selectedExecutorTask?.executor
+      && command.task_id === selectedExecutorTask?.task.task_id),
+    [commands, selectedExecutorTask],
   );
 
   const requestDisable = useCallback(async () => {
-    if (!selected) return;
-    const targetKey = selected.key;
+    if (!selectedExecutorTask) return;
+    const targetKey = selectedExecutorTask.key;
     const requestKey = pendingRequestKeys.current.get(targetKey) ?? crypto.randomUUID();
     pendingRequestKeys.current.set(targetKey, requestKey);
     setCommandBusy(true);
     setCommandError(null);
     try {
-      const result = await requestTaskDisable(selected.executor, selected.task.task_id, requestKey);
+      const result = await requestTaskDisable(
+        selectedExecutorTask.executor,
+        selectedExecutorTask.task.task_id,
+        requestKey,
+      );
       if (!mounted.current) return;
       pendingRequestKeys.current.delete(targetKey);
       setCommands((current) => [result.command, ...current.filter((row) => row.id !== result.command.id)]);
@@ -523,7 +629,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     } finally {
       if (mounted.current) setCommandBusy(false);
     }
-  }, [selected]);
+  }, [selectedExecutorTask]);
 
   const cancelDisable = useCallback(async (commandId: string) => {
     setCommandBusy(true);
@@ -543,7 +649,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
 
   // "No executor has ever posted" and "an executor posted an empty inventory"
   // are different facts and must not share a message.
-  const neverRegistered = !loading && !error && executors.length === 0;
+  const neverRegistered = !loading && !error && executors.length === 0 && tasks.length === 0;
   const registeredButEmpty = !loading && !error && executors.length > 0 && tasks.length === 0;
 
   return (
@@ -582,15 +688,28 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               onClick={() => setSelectedKey(item.key)}
               title={freshnessTitle(item)}
             >
-              <span className="tasks-row__name">{item.task.display_name}</span>
+              <span className="tasks-row__name">
+                {item.source_kind === 'executor'
+                  ? item.task.display_name
+                  : item.reminder.revision.payload.message}
+              </span>
               <span className="tasks-row__meta">
-                <span className="tasks-row__executor">{item.executor}</span>
-                <span
-                  className={`tasks-freshness tasks-freshness--${item.freshness}`}
-                  aria-label={`Executor report ${FRESHNESS_LABEL[item.freshness]}`}
-                >
-                  {FRESHNESS_LABEL[item.freshness]}
-                </span>
+                {item.source_kind === 'executor' ? (
+                  <>
+                    <span className="tasks-row__executor">{item.executor}</span>
+                    <span
+                      className={`tasks-freshness tasks-freshness--${item.freshness}`}
+                      aria-label={`Executor report ${FRESHNESS_LABEL[item.freshness]}`}
+                    >
+                      {FRESHNESS_LABEL[item.freshness]}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="tasks-row__executor">{item.reminder.project_key}</span>
+                    <span className="tasks-freshness">{item.reminder.lifecycle}</span>
+                  </>
+                )}
               </span>
             </button>
           ))
@@ -599,8 +718,8 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
 
       <div className="tasks-detail">
         <p className="tasks-provenance">
-          Reported by executor. Mandible verifies the publisher's identity and the shape of what
-          they post — not that any of it happened.
+          Reported by executor: those rows remain executor testimony. Mandible reminder rows are
+          first-party ledger records; neither row type implies external execution.
         </p>
         {error ? (
           <div className="tasks-detail__empty">
@@ -624,16 +743,20 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
             </span>
           </div>
         ) : (
-          <TaskDetail
-            item={selected}
-            executor={selectedExecutor}
-            commands={selectedCommands}
-            commandAvailable={commandAvailable}
-            commandBusy={commandBusy}
-            commandError={commandError}
-            onRequestDisable={() => { void requestDisable(); }}
-            onCancelDisable={(commandId) => { void cancelDisable(commandId); }}
-          />
+          selected.source_kind === 'executor' ? (
+            <ExecutorTaskDetail
+              item={selected}
+              executor={selectedExecutor}
+              commands={selectedCommands}
+              commandAvailable={commandAvailable}
+              commandBusy={commandBusy}
+              commandError={commandError}
+              onRequestDisable={() => { void requestDisable(); }}
+              onCancelDisable={(commandId) => { void cancelDisable(commandId); }}
+            />
+          ) : (
+            <MandibleReminderDetail item={selected} />
+          )
         )}
       </div>
     </div>

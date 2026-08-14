@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate } from "../src/db.js";
 import { METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 
-describe("migration v130 managed reminder core", () => {
+describe("migration v130-v131 managed reminder core and Inbox acknowledgement", () => {
   it("installs the constrained immutable reminder schema in the fresh baseline", () => {
     const db = new Database(":memory:");
     try {
       migrate(db);
-      expect(CURRENT_SCHEMA_VERSION).toBe(130);
+      expect(CURRENT_SCHEMA_VERSION).toBe(131);
       const tables = db.prepare(
         `SELECT name FROM sqlite_master
           WHERE type = 'table' AND name LIKE 'managed_task%'
@@ -28,6 +28,10 @@ describe("migration v130 managed reminder core", () => {
         "managed_task_create_requests",
         "managed_task_occurrences",
         "managed_task_events",
+      ]));
+      expect(db.pragma("table_info(managed_task_occurrences)")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "acknowledged_by", type: "TEXT" }),
+        expect.objectContaining({ name: "acknowledged_at", type: "INTEGER" }),
       ]));
     } finally {
       db.close();
@@ -60,7 +64,7 @@ describe("migration v130 managed reminder core", () => {
       `);
       migrate(db);
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-        .toEqual({ value: "130" });
+        .toEqual({ value: "131" });
       expect(db.prepare(
         "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE 'managed_task%'",
       ).get()).toEqual({ count: 5 });

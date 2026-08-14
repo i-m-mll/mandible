@@ -535,6 +535,7 @@ export function getTaskInventoryView(
     });
     for (const task of generation.tasks) {
       tasks.push({
+        source_kind: "executor",
         key: `${row.executor_name}/${task.task_id}`,
         executor: row.executor_name,
         freshness,
