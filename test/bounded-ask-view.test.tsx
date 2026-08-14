@@ -507,7 +507,7 @@ describe('bounded ask renderer', () => {
     }));
     render(shell(<BriefingView instance={null} />));
     expect(await screen.findByTestId('briefing-view')).toBeTruthy();
-    expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBe('page');
+    expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBe('true');
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
       selectedCollectionId: 'recurring_feed:alpha',
       collectionKindFilter: 'recurring_feed',

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addSpaceItem,
   feedbackApiCacheFamiliesForEvent,
+  getBriefingQueue,
+  getCachedBriefingQueue,
   getSpace,
   getSpaceFactPacket,
   getSessions,
@@ -109,6 +111,36 @@ describe('dashboard API GET cache', () => {
     await expect(getSessions<{ id: string }>()).resolves.toEqual([{ id: 's1' }]);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes a warm Briefing queue synchronously and clears it through the shared cache', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      candidates: [],
+      sources: [{
+        source: 'alpha',
+        pending_count: 0,
+        candidate_count: 0,
+        last_task_identity: 'task/alpha',
+        last_run_id: 'run-1',
+        last_digest_version: 1,
+        last_ingested_at: 1_000,
+        last_ingest_age_ms: 0,
+        last_batch_item_count: 0,
+      }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(getCachedBriefingQueue()).toBeNull();
+    await getBriefingQueue();
+    expect(getCachedBriefingQueue()?.sources[0]).toMatchObject({
+      source: 'alpha',
+      pending_count: 0,
+      last_batch_item_count: 0,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    invalidateApiGetCache('/api/briefing');
+    expect(getCachedBriefingQueue()).toBeNull();
   });
 
   it('invalidates a cached Space fact packet after a Space mutation', async () => {

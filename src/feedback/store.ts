@@ -426,14 +426,6 @@ export function getRecurringCandidate(db: Db, candidateId: string): RecurringCan
   ).get(candidateId) as RecurringCandidateRow | undefined) ?? null;
 }
 
-function occurrenceStats(db: Db, revisionId: string): BriefingOccurrenceStats {
-  const row = db.prepare(
-    `SELECT COUNT(*) AS count, MIN(seen_at) AS first_seen_at, MAX(seen_at) AS last_seen_at
-       FROM feedback_publication_items WHERE item_revision_id = ?`,
-  ).get(revisionId) as { count: number; first_seen_at: number | null; last_seen_at: number | null };
-  return { count: row.count, first_seen_at: row.first_seen_at, last_seen_at: row.last_seen_at };
-}
-
 export function countPendingRecurringItems(db: Db): number {
   return (db.prepare(
     `SELECT COUNT(*) AS n
@@ -463,17 +455,44 @@ export function listRecurringQueue(
     params.push(Math.max(0, Math.trunc(options.limit)));
   }
   const rows = db.prepare(sql).all(...params) as RecurringCandidateRow[];
-  const revisionStatement = db.prepare(
+  if (rows.length === 0) {
+    return { candidates: [], sources: listRecurringSourceHealth(db, options.now) };
+  }
+
+  const itemPlaceholders = rows.map(() => "?").join(", ");
+  const revisionIds = rows.map((row) => row.current_revision_id as string);
+  const revisionPlaceholders = revisionIds.map(() => "?").join(", ");
+  const revisions = db.prepare(
     `SELECT ${revisionSelect("r")}
        FROM feedback_item_revisions r
        LEFT JOIN feedback_publications p ON p.id = r.publication_id
-      WHERE r.id = ?`,
-  );
-  const countStatement = db.prepare(
-    "SELECT COUNT(*) AS n FROM feedback_item_revisions WHERE item_id = ?",
+      WHERE r.id IN (${revisionPlaceholders})`,
+  ).all(...revisionIds) as KernelRevisionRow[];
+  const revisionsById = new Map(revisions.map((revision) => [revision.id, revision]));
+  const revisionCounts = db.prepare(
+    `SELECT item_id, COUNT(*) AS n
+       FROM feedback_item_revisions
+      WHERE item_id IN (${itemPlaceholders})
+      GROUP BY item_id`,
+  ).all(...rows.map((row) => row.id)) as Array<{ item_id: string; n: number }>;
+  const revisionCountByItem = new Map(revisionCounts.map((row) => [row.item_id, row.n]));
+  const occurrenceRows = db.prepare(
+    `SELECT item_revision_id, COUNT(*) AS count,
+            MIN(seen_at) AS first_seen_at, MAX(seen_at) AS last_seen_at
+       FROM feedback_publication_items
+      WHERE item_revision_id IN (${revisionPlaceholders})
+      GROUP BY item_revision_id`,
+  ).all(...revisionIds) as Array<BriefingOccurrenceStats & { item_revision_id: string }>;
+  const occurrencesByRevision = new Map(
+    occurrenceRows.map((row) => [row.item_revision_id, {
+      count: row.count,
+      first_seen_at: row.first_seen_at,
+      last_seen_at: row.last_seen_at,
+    }]),
   );
   const candidates: BriefingQueueEntry[] = rows.map((row) => {
-    const revision = revisionStatement.get(row.current_revision_id) as KernelRevisionRow;
+    const revision = revisionsById.get(row.current_revision_id as string);
+    if (!revision) throw new Error(`missing current feedback revision for ${row.id}`);
     return {
       id: row.id,
       source: row.source,
@@ -481,8 +500,9 @@ export function listRecurringQueue(
       created_at: row.created_at,
       state: "pending",
       revision: projectRevision(revision),
-      revision_count: (countStatement.get(row.id) as { n: number }).n,
-      occurrences: occurrenceStats(db, revision.id),
+      revision_count: revisionCountByItem.get(row.id) ?? 0,
+      occurrences: occurrencesByRevision.get(revision.id)
+        ?? { count: 0, first_seen_at: null, last_seen_at: null },
       task_identity: revision.task_identity,
     };
   });
@@ -500,20 +520,31 @@ export function listRecurringSourceHealth(db: Db, now: number): BriefingSourceHe
        )
       GROUP BY source ORDER BY source ASC`,
   ).all() as Array<{ source: string; candidate_count: number; pending_count: number }>;
+  const publications = db.prepare(
+    `SELECT source, task_identity, run_id, digest_version, item_count, received_at
+       FROM (
+         SELECT c.source, p.task_identity, p.run_id, p.digest_version,
+                p.item_count, p.received_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY c.source
+                  ORDER BY p.received_at DESC, p.rowid DESC
+                ) AS recency
+           FROM feedback_publications p
+           JOIN feedback_collections c ON c.id = p.collection_id
+          WHERE c.kind = 'recurring_feed'
+       )
+      WHERE recency = 1`,
+  ).all() as Array<{
+    source: string;
+    task_identity: string;
+    run_id: string | null;
+    digest_version: number | null;
+    item_count: number;
+    received_at: number;
+  }>;
+  const publicationBySource = new Map(publications.map((publication) => [publication.source, publication]));
   return rows.map((row) => {
-    const publication = db.prepare(
-      `SELECT p.task_identity, p.run_id, p.digest_version, p.item_count, p.received_at
-         FROM feedback_publications p
-         JOIN feedback_collections c ON c.id = p.collection_id
-        WHERE c.kind = 'recurring_feed' AND c.source = ?
-        ORDER BY p.received_at DESC, p.rowid DESC LIMIT 1`,
-    ).get(row.source) as {
-      task_identity: string;
-      run_id: string | null;
-      digest_version: number | null;
-      item_count: number;
-      received_at: number;
-    } | undefined;
+    const publication = publicationBySource.get(row.source);
     return {
       source: row.source,
       pending_count: Number(row.pending_count ?? 0),

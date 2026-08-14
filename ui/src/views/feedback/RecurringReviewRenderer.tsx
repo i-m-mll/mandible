@@ -43,6 +43,7 @@ import type { Dispatch, StateUpdater } from 'preact/hooks';
 
 import {
   getAgentDispatchEvents,
+  getCachedBriefingQueue,
   getBriefingHistory,
   getBriefingQueue,
   isApiErrorStatus,
@@ -865,11 +866,14 @@ export function RecurringReviewRenderer({
   const { active } = useAppShell();
   const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
 
-  const [queue, setQueue] = useState<QueueState>({
-    data: null,
-    loading: true,
-    error: null,
-    generation: 0,
+  const [queue, setQueue] = useState<QueueState>(() => {
+    const cached = getCachedBriefingQueue(nowMs);
+    return {
+      data: cached,
+      loading: cached === null,
+      error: null,
+      generation: 0,
+    };
   });
   const [selectedId, setSelectedId] = useState<string | null>(initialCandidateId ?? null);
   // Held as state rather than a ref so the selection keep-alive sees the same

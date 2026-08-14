@@ -28,6 +28,7 @@ import {
 } from '../ui/src/views/briefing';
 import {
   deriveBriefingSourceStatus,
+  invalidateApiGetCache,
   normalizeBriefingQueue,
 } from '../ui/src/api';
 import {
@@ -318,6 +319,7 @@ async function awaitSelection(candidateId: string): Promise<void> {
 }
 
 beforeEach(() => {
+  invalidateApiGetCache();
   installMemoryLocalStorage();
   window.history.replaceState(null, '', '/#/briefing');
 });
