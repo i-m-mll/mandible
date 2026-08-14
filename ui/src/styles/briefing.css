@@ -5,8 +5,7 @@
  * centralized in tokens.css). */
 
 .feedback-collection-shell {
-  display: grid;
-  grid-template-columns: minmax(230px, 290px) minmax(0, 1fr);
+  display: flex;
   gap: var(--space-5);
   padding: var(--space-5) var(--space-6) var(--space-8);
   max-width: 1440px;
@@ -15,31 +14,19 @@
   color: var(--text-primary);
 }
 
-.feedback-collection-shell--sidebar-hidden {
-  display: block;
-  max-width: 1080px;
-}
-
 .feedback-collection-shell__content {
+  flex: 1;
   min-width: 0;
 }
 
-.feedback-collections-sidebar {
-  align-self: start;
-  position: sticky;
-  top: var(--space-4);
-  max-height: calc(100vh - var(--space-8));
-  overflow: auto;
-  border: 1px solid var(--border-faint);
-  border-radius: var(--radius-md);
-  background: var(--surface-panel);
+.feedback-collections-sidebar__filters,
+.feedback-collections-sidebar .view-sidebar__body {
   padding: var(--space-3);
 }
 
 .feedback-collections-sidebar__filters {
   display: grid;
   gap: var(--space-2);
-  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--border-faint);
 }
 
@@ -72,14 +59,14 @@
 
 .feedback-collections-sidebar__list {
   list-style: none;
-  margin: var(--space-3) 0 0;
+  margin: 0;
   padding: 0;
   display: grid;
   gap: var(--space-2);
 }
 
 .feedback-collections-sidebar__empty {
-  margin: var(--space-3) 0 0;
+  margin: 0;
   color: var(--text-muted);
   font-size: var(--text-sm);
 }
@@ -261,13 +248,8 @@
 
 @media (max-width: 760px) {
   .feedback-collection-shell {
-    grid-template-columns: 1fr;
+    flex-direction: column;
     padding: var(--space-3);
-  }
-
-  .feedback-collections-sidebar {
-    position: static;
-    max-height: none;
   }
 }
 

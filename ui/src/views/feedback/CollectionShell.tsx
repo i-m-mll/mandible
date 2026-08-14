@@ -31,16 +31,15 @@ export function CollectionShell({
   };
 
   return (
-    <div className={`feedback-collection-shell${sidebarHidden ? ' feedback-collection-shell--sidebar-hidden' : ''}`} data-testid="feedback-collection-shell">
-      {!sidebarHidden ? (
-        <CollectionsSidebar
-          collections={collections}
-          selectedCollectionId={selectedCollectionId}
-          viewState={viewState}
-          setViewState={setViewState}
-          onSelect={selectCollection}
-        />
-      ) : null}
+    <div className="feedback-collection-shell" data-testid="feedback-collection-shell">
+      <CollectionsSidebar
+        collections={collections}
+        hidden={sidebarHidden}
+        selectedCollectionId={selectedCollectionId}
+        viewState={viewState}
+        setViewState={setViewState}
+        onSelect={selectCollection}
+      />
       <section className="feedback-collection-shell__content" aria-label="Selected feedback collection">
         {children}
       </section>
