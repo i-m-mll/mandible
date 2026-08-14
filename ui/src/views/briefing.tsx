@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import {
   projectBoundedAskCollection,
   projectBriefingRecurringCollections,
+  getCachedBriefingQueue,
   type AskProjection,
   type BriefingQueue,
   type InstanceInfo,
@@ -35,7 +36,7 @@ export function BriefingView({
 }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
-  const [queue, setQueue] = useState<BriefingQueue | null>(null);
+  const [queue, setQueue] = useState<BriefingQueue | null>(() => getCachedBriefingQueue(nowMs));
   const [loadedAsk, setLoadedAsk] = useState<AskProjection | null>(null);
   const [askId, setAskId] = useState<string | null>(initialAskId ?? null);
   const onQueueChange = useCallback((next: BriefingQueue | null) => setQueue(next), []);

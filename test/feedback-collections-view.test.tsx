@@ -260,9 +260,10 @@ describe('browser-local collection view state', () => {
   it('persists pins and filters across remount and keeps them through reconciliation', async () => {
     const rows = [recurring('alpha'), recurring('beta')];
     const view = render(<ViewStateHarness collections={rows} />);
-    fireEvent.input(screen.getByLabelText('Collection kind'), { target: { value: 'recurring_feed' } });
-    fireEvent.input(screen.getByLabelText('Collection source'), { target: { value: 'alp' } });
-    fireEvent.input(screen.getByLabelText('Collection state'), { target: { value: 'open' } });
+    fireEvent.input(screen.getByLabelText('Search collections'), { target: { value: 'alp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Collection filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
     fireEvent.click(screen.getByRole('button', { name: 'Pin alpha' }));
 
     await waitFor(() => {
@@ -284,7 +285,7 @@ describe('browser-local collection view state', () => {
 
     view.unmount();
     render(<ViewStateHarness collections={rows} />);
-    expect((screen.getByLabelText('Collection source') as HTMLInputElement).value).toBe('alp');
+    expect((screen.getByLabelText('Search collections') as HTMLInputElement).value).toBe('alp');
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
   });
 
@@ -319,16 +320,64 @@ describe('collection shell accessibility and reconciliation', () => {
     render(<ViewStateHarness collections={[recurring('alpha'), ask]} />);
     const sidebar = screen.getByTestId('feedback-collections-sidebar');
     fireEvent.click(within(sidebar).getByRole('button', { name: 'Select collection alpha' }));
-    expect(within(sidebar).getByRole('button', { name: 'Select collection alpha' }).getAttribute('aria-current')).toBe('page');
+    expect(within(sidebar).getByRole('button', { name: 'Select collection alpha' }).getAttribute('aria-current')).toBe('true');
     const pin = within(sidebar).getByRole('button', { name: 'Pin alpha' });
     expect(pin.getAttribute('aria-pressed')).toBe('false');
     fireEvent.click(pin);
     expect(within(sidebar).getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
 
-    fireEvent.input(screen.getByLabelText('Collection source'), { target: { value: 'no-match' } });
+    fireEvent.input(screen.getByLabelText('Search collections'), { target: { value: 'no-match' } });
     expect(within(sidebar).getByRole('status').textContent).toContain('No collections match');
     expect(screen.queryByRole('textbox', { name: /answer|response/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /submit answer|send response/i })).toBeNull();
+  });
+
+  it('uses the shared search, filter popover, dismissal, count, and list navigation idioms', () => {
+    const view = render(<ViewStateHarness collections={[recurring('beta'), recurring('alpha'), ask]} />);
+    const search = screen.getByRole('searchbox', { name: 'Search collections' });
+    fireEvent.input(search, { target: { value: 'alp' } });
+    expect(screen.getByRole('button', { name: 'Select collection alpha' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Select collection beta' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Clear collection search' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collection filters' }));
+    expect(screen.getByRole('dialog', { name: 'Collection filter controls' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Closed' }));
+    const trigger = screen.getByRole('button', { name: 'Collection filters' });
+    expect(trigger.textContent).toContain('2');
+    expect(trigger.classList.contains('sidebar-search-filter__trigger--active')).toBe(true);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Collection filter controls' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear collection search' }));
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    trigger.focus();
+    fireEvent(trigger, new FocusEvent('focusout', {
+      bubbles: true,
+      relatedTarget: screen.getByRole('button', { name: 'Reconcile' }),
+    }));
+    expect(screen.queryByRole('dialog', { name: 'Collection filter controls' })).toBeNull();
+
+    const alpha = screen.getByRole('button', { name: 'Select collection alpha' });
+    alpha.focus();
+    fireEvent.keyDown(alpha, { key: 'ArrowDown' });
+    const beta = screen.getByRole('button', { name: 'Select collection beta' });
+    expect(document.activeElement).toBe(beta);
+    expect(beta.getAttribute('aria-current')).toBe('true');
+    expect(alpha.getAttribute('tabindex')).toBe('-1');
+    fireEvent.keyDown(beta, { key: 'ArrowUp' });
+    expect(alpha.getAttribute('aria-current')).toBe('true');
+    fireEvent.keyDown(beta, { key: 'Enter' });
+    fireEvent.click(beta);
+    expect(beta.getAttribute('aria-current')).toBe('true');
+
+    view.unmount();
+    render(<ViewStateHarness collections={[]} />);
+    const emptySidebar = screen.getByTestId('feedback-collections-sidebar');
+    expect(within(emptySidebar).getByRole('status').textContent).toContain('have been reported yet');
+    expect(within(emptySidebar).getByRole('status').parentElement?.classList.contains('feedback-collections-sidebar__list')).toBe(true);
   });
 
   it('reconciles after feedback SSE without resetting filters, pins, selection, or expansion', async () => {
@@ -370,7 +419,7 @@ describe('collection shell accessibility and reconciliation', () => {
     window.dispatchEvent(new CustomEvent('feedback:sse', { detail: { type: 'ask:created' } }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/briefing/queue')).toHaveLength(2);
-    expect((screen.getByLabelText('Collection source') as HTMLInputElement).value).toBe('alp');
+    expect((screen.getByLabelText('Search collections') as HTMLInputElement).value).toBe('alp');
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('briefing-detail-cand-1')).toBeTruthy();
     expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({

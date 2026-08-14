@@ -4465,9 +4465,25 @@ function normalizeBriefingDecisionEvent(
 }
 
 /** Contract §4 — pending queue + deterministic per-source health. Read-only. */
+const BRIEFING_QUEUE_PATH = '/api/briefing/queue';
+
+/** Synchronously project a still-usable shared GET-cache entry for warm rendering. */
+export function getCachedBriefingQueue(now: number = Date.now()): BriefingQueue | null {
+  const cached = getJsonCache.get(cacheKeyForGet(BRIEFING_QUEUE_PATH));
+  if (!cached || now >= cached.staleUntil) return null;
+  return normalizeBriefingQueue(cached.value, now);
+}
+
 export async function getBriefingQueue(signal?: AbortSignal): Promise<BriefingQueue> {
-  const response = await apiGet('/api/briefing/queue', signal ? { signal } : {});
-  return normalizeBriefingQueue(await parseMaybeJson(response));
+  const response = await apiGet(BRIEFING_QUEUE_PATH, signal ? { signal } : {});
+  const payload = await parseMaybeJson(response);
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(BRIEFING_QUEUE_PATH), {
+    value: payload,
+    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
+    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
+  });
+  return normalizeBriefingQueue(payload, now);
 }
 
 /** Contract §4 — revisions + decisions + comments for one candidate. Read-only. */

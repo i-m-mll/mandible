@@ -741,6 +741,103 @@ describe("briefing review state", () => {
     ]);
   });
 
+  it("preserves the complete queue projection for multiple candidates and sources", () => {
+    ingestBriefingBatch(db, batch({
+      items: [
+        item({ source: "alpha", ref: "paper-a", title: "Alpha finding", refs: ["https://example.invalid/a"] }),
+        item({ source: "beta", ref: "paper-b", title: "Beta finding", refs: ["https://example.invalid/b"] }),
+      ],
+    }), 1_000);
+
+    const alphaId = candidateIdFor("alpha", "paper-a");
+    const betaId = candidateIdFor("beta", "paper-b");
+    const alphaRevisionId = currentRevisionId(alphaId);
+    const betaRevisionId = currentRevisionId(betaId);
+    const queue = listBriefingQueue(db, { now: 2_000 });
+    const candidates = [...queue.candidates].sort((left, right) => left.source.localeCompare(right.source));
+
+    expect(candidates).toEqual([
+      {
+        id: alphaId,
+        source: "alpha",
+        candidate_key: candidateKey("alpha", "paper-a"),
+        created_at: 1_000,
+        state: "pending",
+        revision: {
+          id: alphaRevisionId,
+          candidate_id: alphaId,
+          title: "Alpha finding",
+          why_notable: "It moves the pilot forward",
+          refs: ["https://example.invalid/a"],
+          source_ref: "paper-a",
+          evidence_hash: "evidence-a",
+          evidence_kind: "snapshot-item",
+          captured_at: "2026-08-11T09:00:00Z",
+          run_id: "run-1",
+          digest_series_ref: "artifact-series:abc123",
+          digest_version: 1,
+          rank: 1,
+          batch_key: "batch-1",
+          ingested_at: 1_000,
+        },
+        revision_count: 1,
+        occurrences: { count: 1, first_seen_at: 1_000, last_seen_at: 1_000 },
+        task_identity: "agent-schedule/daily-digest",
+      },
+      {
+        id: betaId,
+        source: "beta",
+        candidate_key: candidateKey("beta", "paper-b"),
+        created_at: 1_000,
+        state: "pending",
+        revision: {
+          id: betaRevisionId,
+          candidate_id: betaId,
+          title: "Beta finding",
+          why_notable: "It moves the pilot forward",
+          refs: ["https://example.invalid/b"],
+          source_ref: "paper-b",
+          evidence_hash: "evidence-a",
+          evidence_kind: "snapshot-item",
+          captured_at: "2026-08-11T09:00:00Z",
+          run_id: "run-1",
+          digest_series_ref: "artifact-series:abc123",
+          digest_version: 1,
+          rank: 1,
+          batch_key: "batch-1",
+          ingested_at: 1_000,
+        },
+        revision_count: 1,
+        occurrences: { count: 1, first_seen_at: 1_000, last_seen_at: 1_000 },
+        task_identity: "agent-schedule/daily-digest",
+      },
+    ]);
+    expect(queue.sources).toEqual([
+      {
+        source: "alpha",
+        pending_count: 1,
+        candidate_count: 1,
+        last_task_identity: "agent-schedule/daily-digest",
+        last_run_id: "run-1",
+        last_digest_version: 1,
+        last_ingested_at: 1_000,
+        last_ingest_age_ms: 1_000,
+        last_batch_item_count: 2,
+      },
+      {
+        source: "beta",
+        pending_count: 1,
+        candidate_count: 1,
+        last_task_identity: "agent-schedule/daily-digest",
+        last_run_id: "run-1",
+        last_digest_version: 1,
+        last_ingested_at: 1_000,
+        last_ingest_age_ms: 1_000,
+        last_batch_item_count: 2,
+      },
+    ]);
+  });
+
   it("returns revisions, decisions, and comments in candidate history", () => {
     ingestBriefingBatch(db, batch(), 1_000);
     const candidateId = candidateIdFor("arxiv-scan", "paper-1");
