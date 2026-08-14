@@ -2197,6 +2197,7 @@ function App(): JSX.Element {
               instance={instanceInfo}
               initialFilter={tabRoute.params.filter}
               initialCandidateId={tabRoute.params.candidate ?? null}
+              initialAskId={tabRoute.params.ask ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );

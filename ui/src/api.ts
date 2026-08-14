@@ -4122,6 +4122,297 @@ export function projectBriefingRecurringCollections(
   return orderFeedbackCollections([...collections.values()], []);
 }
 
+// --- bounded ask form -------------------------------------------------------
+
+export type AskResponseType = 'verdict' | 'free_text' | 'single_choice' | 'multi_choice';
+export type AskResponseValue =
+  | { verdict: 'keep' | 'dismiss' }
+  | { text: string }
+  | { option_key: string }
+  | { option_keys: string[] };
+
+export type AskOption = {
+  option_key: string;
+  label: string;
+  description: string | null;
+  position: number;
+};
+
+export type AskItem = {
+  id: string;
+  client_item_key: string | null;
+  parent_item_id: string | null;
+  item_kind: 'item' | 'group';
+  revision: {
+    id: string;
+    ordinal: number;
+    title: string;
+    prompt: string;
+    description: string | null;
+    response_type: AskResponseType | null;
+    required: boolean;
+    position: number;
+    options: AskOption[];
+  };
+  effective_response: null | { response_event_id: string; value: AskResponseValue };
+  responseVisible: boolean;
+};
+
+export type AskProjection = {
+  ask_id: string;
+  state: 'open' | 'submitted' | 'expired' | 'cancelled' | 'closed';
+  request_key: string;
+  request_digest: string;
+  requester_user_id: string;
+  requester_session_id: string;
+  responder_user_ids: string[];
+  expires_at: number;
+  retention_expires_at: number | null;
+  created_at: number;
+  lifecycle_event_id: string;
+  latest_submission: null | { id: string; ordinal: number };
+  items: AskItem[];
+  valid: boolean;
+};
+
+export type ClientAuthWhoami = {
+  authenticated: boolean;
+  user: null | { id: string; slug: string; kind: string | null; display_name: string | null };
+};
+
+export type AskAnswerOperation = {
+  item_id: string;
+  item_revision_id: string;
+  operation: 'set' | 'retract';
+  expected_response_event_id: string | null;
+  value?: AskResponseValue;
+};
+
+export type AskSubmissionAnswer = {
+  item_id: string;
+  item_revision_id: string;
+  response_event_id: string;
+};
+
+const ASK_STATES = new Set(['open', 'submitted', 'expired', 'cancelled', 'closed']);
+const ASK_RESPONSE_TYPES = new Set<AskResponseType>([
+  'verdict', 'free_text', 'single_choice', 'multi_choice',
+]);
+
+function exactAskValueKeys(row: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(row).sort();
+  const sortedExpected = [...expected].sort();
+  return keys.length === sortedExpected.length
+    && keys.every((key, index) => key === sortedExpected[index]);
+}
+
+function askResponseValue(
+  value: unknown,
+  responseType: AskResponseType,
+  optionKeys: readonly string[],
+): AskResponseValue | null {
+  const row = briefingRecord(value);
+  if (responseType === 'verdict') {
+    return exactAskValueKeys(row, ['verdict']) && (row.verdict === 'keep' || row.verdict === 'dismiss')
+      ? { verdict: row.verdict }
+      : null;
+  }
+  if (responseType === 'free_text') {
+    return exactAskValueKeys(row, ['text']) && typeof row.text === 'string' ? { text: row.text } : null;
+  }
+  const allowed = new Set(optionKeys);
+  if (responseType === 'single_choice') {
+    return exactAskValueKeys(row, ['option_key'])
+      && typeof row.option_key === 'string'
+      && allowed.has(row.option_key)
+      ? { option_key: row.option_key }
+      : null;
+  }
+  if (!exactAskValueKeys(row, ['option_keys'])
+      || !Array.isArray(row.option_keys)
+      || row.option_keys.some((key) => typeof key !== 'string')
+      || row.option_keys.some((key) => !allowed.has(key as string))
+      || new Set(row.option_keys).size !== row.option_keys.length) return null;
+  const selected = new Set(row.option_keys as string[]);
+  return { option_keys: optionKeys.filter((key) => selected.has(key)) };
+}
+
+export function normalizeAskProjection(payload: unknown): AskProjection {
+  const root = briefingRecord(payload);
+  let valid = true;
+  const askId = briefingString(root.ask_id);
+  const rawState = briefingString(root.state);
+  if (!askId || !ASK_STATES.has(rawState) || !briefingString(root.lifecycle_event_id)) valid = false;
+  const rawItems = Array.isArray(root.items) ? root.items : [];
+  if (!Array.isArray(root.items)) valid = false;
+  const items = rawItems.map((entry): AskItem | null => {
+    const row = briefingRecord(entry);
+    const revision = briefingRecord(row.revision);
+    const id = briefingString(row.id);
+    const revisionId = briefingString(revision.id);
+    const itemKind = row.item_kind;
+    const rawType = revision.response_type;
+    const responseType = typeof rawType === 'string' && ASK_RESPONSE_TYPES.has(rawType as AskResponseType)
+      ? rawType as AskResponseType
+      : null;
+    if (!id || !revisionId || (itemKind !== 'item' && itemKind !== 'group')) {
+      valid = false;
+      return null;
+    }
+    if ((itemKind === 'group' && rawType !== null) || (itemKind === 'item' && !responseType)) valid = false;
+    if (typeof revision.required !== 'boolean') valid = false;
+    if (!Array.isArray(revision.options)) valid = false;
+    const options = (Array.isArray(revision.options) ? revision.options : []).map((option) => {
+      const value = briefingRecord(option);
+      return {
+        option_key: briefingString(value.option_key),
+        label: briefingString(value.label),
+        description: briefingOptionalString(value.description),
+        position: briefingOptionalNumber(value.position) ?? 0,
+      };
+    }).filter((option) => {
+      if (!option.option_key) valid = false;
+      return Boolean(option.option_key);
+    }).sort((left, right) => left.position - right.position || left.option_key.localeCompare(right.option_key));
+    const choice = responseType === 'single_choice' || responseType === 'multi_choice';
+    if (itemKind === 'group' && (revision.required === true || options.length > 0)) valid = false;
+    if (itemKind === 'item' && ((choice && options.length === 0) || (!choice && options.length > 0))) valid = false;
+    const hasEffective = Object.prototype.hasOwnProperty.call(row, 'effective_response');
+    const effective = briefingRecord(row.effective_response);
+    const effectiveValue = responseType && hasEffective && row.effective_response !== null
+      ? askResponseValue(effective.value, responseType, options.map((option) => option.option_key))
+      : null;
+    if (hasEffective && row.effective_response !== null
+        && (!briefingString(effective.response_event_id) || !effectiveValue)) valid = false;
+    return {
+      id,
+      client_item_key: briefingOptionalString(row.client_item_key),
+      parent_item_id: briefingOptionalString(row.parent_item_id),
+      item_kind: itemKind,
+      revision: {
+        id: revisionId,
+        ordinal: briefingOptionalNumber(revision.ordinal) ?? 0,
+        title: briefingString(revision.title),
+        prompt: briefingString(revision.prompt),
+        description: briefingOptionalString(revision.description),
+        response_type: responseType,
+        required: revision.required === true,
+        position: briefingOptionalNumber(revision.position) ?? 0,
+        options,
+      },
+      effective_response: effectiveValue
+        ? { response_event_id: briefingString(effective.response_event_id), value: effectiveValue }
+        : null,
+      responseVisible: hasEffective,
+    };
+  }).filter((item): item is AskItem => item !== null)
+    .sort((left, right) => left.revision.position - right.revision.position || left.id.localeCompare(right.id));
+  const itemIds = new Set<string>();
+  for (const item of items) {
+    if (itemIds.has(item.id)) valid = false;
+    itemIds.add(item.id);
+  }
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  for (const item of items) {
+    if (item.parent_item_id && itemById.get(item.parent_item_id)?.item_kind !== 'group') valid = false;
+    if (new Set(item.revision.options.map((option) => option.option_key)).size !== item.revision.options.length) valid = false;
+    const ancestors = new Set<string>([item.id]);
+    let parent = item.parent_item_id;
+    while (parent) {
+      if (ancestors.has(parent)) {
+        valid = false;
+        break;
+      }
+      ancestors.add(parent);
+      parent = itemById.get(parent)?.parent_item_id ?? null;
+    }
+  }
+  const latest = briefingRecord(root.latest_submission);
+  const latestSubmission = root.latest_submission === null ? null : {
+    id: briefingString(latest.id),
+    ordinal: briefingOptionalNumber(latest.ordinal) ?? 0,
+  };
+  if (root.latest_submission !== null && (!latestSubmission.id || latestSubmission.ordinal < 1)) valid = false;
+  if ((rawState === 'open' && latestSubmission !== null)
+      || (rawState === 'submitted' && latestSubmission === null)) valid = false;
+  return {
+    ask_id: askId,
+    state: ASK_STATES.has(rawState) ? rawState as AskProjection['state'] : 'closed',
+    request_key: briefingString(root.request_key),
+    request_digest: briefingString(root.request_digest),
+    requester_user_id: briefingString(root.requester_user_id),
+    requester_session_id: briefingString(root.requester_session_id),
+    responder_user_ids: briefingStringArray(root.responder_user_ids),
+    expires_at: briefingOptionalNumber(root.expires_at) ?? 0,
+    retention_expires_at: briefingOptionalNumber(root.retention_expires_at),
+    created_at: briefingOptionalNumber(root.created_at) ?? 0,
+    lifecycle_event_id: briefingString(root.lifecycle_event_id),
+    latest_submission: latestSubmission,
+    items,
+    valid,
+  };
+}
+
+export function projectBoundedAskCollection(ask: Readonly<AskProjection>): FeedbackCollection {
+  const answerable = ask.items.filter((item) => item.item_kind === 'item');
+  const required = answerable.filter((item) => item.revision.required);
+  return {
+    id: feedbackCollectionIdentity('bounded_ask', ask.ask_id),
+    kind: 'bounded_ask',
+    state: ask.state,
+    label: ask.request_key || `Ask ${ask.ask_id}`,
+    boundedAsk: {
+      askId: ask.ask_id,
+      itemCount: answerable.length,
+      requiredCount: required.length,
+      answeredRequiredCount: required.filter((item) => item.effective_response !== null).length,
+    },
+  };
+}
+
+export async function getClientAuthWhoami(signal?: AbortSignal): Promise<ClientAuthWhoami> {
+  const response = await apiGet('/api/client-auth/whoami', signal ? { signal } : {});
+  const root = briefingRecord(await parseMaybeJson(response));
+  const user = briefingRecord(root.user);
+  return {
+    authenticated: root.authenticated === true,
+    user: root.authenticated === true && briefingString(user.id) ? {
+      id: briefingString(user.id),
+      slug: briefingString(user.slug),
+      kind: briefingOptionalString(user.kind),
+      display_name: briefingOptionalString(user.display_name),
+    } : null,
+  };
+}
+
+export async function getAsk(askId: string, signal?: AbortSignal): Promise<AskProjection> {
+  const response = await apiGet(`/api/asks/${encodeURIComponent(askId)}`, signal ? { signal } : {});
+  return normalizeAskProjection(await parseMaybeJson(response));
+}
+
+export async function postAskAnswers(
+  askId: string,
+  answers: readonly AskAnswerOperation[],
+): Promise<{ answer_event_ids: string[] }> {
+  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/answers`, { answers });
+  const root = briefingRecord(await parseMaybeJson(response));
+  return { answer_event_ids: briefingStringArray(root.answer_event_ids) };
+}
+
+export async function postAskSubmission(
+  askId: string,
+  input: {
+    expected_lifecycle_event_id: string;
+    supersedes_submission_id?: string;
+    answers: readonly AskSubmissionAnswer[];
+  },
+): Promise<unknown> {
+  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/submit`, input);
+  invalidateApiGetCache(`/api/asks/${encodeURIComponent(askId)}`);
+  invalidateApiGetCache('/api/dashboard/badges');
+  return parseMaybeJson(response);
+}
+
 /** Normalize a raw `/api/briefing/candidates/:id/history` payload. */
 export function normalizeBriefingHistory(payload: unknown, candidateId: string): BriefingHistory {
   const root = briefingContractRecord<ContractBriefingHistoryResponse>(payload);

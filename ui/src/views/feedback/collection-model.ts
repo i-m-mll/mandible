@@ -22,6 +22,12 @@ export type FeedbackCollection = {
     lastPublicationItemCount: number | null;
     lastTaskIdentity: string | null;
   };
+  boundedAsk?: {
+    askId: string;
+    itemCount: number;
+    requiredCount: number;
+    answeredRequiredCount: number;
+  };
 };
 
 export type FeedbackCollectionFilters = {
@@ -32,9 +38,9 @@ export type FeedbackCollectionFilters = {
 
 export function feedbackCollectionIdentity(
   kind: FeedbackCollectionKind,
-  source: string,
+  sourceOrAskId: string,
 ): string {
-  return `${kind}:${encodeURIComponent(source)}`;
+  return `${kind}:${encodeURIComponent(sourceOrAskId)}`;
 }
 
 export function filterFeedbackCollections(
@@ -68,4 +74,3 @@ export function orderFeedbackCollections(
     return pinOrder !== 0 ? pinOrder : compareCollections(left, right);
   });
 }
-

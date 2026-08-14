@@ -3,7 +3,9 @@ import { useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  normalizeAskProjection,
   normalizeBriefingQueue,
+  projectBoundedAskCollection,
   projectBriefingRecurringCollections,
 } from '../ui/src/api';
 import { AppShellProvider } from '../ui/src/app-shell';
@@ -197,6 +199,30 @@ describe('collection filtering and ordering', () => {
       'bounded_ask:ask-1',
       'recurring_feed:alpha',
     ]);
+  });
+});
+
+describe('bounded collection projection', () => {
+  it('uses stable ask identity and only the loaded projection without inventing a source', () => {
+    const projection = normalizeAskProjection({
+      ask_id: 'ask/one', state: 'submitted', request_key: 'Choose', request_digest: 'd',
+      requester_user_id: 'agent', requester_session_id: 'session', responder_user_ids: ['human'],
+      expires_at: 1, retention_expires_at: null, created_at: 1,
+      lifecycle_event_id: 'life', latest_submission: { id: 'submission', ordinal: 1 },
+      items: [{
+        id: 'item', client_item_key: 'item', parent_item_id: null, item_kind: 'item',
+        revision: { id: 'revision', ordinal: 1, title: 'Title', prompt: 'Prompt', description: null,
+          response_type: 'verdict', required: true, position: 0, options: [] },
+        effective_response: { response_event_id: 'response', value: { verdict: 'keep' } },
+      }],
+    });
+    expect(projectBoundedAskCollection(projection)).toEqual({
+      id: 'bounded_ask:ask%2Fone',
+      kind: 'bounded_ask',
+      state: 'submitted',
+      label: 'Choose',
+      boundedAsk: { askId: 'ask/one', itemCount: 1, requiredCount: 1, answeredRequiredCount: 1 },
+    });
   });
 });
 
