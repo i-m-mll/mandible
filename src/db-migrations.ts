@@ -3864,7 +3864,127 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_auth_merge_succeeded_project
         ON auth_request_merge_succeeded_facts(
           project_id, base_branch, canonical_message, completed_at, auth_request_id
-        )`,
+      )`,
+    ],
+  },
+  {
+    version: 130,
+    name: "managed_reminder_core",
+    // Issue e257e5c — immutable one-shot reminder revisions, bounded inbox
+    // occurrences, attributable idempotent creation, and append-only audit.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS managed_tasks (
+        id                 TEXT PRIMARY KEY,
+        project_id         TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        kind               TEXT NOT NULL CHECK(kind = 'mandible-reminder'),
+        lifecycle          TEXT NOT NULL CHECK(lifecycle IN ('armed','completed','cancelled')),
+        active_revision_id TEXT NOT NULL
+                           REFERENCES managed_task_revisions(id) ON DELETE RESTRICT
+                           DEFERRABLE INITIALLY DEFERRED,
+        created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        completed_at       INTEGER,
+        cancelled_at       INTEGER,
+        CHECK (
+          (lifecycle = 'armed' AND completed_at IS NULL AND cancelled_at IS NULL) OR
+          (lifecycle = 'completed' AND completed_at IS NOT NULL AND cancelled_at IS NULL) OR
+          (lifecycle = 'cancelled' AND completed_at IS NULL AND cancelled_at IS NOT NULL)
+        )
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_tasks_reconcile
+        ON managed_tasks(lifecycle, created_at, id)`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_tasks_project
+        ON managed_tasks(project_id, created_at DESC, id DESC)`,
+      `CREATE TABLE IF NOT EXISTS managed_task_revisions (
+        id                 TEXT PRIMARY KEY,
+        task_id            TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_no        INTEGER NOT NULL CHECK(revision_no = 1),
+        schema_id          TEXT NOT NULL CHECK(schema_id = 'mandible-reminder@1'),
+        payload_json       TEXT NOT NULL CHECK(
+                             json_valid(payload_json)
+                             AND json_type(payload_json) = 'object'
+                             AND json_extract(payload_json, '$.schema') = 'mandible-reminder@1'
+                             AND json_extract(payload_json, '$.effect.kind') = 'inbox_occurrence'
+                           ),
+        payload_digest     TEXT NOT NULL CHECK(
+                             length(payload_digest) = 64
+                             AND payload_digest NOT GLOB '*[^0-9a-f]*'
+                           ),
+        created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at         INTEGER NOT NULL,
+        UNIQUE(task_id),
+        UNIQUE(task_id, id),
+        UNIQUE(task_id, revision_no)
+      )`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_revision_matches_task
+        AFTER INSERT ON managed_task_revisions
+        WHEN (SELECT active_revision_id FROM managed_tasks WHERE id = NEW.task_id) != NEW.id
+        BEGIN SELECT RAISE(ABORT, 'managed task active revision mismatch'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_active_revision_immutable
+        BEFORE UPDATE OF active_revision_id ON managed_tasks
+        BEGIN SELECT RAISE(ABORT, 'managed task active revision is immutable'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_revisions_immutable_update
+        BEFORE UPDATE ON managed_task_revisions
+        BEGIN SELECT RAISE(ABORT, 'managed task revisions are immutable'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_revisions_immutable_delete
+        BEFORE DELETE ON managed_task_revisions
+        BEGIN SELECT RAISE(ABORT, 'managed task revisions are immutable'); END`,
+      `CREATE TABLE IF NOT EXISTS managed_task_create_requests (
+        id                 TEXT PRIMARY KEY,
+        created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        idempotency_key    TEXT NOT NULL CHECK(trim(idempotency_key) != ''),
+        request_digest     TEXT NOT NULL CHECK(
+                             length(request_digest) = 64
+                             AND request_digest NOT GLOB '*[^0-9a-f]*'
+                           ),
+        task_id            TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        result_json        TEXT NOT NULL CHECK(
+                             json_valid(result_json) AND json_type(result_json) = 'object'
+                           ),
+        created_at         INTEGER NOT NULL,
+        UNIQUE(created_by_user_id, idempotency_key),
+        UNIQUE(task_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS managed_task_occurrences (
+        id                        TEXT PRIMARY KEY,
+        task_id                   TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_id               TEXT NOT NULL,
+        occurrence_key            TEXT NOT NULL CHECK(trim(occurrence_key) != ''),
+        kind                      TEXT NOT NULL CHECK(kind = 'inbox_occurrence'),
+        payload_json              TEXT NOT NULL CHECK(
+                                    json_valid(payload_json) AND json_type(payload_json) = 'object'
+                                  ),
+        triggering_evidence_json TEXT NOT NULL CHECK(
+                                    json_valid(triggering_evidence_json)
+                                    AND json_type(triggering_evidence_json) = 'object'
+                                  ),
+        created_by_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        fired_by_user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at                INTEGER NOT NULL,
+        UNIQUE(task_id, revision_id, occurrence_key),
+        FOREIGN KEY(task_id, revision_id)
+          REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_task_occurrences_created
+        ON managed_task_occurrences(created_at DESC, id DESC)`,
+      `CREATE TABLE IF NOT EXISTS managed_task_events (
+        id              TEXT PRIMARY KEY,
+        task_id         TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_id     TEXT NOT NULL,
+        project_id      TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        event_type      TEXT NOT NULL CHECK(event_type IN ('created','completed','cancelled')),
+        actor_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','ephemeral','system_internal')),
+        payload_json    TEXT NOT NULL DEFAULT '{}' CHECK(
+                          json_valid(payload_json) AND json_type(payload_json) = 'object'
+                        ),
+        occurred_at     INTEGER NOT NULL,
+        FOREIGN KEY(task_id, revision_id)
+          REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_task_events_task
+        ON managed_task_events(task_id, occurred_at, id)`,
     ],
   }
 ];

@@ -1656,3 +1656,91 @@ export type TaskCommandListResponse = {
 export const TASK_COMMAND_EVENTS = Object.freeze({
   changed: 'tasks.commands.changed',
 } as const);
+
+// --- managed reminders (umbrella d110073 / issue e257e5c) -------------------
+
+export const MANAGED_REMINDER_SCHEMA = 'mandible-reminder@1';
+
+export type ManagedReminderPredicate =
+  | { kind: 'at'; at: string }
+  | { kind: 'issue_closed'; issue_id: string }
+  | {
+      kind: 'auth_merge_count_gte';
+      project_id: string;
+      base_branch?: string;
+      canonical_message?: boolean;
+      threshold: number;
+    };
+
+export type ManagedReminderPayload = {
+  schema: typeof MANAGED_REMINDER_SCHEMA;
+  message: string;
+  predicate: ManagedReminderPredicate;
+  effect: { kind: 'inbox_occurrence' };
+};
+
+export type ManagedReminderLifecycle = 'armed' | 'completed' | 'cancelled';
+
+export type ManagedReminderOccurrence = {
+  id: string;
+  task_id: string;
+  revision_id: string;
+  occurrence_key: string;
+  kind: 'inbox_occurrence';
+  message: string;
+  triggering_evidence: Record<string, unknown>;
+  created_by_user_id: string;
+  fired_by_user_id: string;
+  created_at: number;
+};
+
+export type ManagedReminder = {
+  id: string;
+  project_id: string;
+  project_key: string;
+  kind: 'mandible-reminder';
+  lifecycle: ManagedReminderLifecycle;
+  created_by_user_id: string;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+  cancelled_at: number | null;
+  revision: {
+    id: string;
+    revision_no: 1;
+    schema: typeof MANAGED_REMINDER_SCHEMA;
+    payload_digest: string;
+    payload: ManagedReminderPayload;
+    created_by_user_id: string;
+    created_at: number;
+  };
+  occurrence: ManagedReminderOccurrence | null;
+};
+
+export type ManagedReminderCreateRequest = {
+  schema: typeof MANAGED_REMINDER_SCHEMA;
+  idempotency_key: string;
+  project: string;
+  message: string;
+  predicate:
+    | { kind: 'at'; at: string }
+    | { kind: 'issue_closed'; issue: string }
+    | {
+        kind: 'auth_merge_count_gte';
+        project: string;
+        base_branch?: string;
+        canonical_message?: boolean;
+        threshold: number;
+      };
+};
+
+export type ManagedReminderCreateResult = {
+  reminder: ManagedReminder;
+  stored: boolean;
+  fired_immediately: boolean;
+};
+
+export const MANAGED_REMINDER_EVENTS = Object.freeze({
+  changed: 'managed-reminders.changed',
+  occurred: 'managed-reminders.occurred',
+} as const);
