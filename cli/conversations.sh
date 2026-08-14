@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 source "$SCRIPT_DIR/api.sh"
 
-MANDIBLE_DB="${MANDIBLE_DB:-${HOME}/.cache/mandible/mandible.db}"
+MANDIBLE_DB="$(api_live_db_path)"
 
 usage() {
   cat <<'EOF'

@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
-import { getMandibleConfigDir } from "../platform-paths.js";
+import { ensureMandibleConfigEntry } from "../platform-paths.js";
 
 const PEPPER_FILE = "pepper";
 const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
@@ -24,8 +24,14 @@ export const MAX_DASHBOARD_SESSIONS = 8;
 /** Legacy location: the pepper used to live in the settings KV table. */
 const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
 
+/**
+ * Copies the directory forward from the pre-durable-root config location on
+ * first use (issue 24f0316). The pepper in particular cannot be regenerated
+ * without consequence: every stored API token's fingerprint is an HMAC under
+ * it, so a fresh pepper silently invalidates all of them.
+ */
 export function defaultClientAuthDir(): string {
-  return path.join(getMandibleConfigDir(), "client-auth");
+  return ensureMandibleConfigEntry("client-auth");
 }
 
 function ensureDir(dir: string): void {
