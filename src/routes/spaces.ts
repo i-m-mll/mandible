@@ -1,4 +1,9 @@
 import { candidateStateFromAction, lastActionForRevision } from "../briefing.js";
+import {
+  getRecurringCandidate,
+  getRecurringRevision,
+  recurringStoreAvailable,
+} from "../feedback/store.js";
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -233,8 +238,8 @@ function validateItemRef(
 
 // --- finding references (briefing umbrella 99b74d6) --------------------------
 //
-// A `finding` SpaceItem points at one briefing review candidate
-// (`review_candidates.id`) and carries its revision semantics in the item
+// A `finding` SpaceItem points at one recurring feedback item (the preserved
+// Briefing candidate id) and carries its revision semantics in the item
 // metadata: `{ revision_mode: 'latest' | 'pinned', pinned_revision_id?: string }`.
 // Everything here is READ-ONLY over the briefing candidate store: Spaces never
 // writes candidates, revisions, or decision events. Placing a finding in a Space
@@ -255,24 +260,6 @@ interface FindingCandidateRow {
   created_at: number | null;
 }
 
-interface FindingRevisionRow {
-  id: string;
-  candidate_id: string;
-  title: string | null;
-  why_notable: string | null;
-  refs_json: string | null;
-  source_ref: string | null;
-  evidence_hash: string | null;
-  evidence_kind: string | null;
-  captured_at: string | null;
-  run_id: string | null;
-  digest_series_ref: string | null;
-  digest_version: number | null;
-  rank: number | null;
-  batch_key: string | null;
-  ingested_at: number | null;
-}
-
 function tableExists(db: Db, name: string): boolean {
   const row = db
     .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -282,7 +269,7 @@ function tableExists(db: Db, name: string): boolean {
 
 /** True when the briefing candidate store (contract §2) exists in this database. */
 export function findingStoreAvailable(db: Db): boolean {
-  return tableExists(db, "review_candidates") && tableExists(db, "candidate_revisions");
+  return recurringStoreAvailable(db);
 }
 
 /** Strip an optional `finding:` prefix from a raw ref; returns the candidate id. */
@@ -295,54 +282,12 @@ export function findingCandidateIdFromRef(ref: string): string {
 
 function loadFindingCandidateRow(db: Db, candidateId: string): FindingCandidateRow | null {
   if (!findingStoreAvailable(db)) return null;
-  const row = db
-    .prepare(
-      `SELECT id, source, candidate_key, current_revision_id, created_at
-         FROM review_candidates WHERE id = ?`,
-    )
-    .get(candidateId) as FindingCandidateRow | undefined;
-  return row ?? null;
-}
-
-function projectFindingRevision(row: FindingRevisionRow): SpaceFindingRevisionSummary {
-  let refs: string[] = [];
-  if (row.refs_json) {
-    try {
-      const parsed = JSON.parse(row.refs_json) as unknown;
-      if (Array.isArray(parsed)) refs = parsed.filter((v): v is string => typeof v === "string");
-    } catch {
-      refs = [];
-    }
-  }
-  const evidenceKind =
-    row.evidence_kind === "snapshot-item" || row.evidence_kind === "finding-only"
-      ? row.evidence_kind
-      : null;
-  return {
-    id: row.id,
-    candidate_id: row.candidate_id,
-    title: row.title ?? null,
-    why_notable: row.why_notable ?? null,
-    source_ref: row.source_ref ?? null,
-    evidence_hash: row.evidence_hash ?? null,
-    evidence_kind: evidenceKind,
-    captured_at: row.captured_at ?? null,
-    run_id: row.run_id ?? null,
-    digest_series_ref: row.digest_series_ref ?? null,
-    digest_version: row.digest_version ?? null,
-    rank: row.rank ?? null,
-    batch_key: row.batch_key ?? null,
-    ingested_at: row.ingested_at ?? null,
-    refs,
-  };
+  return getRecurringCandidate(db, candidateId);
 }
 
 function loadFindingRevision(db: Db, revisionId: string): SpaceFindingRevisionSummary | null {
-  if (!findingStoreAvailable(db)) return null;
-  const row = db
-    .prepare("SELECT * FROM candidate_revisions WHERE id = ?")
-    .get(revisionId) as FindingRevisionRow | undefined;
-  return row ? projectFindingRevision(row) : null;
+  const revision = getRecurringRevision(db, revisionId);
+  return revision ? { ...revision } : null;
 }
 
 /**
@@ -352,7 +297,7 @@ function loadFindingRevision(db: Db, revisionId: string): SpaceFindingRevisionSu
  * never guesses `pending`.
  */
 function findingReviewState(db: Db, revisionId: string | null): FindingReviewState {
-  if (!revisionId || !tableExists(db, "decision_events")) return "unknown";
+  if (!revisionId || !findingStoreAvailable(db)) return "unknown";
   return candidateStateFromAction(lastActionForRevision(db, revisionId));
 }
 
@@ -414,7 +359,7 @@ export function normalizeFindingMetadata(
   }
   if (mode === "pinned" && findingStoreAvailable(db)) {
     const row = db
-      .prepare("SELECT candidate_id FROM candidate_revisions WHERE id = ?")
+      .prepare("SELECT item_id AS candidate_id FROM feedback_item_revisions WHERE id = ?")
       .get(pinned) as { candidate_id: string } | undefined;
     if (!row) throw new HttpError(400, `pinned revision not found: ${pinned}`);
     if (row.candidate_id !== candidateId) {
@@ -518,8 +463,14 @@ export function listFindingCandidates(
       `SELECT c.id AS id, c.source AS source, c.candidate_key AS candidate_key,
               c.current_revision_id AS current_revision_id, c.created_at AS created_at,
               r.title AS title
-         FROM review_candidates c
-         LEFT JOIN candidate_revisions r ON r.id = c.current_revision_id
+         FROM (
+           SELECT i.id, collections.source, i.external_key AS candidate_key,
+                  i.current_revision_id, i.created_at
+             FROM feedback_items i
+             JOIN feedback_collections collections ON collections.id = i.collection_id
+            WHERE collections.kind = 'recurring_feed'
+         ) c
+         LEFT JOIN feedback_item_revisions r ON r.id = c.current_revision_id
         ORDER BY c.created_at DESC, c.id ASC`,
     )
     .all() as Array<FindingCandidateRow & { title: string | null }>;

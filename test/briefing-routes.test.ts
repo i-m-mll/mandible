@@ -88,12 +88,12 @@ function makeRouter(options: { readOnly?: boolean } = {}): Router {
 }
 
 function onlyCandidateId(): string {
-  return (db.prepare("SELECT id FROM review_candidates LIMIT 1").get() as { id: string }).id;
+  return (db.prepare("SELECT id FROM feedback_items LIMIT 1").get() as { id: string }).id;
 }
 
 function currentRevisionId(candidateId: string): string {
   return (db
-    .prepare("SELECT current_revision_id AS id FROM review_candidates WHERE id = ?")
+    .prepare("SELECT current_revision_id AS id FROM feedback_items WHERE id = ?")
     .get(candidateId) as { id: string }).id;
 }
 
@@ -137,7 +137,7 @@ describe("briefing ingest route", () => {
     });
     expect(replay).toEqual(first);
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM candidate_revisions").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_item_revisions").get() as { n: number }).n,
     ).toBe(1);
     expect(publisherId).toBeTruthy();
   });
@@ -159,7 +159,7 @@ describe("briefing ingest route", () => {
     expect(foreignNamespace.status).toBe(403);
     expect(foreignNamespace.body).toMatchObject({ code: "source_namespace_forbidden" });
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM briefing_batches").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n,
     ).toBe(0);
   });
 
@@ -193,7 +193,7 @@ describe("briefing ingest route", () => {
     });
     expect(response.status).toBe(400);
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM briefing_batches").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n,
     ).toBe(0);
   });
 });
@@ -215,7 +215,7 @@ describe("briefing decision and comment routes", () => {
     expect(kept.body).toMatchObject({ candidate_id: candidateId, action: "keep", state: "kept" });
     expect(countPendingBriefingCandidates(db)).toBe(0);
     expect(
-      (db.prepare("SELECT actor_user_id AS id FROM decision_events").get() as { id: string }).id,
+      (db.prepare("SELECT actor_user_id AS id FROM feedback_response_events").get() as { id: string }).id,
     ).toBe(operatorId);
 
     const undone = await router.invoke({
@@ -319,7 +319,7 @@ describe("briefing decision and comment routes", () => {
     expect(unknown.status).toBe(404);
 
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_response_events").get() as { n: number }).n,
     ).toBe(0);
   });
 
@@ -337,7 +337,7 @@ describe("briefing decision and comment routes", () => {
       expect(bad.status).toBe(400);
     }
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_response_events").get() as { n: number }).n,
     ).toBe(0);
 
     const kept = await router.invoke({
@@ -366,7 +366,7 @@ describe("briefing decision and comment routes", () => {
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({ error: "decision changed since it was read" });
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_response_events").get() as { n: number }).n,
     ).toBe(2);
     expect(countPendingBriefingCandidates(db)).toBe(0);
   });
@@ -387,10 +387,10 @@ describe("briefing decision and comment routes", () => {
       expect(response.body).toMatchObject({ code: "human_reviewer_required" });
     }
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_response_events").get() as { n: number }).n,
     ).toBe(0);
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM candidate_comments").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_comments").get() as { n: number }).n,
     ).toBe(0);
     expect(countPendingBriefingCandidates(db)).toBe(1);
   });
@@ -517,7 +517,7 @@ describe("briefing decision and comment routes", () => {
       });
     }
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_response_events").get() as { n: number }).n,
     ).toBe(0);
 
     // Reads stay available on a read-only instance.

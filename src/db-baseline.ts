@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v125 migration replay.
+ * Schema snapshot generated from a full v1-v126 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 125;
+export const BASELINE_SCHEMA_VERSION = 126;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -319,98 +319,15 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
   "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
   "CREATE TRIGGER trg_work_units_assigned_session_update_normalize\n     AFTER UPDATE OF assigned_session_id ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
-  // Migration v120 (umbrella 99b74d6 / issue ce22a3a) — briefing review store.
-  // The equivalence test normalizes whitespace, so these read as ordinary DDL
-  // rather than the single-line dump form above.
-  `CREATE TABLE review_candidates (
-        id                  TEXT PRIMARY KEY,
-        source              TEXT NOT NULL,
-        candidate_key       TEXT NOT NULL,
-        current_revision_id TEXT,
-        created_at          INTEGER NOT NULL,
-        UNIQUE(source, candidate_key)
-      )`,
-  `CREATE TABLE candidate_revisions (
-        id                TEXT PRIMARY KEY,
-        candidate_id      TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
-        title             TEXT NOT NULL,
-        why_notable       TEXT,
-        refs_json         TEXT NOT NULL DEFAULT '[]'
-                            CHECK(json_valid(refs_json) AND json_type(refs_json)='array'),
-        source_ref        TEXT,
-        evidence_hash     TEXT NOT NULL,
-        evidence_kind     TEXT NOT NULL
-                            CHECK(evidence_kind IN ('snapshot-item','finding-only')),
-        captured_at       TEXT,
-        run_id            TEXT,
-        digest_series_ref TEXT,
-        digest_version    INTEGER,
-        rank              INTEGER,
-        batch_key         TEXT NOT NULL,
-        ingested_at       INTEGER NOT NULL,
-        UNIQUE(candidate_id, evidence_hash)
-      )`,
-  `CREATE TABLE candidate_occurrences (
-        id             TEXT PRIMARY KEY,
-        revision_id    TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        digest_version INTEGER,
-        batch_key      TEXT NOT NULL,
-        seen_at        INTEGER NOT NULL,
-        UNIQUE(revision_id, batch_key)
-      )`,
-  `CREATE TABLE decision_events (
-        id            TEXT PRIMARY KEY,
-        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
-        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        action        TEXT NOT NULL CHECK(action IN ('keep','dismiss','undo','expire')),
-        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        comment_id    TEXT,
-        created_at    INTEGER NOT NULL
-      )`,
-  `CREATE TABLE candidate_comments (
-        id            TEXT PRIMARY KEY,
-        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
-        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        body          TEXT NOT NULL,
-        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        created_at    INTEGER NOT NULL
-      )`,
-  `CREATE TABLE briefing_batches (
-        batch_key         TEXT PRIMARY KEY,
-        task_identity     TEXT NOT NULL,
-        run_id            TEXT,
-        digest_series_ref TEXT,
-        digest_version    INTEGER,
-        item_count        INTEGER NOT NULL DEFAULT 0,
-        received_at       INTEGER NOT NULL
-      )`,
-  `CREATE INDEX idx_review_candidates_source
-         ON review_candidates(source, created_at DESC)`,
-  `CREATE INDEX idx_candidate_revisions_candidate
-         ON candidate_revisions(candidate_id, ingested_at DESC)`,
-  `CREATE INDEX idx_candidate_revisions_batch
-         ON candidate_revisions(batch_key)`,
-  `CREATE INDEX idx_candidate_occurrences_revision
-         ON candidate_occurrences(revision_id, seen_at DESC)`,
-  `CREATE INDEX idx_candidate_occurrences_batch
-         ON candidate_occurrences(batch_key)`,
-  `CREATE INDEX idx_decision_events_revision
-         ON decision_events(revision_id, created_at)`,
-  `CREATE INDEX idx_decision_events_candidate
-         ON decision_events(candidate_id, created_at)`,
-  `CREATE INDEX idx_candidate_comments_candidate
-         ON candidate_comments(candidate_id, created_at)`,
-  `CREATE INDEX idx_briefing_batches_task
-         ON briefing_batches(task_identity, digest_version)`,
   // Migration v122 (umbrella 99b74d6 / issue ce83a84) — agent dispatch
   // handling events: the audit chain comment -> handling event -> session
   // handle for human-initiated Claude dispatch.
-  `CREATE TABLE agent_dispatch_events (
+  `CREATE TABLE "agent_dispatch_events" (
         id             TEXT PRIMARY KEY,
         subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
-        candidate_id   TEXT REFERENCES review_candidates(id) ON DELETE CASCADE,
-        revision_id    TEXT REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        comment_id     TEXT REFERENCES candidate_comments(id) ON DELETE SET NULL,
+        candidate_id   TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        revision_id    TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        comment_id     TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
         issue_id       TEXT,
         actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
         provider       TEXT NOT NULL DEFAULT 'claude',

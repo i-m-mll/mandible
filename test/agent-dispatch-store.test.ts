@@ -67,7 +67,7 @@ function batch(overrides: Partial<BriefingIngestRequest> = {}): BriefingIngestRe
 }
 
 function onlyCandidateId(): string {
-  return (db.prepare("SELECT id FROM review_candidates LIMIT 1").get() as { id: string }).id;
+  return (db.prepare("SELECT id FROM feedback_items LIMIT 1").get() as { id: string }).id;
 }
 
 beforeEach(() => {
@@ -133,7 +133,7 @@ describe("dispatch prompt construction", () => {
       }],
     }), 2_000);
     const candidateId = (db
-      .prepare("SELECT id FROM review_candidates WHERE candidate_key = 'key-2'")
+      .prepare("SELECT id FROM feedback_items WHERE external_key = 'key-2'")
       .get() as { id: string }).id;
 
     const plan = previewAgentDispatch(db, {
@@ -208,7 +208,7 @@ describe("dispatch prompt construction", () => {
       actorUserId: operatorId,
     });
 
-    expect((db.prepare("SELECT COUNT(*) AS n FROM candidate_comments").get() as { n: number }).n)
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_comments").get() as { n: number }).n)
       .toBe(0);
     expect((db.prepare("SELECT COUNT(*) AS n FROM agent_dispatch_events").get() as { n: number }).n)
       .toBe(0);
@@ -234,7 +234,8 @@ describe("dispatch chain", () => {
 
     expect(outcome.ok).toBe(true);
     const comment = db
-      .prepare("SELECT * FROM candidate_comments")
+      .prepare(`SELECT id, item_id AS candidate_id, item_revision_id AS revision_id,
+                       body, actor_user_id, created_at FROM feedback_comments`)
       .get() as { id: string; body: string; revision_id: string; actor_user_id: string };
     expect(comment.body).toBe("Reproduce this result on the small model.");
     expect(comment.actor_user_id).toBe(operatorId);
@@ -284,7 +285,7 @@ describe("dispatch chain", () => {
       error: "dedicated tmux server 'claude-spawn' is not running",
     });
     // The instruction is not lost because the external spawn failed.
-    expect((db.prepare("SELECT COUNT(*) AS n FROM candidate_comments").get() as { n: number }).n)
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_comments").get() as { n: number }).n)
       .toBe(1);
     expect(outcome.event.comment_id).not.toBeNull();
   });

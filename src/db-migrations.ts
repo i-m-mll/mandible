@@ -5,6 +5,7 @@ import { getDaemonLogger } from "./daemon-log.js";
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
+import { encodeRecurringRevisionContent } from "./feedback/store.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 import { backfillProjectKeys } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
@@ -3749,6 +3750,13 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_feedback_comments_item
         ON feedback_comments(item_id, created_at)`
     ]
+  },
+  {
+    version: 126,
+    name: "feedback_recurring_cutover",
+    // The destructive work runs in the guarded migration helper, outside the
+    // generic transaction, so PRAGMA foreign_keys=OFF takes effect first.
+    statements: [],
   }
 ];
 
@@ -3897,7 +3905,8 @@ export function migrate(db: Db): void {
   // Migration 105 depends on Node post-migrations through v104. Apply only the
   // earlier SQL/hooks now; later migrations remain pending until v105 commits.
   const beforeV105 = pending.filter((migration) => migration.version < 105);
-  const afterV105 = pending.filter((migration) => migration.version > 105);
+  const afterV105 = pending.filter((migration) => migration.version > 105 && migration.version < 126);
+  const afterV126 = pending.filter((migration) => migration.version > 126);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -4155,6 +4164,11 @@ export function migrate(db: Db): void {
   // newer than v105 may execute until every older post-DDL migration and v105
   // itself have completed successfully.
   applySchemaMigrations(db, afterV105);
+
+  if (pending.some((migration) => migration.version === 126)) {
+    migrateFeedbackRecurringCutover(db);
+  }
+  applySchemaMigrations(db, afterV126);
 
   // Integration reconciliation (umbrella c16807e): the additive-column hooks for
   // v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
@@ -5786,6 +5800,534 @@ function canonicalizeProjectRepoIds(db: Db): void {
       ).run(plan.target_id, plan.root, temporaryIds.get(plan.root));
     }
   }
+}
+
+const V126_LEGACY_TABLES = [
+  "review_candidates",
+  "candidate_revisions",
+  "candidate_occurrences",
+  "decision_events",
+  "candidate_comments",
+  "briefing_batches",
+] as const;
+
+const V126_FEEDBACK_TABLES = [
+  "feedback_collections",
+  "feedback_recurring_profiles",
+  "feedback_ask_sessions",
+  "feedback_publications",
+  "feedback_items",
+  "feedback_item_revisions",
+  "feedback_item_options",
+  "feedback_publication_items",
+  "feedback_collection_events",
+  "feedback_item_events",
+  "feedback_response_events",
+  "feedback_submissions",
+  "feedback_submission_answers",
+  "feedback_comments",
+] as const;
+
+function v126StableId(kind: string, ...parts: string[]): string {
+  const digest = createHash("sha256")
+    .update(["mandible.feedback.v126", kind, ...parts].join("\u0000"))
+    .digest("hex");
+  return `feedback-${kind}-${digest}`;
+}
+
+function assertV126Checks(db: Db, phase: string): void {
+  const violations = db.pragma("foreign_key_check") as unknown[];
+  if (violations.length > 0) {
+    throw new Error(`migration 126 ${phase}: ${violations.length} foreign key violation(s)`);
+  }
+  const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+    throw new Error(`migration 126 ${phase}: integrity_check failed`);
+  }
+}
+
+function assertV126AgentDispatchSchema(db: Db): void {
+  if (!tableExists(db, "agent_dispatch_events")) {
+    throw new Error("migration 126 precondition: agent_dispatch_events is missing");
+  }
+  const fks = db.pragma("foreign_key_list(agent_dispatch_events)") as Array<{
+    from: string;
+    table: string;
+    on_delete: string;
+  }>;
+  const expected = new Map([
+    ["candidate_id", "feedback_items"],
+    ["revision_id", "feedback_item_revisions"],
+    ["comment_id", "feedback_comments"],
+  ]);
+  for (const [column, parent] of expected) {
+    const fk = fks.find((entry) => entry.from === column);
+    if (!fk || fk.table !== parent || fk.on_delete.toUpperCase() !== "RESTRICT") {
+      throw new Error(
+        `migration 126 verification: agent_dispatch_events.${column} does not ` +
+        `reference ${parent}(id) ON DELETE RESTRICT`,
+      );
+    }
+  }
+}
+
+function migrateFeedbackRecurringCutover(db: Db): void {
+  if (db.inTransaction) {
+    throw new Error("migration 126 precondition: cutover cannot start inside a transaction");
+  }
+  const legacyPresence = V126_LEGACY_TABLES.map((name) => tableExists(db, name));
+  const legacyCount = legacyPresence.filter(Boolean).length;
+  if (legacyCount !== 0 && legacyCount !== V126_LEGACY_TABLES.length) {
+    const present = V126_LEGACY_TABLES.filter((_, index) => legacyPresence[index]);
+    throw new Error(
+      `migration 126 precondition: partial legacy Briefing schema (${present.join(", ")})`,
+    );
+  }
+  for (const table of V126_FEEDBACK_TABLES) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 126 precondition: ${table} is missing`);
+    }
+  }
+
+  // Replay after only the marker was rewound: verify the already-cut-over live
+  // schema and restore the marker without recreating or rewriting anything.
+  if (legacyCount === 0) {
+    assertV126AgentDispatchSchema(db);
+    assertV126Checks(db, "replay verification");
+    db.transaction(() => setMeta(db, SCHEMA_VERSION_KEY, "126")).immediate();
+    return;
+  }
+
+  const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+  try {
+    if (!previousForeignKeys) db.pragma("foreign_keys = ON");
+    assertV126Checks(db, "preflight");
+
+    // C1a did not write feedback rows. Refuse to merge two independent stores:
+    // doing so could collide identities or silently duplicate human judgments.
+    for (const table of V126_FEEDBACK_TABLES) {
+      const count = (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+      if (count !== 0) {
+        throw new Error(`migration 126 precondition: ${table} is not empty`);
+      }
+    }
+
+    const invalid = (sql: string): number =>
+      (db.prepare(sql).get() as { n: number }).n;
+    const validations: Array<[string, string]> = [
+      ["candidate source/key is blank", `SELECT COUNT(*) AS n FROM review_candidates
+        WHERE trim(source) = '' OR trim(candidate_key) = ''`],
+      ["candidate current revision is missing or belongs to another candidate", `
+        SELECT COUNT(*) AS n FROM review_candidates c
+         WHERE c.current_revision_id IS NOT NULL AND NOT EXISTS (
+           SELECT 1 FROM candidate_revisions r
+            WHERE r.id = c.current_revision_id AND r.candidate_id = c.id)`],
+      ["revision JSON/evidence fields are invalid", `SELECT COUNT(*) AS n FROM candidate_revisions
+        WHERE trim(evidence_hash) = '' OR trim(title) = ''
+           OR NOT json_valid(refs_json) OR json_type(refs_json) != 'array'`],
+      ["revision batch is missing", `SELECT COUNT(*) AS n FROM candidate_revisions r
+        WHERE NOT EXISTS (SELECT 1 FROM briefing_batches b WHERE b.batch_key = r.batch_key)`],
+      ["revision has no occurrence in its originating batch", `SELECT COUNT(*) AS n
+        FROM candidate_revisions r WHERE NOT EXISTS (
+          SELECT 1 FROM candidate_occurrences o
+           WHERE o.revision_id = r.id AND o.batch_key = r.batch_key)`],
+      ["occurrence batch is missing", `SELECT COUNT(*) AS n FROM candidate_occurrences o
+        WHERE NOT EXISTS (SELECT 1 FROM briefing_batches b WHERE b.batch_key = o.batch_key)`],
+      ["empty legacy batch cannot be source-scoped", `SELECT COUNT(*) AS n FROM briefing_batches b
+        WHERE NOT EXISTS (SELECT 1 FROM candidate_occurrences o WHERE o.batch_key = b.batch_key)`],
+      ["decision candidate/revision relationship is invalid", `SELECT COUNT(*) AS n
+        FROM decision_events d WHERE NOT EXISTS (
+          SELECT 1 FROM candidate_revisions r
+           WHERE r.id = d.revision_id AND r.candidate_id = d.candidate_id)`],
+      ["human decision actor is missing", `SELECT COUNT(*) AS n FROM decision_events
+        WHERE action IN ('keep','dismiss','undo') AND actor_user_id IS NULL`],
+      ["comment cannot satisfy strict feedback constraints", `SELECT COUNT(*) AS n
+        FROM candidate_comments c WHERE actor_user_id IS NULL OR trim(body) = '' OR NOT EXISTS (
+          SELECT 1 FROM candidate_revisions r
+           WHERE r.id = c.revision_id AND r.candidate_id = c.candidate_id)`],
+      ["decision comment_id cannot be represented", `SELECT COUNT(*) AS n FROM decision_events
+        WHERE comment_id IS NOT NULL`],
+      ["finding dispatch link is incomplete", `SELECT COUNT(*) AS n FROM agent_dispatch_events e
+        WHERE e.subject_kind = 'finding' AND (
+          e.candidate_id IS NULL OR e.revision_id IS NULL OR e.comment_id IS NULL
+          OR NOT EXISTS (SELECT 1 FROM review_candidates c WHERE c.id = e.candidate_id)
+          OR NOT EXISTS (SELECT 1 FROM candidate_revisions r
+               WHERE r.id = e.revision_id AND r.candidate_id = e.candidate_id)
+          OR NOT EXISTS (SELECT 1 FROM candidate_comments c
+               WHERE c.id = e.comment_id AND c.candidate_id = e.candidate_id
+                 AND c.revision_id = e.revision_id))`],
+    ];
+    for (const [description, sql] of validations) {
+      const count = invalid(sql);
+      if (count > 0) {
+        throw new Error(`migration 126 precondition: ${count} row(s): ${description}`);
+      }
+    }
+
+    const legacyCounts = Object.fromEntries(
+      V126_LEGACY_TABLES.map((table) => [
+        table,
+        (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n,
+      ]),
+    ) as Record<(typeof V126_LEGACY_TABLES)[number], number>;
+    const dispatchCount = (db.prepare(
+      "SELECT COUNT(*) AS n FROM agent_dispatch_events",
+    ).get() as { n: number }).n;
+
+    db.pragma("foreign_keys = OFF");
+    db.transaction(() => {
+      const expiryRaw = (db.prepare(
+        "SELECT value FROM settings WHERE key = 'briefing.expiry_ms'",
+      ).get() as { value: string } | undefined)?.value;
+      const parsedExpiry = expiryRaw === undefined ? Number.NaN : Number(expiryRaw);
+      const expiryMs = Number.isFinite(parsedExpiry) && parsedExpiry > 0
+        ? parsedExpiry
+        : 14 * 24 * 60 * 60 * 1_000;
+
+      const sourceRows = db.prepare(
+        `SELECT source, MIN(created_at) AS created_at
+           FROM review_candidates GROUP BY source ORDER BY source`,
+      ).all() as Array<{ source: string; created_at: number }>;
+      const collectionIds = new Map<string, string>();
+      for (const source of sourceRows) {
+        const collectionId = v126StableId("collection", source.source);
+        collectionIds.set(source.source, collectionId);
+        db.prepare(
+          `INSERT INTO feedback_collections
+             (id, kind, interaction_mode, source, created_at, tombstoned_at)
+           VALUES (?, 'recurring_feed', 'immediate_per_item', ?, ?, NULL)`,
+        ).run(collectionId, source.source, source.created_at);
+        db.prepare(
+          `INSERT INTO feedback_recurring_profiles
+             (collection_id, source_namespace, item_expiry_ms, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(collectionId, source.source, expiryMs, source.created_at, source.created_at);
+        db.prepare(
+          `INSERT INTO feedback_collection_events
+             (id, collection_id, operation, previous_event_id, actor_user_id,
+              metadata_json, created_at)
+           VALUES (?, ?, 'opened', NULL, NULL, '{}', ?)`,
+        ).run(v126StableId("opened", source.source), collectionId, source.created_at);
+      }
+
+      const publicationRows = db.prepare(
+        `SELECT DISTINCT b.batch_key, b.task_identity, b.run_id, b.digest_series_ref,
+                b.digest_version, b.item_count, b.received_at, c.source
+           FROM briefing_batches b
+           JOIN candidate_occurrences o ON o.batch_key = b.batch_key
+           JOIN candidate_revisions r ON r.id = o.revision_id
+           JOIN review_candidates c ON c.id = r.candidate_id
+          ORDER BY b.received_at, b.rowid, c.source`,
+      ).all() as Array<{
+        batch_key: string;
+        task_identity: string;
+        run_id: string | null;
+        digest_series_ref: string | null;
+        digest_version: number | null;
+        item_count: number;
+        received_at: number;
+        source: string;
+      }>;
+      const publicationIds = new Map<string, string>();
+      for (const publication of publicationRows) {
+        const collectionId = collectionIds.get(publication.source);
+        if (!collectionId) throw new Error("migration 126 copy: missing collection");
+        const mapKey = `${publication.batch_key}\u0000${publication.source}`;
+        const publicationId = v126StableId(
+          "publication", publication.batch_key, publication.source,
+        );
+        publicationIds.set(mapKey, publicationId);
+        db.prepare(
+          `INSERT INTO feedback_publications (
+             id, collection_id, publication_key, publisher_user_id, task_identity,
+             run_id, digest_series_ref, digest_version, item_count, received_at
+           ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          publicationId,
+          collectionId,
+          publication.batch_key,
+          publication.task_identity,
+          publication.run_id,
+          publication.digest_series_ref,
+          publication.digest_version,
+          publication.item_count,
+          publication.received_at,
+        );
+      }
+
+      const candidates = db.prepare(
+        "SELECT * FROM review_candidates ORDER BY created_at, rowid",
+      ).all() as Array<{
+        id: string;
+        source: string;
+        candidate_key: string;
+        current_revision_id: string | null;
+        created_at: number;
+      }>;
+      for (const candidate of candidates) {
+        const collectionId = collectionIds.get(candidate.source);
+        if (!collectionId) throw new Error("migration 126 copy: missing candidate collection");
+        db.prepare(
+          `INSERT INTO feedback_items (
+             id, collection_id, parent_item_id, item_kind, identity_mode, external_key,
+             client_item_key, current_revision_id, created_at, tombstoned_at
+           ) VALUES (?, ?, NULL, 'item', 'publisher_dedup', ?, NULL, NULL, ?, NULL)`,
+        ).run(candidate.id, collectionId, candidate.candidate_key, candidate.created_at);
+      }
+
+      const revisions = db.prepare(
+        `SELECT r.*, c.source
+           FROM candidate_revisions r JOIN review_candidates c ON c.id = r.candidate_id
+          ORDER BY r.candidate_id, r.ingested_at, r.rowid`,
+      ).all() as Array<{
+        id: string;
+        candidate_id: string;
+        title: string;
+        why_notable: string | null;
+        refs_json: string;
+        source_ref: string | null;
+        evidence_hash: string;
+        evidence_kind: "snapshot-item" | "finding-only";
+        captured_at: string | null;
+        rank: number | null;
+        batch_key: string;
+        ingested_at: number;
+        source: string;
+      }>;
+      const ordinals = new Map<string, number>();
+      for (const revision of revisions) {
+        const ordinal = (ordinals.get(revision.candidate_id) ?? 0) + 1;
+        ordinals.set(revision.candidate_id, ordinal);
+        const publicationId = publicationIds.get(`${revision.batch_key}\u0000${revision.source}`);
+        if (!publicationId) throw new Error("migration 126 copy: missing revision publication");
+        db.prepare(
+          `INSERT INTO feedback_item_revisions (
+             id, item_id, ordinal, title, prompt, description, response_type, required,
+             content_json, evidence_digest, publication_id, position, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'verdict', 0, ?, ?, ?, ?, ?)`,
+        ).run(
+          revision.id,
+          revision.candidate_id,
+          ordinal,
+          revision.title,
+          revision.title,
+          revision.why_notable,
+          encodeRecurringRevisionContent({
+            why_notable: revision.why_notable,
+            refs: JSON.parse(revision.refs_json) as string[],
+            source_ref: revision.source_ref,
+            evidence_kind: revision.evidence_kind,
+            captured_at: revision.captured_at,
+            rank: revision.rank,
+          }),
+          revision.evidence_hash,
+          publicationId,
+          Math.max(0, revision.rank ?? 0),
+          revision.ingested_at,
+        );
+      }
+      for (const candidate of candidates) {
+        if (candidate.current_revision_id) {
+          db.prepare("UPDATE feedback_items SET current_revision_id = ? WHERE id = ?")
+            .run(candidate.current_revision_id, candidate.id);
+        }
+      }
+
+      const occurrences = db.prepare(
+        `SELECT o.*, c.source, r.rank
+           FROM candidate_occurrences o
+           JOIN candidate_revisions r ON r.id = o.revision_id
+           JOIN review_candidates c ON c.id = r.candidate_id
+          ORDER BY o.seen_at, o.rowid`,
+      ).all() as Array<{
+        id: string;
+        revision_id: string;
+        batch_key: string;
+        seen_at: number;
+        source: string;
+        rank: number | null;
+      }>;
+      for (const occurrence of occurrences) {
+        const publicationId = publicationIds.get(`${occurrence.batch_key}\u0000${occurrence.source}`);
+        if (!publicationId) throw new Error("migration 126 copy: missing occurrence publication");
+        db.prepare(
+          `INSERT INTO feedback_publication_items
+             (id, publication_id, item_revision_id, position, seen_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(
+          occurrence.id,
+          publicationId,
+          occurrence.revision_id,
+          occurrence.rank !== null && occurrence.rank >= 0 ? occurrence.rank : null,
+          occurrence.seen_at,
+        );
+      }
+
+      const decisions = db.prepare(
+        `SELECT d.*, i.collection_id
+           FROM decision_events d JOIN feedback_items i ON i.id = d.candidate_id
+          ORDER BY d.created_at, d.rowid`,
+      ).all() as Array<{
+        id: string;
+        candidate_id: string;
+        revision_id: string;
+        action: "keep" | "dismiss" | "undo" | "expire";
+        actor_user_id: string | null;
+        created_at: number;
+        collection_id: string;
+      }>;
+      const effective = new Map<string, { id: string; action: string; response: boolean }>();
+      for (const decision of decisions) {
+        if (decision.action === "expire") {
+          db.prepare(
+            `INSERT INTO feedback_item_events
+               (id, item_id, item_revision_id, operation, actor_user_id, created_at)
+             VALUES (?, ?, ?, 'expired', ?, ?)`,
+          ).run(
+            decision.id, decision.candidate_id, decision.revision_id,
+            decision.actor_user_id, decision.created_at,
+          );
+          effective.set(decision.revision_id, {
+            id: decision.id, action: "expire", response: false,
+          });
+          continue;
+        }
+        if (decision.action === "undo") {
+          const target = effective.get(decision.revision_id);
+          if (!target?.response || target.action === "undo") {
+            throw new Error(
+              `migration 126 precondition: undo ${decision.id} has no effective response target`,
+            );
+          }
+          db.prepare(
+            `INSERT INTO feedback_response_events (
+               id, collection_id, item_id, item_revision_id, operation, value_json,
+               retracts_event_id, actor_user_id, created_at
+             ) VALUES (?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+          ).run(
+            decision.id, decision.collection_id, decision.candidate_id,
+            decision.revision_id, target.id, decision.actor_user_id, decision.created_at,
+          );
+          effective.set(decision.revision_id, {
+            id: decision.id, action: "undo", response: true,
+          });
+          continue;
+        }
+        db.prepare(
+          `INSERT INTO feedback_response_events (
+             id, collection_id, item_id, item_revision_id, operation, value_json,
+             retracts_event_id, actor_user_id, created_at
+           ) VALUES (?, ?, ?, ?, 'set', ?, NULL, ?, ?)`,
+        ).run(
+          decision.id,
+          decision.collection_id,
+          decision.candidate_id,
+          decision.revision_id,
+          JSON.stringify({ verdict: decision.action }),
+          decision.actor_user_id,
+          decision.created_at,
+        );
+        effective.set(decision.revision_id, {
+          id: decision.id, action: decision.action, response: true,
+        });
+      }
+
+      db.exec(
+        `INSERT INTO feedback_comments (
+           id, collection_id, item_id, item_revision_id, body, actor_user_id, created_at
+         )
+         SELECT c.id, i.collection_id, c.candidate_id, c.revision_id,
+                c.body, c.actor_user_id, c.created_at
+           FROM candidate_comments c JOIN feedback_items i ON i.id = c.candidate_id`,
+      );
+
+      db.exec(`
+        CREATE TABLE agent_dispatch_events_v126 (
+          id             TEXT PRIMARY KEY,
+          subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
+          candidate_id   TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+          revision_id    TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+          comment_id     TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
+          issue_id       TEXT,
+          actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
+          provider       TEXT NOT NULL DEFAULT 'claude',
+          instruction    TEXT NOT NULL,
+          cwd            TEXT NOT NULL,
+          prompt_path    TEXT,
+          prompt_sha256  TEXT,
+          status         TEXT NOT NULL CHECK(status IN ('dispatching','dispatched','failed')),
+          session_handle TEXT,
+          session_id     TEXT,
+          attach_command TEXT,
+          error          TEXT,
+          created_at     INTEGER NOT NULL,
+          settled_at     INTEGER
+        );
+        INSERT INTO agent_dispatch_events_v126 SELECT * FROM agent_dispatch_events;
+        DROP TABLE agent_dispatch_events;
+        ALTER TABLE agent_dispatch_events_v126 RENAME TO agent_dispatch_events;
+        CREATE INDEX idx_agent_dispatch_events_candidate
+          ON agent_dispatch_events(candidate_id, created_at DESC);
+        CREATE INDEX idx_agent_dispatch_events_issue
+          ON agent_dispatch_events(issue_id, created_at DESC);
+        CREATE INDEX idx_agent_dispatch_events_comment
+          ON agent_dispatch_events(comment_id);
+      `);
+
+      db.exec(`
+        DROP TABLE decision_events;
+        DROP TABLE candidate_comments;
+        DROP TABLE candidate_occurrences;
+        DROP TABLE candidate_revisions;
+        DROP TABLE review_candidates;
+        DROP TABLE briefing_batches;
+      `);
+
+      const expectedCounts: Array<[string, number]> = [
+        ["feedback_items", legacyCounts.review_candidates],
+        ["feedback_item_revisions", legacyCounts.candidate_revisions],
+        ["feedback_publication_items", legacyCounts.candidate_occurrences],
+        ["feedback_comments", legacyCounts.candidate_comments],
+        ["agent_dispatch_events", dispatchCount],
+      ];
+      for (const [table, expected] of expectedCounts) {
+        const actual = (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+        if (actual !== expected) {
+          throw new Error(
+            `migration 126 verification: ${table} expected ${expected} rows, found ${actual}`,
+          );
+        }
+      }
+      const eventCount = (db.prepare(
+        `SELECT (SELECT COUNT(*) FROM feedback_response_events)
+              + (SELECT COUNT(*) FROM feedback_item_events) AS n`,
+      ).get() as { n: number }).n;
+      if (eventCount !== legacyCounts.decision_events) {
+        throw new Error(
+          `migration 126 verification: expected ${legacyCounts.decision_events} decision rows, ` +
+          `found ${eventCount} feedback events`,
+        );
+      }
+      const brokenDispatches = invalid(`SELECT COUNT(*) AS n FROM agent_dispatch_events e
+        WHERE e.subject_kind = 'finding' AND (
+          NOT EXISTS (SELECT 1 FROM feedback_items i WHERE i.id = e.candidate_id)
+          OR NOT EXISTS (SELECT 1 FROM feedback_item_revisions r WHERE r.id = e.revision_id)
+          OR NOT EXISTS (SELECT 1 FROM feedback_comments c WHERE c.id = e.comment_id))`);
+      if (brokenDispatches > 0) {
+        throw new Error(
+          `migration 126 verification: ${brokenDispatches} finding dispatch link(s) are unresolved`,
+        );
+      }
+      assertV126AgentDispatchSchema(db);
+      assertV126Checks(db, "transaction verification");
+      setMeta(db, SCHEMA_VERSION_KEY, "126");
+    }).immediate();
+  } finally {
+    db.pragma(`foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
+  }
+
+  assertV126AgentDispatchSchema(db);
+  assertV126Checks(db, "post-restore verification");
 }
 
 function getSchemaVersion(db: Db): number {
