@@ -4218,6 +4218,12 @@ function ensureAskCreateGlobalCapability(db: Db): void {
     throw new Error("Migration v125 requires permission_grants to exist");
   }
   if (definition.sql.includes("'ask.create'")) return;
+  // Partial legacy fixtures and interrupted historical databases can record a
+  // post-v55 schema version while still lacking the ledger substrate. SQLite
+  // cannot safely rebuild a table whose foreign key target is absent. A valid
+  // pre-ledger upgrade applies v55 before reaching this hook; inconsistent
+  // partial schemas retain their v111 grant table and indexes without crashing.
+  if (!tableExists(db, "ledger_projects")) return;
 
   db.exec(`
     ALTER TABLE permission_grants RENAME TO permission_grants_v124;

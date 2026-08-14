@@ -1,9 +1,11 @@
+import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, openDb, type Db } from "../src/db.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 import { addGrant } from "../src/permissions/store.js";
 import { createUser } from "../src/users/store.js";
 
@@ -86,6 +88,16 @@ function objectDefinitions(target: Db, names: readonly string[]): Array<{
 
 function rows(target: Db, table: string): unknown[] {
   return target.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+}
+
+function buildSequentialSchemaThroughV54(target: Db): void {
+  for (const migration of MIGRATIONS.filter((entry) => entry.version <= 54)) {
+    for (const statement of migration.statements) target.exec(statement);
+  }
+  target.prepare(
+    `INSERT INTO meta (key, value) VALUES ('schema_version', '54')
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run();
 }
 
 function rewindToV124(target: Db): void {
@@ -276,5 +288,40 @@ describe.sequential("migration v125: feedback schema foundation", () => {
     });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+  });
+
+  it("upgrades a genuine pre-ledger schema and preserves grants through v125 replay", () => {
+    const legacyDb = new Database(":memory:");
+    try {
+      legacyDb.pragma("foreign_keys = ON");
+      buildSequentialSchemaThroughV54(legacyDb);
+      expect(objectDefinitions(legacyDb, ["ledger_projects", "permission_grants"])).toEqual([]);
+
+      migrate(legacyDb);
+      const permissionDefinition = objectDefinitions(legacyDb, ["permission_grants"])[0];
+      expect(permissionDefinition.sql).toContain("'ask.create'");
+      expect(objectDefinitions(legacyDb, PERMISSION_INDEXES).map((entry) => entry.name).sort())
+        .toEqual([...PERMISSION_INDEXES].sort());
+
+      createUser(legacyDb, { slug: "pre-ledger-user", kind: "agent", display_name: "Pre-ledger User" }, 300);
+      addGrant(legacyDb, {
+        subject_type: "user",
+        subject: "pre-ledger-user",
+        resource_type: "global",
+        permission: "backup",
+      }, 301);
+      rewindToV124(legacyDb);
+      const grantsBefore = rows(legacyDb, "permission_grants");
+      migrate(legacyDb);
+
+      expect(rows(legacyDb, "permission_grants")).toEqual(grantsBefore);
+      expect(objectDefinitions(legacyDb, ["permission_grants"])[0].sql).toContain("'ask.create'");
+      expect(objectDefinitions(legacyDb, PERMISSION_INDEXES).map((entry) => entry.name).sort())
+        .toEqual([...PERMISSION_INDEXES].sort());
+      expect(legacyDb.pragma("foreign_key_check")).toEqual([]);
+      expect(legacyDb.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+    } finally {
+      legacyDb.close();
+    }
   });
 });
