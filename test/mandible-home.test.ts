@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import Database from "better-sqlite3";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -208,6 +209,28 @@ describe("durable-state root (issue 24f0316)", () => {
       expect(ensureMandibleConfigFile("repos.json")).toBe(target);
       expect(fs.readFileSync(target, "utf8")).toBe("current\n");
     });
+
+    it("leaves a missing legacy config entry absent", async () => {
+      const { ensureMandibleConfigEntry } = await import("../src/platform-paths.js");
+      const target = ensureMandibleConfigEntry("client-auth");
+      expect(target).toBe(path.join(tempHome, ".mandible", "config", "client-auth"));
+      expect(fs.existsSync(target)).toBe(false);
+    });
+
+    it("folds a partial legacy config without inventing missing entries", async () => {
+      const legacyDir = getLegacyMandibleConfigDirs()[0];
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.writeFileSync(path.join(legacyDir, "repos.json"), "partial\n", "utf8");
+
+      const { ensureMandibleConfigEntry, ensureMandibleConfigFile } = await import(
+        "../src/platform-paths.js"
+      );
+      const repos = ensureMandibleConfigFile("repos.json");
+      const clientAuth = ensureMandibleConfigEntry("client-auth");
+
+      expect(fs.readFileSync(repos, "utf8")).toBe("partial\n");
+      expect(fs.existsSync(clientAuth)).toBe(false);
+    });
   });
 
   describe("startup copy-forward shim", () => {
@@ -231,25 +254,40 @@ describe("durable-state root (issue 24f0316)", () => {
       expect(fs.existsSync(target)).toBe(false);
     });
 
-    it("legacy present: copies the database with its sidecars and keeps the originals", () => {
-      seedFakeDb(legacy, "from-legacy");
-      // A -wal with committed frames is the whole reason sidecars travel with
-      // the database; a .db-only copy can silently drop recent transactions.
-      fs.writeFileSync(`${legacy}-wal`, "wal-bytes");
-      fs.writeFileSync(`${legacy}-shm`, "shm-bytes");
+    it("copies committed frames that exist only in a real non-empty WAL", () => {
+      seedFakeDb(legacy, "main-file-value");
+      const source = openExplicitly(legacy);
+      try {
+        source.pragma("wal_autocheckpoint = 0");
+        source.pragma("wal_checkpoint(TRUNCATE)");
+        source
+          .prepare("UPDATE settings SET value = ? WHERE key = ?")
+          .run("committed-only-in-wal", "copy_forward_marker");
+        expect(fs.statSync(`${legacy}-wal`).size).toBeGreaterThan(0);
 
-      const outcome = copyForward();
+        const mainOnly = path.join(tempHome, "main-file-only.db");
+        fs.copyFileSync(legacy, mainOnly);
+        const mainOnlyDb = new Database(mainOnly, { fileMustExist: true });
+        try {
+          expect(
+            mainOnlyDb
+              .prepare("SELECT value FROM settings WHERE key = ?")
+              .pluck()
+              .get("copy_forward_marker"),
+          ).toBe("main-file-value");
+        } finally {
+          mainOnlyDb.close();
+        }
 
-      expect(outcome.action).toBe("copied");
-      expect(outcome.dbPath).toBe(target);
-      expect(readMarker(target)).toBe("from-legacy");
-      // Asserted on the copy manifest rather than on disk: the verification
-      // open is a normal read-write open, so SQLite checkpoints the WAL into
-      // the database and removes the sidecars on clean close. That is the
-      // correct end state — the frames were carried across, not dropped.
-      expect(outcome.copied).toEqual([target, `${target}-wal`, `${target}-shm`]);
-      // Never destructive: the source survives, plus a receipt explaining why a
-      // multi-gigabyte file is still sitting in the cache root.
+        const outcome = copyForward();
+        expect(outcome.action).toBe("copied");
+        expect(outcome.dbPath).toBe(target);
+        expect(readMarker(target)).toBe("committed-only-in-wal");
+        expect(outcome.copied).toEqual([target, `${target}-wal`, `${target}-shm`]);
+      } finally {
+        source.close();
+      }
+
       expect(fs.existsSync(legacy)).toBe(true);
       expect(fs.existsSync(`${legacy}.moved-to-mandible-home`)).toBe(true);
       expect(fs.existsSync(`${target}.copy-forward-in-progress`)).toBe(false);
@@ -271,6 +309,33 @@ describe("durable-state root (issue 24f0316)", () => {
 
       expect(outcome).toMatchObject({ dbPath: target, action: "target-present" });
       expect(readMarker(target)).toBe("current-durable");
+    });
+
+    it("refuses an empty durable database while a populated legacy database exists", () => {
+      seedFakeDb(legacy, "authoritative-legacy");
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, "");
+      const logs: string[] = [];
+
+      const outcome = copyForwardLegacyDb(target, legacy, { log: (line) => logs.push(line) });
+
+      expect(outcome).toMatchObject({ dbPath: legacy, action: "kept-legacy" });
+      expect(outcome.reason).toMatch(/invalid-target.*zero bytes/i);
+      expect(logs.join("\n")).toMatch(/REFUSING.*zero bytes.*legacy database/i);
+      expect(readMarker(legacy)).toBe("authoritative-legacy");
+      expect(fs.statSync(target).size).toBe(0);
+    });
+
+    it("refuses an unopenable durable database while a populated legacy database exists", () => {
+      seedFakeDb(legacy, "authoritative-legacy");
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, "not a sqlite database");
+
+      const outcome = copyForward();
+
+      expect(outcome).toMatchObject({ dbPath: legacy, action: "kept-legacy" });
+      expect(outcome.reason).toMatch(/invalid-target.*not openable/i);
+      expect(readMarker(legacy)).toBe("authoritative-legacy");
     });
 
     it("insufficient headroom: keeps using the legacy database and writes nothing", () => {
@@ -324,6 +389,18 @@ describe("durable-state root (issue 24f0316)", () => {
       expect(fs.existsSync(`${target}.copy-forward-in-progress`)).toBe(false);
     });
 
+    it("complete destination plus stale marker is still discarded and recopied", () => {
+      seedFakeDb(legacy, "authoritative");
+      seedFakeDb(target, "complete-but-uncommitted");
+      fs.writeFileSync(`${target}.copy-forward-in-progress`, "interrupted-after-verify");
+
+      const outcome = copyForward();
+
+      expect(outcome.action).toBe("copied");
+      expect(readMarker(target)).toBe("authoritative");
+      expect(fs.existsSync(`${target}.copy-forward-in-progress`)).toBe(false);
+    });
+
     it("rejects a destination that copied but will not open", () => {
       // Size verification alone is not enough: a byte-identical copy of a
       // corrupt file is still unusable, so the shim opens the result before
@@ -361,6 +438,7 @@ describe("durable-state root (issue 24f0316)", () => {
       const modulePath = require_.resolve("../cli/mandible-paths.cjs");
       delete require_.cache[modulePath];
       return require_(modulePath) as {
+        mandibleHome: () => string;
         liveDbPath: () => string;
         defaultDbPath: () => string;
         legacyCacheDbPath: () => string;
@@ -386,6 +464,25 @@ describe("durable-state root (issue 24f0316)", () => {
       expect(shellLiveDbPath()).toBe(getDefaultDbPath());
     });
 
+    it("keeps reading legacy while the durable copy marker is present", () => {
+      seedFakeDb(getLegacyCacheDbPath(), "authoritative-during-copy");
+      fs.mkdirSync(path.dirname(getDefaultDbPath()), { recursive: true });
+      fs.writeFileSync(getDefaultDbPath(), "partial-copy");
+      fs.writeFileSync(`${getDefaultDbPath()}.copy-forward-in-progress`, "copying");
+
+      expect(cjsPaths().liveDbPath()).toBe(getLegacyCacheDbPath());
+      expect(shellLiveDbPath()).toBe(getLegacyCacheDbPath());
+    });
+
+    it("does not let an empty durable file strand a populated legacy database", () => {
+      seedFakeDb(getLegacyCacheDbPath(), "authoritative");
+      fs.mkdirSync(path.dirname(getDefaultDbPath()), { recursive: true });
+      fs.writeFileSync(getDefaultDbPath(), "");
+
+      expect(cjsPaths().liveDbPath()).toBe(getLegacyCacheDbPath());
+      expect(shellLiveDbPath()).toBe(getLegacyCacheDbPath());
+    });
+
     it("lets MANDIBLE_DB win in both implementations", () => {
       const explicit = path.join(tempHome, "explicit.db");
       process.env.MANDIBLE_DB = explicit;
@@ -404,6 +501,26 @@ describe("durable-state root (issue 24f0316)", () => {
           { env: { ...process.env, HOME: tempHome }, encoding: "utf8" },
         ).trim(),
       ).toBe(getDefaultDbPath());
+    });
+
+    it("normalizes MANDIBLE_HOME identically for spaces, trailing slashes, and tilde", () => {
+      const variants = [
+        path.join(tempHome, "durable root") + path.sep,
+        "~/tilde-root/",
+        "~",
+      ];
+      for (const variant of variants) {
+        process.env.MANDIBLE_HOME = variant;
+        const expected = getMandibleHome();
+        expect(cjsPaths().mandibleHome()).toBe(expected);
+        expect(
+          execFileSync(
+            "bash",
+            ["-c", `source "${path.join(repoRoot, "cli", "api.sh")}"; api_mandible_home`],
+            { env: { ...process.env, HOME: tempHome }, encoding: "utf8" },
+          ).trim(),
+        ).toBe(expected);
+      }
     });
   });
 
@@ -424,6 +541,27 @@ describe("durable-state root (issue 24f0316)", () => {
 
       expect(fs.existsSync(getDefaultDbPath())).toBe(true);
       expect(fs.existsSync(legacy)).toBe(true);
+    });
+
+    it("keeps the populated legacy database authoritative when durable is empty", () => {
+      const legacy = getLegacyCacheDbPath();
+      seedFakeDb(legacy, "not-stranded");
+      fs.mkdirSync(path.dirname(getDefaultDbPath()), { recursive: true });
+      fs.writeFileSync(getDefaultDbPath(), "");
+
+      const db = openDb();
+      try {
+        expect(
+          db.prepare("SELECT value FROM settings WHERE key = ?")
+            .pluck()
+            .get("copy_forward_marker"),
+        ).toBe("not-stranded");
+      } finally {
+        db.close();
+      }
+
+      expect(fs.statSync(getDefaultDbPath()).size).toBe(0);
+      expect(readMarker(legacy)).toBe("not-stranded");
     });
 
     it("creates a fresh durable database when there is nothing to copy forward", () => {

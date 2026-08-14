@@ -737,7 +737,7 @@ fn client_auth_bootstrap_path() -> PathBuf {
 fn mandible_config_dir() -> PathBuf {
     if let Ok(path) = std::env::var("MANDIBLE_CONFIG_DIR") {
         if !path.trim().is_empty() {
-            return PathBuf::from(path);
+            return resolve_user_path(&path);
         }
     }
     mandible_home().join("config")
@@ -748,13 +748,38 @@ fn mandible_config_dir() -> PathBuf {
 fn mandible_home() -> PathBuf {
     if let Ok(path) = std::env::var("MANDIBLE_HOME") {
         if !path.trim().is_empty() {
-            return PathBuf::from(path);
+            return resolve_user_path(&path);
         }
     }
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".mandible")
+}
+
+fn resolve_user_path(raw: &str) -> PathBuf {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    resolve_user_path_from(raw, &home)
+}
+
+fn resolve_user_path_from(raw: &str, home: &std::path::Path) -> PathBuf {
+    let trimmed = raw.trim();
+    let expanded = if trimmed == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(expanded)
+    }
 }
 
 fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
@@ -1099,7 +1124,7 @@ mod tests {
     use super::{
         build_handshake_request, extract_credential, interpret_handshake_response,
         is_url_fragment_safe, normalize_enrollment_route, read_client_auth_bootstrap,
-        run_enrollment, Enrollment, MAX_HANDSHAKE_RESPONSE_BYTES,
+        resolve_user_path_from, run_enrollment, Enrollment, MAX_HANDSHAKE_RESPONSE_BYTES,
     };
     use std::cell::Cell;
     use std::fs;
@@ -1125,6 +1150,20 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("mandible-tauri-auth-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn resolves_mandible_home_overrides_like_the_typescript_and_shell_mirrors() {
+        let home = std::path::Path::new("/tmp/home with spaces");
+        assert_eq!(resolve_user_path_from("~", home), home);
+        assert_eq!(
+            resolve_user_path_from("~/tilde-root/", home),
+            home.join("tilde-root")
+        );
+        assert_eq!(
+            resolve_user_path_from("  /tmp/durable root/  ", home),
+            std::path::PathBuf::from("/tmp/durable root")
+        );
     }
 
     #[test]

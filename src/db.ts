@@ -123,10 +123,16 @@ function isUnderTestRunner(): boolean {
 // compare. Falls back to a resolved (non-real) path when the file does not
 // exist yet.
 function canonicalizePath(target: string): string {
+  const expanded =
+    target === "~"
+      ? realSystemHomeDir()
+      : target.startsWith("~/") || target.startsWith("~\\")
+        ? path.join(realSystemHomeDir(), target.slice(2))
+        : target;
   try {
-    return fs.realpathSync.native(target);
+    return fs.realpathSync.native(expanded);
   } catch {
-    return path.resolve(target);
+    return path.resolve(expanded);
   }
 }
 
@@ -135,8 +141,8 @@ function canonicalizePath(target: string): string {
 // strings differ. Returns false when either side is absent.
 function sameFile(a: string, b: string): boolean {
   try {
-    const sa = fs.statSync(a);
-    const sb = fs.statSync(b);
+    const sa = fs.statSync(canonicalizePath(a));
+    const sb = fs.statSync(canonicalizePath(b));
     return sa.dev === sb.dev && sa.ino === sb.ino;
   } catch {
     return false;
@@ -258,10 +264,11 @@ function availableBytes(dir: string): number | null {
 }
 
 /** Open the copy the way the daemon will and read its schema catalog. */
-function assertDbOpenable(dbPath: string): void {
+function assertDbOpenable(dbPath: string): number {
   const probe = new Database(dbPath, { fileMustExist: true });
   try {
-    probe.prepare("SELECT count(*) AS n FROM sqlite_master").get();
+    const row = probe.prepare("SELECT count(*) AS n FROM sqlite_master").get() as { n: number };
+    return row.n;
   } finally {
     probe.close();
   }
@@ -313,6 +320,36 @@ export function copyForwardLegacyDb(
   }
 
   if (fs.existsSync(targetPath)) {
+    if (fs.existsSync(legacyPath)) {
+      let invalidReason: string | null = null;
+      const targetSize = fileSizeOrZero(targetPath);
+      if (targetSize === 0) {
+        invalidReason = "the durable database is zero bytes";
+      } else {
+        try {
+          if (assertDbOpenable(targetPath) === 0) {
+            invalidReason = "the durable database has no SQLite schema";
+          }
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          invalidReason = `the durable database is not openable (${detail})`;
+        }
+      }
+      if (invalidReason) {
+        const legacySize = fileSizeOrZero(legacyPath);
+        log(
+          `[mandible] REFUSING to adopt ${targetPath}: ${invalidReason}, while the ` +
+            `legacy database at ${legacyPath} is ${legacySize} bytes. Continuing to use ` +
+            `the legacy database; remove or repair the invalid durable file before ` +
+            `restarting to complete the move (issue 24f0316).`,
+        );
+        return {
+          dbPath: legacyPath,
+          action: "kept-legacy",
+          reason: `invalid-target: ${invalidReason}`,
+        };
+      }
+    }
     return { dbPath: targetPath, action: "target-present" };
   }
   if (!fs.existsSync(legacyPath)) {

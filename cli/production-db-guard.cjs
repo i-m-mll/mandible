@@ -62,10 +62,16 @@ function isUnderTestRunner() {
 // case-insensitive alias cannot smuggle the production path past a string
 // compare. Falls back to a resolved (non-real) path when the file is absent.
 function canonicalizePath(target) {
+  const expanded =
+    target === "~"
+      ? realSystemHomeDir()
+      : target.startsWith("~/") || target.startsWith("~\\")
+        ? path.join(realSystemHomeDir(), target.slice(2))
+        : target;
   try {
-    return fs.realpathSync.native(target);
+    return fs.realpathSync.native(expanded);
   } catch {
-    return path.resolve(target);
+    return path.resolve(expanded);
   }
 }
 
@@ -73,8 +79,8 @@ function canonicalizePath(target) {
 // that resolve to the production bytes even when their path strings differ.
 function sameFile(a, b) {
   try {
-    const sa = fs.statSync(a);
-    const sb = fs.statSync(b);
+    const sa = fs.statSync(canonicalizePath(a));
+    const sb = fs.statSync(canonicalizePath(b));
     return sa.dev === sb.dev && sa.ino === sb.ino;
   } catch {
     return false;

@@ -15,12 +15,40 @@
 # src/db.ts. A shell script that keeps the old ~/.cache database literal would
 # silently read the pre-split file, which the copy-forward shim deliberately
 # leaves on disk.
+api_resolve_user_path() {
+  local value="$1" rest part resolved=""
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ "$value" == "~" ]]; then
+    value="$HOME"
+  elif [[ "$value" == "~/"* ]]; then
+    value="$HOME/${value#\~/}"
+  fi
+  [[ "$value" == /* ]] || value="$PWD/$value"
+  # Component-wise lexical normalization using only portable parameter
+  # expansion. This file is sourced by both bash entrypoints (macOS ships
+  # bash 3.2) and zsh entrypoints (cli/user.sh), so arrays and `read -a`
+  # are off the table: zsh spells the array flag `read -A`, and bash < 4.4
+  # makes an empty "${arr[@]}" fatal under `set -u`.
+  rest="$value/"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    rest="${rest#*/}"
+    case "$part" in
+      "" | .) ;;
+      ..) resolved="${resolved%/*}" ;;
+      *) resolved="$resolved/$part" ;;
+    esac
+  done
+  printf '%s' "${resolved:-/}"
+}
+
 api_mandible_home() {
-  if [[ -n "${MANDIBLE_HOME:-}" ]]; then
-    printf '%s' "${MANDIBLE_HOME/#\~\//$HOME/}"
+  if [[ -n "${MANDIBLE_HOME:-}" && -n "${MANDIBLE_HOME//[[:space:]]/}" ]]; then
+    api_resolve_user_path "$MANDIBLE_HOME"
     return
   fi
-  printf '%s/.mandible' "$HOME"
+  api_resolve_user_path "$HOME/.mandible"
 }
 
 api_default_db_path() {
@@ -36,16 +64,20 @@ api_default_db_path() {
 # the durable path when neither exists, which is a fresh install.
 api_live_db_path() {
   if [[ -n "${MANDIBLE_DB:-}" ]]; then
-    printf '%s' "$MANDIBLE_DB"
+    api_resolve_user_path "$MANDIBLE_DB"
     return
   fi
   local durable legacy
   durable="$(api_default_db_path)"
-  if [[ -f "$durable" ]]; then
+  legacy="${HOME}/.cache/mandible/mandible.db"
+  if [[ -f "${durable}.copy-forward-in-progress" && -f "$legacy" ]]; then
+    printf '%s' "$legacy"
+    return
+  fi
+  if [[ -s "$durable" || ( -f "$durable" && ! -f "$legacy" ) ]]; then
     printf '%s' "$durable"
     return
   fi
-  legacy="${HOME}/.cache/mandible/mandible.db"
   if [[ -f "$legacy" ]]; then
     printf '%s' "$legacy"
     return
@@ -143,7 +175,7 @@ api_is_file_rpc() {
 # unnoticed because macOS filesystems are case-insensitive by default.
 api_client_auth_config_dir() {
   if [[ -n "${MANDIBLE_CONFIG_DIR:-}" ]]; then
-    printf '%s' "$MANDIBLE_CONFIG_DIR"
+    api_resolve_user_path "$MANDIBLE_CONFIG_DIR"
     return
   fi
   printf '%s/config' "$(api_mandible_home)"

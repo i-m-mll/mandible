@@ -87,6 +87,15 @@ describe("production database isolation guard (issue 07edc0d)", () => {
     );
   });
 
+  it("refuses literal unexpanded-tilde spellings of both production paths", () => {
+    expect(() => assertNotProductionDbUnderTest("~/.mandible/mandible.db")).toThrow(
+      /production Mandible database/i,
+    );
+    expect(() => assertNotProductionDbUnderTest("~/.cache/mandible/mandible.db")).toThrow(
+      /production Mandible database/i,
+    );
+  });
+
   it("blocks openDb() from touching the production database under test", () => {
     // openDb must trip the guard BEFORE constructing a Database handle, so this
     // never opens or writes the real file.
@@ -195,6 +204,14 @@ describe("CommonJS guard twin (cli/production-db-guard.cjs)", () => {
 
   it("refuses both of them under the test runner", () => {
     for (const guarded of guard.PRODUCTION_DB_PATHS) {
+      expect(() => guard.assertNotProductionDbUnderTest(guarded)).toThrow(
+        /production Mandible database/i,
+      );
+    }
+  });
+
+  it("refuses the same unexpanded-tilde spellings as the TypeScript guard", () => {
+    for (const guarded of ["~/.mandible/mandible.db", "~/.cache/mandible/mandible.db"]) {
       expect(() => guard.assertNotProductionDbUnderTest(guarded)).toThrow(
         /production Mandible database/i,
       );

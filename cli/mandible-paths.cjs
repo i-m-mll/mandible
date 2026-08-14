@@ -70,8 +70,16 @@ function legacyCacheDbPath() {
 function liveDbPath() {
   if (process.env.MANDIBLE_DB) return path.resolve(expandHome(process.env.MANDIBLE_DB));
   const durable = defaultDbPath();
-  if (fs.existsSync(durable)) return durable;
   const legacy = legacyCacheDbPath();
+  const marker = `${durable}.copy-forward-in-progress`;
+  if (fs.existsSync(marker) && fs.existsSync(legacy)) return legacy;
+  if (fs.existsSync(durable)) {
+    try {
+      if (fs.statSync(durable).size > 0 || !fs.existsSync(legacy)) return durable;
+    } catch {
+      // Fall through to the legacy path when the durable entry cannot be read.
+    }
+  }
   if (fs.existsSync(legacy)) return legacy;
   return durable;
 }
