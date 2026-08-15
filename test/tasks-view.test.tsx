@@ -269,6 +269,39 @@ describe('TasksView', () => {
     expect(within(detail).getByRole('button', { name: 'Request disable' })).toBeTruthy();
   });
 
+  it('keeps a stale reported no-op request enabled but de-emphasized', async () => {
+    post([knownTask()], Date.now() - TASK_INVENTORY_STALE_AFTER_MS - HOUR);
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView />);
+
+    const button = await screen.findByRole('button', { name: 'Request disable' });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(button.classList.contains('btn--ghost')).toBe(true);
+    expect(button.classList.contains('btn--danger')).toBe(false);
+    expect(screen.getByText(
+      /already disabled per last executor report — request would be a no-op/i,
+    )).toBeTruthy();
+    expect(document.querySelector('.tasks-freshness--stale')).toBeTruthy();
+  });
+
+  it('keeps disable safety emphasis when config is off but the host remains activated', async () => {
+    const task = knownTask();
+    task.activation = { config_enabled: false, locally_activated: true };
+    post([task]);
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView />);
+
+    const button = await screen.findByRole('button', { name: 'Request disable' });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(button.classList.contains('btn--danger')).toBe(true);
+    expect(button.classList.contains('btn--ghost')).toBe(false);
+    expect(screen.getByText(
+      /configuration says disabled, but the reporting host still says locally activated/i,
+    )).toBeTruthy();
+    expect(screen.getByText(/requesting disable is not expected to be a no-op/i)).toBeTruthy();
+    expect(screen.queryByText(/already disabled per last executor report/i)).toBeNull();
+  });
+
   it('renders a new disable as requested rather than applied', async () => {
     post([knownTask()]);
     const inventory = normalizeTaskInventory(getTaskInventoryView(db));
