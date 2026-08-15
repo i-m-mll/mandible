@@ -1418,7 +1418,11 @@ export type SpaceFindingListResponse = { findings: SpaceFindingCandidateSummary[
 //
 // The publisher-facing spec is docs/executor-inventory-contract.md.
 
-export const TASK_INVENTORY_SCHEMA = 'executor-inventory@1';
+export const TASK_INVENTORY_SCHEMA_V1 = 'executor-inventory@1';
+export const TASK_INVENTORY_SCHEMA = 'executor-inventory@2';
+export type TaskInventorySchema =
+  | typeof TASK_INVENTORY_SCHEMA_V1
+  | typeof TASK_INVENTORY_SCHEMA;
 
 /** The literal an executor sends when it cannot answer a field. */
 export const TASK_INVENTORY_UNKNOWN = 'unknown';
@@ -1462,6 +1466,22 @@ export type TaskActivationFacts = {
   locally_activated: TaskInventoryMaybe<boolean>;
 };
 
+/** Executor-reported configuration that determines what fires and how. */
+export type TaskConfigFacts = {
+  schedule_text: TaskInventoryMaybe<string>;
+  not_before: TaskInventoryMaybe<string>;
+  max_lateness_minutes: TaskInventoryMaybe<number>;
+  missed_run_policy: TaskInventoryMaybe<string>;
+  timeout_seconds: TaskInventoryMaybe<number>;
+  runner: TaskInventoryMaybe<string>;
+  runner_profile: TaskInventoryMaybe<string>;
+  model: TaskInventoryMaybe<string>;
+  max_total_tokens: TaskInventoryMaybe<number>;
+  max_turns: TaskInventoryMaybe<number>;
+  publish: TaskInventoryMaybe<boolean>;
+  output_as_source: TaskInventoryMaybe<boolean>;
+};
+
 /** Runtime guards the executor applies to the task. */
 export type TaskGuardFacts = {
   circuit: TaskInventoryMaybe<TaskCircuitState>;
@@ -1499,6 +1519,12 @@ export type TaskInventoryEntry = {
   task_id: string;
   display_name: string;
   management_mode: TaskManagementMode;
+  /** Absent only on a preserved executor-inventory@1 generation. */
+  config_hash?: TaskInventoryMaybe<string>;
+  /** Absent only on a preserved executor-inventory@1 generation. */
+  prompt_hash?: TaskInventoryMaybe<string>;
+  /** Absent only on a preserved executor-inventory@1 generation. */
+  config?: TaskConfigFacts;
   bundle: TaskBundleFacts | TaskInventoryUnknown;
   activation: TaskActivationFacts;
   guards: TaskGuardFacts;
@@ -1516,7 +1542,7 @@ export type TaskExecutorIdentity = {
 
 /** One atomic inventory generation, exactly as posted. */
 export type TaskInventoryGeneration = {
-  schema: typeof TASK_INVENTORY_SCHEMA;
+  schema: TaskInventorySchema;
   executor: TaskExecutorIdentity;
   /** Epoch ms the executor took the snapshot. Doubles as its heartbeat. */
   observed_at: number;

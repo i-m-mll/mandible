@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   TASK_INVENTORY_SCHEMA,
+  TASK_INVENTORY_SCHEMA_V1,
   type TaskInventoryEntry,
   type TaskInventoryGeneration,
 } from "../src/contracts.js";
@@ -32,11 +33,31 @@ const NOW = 1_786_650_000_000;
 let db: Db;
 let publisherId: string;
 
+function configFixture(): Record<string, unknown> {
+  return {
+    schedule_text: "0 6 * * *",
+    not_before: "2026-08-15T00:00:00Z",
+    max_lateness_minutes: 30,
+    missed_run_policy: "skip",
+    timeout_seconds: 90,
+    runner: "codex",
+    runner_profile: "default",
+    model: "gpt-5",
+    max_total_tokens: 20_000,
+    max_turns: 12,
+    publish: true,
+    output_as_source: false,
+  };
+}
+
 function taskFixture(overrides: Partial<TaskInventoryEntry> = {}): Record<string, unknown> {
   return {
     task_id: "daily-digest",
     display_name: "Daily digest",
     management_mode: "external",
+    config_hash: "sha256:config",
+    prompt_hash: "sha256:prompt",
+    config: configFixture(),
     bundle: {
       commit: "a".repeat(40),
       content_hash: "sha256:content",
@@ -106,7 +127,7 @@ describe("generation validation", () => {
     );
     const sample = [...contract.matchAll(/```json\n([\s\S]*?)\n```/g)]
       .map((match) => match[1])
-      .find((block) => block.includes(`"schema": "${TASK_INVENTORY_SCHEMA}"`));
+      .find((block) => block.includes(`"schema": "${TASK_INVENTORY_SCHEMA_V1}"`));
     expect(sample).toBeTruthy();
     expect(() => parseTaskInventoryGeneration(JSON.parse(sample!))).not.toThrow();
 
@@ -158,6 +179,61 @@ describe("generation validation", () => {
     });
     expect(parsed.tasks).toHaveLength(1);
     expect(parsed.tasks[0].last_failure).toBe("never");
+    expect(parsed.tasks[0].config).toEqual(configFixture());
+  });
+
+  it("accepts explicit unknown for every v2 config field", () => {
+    const allUnknown = Object.fromEntries(Object.keys(configFixture()).map((key) => [key, "unknown"]));
+    const parsed = parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({ config_hash: "unknown", prompt_hash: "unknown", config: allUnknown })],
+    }));
+    expect(parsed.tasks[0]).toMatchObject({
+      config_hash: "unknown",
+      prompt_hash: "unknown",
+      config: allUnknown,
+    });
+  });
+
+  it("rejects null inside a v2 config field", () => {
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({ config: { ...configFixture(), model: null } })],
+    }))).toThrow(/tasks\[0\]\.config\.model is required; send 'unknown'/);
+  });
+
+  it("rejects omission of a v2 config field", () => {
+    const missing = configFixture();
+    delete missing.max_turns;
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({ config: missing })],
+    }))).toThrow(/tasks\[0\]\.config\.max_turns is required; send 'unknown'/);
+  });
+
+  it("rejects an unexpected key inside v2 config", () => {
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({ config: { ...configFixture(), surprise: true } })],
+    }))).toThrow(/tasks\[0\]\.config has unknown field\(s\): surprise/);
+  });
+
+  it("round-trips v1 without inventing a config group", () => {
+    const legacyTask = taskFixture();
+    delete legacyTask.config_hash;
+    delete legacyTask.prompt_hash;
+    delete legacyTask.config;
+    const parsed = parseTaskInventoryGeneration(generationFixture({
+      schema: TASK_INVENTORY_SCHEMA_V1,
+      tasks: [legacyTask],
+    }));
+    const receipt = store(parsed);
+    const stored = JSON.parse((db.prepare(
+      "SELECT payload_json FROM task_inventory_generations WHERE id = ?",
+    ).get(receipt.generation_id) as { payload_json: string }).payload_json);
+    const projected = getTaskInventoryView(db, { now: NOW });
+
+    expect(stored.schema).toBe(TASK_INVENTORY_SCHEMA_V1);
+    expect(stored.tasks[0]).not.toHaveProperty("config");
+    expect(projected.tasks[0]).toMatchObject({ source_kind: "executor" });
+    expect((projected.tasks[0] as { task: Record<string, unknown> }).task)
+      .not.toHaveProperty("config");
   });
 
   it("rejects an unknown field at the top level and inside a task", () => {
@@ -178,8 +254,8 @@ describe("generation validation", () => {
   });
 
   it("rejects a schema it does not implement", () => {
-    expect(() => parseTaskInventoryGeneration(generationFixture({ schema: "executor-inventory@2" })))
-      .toThrow(/unsupported schema 'executor-inventory@2'/);
+    expect(() => parseTaskInventoryGeneration(generationFixture({ schema: "executor-inventory@3" })))
+      .toThrow(/unsupported schema 'executor-inventory@3'/);
   });
 
   it("rejects prototype-shaped and deep unknown keys with their exact paths", () => {

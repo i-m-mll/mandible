@@ -30,6 +30,7 @@ import {
   TASK_INVENTORY_UNKNOWN,
   type TaskActivationFacts,
   type TaskBundleFacts,
+  type TaskConfigFacts,
   type TaskExecutorFreshness,
   type TaskExecutorSummary,
   type TaskGuardFacts,
@@ -149,6 +150,57 @@ function ActivationSection({ activation }: { activation: TaskActivationFacts }):
           Configured to run, but not activated on the reporting host.
         </p>
       ) : null}
+    </>
+  );
+}
+
+function ConfigSection({
+  config,
+  configHash,
+  promptHash,
+}: {
+  config: TaskConfigFacts | undefined;
+  configHash: unknown;
+  promptHash: unknown;
+}): JSX.Element {
+  if (config === undefined) {
+    return (
+      <p className="tasks-note tasks-note--unknown">
+        Not reported by this executor-inventory@1 publisher.
+      </p>
+    );
+  }
+  return (
+    <>
+      <p className="tasks-note">
+        Executor-reported configuration. Mandible verifies the payload shape, not these values.
+      </p>
+      <p className="tasks-section__caption">Timing</p>
+      <dl className="tasks-facts">
+        <Fact label="Schedule" value={config.schedule_text} mono />
+        <Fact label="Not before" value={config.not_before} />
+        <Fact label="Maximum lateness (minutes)" value={config.max_lateness_minutes} />
+        <Fact label="Missed-run policy" value={config.missed_run_policy} />
+      </dl>
+      <p className="tasks-section__caption">Runner and model</p>
+      <dl className="tasks-facts">
+        <Fact label="Runner" value={config.runner} />
+        <Fact label="Runner profile" value={config.runner_profile} />
+        <Fact label="Model" value={config.model} />
+      </dl>
+      <p className="tasks-section__caption">Limits and publication</p>
+      <dl className="tasks-facts">
+        <Fact label="Timeout (seconds)" value={config.timeout_seconds} />
+        <Fact label="Maximum total tokens" value={config.max_total_tokens} />
+        <Fact label="Maximum turns" value={config.max_turns} />
+        <Fact label="Publish" value={config.publish} />
+        <Fact label="Output as source" value={config.output_as_source} />
+      </dl>
+      <p className="tasks-section__caption">Reported identities</p>
+      <dl className="tasks-facts">
+        <Fact label="Config hash" value={configHash} mono />
+        <Fact label="Prompt hash" value={promptHash} mono />
+      </dl>
     </>
   );
 }
@@ -393,6 +445,15 @@ function ExecutorTaskDetail({
       <section className="tasks-section">
         <h3 className="tasks-section__title">Active bundle</h3>
         <BundleSection bundle={task.bundle} />
+      </section>
+
+      <section className="tasks-section">
+        <h3 className="tasks-section__title">Configuration</h3>
+        <ConfigSection
+          config={task.config}
+          configHash={task.config_hash}
+          promptHash={task.prompt_hash}
+        />
       </section>
 
       <section className="tasks-section">
