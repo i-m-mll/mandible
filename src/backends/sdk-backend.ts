@@ -32,6 +32,8 @@ import type {
   PermissionDecision,
   PermissionRequest,
   UsageAwareBackend,
+  ToolPolicyBackend,
+  PresetAwareBackend,
 } from "../agentic-backend.js";
 import type {
   ConsoleContentBlock,
@@ -47,6 +49,17 @@ import {
 } from "../claude-lane-policy.js";
 import { computePresetUnion } from "../presets.js";
 import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
+import {
+  composeRunOptions,
+  declaredRunOptionsSnapshot,
+  validateRunOptionsPatch,
+  type BackendRunOptionDeclaration,
+  type ProviderRunOption,
+  type SessionRunOptionValue,
+  type SessionRunOptionsPatch,
+  type SessionRunOptionsSnapshot,
+  type SessionRunOptionsUpdateResult,
+} from "../session-run-options.js";
 
 const EVENT_LOG_LIMIT = 2000;
 export const SDK_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
@@ -82,6 +95,61 @@ export interface SDKBackendOptions {
   settingSourcesOverride?: string[];
 }
 
+const SDK_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
+  {
+    id: "model", label: "Model", category: "model", kind: "select", nullable: true,
+    discovery: { kind: "provider", protocol: "sdk_supported_models", providerOptionId: "model", fallbackAllowedValues: null },
+    support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" }, applyOrder: 10,
+    legacyRequestKeys: ["model"],
+  },
+  {
+    id: "thinking_effort", label: "Thinking effort", category: "thought_level", kind: "select", nullable: true,
+    discovery: {
+      kind: "static_then_provider", protocol: "sdk_supported_models", providerOptionId: "thinking_effort",
+      staticAllowedValues: ["low", "medium", "high", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) })),
+    },
+    support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 20,
+    applyAfter: ["model"], legacyRequestKeys: ["thinkingEffort"],
+  },
+  {
+    id: "permission_mode", label: "Permission mode", category: "mode", kind: "select", nullable: true,
+    discovery: { kind: "static", allowedValues: [
+      { value: "default", label: "Default" }, { value: "acceptEdits", label: "Accept edits" },
+      { value: "bypassPermissions", label: "Bypass permissions" },
+    ] },
+    support: { status: "supported", owner: "backend", effectiveFrom: "immediate" }, applyOrder: 30,
+    legacyRequestKeys: ["permissionMode"],
+  },
+  {
+    id: "max_turns", label: "Maximum turns", category: "limit", kind: "integer", nullable: true,
+    discovery: { kind: "static", allowedValues: null },
+    support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 40,
+    legacyRequestKeys: ["maxTurns"],
+  },
+  {
+    id: "max_cost_usd", label: "Maximum cost (USD)", category: "limit", kind: "number", nullable: true,
+    discovery: { kind: "static", allowedValues: null },
+    support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 50,
+    legacyRequestKeys: ["maxCostUsd"],
+  },
+  {
+    id: "system_prompt", label: "System prompt", category: "prompt", kind: "text", nullable: true,
+    discovery: { kind: "static", allowedValues: null },
+    support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 60,
+    legacyRequestKeys: ["systemPrompt"],
+  },
+  {
+    id: "setting_sources", label: "Setting sources", category: "settings", kind: "multi_select", nullable: true,
+    discovery: { kind: "static", allowedValues: ["user", "project", "local"].map((value) => ({ value, label: value })) },
+    support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 70,
+    legacyRequestKeys: ["settingSourcesOverride"],
+  },
+];
+
+export function getSdkRunOptionDeclaration(command: string): BackendRunOptionDeclaration {
+  return { backendType: "sdk", command, options: SDK_RUN_OPTIONS };
+}
+
 export function buildMandibleChannelEnvironment(
   sessionId: string,
   cwd: string,
@@ -99,7 +167,9 @@ export class SDKBackend extends EventEmitter
 implements
   AgenticBackend,
   PermissionAwareBackend,
-  ConfigurableBackend<SDKBackendOptions>,
+  ConfigurableBackend,
+  ToolPolicyBackend,
+  PresetAwareBackend,
   UsageAwareBackend<UsageRow> {
   readonly id: string;
   meta: ConsoleSession;
@@ -123,6 +193,8 @@ implements
   private readonly mandibleTokenSource: string | (() => string | null) | null;
   /** Bug: 790433d — Message index counter for parameter snapshots */
   private messageIndex = 0;
+  readonly runOptionDeclaration: BackendRunOptionDeclaration;
+  private runOptionsSnapshot: SessionRunOptionsSnapshot;
 
   /** Bug: 81c9d85 — expose processing state for is_processing on ConsoleSession */
   get isProcessing(): boolean {
@@ -142,6 +214,8 @@ implements
     this.sessionRegistry = sessionRegistry;
     this.mandibleTokenSource = mandibleToken;
     this.autoAllowedTools = new Set(meta.allowed_tools ?? []);
+    this.runOptionDeclaration = getSdkRunOptionDeclaration(meta.command);
+    this.runOptionsSnapshot = declaredRunOptionsSnapshot(this.runOptionDeclaration, "ready");
     this.options = {
       model: this.extractModel(meta.args) ?? undefined,
       allowedTools: meta.allowed_tools ?? undefined,
@@ -325,58 +399,69 @@ implements
     this.write(data);
   }
 
-  updateOptions(options: SDKBackendOptions): void {
-    this.options = {
-      ...this.options,
-      ...options,
-      ...(options.allowedTools !== undefined ? { allowedTools: [...options.allowedTools] } : {}),
+  getRunOptions(): SessionRunOptionsSnapshot {
+    const values: Record<string, SessionRunOptionValue> = {
+      model: this.options.model ?? null,
+      thinking_effort: this.options.thinkingEffort ?? null,
+      permission_mode: this.options.permissionMode ?? null,
+      max_turns: this.options.maxTurns ?? null,
+      max_cost_usd: this.options.maxCostUsd ?? null,
+      system_prompt: this.options.systemPrompt ?? null,
+      setting_sources: this.options.settingSourcesOverride ?? null,
     };
+    return { ...this.runOptionsSnapshot, options: this.runOptionsSnapshot.options.map((option) => ({
+      ...option, currentValue: values[option.id] ?? option.currentValue,
+    })) };
+  }
 
-    if (options.allowedTools !== undefined) {
-      this.autoAllowedTools = new Set(options.allowedTools);
-      this.meta = {
-        ...this.meta,
-        allowed_tools: [...this.autoAllowedTools],
-        updated_at: Date.now(),
-      };
-      this.emitMetaUpdate({
-        allowed_tools: [...this.autoAllowedTools],
-        updated_at: this.meta.updated_at,
-      });
+  async applyRunOptions(patch: SessionRunOptionsPatch): Promise<SessionRunOptionsUpdateResult> {
+    const snapshot = this.getRunOptions();
+    const ordered = validateRunOptionsPatch(this.runOptionDeclaration, snapshot, patch);
+    const next = { ...this.options };
+    const applied: SessionRunOptionsUpdateResult["applied"][number][] = [];
+    for (const declaration of ordered) {
+      const value = patch.values[declaration.id];
+      if (declaration.id === "model") {
+        if (this.activeQuery) await this.activeQuery.setModel(typeof value === "string" ? value || undefined : undefined);
+        next.model = typeof value === "string" ? value : undefined;
+        if (this.activeQuery) await this.refreshSupportedModels(this.activeQuery, next.model);
+      } else if (declaration.id === "permission_mode") {
+        if (this.activeQuery && typeof value === "string") await this.activeQuery.setPermissionMode(value as ClaudePermissionMode);
+        next.permissionMode = typeof value === "string" ? value as SDKBackendOptions["permissionMode"] : undefined;
+      } else if (declaration.id === "thinking_effort") next.thinkingEffort = value as SDKThinkingEffort;
+      else if (declaration.id === "max_turns") next.maxTurns = typeof value === "number" ? value : undefined;
+      else if (declaration.id === "max_cost_usd") next.maxCostUsd = typeof value === "number" ? value : undefined;
+      else if (declaration.id === "system_prompt") next.systemPrompt = typeof value === "string" ? value : undefined;
+      else if (declaration.id === "setting_sources") next.settingSourcesOverride = Array.isArray(value) ? value : undefined;
+      applied.push({ id: declaration.id, requestedValue: value, currentValue: value,
+        effectiveFrom: declaration.support.status === "supported" ? declaration.support.effectiveFrom : "next_prompt", status: "enforced" });
     }
+    this.options = next;
+    this.runOptionsSnapshot = { ...this.getRunOptions(), phase: "ready", revision: this.runOptionsSnapshot.revision + 1 };
+    return { applied, snapshot: this.getRunOptions() };
+  }
 
-    if (this.activeQuery && typeof options.permissionMode === "string") {
-      void this.activeQuery.setPermissionMode(options.permissionMode as ClaudePermissionMode).catch(() => {
-        this.logger("warn", "sdk_set_permission_mode_failed", { id: this.id });
-      });
-    }
+  setAllowedTools(tools: readonly string[]): void {
+    this.autoAllowedTools = new Set(tools);
+    this.options.allowedTools = [...tools];
+    this.meta = { ...this.meta, allowed_tools: [...tools], updated_at: Date.now() };
+    this.emitMetaUpdate({ allowed_tools: [...tools], updated_at: this.meta.updated_at });
+  }
 
-    if (this.activeQuery && typeof options.model === "string") {
-      void this.activeQuery.setModel(options.model || undefined).catch(() => {
-        this.logger("warn", "sdk_set_model_failed", { id: this.id, model: options.model });
-      });
-    }
-
-    // Bug: 790433d — Dynamic preset switching: recompute preset union and emit
-    // a system event. The new system prompt takes effect on the NEXT query.
-    if (options.presetIds !== undefined) {
-      const presetNames: string[] = [];
-      try {
-        const db = getDb();
-        for (const pid of options.presetIds) {
-          const row = db.prepare("SELECT name FROM presets WHERE id = ?").get(pid) as { name: string } | undefined;
-          if (row) presetNames.push(row.name);
-        }
-      } catch {
-        // DB not available — names will be empty
+  setPresetIds(ids: readonly string[]): void {
+    this.options.presetIds = [...ids];
+    const presetNames: string[] = [];
+    try {
+      const db = getDb();
+      for (const pid of ids) {
+        const row = db.prepare("SELECT name FROM presets WHERE id = ?").get(pid) as { name: string } | undefined;
+        if (row) presetNames.push(row.name);
       }
-      this.storeAndBroadcast({
-        type: "system",
-        subtype: "preset_changed",
-        session_id: this.meta.provider_session_id ?? this.id,
-        data: { presetIds: options.presetIds, presetNames },
-      } as unknown as ConsoleStreamEvent);
-    }
+    } catch { /* DB not available */ }
+    this.storeAndBroadcast({
+      type: "system", subtype: "preset_changed", session_id: this.meta.provider_session_id ?? this.id,
+      data: { presetIds: [...ids], presetNames },
+    } as unknown as ConsoleStreamEvent);
   }
 
   getPendingPermissions(): PermissionRequest[] {
@@ -512,6 +597,7 @@ implements
 
       this.abortController = abortController;
       this.activeQuery = query;
+      void this.refreshSupportedModels(query, this.options.model);
 
       // Bug: 790433d — Snapshot the effective parameters for this prompt (keyframe model)
       this.snapshotMessageParams();
@@ -567,6 +653,34 @@ implements
           // Best effort cleanup.
         }
       }
+    }
+  }
+
+  private async refreshSupportedModels(query: ClaudeQuery, selectedModel?: string): Promise<void> {
+    try {
+      const models = await query.supportedModels();
+      const selected = models.find((model) => model.value === selectedModel) ?? models[0];
+      const efforts = selected?.supportedEffortLevels
+        ?? Array.from(new Set(models.flatMap((model) => model.supportedEffortLevels ?? [])));
+      const provider: ProviderRunOption[] = [
+        {
+          id: "model", label: "Model", category: "model", kind: "select",
+          currentValue: selectedModel ?? selected?.value ?? null,
+          allowedValues: models.map((model) => ({
+            value: model.value, label: model.displayName, description: model.description,
+          })),
+        },
+        {
+          id: "thinking_effort", label: "Thinking effort", category: "thought_level", kind: "select",
+          currentValue: this.options.thinkingEffort ?? null,
+          allowedValues: efforts.map((effort) => ({ value: effort, label: effort[0].toUpperCase() + effort.slice(1) })),
+        },
+      ];
+      this.runOptionsSnapshot = composeRunOptions(this.runOptionDeclaration, provider, {
+        phase: "ready", revision: this.runOptionsSnapshot.revision + 1,
+      });
+    } catch (error) {
+      this.logger("warn", "sdk_supported_models_failed", { id: this.id, error: String(error) });
     }
   }
 

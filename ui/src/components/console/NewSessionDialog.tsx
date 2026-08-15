@@ -3,8 +3,9 @@
 // Bug: b5e1c51 — PTY+Channel transport option for channel-connected sessions
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
-import type { Preset, SessionValidationWarning } from '../../api';
+import type { Preset, SessionRunOptionsSnapshot, SessionRunOptionValue, SessionValidationWarning } from '../../api';
 import {
+  getConsoleRunOptions,
   getConsoleLanePolicy,
   getPresets,
   getDefaultPresetIds,
@@ -35,6 +36,7 @@ type NewSessionDialogProps = {
     transport_lane: TransportLane;
     channel_enabled?: boolean;
     presetIds?: string[];
+    runOptions?: Record<string, SessionRunOptionValue>;
   }) => void;
   /** Pre-selected instruction artifact or legacy preset ID from navigation. */
   initialPresetId?: string | null;
@@ -198,6 +200,22 @@ export function NewSessionDialog({
   const [presetsLoaded, setPresetsLoaded] = useState(false);
   // Bug: 8baedeb — convention-setting validation warnings
   const [validationWarnings, setValidationWarnings] = useState<SessionValidationWarning[]>([]);
+  const [runOptions, setRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
+  const [runOptionValues, setRunOptionValues] = useState<Record<string, SessionRunOptionValue>>({});
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    const backendType = backendTypeForLane(transportLane);
+    void getConsoleRunOptions(backendType, backend).then((snapshot) => {
+      if (!active) return;
+      setRunOptions(snapshot);
+      setRunOptionValues((current) => Object.fromEntries(snapshot.options
+        .filter((option) => option.enforcement.status !== 'unsupported' && current[option.id] !== undefined)
+        .map((option) => [option.id, current[option.id]])));
+    }).catch(() => { if (active) setRunOptions(null); });
+    return () => { active = false; };
+  }, [backend, open, transportLane]);
 
   // Load available presets and default selections when dialog opens
   useEffect(() => {
@@ -327,6 +345,7 @@ export function NewSessionDialog({
       transport_lane: transportLane,
       channel_enabled: transportLane === 'channel' || undefined,
       presetIds: supportsPresets ? presetIds : undefined,
+      runOptions: Object.keys(runOptionValues).length > 0 ? runOptionValues : undefined,
     });
     setLabel('');
     setKind('agent');
@@ -335,6 +354,8 @@ export function NewSessionDialog({
     setPresetIds([]);
     setPresetsLoaded(false);
     setValidationWarnings([]);
+    setRunOptions(null);
+    setRunOptionValues({});
     onClose();
   };
 
@@ -367,6 +388,39 @@ export function NewSessionDialog({
               className="new-session-dialog__input"
             />
           </div>
+
+          {(runOptions?.options ?? []).some((option) => option.enforcement.status !== 'unsupported') && (
+            <div className="new-session-dialog__field">
+              <div className="new-session-dialog__label">Run options</div>
+              {(runOptions?.options ?? []).filter((option) => option.enforcement.status !== 'unsupported').map((option) => (
+                <label key={option.id} className="new-session-dialog__field">
+                  <span className="new-session-dialog__label">{option.label}</span>
+                  {option.kind === 'select' && (option.allowedValues?.length ?? 0) > 0 ? (
+                    <select className="new-session-dialog__input" value={String(runOptionValues[option.id] ?? '')}
+                      onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.value || null }))}>
+                      <option value="">Default</option>
+                      {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
+                    </select>
+                  ) : option.kind === 'boolean' ? (
+                    <input type="checkbox" checked={runOptionValues[option.id] === true}
+                      onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.checked }))} />
+                  ) : (
+                    <input className="new-session-dialog__input"
+                      type={option.kind === 'integer' || option.kind === 'number' ? 'number' : 'text'}
+                      min={option.kind === 'integer' ? '1' : option.kind === 'number' ? '0' : undefined}
+                      placeholder={option.availability === 'awaiting_provider' ? 'Validated when provider starts' : 'Default'}
+                      value={String(runOptionValues[option.id] ?? '')}
+                      onInput={(event) => {
+                        const raw = event.currentTarget.value;
+                        const value = option.kind === 'integer' || option.kind === 'number' ? (raw ? Number(raw) : null) : (raw || null);
+                        setRunOptionValues((current) => raw ? { ...current, [option.id]: value } : Object.fromEntries(Object.entries(current).filter(([id]) => id !== option.id)));
+                      }} />
+                  )}
+                  {option.description && <span className="new-session-dialog__preset-note new-session-dialog__preset-note--muted">{option.description}</span>}
+                </label>
+              ))}
+            </div>
+          )}
 
           <div className="new-session-dialog__field">
             <div className="new-session-dialog__label">Kind</div>

@@ -110,6 +110,13 @@ describe("restricted project route enforcement", () => {
       create: vi.fn(() => ({ id: "console-1" })),
       start: vi.fn(),
       get: vi.fn(() => ({ meta: { id: "console-1" } })),
+      waitForInitialRunOptions: vi.fn(async () => ({
+        backendType: "spawn",
+        command: "bash",
+        phase: "declared",
+        revision: 0,
+        options: [],
+      })),
     };
     registerConsoleRoutes(router, manager as never);
     const input = {
@@ -129,6 +136,7 @@ describe("restricted project route enforcement", () => {
     });
     expect((await router.invoke(input)).status).toBe(201);
     expect(manager.create).toHaveBeenCalledOnce();
+    expect(manager.waitForInitialRunOptions).toHaveBeenCalledWith("console-1");
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

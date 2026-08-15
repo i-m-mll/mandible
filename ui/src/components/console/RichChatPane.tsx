@@ -37,7 +37,6 @@ export function RichChatPane({
   sessionId,
   providerFamily,
   model,
-  modelOptions,
   allowedTools,
   availableTools,
   permissionRequest,
@@ -75,7 +74,6 @@ export function RichChatPane({
   sessionId: string;
   providerFamily: string;
   model?: string;
-  modelOptions: string[];
   allowedTools?: string[] | null;
   availableTools: string[];
   permissionRequest: ConsolePermissionRequest | null;
@@ -209,9 +207,6 @@ export function RichChatPane({
           modelSlot={backendType === 'sdk' ? (
             <SessionModelControl
               sessionId={sessionId}
-              backendType={backendType}
-              model={model}
-              modelOptions={modelOptions}
               onModelSaved={onModelSaved}
               compact
             />
@@ -270,9 +265,6 @@ export function RichChatPane({
             <>
               <SessionControls
                 sessionId={sessionId}
-                backendType={backendType}
-                model={model}
-                modelOptions={modelOptions}
                 allowedTools={allowedTools}
                 availableTools={availableTools}
                 onModelSaved={onModelSaved}

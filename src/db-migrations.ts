@@ -4100,6 +4100,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     // bounded-ask expiry remains owned by feedback_ask_sessions. The guarded
     // hook also makes ask expiry nullable so both kinds can be un-expired.
     statements: [],
+  },
+  {
+    version: 134,
+    name: "console_session_run_options",
+    statements: [],
   }
 ];
 
@@ -4215,6 +4220,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 131) {
         ensureManagedReminderOccurrenceAcknowledgementColumns(db);
+      }
+      if (migration.version === 134) {
+        ensureConsoleSessionRunOptionsColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -8321,6 +8329,17 @@ function ensureConsoleTransportLaneColumn(db: Db): void {
          WHEN backend_type = 'spawn' THEN 'spawn'
          ELSE 'pty'
        END`
+  );
+}
+
+function ensureConsoleSessionRunOptionsColumn(db: Db): void {
+  if (!tableExists(db, "console_sessions")) return;
+  const columns = tableColumnNames(db, "console_sessions");
+  if (columns.has("run_options_json")) return;
+
+  db.exec(
+    `ALTER TABLE console_sessions ADD COLUMN run_options_json TEXT NOT NULL DEFAULT '{}'
+       CHECK(json_valid(run_options_json) AND json_type(run_options_json) = 'object')`,
   );
 }
 

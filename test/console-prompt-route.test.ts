@@ -49,6 +49,18 @@ function makeJsonResponse(): {
 }
 
 describe("console prompt route", () => {
+  it("returns static run-option capabilities without route-side model knowledge", () => {
+    const { server, routes } = makeRegistrar();
+    const snapshot = { backendType: "acp", command: "provider", phase: "declared", revision: 0, options: [] };
+    const manager = { describeRunOptions: vi.fn(() => snapshot) };
+    registerConsoleRoutes(server, manager as never);
+    const route = routes.find((item) => item.method === "GET" && item.path === "/api/console/run-options");
+    const { res, payloads } = makeJsonResponse();
+    route?.handler({ params: {}, query: { backend_type: "acp", command: "provider" } } as never, res as never);
+    expect(manager.describeRunOptions).toHaveBeenCalledWith("acp", "provider");
+    expect(payloads).toEqual([{ code: 200, payload: { runOptions: snapshot } }]);
+  });
+
   it("rejects caller-selected operator sessions before invoking the spawner", () => {
     const db = openDb(":memory:");
     setDb(db);
@@ -327,7 +339,7 @@ describe("console prompt route", () => {
     db.close();
   });
 
-  it("accepts typed SDK thinking-effort option updates", () => {
+  it("accepts typed SDK thinking-effort option updates", async () => {
     const db = openDb(":memory:");
     setDb(db);
     const { server, routes } = makeRegistrar();
@@ -350,7 +362,7 @@ describe("console prompt route", () => {
     expect(route).toBeDefined();
 
     const { res, payloads } = makeJsonResponse();
-    route?.handler(
+    await route?.handler(
       { params: { id: "sdk-session" }, body: { thinkingEffort: "high", maxTurns: 3 } } as never,
       res as never,
     );
@@ -363,6 +375,21 @@ describe("console prompt route", () => {
       code: 200,
       payload: { session: { id: "sdk-session", backend_type: "sdk" } },
     }]);
+    db.close();
+  });
+
+  it("rejects SDK xhigh because the installed capability does not advertise it", async () => {
+    const db = openDb(":memory:"); setDb(db);
+    const { server, routes } = makeRegistrar();
+    const manager = { get: vi.fn(() => ({ meta: { id: "sdk-session", command: "provider", is_operator: false, backend_type: "sdk" } })), updateOptions: vi.fn() };
+    registerConsoleRoutes(server, manager as never);
+    const route = routes.find((item) => item.method === "PATCH" && item.path === "/api/console/sessions/:id/options");
+    const { res, payloads } = makeJsonResponse();
+    await route?.handler({ params: { id: "sdk-session" }, body: { thinkingEffort: "xhigh" } } as never, res as never);
+    expect(manager.updateOptions).not.toHaveBeenCalled();
+    expect(payloads).toEqual([{ code: 422, payload: expect.objectContaining({
+      error: "unavailable_session_option_value", option: "thinking_effort",
+    }) }]);
     db.close();
   });
 
@@ -395,7 +422,13 @@ describe("console prompt route", () => {
     );
 
     expect(manager.updateOptions).not.toHaveBeenCalled();
-    expect(payloads).toEqual([{ code: 400, payload: { error: "unsupported_session_option" } }]);
+    expect(payloads).toEqual([{ code: 400, payload: expect.objectContaining({
+      error: "unsupported_session_option",
+      code: "unsupported_option",
+      option: "thinking_effort",
+      requestKey: "thinkingEffort",
+      backend: { type: "acp", command: "unbound-acp" },
+    }) }]);
     db.close();
   });
 

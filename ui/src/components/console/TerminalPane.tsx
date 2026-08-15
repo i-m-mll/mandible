@@ -52,22 +52,6 @@ type TerminalPaneProps = {
   workspaceMode?: boolean;
 };
 
-const MODEL_OPTIONS: Record<string, string[]> = {
-  claude: ['sonnet', 'opus', 'haiku', 'sonnet[1m]', 'opusplan'],
-  gemini: [
-    'auto',
-    'pro',
-    'flash',
-    'flash-lite',
-    'gemini-3.1-pro-preview',
-    'gemini-3-flash-preview',
-    'gemini-3.1-flash-lite-preview',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-  ],
-};
-
 const DRAFT_STORAGE_PREFIX = 'mandible:console:composer-draft:v1:';
 
 function draftStorageKey(sessionId: string): string {
@@ -517,7 +501,6 @@ export function TerminalPane({
             sessionId={sessionId}
             providerFamily={providerFamily}
             model={model}
-            modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
             allowedTools={optimisticAllowedTools}
             availableTools={availableTools}
             permissionRequest={permissionRequest}

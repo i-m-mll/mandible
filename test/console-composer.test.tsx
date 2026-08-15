@@ -4,11 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const apiMocks = vi.hoisted(() => ({
   updateConsoleSession: vi.fn(),
   updateConsoleSessionOptions: vi.fn(),
+  getConsoleSessionOptions: vi.fn(),
 }));
 
 vi.mock("../ui/src/api", () => ({
   updateConsoleSession: apiMocks.updateConsoleSession,
   updateConsoleSessionOptions: apiMocks.updateConsoleSessionOptions,
+  getConsoleSessionOptions: apiMocks.getConsoleSessionOptions,
 }));
 
 import { Composer } from "../ui/src/components/console/Composer";
@@ -86,9 +88,14 @@ describe("SessionControls", () => {
     render(
       <SessionControls
         sessionId="sdk-1"
-        backendType="sdk"
-        model="claude-sonnet-4-6"
-        modelOptions={["claude-sonnet-4-6"]}
+        runOptions={{ backendType: "sdk", command: "provider", phase: "ready", revision: 1, options: [
+          { id: "model", label: "Model", category: "model", kind: "select", nullable: true, source: "backend",
+            availability: "available", currentValue: "model-a", allowedValues: [{ value: "model-a", label: "Model A" }],
+            enforcement: { status: "enforced", owner: "provider", effectiveFrom: "next_prompt" } },
+          { id: "thinking_effort", label: "Thinking effort", category: "thought_level", kind: "select", nullable: true, source: "backend",
+            availability: "available", currentValue: null, allowedValues: [{ value: "high", label: "High" }],
+            enforcement: { status: "enforced", owner: "backend", effectiveFrom: "next_prompt" } },
+        ] }}
         allowedTools={["Read"]}
         availableTools={["Read"]}
       />,
@@ -99,11 +106,7 @@ describe("SessionControls", () => {
 
     await vi.waitFor(() => expect(apiMocks.updateConsoleSessionOptions).toHaveBeenCalledWith("sdk-1", {
       allowedTools: ["Read"],
-      model: "claude-sonnet-4-6",
-      thinkingEffort: "high",
-      permissionMode: "default",
-      maxTurns: undefined,
-      maxCostUsd: undefined,
+      runOptions: { model: "model-a", thinking_effort: "high" },
     }));
   });
 
@@ -112,9 +115,14 @@ describe("SessionControls", () => {
     render(
       <SessionControls
         sessionId="acp-1"
-        backendType="acp"
-        model="gpt-5.3-codex"
-        modelOptions={["gpt-5.3-codex"]}
+        runOptions={{ backendType: "acp", command: "provider", phase: "ready", revision: 1, options: [
+          { id: "model", label: "Model", category: "model", kind: "select", nullable: false, source: "composed",
+            availability: "available", currentValue: "model-a", allowedValues: [{ value: "model-a", label: "Model A" }],
+            enforcement: { status: "enforced", owner: "provider", effectiveFrom: "next_prompt" } },
+          { id: "reasoning_effort", label: "Reasoning effort", category: "thought_level", kind: "select", nullable: false, source: "composed",
+            availability: "available", currentValue: "high", allowedValues: [{ value: "high", label: "High" }],
+            enforcement: { status: "enforced", owner: "provider", effectiveFrom: "next_prompt" } },
+        ] }}
         allowedTools={["Read"]}
         availableTools={["Read"]}
       />,
@@ -125,6 +133,7 @@ describe("SessionControls", () => {
 
     await vi.waitFor(() => expect(apiMocks.updateConsoleSessionOptions).toHaveBeenCalledWith("acp-1", {
       allowedTools: ["Read"],
+      runOptions: { model: "model-a", reasoning_effort: "high" },
     }));
   });
 });

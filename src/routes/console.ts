@@ -6,10 +6,10 @@
 import { getDb } from "../db.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
 import { readSessionIdentityMismatchBatch } from "../identity/session-mismatch.js";
-import type { PermissionDecision } from "../agentic-backend.js";
+import type { BackendType, PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
-import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
-import { AcpBackend } from "../backends/acp-backend.js";
+import { SDKBackend, getSdkRunOptionDeclaration } from "../backends/sdk-backend.js";
+import { AcpBackend, getAcpRunOptionDeclaration } from "../backends/acp-backend.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type {
   ConsoleInteractionMode,
@@ -28,9 +28,13 @@ import {
   ClientAuthzError,
   requireOperator,
 } from "../client-auth/authz.js";
-
-const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
-const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
+import {
+  normalizeLegacyRunOptions,
+  SessionRunOptionError,
+  validateRunOptionsPatch,
+  type BackendRunOptionDeclaration,
+  type SessionRunOptionValue,
+} from "../session-run-options.js";
 
 function stripModelArgs(args: string[]): string[] {
   const next: string[] = [];
@@ -62,100 +66,127 @@ function parseStringArray(value: unknown): { ok: true; value: string[] } | { ok:
   return { ok: true, value };
 }
 
-function parsePositiveInteger(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function parseNonNegativeNumber(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
 function parseSessionOptionsBody(
-  backendType: ConsoleSession["backend_type"],
+  declaration: BackendRunOptionDeclaration,
   body: unknown,
-): { ok: true; options: SDKBackendOptions } | { ok: false; error: string } {
+): { ok: true; options: {
+  runOptions: Record<string, SessionRunOptionValue>;
+  allowedTools?: string[];
+  presetIds?: string[];
+} } | { ok: false; error: string } {
   const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  const options: SDKBackendOptions = {};
-
-  if (typeof record.model === "string") {
-    options.model = record.model;
-  } else if (record.model !== undefined) {
-    return { ok: false, error: "invalid_model" };
+  const allowedKeys = new Set(["runOptions", "allowedTools", "presetIds"]);
+  for (const option of declaration.options) {
+    for (const alias of option.legacyRequestKeys ?? []) allowedKeys.add(alias);
   }
+  const unsupportedAliases: Record<string, string> = {
+    thinkingEffort: "thinking_effort", permissionMode: "permission_mode", maxTurns: "max_turns",
+    maxCostUsd: "max_cost_usd", systemPrompt: "system_prompt", settingSourcesOverride: "setting_sources",
+  };
+  for (const key of Object.keys(record)) {
+    if (allowedKeys.has(key)) continue;
+    const optionId = unsupportedAliases[key] ?? key;
+    throw new SessionRunOptionError("unsupported_option", optionId, {
+      type: declaration.backendType, command: declaration.command,
+    }, { requestKey: key, requestedValue: record[key] as SessionRunOptionValue });
+  }
+  const canonical = record.runOptions === undefined ? {} : record.runOptions;
+  if (!canonical || typeof canonical !== "object" || Array.isArray(canonical)) {
+    return { ok: false, error: "invalid_run_options" };
+  }
+  let patch;
+  try {
+    patch = normalizeLegacyRunOptions(
+      declaration,
+      canonical as Record<string, SessionRunOptionValue>,
+      record,
+    );
+  } catch (error) {
+    return { ok: false, error: String(error).includes("conflicting_session_option")
+      ? "conflicting_session_option" : "invalid_run_options" };
+  }
+  validateRunOptionsPatch(declaration, declaredSnapshot(declaration), patch);
 
   const allowedTools = parseStringArray(record.allowedTools);
-  if (allowedTools?.ok) {
-    options.allowedTools = allowedTools.value;
-  } else if (allowedTools !== undefined) {
+  if (allowedTools !== undefined && !allowedTools.ok) {
     return { ok: false, error: "invalid_allowed_tools" };
   }
 
   const presetIds = parseStringArray(record.presetIds);
-  if (presetIds?.ok) {
-    options.presetIds = presetIds.value;
-  } else if (presetIds !== undefined) {
+  if (presetIds !== undefined && !presetIds.ok) {
     return { ok: false, error: "invalid_preset_ids" };
   }
+  return { ok: true, options: {
+    runOptions: patch.values,
+    ...(allowedTools?.ok ? { allowedTools: allowedTools.value } : {}),
+    ...(presetIds?.ok ? { presetIds: presetIds.value } : {}),
+  } };
+}
 
-  if (backendType === "sdk") {
-    if (record.thinkingEffort !== undefined) {
-      if (typeof record.thinkingEffort !== "string" || !SDK_THINKING_EFFORTS.has(record.thinkingEffort)) {
-        return { ok: false, error: "invalid_thinking_effort" };
-      }
-      options.thinkingEffort = record.thinkingEffort as SDKBackendOptions["thinkingEffort"];
-    }
+function declaredSnapshot(declaration: BackendRunOptionDeclaration) {
+  return {
+    backendType: declaration.backendType, command: declaration.command, phase: "declared" as const, revision: 0,
+    options: declaration.options.map((option) => ({
+      id: option.id, label: option.label, description: option.description, category: option.category,
+      kind: option.kind, nullable: option.nullable, source: "backend" as const,
+      availability: option.discovery.kind === "static" ? "available" as const : "awaiting_provider" as const,
+      currentValue: null,
+      allowedValues: option.discovery.kind === "static" ? option.discovery.allowedValues
+        : option.discovery.kind === "static_then_provider" ? option.discovery.staticAllowedValues
+          : option.discovery.fallbackAllowedValues,
+      enforcement: option.support.status === "unsupported" ? option.support
+        : { status: option.discovery.kind === "static" ? "enforced" as const : "awaiting_provider" as const,
+            owner: option.support.owner, effectiveFrom: option.support.effectiveFrom },
+    })),
+  };
+}
 
-    if (record.permissionMode !== undefined) {
-      if (typeof record.permissionMode !== "string" || !SDK_PERMISSION_MODES.has(record.permissionMode)) {
-        return { ok: false, error: "invalid_permission_mode" };
-      }
-      options.permissionMode = record.permissionMode as SDKBackendOptions["permissionMode"];
-    }
-
-    const maxTurns = parsePositiveInteger(record.maxTurns);
-    if (maxTurns !== undefined) {
-      options.maxTurns = maxTurns;
-    } else if (record.maxTurns !== undefined) {
-      return { ok: false, error: "invalid_max_turns" };
-    }
-
-    const maxCostUsd = parseNonNegativeNumber(record.maxCostUsd);
-    if (maxCostUsd !== undefined) {
-      options.maxCostUsd = maxCostUsd;
-    } else if (record.maxCostUsd !== undefined) {
-      return { ok: false, error: "invalid_max_cost_usd" };
-    }
-
-    if (typeof record.systemPrompt === "string") {
-      options.systemPrompt = record.systemPrompt;
-    } else if (record.systemPrompt !== undefined) {
-      return { ok: false, error: "invalid_system_prompt" };
-    }
-
-    const settingSourcesOverride = parseStringArray(record.settingSourcesOverride);
-    if (settingSourcesOverride?.ok) {
-      options.settingSourcesOverride = settingSourcesOverride.value;
-    } else if (settingSourcesOverride !== undefined) {
-      return { ok: false, error: "invalid_setting_sources" };
-    }
-  } else {
-    const sdkOnlyKeys = [
-      "thinkingEffort",
-      "permissionMode",
-      "maxTurns",
-      "maxCostUsd",
-      "systemPrompt",
-      "settingSourcesOverride",
-      "presetIds",
-    ];
-    if (sdkOnlyKeys.some((key) => record[key] !== undefined)) {
-      return { ok: false, error: "unsupported_session_option" };
-    }
+function sendRunOptionError(res: ResponseLike, error: SessionRunOptionError): void {
+  const status = error.code === "unsupported_option" ? 400 : error.code === "unavailable_value" ? 422
+    : error.code === "provider_timeout" ? 504 : 502;
+  const names = {
+    unsupported_option: "unsupported_session_option",
+    unavailable_value: "unavailable_session_option_value",
+    provider_rejected: "session_option_provider_rejected",
+    provider_timeout: "session_option_provider_timeout",
+    provider_disagreement: "session_option_provider_disagreement",
+    state_indeterminate: "session_option_state_indeterminate",
+  } as const;
+  const payload: Record<string, unknown> = {
+    error: names[error.code], code: error.code, option: error.optionId,
+    ...(error.details.requestKey ? { requestKey: error.details.requestKey } : {}),
+    backend: error.backend, message: error.message,
+    ...(error.details.currentValue !== undefined ? { currentValue: error.details.currentValue } : {}),
+    ...(error.details.allowedValues ? { allowedValues: error.details.allowedValues } : {}),
+    ...(error.details.applied ? { applied: error.details.applied } : {}),
+    ...(error.details.snapshot ? { runOptions: error.details.snapshot } : {}),
+  };
+  const declaration = error.details.snapshot?.options.find((option) => option.id === error.optionId);
+  if (error.details.requestedValue !== undefined && declaration?.kind !== "text" && declaration?.kind !== "multi_select") {
+    payload.requestedValue = error.details.requestedValue;
   }
+  sendJson(res, status, payload);
+}
 
-  return { ok: true, options };
+function creationOptionFields(body: unknown): Record<string, unknown> {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const keys = ["runOptions", "allowedTools", "presetIds", "model", "thinkingEffort", "permissionMode",
+    "maxTurns", "maxCostUsd", "systemPrompt", "settingSourcesOverride"];
+  return Object.fromEntries(keys.filter((key) => record[key] !== undefined).map((key) => [key, record[key]]));
+}
+
+function resolveDeclaration(
+  manager: SessionManager,
+  backendType: BackendType,
+  command: string,
+): BackendRunOptionDeclaration {
+  const method = (manager as SessionManager & {
+    describeRunOptionDeclaration?: (type: BackendType, command: string) => BackendRunOptionDeclaration;
+  }).describeRunOptionDeclaration;
+  if (typeof method === "function") return method.call(manager, backendType, command);
+  if (backendType === "sdk") return getSdkRunOptionDeclaration(command);
+  if (backendType === "acp") return getAcpRunOptionDeclaration(command);
+  return { backendType, command, options: [] };
 }
 
 // Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
@@ -277,10 +308,20 @@ export function registerConsoleRoutes(
     });
   }, { fileRpc: "deny" });
 
+  server.get("/api/console/run-options", (req, res) => {
+    const backendType = req.query.backend_type;
+    const command = req.query.command;
+    if (!(["pty", "sdk", "spawn", "acp"] as unknown[]).includes(backendType) || typeof command !== "string" || !command) {
+      sendJson(res, 400, { error: "invalid_run_options_query" });
+      return;
+    }
+    sendJson(res, 200, { runOptions: manager.describeRunOptions(backendType as BackendType, command) });
+  }, { fileRpc: "deny" });
+
   // ------------------------------------------------------------------
   // POST /api/console/sessions — create a new session
   // ------------------------------------------------------------------
-  server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", (req, res) => {
+  server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", async (req, res) => {
     const body = (req.body ?? {}) as Partial<ConsoleSessionInput & { interaction_mode?: string }>;
 
     if (!body.label || typeof body.label !== "string") {
@@ -334,6 +375,24 @@ export function registerConsoleRoutes(
         : undefined,
     };
 
+    try {
+      const declaration = resolveDeclaration(manager, input.backend_type!, input.command);
+      const parsed = parseSessionOptionsBody(declaration, creationOptionFields(req.body));
+      if (!parsed.ok) {
+        sendJson(res, 400, { error: parsed.error });
+        return;
+      }
+      input.runOptions = parsed.options.runOptions;
+      input.allowed_tools = parsed.options.allowedTools ?? null;
+      input.presetIds = parsed.options.presetIds;
+    } catch (error) {
+      if (error instanceof SessionRunOptionError) {
+        sendRunOptionError(res, error);
+        return;
+      }
+      throw error;
+    }
+
     let session: ConsoleSession;
     try {
       session = manager.create(input);
@@ -353,7 +412,16 @@ export function registerConsoleRoutes(
       manager.start(session.id);
     }
     const ptySession = manager.get(session.id);
-    res.status(201).json({ session: ptySession?.meta ?? session });
+    try {
+      const runOptions = await manager.waitForInitialRunOptions(session.id);
+      res.status(201).json({ session: manager.get(session.id)?.meta ?? session, runOptions });
+    } catch (error) {
+      if (error instanceof SessionRunOptionError) {
+        sendRunOptionError(res, error);
+        return;
+      }
+      throw error;
+    }
   }, { authenticated: true }), { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
@@ -369,7 +437,7 @@ export function registerConsoleRoutes(
     res.status(200).json({ session: enrichWithProcessing(ptySession) });
   }, { fileRpc: "deny" });
 
-  server.patch("/api/console/sessions/:id", (req, res) => {
+  server.patch("/api/console/sessions/:id", async (req, res) => {
     const id = req.params.id;
     const ptySession = manager.get(id);
     if (!ptySession) {
@@ -382,6 +450,22 @@ export function registerConsoleRoutes(
     const patch: Partial<Pick<ConsoleSession, "label" | "args">> = {};
     if (typeof body.label === "string" && body.label.trim()) {
       patch.label = body.label.trim();
+    }
+    const modelOption = resolveDeclaration(
+      manager,
+      ptySession.meta.backend_type,
+      ptySession.meta.command,
+    ).options.find((option) => option.id === "model");
+    if (typeof body.model === "string" && modelOption?.support.status === "supported") {
+      try {
+        const result = await manager.updateOptions(id, { runOptions: { model: body.model } });
+        if (patch.label !== undefined) manager.updateConfig(id, { label: patch.label });
+        res.status(200).json({ ...result, session: manager.get(id)?.meta ?? result.session });
+      } catch (error) {
+        if (error instanceof SessionRunOptionError) { sendRunOptionError(res, error); return; }
+        throw error;
+      }
+      return;
     }
     if (typeof body.model === "string") {
       const nextArgs = stripModelArgs(ptySession.meta.args);
@@ -396,7 +480,17 @@ export function registerConsoleRoutes(
     res.status(200).json({ session });
   }, { fileRpc: "deny" });
 
-  server.patch("/api/console/sessions/:id/options", (req, res) => {
+  server.get("/api/console/sessions/:id/options", (req, res) => {
+    const session = manager.get(req.params.id);
+    if (!session) { sendJson(res, 404, { error: "not_found" }); return; }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
+    sendJson(res, 200, {
+      runOptions: manager.getRunOptions(req.params.id),
+      mandibleControls: manager.getSessionOptionsControls(req.params.id),
+    });
+  }, { fileRpc: "deny" });
+
+  server.patch("/api/console/sessions/:id/options", async (req, res) => {
     const id = req.params.id;
     const session = manager.get(id);
     if (!session) {
@@ -405,15 +499,25 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
 
-    const parsed = parseSessionOptionsBody(session.meta.backend_type, req.body ?? {});
-    if (!parsed.ok) {
-      sendJson(res, 400, { error: parsed.error });
-      return;
+    try {
+      const declaration = resolveDeclaration(manager, session.meta.backend_type, session.meta.command);
+      const parsed = parseSessionOptionsBody(declaration, req.body ?? {});
+      if (!parsed.ok) { sendJson(res, 400, { error: parsed.error }); return; }
+      if (session.meta.backend_type !== "sdk" && session.meta.backend_type !== "acp" && parsed.options.presetIds !== undefined) {
+        sendJson(res, 400, { error: "unsupported_session_option" });
+        return;
+      }
+      const source = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+      const legacyKeys = ["model", "thinkingEffort", "permissionMode", "maxTurns", "maxCostUsd", "systemPrompt", "settingSourcesOverride"];
+      const legacy = Object.fromEntries(legacyKeys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+      const result = await manager.updateOptions(id, Object.keys(source.runOptions as object ?? {}).length > 0
+        ? parsed.options
+        : { ...legacy, allowedTools: parsed.options.allowedTools, presetIds: parsed.options.presetIds });
+      res.status(200).json(result && typeof result === "object" && "session" in result ? result : { session: result });
+    } catch (error) {
+      if (error instanceof SessionRunOptionError) { sendRunOptionError(res, error); return; }
+      throw error;
     }
-    const body = parsed.options;
-
-    const nextSession = manager.updateOptions(id, body);
-    res.status(200).json({ session: nextSession });
   }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
