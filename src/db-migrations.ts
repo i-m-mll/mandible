@@ -3996,6 +3996,102 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_managed_task_occurrences_inbox
         ON managed_task_occurrences(acknowledged_at, created_at DESC, id DESC)`,
     ],
+  },
+  {
+    version: 132,
+    name: "auth_hook_dotfiles_agent_schedule_deploy",
+    // Issue 2c94346 — A protected dotfiles merge that changes anything under
+    // agents/ leaves the deployed agent-schedule bundle stale until someone
+    // runs `agent-schedule deploy` by hand. Deploy needs no authorization of
+    // its own: it refuses any commit that is not on the protected branch, so
+    // the YubiKey moment already happened at merge time and deploy is a pure
+    // materialization step.
+    //
+    // The hook deploys and reports. It deliberately does NOT restore task
+    // activation. Deploy clears activation and the dry-run receipt for every
+    // task whose execution hash changed, and that hash covers prompt,
+    // collector, schema, task config, and shared data precisely because any of
+    // them can change behaviour. Execution-hash equality is the only sound
+    // automatic discriminator and the executor already applies it, preserving
+    // activation by itself when nothing behavioural changed. Anything more
+    // would re-activate a task on evidence that no longer describes it, and a
+    // shell hook additionally cannot compare-and-set against an operator
+    // disable that lands mid-hook. `agent-schedule deploy` prints
+    // "disabled pending dry-run: ..." for each task it turns off, and hook
+    // output is captured into the auth result, so a deactivation is reported
+    // rather than silent.
+    statements: [
+      // Partial legacy fixtures can reach this migration without auth_hooks —
+      // earlier hook-seeding migrations create it the same way for the same
+      // reason. Seeding a row into a table that may not exist is what makes a
+      // migration fail on a genuine old database rather than on a fresh one.
+      `CREATE TABLE IF NOT EXISTS auth_hooks (
+        id            TEXT PRIMARY KEY,
+        repo_pattern  TEXT NOT NULL DEFAULT '*',
+        auth_type     TEXT NOT NULL DEFAULT 'merge',
+        command       TEXT NOT NULL,
+        label         TEXT NOT NULL DEFAULT '',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        builtin       INTEGER NOT NULL DEFAULT 0,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
+      `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
+       VALUES (
+         'builtin-dotfiles-agent-schedule-deploy',
+         '.dotfiles',
+         'merge',
+         'set -o pipefail
+base=$(git rev-parse --verify -q HEAD^1 || git rev-parse --verify -q HEAD~1)
+if [ -z "$base" ]; then echo "agent-schedule deploy hook: cannot resolve the merge parent" >&2; exit 1; fi
+if [ -z "$(git diff --name-only "$base" HEAD -- agents/)" ]; then echo "no agents/ changes in this merge; skipping agent-schedule deploy"; exit 0; fi
+sched=""
+for candidate in "$HOME/.local/bin/agent-schedule" "$HOME/.dotfiles/bin/agent-schedule"; do
+  if [ -x "$candidate" ]; then sched="$candidate"; break; fi
+done
+if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule executable not found" >&2; exit 1; fi
+"$sched" deploy',
+         'Deploy the agent-schedule bundle after an agents/ merge',
+         1,
+         1,
+         10,
+         CAST(strftime('%s','now') * 1000 AS INTEGER),
+         CAST(strftime('%s','now') * 1000 AS INTEGER)
+       )
+       ON CONFLICT(id) DO UPDATE SET
+         repo_pattern = excluded.repo_pattern,
+         auth_type = excluded.auth_type,
+         command = excluded.command,
+         label = excluded.label,
+         enabled = excluded.enabled,
+         builtin = excluded.builtin,
+         position = excluded.position,
+         updated_at = excluded.updated_at`,
+      `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
+       SELECT
+         'builtin-dotfiles-agent-schedule-deploy-nodot',
+         'dotfiles',
+         auth_type,
+         command,
+         label,
+         enabled,
+         builtin,
+         position,
+         created_at,
+         updated_at
+       FROM auth_hooks
+       WHERE id = 'builtin-dotfiles-agent-schedule-deploy'
+       ON CONFLICT(id) DO UPDATE SET
+         repo_pattern = excluded.repo_pattern,
+         auth_type = excluded.auth_type,
+         command = excluded.command,
+         label = excluded.label,
+         enabled = excluded.enabled,
+         builtin = excluded.builtin,
+         position = excluded.position,
+         updated_at = excluded.updated_at`,
+    ],
   }
 ];
 
