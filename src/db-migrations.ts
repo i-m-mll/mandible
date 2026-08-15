@@ -4415,21 +4415,29 @@ export function migrate(db: Db): void {
   }
   applySchemaMigrations(db, afterV126);
 
+  const v129AuthMergeSucceededPostMigration = "v129_backfill_auth_merge_succeeded_facts";
   if (
     tableExists(db, "ledger_projects") &&
     tableExists(db, "ledger_project_checkouts") &&
     shouldRunPostMigration(
       db,
-      "v129_backfill_auth_merge_succeeded_facts",
+      v129AuthMergeSucceededPostMigration,
       pending,
       129,
       () => hasAuthMergeSucceededFactBackfillWork(db),
     )
   ) {
-    runPostMigration(db, "v129_backfill_auth_merge_succeeded_facts", () => {
-      backfillAuthMergeSucceededFacts(db);
-    });
+    const deferredAuthRequestIds = backfillAuthMergeSucceededFacts(db);
+    if (deferredAuthRequestIds.length === 0) {
+      completeAuthMergeSucceededFactBackfill(db, v129AuthMergeSucceededPostMigration);
+    }
   }
+  // A running daemon can fill deferred facts through the auth finalizer sweep
+  // after their projects are registered. On the next startup, the generic gate
+  // then observes no incomplete work, writes the completion marker itself, and
+  // returns false without entering the backfill's empty-deferred cleanup path.
+  // Converge that production state, and any already-complete replay, here.
+  cleanupCompletedAuthMergeSucceededFactBackfill(db, v129AuthMergeSucceededPostMigration);
 
   // Integration reconciliation (umbrella c16807e): the additive-column hooks for
   // v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
@@ -4493,7 +4501,22 @@ function hasAuthMergeSucceededFactBackfillWork(db: Db): boolean {
   ).get() != null;
 }
 
-function backfillAuthMergeSucceededFacts(db: Db): void {
+const V129_AUTH_MERGE_SUCCEEDED_DEFERRED_KEY =
+  "post_migration.v129_backfill_auth_merge_succeeded_facts.deferred_auth_request_ids";
+
+function completeAuthMergeSucceededFactBackfill(db: Db, name: string): void {
+  db.transaction(() => {
+    db.prepare("DELETE FROM meta WHERE key = ?").run(V129_AUTH_MERGE_SUCCEEDED_DEFERRED_KEY);
+    setMeta(db, postMigrationKey(name), "done");
+  }).immediate();
+}
+
+function cleanupCompletedAuthMergeSucceededFactBackfill(db: Db, name: string): void {
+  if (getMeta(db, postMigrationKey(name)) !== "done") return;
+  db.prepare("DELETE FROM meta WHERE key = ?").run(V129_AUTH_MERGE_SUCCEEDED_DEFERRED_KEY);
+}
+
+function backfillAuthMergeSucceededFacts(db: Db): string[] {
   const rows = db.prepare(
     `SELECT id, repo, cwd, target_repo_root, base_branch, resolved_at,
             updated_at, commit_message_digest
@@ -4516,6 +4539,7 @@ function backfillAuthMergeSucceededFacts(db: Db): void {
        canonical_message, recorded_at
      ) VALUES (?, ?, ?, ?, ?, ?)`,
   );
+  const deferredAuthRequestIds: string[] = [];
   const run = db.transaction(() => {
     for (const row of rows) {
       const projectId = resolveAuthRequestProjectId(db, [
@@ -4524,9 +4548,12 @@ function backfillAuthMergeSucceededFacts(db: Db): void {
         row.repo,
       ]);
       if (!projectId) {
-        throw new Error(
-          `Migration v129 cannot resolve canonical project for successful auth request '${row.id}'`,
-        );
+        // Historical successful requests can belong to legitimate repositories
+        // that were never registered as canonical projects. Preserve the
+        // request, record the deferred fact explicitly, and retry on a later
+        // startup instead of inventing project identity or bricking replay.
+        deferredAuthRequestIds.push(row.id);
+        continue;
       }
       const completedAt = row.resolved_at ?? row.updated_at;
       insert.run(
@@ -4538,8 +4565,14 @@ function backfillAuthMergeSucceededFacts(db: Db): void {
         completedAt,
       );
     }
+    if (deferredAuthRequestIds.length > 0) {
+      setMeta(db, V129_AUTH_MERGE_SUCCEEDED_DEFERRED_KEY, JSON.stringify(deferredAuthRequestIds));
+    } else {
+      db.prepare("DELETE FROM meta WHERE key = ?").run(V129_AUTH_MERGE_SUCCEEDED_DEFERRED_KEY);
+    }
   });
   run.immediate();
+  return deferredAuthRequestIds;
 }
 
 function resolveAuthRequestProjectId(db: Db, refs: Array<string | null>): string | null {
