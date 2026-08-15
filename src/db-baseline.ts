@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 131;
+export const BASELINE_SCHEMA_VERSION = 132;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -906,6 +906,26 @@ const BUILTIN_AUTH_HOOKS: readonly BaselineAuthHook[] = [
     "enabled": 1,
     "builtin": 1,
     "position": 0
+  },
+  {
+    "id": "builtin-dotfiles-agent-schedule-deploy",
+    "repo_pattern": ".dotfiles",
+    "auth_type": "merge",
+    "command": "set -o pipefail\nbase=$(git rev-parse --verify -q HEAD^1 || git rev-parse --verify -q HEAD~1)\nif [ -z \"$base\" ]; then echo \"agent-schedule deploy hook: cannot resolve the merge parent\" >&2; exit 1; fi\nif [ -z \"$(git diff --name-only \"$base\" HEAD -- agents/)\" ]; then echo \"no agents/ changes in this merge; skipping agent-schedule deploy\"; exit 0; fi\nsched=\"\"\nfor candidate in \"$HOME/.local/bin/agent-schedule\" \"$HOME/.dotfiles/bin/agent-schedule\"; do\n  if [ -x \"$candidate\" ]; then sched=\"$candidate\"; break; fi\ndone\nif [ -z \"$sched\" ]; then echo \"agent-schedule deploy hook: agent-schedule executable not found\" >&2; exit 1; fi\n\"$sched\" deploy",
+    "label": "Deploy the agent-schedule bundle after an agents/ merge",
+    "enabled": 1,
+    "builtin": 1,
+    "position": 10
+  },
+  {
+    "id": "builtin-dotfiles-agent-schedule-deploy-nodot",
+    "repo_pattern": "dotfiles",
+    "auth_type": "merge",
+    "command": "set -o pipefail\nbase=$(git rev-parse --verify -q HEAD^1 || git rev-parse --verify -q HEAD~1)\nif [ -z \"$base\" ]; then echo \"agent-schedule deploy hook: cannot resolve the merge parent\" >&2; exit 1; fi\nif [ -z \"$(git diff --name-only \"$base\" HEAD -- agents/)\" ]; then echo \"no agents/ changes in this merge; skipping agent-schedule deploy\"; exit 0; fi\nsched=\"\"\nfor candidate in \"$HOME/.local/bin/agent-schedule\" \"$HOME/.dotfiles/bin/agent-schedule\"; do\n  if [ -x \"$candidate\" ]; then sched=\"$candidate\"; break; fi\ndone\nif [ -z \"$sched\" ]; then echo \"agent-schedule deploy hook: agent-schedule executable not found\" >&2; exit 1; fi\n\"$sched\" deploy",
+    "label": "Deploy the agent-schedule bundle after an agents/ merge",
+    "enabled": 1,
+    "builtin": 1,
+    "position": 10
   }
 ];
 
