@@ -366,6 +366,62 @@ describe("receipts", () => {
   });
 });
 
+describe("generation retention", () => {
+  it("keeps only the newest 50 generations for the executor being ingested", () => {
+    const otherReceipts = Array.from({ length: 3 }, (_, index) =>
+      store(parseTaskInventoryGeneration(generationFixture({
+        executor: { name: "other-executor", version: `${index}`, capabilities: [] },
+        observed_at: NOW + index,
+      })), NOW + index));
+
+    const receipts = Array.from({ length: 55 }, (_, index) =>
+      store(parseTaskInventoryGeneration(generationFixture({
+        executor: { name: "agent-schedule", version: `${index}`, capabilities: ["cron"] },
+        observed_at: NOW + index,
+      })), NOW + index));
+
+    const retained = db.prepare(
+      `SELECT id, observed_at
+         FROM task_inventory_generations
+        WHERE executor_name = ?
+        ORDER BY observed_at ASC`,
+    ).all("agent-schedule") as Array<{ id: string; observed_at: number }>;
+    expect(retained).toHaveLength(50);
+    expect(retained.map((row) => row.observed_at)).toEqual(
+      Array.from({ length: 50 }, (_, index) => NOW + index + 5),
+    );
+    expect(retained.map((row) => row.id)).toContain(receipts[54].generation_id);
+    expect(retained.map((row) => row.id)).not.toContain(receipts[0].generation_id);
+
+    const otherIds = db.prepare(
+      `SELECT id
+         FROM task_inventory_generations
+        WHERE executor_name = ?
+        ORDER BY observed_at ASC`,
+    ).all("other-executor") as Array<{ id: string }>;
+    expect(otherIds.map((row) => row.id)).toEqual(
+      otherReceipts.map((receipt) => receipt.generation_id),
+    );
+  });
+
+  it("breaks equal observation and receipt timestamps by newest rowid", () => {
+    const receipts = Array.from({ length: 51 }, (_, index) =>
+      store(parseTaskInventoryGeneration(generationFixture({
+        executor: { name: "agent-schedule", version: `${index}`, capabilities: ["cron"] },
+      })), NOW));
+
+    const retainedIds = db.prepare(
+      `SELECT id
+         FROM task_inventory_generations
+        WHERE executor_name = ?
+        ORDER BY rowid ASC`,
+    ).all("agent-schedule") as Array<{ id: string }>;
+    expect(retainedIds.map((row) => row.id)).toEqual(
+      receipts.slice(1).map((receipt) => receipt.generation_id),
+    );
+  });
+});
+
 describe("projection", () => {
   it("returns nothing at all before any executor posts", () => {
     expect(getTaskInventoryView(db, { now: NOW })).toEqual({

@@ -367,6 +367,12 @@ export function publisherMayPostInventory(
 
 // --- receipts ---------------------------------------------------------------
 
+const TASK_INVENTORY_GENERATIONS_PER_EXECUTOR = 50;
+
+function generationRecencyOrder(alias: string): string {
+  return `${alias}.observed_at DESC, ${alias}.created_at DESC, ${alias}.rowid DESC`;
+}
+
 interface GenerationRow {
   id: string;
   digest: string;
@@ -436,6 +442,21 @@ export function recordTaskInventoryGeneration(
       options.postedByUserId,
       now,
     );
+    db.prepare(
+      `DELETE FROM task_inventory_generations
+        WHERE executor_name = ?
+          AND id IN (
+            SELECT retained.id
+              FROM task_inventory_generations AS retained
+             WHERE retained.executor_name = ?
+             ORDER BY ${generationRecencyOrder("retained")}
+             LIMIT -1 OFFSET ?
+          )`,
+    ).run(
+      generation.executor.name,
+      generation.executor.name,
+      TASK_INVENTORY_GENERATIONS_PER_EXECUTOR,
+    );
     return {
       generation_id: id,
       digest,
@@ -504,7 +525,7 @@ export function getTaskInventoryView(
           SELECT inner.id
             FROM task_inventory_generations AS inner
            WHERE inner.executor_name = g.executor_name
-           ORDER BY inner.observed_at DESC, inner.created_at DESC, inner.rowid DESC
+           ORDER BY ${generationRecencyOrder("inner")}
            LIMIT 1
         )
         ORDER BY g.executor_name ASC`,
