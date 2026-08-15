@@ -758,50 +758,99 @@ export function listRecurringQueue(
 
 export function listRecurringSourceHealth(db: Db, now: number): BriefingSourceHealth[] {
   const rows = db.prepare(
-    `SELECT source, COUNT(*) AS candidate_count, SUM(is_pending) AS pending_count
-       FROM (
-         SELECT c.source AS source, CASE WHEN ${PENDING_PREDICATE} THEN 1 ELSE 0 END AS is_pending
-           FROM feedback_items i
-           JOIN feedback_collections c ON c.id = i.collection_id
-          WHERE c.kind = 'recurring_feed' AND i.item_kind = 'item'
-       )
-      GROUP BY source ORDER BY source ASC`,
-  ).all() as Array<{ source: string; candidate_count: number; pending_count: number }>;
-  const publications = db.prepare(
-    `SELECT source, task_identity, run_id, digest_version, item_count, received_at
-       FROM (
-         SELECT c.source, p.task_identity, p.run_id, p.digest_version,
-                p.item_count, p.received_at,
-                ROW_NUMBER() OVER (
-                  PARTITION BY c.source
-                  ORDER BY p.received_at DESC, p.rowid DESC
-                ) AS recency
-           FROM feedback_publications p
-           JOIN feedback_collections c ON c.id = p.collection_id
-          WHERE c.kind = 'recurring_feed'
-       )
-      WHERE recency = 1`,
-  ).all() as Array<{
+    `WITH sentinel(source) AS (VALUES (?)),
+          item_counts AS (
+            SELECT source, COUNT(*) AS candidate_count, SUM(is_pending) AS pending_count
+              FROM (
+                SELECT c.source AS source,
+                       CASE WHEN ${PENDING_PREDICATE} THEN 1 ELSE 0 END AS is_pending
+                  FROM feedback_items i
+                  JOIN feedback_collections c ON c.id = i.collection_id
+                  JOIN sentinel s ON c.source != s.source
+                 WHERE c.kind = 'recurring_feed' AND i.item_kind = 'item'
+              )
+             GROUP BY source
+          ),
+          normal_task_sources AS (
+            SELECT DISTINCT p.task_identity, c.source
+              FROM feedback_publications p
+              JOIN feedback_collections c ON c.id = p.collection_id
+              JOIN sentinel s ON c.source != s.source
+             WHERE c.kind = 'recurring_feed' AND p.item_count > 0
+          ),
+          projected_publications AS (
+            SELECT c.source, p.task_identity, p.run_id, p.digest_version,
+                   p.item_count, p.received_at, p.rowid AS publication_rowid
+              FROM feedback_publications p
+              JOIN feedback_collections c ON c.id = p.collection_id
+              JOIN sentinel s ON c.source != s.source
+             WHERE c.kind = 'recurring_feed'
+            UNION ALL
+            SELECT nts.source, p.task_identity, p.run_id, p.digest_version,
+                   p.item_count, p.received_at, p.rowid AS publication_rowid
+              FROM feedback_publications p
+              JOIN feedback_collections c ON c.id = p.collection_id
+              JOIN sentinel s ON c.source = s.source
+              JOIN normal_task_sources nts ON nts.task_identity = p.task_identity
+             WHERE c.kind = 'recurring_feed'
+            UNION ALL
+            SELECT p.task_identity AS source, p.task_identity, p.run_id, p.digest_version,
+                   p.item_count, p.received_at, p.rowid AS publication_rowid
+              FROM feedback_publications p
+              JOIN feedback_collections c ON c.id = p.collection_id
+              JOIN sentinel s ON c.source = s.source
+             WHERE c.kind = 'recurring_feed'
+               AND NOT EXISTS (
+                 SELECT 1 FROM normal_task_sources nts
+                  WHERE nts.task_identity = p.task_identity
+               )
+          ),
+          latest_publications AS (
+            SELECT source, task_identity, run_id, digest_version, item_count, received_at
+              FROM (
+                SELECT projected_publications.*,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY source
+                         ORDER BY received_at DESC, publication_rowid DESC
+                       ) AS recency
+                  FROM projected_publications
+              )
+             WHERE recency = 1
+          ),
+          reportable_sources AS (
+            SELECT source FROM item_counts
+            UNION
+            SELECT source FROM projected_publications
+          )
+     SELECT rs.source,
+            COALESCE(ic.candidate_count, 0) AS candidate_count,
+            COALESCE(ic.pending_count, 0) AS pending_count,
+            lp.task_identity, lp.run_id, lp.digest_version, lp.item_count, lp.received_at
+       FROM reportable_sources rs
+       LEFT JOIN item_counts ic ON ic.source = rs.source
+       LEFT JOIN latest_publications lp ON lp.source = rs.source
+      ORDER BY rs.source ASC`,
+  ).all(EMPTY_BRIEFING_BATCH_SOURCE) as Array<{
     source: string;
-    task_identity: string;
+    candidate_count: number;
+    pending_count: number;
+    task_identity: string | null;
     run_id: string | null;
     digest_version: number | null;
-    item_count: number;
-    received_at: number;
+    item_count: number | null;
+    received_at: number | null;
   }>;
-  const publicationBySource = new Map(publications.map((publication) => [publication.source, publication]));
   return rows.map((row) => {
-    const publication = publicationBySource.get(row.source);
     return {
       source: row.source,
       pending_count: Number(row.pending_count ?? 0),
       candidate_count: Number(row.candidate_count ?? 0),
-      last_task_identity: publication?.task_identity ?? null,
-      last_run_id: publication?.run_id ?? null,
-      last_digest_version: publication?.digest_version ?? null,
-      last_ingested_at: publication?.received_at ?? null,
-      last_ingest_age_ms: publication ? Math.max(0, now - publication.received_at) : null,
-      last_batch_item_count: publication?.item_count ?? null,
+      last_task_identity: row.task_identity,
+      last_run_id: row.run_id,
+      last_digest_version: row.digest_version,
+      last_ingested_at: row.received_at,
+      last_ingest_age_ms: row.received_at === null ? null : Math.max(0, now - row.received_at),
+      last_batch_item_count: row.item_count,
     };
   });
 }

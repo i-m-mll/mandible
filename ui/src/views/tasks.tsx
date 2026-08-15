@@ -254,6 +254,7 @@ function commandStatusText(command: TaskCommand): string {
 
 function CommandSection({
   commands,
+  activation,
   available,
   busy,
   error,
@@ -261,6 +262,7 @@ function CommandSection({
   onCancel,
 }: {
   commands: TaskCommand[];
+  activation: TaskActivationFacts;
   available: boolean;
   busy: boolean;
   error: string | null;
@@ -273,6 +275,13 @@ function CommandSection({
   const active = commands.find((command) =>
     command.state === 'requested' || command.state === 'accepted') ?? null;
   const displayed = active ?? latest;
+  // This prediction mirrors the executor's no-op predicate exactly. Config is
+  // a separate reading and must not turn an activated host into a predicted
+  // no-op. The report may be stale, so this changes emphasis, never safety
+  // availability.
+  const disableExpectedNoOp = activation.locally_activated === false;
+  const configHostDisagreement = activation.config_enabled === false
+    && activation.locally_activated === true;
   return (
     <section className="tasks-section tasks-command">
       <h3 className="tasks-section__title">Disable command</h3>
@@ -289,11 +298,21 @@ function CommandSection({
       ) : (
         <p className="tasks-note">No disable request has been recorded for this task.</p>
       )}
+      {disableExpectedNoOp ? (
+        <p className="tasks-note">
+          Already disabled per last executor report — request would be a no-op.
+        </p>
+      ) : configHostDisagreement ? (
+        <p className="tasks-note">
+          Configuration says disabled, but the reporting host still says locally activated.
+          Requesting disable is not expected to be a no-op.
+        </p>
+      ) : null}
       {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
       <div className="tasks-command__actions">
         <button
           type="button"
-          className="btn btn--danger"
+          className={disableExpectedNoOp ? 'btn btn--ghost' : 'btn btn--danger'}
           disabled={busy || active !== null || !available}
           onClick={onRequest}
         >
@@ -363,6 +382,7 @@ function ExecutorTaskDetail({
 
       <CommandSection
         commands={commands}
+        activation={task.activation}
         available={commandAvailable}
         busy={commandBusy}
         error={commandError}

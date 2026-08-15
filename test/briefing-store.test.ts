@@ -275,7 +275,7 @@ describe("briefing ingestion", () => {
     expect(counts()).toEqual(before);
   });
 
-  it("records and replays an empty batch without exposing a queue source", () => {
+  it("reports and replays an empty-batch-only task without exposing the sentinel source", () => {
     const empty = batch({ batch_key: "batch-empty", items: [] });
     expect(ingestBriefingBatch(db, empty, 1_000)).toEqual({
       accepted: 0, created: 0, revised: 0, unchanged: 0,
@@ -289,7 +289,47 @@ describe("briefing ingestion", () => {
     expect((db.prepare(
       "SELECT COUNT(*) AS n FROM feedback_publications",
     ).get() as { n: number }).n).toBe(before);
-    expect(listBriefingQueue(db).sources).toEqual([]);
+    const queue = listBriefingQueue(db, { now: 3_000 });
+    expect(queue.candidates).toEqual([]);
+    expect(queue.sources).toEqual([
+      {
+        source: "agent-schedule/daily-digest",
+        pending_count: 0,
+        candidate_count: 0,
+        last_task_identity: "agent-schedule/daily-digest",
+        last_run_id: "run-1",
+        last_digest_version: 1,
+        last_ingested_at: 1_000,
+        last_ingest_age_ms: 2_000,
+        last_batch_item_count: 0,
+      },
+    ]);
+  });
+
+  it("projects a newer empty batch onto its task's established source", () => {
+    ingestBriefingBatch(db, batch(), 1_000);
+    ingestBriefingBatch(db, batch({
+      batch_key: "batch-empty",
+      digest: { series_ref: "artifact-series:abc123", version: 2 },
+      run_id: "run-empty",
+      items: [],
+    }), 5_000);
+
+    const queue = listBriefingQueue(db, { now: 6_000 });
+    expect(queue.candidates).toHaveLength(1);
+    expect(queue.sources).toEqual([
+      {
+        source: "arxiv-scan",
+        pending_count: 1,
+        candidate_count: 1,
+        last_task_identity: "agent-schedule/daily-digest",
+        last_run_id: "run-empty",
+        last_digest_version: 2,
+        last_ingested_at: 5_000,
+        last_ingest_age_ms: 1_000,
+        last_batch_item_count: 0,
+      },
+    ]);
   });
 
   it("records only an occurrence for a re-ingested (candidate_key, evidence_hash) pair", () => {
