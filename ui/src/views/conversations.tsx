@@ -17,6 +17,7 @@ import {
   exportConversationBlocks,
   forkConversation,
   getConsoleSessionUsage,
+  getConsoleSessionOptions,
   getConversation,
   getConversations,
   getSessionIssues,
@@ -29,6 +30,7 @@ import {
   updateConsoleSessionOptions,
   updateConversation,
   type SessionPreset,
+  type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
 import { TerminalPane } from '../components/console/TerminalPane';
@@ -194,23 +196,6 @@ const AGENT_LABELS: Record<string, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   shell: 'Shell',
-};
-
-const MODEL_OPTIONS: Record<string, string[]> = {
-  claude: ['sonnet', 'opus', 'haiku', 'sonnet[1m]', 'opusplan'],
-  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2'],
-  gemini: [
-    'auto',
-    'pro',
-    'flash',
-    'flash-lite',
-    'gemini-3.1-pro-preview',
-    'gemini-3-flash-preview',
-    'gemini-3.1-flash-lite-preview',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-  ],
 };
 
 const PAGE_SIZE = 50;
@@ -511,6 +496,7 @@ export type ConversationsViewProps = {
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
+    runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
   }) => void;
 };
 
@@ -1862,6 +1848,15 @@ function ConversationDetail({
   }), [blocks, chatEvents, telemetry, usageRows]);
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
+  const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
+  useEffect(() => {
+    if (!linkedConsoleSession) { setSessionRunOptions(null); return; }
+    let active = true;
+    void getConsoleSessionOptions(linkedConsoleSession.id).then((result) => {
+      if (active) setSessionRunOptions(result.runOptions);
+    }).catch(() => { if (active) setSessionRunOptions(null); });
+    return () => { active = false; };
+  }, [linkedConsoleSession?.id]);
 
   const latestDagUuid = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
@@ -1895,7 +1890,9 @@ function ConversationDetail({
     'claude'
   );
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
-  const modelOptions = MODEL_OPTIONS[providerFamily] ?? [];
+  const modelOptions = (sessionRunOptions?.options.find((option) => option.id === 'model')?.allowedValues ?? [])
+    .map((choice) => choice.value)
+    .filter((value): value is string => typeof value === 'string');
   const canShowSessionControls = linkedConsoleSession
     && (linkedConsoleSession.backend_type === 'sdk'
       || linkedConsoleSession.backend_type === 'pty'
@@ -2422,13 +2419,7 @@ function ConversationDetail({
           <div className="conv-compose__controls">
             <SessionControls
               sessionId={linkedConsoleSession.id}
-              backendType={linkedConsoleSession.backend_type === 'sdk'
-                ? 'sdk'
-                : linkedConsoleSession.backend_type === 'acp'
-                  ? 'acp'
-                  : 'pty'}
-              model={parseModelFromArgs(linkedConsoleSession.args)}
-              modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
+              runOptions={sessionRunOptions}
               allowedTools={linkedConsoleSession.allowed_tools}
             />
           </div>
@@ -3087,6 +3078,7 @@ export function ConversationsView({
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
+    runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
   }) => {
     onNewSession(input);
     setDialogOpen(false);

@@ -3,6 +3,7 @@ import {
   acpPermissionOutcome,
   createAcpMapperState,
   normalizeAcpIncoming,
+  parseAcpConfigOptions,
   parseAcpNdjsonLine,
 } from "../src/backends/acp-protocol.js";
 import {
@@ -11,6 +12,19 @@ import {
 } from "../src/ingestion.js";
 
 describe("ACP protocol mapper", () => {
+  it("parses flat, grouped, and boolean config options without changing provider IDs", () => {
+    expect(parseAcpConfigOptions([
+      { id: "model", name: "Model", category: "model", type: "select", currentValue: "m/2",
+        options: [{ value: "m/2", name: "Model 2" }] },
+      { id: "effort", name: "Effort", category: "thought_level", type: "select", currentValue: "high+",
+        options: [{ group: "recommended", name: "Recommended", options: [{ value: "high+", name: "High plus" }] }] },
+      { id: "fast", name: "Fast", category: "model_config", type: "boolean", currentValue: true },
+    ])).toEqual([
+      expect.objectContaining({ id: "model", currentValue: "m/2", allowedValues: [{ value: "m/2", label: "Model 2" }] }),
+      expect.objectContaining({ id: "effort", currentValue: "high+", allowedValues: [{ value: "high+", label: "Recommended: High plus" }] }),
+      expect.objectContaining({ id: "fast", currentValue: true, kind: "boolean" }),
+    ]);
+  });
   it("parses NDJSON JSON-RPC lines", () => {
     expect(parseAcpNdjsonLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update" })))
       .toMatchObject({ method: "session/update" });

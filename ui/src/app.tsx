@@ -1634,6 +1634,7 @@ function App(): JSX.Element {
     transport_lane,
     channel_enabled,
     presetIds,
+    runOptions,
   }: {
     label: string;
     backend: string;
@@ -1642,12 +1643,14 @@ function App(): JSX.Element {
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
+    runOptions?: Record<string, import('./api').SessionRunOptionValue>;
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type, {
         channel_enabled,
         transport_lane,
         presetIds,
+        runOptions,
       });
       const session = {
         pinned: false,

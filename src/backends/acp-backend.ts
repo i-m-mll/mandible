@@ -10,6 +10,7 @@ import type {
   PermissionDecision,
   PermissionRequest,
   UsageAwareBackend,
+  ToolPolicyBackend,
 } from "../agentic-backend.js";
 import type { ConsoleSession, ConsoleStreamEvent, Logger } from "../types.js";
 import {
@@ -18,6 +19,7 @@ import {
   makeAcpUserEvent,
   normalizeAcpIncoming,
   normalizeAcpUsage,
+  parseAcpConfigOptions,
   parseAcpNdjsonLine,
   type AcpJsonRpcMessage,
   type AcpMapperState,
@@ -25,10 +27,24 @@ import {
   type JsonRpcId,
 } from "./acp-protocol.js";
 import { suppressAcpIngestForSession } from "../ingestion.js";
+import {
+  composeRunOptions,
+  declaredRunOptionsSnapshot,
+  SessionRunOptionError,
+  sessionRunOptionValuesEqual,
+  validateRunOptionsPatch,
+  type AppliedSessionRunOption,
+  type BackendRunOptionDeclaration,
+  type ProviderRunOption,
+  type SessionRunOptionsPatch,
+  type SessionRunOptionsSnapshot,
+  type SessionRunOptionsUpdateResult,
+} from "../session-run-options.js";
 
 const EVENT_LOG_LIMIT = 2000;
 export const ACP_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
 const PERMISSION_TIMEOUT_MS = 120_000;
+const OPTION_TIMEOUT_MS = 10_000;
 
 const POLLUTED_ENV_KEYS_PREFIX = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
 const POLLUTED_ENV_KEYS_EXACT = new Set([
@@ -52,7 +68,60 @@ interface AcpAgentDefinition {
   probeFlag?: boolean;
   fallbackAuthMethodId?: string;
   selectAuthMethod(authMethods: AcpAuthMethod[], env: Record<string, string>): string | null;
+  runOptions: BackendRunOptionDeclaration["options"];
 }
+
+interface PendingRpc {
+  method: string;
+  optionId?: string;
+  resolve?: (result: unknown) => void;
+  reject?: (error: Error) => void;
+  timeout?: NodeJS.Timeout;
+}
+
+const ACP_RUNTIME_POLICY = {
+  source: "acp_session_config" as const,
+  managedCategories: ["model", "thought_level", "mode"],
+  managedKinds: ["select", "boolean"] as const,
+  undeclaredOptions: "read_only" as const,
+};
+
+const CODEX_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
+  {
+    id: "model", label: "Model", category: "model", kind: "select", nullable: false,
+    discovery: { kind: "provider", protocol: "acp_session_config", providerOptionId: "model", fallbackAllowedValues: null },
+    support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" },
+    applyOrder: 10, legacyRequestKeys: ["model"],
+  },
+  {
+    id: "reasoning_effort", label: "Reasoning effort", category: "thought_level", kind: "select", nullable: false,
+    discovery: { kind: "provider", protocol: "acp_session_config", providerOptionId: "reasoning_effort", fallbackAllowedValues: null },
+    support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" },
+    applyOrder: 20, applyAfter: ["model"],
+  },
+  {
+    id: "mode", label: "Mode", category: "mode", kind: "select", nullable: false,
+    discovery: {
+      kind: "static_then_provider", protocol: "acp_session_config", providerOptionId: "mode",
+      staticAllowedValues: [
+        { value: "read-only", label: "Read only" },
+        { value: "agent", label: "Agent" },
+        { value: "agent-full-access", label: "Agent full access" },
+      ],
+    },
+    support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" }, applyOrder: 30,
+  },
+  {
+    id: "max_turns", label: "Maximum turns", category: "limit", kind: "integer", nullable: true,
+    discovery: { kind: "static", allowedValues: null },
+    support: { status: "unsupported", reason: "ACP exposes only a max_turn_requests stop reason" }, applyOrder: 40,
+  },
+  {
+    id: "max_cost_usd", label: "Maximum cost (USD)", category: "limit", kind: "number", nullable: true,
+    discovery: { kind: "static", allowedValues: null },
+    support: { status: "unsupported", reason: "ACP provides no enforceable USD budget" }, applyOrder: 50,
+  },
+];
 
 interface AcpAuthMethod {
   id?: string;
@@ -70,6 +139,7 @@ const ACP_AGENT_REGISTRY: Record<string, AcpAgentDefinition> = {
     selectAuthMethod(authMethods) {
       return firstAuthMethod(authMethods, ["oauth-personal", "oauth", "browser"]) ?? "oauth-personal";
     },
+    runOptions: [],
   },
   codex: {
     command: "npx",
@@ -83,8 +153,18 @@ const ACP_AGENT_REGISTRY: Record<string, AcpAgentDefinition> = {
       }
       return firstAuthMethod(authMethods, ["chat-gpt", "api-key", "gateway"]);
     },
+    runOptions: CODEX_RUN_OPTIONS,
   },
 };
+
+export function getAcpRunOptionDeclaration(command: string): BackendRunOptionDeclaration {
+  return {
+    backendType: "acp",
+    command,
+    options: ACP_AGENT_REGISTRY[command]?.runOptions ?? [],
+    runtimeDiscoveredOptions: ACP_RUNTIME_POLICY,
+  };
+}
 
 export interface AcpBackendOptions {
   model?: string;
@@ -95,7 +175,8 @@ export class AcpBackend extends EventEmitter
 implements
   AgenticBackend,
   PermissionAwareBackend,
-  ConfigurableBackend<AcpBackendOptions>,
+  ConfigurableBackend,
+  ToolPolicyBackend,
   UsageAwareBackend<Record<string, unknown>> {
   readonly id: string;
   meta: ConsoleSession;
@@ -116,10 +197,19 @@ implements
   private mapper: AcpMapperState;
   private autoAllowedTools: Set<string>;
   private pendingPermissions: Map<string, PendingPermission> = new Map();
-  private pendingRequestMethods: Map<string, string> = new Map();
+  private pendingRequests: Map<string, PendingRpc> = new Map();
   private authMethods: AcpAuthMethod[] = [];
   private agentCapabilities: Record<string, unknown> | null = null;
   private readonly mandibleTokenSource: string | (() => string | null) | null;
+  readonly runOptionDeclaration: BackendRunOptionDeclaration;
+  private runOptionsSnapshot: SessionRunOptionsSnapshot;
+  private providerOptions: ProviderRunOption[] | null = null;
+  private initialPatch: SessionRunOptionsPatch | null = null;
+  private initialResult: {
+    resolve: (result: SessionRunOptionsUpdateResult) => void;
+    reject: (error: Error) => void;
+  } | null = null;
+  private optionQueue: Promise<unknown> = Promise.resolve();
 
   get isProcessing(): boolean {
     return this.processing;
@@ -136,10 +226,15 @@ implements
     this.logger = logger;
     this.mandibleTokenSource = mandibleToken;
     this.autoAllowedTools = new Set(meta.allowed_tools ?? []);
+    this.runOptionDeclaration = getAcpRunOptionDeclaration(meta.command);
+    this.runOptionsSnapshot = declaredRunOptionsSnapshot(this.runOptionDeclaration, "discovering");
     this.mapper = createAcpMapperState({
       sessionId: meta.provider_session_id,
       model: this.extractModel(meta.args),
     });
+    if (Object.keys(meta.run_options ?? {}).length > 0) {
+      this.initialPatch = { values: { ...meta.run_options } };
+    }
   }
 
   start(): void {
@@ -287,23 +382,40 @@ implements
     this.write(data);
   }
 
-  updateOptions(options: AcpBackendOptions): void {
-    if (options.allowedTools !== undefined) {
-      this.autoAllowedTools = new Set(options.allowedTools);
-      this.meta = {
-        ...this.meta,
-        allowed_tools: [...this.autoAllowedTools],
-        updated_at: Date.now(),
-      };
-      this.emitMetaUpdate({
-        allowed_tools: [...this.autoAllowedTools],
-        updated_at: this.meta.updated_at,
-      });
-    }
+  getRunOptions(): SessionRunOptionsSnapshot {
+    return this.runOptionsSnapshot;
+  }
 
-    if (typeof options.model === "string") {
-      this.mapper.model = options.model.trim() || null;
+  setAllowedTools(tools: readonly string[]): void {
+    this.autoAllowedTools = new Set(tools);
+    this.meta = { ...this.meta, allowed_tools: [...tools], updated_at: Date.now() };
+    this.emitMetaUpdate({ allowed_tools: [...tools], updated_at: this.meta.updated_at });
+  }
+
+  applyRunOptions(
+    patch: SessionRunOptionsPatch,
+    context: { phase: "initial" | "runtime" },
+  ): Promise<SessionRunOptionsUpdateResult> {
+    if (context.phase === "initial" && !this.providerOptions) {
+      validateRunOptionsPatch(this.runOptionDeclaration, this.runOptionsSnapshot, patch);
+      if (this.initialResult) {
+        return Promise.reject(new SessionRunOptionError("state_indeterminate", "*", {
+          type: "acp", command: this.meta.command,
+        }, { snapshot: this.runOptionsSnapshot }));
+      }
+      this.initialPatch = patch;
+      return new Promise((resolve, reject) => { this.initialResult = { resolve, reject }; });
     }
+    const operation = this.optionQueue.then(() => this.applyProviderPatch(patch)).catch((error) => {
+      if (!(error instanceof SessionRunOptionError)
+        || (error.code !== "provider_timeout" && error.code !== "state_indeterminate")) {
+        this.ready = true;
+        this.runOptionsSnapshot = { ...this.runOptionsSnapshot, phase: "ready" };
+      }
+      throw error;
+    });
+    this.optionQueue = operation.catch(() => undefined);
+    return operation;
   }
 
   getPendingPermissions(): PermissionRequest[] {
@@ -497,7 +609,21 @@ implements
   }
 
   private handleMessage(message: AcpJsonRpcMessage): void {
+    if (message.id !== null && message.id !== undefined && message.error !== undefined) {
+      const pending = this.pendingRequests.get(String(message.id));
+      if (pending) {
+        this.pendingRequests.delete(String(message.id));
+        if (pending.timeout) clearTimeout(pending.timeout);
+        pending.reject?.(new SessionRunOptionError("provider_rejected", optionIdFromPending(pending), {
+          type: "acp", command: this.meta.command,
+        }, { providerMessage: extractRpcError(message.error) }));
+      }
+    }
     this.handleHandshakeMessage(message);
+    const notificationInventory = extractNotificationConfigOptions(message);
+    if (notificationInventory) {
+      this.installProviderInventory(notificationInventory, this.runOptionsSnapshot.phase);
+    }
     const previousUsage = this.mapper.cumulativeUsage;
     const normalized = normalizeAcpIncoming(message, this.mapper, this.id);
     for (const event of normalized.events) {
@@ -561,11 +687,14 @@ implements
       return;
     }
     const requestKey = String(message.id);
-    const method = this.pendingRequestMethods.get(requestKey);
-    if (!method) {
+    const pending = this.pendingRequests.get(requestKey);
+    if (!pending) {
       return;
     }
-    this.pendingRequestMethods.delete(requestKey);
+    this.pendingRequests.delete(requestKey);
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.resolve?.(message.result);
+    const method = pending.method;
 
     if (method === "initialize") {
       this.captureInitializeResult(message.result);
@@ -579,11 +708,119 @@ implements
     }
 
     if (method === "session/new" || method === "session/load") {
-      this.ready = true;
-      if (this.processing) {
-        this.sendNextPrompt();
-      }
+      this.captureSessionInventory(message.result);
+      void this.finishInitialConfiguration();
     }
+  }
+
+  private captureSessionInventory(result: unknown): void {
+    const record = asRecord(result);
+    if (!record) return;
+    const sessionId = typeof record.sessionId === "string" ? record.sessionId : null;
+    if (sessionId) this.mapper.sessionId = sessionId;
+    this.installProviderInventory(record.configOptions);
+  }
+
+  private installProviderInventory(
+    raw: unknown,
+    phase: SessionRunOptionsSnapshot["phase"] = "configuring",
+  ): void {
+    this.providerOptions = parseAcpConfigOptions(raw);
+    this.runOptionsSnapshot = composeRunOptions(this.runOptionDeclaration, this.providerOptions, {
+      phase,
+      revision: this.runOptionsSnapshot.revision + 1,
+    });
+    const model = this.providerOptions.find((option) => option.id === "model")?.currentValue;
+    if (typeof model === "string") this.mapper.model = model;
+  }
+
+  private async finishInitialConfiguration(): Promise<void> {
+    try {
+      const result = this.initialPatch
+        ? await this.applyProviderPatch(this.initialPatch)
+        : { applied: [], snapshot: this.markRunOptionsReady() };
+      this.initialPatch = null;
+      this.initialResult?.resolve(result);
+      this.initialResult = null;
+      this.ready = true;
+      if (this.processing) this.sendNextPrompt();
+    } catch (error) {
+      this.ready = false;
+      this.runOptionsSnapshot = { ...this.runOptionsSnapshot, phase: "blocked" };
+      this.initialResult?.reject(error instanceof Error ? error : new Error(String(error)));
+      this.initialResult = null;
+    }
+  }
+
+  private markRunOptionsReady(): SessionRunOptionsSnapshot {
+    this.runOptionsSnapshot = { ...this.runOptionsSnapshot, phase: "ready", revision: this.runOptionsSnapshot.revision + 1 };
+    return this.runOptionsSnapshot;
+  }
+
+  private async applyProviderPatch(patch: SessionRunOptionsPatch): Promise<SessionRunOptionsUpdateResult> {
+    if (!this.providerOptions) {
+      throw new SessionRunOptionError("state_indeterminate", "*", {
+        type: "acp", command: this.meta.command,
+      }, { snapshot: this.runOptionsSnapshot });
+    }
+    const ordered = validateRunOptionsPatch(this.runOptionDeclaration, this.runOptionsSnapshot, patch);
+    const applied: AppliedSessionRunOption[] = [];
+    this.ready = false;
+    this.runOptionsSnapshot = { ...this.runOptionsSnapshot, phase: "configuring" };
+    for (const declaration of ordered) {
+      const requestedValue = patch.values[declaration.id];
+      // Revalidate after every response because changing model may replace the
+      // provider's effort inventory.
+      validateRunOptionsPatch(this.runOptionDeclaration, this.runOptionsSnapshot, {
+        values: { [declaration.id]: requestedValue },
+      });
+      let result: unknown;
+      try {
+        result = await this.sendRequestAwait("session/set_config_option", {
+          sessionId: this.meta.provider_session_id ?? this.mapper.sessionId ?? this.id,
+          configId: declaration.id,
+          value: requestedValue,
+        });
+      } catch (error) {
+        const typed = error instanceof SessionRunOptionError ? error : new SessionRunOptionError(
+          "provider_rejected", declaration.id, { type: "acp", command: this.meta.command },
+          { requestedValue, applied, providerMessage: String(error) },
+        );
+        if (typed.code === "provider_timeout") this.markOptionIndeterminate(declaration.id);
+        throw new SessionRunOptionError(typed.code, declaration.id, typed.backend, {
+          ...typed.details, requestedValue, applied, snapshot: this.runOptionsSnapshot,
+        });
+      }
+      const response = asRecord(result);
+      this.installProviderInventory(response?.configOptions);
+      const current = this.runOptionsSnapshot.options.find((option) => option.id === declaration.id)?.currentValue;
+      if (!sessionRunOptionValuesEqual(current ?? null, requestedValue)) {
+        throw new SessionRunOptionError("provider_disagreement", declaration.id, {
+          type: "acp", command: this.meta.command,
+        }, { requestedValue, currentValue: current ?? null, applied, snapshot: this.runOptionsSnapshot });
+      }
+      applied.push({
+        id: declaration.id,
+        requestedValue,
+        currentValue: current ?? null,
+        effectiveFrom: declaration.support.status === "supported" ? declaration.support.effectiveFrom : "next_prompt",
+        status: "enforced",
+      });
+    }
+    this.ready = true;
+    return { applied, snapshot: this.markRunOptionsReady() };
+  }
+
+  private markOptionIndeterminate(id: string): void {
+    this.ready = false;
+    this.runOptionsSnapshot = {
+      ...this.runOptionsSnapshot,
+      phase: "blocked",
+      revision: this.runOptionsSnapshot.revision + 1,
+      options: this.runOptionsSnapshot.options.map((option) => option.id === id && option.enforcement.status !== "unsupported"
+        ? { ...option, enforcement: { ...option.enforcement, status: "indeterminate", detail: "Provider acknowledgement timed out" } }
+        : option),
+    };
   }
 
   private captureInitializeResult(result: unknown): void {
@@ -694,16 +931,39 @@ implements
 
   private sendRequest(method: string, params?: Record<string, unknown>): number {
     const id = this.nextRequestId++;
-    this.pendingRequestMethods.set(String(id), method);
+    this.pendingRequests.set(String(id), { method });
     this.writeJson({ jsonrpc: "2.0", id, method, params });
     return id;
   }
 
-  private writeJson(payload: Record<string, unknown>): void {
+  private sendRequestAwait(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    const id = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      const pending: PendingRpc = { method, optionId: optionIdFromMethodParams(method, params), resolve, reject };
+      this.pendingRequests.set(String(id), pending);
+      if (!this.writeJson({ jsonrpc: "2.0", id, method, params })) {
+        this.pendingRequests.delete(String(id));
+        reject(new SessionRunOptionError("state_indeterminate", optionIdFromMethodParams(method, params), {
+          type: "acp", command: this.meta.command,
+        }, { providerMessage: "ACP process stdin is not writable" }));
+        return;
+      }
+      pending.timeout = setTimeout(() => {
+        this.pendingRequests.delete(String(id));
+        reject(new SessionRunOptionError("provider_timeout", optionIdFromMethodParams(method, params), {
+          type: "acp", command: this.meta.command,
+        }));
+      }, OPTION_TIMEOUT_MS);
+      if (typeof pending.timeout === "object" && "unref" in pending.timeout) pending.timeout.unref();
+    });
+  }
+
+  private writeJson(payload: Record<string, unknown>): boolean {
     if (!this.childProc?.stdin?.writable) {
-      return;
+      return false;
     }
     this.childProc.stdin.write(`${JSON.stringify(payload)}\n`);
+    return true;
   }
 
   private storeAndBroadcast(event: ConsoleStreamEvent): void {
@@ -743,6 +1003,19 @@ implements
     this.ready = false;
     this.childProc = null;
     this.resolveAllPendingPermissions("deny");
+    for (const [id, pending] of this.pendingRequests) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.reject?.(new SessionRunOptionError("state_indeterminate", optionIdFromPending(pending), {
+        type: "acp", command: this.meta.command,
+      }, { providerMessage: "ACP process exited" }));
+      this.pendingRequests.delete(id);
+    }
+    if (this.initialResult) {
+      this.initialResult.reject(new SessionRunOptionError("state_indeterminate", "*", {
+        type: "acp", command: this.meta.command,
+      }, { providerMessage: "ACP process exited before initial options were enforced" }));
+      this.initialResult = null;
+    }
 
     if (this.destroyed) {
       return;
@@ -857,6 +1130,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function optionIdFromMethodParams(method: string, params?: Record<string, unknown>): string {
+  return method === "session/set_config_option" && typeof params?.configId === "string"
+    ? params.configId
+    : "*";
+}
+
+function optionIdFromPending(pending: PendingRpc): string {
+  return pending.optionId ?? "*";
+}
+
+function extractRpcError(error: unknown): string {
+  const record = asRecord(error);
+  return typeof record?.message === "string" ? record.message : String(error);
+}
+
+function extractNotificationConfigOptions(message: AcpJsonRpcMessage): unknown[] | null {
+  if (message.id !== undefined) return null;
+  const params = asRecord(message.params);
+  if (!params) return null;
+  const update = asRecord(params.update) ?? params;
+  return Array.isArray(update.configOptions) ? update.configOptions : null;
 }
 
 export async function probeGeminiAcpFlag(

@@ -1,6 +1,12 @@
 import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
 import type { ConsoleSession, ConsoleSessionStatus, ConsoleStreamEvent } from "./types.js";
+import type {
+  BackendRunOptionDeclaration,
+  SessionRunOptionsPatch,
+  SessionRunOptionsSnapshot,
+  SessionRunOptionsUpdateResult,
+} from "./session-run-options.js";
 
 export type BackendType = "pty" | "sdk" | "spawn" | "acp";
 export type PermissionDecision =
@@ -87,8 +93,21 @@ export interface PermissionAwareBackend {
   resolvePermission(requestId: string, decision: PermissionDecision): boolean;
 }
 
-export interface ConfigurableBackend<TOptions> {
-  updateOptions(options: TOptions): void;
+export interface ConfigurableBackend {
+  readonly runOptionDeclaration: BackendRunOptionDeclaration;
+  getRunOptions(): SessionRunOptionsSnapshot;
+  applyRunOptions(
+    patch: SessionRunOptionsPatch,
+    context: { phase: "initial" | "runtime" },
+  ): Promise<SessionRunOptionsUpdateResult>;
+}
+
+export interface ToolPolicyBackend {
+  setAllowedTools(tools: readonly string[]): Promise<void> | void;
+}
+
+export interface PresetAwareBackend {
+  setPresetIds(ids: readonly string[]): Promise<void> | void;
 }
 
 export interface UsageAwareBackend<TUsage> {

@@ -49,7 +49,10 @@ async function makeHelpScript(helpText: string): Promise<string> {
   return script;
 }
 
-async function makeNpxAcpScript(sessionId: string): Promise<{ root: string; env: Record<string, string>; logPath: string }> {
+async function makeNpxAcpScript(
+  sessionId: string,
+  setOptionBehavior: "accept" | "reject" | "disagree" | "missing" | "timeout" = "accept",
+): Promise<{ root: string; env: Record<string, string>; logPath: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-codex-acp-"));
   tempRoots.push(root);
   const script = path.join(root, "npx");
@@ -59,6 +62,16 @@ const fs = require("node:fs");
 const readline = require("node:readline");
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ argv: process.argv.slice(2) }) + "\\n");
 const rl = readline.createInterface({ input: process.stdin });
+const setOptionBehavior = ${JSON.stringify(setOptionBehavior)};
+const config = { model: "gpt-5.3-codex", reasoning_effort: "medium", mode: "agent" };
+const inventory = () => [
+  { id: "model", name: "Model", category: "model", type: "select", currentValue: config.model,
+    options: [{ value: "gpt-5.3-codex", name: "Codex" }, { value: "gpt-next", name: "Next" }] },
+  { id: "reasoning_effort", name: "Reasoning effort", category: "thought_level", type: "select", currentValue: config.reasoning_effort,
+    options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+  { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: config.mode,
+    options: [{ value: "read-only", name: "Read only" }, { value: "agent", name: "Agent" }, { value: "agent-full-access", name: "Full access" }] }
+];
 rl.on("line", (line) => {
   const msg = JSON.parse(line);
   fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ method: msg.method, params: msg.params }) + "\\n");
@@ -94,12 +107,28 @@ rl.on("line", (line) => {
       result: {
         sessionId: ${JSON.stringify(sessionId)},
         currentModelId: "gpt-5.3-codex[medium]",
-        configOptions: [
-          { id: "model", name: "Model", type: "select", currentValue: "gpt-5.3-codex", options: [] },
-          { id: "mode", name: "Mode", type: "select", currentValue: "agent", options: [] }
-        ]
+        configOptions: inventory()
       }
     }) + "\\n");
+    return;
+  }
+  if (msg.method === "session/set_config_option") {
+    if (setOptionBehavior === "timeout") return;
+    if (setOptionBehavior === "reject") {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "rejected" } }) + "\\n");
+      return;
+    }
+    if (setOptionBehavior !== "disagree") config[msg.params.configId] = msg.params.value;
+    const configOptions = setOptionBehavior === "missing"
+      ? inventory().filter((option) => option.id !== msg.params.configId)
+      : inventory();
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { configOptions } }) + "\\n");
+    return;
+  }
+  if (msg.method === "session/prompt") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: {
+      sessionId: ${JSON.stringify(sessionId)}, update: { sessionUpdate: "completed" }
+    } }) + "\\n");
   }
 });
 `, "utf8");
@@ -142,6 +171,72 @@ afterEach(async () => {
 });
 
 describe("AcpBackend", () => {
+  it("applies initial Codex model, reasoning_effort, and mode before first prompt", async () => {
+    const fake = await makeNpxAcpScript("codex-options");
+    const backend = new AcpBackend(makeMeta({
+      command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
+    }), vi.fn());
+    const pending = backend.applyRunOptions({ values: {
+      model: "gpt-next", reasoning_effort: "high", mode: "read-only",
+    } }, { phase: "initial" });
+    backend.sendPrompt("first prompt");
+    await expect(pending).resolves.toMatchObject({ applied: [
+      { id: "model", currentValue: "gpt-next" },
+      { id: "reasoning_effort", currentValue: "high" },
+      { id: "mode", currentValue: "read-only" },
+    ] });
+    await waitForLog(fake.logPath, '"method":"session/prompt"');
+    const methods = (await fs.readFile(fake.logPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> })
+      .filter((line) => line.method)
+      .map((line) => line.method === "session/set_config_option" ? `set:${line.params?.configId}` : line.method);
+    expect(methods).toEqual([
+      "initialize", "authenticate", "session/new", "set:model", "set:reasoning_effort", "set:mode", "session/prompt",
+    ]);
+    expect(backend.getRunOptions()).toMatchObject({ phase: "ready" });
+    backend.destroy();
+  });
+
+  it.each([
+    ["provider rejection", "reject", "provider_rejected"],
+    ["provider disagreement", "disagree", "provider_disagreement"],
+    ["a missing response option", "missing", "provider_disagreement"],
+  ] as const)("blocks the first prompt after %s", async (_label, behavior, code) => {
+    const fake = await makeNpxAcpScript(`codex-${behavior}`, behavior);
+    const backend = new AcpBackend(makeMeta({
+      command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
+    }), vi.fn());
+    const pending = backend.applyRunOptions({ values: { model: "gpt-next" } }, { phase: "initial" });
+    backend.sendPrompt("must remain gated");
+    await expect(pending).rejects.toMatchObject({ code, optionId: "model" });
+    const log = await fs.readFile(fake.logPath, "utf8");
+    expect(log).not.toContain('"method":"session/prompt"');
+    expect(backend.getRunOptions().phase).toBe("blocked");
+    backend.destroy();
+  });
+
+  it("marks a timed-out option indeterminate and blocks subsequent prompts", async () => {
+    const fake = await makeNpxAcpScript("codex-timeout", "timeout");
+    const backend = new AcpBackend(makeMeta({
+      command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
+    }), vi.fn());
+    backend.start();
+    await waitFor(() => backend.getRunOptions().phase === "ready");
+
+    const pending = backend.applyRunOptions({ values: { model: "gpt-next" } }, { phase: "runtime" });
+    await expect(pending).rejects.toMatchObject({ code: "provider_timeout", optionId: "model" });
+    expect(backend.getRunOptions()).toMatchObject({
+      phase: "blocked",
+      options: expect.arrayContaining([
+        expect.objectContaining({ id: "model", enforcement: expect.objectContaining({ status: "indeterminate" }) }),
+      ]),
+    });
+    backend.sendPrompt("must remain blocked");
+    const log = await fs.readFile(fake.logPath, "utf8");
+    expect(log).not.toContain('"method":"session/prompt"');
+    backend.destroy();
+  }, 15_000);
+
   it("crashes cleanly for unsupported ACP commands", async () => {
     const logger: Logger = vi.fn();
     const backend = new AcpBackend(makeMeta(), logger);
@@ -201,7 +296,7 @@ describe("AcpBackend", () => {
     });
     expect(events.find((event) => event.subtype === "init")).toMatchObject({
       session_id: "codex-thread-1",
-      config_options: [{ id: "model" }, { id: "mode" }],
+      config_options: [{ id: "model" }, { id: "reasoning_effort" }, { id: "mode" }],
     });
 
     backend.destroy();
@@ -218,9 +313,13 @@ describe("AcpBackend", () => {
     }), vi.fn());
 
     backend.start();
+    const pending = backend.applyRunOptions({ values: { reasoning_effort: "high" } }, { phase: "initial" });
     const log = await waitForLog(fake.logPath, '"method":"session/load"');
     expect(log).toContain('"method":"session/load"');
     expect(log).toContain('"sessionId":"codex-existing"');
+    await expect(pending).resolves.toMatchObject({ applied: [{ id: "reasoning_effort", currentValue: "high" }] });
+    expect(await waitForLog(fake.logPath, '"configId":"reasoning_effort"'))
+      .toContain('"configId":"reasoning_effort"');
 
     backend.destroy();
   });

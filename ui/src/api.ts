@@ -1759,7 +1759,25 @@ export type ConsolePermissionDecision =
   | 'reject_once'
   | 'reject_always'
   | `option:${string}`;
-export type ConsoleThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ConsoleThinkingEffort = 'low' | 'medium' | 'high' | 'max';
+export type SessionRunOptionValue = string | number | boolean | string[] | null;
+export type SessionRunOptionChoice = { value: string | number | boolean; label: string; description?: string };
+export type SessionRunOptionState = {
+  id: string; label: string; description?: string; category: string;
+  kind: 'select' | 'multi_select' | 'boolean' | 'integer' | 'number' | 'text';
+  nullable: boolean; source: 'backend' | 'provider' | 'composed';
+  availability: 'available' | 'awaiting_provider' | 'unavailable';
+  currentValue: SessionRunOptionValue; allowedValues: readonly SessionRunOptionChoice[] | null;
+  enforcement: { status: 'unsupported'; reason: string } | {
+    status: 'awaiting_provider' | 'pending' | 'enforced' | 'indeterminate';
+    owner: 'backend' | 'provider'; effectiveFrom: 'immediate' | 'next_prompt'; detail?: string;
+  };
+};
+export type SessionRunOptionsSnapshot = {
+  backendType: ConsoleBackendType; command: string;
+  phase: 'declared' | 'discovering' | 'configuring' | 'ready' | 'blocked';
+  revision: number; options: readonly SessionRunOptionState[];
+};
 
 export type ConsolePermissionRequest = {
   id: string;
@@ -1782,6 +1800,7 @@ export type ConsolePermissionRequest = {
 };
 
 export type ConsoleSessionOptions = {
+  runOptions?: Record<string, SessionRunOptionValue>;
   model?: string;
   thinkingEffort?: ConsoleThinkingEffort;
   systemPrompt?: string;
@@ -1798,7 +1817,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[] },
+  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue> },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -1835,6 +1854,7 @@ export async function createConsoleSession(
     channel_enabled?: boolean;
     transport_lane?: ConsoleTransportLane;
     presetIds?: string[];
+    runOptions?: Record<string, SessionRunOptionValue>;
   };
   const body: SessionBody = { label, command: '', args: [] };
   if (options?.channel_enabled) {
@@ -1846,6 +1866,7 @@ export async function createConsoleSession(
   if (options?.presetIds) {
     body.presetIds = options.presetIds;
   }
+  if (options?.runOptions) body.runOptions = options.runOptions;
   // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
   // which gates tools through canUseTool and Mandible's permission cards.
   // `--dangerously-skip-permissions` is never sent for the default lane; it
@@ -1978,6 +1999,25 @@ export async function updateConsoleSessionOptions(
 ): Promise<unknown> {
   const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`, body);
   return parseMaybeJson(response);
+}
+
+export async function getConsoleRunOptions(
+  backendType: ConsoleBackendType,
+  command: string,
+): Promise<SessionRunOptionsSnapshot> {
+  const response = await apiGet(`/api/console/run-options?backend_type=${encodeURIComponent(backendType)}&command=${encodeURIComponent(command)}`);
+  return (await parseMaybeJson(response) as { runOptions: SessionRunOptionsSnapshot }).runOptions;
+}
+
+export async function getConsoleSessionOptions(sessionId: string): Promise<{
+  runOptions: SessionRunOptionsSnapshot;
+  mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+}> {
+  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`);
+  return parseMaybeJson(response) as Promise<{
+    runOptions: SessionRunOptionsSnapshot;
+    mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+  }>;
 }
 
 export async function getConsoleSessionUsage<T = Record<string, unknown>>(

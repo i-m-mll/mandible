@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PermissionDecision, PermissionRequest } from "../agentic-backend.js";
 import type { ConsoleStreamEvent } from "../types.js";
+import type { ProviderRunOption, SessionRunOptionChoice } from "../session-run-options.js";
 
 export type JsonRpcId = string | number | null;
 
@@ -44,6 +45,59 @@ export interface AcpPermissionOption {
 export interface AcpNormalizeResult {
   events: ConsoleStreamEvent[];
   permission?: AcpPermissionEnvelope;
+}
+
+/** Parse the provider's complete ACP session config inventory without changing value IDs. */
+export function parseAcpConfigOptions(value: unknown): ProviderRunOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): ProviderRunOption[] => {
+    const record = asRecord(entry);
+    const id = record ? stringValue(record.id) : null;
+    const label = record ? stringValue(record.name) : null;
+    const type = record ? stringValue(record.type) : null;
+    if (!record || !id || !label || (type !== "select" && type !== "boolean")) return [];
+    const common = {
+      id,
+      label,
+      ...(typeof record.description === "string" ? { description: record.description } : {}),
+      category: stringValue(record.category) ?? "other",
+    };
+    if (type === "boolean") {
+      if (typeof record.currentValue !== "boolean") return [];
+      return [{ ...common, kind: "boolean", currentValue: record.currentValue, allowedValues: [
+        { value: true, label: "On" }, { value: false, label: "Off" },
+      ] }];
+    }
+    if (typeof record.currentValue !== "string" || !Array.isArray(record.options)) return [];
+    const choices: SessionRunOptionChoice[] = [];
+    for (const item of record.options) {
+      const option = asRecord(item);
+      if (!option) continue;
+      if (Array.isArray(option.options)) {
+        const groupLabel = stringValue(option.name);
+        for (const grouped of option.options) {
+          const parsed = parseAcpChoice(grouped, groupLabel);
+          if (parsed) choices.push(parsed);
+        }
+      } else {
+        const parsed = parseAcpChoice(option);
+        if (parsed) choices.push(parsed);
+      }
+    }
+    return [{ ...common, kind: "select", currentValue: record.currentValue, allowedValues: choices }];
+  });
+}
+
+function parseAcpChoice(value: unknown, groupLabel?: string | null): SessionRunOptionChoice | null {
+  const record = asRecord(value);
+  const optionValue = record ? stringValue(record.value) : null;
+  const name = record ? stringValue(record.name) : null;
+  if (!record || !optionValue || !name) return null;
+  return {
+    value: optionValue,
+    label: groupLabel ? `${groupLabel}: ${name}` : name,
+    ...(typeof record.description === "string" ? { description: record.description } : {}),
+  };
 }
 
 export function createAcpMapperState(options: {
