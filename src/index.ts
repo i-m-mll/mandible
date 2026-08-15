@@ -56,6 +56,7 @@ import { registerSpacesRoutes } from "./routes/spaces.js";
 // Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
 import { registerBriefingRoutes } from "./routes/briefing.js";
 import { registerAskRoutes } from "./routes/asks.js";
+import { registerFeedbackRoutes } from "./routes/feedback.js";
 import { startBriefingExpirySweep, stopBriefingExpirySweep } from "./briefing-scheduler.js";
 // Umbrella 99b74d6 / issue ce83a84 — human-initiated agent dispatch.
 import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
@@ -246,6 +247,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
   registerBriefingRoutes(router, db);
   registerAskRoutes(router, db);
+  registerFeedbackRoutes(router, db);
   // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)

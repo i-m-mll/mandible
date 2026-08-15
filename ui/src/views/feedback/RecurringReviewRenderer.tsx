@@ -1111,8 +1111,10 @@ export function RecurringReviewRenderer({
   };
   const setSource = (next: string | null) => {
     setViewState((current) => {
-      const selectedCollectionId = next ? `recurring_feed:${encodeURIComponent(next)}` : null;
-      return current.source === next && current.selectedCollectionId === selectedCollectionId
+      // This renderer knows a source, not the collection's durable id. The
+      // shell resolves the generic listing row from source on the next render.
+      const selectedCollectionId = null;
+      return current.source === next && current.selectedCollectionId === null
         ? current
         : { ...current, source: next, selectedCollectionId };
     });

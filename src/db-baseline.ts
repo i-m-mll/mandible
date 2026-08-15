@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 132;
+export const BASELINE_SCHEMA_VERSION = 133;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -449,6 +449,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         source            TEXT,
         created_at        INTEGER NOT NULL,
         tombstoned_at     INTEGER,
+        expires_at        INTEGER,
         CHECK (
           (kind = 'recurring_feed'
             AND interaction_mode = 'immediate_per_item'
@@ -465,6 +466,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         WHERE kind = 'recurring_feed'`,
   `CREATE INDEX idx_feedback_collections_kind_created
         ON feedback_collections(kind, created_at DESC)`,
+  `CREATE INDEX idx_feedback_collections_expiry
+        ON feedback_collections(expires_at)`,
   `CREATE TABLE feedback_recurring_profiles (
         collection_id       TEXT PRIMARY KEY
                             REFERENCES feedback_collections(id) ON DELETE RESTRICT,
@@ -485,12 +488,14 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         responder_user_ids_json   TEXT NOT NULL
                                   CHECK(json_valid(responder_user_ids_json)
                                     AND json_type(responder_user_ids_json) = 'array'),
-        expires_at                INTEGER NOT NULL,
+        expires_at                INTEGER,
         retention_expires_at      INTEGER,
         created_at                INTEGER NOT NULL,
         UNIQUE(requester_user_id, requester_session_id, request_key),
-        CHECK(expires_at > created_at),
-        CHECK(retention_expires_at IS NULL OR retention_expires_at >= expires_at)
+        CHECK(expires_at IS NULL OR expires_at > created_at),
+        CHECK(expires_at IS NULL
+          OR retention_expires_at IS NULL
+          OR retention_expires_at >= expires_at)
       )`,
   `CREATE INDEX idx_feedback_ask_sessions_requester
         ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC)`,

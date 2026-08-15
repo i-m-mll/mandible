@@ -114,6 +114,7 @@ describe("ask routes", () => {
     const first = await create();
     expect(first.status).toBe(201);
     expect(first.body).toMatchObject({ replay: false });
+    expect((first.body as { dashboard_url: string }).dashboard_url).toContain('/#/briefing?collection=');
     const replay = await create();
     expect(replay.status).toBe(200);
     expect(replay.body).toMatchObject({ ask_id: (first.body as { ask_id: string }).ask_id, replay: true });

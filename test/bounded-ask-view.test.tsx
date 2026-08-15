@@ -461,6 +461,18 @@ describe('bounded ask renderer', () => {
   it('preserves ask draft and recurring shell state while switching collections', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === '/api/feedback/collections') return json({ state: 'all', collections: [
+        {
+          id: 'recurring', kind: 'recurring_feed', interaction_mode: 'immediate_per_item',
+          state: 'open', source: 'alpha', label: 'alpha', item_count: 0,
+          expires_at: null, created_at: 1, updated_at: 1, expiry_reversible: 0,
+        },
+        {
+          id: 'ask-1', kind: 'bounded_ask', interaction_mode: 'explicit_submit',
+          state: 'open', source: null, label: 'review-plan', item_count: 1,
+          expires_at: Date.now() + 60_000, created_at: 2, updated_at: 2, expiry_reversible: 0,
+        },
+      ] });
       if (url === '/api/briefing/queue') return json({
         candidates: [],
         sources: [{
@@ -473,16 +485,16 @@ describe('bounded ask renderer', () => {
       if (url === '/api/asks/ask-1') return json(askPayload({ items: [item('text', 'free_text')] }));
       throw new Error(`unexpected ${url}`);
     }));
-    const rendered = render(shell(<BriefingView instance={null} />));
+    render(shell(<BriefingView instance={null} />));
     await screen.findByRole('button', { name: 'Select collection alpha' });
-    rendered.rerender(shell(<BriefingView instance={null} initialAskId="ask-1" />));
+    fireEvent.click(screen.getByRole('button', { name: 'Select collection review-plan' }));
     const textbox = await screen.findByRole('textbox');
     fireEvent.input(textbox, { target: { value: 'keep this draft' } });
-    rendered.rerender(shell(<BriefingView instance={null} />));
+    fireEvent.click(screen.getByRole('button', { name: 'Select collection alpha' }));
     expect(await screen.findByTestId('briefing-view')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'review-plan' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Select collection review-plan' }));
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('keep this draft');
+    expect(((await screen.findByRole('textbox')) as HTMLTextAreaElement).value).toBe('keep this draft');
   });
 
   it('reconciles an unavailable persisted bounded selection to the retained recurring source', async () => {
@@ -495,6 +507,11 @@ describe('bounded ask renderer', () => {
       pinnedCollectionIds: ['recurring_feed:alpha', 'bounded_ask:unavailable'],
     }));
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/feedback/collections') return json({ state: 'all', collections: [{
+        id: 'recurring', kind: 'recurring_feed', interaction_mode: 'immediate_per_item',
+        state: 'open', source: 'alpha', label: 'alpha', item_count: 0,
+        expires_at: null, created_at: 1, updated_at: 1, expiry_reversible: 0,
+      }] });
       if (String(input) === '/api/briefing/queue') return json({
         candidates: [],
         sources: [{
@@ -509,10 +526,10 @@ describe('bounded ask renderer', () => {
     expect(await screen.findByTestId('briefing-view')).toBeTruthy();
     expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBe('true');
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
-      selectedCollectionId: 'recurring_feed:alpha',
+      selectedCollectionId: 'bounded_ask:unavailable',
       collectionKindFilter: 'recurring_feed',
       collectionSourceFilter: 'alp',
-      pinnedCollectionIds: ['recurring_feed:alpha', 'bounded_ask:unavailable'],
+      pinnedCollectionIds: ['feedback_collection:recurring', 'bounded_ask:unavailable'],
     }));
   });
 });

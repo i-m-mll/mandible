@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
-  projectBoundedAskCollection,
-  projectBriefingRecurringCollections,
-  getCachedBriefingQueue,
-  type AskProjection,
-  type BriefingQueue,
+  getCachedFeedbackCollections,
+  getFeedbackCollections,
+  patchFeedbackCollectionExpiry,
   type InstanceInfo,
 } from '../api';
 import { AppShellProvider, useAppShell } from '../app-shell';
 import { CollectionShell } from './feedback/CollectionShell';
 import { BoundedAskRenderer } from './feedback/BoundedAskRenderer';
-import { feedbackCollectionIdentity } from './feedback/collection-model';
+import {
+  feedbackCollectionIdentity,
+  legacyFeedbackCollectionIdentity,
+} from './feedback/collection-model';
+import type { FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
 import { RecurringReviewRenderer } from './feedback/RecurringReviewRenderer';
 
@@ -22,6 +24,7 @@ export type BriefingViewProps = {
   initialFilter?: string;
   initialCandidateId?: string | null;
   initialAskId?: string | null;
+  initialCollectionId?: string | null;
   sidebarHidden?: boolean;
   nowMs?: number;
 };
@@ -31,42 +34,113 @@ export function BriefingView({
   initialFilter,
   initialCandidateId,
   initialAskId,
+  initialCollectionId,
   sidebarHidden = false,
   nowMs,
 }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
-  const [queue, setQueue] = useState<BriefingQueue | null>(() => getCachedBriefingQueue(nowMs));
-  const [loadedAsk, setLoadedAsk] = useState<AskProjection | null>(null);
-  const [askId, setAskId] = useState<string | null>(initialAskId ?? null);
-  const onQueueChange = useCallback((next: BriefingQueue | null) => setQueue(next), []);
+  const [collections, setCollections] = useState<FeedbackCollection[]>(
+    () => getCachedFeedbackCollections(nowMs) ?? [],
+  );
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const loadSequence = useRef(0);
   useEffect(() => {
-    if (initialAskId) {
-      setAskId(initialAskId);
+    const routedCollectionId = initialCollectionId ?? initialAskId;
+    if (routedCollectionId) {
       setViewState((current) => ({
         ...current,
-        selectedCollectionId: feedbackCollectionIdentity('bounded_ask', initialAskId),
+        selectedCollectionId: feedbackCollectionIdentity(routedCollectionId),
       }));
-      return;
     }
-    setViewState((current) => current.selectedCollectionId?.startsWith('bounded_ask:')
-      ? {
-          ...current,
-          selectedCollectionId: current.source
-            ? feedbackCollectionIdentity('recurring_feed', current.source)
-            : null,
-        }
-      : current);
-  }, [initialAskId, setViewState]);
+  }, [initialAskId, initialCollectionId, setViewState]);
 
-  const collections = useMemo(() => [
-    ...(queue ? projectBriefingRecurringCollections(queue) : []),
-    ...(loadedAsk ? [projectBoundedAskCollection(loadedAsk)] : []),
-  ], [loadedAsk, queue]);
-  const selectedAsk = Boolean(
-    askId && viewState.selectedCollectionId === feedbackCollectionIdentity('bounded_ask', askId),
-  );
-  const selectedAskId = askId;
+  const loadCollections = useCallback(async (signal: AbortSignal) => {
+    const sequence = ++loadSequence.current;
+    try {
+      const next = await getFeedbackCollections(signal);
+      if (!signal.aborted && sequence === loadSequence.current) setCollections(next);
+    } catch {
+      // Keep the last reconciled list. A transient poll failure must not flicker
+      // the sidebar or disturb browser-owned filter, pin, selection, or scroll.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!appShell.active) return undefined;
+    const controller = new AbortController();
+    void loadCollections(controller.signal);
+    return () => controller.abort();
+  }, [appShell.active, loadCollections, reloadNonce]);
+
+  useEffect(() => {
+    if (!appShell.active) return undefined;
+    const interval = window.setInterval(() => setReloadNonce((value) => value + 1), 60_000);
+    return () => window.clearInterval(interval);
+  }, [appShell.active]);
+
+  useEffect(() => {
+    if (collections.length === 0) return;
+    const legacyIds = new Map(
+      collections.map((collection) => [legacyFeedbackCollectionIdentity(collection), collection.id]),
+    );
+    setViewState((current) => {
+      const selectedCollectionId = current.selectedCollectionId
+        ? legacyIds.get(current.selectedCollectionId) ?? current.selectedCollectionId
+        : null;
+      const pinnedCollectionIds = current.pinnedCollectionIds.map(
+        (id) => legacyIds.get(id) ?? id,
+      );
+      const changed = selectedCollectionId !== current.selectedCollectionId
+        || pinnedCollectionIds.some((id, index) => id !== current.pinnedCollectionIds[index]);
+      return changed ? { ...current, selectedCollectionId, pinnedCollectionIds } : current;
+    });
+  }, [collections, setViewState]);
+
+  useEffect(() => {
+    if (!appShell.active) return undefined;
+    let timer: number | null = null;
+    const reconcile = (event: Event) => {
+      const type = (event as CustomEvent<{ type?: string }>).detail?.type;
+      if (type !== 'reconnected'
+          && type !== 'feedback:collection-updated'
+          && !type?.startsWith('ask:')
+          && !type?.startsWith('briefing:')) return;
+      if (timer !== null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        setReloadNonce((value) => value + 1);
+      }, 100);
+    };
+    window.addEventListener('feedback:sse', reconcile);
+    return () => {
+      window.removeEventListener('feedback:sse', reconcile);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [appShell.active]);
+
+  const selectedCollection = useMemo(() => (
+    collections.find((collection) => collection.id === viewState.selectedCollectionId)
+      ?? collections.find((collection) => collection.source !== null && collection.source === viewState.source)
+      ?? null
+  ), [collections, viewState.selectedCollectionId, viewState.source]);
+  const routedAskId = initialAskId && viewState.selectedCollectionId === feedbackCollectionIdentity(initialAskId)
+    ? initialAskId
+    : null;
+  const selectedAskId = selectedCollection?.interactionMode === 'explicit_submit'
+    ? selectedCollection.collectionId
+    : selectedCollection === null ? routedAskId : null;
+  const selectedAsk = selectedAskId !== null;
+
+  const setCollectionExpiry = useCallback(async (collection: FeedbackCollection) => {
+    const updated = await patchFeedbackCollectionExpiry(
+      collection.collectionId,
+      collection.state === 'expired' ? null : Date.now(),
+    );
+    setCollections((current) => current.map((entry) => (
+      entry.collectionId === updated.collectionId ? updated : entry
+    )));
+  }, []);
 
   return (
     <CollectionShell
@@ -74,6 +148,7 @@ export function BriefingView({
       sidebarHidden={sidebarHidden}
       viewState={viewState}
       setViewState={setViewState}
+      onSetExpiry={setCollectionExpiry}
     >
       <div hidden={selectedAsk}>
         <AppShellProvider value={{ ...appShell, active: appShell.active && !selectedAsk }}>
@@ -81,7 +156,6 @@ export function BriefingView({
             instance={instance}
             viewState={viewState}
             setViewState={setViewState}
-            onQueueChange={onQueueChange}
             initialFilter={initialFilter}
             initialCandidateId={initialCandidateId}
             nowMs={nowMs}
@@ -94,7 +168,6 @@ export function BriefingView({
             <BoundedAskRenderer
               askId={selectedAskId}
               instance={instance}
-              onAskChange={setLoadedAsk}
             />
           </AppShellProvider>
         </div>

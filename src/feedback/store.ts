@@ -244,8 +244,8 @@ function ensureRecurringCollection(
   const id = randomUUID();
   db.prepare(
     `INSERT INTO feedback_collections
-       (id, kind, interaction_mode, source, created_at, tombstoned_at)
-     VALUES (?, 'recurring_feed', 'immediate_per_item', ?, ?, NULL)`,
+       (id, kind, interaction_mode, source, expires_at, created_at, tombstoned_at)
+     VALUES (?, 'recurring_feed', 'immediate_per_item', ?, NULL, ?, NULL)`,
   ).run(id, source, now);
   db.prepare(
     `INSERT INTO feedback_recurring_profiles

@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact';
 import type { Dispatch, StateUpdater } from 'preact/hooks';
 
 import { CollectionsSidebar } from './CollectionsSidebar';
-import { feedbackCollectionIdentity, type FeedbackCollection } from './collection-model';
+import type { FeedbackCollection } from './collection-model';
 import type { BriefingCollectionViewState } from './collection-view-state';
 
 export type CollectionShellProps = {
@@ -10,6 +10,7 @@ export type CollectionShellProps = {
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
+  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
   children: ComponentChildren;
 };
 
@@ -18,15 +19,22 @@ export function CollectionShell({
   sidebarHidden = false,
   viewState,
   setViewState,
+  onSetExpiry,
   children,
 }: CollectionShellProps): JSX.Element {
-  const selectedCollectionId = viewState.selectedCollectionId
-    ?? (viewState.source ? feedbackCollectionIdentity('recurring_feed', viewState.source) : null);
+  const storedSelectionIsVisible = collections.some(
+    (collection) => collection.id === viewState.selectedCollectionId,
+  );
+  const selectedCollectionId = storedSelectionIsVisible
+    ? viewState.selectedCollectionId
+    : collections.find((collection) => collection.source === viewState.source)?.id
+      ?? viewState.selectedCollectionId
+      ?? null;
   const selectCollection = (collection: FeedbackCollection) => {
     setViewState((current) => ({
       ...current,
       selectedCollectionId: collection.id,
-      source: collection.kind === 'recurring_feed' ? collection.source ?? null : current.source,
+      source: collection.source ?? current.source,
     }));
   };
 
@@ -39,6 +47,7 @@ export function CollectionShell({
         viewState={viewState}
         setViewState={setViewState}
         onSelect={selectCollection}
+        onSetExpiry={onSetExpiry}
       />
       <section className="feedback-collection-shell__content" aria-label="Selected feedback collection">
         <div className="feedback-collection-shell__content-inner">

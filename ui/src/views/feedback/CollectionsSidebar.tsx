@@ -18,21 +18,12 @@ export type CollectionsSidebarProps = {
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
   onSelect(collection: FeedbackCollection): void;
+  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
 };
 
 function kindLabel(kind: FeedbackCollection['kind']): string {
-  return kind === 'recurring_feed' ? 'Recurring review' : 'Bounded ask';
-}
-
-function recurringFact(collection: FeedbackCollection): string | null {
-  const recurring = collection.recurring;
-  if (!recurring) return null;
-  if (!recurring.publicationRecorded) return 'No publication recorded';
-  if (recurring.lastPublicationItemCount === 0) return 'Latest publication: no findings';
-  if (recurring.lastPublicationItemCount !== null) {
-    return `Latest publication: ${recurring.lastPublicationItemCount} finding${recurring.lastPublicationItemCount === 1 ? '' : 's'}`;
-  }
-  return 'Publication recorded';
+  const words = kind.replaceAll('_', ' ');
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
 export function CollectionsSidebar({
@@ -42,8 +33,10 @@ export function CollectionsSidebar({
   viewState,
   setViewState,
   onSelect,
+  onSetExpiry,
 }: CollectionsSidebarProps): JSX.Element {
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [expiryBusyId, setExpiryBusyId] = useState<string | null>(null);
   const ordered = useMemo(() => orderFeedbackCollections(
     filterFeedbackCollections(collections, {
       kind: viewState.collectionKindFilter,
@@ -61,6 +54,10 @@ export function CollectionsSidebar({
   const pinned = useMemo(
     () => new Set(viewState.pinnedCollectionIds),
     [viewState.pinnedCollectionIds],
+  );
+  const kinds = useMemo(
+    () => [...new Set(collections.map((collection) => collection.kind))].sort(),
+    [collections],
   );
   const activeFilterCount = Number(viewState.collectionKindFilter !== 'all')
     + Number(viewState.collectionStateFilter !== 'all');
@@ -81,6 +78,16 @@ export function CollectionsSidebar({
           : [...current.pinnedCollectionIds, collectionId],
       };
     });
+  };
+
+  const toggleExpiry = async (collection: FeedbackCollection) => {
+    if (!onSetExpiry || expiryBusyId) return;
+    setExpiryBusyId(collection.id);
+    try {
+      await onSetExpiry(collection);
+    } finally {
+      setExpiryBusyId(null);
+    }
   };
 
   return (
@@ -139,11 +146,7 @@ export function CollectionsSidebar({
                 <div className="sidebar-search-filter__section">
                   <span className="sidebar-search-filter__label">Kind</span>
                   <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
-                    {([
-                      ['all', 'All'],
-                      ['recurring_feed', 'Recurring review'],
-                      ['bounded_ask', 'Bounded ask'],
-                    ] as const).map(([kind, label]) => (
+                    {(['all', ...kinds] as const).map((kind) => (
                       <button
                         key={kind}
                         type="button"
@@ -151,7 +154,7 @@ export function CollectionsSidebar({
                         aria-pressed={viewState.collectionKindFilter === kind}
                         onClick={() => setViewState((current) => ({ ...current, collectionKindFilter: kind }))}
                       >
-                        {label}
+                        {kind === 'all' ? 'All' : kindLabel(kind)}
                       </button>
                     ))}
                   </div>
@@ -159,7 +162,7 @@ export function CollectionsSidebar({
                 <div className="sidebar-search-filter__section">
                   <span className="sidebar-search-filter__label">State</span>
                   <div className="sidebar-search-filter__options">
-                    {(['all', 'open', 'submitted', 'expired', 'cancelled', 'closed'] as const).map((state) => (
+                    {(['all', 'open', 'expired'] as const).map((state) => (
                       <button
                         key={state}
                         type="button"
@@ -192,7 +195,6 @@ export function CollectionsSidebar({
           <ul className="feedback-collections-sidebar__list">
             {ordered.map((collection, index) => {
               const isPinned = pinned.has(collection.id);
-              const fact = recurringFact(collection);
               const navigation = listNavigation.getItemNavigationProps(collection, index);
               return (
                 <li key={collection.id} className="feedback-collection-row">
@@ -206,25 +208,44 @@ export function CollectionsSidebar({
                     onKeyDown={navigation.onKeyDown}
                     onClick={() => onSelect(collection)}
                   >
-                    <span className="feedback-collection-row__label">{collection.label}</span>
+                    <span className="feedback-collection-row__title">
+                      <span
+                        className={`feedback-collection-row__state feedback-collection-row__state--${collection.state}`}
+                        aria-label={`State: ${collection.state}`}
+                        title={collection.state}
+                      />
+                      <span className="feedback-collection-row__label">{collection.label}</span>
+                    </span>
                     <span className="feedback-collection-row__facts">
                       <span>{kindLabel(collection.kind)}</span>
                       {collection.source ? <span>Source: {collection.source}</span> : null}
-                      <span className="briefing-chip" aria-label={`State: ${collection.state}`}>{collection.state}</span>
-                      {collection.recurring ? <span>Health: {collection.recurring.health}</span> : null}
-                      {collection.pendingCount !== undefined ? <span>{collection.pendingCount} pending</span> : null}
-                      {fact ? <span>{fact}</span> : null}
+                      <span>{collection.itemCount} item{collection.itemCount === 1 ? '' : 's'}</span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    className="feedback-collection-row__pin"
-                    aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${collection.label}`}
-                    aria-pressed={isPinned}
-                    onClick={() => togglePin(collection.id)}
-                  >
-                    {isPinned ? 'Pinned' : 'Pin'}
-                  </button>
+                  <span className="feedback-collection-row__actions">
+                    <button
+                      type="button"
+                      className="feedback-collection-row__pin"
+                      aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${collection.label}`}
+                      aria-pressed={isPinned}
+                      onClick={() => togglePin(collection.id)}
+                    >
+                      {isPinned ? 'Pinned' : 'Pin'}
+                    </button>
+                    {onSetExpiry && collection.expiryReversible ? (
+                      <button
+                        type="button"
+                        className="feedback-collection-row__expiry"
+                        aria-label={`${collection.state === 'expired' ? 'Un-expire' : 'Expire'} ${collection.label}`}
+                        disabled={expiryBusyId !== null}
+                        onClick={() => void toggleExpiry(collection)}
+                      >
+                        {expiryBusyId === collection.id
+                          ? 'Saving…'
+                          : collection.state === 'expired' ? 'Un-expire' : 'Expire'}
+                      </button>
+                    ) : null}
+                  </span>
                 </li>
               );
             })}

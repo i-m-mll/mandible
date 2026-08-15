@@ -1217,6 +1217,26 @@ export function isBriefingEvent(value: unknown): value is BriefingEvent {
     && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
 }
 
+// --- feedback collections (umbrella 669ef48 / issue 5d54f61) ----------------
+
+export type FeedbackCollectionListState = "all" | "open" | "expired";
+export type FeedbackCollectionState = Exclude<FeedbackCollectionListState, "all">;
+
+/** Collection-general sidebar projection. No collection kind owns this shape. */
+export interface FeedbackCollectionProjection {
+  id: string;
+  kind: string;
+  interaction_mode: "immediate_per_item" | "explicit_submit";
+  source: string | null;
+  label: string;
+  state: FeedbackCollectionState;
+  expires_at: number | null;
+  created_at: number;
+  updated_at: number;
+  item_count: number;
+  expiry_reversible: 0 | 1;
+}
+
 // --- bounded asks (umbrella 669ef48 / issue 2a7aa03) -------------------------
 
 export type FeedbackResponseType =
@@ -1242,7 +1262,7 @@ export interface MandibleAskResult {
   ask_id: string;
   state: "open" | "submitted" | "expired" | "cancelled";
   request_digest: string;
-  expires_at: number;
+  expires_at: number | null;
   submission: null | {
     id: string;
     ordinal: number;

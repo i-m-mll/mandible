@@ -88,7 +88,7 @@ type AskRow = {
   request_key: string;
   request_digest: string;
   responder_user_ids_json: string;
-  expires_at: number;
+  expires_at: number | null;
   retention_expires_at: number | null;
   created_at: number;
 };
@@ -321,8 +321,8 @@ export function createAsk(
     const askId = randomUUID();
     db.prepare(
       `INSERT INTO feedback_collections
-         (id, kind, interaction_mode, source, created_at, tombstoned_at)
-       VALUES (?, 'bounded_ask', 'explicit_submit', NULL, ?, NULL)`,
+         (id, kind, interaction_mode, source, expires_at, created_at, tombstoned_at)
+       VALUES (?, 'bounded_ask', 'explicit_submit', NULL, NULL, ?, NULL)`,
     ).run(askId, now);
     db.prepare(
       `INSERT INTO feedback_ask_sessions
@@ -398,7 +398,7 @@ function creationProjection(row: AskRow, replay: boolean): AskCreationResult {
     ask_id: row.collection_id,
     request_digest: row.request_digest,
     replay,
-    dashboard_url: `/#/briefing?ask=${encodeURIComponent(row.collection_id)}&sidebar=hidden&agent_session=${encodeURIComponent(row.requester_session_id)}`,
+    dashboard_url: `/#/briefing?collection=${encodeURIComponent(row.collection_id)}&sidebar=hidden&agent_session=${encodeURIComponent(row.requester_session_id)}`,
     created_at: row.created_at,
     requester_user_id: row.requester_user_id,
     requester_session_id: row.requester_session_id,
@@ -407,7 +407,10 @@ function creationProjection(row: AskRow, replay: boolean): AskCreationResult {
 
 function getAskRow(db: Db, askId: string): AskRow | null {
   return (db.prepare(
-    `SELECT a.* FROM feedback_ask_sessions a
+    `SELECT a.collection_id, a.requester_user_id, a.requester_session_id,
+            a.request_key, a.request_digest, a.responder_user_ids_json,
+            a.expires_at, a.retention_expires_at, a.created_at
+       FROM feedback_ask_sessions a
       JOIN feedback_collections c ON c.id = a.collection_id
      WHERE a.collection_id = ? AND c.kind = 'bounded_ask'`,
   ).get(askId) as AskRow | undefined) ?? null;
@@ -438,7 +441,7 @@ function lifecycleState(operation: LifecycleRow["operation"]): MandibleAskResult
 
 function materializeExpiryInTransaction(db: Db, ask: AskRow, now: number): AskLifecycleTransition | null {
   const head = lifecycleHead(db, ask.collection_id);
-  if (head.operation !== "opened" || now < ask.expires_at) return null;
+  if (head.operation !== "opened" || ask.expires_at === null || now < ask.expires_at) return null;
   const eventId = randomUUID();
   db.prepare(
     `INSERT INTO feedback_collection_events
@@ -514,7 +517,7 @@ export type AskReadProjection = {
   requester_user_id: string;
   requester_session_id: string;
   responder_user_ids: string[];
-  expires_at: number;
+  expires_at: number | null;
   retention_expires_at: number | null;
   created_at: number;
   lifecycle_event_id: string;
