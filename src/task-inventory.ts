@@ -26,10 +26,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { getSetting } from "./client-auth/settings-kv.js";
 import {
   TASK_INVENTORY_SCHEMA,
+  TASK_INVENTORY_SCHEMA_V1,
   TASK_INVENTORY_UNKNOWN,
   type TaskActivationFacts,
   type TaskBundleFacts,
   type TaskCircuitState,
+  type TaskConfigFacts,
   type TaskExecutorFreshness,
   type TaskExecutorIdentity,
   type TaskExecutorSummary,
@@ -168,6 +170,33 @@ const TASK_KEYS = [
   "last_run",
   "last_failure",
 ] as const;
+const TASK_V2_KEYS = [
+  "task_id",
+  "display_name",
+  "management_mode",
+  "config_hash",
+  "prompt_hash",
+  "config",
+  "bundle",
+  "activation",
+  "guards",
+  "last_run",
+  "last_failure",
+] as const;
+const CONFIG_KEYS = [
+  "schedule_text",
+  "not_before",
+  "max_lateness_minutes",
+  "missed_run_policy",
+  "timeout_seconds",
+  "runner",
+  "runner_profile",
+  "model",
+  "max_total_tokens",
+  "max_turns",
+  "publish",
+  "output_as_source",
+] as const;
 const BUNDLE_KEYS = ["commit", "content_hash", "execution_hash", "deployed_at"] as const;
 const ACTIVATION_KEYS = ["config_enabled", "locally_activated"] as const;
 const GUARD_KEYS = [
@@ -225,6 +254,37 @@ function parseActivation(value: unknown, field: string): TaskActivationFacts {
   };
 }
 
+function parseConfig(value: unknown, field: string): TaskConfigFacts {
+  const record = objectAt(value, field);
+  rejectUnknownKeys(record, CONFIG_KEYS, field);
+  return {
+    schedule_text: maybe(record.schedule_text, `${field}.schedule_text`, requireString),
+    not_before: maybe(record.not_before, `${field}.not_before`, requireString),
+    max_lateness_minutes: maybe(
+      record.max_lateness_minutes,
+      `${field}.max_lateness_minutes`,
+      parseNonNegativeInteger,
+    ),
+    missed_run_policy: maybe(
+      record.missed_run_policy,
+      `${field}.missed_run_policy`,
+      requireString,
+    ),
+    timeout_seconds: maybe(record.timeout_seconds, `${field}.timeout_seconds`, parseNonNegativeInteger),
+    runner: maybe(record.runner, `${field}.runner`, requireString),
+    runner_profile: maybe(record.runner_profile, `${field}.runner_profile`, requireString),
+    model: maybe(record.model, `${field}.model`, requireString),
+    max_total_tokens: maybe(
+      record.max_total_tokens,
+      `${field}.max_total_tokens`,
+      parseNonNegativeInteger,
+    ),
+    max_turns: maybe(record.max_turns, `${field}.max_turns`, parseNonNegativeInteger),
+    publish: maybe(record.publish, `${field}.publish`, parseBoolean),
+    output_as_source: maybe(record.output_as_source, `${field}.output_as_source`, parseBoolean),
+  };
+}
+
 function parseRetryNextAt(value: unknown, field: string): number | "none" {
   if (value === "none") return "none";
   return requireIntegerMs(value, field);
@@ -271,10 +331,11 @@ function parseRunSlot(value: unknown, field: string): TaskRunSlot {
   return parseRunFacts(value, field);
 }
 
-function parseTask(value: unknown, index: number): TaskInventoryEntry {
+function parseTask(value: unknown, index: number, schema: string): TaskInventoryEntry {
   const field = `tasks[${index}]`;
   const record = objectAt(value, field);
-  rejectUnknownKeys(record, TASK_KEYS, field);
+  const isV2 = schema === TASK_INVENTORY_SCHEMA;
+  rejectUnknownKeys(record, isV2 ? TASK_V2_KEYS : TASK_KEYS, field);
   return {
     task_id: requireString(record.task_id, `${field}.task_id`),
     display_name: requireString(record.display_name, `${field}.display_name`),
@@ -282,6 +343,11 @@ function parseTask(value: unknown, index: number): TaskInventoryEntry {
       record.management_mode,
       `${field}.management_mode`,
     ),
+    ...(isV2 ? {
+      config_hash: maybe(record.config_hash, `${field}.config_hash`, requireString),
+      prompt_hash: maybe(record.prompt_hash, `${field}.prompt_hash`, requireString),
+      config: parseConfig(record.config, `${field}.config`),
+    } : {}),
     bundle: parseBundle(record.bundle, `${field}.bundle`),
     activation: parseActivation(record.activation, `${field}.activation`),
     guards: parseGuards(record.guards, `${field}.guards`),
@@ -299,19 +365,20 @@ export function parseTaskInventoryGeneration(body: unknown): TaskInventoryGenera
   const record = objectAt(body, "request body");
   rejectUnknownKeys(record, GENERATION_KEYS, "request body");
   const schema = requireString(record.schema, "schema");
-  if (schema !== TASK_INVENTORY_SCHEMA) {
+  if (schema !== TASK_INVENTORY_SCHEMA && schema !== TASK_INVENTORY_SCHEMA_V1) {
     throw new TaskInventoryValidationError(
-      `unsupported schema '${schema}'; expected '${TASK_INVENTORY_SCHEMA}'`,
+      `unsupported schema '${schema}'; expected '${TASK_INVENTORY_SCHEMA}' or `
+        + `'${TASK_INVENTORY_SCHEMA_V1}'`,
     );
   }
   const tasks = record.tasks;
   if (!Array.isArray(tasks)) fail("tasks must be an array");
 
   const parsed: TaskInventoryGeneration = {
-    schema: TASK_INVENTORY_SCHEMA,
+    schema,
     executor: parseExecutor(record.executor),
     observed_at: requireIntegerMs(record.observed_at, "observed_at"),
-    tasks: tasks.map((task, index) => parseTask(task, index)),
+    tasks: tasks.map((task, index) => parseTask(task, index, schema)),
   };
 
   // A generation is a complete snapshot, so a duplicated task id would make the

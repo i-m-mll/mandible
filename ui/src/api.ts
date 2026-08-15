@@ -4765,6 +4765,7 @@ import {
   type TaskActivationFacts,
   type TaskBundleFacts,
   type TaskCircuitState,
+  type TaskConfigFacts,
   type TaskExecutorFreshness,
   type TaskExecutorSummary as ContractTaskExecutorSummary,
   type TaskGuardFacts,
@@ -4789,6 +4790,7 @@ export {
 export type {
   TaskActivationFacts,
   TaskBundleFacts,
+  TaskConfigFacts,
   TaskExecutorFreshness,
   TaskGuardFacts,
   TaskInventoryEntry,
@@ -4856,6 +4858,25 @@ function normalizeTaskActivation(value: unknown): TaskActivationFacts {
   };
 }
 
+function normalizeTaskConfig(value: unknown): TaskConfigFacts | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = briefingRecord(value);
+  return {
+    schedule_text: taskMaybeString(row.schedule_text),
+    not_before: taskMaybeString(row.not_before),
+    max_lateness_minutes: taskMaybeNumber(row.max_lateness_minutes),
+    missed_run_policy: taskMaybeString(row.missed_run_policy),
+    timeout_seconds: taskMaybeNumber(row.timeout_seconds),
+    runner: taskMaybeString(row.runner),
+    runner_profile: taskMaybeString(row.runner_profile),
+    model: taskMaybeString(row.model),
+    max_total_tokens: taskMaybeNumber(row.max_total_tokens),
+    max_turns: taskMaybeNumber(row.max_turns),
+    publish: taskMaybeBoolean(row.publish),
+    output_as_source: taskMaybeBoolean(row.output_as_source),
+  };
+}
+
 function normalizeTaskGuards(value: unknown): TaskGuardFacts {
   const row = briefingRecord(value);
   const retryNextAt = row.retry_next_at === 'none'
@@ -4900,6 +4921,11 @@ function normalizeTaskEntry(value: unknown): TaskInventoryEntry | null {
     task_id: taskId,
     display_name: briefingOptionalString(row.display_name) ?? taskId,
     management_mode: mode,
+    ...(row.config === undefined ? {} : {
+      config_hash: taskMaybeString(row.config_hash),
+      prompt_hash: taskMaybeString(row.prompt_hash),
+      config: normalizeTaskConfig(row.config),
+    }),
     bundle: normalizeTaskBundle(row.bundle),
     activation: normalizeTaskActivation(row.activation),
     guards: normalizeTaskGuards(row.guards),

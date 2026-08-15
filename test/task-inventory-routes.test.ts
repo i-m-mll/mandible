@@ -77,6 +77,22 @@ function generation(overrides: Record<string, unknown> = {}): Record<string, unk
         task_id: "daily-digest",
         display_name: "Daily digest",
         management_mode: "external",
+        config_hash: "sha256:config",
+        prompt_hash: "sha256:prompt",
+        config: {
+          schedule_text: "0 6 * * *",
+          not_before: "2026-08-15T00:00:00Z",
+          max_lateness_minutes: 30,
+          missed_run_policy: "skip",
+          timeout_seconds: 90,
+          runner: "codex",
+          runner_profile: "default",
+          model: "gpt-5",
+          max_total_tokens: 20_000,
+          max_turns: 12,
+          publish: true,
+          output_as_source: false,
+        },
         bundle: "unknown",
         activation: { config_enabled: true, locally_activated: false },
         guards: {
@@ -303,12 +319,12 @@ describe("POST /api/tasks/inventory", () => {
     expect((extra.body as { error: string }).error).toMatch(/unknown field\(s\): enabled/);
 
     const badSchema = await post(
-      generation({ schema: "executor-inventory@2" }),
+      generation({ schema: "executor-inventory@3" }),
       "agent-schedule",
     );
     expect(badSchema.status).toBe(400);
     expect((badSchema.body as { error: string }).error).toMatch(
-      /unsupported schema 'executor-inventory@2'; expected 'executor-inventory@1'/,
+      /unsupported schema 'executor-inventory@3'; expected 'executor-inventory@2' or 'executor-inventory@1'/,
     );
 
     const nulled = await post(
@@ -394,6 +410,14 @@ describe("GET /api/tasks", () => {
     expect(task.last_run).toBe("unknown");
     expect(task.last_failure).toBe("never");
     expect(task.activation).toEqual({ config_enabled: true, locally_activated: false });
+    expect(task.config_hash).toBe("sha256:config");
+    expect(task.prompt_hash).toBe("sha256:prompt");
+    expect(task.config).toMatchObject({
+      schedule_text: "0 6 * * *",
+      runner: "codex",
+      model: "gpt-5",
+      max_total_tokens: 20_000,
+    });
     expect(body.stale_after_ms).toBeGreaterThan(0);
   });
 

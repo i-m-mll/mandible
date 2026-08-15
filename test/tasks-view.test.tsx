@@ -41,6 +41,22 @@ function knownTask(): Record<string, unknown> {
     task_id: 'daily-digest',
     display_name: 'Daily digest',
     management_mode: 'external',
+    config_hash: 'sha256:config',
+    prompt_hash: 'sha256:prompt',
+    config: {
+      schedule_text: '0 6 * * *',
+      not_before: '2026-08-15T00:00:00Z',
+      max_lateness_minutes: 30,
+      missed_run_policy: 'skip',
+      timeout_seconds: 90,
+      runner: 'codex',
+      runner_profile: 'default',
+      model: 'gpt-5',
+      max_total_tokens: 20_000,
+      max_turns: 12,
+      publish: true,
+      output_as_source: false,
+    },
     bundle: {
       commit: 'a'.repeat(40),
       content_hash: 'sha256:content',
@@ -77,6 +93,22 @@ function unknownTask(): Record<string, unknown> {
     task_id: 'unknown-task',
     display_name: 'Unknown task',
     management_mode: 'external',
+    config_hash: 'unknown',
+    prompt_hash: 'unknown',
+    config: {
+      schedule_text: 'unknown',
+      not_before: 'unknown',
+      max_lateness_minutes: 'unknown',
+      missed_run_policy: 'unknown',
+      timeout_seconds: 'unknown',
+      runner: 'unknown',
+      runner_profile: 'unknown',
+      model: 'unknown',
+      max_total_tokens: 'unknown',
+      max_turns: 'unknown',
+      publish: 'unknown',
+      output_as_source: 'unknown',
+    },
     bundle: 'unknown',
     activation: { config_enabled: 'unknown', locally_activated: 'unknown' },
     guards: {
@@ -250,6 +282,14 @@ describe('TasksView', () => {
     expect(factValue('Enabled in config').textContent).toBe('yes');
     expect(factValue('Activated on this host').textContent).toBe('no');
     expect(within(detail).getByText(/not activated on the reporting host/i)).toBeTruthy();
+
+    expect(factValue('Schedule').textContent).toBe('0 6 * * *');
+    expect(factValue('Runner').textContent).toBe('codex');
+    expect(factValue('Model').textContent).toBe('gpt-5');
+    expect(factValue('Maximum total tokens').textContent).toBe('20000');
+    expect(factValue('Config hash').textContent).toBe('sha256:config');
+    expect(factValue('Prompt hash').textContent).toBe('sha256:prompt');
+    expect(within(detail).getByText(/Executor-reported configuration/i)).toBeTruthy();
 
     expect(factValue('Circuit').textContent).toBe('open');
     expect(factValue('Retry attempts').textContent).toBe('2');
@@ -553,6 +593,20 @@ describe('TasksView', () => {
       'Active bundle',
       'Enabled in config',
       'Activated on this host',
+      'Schedule',
+      'Not before',
+      'Maximum lateness (minutes)',
+      'Missed-run policy',
+      'Runner',
+      'Runner profile',
+      'Model',
+      'Timeout (seconds)',
+      'Maximum total tokens',
+      'Maximum turns',
+      'Publish',
+      'Output as source',
+      'Config hash',
+      'Prompt hash',
       'Circuit',
       'Retry attempts',
       'Next retry',
@@ -560,6 +614,7 @@ describe('TasksView', () => {
       'Executor staleness claim',
     ]) {
       expect(factValue(label).textContent, label).toBe('unknown');
+      expect(factValue(label).className, label).toContain('tasks-fact__value--unknown');
     }
     expect(within(detail).getAllByText(/unknown — the executor could not say/i)).toHaveLength(2);
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
