@@ -337,6 +337,8 @@ describe('briefing route registration', () => {
     expect(parseRouteFromHash('#/briefing').tab).toBe('briefing');
     expect(parseRouteFromHash('#/briefing?filter=judged').params).toMatchObject({ filter: 'judged' });
     expect(parseRouteFromHash('#/briefing?ask=ask-1&sidebar=hidden').params).toMatchObject({ ask: 'ask-1' });
+    expect(parseRouteFromHash('#/briefing?collection=collection-1&sidebar=hidden').params)
+      .toMatchObject({ collection: 'collection-1' });
     // Guard the fallback itself so the assertion above cannot pass vacuously.
     expect(parseRouteFromHash('#/nope').tab).toBe('spaces');
   });
@@ -357,6 +359,7 @@ describe('briefing route registration', () => {
     expect(app).toContain('briefing: loadBriefingView');
     expect(app).toContain("renderTabPanel('briefing'");
     expect(app).toContain('initialAskId={tabRoute.params.ask ?? null}');
+    expect(app).toContain('initialCollectionId={tabRoute.params.collection ?? null}');
     expect(app).toContain("href: '#/briefing'");
     expect(app).toContain('badge: badges.briefing');
     // Per-view stylesheet follows the global-view import convention.

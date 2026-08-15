@@ -1135,6 +1135,7 @@ function App(): JSX.Element {
       client.on('ask:submitted', feedbackHandler),
       client.on('ask:cancelled', feedbackHandler),
       client.on('ask:expired', feedbackHandler),
+      client.on('feedback:collection-updated', feedbackHandler),
       client.on('managed-reminders.changed', managedReminderHandler),
       client.on('managed-reminders.occurred', managedReminderHandler),
       client.on('heartbeat', heartbeatHandler),
@@ -2221,6 +2222,7 @@ function App(): JSX.Element {
               initialFilter={tabRoute.params.filter}
               initialCandidateId={tabRoute.params.candidate ?? null}
               initialAskId={tabRoute.params.ask ?? null}
+              initialCollectionId={tabRoute.params.collection ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );

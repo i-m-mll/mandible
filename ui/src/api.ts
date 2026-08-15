@@ -475,13 +475,20 @@ const ASK_FEEDBACK_EVENTS = new Set([
   'ask:expired',
 ]);
 
+const COLLECTION_FEEDBACK_EVENTS = new Set([
+  'feedback:collection-updated',
+]);
+
 /** Exact cache families affected by a feedback lifecycle event. */
 export function feedbackApiCacheFamiliesForEvent(type: string): readonly string[] {
+  if (COLLECTION_FEEDBACK_EVENTS.has(type)) {
+    return ['/api/feedback/collections'];
+  }
   if (BRIEFING_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/briefing', '/api/dashboard/badges'];
+    return ['/api/briefing', '/api/feedback/collections', '/api/dashboard/badges'];
   }
   if (ASK_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/asks', '/api/dashboard/badges'];
+    return ['/api/asks', '/api/feedback/collections', '/api/dashboard/badges'];
   }
   return [];
 }
@@ -3644,6 +3651,7 @@ export async function getSpaceExportDrift(
 // decision event.
 
 import type {
+  FeedbackCollectionProjection as ContractFeedbackCollectionProjection,
   SpaceFindingCandidateSummary as ContractSpaceFindingCandidateSummary,
   SpaceFindingListResponse,
   SpaceFindingRefMetadata as ContractSpaceFindingRefMetadata,
@@ -4088,62 +4096,72 @@ export function normalizeBriefingQueue(payload: unknown, now: number = Date.now(
   };
 }
 
-/**
- * Project the complete normalized queue into one recurring collection per
- * source. Health-only sources remain visible; queue-only sources degrade to an
- * honest unknown collection instead of disappearing.
- */
-export function projectBriefingRecurringCollections(
-  queue: Readonly<BriefingQueue>,
-): FeedbackCollection[] {
-  const pendingBySource = new Map<string, number>();
-  for (const candidate of queue.candidates) {
-    pendingBySource.set(candidate.source, (pendingBySource.get(candidate.source) ?? 0) + 1);
-  }
+const FEEDBACK_COLLECTIONS_PATH = '/api/feedback/collections';
 
-  const collections = new Map<string, FeedbackCollection>();
-  for (const source of queue.sources) {
-    const publicationRecorded = source.last_ingested_at !== null
-      || source.last_ingest_age_ms !== null
-      || source.last_task_identity !== null
-      || source.last_run_id !== null
-      || source.last_digest_version !== null
-      || source.last_batch_item_count !== null;
-    collections.set(source.source, {
-      id: feedbackCollectionIdentity('recurring_feed', source.source),
-      kind: 'recurring_feed',
-      state: 'open',
-      source: source.source,
-      label: source.source,
-      pendingCount: pendingBySource.get(source.source) ?? source.pending_count ?? 0,
-      recurring: {
-        health: source.status,
-        publicationRecorded,
-        lastPublicationItemCount: source.last_batch_item_count,
-        lastTaskIdentity: source.last_task_identity,
-      },
-    });
-  }
+function normalizeFeedbackCollection(value: unknown): FeedbackCollection | null {
+  const row = briefingContractRecord<ContractFeedbackCollectionProjection>(value);
+  const collectionId = briefingString(row.id);
+  const kind = briefingString(row.kind);
+  const interactionMode = briefingString(row.interaction_mode);
+  const state = briefingString(row.state);
+  if (!collectionId
+      || !kind
+      || (interactionMode !== 'immediate_per_item' && interactionMode !== 'explicit_submit')
+      || (state !== 'open' && state !== 'expired')) return null;
+  return {
+    id: feedbackCollectionIdentity(collectionId),
+    collectionId,
+    kind,
+    interactionMode,
+    state,
+    source: briefingOptionalString(row.source),
+    label: briefingString(row.label, `Collection ${collectionId.slice(0, 8)}`),
+    itemCount: briefingOptionalNumber(row.item_count) ?? 0,
+    expiresAt: briefingOptionalNumber(row.expires_at),
+    createdAt: briefingOptionalNumber(row.created_at) ?? 0,
+    updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
+    expiryReversible: row.expiry_reversible === 1,
+  };
+}
 
-  for (const [source, pendingCount] of pendingBySource) {
-    if (collections.has(source)) continue;
-    collections.set(source, {
-      id: feedbackCollectionIdentity('recurring_feed', source),
-      kind: 'recurring_feed',
-      state: 'open',
-      source,
-      label: source,
-      pendingCount,
-      recurring: {
-        health: 'unknown',
-        publicationRecorded: false,
-        lastPublicationItemCount: null,
-        lastTaskIdentity: null,
-      },
-    });
-  }
+export function normalizeFeedbackCollections(payload: unknown): FeedbackCollection[] {
+  const root = briefingRecord(payload);
+  const rows = Array.isArray(root.collections) ? root.collections : [];
+  return rows
+    .map((entry) => normalizeFeedbackCollection(entry))
+    .filter((entry): entry is FeedbackCollection => entry !== null);
+}
 
-  return orderFeedbackCollections([...collections.values()], []);
+export function getCachedFeedbackCollections(now: number = Date.now()): FeedbackCollection[] | null {
+  const cached = getJsonCache.get(cacheKeyForGet(FEEDBACK_COLLECTIONS_PATH));
+  if (!cached || now >= cached.staleUntil) return null;
+  return normalizeFeedbackCollections(cached.value);
+}
+
+export async function getFeedbackCollections(signal?: AbortSignal): Promise<FeedbackCollection[]> {
+  const response = await apiGet(FEEDBACK_COLLECTIONS_PATH, signal ? { signal } : {});
+  const payload = await parseMaybeJson(response);
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(FEEDBACK_COLLECTIONS_PATH), {
+    value: payload,
+    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
+    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
+  });
+  return normalizeFeedbackCollections(payload);
+}
+
+export async function patchFeedbackCollectionExpiry(
+  collectionId: string,
+  expiresAt: number | null,
+): Promise<FeedbackCollection> {
+  const response = await apiPatch(
+    `/api/feedback/collections/${encodeURIComponent(collectionId)}`,
+    { expires_at: expiresAt },
+  );
+  const collection = normalizeFeedbackCollection(await parseMaybeJson(response));
+  if (!collection) throw new Error('Feedback collection response was invalid.');
+  invalidateApiGetCache(FEEDBACK_COLLECTIONS_PATH);
+  return collection;
 }
 
 // --- bounded ask form -------------------------------------------------------
@@ -4190,7 +4208,7 @@ export type AskProjection = {
   requester_user_id: string;
   requester_session_id: string;
   responder_user_ids: string[];
-  expires_at: number;
+  expires_at: number | null;
   retention_expires_at: number | null;
   created_at: number;
   lifecycle_event_id: string;
@@ -4367,30 +4385,13 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     requester_user_id: briefingString(root.requester_user_id),
     requester_session_id: briefingString(root.requester_session_id),
     responder_user_ids: briefingStringArray(root.responder_user_ids),
-    expires_at: briefingOptionalNumber(root.expires_at) ?? 0,
+    expires_at: briefingOptionalNumber(root.expires_at),
     retention_expires_at: briefingOptionalNumber(root.retention_expires_at),
     created_at: briefingOptionalNumber(root.created_at) ?? 0,
     lifecycle_event_id: briefingString(root.lifecycle_event_id),
     latest_submission: latestSubmission,
     items,
     valid,
-  };
-}
-
-export function projectBoundedAskCollection(ask: Readonly<AskProjection>): FeedbackCollection {
-  const answerable = ask.items.filter((item) => item.item_kind === 'item');
-  const required = answerable.filter((item) => item.revision.required);
-  return {
-    id: feedbackCollectionIdentity('bounded_ask', ask.ask_id),
-    kind: 'bounded_ask',
-    state: ask.state,
-    label: ask.request_key || `Ask ${ask.ask_id}`,
-    boundedAsk: {
-      askId: ask.ask_id,
-      itemCount: answerable.length,
-      requiredCount: required.length,
-      answeredRequiredCount: required.filter((item) => item.effective_response !== null).length,
-    },
   };
 }
 

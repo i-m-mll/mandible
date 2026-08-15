@@ -31,13 +31,9 @@ export const DEFAULT_BRIEFING_COLLECTION_VIEW_STATE: BriefingCollectionViewState
   selectedCollectionId: null,
 };
 
-const KINDS = new Set<FeedbackCollectionKind>(['recurring_feed', 'bounded_ask']);
 const STATES = new Set<FeedbackCollectionState>([
   'open',
-  'submitted',
   'expired',
-  'cancelled',
-  'closed',
 ]);
 
 function optionalString(value: unknown): string | null {
@@ -64,7 +60,7 @@ export function normalizeBriefingCollectionViewState(
     healthOpen: typeof row.healthOpen === 'boolean' ? row.healthOpen : null,
     expandedCandidateId: optionalString(row.expandedCandidateId),
     collectionKindFilter:
-      kind === 'all' || KINDS.has(kind as FeedbackCollectionKind)
+      kind === 'all' || (typeof kind === 'string' && /^[a-z][a-z0-9_]*$/.test(kind))
         ? kind as 'all' | FeedbackCollectionKind
         : defaults.collectionKindFilter,
     collectionSourceFilter:
@@ -85,4 +81,3 @@ export function useBriefingCollectionViewState() {
     DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
   );
 }
-
