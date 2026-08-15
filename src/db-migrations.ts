@@ -4045,9 +4045,6 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 79) {
         ensureAuthRequestMergeFinalizerColumns(db);
       }
-      if (migration.version === 132) {
-        ensureFeedbackCollectionExpiryColumn(db);
-      }
       if (migration.version === 87) {
         ensureLedgerProjectKeyColumn(db);
       }
@@ -4429,9 +4426,7 @@ export function migrate(db: Db): void {
   // v132 was exercised by development daemons before release. Converge those
   // head-version databases too: remove any duplicated bounded-ask expiry and
   // restore nullable ask-session expiry without stacking a new migration.
-  if (tableExists(db, "feedback_collections") && tableExists(db, "feedback_ask_sessions")) {
-    ensureFeedbackCollectionExpiryColumn(db);
-  }
+  ensureFeedbackCollectionExpiryColumn(db);
 
   const v129AuthMergeSucceededPostMigration = "v129_backfill_auth_merge_succeeded_facts";
   if (
@@ -9358,6 +9353,8 @@ function ensureBriefingIngestRequestColumn(db: Db): void {
 }
 
 function ensureFeedbackCollectionExpiryColumn(db: Db): void {
+  if (!tableExists(db, "feedback_collections")) return;
+
   const columns = db.prepare("PRAGMA table_info(feedback_collections)").all() as
     Array<{ name: string }>;
   if (!columns.some((column) => column.name === "expires_at")) {
@@ -9368,47 +9365,66 @@ function ensureFeedbackCollectionExpiryColumn(db: Db): void {
     "WHERE kind = 'bounded_ask' AND expires_at IS NOT NULL",
   );
 
-  const askColumns = db.prepare("PRAGMA table_info(feedback_ask_sessions)").all() as
-    Array<{ name: string; notnull: number }>;
-  if (askColumns.find((column) => column.name === "expires_at")?.notnull === 1) {
-    db.exec(`
-      DROP INDEX IF EXISTS idx_feedback_ask_sessions_requester;
-      DROP INDEX IF EXISTS idx_feedback_ask_sessions_expiry;
-      ALTER TABLE feedback_ask_sessions RENAME TO feedback_ask_sessions_v131;
-      CREATE TABLE feedback_ask_sessions (
-        collection_id             TEXT PRIMARY KEY
-                                  REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        requester_user_id         TEXT NOT NULL
-                                  REFERENCES users(id) ON DELETE RESTRICT,
-        requester_session_id      TEXT NOT NULL
-                                  REFERENCES sessions(id) ON DELETE RESTRICT,
-        request_key               TEXT NOT NULL CHECK(trim(request_key) != ''),
-        request_digest            TEXT NOT NULL CHECK(trim(request_digest) != ''),
-        responder_user_ids_json   TEXT NOT NULL
-                                  CHECK(json_valid(responder_user_ids_json)
-                                    AND json_type(responder_user_ids_json) = 'array'),
-        expires_at                INTEGER,
-        retention_expires_at      INTEGER,
-        created_at                INTEGER NOT NULL,
-        UNIQUE(requester_user_id, requester_session_id, request_key),
-        CHECK(expires_at IS NULL OR expires_at > created_at),
-        CHECK(expires_at IS NULL
-          OR retention_expires_at IS NULL
-          OR retention_expires_at >= expires_at)
-      );
-      INSERT INTO feedback_ask_sessions (
-        collection_id, requester_user_id, requester_session_id, request_key, request_digest,
-        responder_user_ids_json, expires_at, retention_expires_at, created_at
-      )
-      SELECT collection_id, requester_user_id, requester_session_id, request_key, request_digest,
-             responder_user_ids_json, expires_at, retention_expires_at, created_at
-        FROM feedback_ask_sessions_v131;
-      DROP TABLE feedback_ask_sessions_v131;
-      CREATE INDEX idx_feedback_ask_sessions_requester
-        ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC);
-      CREATE INDEX idx_feedback_ask_sessions_expiry
-        ON feedback_ask_sessions(expires_at);
-    `);
+  if (tableExists(db, "feedback_ask_sessions")) {
+    const askColumns = db.prepare("PRAGMA table_info(feedback_ask_sessions)").all() as
+      Array<{ name: string; notnull: number }>;
+    if (askColumns.find((column) => column.name === "expires_at")?.notnull === 1) {
+      const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+      db.pragma("foreign_keys = OFF");
+      try {
+        db.transaction(() => {
+          db.exec(`
+            DROP INDEX IF EXISTS idx_feedback_ask_sessions_requester;
+            DROP INDEX IF EXISTS idx_feedback_ask_sessions_expiry;
+            ALTER TABLE feedback_ask_sessions RENAME TO feedback_ask_sessions_v131;
+            CREATE TABLE feedback_ask_sessions (
+              collection_id             TEXT PRIMARY KEY
+                                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+              requester_user_id         TEXT NOT NULL
+                                            REFERENCES users(id) ON DELETE RESTRICT,
+              requester_session_id      TEXT NOT NULL
+                                            REFERENCES sessions(id) ON DELETE RESTRICT,
+              request_key               TEXT NOT NULL CHECK(trim(request_key) != ''),
+              request_digest            TEXT NOT NULL CHECK(trim(request_digest) != ''),
+              responder_user_ids_json   TEXT NOT NULL
+                                            CHECK(json_valid(responder_user_ids_json)
+                                              AND json_type(responder_user_ids_json) = 'array'),
+              expires_at                INTEGER,
+              retention_expires_at      INTEGER,
+              created_at                INTEGER NOT NULL,
+              UNIQUE(requester_user_id, requester_session_id, request_key),
+              CHECK(expires_at IS NULL OR expires_at > created_at),
+              CHECK(expires_at IS NULL
+                OR retention_expires_at IS NULL
+                OR retention_expires_at >= expires_at)
+            );
+            INSERT INTO feedback_ask_sessions (
+              collection_id, requester_user_id, requester_session_id, request_key, request_digest,
+              responder_user_ids_json, expires_at, retention_expires_at, created_at
+            )
+            SELECT collection_id, requester_user_id, requester_session_id, request_key, request_digest,
+                   responder_user_ids_json, expires_at, retention_expires_at, created_at
+              FROM feedback_ask_sessions_v131;
+            DROP TABLE feedback_ask_sessions_v131;
+            CREATE INDEX idx_feedback_ask_sessions_requester
+              ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC);
+            CREATE INDEX idx_feedback_ask_sessions_expiry
+              ON feedback_ask_sessions(expires_at);
+          `);
+        })();
+      } finally {
+        if (previousForeignKeys) {
+          db.pragma("foreign_keys = ON");
+        }
+      }
+
+      const violations = db.prepare("PRAGMA foreign_key_check").all();
+      if (violations.length > 0) {
+        throw new Error(
+          `feedback ask-session expiry migration left ${violations.length} foreign key violations`,
+        );
+      }
+    }
   }
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_feedback_collections_expiry

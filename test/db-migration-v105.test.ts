@@ -213,7 +213,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     const realHead = migrations.pop();
     expect(realHead?.version).toBe(132);
     migrations.push({
-      version: 131,
+      version: 132,
       name: "test_v105_ordering_boundary",
       statements: [
         `INSERT INTO meta (key, value)
