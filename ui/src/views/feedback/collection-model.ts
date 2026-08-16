@@ -1,33 +1,21 @@
-export type FeedbackCollectionKind = 'recurring_feed' | 'bounded_ask';
+export type FeedbackCollectionKind = string;
+export type FeedbackInteractionMode = 'immediate_per_item' | 'explicit_submit';
+export type FeedbackCollectionState = 'open' | 'expired';
 
-export type FeedbackCollectionState =
-  | 'open'
-  | 'submitted'
-  | 'expired'
-  | 'cancelled'
-  | 'closed';
-
-export type RecurringCollectionHealth = 'current' | 'stale' | 'unknown';
-
+/** The single sidebar row model returned by the collection-general listing. */
 export type FeedbackCollection = {
   id: string;
+  collectionId: string;
   kind: FeedbackCollectionKind;
+  interactionMode: FeedbackInteractionMode;
   state: FeedbackCollectionState;
-  source?: string;
+  source: string | null;
   label: string;
-  pendingCount?: number;
-  recurring?: {
-    health: RecurringCollectionHealth;
-    publicationRecorded: boolean;
-    lastPublicationItemCount: number | null;
-    lastTaskIdentity: string | null;
-  };
-  boundedAsk?: {
-    askId: string;
-    itemCount: number;
-    requiredCount: number;
-    answeredRequiredCount: number;
-  };
+  itemCount: number;
+  expiresAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  expiryReversible: boolean;
 };
 
 export type FeedbackCollectionFilters = {
@@ -36,11 +24,13 @@ export type FeedbackCollectionFilters = {
   state: 'all' | FeedbackCollectionState;
 };
 
-export function feedbackCollectionIdentity(
-  kind: FeedbackCollectionKind,
-  sourceOrAskId: string,
-): string {
-  return `${kind}:${encodeURIComponent(sourceOrAskId)}`;
+export function feedbackCollectionIdentity(collectionId: string): string {
+  return `feedback_collection:${encodeURIComponent(collectionId)}`;
+}
+
+/** Compatibility alias for view-state written before durable collection ids. */
+export function legacyFeedbackCollectionIdentity(collection: FeedbackCollection): string {
+  return `${collection.kind}:${encodeURIComponent(collection.source ?? collection.collectionId)}`;
 }
 
 export function filterFeedbackCollections(
@@ -58,10 +48,8 @@ export function filterFeedbackCollections(
 }
 
 function compareCollections(left: FeedbackCollection, right: FeedbackCollection): number {
-  const source = (left.source ?? left.label).localeCompare(right.source ?? right.label);
-  if (source !== 0) return source;
-  const kind = left.kind.localeCompare(right.kind);
-  return kind !== 0 ? kind : left.id.localeCompare(right.id);
+  const updated = right.updatedAt - left.updatedAt;
+  return updated !== 0 ? updated : left.id.localeCompare(right.id);
 }
 
 export function orderFeedbackCollections(

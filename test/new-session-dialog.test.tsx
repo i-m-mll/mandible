@@ -17,6 +17,10 @@ vi.mock("../ui/src/api", () => ({
   getSettings: vi.fn(async () => ({})),
   validatePresetIds: vi.fn(async () => ({ warnings: [] })),
   getConsoleLanePolicy: (...args: []) => getConsoleLanePolicy(...args),
+  getConsoleRunOptions: vi.fn(async () => ({
+    backend: "test",
+    options: [],
+  })),
 }));
 
 beforeEach(() => {

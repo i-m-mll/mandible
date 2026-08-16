@@ -9,7 +9,101 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 132;
+export const BASELINE_SCHEMA_VERSION = 136;
+
+export const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests (
+        id                   TEXT PRIMARY KEY,
+        schema_id            TEXT NOT NULL
+                             CHECK(schema_id IN ('task-command@1','task-command@2')),
+        request_key          TEXT NOT NULL CHECK(trim(request_key) != ''),
+        request_digest       TEXT NOT NULL
+                             CHECK(length(request_digest) = 64
+                               AND request_digest NOT GLOB '*[^0-9a-f]*'),
+        executor_name        TEXT NOT NULL CHECK(trim(executor_name) != ''),
+        task_id              TEXT NOT NULL CHECK(trim(task_id) != ''),
+        verb                 TEXT NOT NULL CHECK(verb IN ('disable','dry_run','enable')),
+        payload_json         TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(payload_json)
+                               AND json_type(payload_json) = 'object'
+                               AND (
+                                 (schema_id = 'task-command@1'
+                                   AND verb = 'disable' AND payload_json = '{}')
+                                 OR
+                                 (schema_id = 'task-command@2' AND (
+                                   (verb = 'disable' AND payload_json = '{}')
+                                   OR
+                                   (verb IN ('dry_run','enable')
+                                     AND json_type(payload_json, '$.execution_hash') = 'text'
+                                     AND length(json_extract(payload_json, '$.execution_hash')) = 64
+                                     AND json_extract(payload_json, '$.execution_hash')
+                                       NOT GLOB '*[^0-9a-f]*'
+                                     AND payload_json = '{"execution_hash":"'
+                                       || json_extract(payload_json, '$.execution_hash') || '"}')
+                                 ))
+                               )),
+        requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        requested_at         INTEGER NOT NULL,
+        UNIQUE(requested_by_user_id, request_key)
+      )`;
+
+export const TASK_COMMAND_EVENTS_V2_SQL = `CREATE TABLE task_command_events (
+        id               TEXT PRIMARY KEY,
+        command_id       TEXT NOT NULL
+                         REFERENCES task_command_requests(id) ON DELETE RESTRICT,
+        schema_id        TEXT NOT NULL
+                         CHECK(schema_id IN ('task-command-event@1','task-command-event@2')),
+        event_ordinal    INTEGER NOT NULL CHECK(event_ordinal BETWEEN 0 AND 8),
+        event_digest     TEXT NOT NULL
+                         CHECK(length(event_digest) = 64
+                           AND event_digest NOT GLOB '*[^0-9a-f]*'),
+        event_type       TEXT NOT NULL
+                         CHECK(event_type IN (
+                           'accepted','started','progress','applied','rejected','cancelled'
+                         )),
+        payload_json     TEXT NOT NULL DEFAULT '{}'
+                         CHECK(json_valid(payload_json)
+                           AND json_type(payload_json) = 'object'),
+        no_op            INTEGER CHECK(no_op IS NULL OR no_op IN (0,1)),
+        rejection_reason TEXT CHECK(rejection_reason IS NULL OR rejection_reason IN (
+                           'unknown_task','unsupported_verb','invalid_payload','stale_target',
+                           'busy','missing_receipt','stale_receipt','policy_refused',
+                           'dry_run_failed','unknown'
+                         )),
+        actor_user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at       INTEGER NOT NULL,
+        UNIQUE(command_id, event_ordinal),
+        UNIQUE(command_id, event_digest),
+        CHECK (
+          (event_type = 'accepted' AND event_ordinal = 0)
+          OR (event_type = 'started' AND event_ordinal = 1)
+          OR (event_type = 'progress' AND event_ordinal BETWEEN 2 AND 7)
+          OR (event_type IN ('applied','rejected','cancelled') AND event_ordinal = 8)
+        ),
+        CHECK (schema_id = 'task-command-event@2'
+          OR event_type IN ('accepted','applied','rejected','cancelled')),
+        CHECK (
+          (event_type IN ('accepted','cancelled')
+            AND payload_json = '{}' AND no_op IS NULL AND rejection_reason IS NULL)
+          OR (event_type IN ('started','progress')
+            AND no_op IS NULL AND rejection_reason IS NULL)
+          OR (event_type = 'applied' AND rejection_reason IS NULL)
+          OR (event_type = 'rejected' AND no_op IS NULL AND rejection_reason IS NOT NULL)
+        )
+      )`;
+
+export const TASK_COMMAND_V2_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_task_command_requests_target
+        ON task_command_requests(executor_name, task_id, requested_at DESC)`,
+  `CREATE UNIQUE INDEX uq_task_command_events_accepted
+        ON task_command_events(command_id) WHERE event_type = 'accepted'`,
+  `CREATE UNIQUE INDEX uq_task_command_events_started
+        ON task_command_events(command_id) WHERE event_type = 'started'`,
+  `CREATE UNIQUE INDEX uq_task_command_events_terminal
+        ON task_command_events(command_id)
+        WHERE event_type IN ('applied','rejected','cancelled')`,
+  `CREATE INDEX idx_task_command_events_command
+        ON task_command_events(command_id, event_ordinal)`,
+];
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -29,7 +123,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE branches (\n  repo_root     TEXT NOT NULL,\n  branch        TEXT NOT NULL,\n  is_current    INTEGER NOT NULL DEFAULT 0,\n  is_worktree   INTEGER DEFAULT 0,\n  worktree_path TEXT,\n  is_dirty      INTEGER DEFAULT 0,\n  ahead         INTEGER DEFAULT 0,\n  behind        INTEGER DEFAULT 0,\n  last_commit_hash    TEXT,\n  last_commit_message TEXT,\n  last_commit_author  TEXT,\n  last_commit_date    TEXT,\n  diff_stat     TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now')), ahead_default INTEGER DEFAULT 0, behind_default INTEGER DEFAULT 0, default_branch TEXT DEFAULT '', worktree_inventory_known INTEGER NOT NULL DEFAULT 0, worktree_status_known INTEGER NOT NULL DEFAULT 0, default_comparison_known INTEGER NOT NULL DEFAULT 0, has_upstream INTEGER NOT NULL DEFAULT 0, upstream TEXT,\n  PRIMARY KEY (repo_root, branch)\n)",
   "CREATE TABLE console_session_telemetry (\n        telemetry_key TEXT PRIMARY KEY,\n        console_session_id TEXT REFERENCES console_sessions(id) ON DELETE CASCADE,\n        provider_session_id TEXT,\n        transcript_path TEXT,\n        model TEXT,\n        context_used_percentage REAL,\n        context_window_size INTEGER,\n        context_input_tokens INTEGER,\n        context_output_tokens INTEGER,\n        context_cache_creation_input_tokens INTEGER,\n        context_cache_read_input_tokens INTEGER,\n        rate_limit_five_hour_used_percentage REAL,\n        rate_limit_five_hour_resets_at TEXT,\n        rate_limit_seven_day_used_percentage REAL,\n        rate_limit_seven_day_resets_at TEXT,\n        raw_payload_json TEXT NOT NULL,\n        received_at INTEGER NOT NULL\n      )",
   "CREATE TABLE console_session_usage (\n        id                            TEXT PRIMARY KEY,\n        console_session_id            TEXT NOT NULL,\n        provider_session_id           TEXT,\n        recorded_at                   INTEGER NOT NULL,\n        input_tokens                  INTEGER NOT NULL DEFAULT 0,\n        cache_creation_input_tokens   INTEGER NOT NULL DEFAULT 0,\n        cache_read_input_tokens       INTEGER NOT NULL DEFAULT 0,\n        output_tokens                 INTEGER NOT NULL DEFAULT 0,\n        web_search_requests           INTEGER NOT NULL DEFAULT 0,\n        cost_usd                      REAL NOT NULL DEFAULT 0,\n        total_cost_usd                REAL NOT NULL DEFAULT 0,\n        duration_ms                   INTEGER NOT NULL DEFAULT 0,\n        num_turns                     INTEGER NOT NULL DEFAULT 0,\n        is_error                      INTEGER NOT NULL DEFAULT 0,\n        result_subtype                TEXT,\n        usage_json                    TEXT NOT NULL DEFAULT '{}',\n        model_usage_json              TEXT NOT NULL DEFAULT '{}',\n        errors_json                   TEXT NOT NULL DEFAULT '[]',\n        FOREIGN KEY (console_session_id) REFERENCES console_sessions(id) ON DELETE CASCADE\n      )",
-  "CREATE TABLE console_sessions (\n        id            TEXT PRIMARY KEY,\n        label         TEXT NOT NULL,\n        command       TEXT NOT NULL,\n        args_json     TEXT NOT NULL DEFAULT '[]',\n        cwd           TEXT,\n        env_json      TEXT NOT NULL DEFAULT '{}',\n        cols          INTEGER NOT NULL DEFAULT 120,\n        rows          INTEGER NOT NULL DEFAULT 30,\n        status        TEXT NOT NULL DEFAULT 'stopped',\n        pid           INTEGER,\n        exit_code     INTEGER,\n        auto_restart  INTEGER NOT NULL DEFAULT 0,\n        is_operator   INTEGER NOT NULL DEFAULT 0,\n        interaction_mode TEXT NOT NULL DEFAULT 'both',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        started_at    INTEGER,\n        stopped_at    INTEGER\n      , provider_session_id TEXT, backend_type TEXT NOT NULL DEFAULT 'pty', allowed_tools TEXT, mandible_session_id TEXT, resume_at_message TEXT, channel_enabled INTEGER NOT NULL DEFAULT 0, transport_lane TEXT NOT NULL DEFAULT 'pty', owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL)",
+  "CREATE TABLE console_sessions (\n        id            TEXT PRIMARY KEY,\n        label         TEXT NOT NULL,\n        command       TEXT NOT NULL,\n        args_json     TEXT NOT NULL DEFAULT '[]',\n        cwd           TEXT,\n        env_json      TEXT NOT NULL DEFAULT '{}',\n        cols          INTEGER NOT NULL DEFAULT 120,\n        rows          INTEGER NOT NULL DEFAULT 30,\n        status        TEXT NOT NULL DEFAULT 'stopped',\n        pid           INTEGER,\n        exit_code     INTEGER,\n        auto_restart  INTEGER NOT NULL DEFAULT 0,\n        is_operator   INTEGER NOT NULL DEFAULT 0,\n        interaction_mode TEXT NOT NULL DEFAULT 'both',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        started_at    INTEGER,\n        stopped_at    INTEGER\n      , provider_session_id TEXT, backend_type TEXT NOT NULL DEFAULT 'pty', allowed_tools TEXT, mandible_session_id TEXT, resume_at_message TEXT, channel_enabled INTEGER NOT NULL DEFAULT 0, transport_lane TEXT NOT NULL DEFAULT 'pty', owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL, run_options_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(run_options_json) AND json_type(run_options_json) = 'object'))",
   "CREATE TABLE convention_setting_links (\n        id              TEXT PRIMARY KEY,\n        node_id         TEXT NOT NULL REFERENCES preset_nodes(id) ON DELETE CASCADE,\n        setting_key     TEXT NOT NULL,\n        link_type       TEXT NOT NULL DEFAULT 'references'\n                        CHECK(link_type IN ('references', 'requires', 'configures')),\n        created_at      INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual',\n        UNIQUE(node_id, setting_key)\n      )",
   "CREATE TABLE conversation_blocks (\n        id TEXT PRIMARY KEY,\n        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n        type TEXT NOT NULL,\n        role TEXT NOT NULL,\n        content TEXT NOT NULL DEFAULT '',\n        position INTEGER NOT NULL,\n        timestamp TEXT,\n        parent_id TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        dag_uuid TEXT,\n        dag_parent_uuid TEXT, compressed INTEGER NOT NULL DEFAULT 0, timestamp_ms INTEGER,\n        UNIQUE(conversation_id, position)\n      )",
   "CREATE TABLE conversation_ingest_state (\n        file_path TEXT PRIMARY KEY,\n        byte_offset INTEGER NOT NULL DEFAULT 0,\n        line_count INTEGER NOT NULL DEFAULT 0,\n        tail_hash TEXT NOT NULL DEFAULT '',\n        partial_line TEXT NOT NULL DEFAULT '',\n        updated_at INTEGER NOT NULL\n      , empty_source_mtime REAL, empty_source_size INTEGER)",
@@ -335,30 +429,202 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
   "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
   "CREATE TRIGGER trg_work_units_assigned_session_update_normalize\n     AFTER UPDATE OF assigned_session_id ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
-  // Migration v122 (umbrella 99b74d6 / issue ce83a84) — agent dispatch
-  // handling events: the audit chain comment -> handling event -> session
-  // handle for human-initiated Claude dispatch.
+  // Migration v136 (issue 5308097) — durable operational incidents and their
+  // immutable executor observation and operator/server workflow event ledgers.
+  `CREATE TABLE operational_incidents (
+        id                         TEXT PRIMARY KEY,
+        executor                   TEXT NOT NULL,
+        task                       TEXT NOT NULL,
+        condition                  TEXT NOT NULL
+          CHECK(condition IN (
+            'failed_permanent',
+            'timeout',
+            'circuit_open',
+            'publish_stale',
+            'publish_quarantined',
+            'containment_blocked'
+          )),
+        first_seen                 INTEGER NOT NULL,
+
+        observation_state          TEXT NOT NULL
+          CHECK(observation_state IN ('active','recovered')),
+        attention_state            TEXT NOT NULL DEFAULT 'unacknowledged'
+          CHECK(attention_state IN ('unacknowledged','acknowledged')),
+        remediation_state          TEXT NOT NULL DEFAULT 'none'
+          CHECK(remediation_state IN (
+            'none',
+            'triaging',
+            'fix_prepared',
+            'awaiting_auth',
+            'auth_expired',
+            'awaiting_deploy',
+            'awaiting_verification',
+            'complete'
+          )),
+
+        latest_event_seq           INTEGER NOT NULL CHECK(latest_event_seq IN (1,2)),
+        latest_observed_at         INTEGER NOT NULL,
+        latest_event_id            TEXT NOT NULL,
+        latest_telemetry_json      TEXT NOT NULL CHECK(json_valid(latest_telemetry_json)),
+        latest_telemetry_sha256    TEXT NOT NULL CHECK(length(latest_telemetry_sha256) = 64),
+        provenance                 TEXT NOT NULL DEFAULT 'executor_asserted_unverified'
+          CHECK(provenance = 'executor_asserted_unverified'),
+        posted_by_user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+
+        recovered_at               INTEGER,
+        recovery_run_id            TEXT,
+        acknowledged_at            INTEGER,
+        acknowledged_by_user_id    TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        resolved_at                INTEGER,
+        resolution_kind            TEXT
+          CHECK(resolution_kind IS NULL OR
+                resolution_kind IN ('successful_run','operator_closure')),
+        operator_closed_at         INTEGER,
+        operator_closed_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+
+        UNIQUE(executor, task, condition, first_seen),
+
+        CHECK(
+          (observation_state = 'active'
+            AND recovered_at IS NULL AND recovery_run_id IS NULL)
+          OR
+          (observation_state = 'recovered'
+            AND recovered_at IS NOT NULL AND recovery_run_id IS NOT NULL)
+        ),
+        CHECK(
+          (attention_state = 'unacknowledged'
+            AND acknowledged_at IS NULL AND acknowledged_by_user_id IS NULL)
+          OR
+          (attention_state = 'acknowledged'
+            AND acknowledged_at IS NOT NULL AND acknowledged_by_user_id IS NOT NULL)
+        ),
+        CHECK(
+          (resolution_kind IS NULL AND resolved_at IS NULL)
+          OR
+          (resolution_kind IS NOT NULL AND resolved_at IS NOT NULL)
+        ),
+        CHECK(
+          resolution_kind != 'successful_run'
+          OR observation_state = 'recovered'
+        ),
+        CHECK(
+          resolution_kind != 'operator_closure'
+          OR (operator_closed_at IS NOT NULL
+              AND operator_closed_by_user_id IS NOT NULL)
+        ),
+        CHECK(
+          (resolved_at IS NULL AND remediation_state != 'complete')
+          OR
+          (resolved_at IS NOT NULL AND remediation_state = 'complete')
+        )
+      )`,
+  `CREATE INDEX idx_operational_incidents_queue
+        ON operational_incidents(
+          resolved_at,
+          observation_state,
+          attention_state,
+          first_seen DESC,
+          id
+        )`,
+  `CREATE INDEX idx_operational_incidents_task_history
+        ON operational_incidents(executor, task, condition, first_seen DESC)`,
+  `CREATE INDEX idx_operational_incidents_badge
+        ON operational_incidents(attention_state, first_seen DESC)
+        WHERE resolved_at IS NULL
+          AND observation_state = 'active'
+          AND attention_state = 'unacknowledged'`,
+  `CREATE TABLE operational_incident_observation_events (
+        id                       TEXT PRIMARY KEY,
+        incident_id              TEXT NOT NULL
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        source_event_id          TEXT NOT NULL UNIQUE,
+        event_seq                INTEGER NOT NULL CHECK(event_seq IN (1,2)),
+        observation_state        TEXT NOT NULL
+          CHECK(observation_state IN ('active','recovered')),
+        observed_at              INTEGER NOT NULL,
+        inventory_digest         TEXT NOT NULL CHECK(length(inventory_digest) = 64),
+        telemetry_json           TEXT NOT NULL CHECK(json_valid(telemetry_json)),
+        telemetry_sha256         TEXT NOT NULL CHECK(length(telemetry_sha256) = 64),
+        posted_by_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        received_at              INTEGER NOT NULL,
+        applied                  INTEGER NOT NULL CHECK(applied IN (0,1)),
+        ignored_reason           TEXT
+          CHECK(ignored_reason IS NULL OR ignored_reason IN ('stale_sequence')),
+        UNIQUE(incident_id, event_seq),
+        CHECK(
+          (event_seq = 1 AND observation_state = 'active')
+          OR
+          (event_seq = 2 AND observation_state = 'recovered')
+        ),
+        CHECK(
+          (applied = 1 AND ignored_reason IS NULL)
+          OR
+          (applied = 0 AND ignored_reason IS NOT NULL)
+        )
+      )`,
+  `CREATE INDEX idx_operational_incident_observations_incident
+        ON operational_incident_observation_events(incident_id, event_seq)`,
+  `CREATE INDEX idx_operational_incident_observations_received
+        ON operational_incident_observation_events(received_at DESC, id)`,
+  // The v136 CHECK expansion rebuilds v122's dispatch table and preserves all
+  // existing finding/issue rows while adding incident subject columns.
   `CREATE TABLE "agent_dispatch_events" (
-        id             TEXT PRIMARY KEY,
-        subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
-        candidate_id   TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        revision_id    TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        comment_id     TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
-        issue_id       TEXT,
-        actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        provider       TEXT NOT NULL DEFAULT 'claude',
-        instruction    TEXT NOT NULL,
-        cwd            TEXT NOT NULL,
-        prompt_path    TEXT,
-        prompt_sha256  TEXT,
-        status         TEXT NOT NULL
-                         CHECK(status IN ('dispatching','dispatched','failed')),
-        session_handle TEXT,
-        session_id     TEXT,
-        attach_command TEXT,
-        error          TEXT,
-        created_at     INTEGER NOT NULL,
-        settled_at     INTEGER
+        id                        TEXT PRIMARY KEY,
+        subject_kind              TEXT NOT NULL
+          CHECK(subject_kind IN ('finding','issue','incident')),
+        candidate_id              TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        revision_id               TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        comment_id                TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
+        issue_id                  TEXT,
+        incident_id               TEXT
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        incident_telemetry_sha256 TEXT
+          CHECK(incident_telemetry_sha256 IS NULL
+                OR length(incident_telemetry_sha256) = 64),
+        actor_user_id             TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        provider                  TEXT NOT NULL DEFAULT 'claude',
+        instruction               TEXT NOT NULL,
+        cwd                       TEXT NOT NULL,
+        prompt_path               TEXT,
+        prompt_sha256             TEXT,
+        status                    TEXT NOT NULL
+                                  CHECK(status IN ('dispatching','dispatched','failed')),
+        session_handle            TEXT,
+        session_id                TEXT,
+        attach_command            TEXT,
+        error                     TEXT,
+        created_at                INTEGER NOT NULL,
+        settled_at                INTEGER,
+        CHECK(
+          (
+            subject_kind = 'finding'
+            AND candidate_id IS NOT NULL
+            AND revision_id IS NOT NULL
+            AND issue_id IS NULL
+            AND incident_id IS NULL
+          )
+          OR
+          (
+            subject_kind = 'issue'
+            AND issue_id IS NOT NULL
+            AND candidate_id IS NULL
+            AND revision_id IS NULL
+            AND incident_id IS NULL
+          )
+          OR
+          (
+            subject_kind = 'incident'
+            AND incident_id IS NOT NULL
+            AND incident_telemetry_sha256 IS NOT NULL
+            AND candidate_id IS NULL
+            AND revision_id IS NULL
+            AND issue_id IS NULL
+          )
+        )
       )`,
   `CREATE INDEX idx_agent_dispatch_events_candidate
          ON agent_dispatch_events(candidate_id, created_at DESC)`,
@@ -366,6 +632,61 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON agent_dispatch_events(issue_id, created_at DESC)`,
   `CREATE INDEX idx_agent_dispatch_events_comment
          ON agent_dispatch_events(comment_id)`,
+  `CREATE INDEX idx_agent_dispatch_events_incident
+        ON agent_dispatch_events(incident_id, created_at DESC)`,
+  `CREATE TABLE operational_incident_workflow_events (
+        id                       TEXT PRIMARY KEY,
+        incident_id              TEXT NOT NULL
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        kind                     TEXT NOT NULL
+          CHECK(kind IN (
+            'attention_acknowledged',
+            'operator_closed',
+            'prepare_fix_confirmed',
+            'dispatch_failed',
+            'remediation_transition'
+          )),
+        authority                TEXT NOT NULL CHECK(authority IN ('user','server')),
+        actor_user_id            TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        from_attention_state     TEXT
+          CHECK(from_attention_state IS NULL OR
+                from_attention_state IN ('unacknowledged','acknowledged')),
+        to_attention_state       TEXT
+          CHECK(to_attention_state IS NULL OR
+                to_attention_state IN ('unacknowledged','acknowledged')),
+        from_remediation_state   TEXT
+          CHECK(from_remediation_state IS NULL OR
+                from_remediation_state IN (
+                  'none','triaging','fix_prepared','awaiting_auth','auth_expired',
+                  'awaiting_deploy','awaiting_verification','complete'
+                )),
+        to_remediation_state     TEXT
+          CHECK(to_remediation_state IS NULL OR
+                to_remediation_state IN (
+                  'none','triaging','fix_prepared','awaiting_auth','auth_expired',
+                  'awaiting_deploy','awaiting_verification','complete'
+                )),
+
+        agent_dispatch_event_id  TEXT
+          REFERENCES agent_dispatch_events(id) ON DELETE RESTRICT,
+        auth_request_id          TEXT,
+        deploy_ref               TEXT,
+        verification_run_id      TEXT,
+        reason                   TEXT,
+        metadata_json            TEXT CHECK(metadata_json IS NULL OR json_valid(metadata_json)),
+        created_at               INTEGER NOT NULL,
+
+        CHECK(authority != 'user' OR actor_user_id IS NOT NULL)
+      )`,
+  `CREATE INDEX idx_operational_incident_workflow_incident
+        ON operational_incident_workflow_events(incident_id, created_at, id)`,
+  `CREATE INDEX idx_operational_incident_workflow_dispatch
+        ON operational_incident_workflow_events(agent_dispatch_event_id)
+        WHERE agent_dispatch_event_id IS NOT NULL`,
+  `CREATE INDEX idx_operational_incident_workflow_auth
+        ON operational_incident_workflow_events(auth_request_id)
+        WHERE auth_request_id IS NOT NULL`,
   `CREATE TABLE task_inventory_generations (
         id                TEXT PRIMARY KEY,
         digest            TEXT NOT NULL,
@@ -386,60 +707,10 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
   `CREATE INDEX idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`,
-  `CREATE TABLE task_command_requests (
-        id                   TEXT PRIMARY KEY,
-        schema_id            TEXT NOT NULL CHECK(schema_id = 'task-command@1'),
-        request_key          TEXT NOT NULL CHECK(trim(request_key) != ''),
-        request_digest       TEXT NOT NULL
-                             CHECK(length(request_digest) = 64
-                               AND request_digest NOT GLOB '*[^0-9a-f]*'),
-        executor_name        TEXT NOT NULL CHECK(trim(executor_name) != ''),
-        task_id              TEXT NOT NULL CHECK(trim(task_id) != ''),
-        verb                 TEXT NOT NULL CHECK(verb = 'disable'),
-        payload_json         TEXT NOT NULL DEFAULT '{}'
-                             CHECK(json_valid(payload_json)
-                               AND json_type(payload_json) = 'object'
-                               AND payload_json = '{}'),
-        requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        requested_at         INTEGER NOT NULL,
-        UNIQUE(requested_by_user_id, request_key)
-      )`,
-  `CREATE INDEX idx_task_command_requests_target
-        ON task_command_requests(executor_name, task_id, requested_at DESC)`,
-  `CREATE TABLE task_command_events (
-        id            TEXT PRIMARY KEY,
-        command_id    TEXT NOT NULL
-                      REFERENCES task_command_requests(id) ON DELETE RESTRICT,
-        event_digest  TEXT NOT NULL
-                      CHECK(length(event_digest) = 64
-                        AND event_digest NOT GLOB '*[^0-9a-f]*'),
-        event_type    TEXT NOT NULL
-                      CHECK(event_type IN ('accepted','applied','rejected','cancelled')),
-        payload_json  TEXT NOT NULL DEFAULT '{}'
-                      CHECK(json_valid(payload_json)
-                        AND json_type(payload_json) = 'object'),
-        no_op         INTEGER CHECK(no_op IS NULL OR no_op IN (0,1)),
-        rejection_reason TEXT CHECK(rejection_reason IS NULL OR rejection_reason IN (
-                           'unknown_task','unsupported_verb','invalid_payload',
-                           'stale_target','policy_refused','unknown'
-                         )),
-        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at    INTEGER NOT NULL,
-        UNIQUE(command_id, event_digest),
-        CHECK (
-          (event_type IN ('accepted','cancelled')
-            AND no_op IS NULL AND rejection_reason IS NULL)
-          OR (event_type = 'applied' AND no_op IS NOT NULL AND rejection_reason IS NULL)
-          OR (event_type = 'rejected' AND no_op IS NULL AND rejection_reason IS NOT NULL)
-        )
-      )`,
-  `CREATE UNIQUE INDEX uq_task_command_events_accepted
-        ON task_command_events(command_id) WHERE event_type = 'accepted'`,
-  `CREATE UNIQUE INDEX uq_task_command_events_terminal
-        ON task_command_events(command_id)
-        WHERE event_type IN ('applied','rejected','cancelled')`,
-  `CREATE INDEX idx_task_command_events_command
-        ON task_command_events(command_id, created_at, id)`,
+  TASK_COMMAND_REQUESTS_V2_SQL,
+  TASK_COMMAND_V2_INDEX_SQL[0],
+  TASK_COMMAND_EVENTS_V2_SQL,
+  ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
   `CREATE TABLE feedback_collections (
         id                TEXT PRIMARY KEY,
         kind              TEXT NOT NULL
@@ -449,6 +720,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         source            TEXT,
         created_at        INTEGER NOT NULL,
         tombstoned_at     INTEGER,
+        expires_at        INTEGER,
         CHECK (
           (kind = 'recurring_feed'
             AND interaction_mode = 'immediate_per_item'
@@ -465,6 +737,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         WHERE kind = 'recurring_feed'`,
   `CREATE INDEX idx_feedback_collections_kind_created
         ON feedback_collections(kind, created_at DESC)`,
+  `CREATE INDEX idx_feedback_collections_expiry
+        ON feedback_collections(expires_at)`,
   `CREATE TABLE feedback_recurring_profiles (
         collection_id       TEXT PRIMARY KEY
                             REFERENCES feedback_collections(id) ON DELETE RESTRICT,
@@ -485,12 +759,14 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         responder_user_ids_json   TEXT NOT NULL
                                   CHECK(json_valid(responder_user_ids_json)
                                     AND json_type(responder_user_ids_json) = 'array'),
-        expires_at                INTEGER NOT NULL,
+        expires_at                INTEGER,
         retention_expires_at      INTEGER,
         created_at                INTEGER NOT NULL,
         UNIQUE(requester_user_id, requester_session_id, request_key),
-        CHECK(expires_at > created_at),
-        CHECK(retention_expires_at IS NULL OR retention_expires_at >= expires_at)
+        CHECK(expires_at IS NULL OR expires_at > created_at),
+        CHECK(expires_at IS NULL
+          OR retention_expires_at IS NULL
+          OR retention_expires_at >= expires_at)
       )`,
   `CREATE INDEX idx_feedback_ask_sessions_requester
         ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC)`,

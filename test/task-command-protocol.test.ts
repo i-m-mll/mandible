@@ -2,23 +2,35 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
-import { TASK_COMMAND_EVENT_SCHEMA, TASK_COMMAND_SCHEMA } from "../src/contracts.js";
+import {
+  TASK_COMMAND_EVENT_SCHEMA,
+  TASK_COMMAND_EVENT_SCHEMA_V1,
+  TASK_COMMAND_SCHEMA,
+  TASK_COMMAND_SCHEMA_V1,
+  TASK_INVENTORY_SCHEMA,
+} from "../src/contracts.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { registerTaskRoutes } from "../src/routes/tasks.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { taskCommandEventDigest } from "../src/task-commands.js";
-import { TASK_INVENTORY_EXECUTORS_KEY } from "../src/task-inventory.js";
+import {
+  parseTaskInventoryGeneration,
+  recordTaskInventoryGeneration,
+  TASK_INVENTORY_EXECUTORS_KEY,
+} from "../src/task-inventory.js";
+import { setSseManager, SseManager } from "../src/sse.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
 
 let db: Db;
 let router: Router;
 let operatorId: string;
 let executorId: string;
+let sseManager: SseManager;
 
 class SlugGate implements ClientAuthGate {
   authenticate(
@@ -45,7 +57,7 @@ class SlugGate implements ClientAuthGate {
 
 function createBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schema: TASK_COMMAND_SCHEMA,
+    schema: TASK_COMMAND_SCHEMA_V1,
     request_key: "disable-1",
     executor: "agent-schedule",
     task_id: "daily-digest",
@@ -64,16 +76,58 @@ async function executorEvent(
   event: { event: "accepted" } | { event: "applied"; no_op: boolean }
     | { event: "rejected"; reason: "unknown_task" },
   credential = "agent-schedule",
+  schema: typeof TASK_COMMAND_EVENT_SCHEMA_V1 | typeof TASK_COMMAND_EVENT_SCHEMA = TASK_COMMAND_EVENT_SCHEMA_V1,
 ) {
   return router.invoke({
     method: "POST",
     url: `/api/tasks/commands/${commandId}/events`,
     credential,
     body: {
+      schema,
+      ...event,
+      event_digest: taskCommandEventDigest(commandId, event),
+    },
+  });
+}
+
+async function executorV2Event(
+  commandId: string,
+  event: Parameters<typeof taskCommandEventDigest>[1],
+) {
+  return router.invoke({
+    method: "POST",
+    url: `/api/tasks/commands/${commandId}/events`,
+    credential: "agent-schedule",
+    body: {
       schema: TASK_COMMAND_EVENT_SCHEMA,
       ...event,
       event_digest: taskCommandEventDigest(commandId, event),
     },
+  });
+}
+
+function declareV2Capability(): void {
+  recordTaskInventoryGeneration(db, parseTaskInventoryGeneration({
+    schema: TASK_INVENTORY_SCHEMA,
+    executor: {
+      name: "agent-schedule",
+      version: "test",
+      capabilities: [TASK_COMMAND_SCHEMA],
+    },
+    observed_at: Date.now(),
+    tasks: [],
+  }), { postedByUserId: executorId });
+}
+
+function v2Body(
+  verb: "dry_run" | "enable",
+  requestKey = `${verb}-1`,
+): Record<string, unknown> {
+  return createBody({
+    schema: TASK_COMMAND_SCHEMA,
+    request_key: requestKey,
+    verb,
+    payload: { execution_hash: "a".repeat(64) },
   });
 }
 
@@ -94,6 +148,8 @@ beforeEach(() => {
     }),
   });
   registerTaskRoutes(router, db);
+  sseManager = new SseManager();
+  setSseManager(sseManager);
 });
 
 afterEach(() => db.close());
@@ -125,7 +181,7 @@ describe("operator command creation and cancellation", () => {
     })).body).toMatchObject({ code: "operator_required" });
   });
 
-  it("allows pre-acceptance cancellation, replays it, and refuses cancel-after-accept", async () => {
+  it("cancel_wins_only_before_acceptance", async () => {
     const created = await create();
     const id = (created.body as { command: { id: string } }).command.id;
     const cancel = await router.invoke({
@@ -191,7 +247,8 @@ describe("operator command creation and cancellation", () => {
 });
 
 describe("executor authority, receipts, and conflicts", () => {
-  it("requires a durable active mapped agent and keeps operator authority separate", async () => {
+  it("executor_authority_and_sse_are_preserved", async () => {
+    const broadcast = vi.spyOn(sseManager, "broadcast");
     const created = await create();
     const id = (created.body as { command: { id: string } }).command.id;
     const pendingUrl = "/api/tasks/commands/pending?executor=agent-schedule";
@@ -205,9 +262,19 @@ describe("executor authority, receipts, and conflicts", () => {
       .toMatchObject({ code: "executor_agent_required" });
     expect((await executorEvent(id, { event: "accepted" }, "operator")).body)
       .toMatchObject({ code: "executor_agent_required" });
+    expect((await router.invoke({
+      method: "GET", url: `/api/tasks/commands/${id}`, credential: "operator",
+    })).body).toMatchObject({ command: { id } });
+    expect((await router.invoke({
+      method: "GET", url: `/api/tasks/commands/${id}`, credential: "agent-schedule",
+    })).body).toMatchObject({ code: "operator_required" });
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      type: "tasks.commands.changed",
+      data: { command_id: id },
+    }));
   });
 
-  it("replays accepted/applied receipts, persists executor principal, and records no-op", async () => {
+  it("identical_event_replay_is_idempotent", async () => {
     const created = await create();
     const id = (created.body as { command: { id: string } }).command.id;
     const accepted = await executorEvent(id, { event: "accepted" });
@@ -236,7 +303,7 @@ describe("executor authority, receipts, and conflicts", () => {
       url: `/api/tasks/commands/${id}/events`,
       credential: "agent-schedule",
       body: {
-        schema: TASK_COMMAND_EVENT_SCHEMA,
+        schema: TASK_COMMAND_EVENT_SCHEMA_V1,
         event: "accepted",
         event_digest: "a".repeat(64),
       },
@@ -262,7 +329,7 @@ describe("executor authority, receipts, and conflicts", () => {
       url: `/api/tasks/commands/${id}/events`,
       credential: "agent-schedule",
       body: {
-        schema: TASK_COMMAND_EVENT_SCHEMA,
+        schema: TASK_COMMAND_EVENT_SCHEMA_V1,
         event: "rejected",
         reason: "temporary_error",
         event_digest: "a".repeat(64),
@@ -296,7 +363,7 @@ describe("executor authority, receipts, and conflicts", () => {
         path: `/api/tasks/commands/${id}/events`,
         capability_token: "agent-schedule",
         body: {
-          schema: TASK_COMMAND_EVENT_SCHEMA,
+          schema: TASK_COMMAND_EVENT_SCHEMA_V1,
           event: "accepted",
           event_digest: taskCommandEventDigest(id, { event: "accepted" }),
         },
@@ -314,5 +381,112 @@ describe("executor authority, receipts, and conflicts", () => {
     } finally {
       fs.rmSync(spool, { recursive: true, force: true });
     }
+  });
+});
+
+describe("task-command v2 frozen protocol", () => {
+  it("v1_disable_remains_wire_compatible", async () => {
+    const created = await create();
+    expect(created.status).toBe(200);
+    const command = (created.body as { command: { id: string; schema: string; verb: string } }).command;
+    expect(command).toMatchObject({ schema: "task-command@1", verb: "disable" });
+    expect((await executorEvent(command.id, { event: "accepted" })).status).toBe(200);
+    expect((await executorEvent(command.id, { event: "applied", no_op: false })).body)
+      .toMatchObject({ command: { state: "applied", no_op: false } });
+  });
+
+  it("v2_request_and_event_digest_fixtures_match_executor", async () => {
+    declareV2Capability();
+    const created = await create("operator", v2Body("dry_run"));
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({
+      command: { request_digest: "87af17aa43cedc4427877d109f9e215ac225d3f21e1522c5f3862de533e13227" },
+    });
+    expect(taskCommandEventDigest("command-fixture", { event: "accepted" }))
+      .toBe("155fc51a7645ae8644864ca6746d120b8295a237cdf6331c8142127c2431d6e1");
+    expect(taskCommandEventDigest("command-fixture", {
+      event: "started", execution_hash: "a".repeat(64), run_id: "run-7",
+    })).toBe("5ba34f672330f7dcadcf13479c09c2796ece9d8dfe06775d0e04c106f4fb4cf5");
+    expect(taskCommandEventDigest("command-fixture", {
+      event: "progress", sequence: 1, step: "preflight_passed",
+    })).toBe("aeb7ab6c37fa8518d728aab4b5f529967562c93dec68df046672c018bbc993c7");
+    expect(taskCommandEventDigest("command-fixture", {
+      event: "applied", execution_hash: "a".repeat(64), run_id: "run-7",
+    })).toBe("f3f20fdb54ced741bdf1bc41e9089f785ce7e7acf61cf0fbacbb96589f9ea8c0");
+    expect(taskCommandEventDigest("command-fixture", {
+      event: "rejected", reason: "dry_run_failed", failure_class: "runner",
+    })).toBe("09a1f2fd5dba299078d985ac654c2cbe674cf49235456fd1d3f5e7eaf189d223");
+  });
+
+  it("started_and_progress_are_dry_run_only", async () => {
+    declareV2Capability();
+    const dryRun = await create("operator", v2Body("dry_run"));
+    const dryId = (dryRun.body as { command: { id: string } }).command.id;
+    await executorV2Event(dryId, { event: "accepted" });
+    expect((await executorV2Event(dryId, {
+      event: "started", execution_hash: "a".repeat(64), run_id: "run-1",
+    })).status).toBe(200);
+
+    const enable = await create("operator", v2Body("enable"));
+    const enableId = (enable.body as { command: { id: string } }).command.id;
+    await executorV2Event(enableId, { event: "accepted" });
+    const illegal = await executorV2Event(enableId, {
+      event: "started", execution_hash: "a".repeat(64), run_id: "run-2",
+    });
+    expect(illegal.status).toBe(400);
+    expect(illegal.body).toMatchObject({ code: "invalid_task_command" });
+  });
+
+  it("progress_is_closed_ordered_and_capped_at_six", async () => {
+    declareV2Capability();
+    const created = await create("operator", v2Body("dry_run"));
+    const id = (created.body as { command: { id: string } }).command.id;
+    await executorV2Event(id, { event: "accepted" });
+    await executorV2Event(id, {
+      event: "started", execution_hash: "a".repeat(64), run_id: "run-1",
+    });
+    const outOfOrder = await executorV2Event(id, {
+      event: "progress", sequence: 2, step: "collector_started",
+    });
+    expect(outOfOrder.status).toBe(409);
+    expect(outOfOrder.body).toMatchObject({ code: "progress_sequence_conflict" });
+    const pairs = [
+      [1, "preflight_passed"],
+      [2, "collector_started"],
+      [3, "snapshot_validated"],
+      [4, "runner_started"],
+      [5, "runner_completed"],
+      [6, "output_validated"],
+    ] as const;
+    for (const [sequence, step] of pairs) {
+      expect((await executorV2Event(id, { event: "progress", sequence, step })).status).toBe(200);
+    }
+    const unknownPair = await router.invoke({
+      method: "POST",
+      url: `/api/tasks/commands/${id}/events`,
+      credential: "agent-schedule",
+      body: {
+        schema: TASK_COMMAND_EVENT_SCHEMA,
+        event: "progress",
+        sequence: 7,
+        step: "output_validated",
+        event_digest: "b".repeat(64),
+      },
+    });
+    expect(unknownPair.status).toBe(400);
+    expect((db.prepare(
+      "SELECT count(*) AS count FROM task_command_events WHERE command_id = ? AND event_type = 'progress'",
+    ).get(id) as { count: number }).count).toBe(6);
+  });
+
+  it("v2_creation_requires_executor_capability", async () => {
+    const refused = await create("operator", v2Body("enable"));
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ code: "executor_capability_unknown" });
+    expect((await create("operator", createBody({ request_key: "v1-still-available" }))).status)
+      .toBe(200);
+    declareV2Capability();
+    expect((await create("operator", v2Body("enable", "enable-after-capability"))).status)
+      .toBe(200);
   });
 });

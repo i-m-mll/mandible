@@ -31,6 +31,7 @@ import { parseRouteFromHash } from '../ui/src/routing';
 import { taskFact, TasksView } from '../ui/src/views/tasks';
 
 const HOUR = 60 * 60 * 1000;
+const EXECUTION_HASH = 'a'.repeat(64);
 
 let db: Db;
 let publisherId: string;
@@ -88,6 +89,15 @@ function knownTask(): Record<string, unknown> {
   };
 }
 
+function v2Task(): Record<string, unknown> {
+  const task = knownTask();
+  task.bundle = {
+    ...(task.bundle as Record<string, unknown>),
+    execution_hash: EXECUTION_HASH,
+  };
+  return task;
+}
+
 function unknownTask(): Record<string, unknown> {
   return {
     task_id: 'unknown-task',
@@ -123,14 +133,95 @@ function unknownTask(): Record<string, unknown> {
   };
 }
 
-function post(tasks: Array<Record<string, unknown>>, observedAt = Date.now()): void {
+function post(
+  tasks: Array<Record<string, unknown>>,
+  observedAt = Date.now(),
+  capabilities: string[] = ['cron'],
+): void {
   const generation = parseTaskInventoryGeneration({
     schema: TASK_INVENTORY_SCHEMA,
-    executor: { name: 'agent-schedule', version: '0.4.2', capabilities: ['cron'] },
+    executor: { name: 'agent-schedule', version: '0.4.2', capabilities },
     observed_at: observedAt,
     tasks,
   });
   recordTaskInventoryGeneration(db, generation, { postedByUserId: publisherId });
+}
+
+function commandFixture(
+  verb: 'dry_run' | 'enable',
+  state: 'requested' | 'accepted' | 'started' | 'applied' | 'rejected',
+  options: {
+    events?: Array<Record<string, unknown>>;
+    rejectionReason?: string | null;
+    id?: string;
+  } = {},
+): Record<string, unknown> {
+  return {
+    id: options.id ?? `command-${verb}`,
+    schema: 'task-command@2',
+    request_key: `request-${verb}`,
+    request_digest: 'b'.repeat(64),
+    executor: 'agent-schedule',
+    task_id: 'daily-digest',
+    verb,
+    payload: { execution_hash: EXECUTION_HASH },
+    requested_by_user_id: 'operator',
+    requested_by_slug: 'operator',
+    requested_at: Date.now(),
+    state,
+    no_op: verb === 'enable' && state === 'applied' ? false : null,
+    rejection_reason: options.rejectionReason ?? null,
+    events: options.events ?? [],
+  };
+}
+
+function stubV2Fetch(options: {
+  postCommand?: (body: Record<string, unknown>) => Record<string, unknown>;
+  pointCommand?: () => Record<string, unknown>;
+  listedCommands?: Record<string, unknown>[];
+} = {}) {
+  post([v2Task()], Date.now(), ['cron', 'task-command@2']);
+  const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+  const postedBodies: Array<Record<string, unknown>> = [];
+  let inventoryReads = 0;
+  let pointReads = 0;
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/tasks') {
+      inventoryReads += 1;
+      return Promise.resolve(new Response(JSON.stringify(inventory), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+    if (url.startsWith('/api/tasks/commands?') && !init?.method) {
+      return Promise.resolve(new Response(JSON.stringify({
+        commands: options.listedCommands ?? [], polling: 'tick_aligned',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    if (/^\/api\/tasks\/commands\/[^/]+$/.test(url) && !init?.method) {
+      pointReads += 1;
+      const command = options.pointCommand?.();
+      if (!command) return Promise.reject(new Error('unexpected point read'));
+      return Promise.resolve(new Response(JSON.stringify({ command }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+    if (url === '/api/tasks/commands' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      postedBodies.push(body);
+      const command = options.postCommand?.(body)
+        ?? commandFixture(body.verb as 'dry_run' | 'enable', 'requested');
+      return Promise.resolve(new Response(JSON.stringify({ stored: true, command }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+    return Promise.reject(new Error(`unexpected fetch: ${url}`));
+  }));
+  return {
+    postedBodies,
+    inventoryReads: () => inventoryReads,
+    pointReads: () => pointReads,
+  };
 }
 
 function stubInventory(payload: TaskInventoryResponse | (() => TaskInventoryResponse)): void {
@@ -171,6 +262,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   db.close();
@@ -635,5 +727,183 @@ describe('TasksView', () => {
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
       .getByText('Daily digest').closest('.tasks-row') as HTMLElement;
     expect(row.querySelector('.tasks-freshness--current')).toBeTruthy();
+  });
+});
+
+describe('TasksView task-command v2', () => {
+  it('shows_v2_actions_only_for_capable_executor_with_known_hash', async () => {
+    stubV2Fetch();
+    render(<TasksView />);
+    expect(await screen.findByRole('button', { name: 'Dry run' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Enable task' })).toBeTruthy();
+    expect(screen.getAllByText(EXECUTION_HASH).length).toBeGreaterThan(0);
+  });
+
+  it('keeps_disable_available_during_non_disable_command', async () => {
+    stubV2Fetch({ listedCommands: [commandFixture('dry_run', 'accepted')] });
+    render(<TasksView />);
+    const disable = await screen.findByRole('button', { name: 'Request disable' });
+    await waitFor(() => expect((disable as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('dry_run_modal_streams_structured_progress', async () => {
+    const command = commandFixture('dry_run', 'started', { events: [
+      { id: 'accepted', event: 'accepted', payload: {} },
+      { id: 'started', event: 'started', payload: { execution_hash: EXECUTION_HASH, run_id: 'run-1' } },
+      { id: 'progress-1', event: 'progress', payload: { sequence: 1, step: 'preflight_passed' } },
+      { id: 'progress-2', event: 'progress', payload: { sequence: 2, step: 'collector_started' } },
+    ] });
+    stubV2Fetch({ postCommand: () => command, pointCommand: () => command });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Dry run' })).click();
+    const dialog = await screen.findByRole('dialog', { name: 'Dry run command' });
+    expect(await within(dialog).findByText('Run started')).toBeTruthy();
+    expect(within(dialog).getByText('1/6 Preflight passed')).toBeTruthy();
+    expect(within(dialog).getByText('2/6 Collector started')).toBeTruthy();
+    expect(dialog.querySelector('[aria-live="polite"]')).toBeTruthy();
+  });
+
+  it('dry_run_success_keeps_task_disabled', async () => {
+    stubV2Fetch({ postCommand: () => commandFixture('dry_run', 'applied') });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Dry run' })).click();
+    expect(await screen.findByText(/Dry run passed\. Receipt recorded for aaaaaaaaaaaa\. Task remains disabled\./))
+      .toBeTruthy();
+    expect(screen.getByText(/not activated on the reporting host/i)).toBeTruthy();
+  });
+
+  it('enable_after_dry_run_requires_a_second_click', async () => {
+    const stub = stubV2Fetch({
+      postCommand: (body) => commandFixture(
+        body.verb as 'dry_run' | 'enable',
+        'applied',
+        { id: `command-${String(body.verb)}` },
+      ),
+    });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Dry run' })).click();
+    const dialog = await screen.findByRole('dialog', { name: 'Dry run command' });
+    const enable = await within(dialog).findByRole('button', { name: 'Enable task' });
+    expect(stub.postedBodies.map((body) => body.verb)).toEqual(['dry_run']);
+    enable.click();
+    await waitFor(() => expect(stub.postedBodies.map((body) => body.verb))
+      .toEqual(['dry_run', 'enable']));
+  });
+
+  it('matching_receipt_enables_directly', async () => {
+    const stub = stubV2Fetch({ postCommand: () => commandFixture('enable', 'applied') });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Enable task' })).click();
+    expect(await screen.findByText('Enable request applied.')).toBeTruthy();
+    expect(stub.postedBodies.map((body) => body.verb)).toEqual(['enable']);
+  });
+
+  it('missing_or_stale_receipt_offers_dry_run_without_starting_it', async () => {
+    const stub = stubV2Fetch({
+      postCommand: () => commandFixture('enable', 'rejected', {
+        rejectionReason: 'missing_receipt',
+      }),
+    });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Enable task' })).click();
+    const dialog = await screen.findByRole('dialog', { name: 'Enable task command' });
+    expect(await within(dialog).findByRole('button', { name: 'Run dry run' })).toBeTruthy();
+    expect(stub.postedBodies.map((body) => body.verb)).toEqual(['enable']);
+  });
+
+  it('cancel_disappears_at_acceptance', async () => {
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    const accepted = commandFixture('dry_run', 'accepted');
+    stubV2Fetch({
+      postCommand: () => commandFixture('dry_run', 'requested'),
+      pointCommand: () => accepted,
+    });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Dry run' })).click();
+    expect(await screen.findByRole('button', { name: 'Cancel unseen request' })).toBeTruthy();
+    await waitFor(() => expect(intervalSpy.mock.calls
+      .some((call) => call[1] === 2_000)).toBe(true));
+    window.dispatchEvent(new CustomEvent('task-command:sse', {
+      detail: { type: 'tasks.commands.changed', data: { command_id: 'command-dry_run' } },
+    }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel unseen request' }))
+      .toBeNull());
+    expect(screen.getByText('Accepted; cancellation is closed.')).toBeTruthy();
+  });
+
+  it('stale_target_refetches_inventory', async () => {
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    const stub = stubV2Fetch({
+      postCommand: () => commandFixture('enable', 'requested'),
+      pointCommand: () => commandFixture('enable', 'rejected', {
+        rejectionReason: 'stale_target',
+      }),
+    });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Enable task' })).click();
+    const before = stub.inventoryReads();
+    await waitFor(() => expect(intervalSpy.mock.calls
+      .some((call) => call[1] === 2_000)).toBe(true));
+    window.dispatchEvent(new CustomEvent('task-command:sse', {
+      detail: { type: 'tasks.commands.changed', data: { command_id: 'command-enable' } },
+    }));
+    await waitFor(() => expect(stub.inventoryReads()).toBeGreaterThan(before));
+    expect(screen.getByText('Rejected: stale_target.')).toBeTruthy();
+  });
+
+  it('sse_reconciles_with_polling_fallback', async () => {
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    const accepted = commandFixture('dry_run', 'accepted');
+    const stub = stubV2Fetch({
+      postCommand: () => commandFixture('dry_run', 'requested'),
+      pointCommand: () => accepted,
+    });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Dry run' })).click();
+    await screen.findByRole('button', { name: 'Cancel unseen request' });
+    await waitFor(() => expect(intervalSpy.mock.calls.some((call) => call[1] === 2_000)).toBe(true));
+    window.dispatchEvent(new CustomEvent('task-command:sse', {
+      detail: { type: 'tasks.commands.changed', data: { command_id: 'command-dry_run' } },
+    }));
+    await waitFor(() => expect(stub.pointReads()).toBe(1));
+
+    const pollingCall = intervalSpy.mock.calls.find((call) => call[1] === 2_000);
+    expect(pollingCall).toBeTruthy();
+    (pollingCall?.[0] as TimerHandler as () => void)();
+    await waitFor(() => expect(stub.pointReads()).toBe(2));
+  });
+
+  it('never_renders_raw_output_notes_or_environment', async () => {
+    const command = commandFixture('dry_run', 'rejected', {
+      rejectionReason: 'dry_run_failed',
+      events: [
+        {
+          id: 'progress',
+          event: 'progress',
+          payload: {
+            sequence: 1,
+            step: 'preflight_passed',
+            output: 'SECRET RAW OUTPUT',
+            environment: 'TOKEN=secret',
+          },
+        },
+        {
+          id: 'rejected',
+          event: 'rejected',
+          payload: {
+            reason: 'dry_run_failed',
+            failure_class: 'runner',
+            note: 'private run note',
+          },
+        },
+      ],
+    });
+    stubV2Fetch({ postCommand: () => command });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Dry run' })).click();
+    expect(await screen.findByText('Failure class: runner')).toBeTruthy();
+    expect(screen.queryByText('SECRET RAW OUTPUT')).toBeNull();
+    expect(screen.queryByText('TOKEN=secret')).toBeNull();
+    expect(screen.queryByText('private run note')).toBeNull();
   });
 });

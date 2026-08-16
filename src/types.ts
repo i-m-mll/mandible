@@ -721,6 +721,8 @@ export interface ConsoleSession {
   transport_lane: ConsoleTransportLane;
   transport_badge: ConsoleTransportBadge;
   allowed_tools: string[] | null;
+  /** Explicit provider/backend options that were successfully enforced. */
+  run_options: Record<string, import("./session-run-options.js").SessionRunOptionValue>;
   mandible_session_id: string | null;
   /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
   resume_at_message: string | null;
@@ -764,6 +766,7 @@ export interface ConsoleSessionInput {
   backend_type?: 'pty' | 'sdk' | 'spawn' | 'acp';
   transport_lane?: ConsoleTransportLane;
   allowed_tools?: string[] | null;
+  runOptions?: Record<string, import("./session-run-options.js").SessionRunOptionValue>;
   mandible_session_id?: string | null;
   provider_session_id?: string | null;
   resume_at_message?: string | null;

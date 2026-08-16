@@ -49,6 +49,7 @@ describe("dashboard badge aggregate", () => {
       inbox: 2,
       work: 1,
       briefing: 0,
+      incidents: 0,
     });
   });
 
@@ -60,7 +61,34 @@ describe("dashboard badge aggregate", () => {
 
     expect(response).toEqual({
       status: 200,
-      body: { auth: 0, inbox: 0, work: 0, briefing: 0 },
+      body: { auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0 },
+    });
+  });
+
+  it("dashboard_badges_keep_briefing_and_incidents_separate", () => {
+    const insert = db.prepare(
+      `INSERT INTO operational_incidents (
+         id, executor, task, condition, first_seen, observation_state,
+         attention_state, remediation_state, latest_event_seq, latest_observed_at,
+         latest_event_id, latest_telemetry_json, latest_telemetry_sha256,
+         posted_by_user_id, resolved_at, resolution_kind, operator_closed_at,
+         operator_closed_by_user_id, acknowledged_at, acknowledged_by_user_id,
+         created_at, updated_at
+       ) VALUES (?, 'agent-schedule', ?, 'failed_permanent', ?, 'active', ?, ?,
+                 1, ?, ?, '{}', ?, '00000000000000000000000000', ?, ?, ?, ?, ?, ?, 1, 1)`,
+    );
+    const hash = "a".repeat(64);
+    insert.run("unack", "one", 1, "unacknowledged", "none", 1, "event-1", hash,
+      null, null, null, null, null, null);
+    insert.run("ack", "two", 2, "acknowledged", "none", 2, "event-2", hash,
+      null, null, null, null, 2, "00000000000000000000000000");
+    insert.run("closed", "three", 3, "acknowledged", "complete", 3, "event-3", hash,
+      3, "operator_closure", 3, "00000000000000000000000000",
+      3, "00000000000000000000000000");
+
+    expect(readDashboardBadgeCounts({ listActive: () => [] } as never, db)).toMatchObject({
+      briefing: 0,
+      incidents: 1,
     });
   });
 });

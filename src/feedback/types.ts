@@ -21,6 +21,7 @@ export interface FeedbackCollectionRow {
   kind: FeedbackCollectionKind;
   interaction_mode: FeedbackInteractionMode;
   source: string | null;
+  expires_at: number | null;
   created_at: number;
   tombstoned_at: number | null;
 }

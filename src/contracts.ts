@@ -1217,6 +1217,26 @@ export function isBriefingEvent(value: unknown): value is BriefingEvent {
     && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
 }
 
+// --- feedback collections (umbrella 669ef48 / issue 5d54f61) ----------------
+
+export type FeedbackCollectionListState = "all" | "open" | "expired";
+export type FeedbackCollectionState = Exclude<FeedbackCollectionListState, "all">;
+
+/** Collection-general sidebar projection. No collection kind owns this shape. */
+export interface FeedbackCollectionProjection {
+  id: string;
+  kind: string;
+  interaction_mode: "immediate_per_item" | "explicit_submit";
+  source: string | null;
+  label: string;
+  state: FeedbackCollectionState;
+  expires_at: number | null;
+  created_at: number;
+  updated_at: number;
+  item_count: number;
+  expiry_reversible: 0 | 1;
+}
+
 // --- bounded asks (umbrella 669ef48 / issue 2a7aa03) -------------------------
 
 export type FeedbackResponseType =
@@ -1242,7 +1262,7 @@ export interface MandibleAskResult {
   ask_id: string;
   state: "open" | "submitted" | "expired" | "cancelled";
   request_digest: string;
-  expires_at: number;
+  expires_at: number | null;
   submission: null | {
     id: string;
     ordinal: number;
@@ -1618,44 +1638,294 @@ export const TASK_INVENTORY_EVENTS = Object.freeze({
   posted: 'tasks.inventory.posted',
 } as const);
 
+// --- operational incidents (issue 5308097) ---------------------------------
+
+export const OPERATIONAL_INCIDENT_SCHEMA = 'operational-incidents@1';
+export const OPERATIONAL_INCIDENT_RECEIPT_SCHEMA = 'operational-incidents-receipt@1';
+
+export type OperationalIncidentCondition =
+  | 'failed_permanent'
+  | 'timeout'
+  | 'circuit_open'
+  | 'publish_stale'
+  | 'publish_quarantined'
+  | 'containment_blocked';
+
+export type OperationalIncidentObservation = 'active' | 'recovered';
+export type OperationalIncidentAttention = 'unacknowledged' | 'acknowledged';
+export type OperationalIncidentRemediation =
+  | 'none'
+  | 'triaging'
+  | 'fix_prepared'
+  | 'awaiting_auth'
+  | 'auth_expired'
+  | 'awaiting_deploy'
+  | 'awaiting_verification'
+  | 'complete';
+export type OperationalIncidentResolutionKind = 'successful_run' | 'operator_closure';
+
+export type OperationalIncidentFacts = {
+  run_id: string;
+  run_status: string;
+  exit_class: string;
+  finished_at: number;
+};
+
+export type OperationalIncidentRecovery = {
+  basis: 'newer_successful_run';
+  run_id: string;
+  run_status: 'succeeded';
+  finished_at: number;
+};
+
+export type OperationalIncidentTelemetryEvent = {
+  event_id: string;
+  event_seq: 1 | 2;
+  episode: {
+    task: string;
+    condition: OperationalIncidentCondition;
+    first_seen: number;
+  };
+  observation: OperationalIncidentObservation;
+  observed_at: number;
+  facts: OperationalIncidentFacts;
+  recovery: OperationalIncidentRecovery | null;
+};
+
+export type OperationalIncidentIngestEnvelope = {
+  schema: typeof OPERATIONAL_INCIDENT_SCHEMA;
+  executor: { name: string; version: string };
+  generation: {
+    inventory_schema: 'executor-inventory@2';
+    inventory_digest: string;
+    observed_at: number;
+  };
+  provenance: {
+    basis: 'scheduler_computed';
+    verification: 'unverified_by_mandible';
+  };
+  events: OperationalIncidentTelemetryEvent[];
+};
+
+export type OperationalIncidentReceipt = {
+  event_id: string;
+  incident_id: string;
+  result: 'stored' | 'duplicate';
+};
+
+export type OperationalIncidentIngestResponse = {
+  schema: typeof OPERATIONAL_INCIDENT_RECEIPT_SCHEMA;
+  accepted: OperationalIncidentReceipt[];
+};
+
+export type OperationalIncidentProjection = {
+  id: string;
+  executor: string;
+  task: string;
+  condition: OperationalIncidentCondition;
+  first_seen: number;
+  observation: OperationalIncidentObservation;
+  attention: OperationalIncidentAttention;
+  remediation: OperationalIncidentRemediation;
+  resolved: boolean;
+  resolution_kind: OperationalIncidentResolutionKind | null;
+  provenance: {
+    label: 'Executor-reported; not verified by Mandible';
+    value: 'executor_asserted_unverified';
+  };
+  latest_telemetry: { schema: typeof OPERATIONAL_INCIDENT_SCHEMA; event: unknown };
+  latest_telemetry_sha256: string;
+  latest_observed_at: number;
+  recovered_at: number | null;
+  recovery_run_id: string | null;
+  acknowledged_at: number | null;
+  acknowledged_by_user_id: string | null;
+  resolved_at: number | null;
+  operator_closed_at: number | null;
+  operator_closed_by_user_id: string | null;
+  updated_at: number;
+};
+
+export type OperationalIncidentCounts = {
+  active_unacknowledged: number;
+  active_acknowledged: number;
+  resolved: number;
+};
+
+export type OperationalIncidentListResponse = {
+  incidents: OperationalIncidentProjection[];
+  counts: OperationalIncidentCounts;
+  next_cursor: string | null;
+};
+
+export type OperationalIncidentAcknowledgementResponse = {
+  incident_id: string;
+  attention: 'acknowledged';
+  event_id: string;
+  acknowledged_at: number;
+  acknowledged_by_user_id: string;
+};
+
+export type OperationalIncidentCloseResponse = {
+  incident: OperationalIncidentProjection;
+};
+
+export const OPERATIONAL_INCIDENT_EVENTS = Object.freeze({
+  ingested: 'operational-incident:ingested',
+  acknowledged: 'operational-incident:acknowledged',
+  remediationChanged: 'operational-incident:remediation-changed',
+  closed: 'operational-incident:closed',
+} as const);
+
+export type OperationalIncidentEvent =
+  (typeof OPERATIONAL_INCIDENT_EVENTS)[keyof typeof OPERATIONAL_INCIDENT_EVENTS];
+
 // Immutable operator requests plus append-only executor receipts — issue
 // 548bd73. These are deliberately separate from inventory telemetry: Mandible
 // records the desired safety action, while only the addressed executor may
 // attest acceptance and application.
-export const TASK_COMMAND_SCHEMA = 'task-command@1';
-export const TASK_COMMAND_EVENT_SCHEMA = 'task-command-event@1';
+export const TASK_COMMAND_SCHEMA_V1 = 'task-command@1';
+export const TASK_COMMAND_SCHEMA = 'task-command@2';
+export const TASK_COMMAND_EVENT_SCHEMA_V1 = 'task-command-event@1';
+export const TASK_COMMAND_EVENT_SCHEMA = 'task-command-event@2';
 
-export type TaskCommandVerb = 'disable';
-export type TaskCommandState = 'requested' | 'accepted' | 'applied' | 'rejected' | 'cancelled';
-export type TaskCommandExecutorEventType = 'accepted' | 'applied' | 'rejected';
+export type TaskCommandSchema =
+  | typeof TASK_COMMAND_SCHEMA_V1
+  | typeof TASK_COMMAND_SCHEMA;
+export type TaskCommandEventSchema =
+  | typeof TASK_COMMAND_EVENT_SCHEMA_V1
+  | typeof TASK_COMMAND_EVENT_SCHEMA;
+export type Sha256 = string;
+export type EmptyPayload = Record<string, never>;
+export type ExecutionHashPayload = { execution_hash: Sha256 };
+
+type TaskCommandCreateBase = {
+  request_key: string;
+  executor: string;
+  task_id: string;
+};
+
+export type TaskCommandCreateRequest =
+  | (TaskCommandCreateBase & {
+      schema: typeof TASK_COMMAND_SCHEMA_V1;
+      verb: 'disable';
+      payload: EmptyPayload;
+    })
+  | (TaskCommandCreateBase & {
+      schema: typeof TASK_COMMAND_SCHEMA;
+      verb: 'disable';
+      payload: EmptyPayload;
+    })
+  | (TaskCommandCreateBase & {
+      schema: typeof TASK_COMMAND_SCHEMA;
+      verb: 'dry_run' | 'enable';
+      payload: ExecutionHashPayload;
+    });
+
+export type TaskCommandVerb = 'disable' | 'dry_run' | 'enable';
+export type TaskCommandState =
+  | 'requested'
+  | 'accepted'
+  | 'started'
+  | 'applied'
+  | 'rejected'
+  | 'cancelled';
+export type TaskCommandEventType =
+  | 'accepted'
+  | 'started'
+  | 'progress'
+  | 'applied'
+  | 'rejected'
+  | 'cancelled';
 export type TaskCommandRejectionReason =
   | 'unknown_task'
   | 'unsupported_verb'
   | 'invalid_payload'
   | 'stale_target'
+  | 'busy'
+  | 'missing_receipt'
+  | 'stale_receipt'
   | 'policy_refused'
+  | 'dry_run_failed'
   | 'unknown';
+export type TaskCommandFailureClass =
+  | 'budget'
+  | 'collector'
+  | 'config'
+  | 'containment'
+  | 'limit'
+  | 'output-source'
+  | 'runner'
+  | 'schema'
+  | 'stale'
+  | 'supervisor'
+  | 'timeout'
+  | 'unavailable'
+  | 'validation';
+export type TaskCommandProgressStep =
+  | 'preflight_passed'
+  | 'collector_started'
+  | 'snapshot_validated'
+  | 'runner_started'
+  | 'runner_completed'
+  | 'output_validated';
+export type TaskCommandProgressSequence = 1 | 2 | 3 | 4 | 5 | 6;
 
-export type TaskCommandCreateRequest = {
-  schema: typeof TASK_COMMAND_SCHEMA;
-  request_key: string;
-  executor: string;
-  task_id: string;
-  verb: TaskCommandVerb;
-  payload: Record<string, never>;
-};
+type TaskCommandExecutorEventRequestV1 = {
+  schema: typeof TASK_COMMAND_EVENT_SCHEMA_V1;
+  event_digest: Sha256;
+} & (
+  | { event: 'accepted' }
+  | { event: 'applied'; no_op: boolean }
+  | { event: 'rejected'; reason: TaskCommandRejectionReason }
+);
 
-export type TaskCommandExecutorEventRequest = {
+type V2EventBase = {
   schema: typeof TASK_COMMAND_EVENT_SCHEMA;
-  event: TaskCommandExecutorEventType;
-  event_digest: string;
-  no_op?: boolean;
-  reason?: TaskCommandRejectionReason;
+  event_digest: Sha256;
 };
+
+export type TaskCommandExecutorEventRequestV2 =
+  | (V2EventBase & { event: 'accepted' })
+  | (V2EventBase & {
+      event: 'started';
+      execution_hash: Sha256;
+      run_id: string;
+    })
+  | (V2EventBase & {
+      event: 'progress';
+      sequence: TaskCommandProgressSequence;
+      step: TaskCommandProgressStep;
+    })
+  | (V2EventBase & { event: 'applied'; no_op: boolean })
+  | (V2EventBase & {
+      event: 'applied';
+      execution_hash: Sha256;
+      no_op: boolean;
+    })
+  | (V2EventBase & {
+      event: 'applied';
+      execution_hash: Sha256;
+      run_id: string;
+    })
+  | (V2EventBase & {
+      event: 'rejected';
+      reason: Exclude<TaskCommandRejectionReason, 'dry_run_failed'>;
+    })
+  | (V2EventBase & {
+      event: 'rejected';
+      reason: 'dry_run_failed';
+      failure_class: TaskCommandFailureClass;
+    });
+
+export type TaskCommandExecutorEventRequest =
+  | TaskCommandExecutorEventRequestV1
+  | TaskCommandExecutorEventRequestV2;
 
 export type TaskCommandEvent = {
   id: string;
-  event: TaskCommandState;
+  schema: TaskCommandEventSchema;
+  event: TaskCommandEventType;
   event_digest: string;
   payload: Record<string, unknown>;
   actor_user_id: string;
@@ -1665,13 +1935,13 @@ export type TaskCommandEvent = {
 
 export type TaskCommand = {
   id: string;
-  schema: typeof TASK_COMMAND_SCHEMA;
+  schema: TaskCommandSchema;
   request_key: string;
   request_digest: string;
   executor: string;
   task_id: string;
   verb: TaskCommandVerb;
-  payload: Record<string, never>;
+  payload: EmptyPayload | ExecutionHashPayload;
   requested_by_user_id: string;
   requested_by_slug: string | null;
   requested_at: number;

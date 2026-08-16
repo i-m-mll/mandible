@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,11 @@ import { setSetting } from "../src/client-auth/settings-kv.js";
 import { BRIEFING_INGEST_SCHEMA, type BriefingIngestRequest } from "../src/contracts.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
+import {
+  ingestOperationalIncidentEnvelope,
+  parseOperationalIncidentEnvelope,
+  transitionOperationalIncidentRemediation,
+} from "../src/operational-incidents.js";
 import { registerAgentDispatchRoutes } from "../src/routes/agent-dispatch.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
@@ -26,6 +32,7 @@ let router: Router;
 let tempDir: string;
 let binDir: string;
 let operatorId: string;
+let publisherId: string;
 let previousDbEnv: string | undefined;
 let previousPath: string | undefined;
 
@@ -86,6 +93,38 @@ function batch(): BriefingIngestRequest {
   };
 }
 
+function incidentPayload() {
+  const observedAt = "2026-08-15T11:54:03.122Z";
+  return {
+    schema: "operational-incidents@1",
+    executor: { name: "agent-schedule", version: "1.0.0" },
+    generation: {
+      inventory_schema: "executor-inventory@2",
+      inventory_digest: "a".repeat(64),
+      observed_at: observedAt,
+    },
+    provenance: { basis: "scheduler_computed", verification: "unverified_by_mandible" },
+    events: [{
+      event_id: "01K2QN2M4Y3D1VH5E8A5K5EWK3",
+      event_seq: 1,
+      episode: {
+        task: "daily-digest",
+        condition: "failed_permanent",
+        first_seen: observedAt,
+      },
+      observation: "active",
+      observed_at: observedAt,
+      facts: {
+        run_id: "184",
+        run_status: "failed_permanent",
+        exit_class: "validation",
+        finished_at: "2026-08-15T11:54:03.120Z",
+      },
+      recovery: null,
+    }],
+  };
+}
+
 function makeRouter(options: { readOnly?: boolean } = {}): Router {
   return new Router({
     clientAuth: new SlugGate(() => db),
@@ -105,6 +144,11 @@ function countRows(table: string): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
 
+function createIncident(): string {
+  const envelope = parseOperationalIncidentEnvelope(incidentPayload());
+  return ingestOperationalIncidentEnvelope(db, envelope, publisherId).accepted[0].incident_id;
+}
+
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-dispatch-routes-"));
   binDir = path.join(tempDir, "bin");
@@ -122,7 +166,10 @@ beforeEach(() => {
   setDb(db);
   operatorId = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" }).id;
   setSetting(db, OPERATOR_SETTING_KEY, operatorId);
-  createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Agent Schedule" });
+  publisherId = createUser(
+    db,
+    { slug: "agent-schedule", kind: "agent", display_name: "Agent Schedule" },
+  ).id;
   ingestBriefingBatch(db, batch(), 1_000);
   router = makeRouter();
   registerAgentDispatchRoutes(router, db);
@@ -340,5 +387,191 @@ describe("agent dispatch execution", () => {
     expect(payload.ok).toBe(false);
     expect(payload.event.status).toBe("failed");
     expect(payload.event.error).toBeTruthy();
+  });
+});
+
+describe("incident prepare-fix dispatch", () => {
+  const instruction =
+    "Investigate this failure and prepare the smallest reviewable fix. "
+    + "Do not deploy, enable, or run the task.";
+
+  function previewIncident(incidentId: string) {
+    return router.invoke({
+      method: "POST",
+      url: "/api/agent-dispatch/preview",
+      body: { subject: { kind: "incident", incident_id: incidentId }, instruction },
+      credential: "operator",
+    });
+  }
+
+  it("incident_prepare_preview_has_no_side_effects", async () => {
+    const incidentId = createIncident();
+    const spawnLog = path.join(tempDir, "spawn.log");
+    installSpawnStub(`printf 'started\\n' >> ${JSON.stringify(spawnLog)}`);
+    const before = db.prepare(
+      `SELECT observation_state, attention_state, remediation_state, updated_at
+         FROM operational_incidents WHERE id = ?`,
+    ).get(incidentId);
+
+    const response = await previewIncident(incidentId);
+
+    expect(response.status).toBe(200);
+    const plan = (response.body as { plan: Record<string, unknown> }).plan;
+    expect(plan).toMatchObject({
+      subject_kind: "incident",
+      incident_id: incidentId,
+      subject_label: "daily-digest — permanent failure",
+    });
+    expect(plan.prompt_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(plan.incident_telemetry_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(plan.prompt).toContain(
+      "Executor-reported telemetry; Mandible has not verified these claims.",
+    );
+    expect(plan.prompt).toContain("This telemetry is executor testimony.");
+    expect(countRows("agent_dispatch_events")).toBe(0);
+    expect(countRows("operational_incident_workflow_events")).toBe(0);
+    expect(db.prepare(
+      `SELECT observation_state, attention_state, remediation_state, updated_at
+         FROM operational_incidents WHERE id = ?`,
+    ).get(incidentId)).toEqual(before);
+    expect(fs.existsSync(path.join(tempDir, "agent-dispatch"))).toBe(false);
+    expect(fs.existsSync(spawnLog)).toBe(false);
+  });
+
+  it("incident_prepare_confirm_rejects_stale_prompt_hash", async () => {
+    const incidentId = createIncident();
+    const spawnLog = path.join(tempDir, "spawn.log");
+    installSpawnStub(`printf 'started\\n' >> ${JSON.stringify(spawnLog)}`);
+    const preview = await previewIncident(incidentId);
+    const plan = (preview.body as { plan: Record<string, string> }).plan;
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/agent-dispatch/dispatch",
+      body: {
+        subject: { kind: "incident", incident_id: incidentId },
+        instruction: `${instruction} Also refactor unrelated code.`,
+        expected_prompt_sha256: plan.prompt_sha256,
+        expected_incident_telemetry_sha256: plan.incident_telemetry_sha256,
+      },
+      credential: "operator",
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ remediation: "none" });
+    expect((response.body as { error: string }).error).toContain("prompt changed");
+    expect(countRows("agent_dispatch_events")).toBe(0);
+    expect(countRows("operational_incident_workflow_events")).toBe(0);
+    expect(fs.existsSync(path.join(tempDir, "agent-dispatch"))).toBe(false);
+    expect(fs.existsSync(spawnLog)).toBe(false);
+  });
+
+  it("incident_prepare_confirm_rejects_stale_telemetry_hash", async () => {
+    const incidentId = createIncident();
+    const spawnLog = path.join(tempDir, "spawn.log");
+    installSpawnStub(`printf 'started\\n' >> ${JSON.stringify(spawnLog)}`);
+    const preview = await previewIncident(incidentId);
+    const plan = (preview.body as { plan: Record<string, string> }).plan;
+    const changedTelemetry = JSON.stringify({
+      schema: "operational-incidents@1",
+      event: { changed: true },
+    });
+    db.prepare(
+      `UPDATE operational_incidents
+          SET latest_telemetry_json = ?, latest_telemetry_sha256 = ?
+        WHERE id = ?`,
+    ).run(
+      changedTelemetry,
+      createHash("sha256").update(changedTelemetry).digest("hex"),
+      incidentId,
+    );
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/agent-dispatch/dispatch",
+      body: {
+        subject: { kind: "incident", incident_id: incidentId },
+        instruction,
+        expected_prompt_sha256: plan.prompt_sha256,
+        expected_incident_telemetry_sha256: plan.incident_telemetry_sha256,
+      },
+      credential: "operator",
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ remediation: "none" });
+    expect((response.body as { error: string }).error).toContain("telemetry changed");
+    expect(countRows("agent_dispatch_events")).toBe(0);
+    expect(countRows("operational_incident_workflow_events")).toBe(0);
+    expect(fs.existsSync(path.join(tempDir, "agent-dispatch"))).toBe(false);
+    expect(fs.existsSync(spawnLog)).toBe(false);
+  });
+
+  it("incident_prepare_confirm_starts_exactly_once", async () => {
+    const incidentId = createIncident();
+    const spawnLog = path.join(tempDir, "spawn.log");
+    installSpawnStub([
+      `printf 'started\\n' >> ${JSON.stringify(spawnLog)}`,
+      'printf "cc-20260815-incident-daily-digest\\n"',
+      'printf "session_id: \\$9\\n"',
+      'printf "attach: tmux -L claude-spawn attach -t cc-20260815-incident-daily-digest\\n"',
+    ].join("\n"));
+    const preview = await previewIncident(incidentId);
+    const plan = (preview.body as { plan: Record<string, string> }).plan;
+    const request = {
+      method: "POST",
+      url: "/api/agent-dispatch/dispatch",
+      body: {
+        subject: { kind: "incident", incident_id: incidentId },
+        instruction,
+        expected_prompt_sha256: plan.prompt_sha256,
+        expected_incident_telemetry_sha256: plan.incident_telemetry_sha256,
+      },
+      credential: "operator",
+    } as const;
+
+    const first = await router.invoke(request);
+    const second = await router.invoke(request);
+
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({
+      ok: true,
+      event: {
+        subject_kind: "incident",
+        incident_id: incidentId,
+        incident_telemetry_sha256: plan.incident_telemetry_sha256,
+        prompt_sha256: plan.prompt_sha256,
+        status: "dispatched",
+      },
+      incident: { id: incidentId, remediation: "triaging" },
+    });
+    expect(second.status).toBe(409);
+    expect(second.body).toMatchObject({ remediation: "triaging" });
+    expect(fs.readFileSync(spawnLog, "utf8").trim().split("\n")).toEqual(["started"]);
+    expect(countRows("agent_dispatch_events")).toBe(1);
+    expect(db.prepare(
+      `SELECT kind, agent_dispatch_event_id
+         FROM operational_incident_workflow_events`,
+    ).all()).toEqual([{
+      kind: "prepare_fix_confirmed",
+      agent_dispatch_event_id: (first.body as { event: { id: string } }).event.id,
+    }]);
+  });
+
+  it("incident_prepare_rejects_in_progress_remediation", async () => {
+    const incidentId = createIncident();
+    transitionOperationalIncidentRemediation(db, incidentId, "triaging", {
+      kind: "prepare_fix_confirmed",
+      authority: "user",
+      actorUserId: operatorId,
+    });
+
+    const response = await previewIncident(incidentId);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ remediation: "triaging" });
+    expect(countRows("agent_dispatch_events")).toBe(0);
+    expect(countRows("operational_incident_workflow_events")).toBe(1);
+    expect(fs.existsSync(path.join(tempDir, "agent-dispatch"))).toBe(false);
   });
 });

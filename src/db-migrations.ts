@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { compressContent } from "./compression.js";
 import { getDaemonLogger } from "./daemon-log.js";
-import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
+import {
+  BASELINE_SCHEMA_VERSION,
+  createFreshSchemaBaseline,
+  TASK_COMMAND_EVENTS_V2_SQL,
+  TASK_COMMAND_REQUESTS_V2_SQL,
+  TASK_COMMAND_V2_INDEX_SQL,
+} from "./db-baseline.js";
 import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
 import { encodeRecurringRevisionContent } from "./feedback/store.js";
@@ -4092,8 +4098,344 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
          position = excluded.position,
          updated_at = excluded.updated_at`,
     ],
+  },
+  {
+    version: 133,
+    name: "feedback_collection_expiry",
+    // Issue 5d54f61 — recurring-feed expiry belongs to the collection row;
+    // bounded-ask expiry remains owned by feedback_ask_sessions. The guarded
+    // hook also makes ask expiry nullable so both kinds can be un-expired.
+    statements: [],
+  },
+  {
+    version: 134,
+    name: "console_session_run_options",
+    statements: [],
+  },
+  {
+    version: 135,
+    name: "task_command_v2",
+    statements: [],
+  },
+  {
+    version: 136,
+    name: "operational_incidents",
+    statements: [
+      `CREATE TABLE operational_incidents (
+        id                         TEXT PRIMARY KEY,
+        executor                   TEXT NOT NULL,
+        task                       TEXT NOT NULL,
+        condition                  TEXT NOT NULL
+          CHECK(condition IN (
+            'failed_permanent',
+            'timeout',
+            'circuit_open',
+            'publish_stale',
+            'publish_quarantined',
+            'containment_blocked'
+          )),
+        first_seen                 INTEGER NOT NULL,
+
+        observation_state          TEXT NOT NULL
+          CHECK(observation_state IN ('active','recovered')),
+        attention_state            TEXT NOT NULL DEFAULT 'unacknowledged'
+          CHECK(attention_state IN ('unacknowledged','acknowledged')),
+        remediation_state          TEXT NOT NULL DEFAULT 'none'
+          CHECK(remediation_state IN (
+            'none',
+            'triaging',
+            'fix_prepared',
+            'awaiting_auth',
+            'auth_expired',
+            'awaiting_deploy',
+            'awaiting_verification',
+            'complete'
+          )),
+
+        latest_event_seq           INTEGER NOT NULL CHECK(latest_event_seq IN (1,2)),
+        latest_observed_at         INTEGER NOT NULL,
+        latest_event_id            TEXT NOT NULL,
+        latest_telemetry_json      TEXT NOT NULL CHECK(json_valid(latest_telemetry_json)),
+        latest_telemetry_sha256    TEXT NOT NULL CHECK(length(latest_telemetry_sha256) = 64),
+        provenance                 TEXT NOT NULL DEFAULT 'executor_asserted_unverified'
+          CHECK(provenance = 'executor_asserted_unverified'),
+        posted_by_user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+
+        recovered_at               INTEGER,
+        recovery_run_id            TEXT,
+        acknowledged_at            INTEGER,
+        acknowledged_by_user_id    TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        resolved_at                INTEGER,
+        resolution_kind            TEXT
+          CHECK(resolution_kind IS NULL OR
+                resolution_kind IN ('successful_run','operator_closure')),
+        operator_closed_at         INTEGER,
+        operator_closed_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+
+        UNIQUE(executor, task, condition, first_seen),
+
+        CHECK(
+          (observation_state = 'active'
+            AND recovered_at IS NULL AND recovery_run_id IS NULL)
+          OR
+          (observation_state = 'recovered'
+            AND recovered_at IS NOT NULL AND recovery_run_id IS NOT NULL)
+        ),
+        CHECK(
+          (attention_state = 'unacknowledged'
+            AND acknowledged_at IS NULL AND acknowledged_by_user_id IS NULL)
+          OR
+          (attention_state = 'acknowledged'
+            AND acknowledged_at IS NOT NULL AND acknowledged_by_user_id IS NOT NULL)
+        ),
+        CHECK(
+          (resolution_kind IS NULL AND resolved_at IS NULL)
+          OR
+          (resolution_kind IS NOT NULL AND resolved_at IS NOT NULL)
+        ),
+        CHECK(
+          resolution_kind != 'successful_run'
+          OR observation_state = 'recovered'
+        ),
+        CHECK(
+          resolution_kind != 'operator_closure'
+          OR (operator_closed_at IS NOT NULL
+              AND operator_closed_by_user_id IS NOT NULL)
+        ),
+        CHECK(
+          (resolved_at IS NULL AND remediation_state != 'complete')
+          OR
+          (resolved_at IS NOT NULL AND remediation_state = 'complete')
+        )
+      )`,
+      `CREATE INDEX idx_operational_incidents_queue
+        ON operational_incidents(
+          resolved_at,
+          observation_state,
+          attention_state,
+          first_seen DESC,
+          id
+        )`,
+      `CREATE INDEX idx_operational_incidents_task_history
+        ON operational_incidents(executor, task, condition, first_seen DESC)`,
+      `CREATE INDEX idx_operational_incidents_badge
+        ON operational_incidents(attention_state, first_seen DESC)
+        WHERE resolved_at IS NULL
+          AND observation_state = 'active'
+          AND attention_state = 'unacknowledged'`,
+      `CREATE TABLE operational_incident_observation_events (
+        id                       TEXT PRIMARY KEY,
+        incident_id              TEXT NOT NULL
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        source_event_id          TEXT NOT NULL UNIQUE,
+        event_seq                INTEGER NOT NULL CHECK(event_seq IN (1,2)),
+        observation_state        TEXT NOT NULL
+          CHECK(observation_state IN ('active','recovered')),
+        observed_at              INTEGER NOT NULL,
+        inventory_digest         TEXT NOT NULL CHECK(length(inventory_digest) = 64),
+        telemetry_json           TEXT NOT NULL CHECK(json_valid(telemetry_json)),
+        telemetry_sha256         TEXT NOT NULL CHECK(length(telemetry_sha256) = 64),
+        posted_by_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        received_at              INTEGER NOT NULL,
+        applied                  INTEGER NOT NULL CHECK(applied IN (0,1)),
+        ignored_reason           TEXT
+          CHECK(ignored_reason IS NULL OR ignored_reason IN ('stale_sequence')),
+        UNIQUE(incident_id, event_seq),
+        CHECK(
+          (event_seq = 1 AND observation_state = 'active')
+          OR
+          (event_seq = 2 AND observation_state = 'recovered')
+        ),
+        CHECK(
+          (applied = 1 AND ignored_reason IS NULL)
+          OR
+          (applied = 0 AND ignored_reason IS NOT NULL)
+        )
+      )`,
+      `CREATE INDEX idx_operational_incident_observations_incident
+        ON operational_incident_observation_events(incident_id, event_seq)`,
+      `CREATE INDEX idx_operational_incident_observations_received
+        ON operational_incident_observation_events(received_at DESC, id)`,
+      `CREATE TABLE agent_dispatch_events_v136 (
+        id                        TEXT PRIMARY KEY,
+        subject_kind              TEXT NOT NULL
+          CHECK(subject_kind IN ('finding','issue','incident')),
+        candidate_id              TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        revision_id               TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        comment_id                TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
+        issue_id                  TEXT,
+        incident_id               TEXT
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        incident_telemetry_sha256 TEXT
+          CHECK(incident_telemetry_sha256 IS NULL
+                OR length(incident_telemetry_sha256) = 64),
+        actor_user_id             TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        provider                  TEXT NOT NULL DEFAULT 'claude',
+        instruction               TEXT NOT NULL,
+        cwd                       TEXT NOT NULL,
+        prompt_path               TEXT,
+        prompt_sha256             TEXT,
+        status                    TEXT NOT NULL
+                                  CHECK(status IN ('dispatching','dispatched','failed')),
+        session_handle            TEXT,
+        session_id                TEXT,
+        attach_command            TEXT,
+        error                     TEXT,
+        created_at                INTEGER NOT NULL,
+        settled_at                INTEGER,
+        CHECK(
+          (
+            subject_kind = 'finding'
+            AND candidate_id IS NOT NULL
+            AND revision_id IS NOT NULL
+            AND issue_id IS NULL
+            AND incident_id IS NULL
+          )
+          OR
+          (
+            subject_kind = 'issue'
+            AND issue_id IS NOT NULL
+            AND candidate_id IS NULL
+            AND revision_id IS NULL
+            AND incident_id IS NULL
+          )
+          OR
+          (
+            subject_kind = 'incident'
+            AND incident_id IS NOT NULL
+            AND incident_telemetry_sha256 IS NOT NULL
+            AND candidate_id IS NULL
+            AND revision_id IS NULL
+            AND issue_id IS NULL
+          )
+        )
+      )`,
+      `INSERT INTO agent_dispatch_events_v136 (
+        id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+        incident_id, incident_telemetry_sha256, actor_user_id, provider,
+        instruction, cwd, prompt_path, prompt_sha256, status, session_handle,
+        session_id, attach_command, error, created_at, settled_at
+      ) SELECT
+        id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+        NULL, NULL, actor_user_id, provider, instruction, cwd, prompt_path,
+        prompt_sha256, status, session_handle, session_id, attach_command,
+        error, created_at, settled_at
+      FROM agent_dispatch_events`,
+      `DROP TABLE agent_dispatch_events`,
+      `ALTER TABLE agent_dispatch_events_v136 RENAME TO agent_dispatch_events`,
+      `CREATE INDEX idx_agent_dispatch_events_candidate
+        ON agent_dispatch_events(candidate_id, created_at DESC)`,
+      `CREATE INDEX idx_agent_dispatch_events_issue
+        ON agent_dispatch_events(issue_id, created_at DESC)`,
+      `CREATE INDEX idx_agent_dispatch_events_comment
+        ON agent_dispatch_events(comment_id)`,
+      `CREATE INDEX idx_agent_dispatch_events_incident
+        ON agent_dispatch_events(incident_id, created_at DESC)`,
+      `CREATE TABLE operational_incident_workflow_events (
+        id                       TEXT PRIMARY KEY,
+        incident_id              TEXT NOT NULL
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        kind                     TEXT NOT NULL
+          CHECK(kind IN (
+            'attention_acknowledged',
+            'operator_closed',
+            'prepare_fix_confirmed',
+            'dispatch_failed',
+            'remediation_transition'
+          )),
+        authority                TEXT NOT NULL CHECK(authority IN ('user','server')),
+        actor_user_id            TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        from_attention_state     TEXT
+          CHECK(from_attention_state IS NULL OR
+                from_attention_state IN ('unacknowledged','acknowledged')),
+        to_attention_state       TEXT
+          CHECK(to_attention_state IS NULL OR
+                to_attention_state IN ('unacknowledged','acknowledged')),
+        from_remediation_state   TEXT
+          CHECK(from_remediation_state IS NULL OR
+                from_remediation_state IN (
+                  'none','triaging','fix_prepared','awaiting_auth','auth_expired',
+                  'awaiting_deploy','awaiting_verification','complete'
+                )),
+        to_remediation_state     TEXT
+          CHECK(to_remediation_state IS NULL OR
+                to_remediation_state IN (
+                  'none','triaging','fix_prepared','awaiting_auth','auth_expired',
+                  'awaiting_deploy','awaiting_verification','complete'
+                )),
+
+        agent_dispatch_event_id  TEXT
+          REFERENCES agent_dispatch_events(id) ON DELETE RESTRICT,
+        auth_request_id          TEXT,
+        deploy_ref               TEXT,
+        verification_run_id      TEXT,
+        reason                   TEXT,
+        metadata_json            TEXT CHECK(metadata_json IS NULL OR json_valid(metadata_json)),
+        created_at               INTEGER NOT NULL,
+
+        CHECK(authority != 'user' OR actor_user_id IS NOT NULL)
+      )`,
+      `CREATE INDEX idx_operational_incident_workflow_incident
+        ON operational_incident_workflow_events(incident_id, created_at, id)`,
+      `CREATE INDEX idx_operational_incident_workflow_dispatch
+        ON operational_incident_workflow_events(agent_dispatch_event_id)
+        WHERE agent_dispatch_event_id IS NOT NULL`,
+      `CREATE INDEX idx_operational_incident_workflow_auth
+        ON operational_incident_workflow_events(auth_request_id)
+        WHERE auth_request_id IS NOT NULL`,
+    ],
   }
 ];
+
+function hasColumn(db: Db, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+    .some((entry) => entry.name === column);
+}
+
+function verifyOperationalIncidentV136Schema(db: Db): void {
+  for (const table of [
+    "operational_incidents",
+    "operational_incident_observation_events",
+    "operational_incident_workflow_events",
+    "agent_dispatch_events",
+  ]) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 136 verification: ${table} is missing`);
+    }
+  }
+  for (const column of ["incident_id", "incident_telemetry_sha256"]) {
+    if (!hasColumn(db, "agent_dispatch_events", column)) {
+      throw new Error(`migration 136 verification: agent_dispatch_events.${column} is missing`);
+    }
+  }
+  const dispatchSql = (db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_dispatch_events'",
+  ).get() as { sql: string } | undefined)?.sql ?? "";
+  if (!dispatchSql.includes("'finding','issue','incident'")) {
+    throw new Error("migration 136 verification: incident dispatch subject CHECK is missing");
+  }
+  for (const index of [
+    "idx_operational_incidents_queue",
+    "idx_operational_incidents_task_history",
+    "idx_operational_incidents_badge",
+    "idx_operational_incident_observations_incident",
+    "idx_operational_incident_observations_received",
+    "idx_agent_dispatch_events_incident",
+    "idx_operational_incident_workflow_incident",
+    "idx_operational_incident_workflow_dispatch",
+    "idx_operational_incident_workflow_auth",
+  ]) {
+    const exists = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+    ).get(index);
+    if (!exists) throw new Error(`migration 136 verification: ${index} is missing`);
+  }
+}
 
 export function assertMigrationSequence(migrations: readonly Migration[] = MIGRATIONS): void {
   const seen = new Map<number, string>();
@@ -4208,7 +4550,23 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 131) {
         ensureManagedReminderOccurrenceAcknowledgementColumns(db);
       }
-      for (const statement of migration.statements) {
+      if (migration.version === 134) {
+        ensureConsoleSessionRunOptionsColumn(db);
+      }
+      if (migration.version === 135) {
+        migrateTaskCommandV2(db);
+      }
+      let statements = migration.statements;
+      if (migration.name === "operational_incidents" && tableExists(db, "operational_incidents")) {
+        // Historical replay tests deliberately rewind schema_version on a fresh
+        // head schema. If v126 rebuilt the dispatch table during that replay,
+        // restore only the v136 dispatch shape; otherwise the complete v136
+        // schema is already present and the migration is a verified no-op.
+        statements = hasColumn(db, "agent_dispatch_events", "incident_id")
+          ? []
+          : migration.statements.slice(7, 15);
+      }
+      for (const statement of statements) {
         db.exec(statement);
       }
       if (migration.version === 103) {
@@ -4216,6 +4574,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 127) {
         ensureBriefingIngestRequestColumn(db);
+      }
+      if (migration.name === "operational_incidents") {
+        verifyOperationalIncidentV136Schema(db);
       }
       setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
     }
@@ -4510,6 +4871,12 @@ export function migrate(db: Db): void {
     migrateFeedbackRecurringCutover(db);
   }
   applySchemaMigrations(db, afterV126);
+
+  // v133 was exercised by development daemons before release, under its
+  // pre-integration number. Converge those head-version databases too: remove
+  // any duplicated bounded-ask expiry and restore nullable ask-session expiry
+  // without stacking a new migration.
+  ensureFeedbackCollectionExpiryColumn(db);
 
   const v129AuthMergeSucceededPostMigration = "v129_backfill_auth_merge_succeeded_facts";
   if (
@@ -6778,7 +7145,17 @@ function migrateFeedbackRecurringCutover(db: Db): void {
           created_at     INTEGER NOT NULL,
           settled_at     INTEGER
         );
-        INSERT INTO agent_dispatch_events_v126 SELECT * FROM agent_dispatch_events;
+        INSERT INTO agent_dispatch_events_v126 (
+          id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+          actor_user_id, provider, instruction, cwd, prompt_path, prompt_sha256,
+          status, session_handle, session_id, attach_command, error, created_at,
+          settled_at
+        ) SELECT
+          id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+          actor_user_id, provider, instruction, cwd, prompt_path, prompt_sha256,
+          status, session_handle, session_id, attach_command, error, created_at,
+          settled_at
+        FROM agent_dispatch_events;
         DROP TABLE agent_dispatch_events;
         ALTER TABLE agent_dispatch_events_v126 RENAME TO agent_dispatch_events;
         CREATE INDEX idx_agent_dispatch_events_candidate
@@ -8310,6 +8687,105 @@ function ensureConsoleTransportLaneColumn(db: Db): void {
   );
 }
 
+function ensureConsoleSessionRunOptionsColumn(db: Db): void {
+  if (!tableExists(db, "console_sessions")) return;
+  const columns = tableColumnNames(db, "console_sessions");
+  if (columns.has("run_options_json")) return;
+
+  db.exec(
+    `ALTER TABLE console_sessions ADD COLUMN run_options_json TEXT NOT NULL DEFAULT '{}'
+       CHECK(json_valid(run_options_json) AND json_type(run_options_json) = 'object')`,
+  );
+}
+
+function migrateTaskCommandV2(db: Db): void {
+  if (!tableExists(db, "task_command_requests") || !tableExists(db, "task_command_events")) {
+    throw new Error("task-command v2 migration requires both v1 command tables");
+  }
+  const requestColumns = tableColumnNames(db, "task_command_requests");
+  const eventColumns = tableColumnNames(db, "task_command_events");
+  if (eventColumns.has("schema_id") && eventColumns.has("event_ordinal")) {
+    if (!requestColumns.has("schema_id")) {
+      throw new Error("task-command v2 schema is partially materialized");
+    }
+    return;
+  }
+  if (eventColumns.has("schema_id") || eventColumns.has("event_ordinal")) {
+    throw new Error("task-command v2 event schema is partially materialized");
+  }
+
+  const requestProjection = () => db.prepare(
+    `SELECT id, schema_id, request_key, request_digest, executor_name, task_id,
+            verb, payload_json, requested_by_user_id, requested_at
+       FROM task_command_requests ORDER BY rowid`,
+  ).all();
+  const eventProjection = () => db.prepare(
+    `SELECT id, command_id, event_digest, event_type, payload_json, no_op,
+            rejection_reason, actor_user_id, created_at
+       FROM task_command_events ORDER BY rowid`,
+  ).all();
+  const beforeRequests = JSON.stringify(requestProjection());
+  const beforeEvents = JSON.stringify(eventProjection());
+  const beforeRequestCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_requests",
+  ).get() as { count: number }).count;
+  const beforeEventCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_events",
+  ).get() as { count: number }).count;
+
+  db.exec("ALTER TABLE task_command_requests RENAME TO task_command_requests_v134");
+  db.exec("ALTER TABLE task_command_events RENAME TO task_command_events_v134");
+  db.exec(TASK_COMMAND_REQUESTS_V2_SQL);
+  db.exec(TASK_COMMAND_EVENTS_V2_SQL);
+  db.exec(`
+    INSERT INTO task_command_requests (
+      id, schema_id, request_key, request_digest, executor_name, task_id,
+      verb, payload_json, requested_by_user_id, requested_at
+    )
+    SELECT id, schema_id, request_key, request_digest, executor_name, task_id,
+           verb, payload_json, requested_by_user_id, requested_at
+      FROM task_command_requests_v134;
+
+    INSERT INTO task_command_events (
+      id, command_id, schema_id, event_ordinal, event_digest, event_type,
+      payload_json, no_op, rejection_reason, actor_user_id, created_at
+    )
+    SELECT id, command_id, 'task-command-event@1',
+           CASE WHEN event_type = 'accepted' THEN 0 ELSE 8 END,
+           event_digest, event_type, payload_json, no_op, rejection_reason,
+           actor_user_id, created_at
+      FROM task_command_events_v134;
+
+    DROP TABLE task_command_events_v134;
+    DROP TABLE task_command_requests_v134;
+  `);
+  for (const statement of TASK_COMMAND_V2_INDEX_SQL) db.exec(statement);
+
+  const afterRequestCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_requests",
+  ).get() as { count: number }).count;
+  const afterEventCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_events",
+  ).get() as { count: number }).count;
+  if (beforeRequestCount !== afterRequestCount || beforeEventCount !== afterEventCount) {
+    throw new Error("task-command v2 migration changed command or event row counts");
+  }
+  if (beforeRequests !== JSON.stringify(requestProjection())) {
+    throw new Error("task-command v2 migration changed a v1 command projection");
+  }
+  if (beforeEvents !== JSON.stringify(eventProjection())) {
+    throw new Error("task-command v2 migration changed a v1 event projection");
+  }
+  const foreignKeyFailures = db.pragma("foreign_key_check") as unknown[];
+  if (foreignKeyFailures.length > 0) {
+    throw new Error(`task-command v2 migration foreign_key_check failed: ${JSON.stringify(foreignKeyFailures)}`);
+  }
+  const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+    throw new Error(`task-command v2 migration integrity_check failed: ${JSON.stringify(integrity)}`);
+  }
+}
+
 function ensureMessageParamsThinkingEffortColumn(db: Db): void {
   if (!tableExists(db, "message_params")) return;
   const columns = tableColumnNames(db, "message_params");
@@ -9435,6 +9911,86 @@ function ensureBriefingIngestRequestColumn(db: Db): void {
   );
 }
 
+function ensureFeedbackCollectionExpiryColumn(db: Db): void {
+  if (!tableExists(db, "feedback_collections")) return;
+
+  const columns = db.prepare("PRAGMA table_info(feedback_collections)").all() as
+    Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "expires_at")) {
+    db.exec("ALTER TABLE feedback_collections ADD COLUMN expires_at INTEGER");
+  }
+  db.exec(
+    "UPDATE feedback_collections SET expires_at = NULL " +
+    "WHERE kind = 'bounded_ask' AND expires_at IS NOT NULL",
+  );
+
+  if (tableExists(db, "feedback_ask_sessions")) {
+    const askColumns = db.prepare("PRAGMA table_info(feedback_ask_sessions)").all() as
+      Array<{ name: string; notnull: number }>;
+    if (askColumns.find((column) => column.name === "expires_at")?.notnull === 1) {
+      const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+      db.pragma("foreign_keys = OFF");
+      try {
+        db.transaction(() => {
+          db.exec(`
+            DROP INDEX IF EXISTS idx_feedback_ask_sessions_requester;
+            DROP INDEX IF EXISTS idx_feedback_ask_sessions_expiry;
+            ALTER TABLE feedback_ask_sessions RENAME TO feedback_ask_sessions_v131;
+            CREATE TABLE feedback_ask_sessions (
+              collection_id             TEXT PRIMARY KEY
+                                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+              requester_user_id         TEXT NOT NULL
+                                            REFERENCES users(id) ON DELETE RESTRICT,
+              requester_session_id      TEXT NOT NULL
+                                            REFERENCES sessions(id) ON DELETE RESTRICT,
+              request_key               TEXT NOT NULL CHECK(trim(request_key) != ''),
+              request_digest            TEXT NOT NULL CHECK(trim(request_digest) != ''),
+              responder_user_ids_json   TEXT NOT NULL
+                                            CHECK(json_valid(responder_user_ids_json)
+                                              AND json_type(responder_user_ids_json) = 'array'),
+              expires_at                INTEGER,
+              retention_expires_at      INTEGER,
+              created_at                INTEGER NOT NULL,
+              UNIQUE(requester_user_id, requester_session_id, request_key),
+              CHECK(expires_at IS NULL OR expires_at > created_at),
+              CHECK(expires_at IS NULL
+                OR retention_expires_at IS NULL
+                OR retention_expires_at >= expires_at)
+            );
+            INSERT INTO feedback_ask_sessions (
+              collection_id, requester_user_id, requester_session_id, request_key, request_digest,
+              responder_user_ids_json, expires_at, retention_expires_at, created_at
+            )
+            SELECT collection_id, requester_user_id, requester_session_id, request_key, request_digest,
+                   responder_user_ids_json, expires_at, retention_expires_at, created_at
+              FROM feedback_ask_sessions_v131;
+            DROP TABLE feedback_ask_sessions_v131;
+            CREATE INDEX idx_feedback_ask_sessions_requester
+              ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC);
+            CREATE INDEX idx_feedback_ask_sessions_expiry
+              ON feedback_ask_sessions(expires_at);
+          `);
+        })();
+      } finally {
+        if (previousForeignKeys) {
+          db.pragma("foreign_keys = ON");
+        }
+      }
+
+      const violations = db.prepare("PRAGMA foreign_key_check").all();
+      if (violations.length > 0) {
+        throw new Error(
+          `feedback ask-session expiry migration left ${violations.length} foreign key violations`,
+        );
+      }
+    }
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_feedback_collections_expiry
+       ON feedback_collections(expires_at)`,
+  );
+}
+
 function tableColumnNames(db: Db, table: string): Set<string> {
   const allowed = new Set([
     "artifact",
@@ -9464,6 +10020,8 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "session_projects",
     "sessions",
     "space_exports",
+    "task_command_events",
+    "task_command_requests",
     "work_units",
     "workflow_ingest_state",
   ]);

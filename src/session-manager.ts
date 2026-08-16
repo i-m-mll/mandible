@@ -12,6 +12,8 @@ import type {
   PermissionDecision,
   PermissionRequest,
   UsageAwareBackend,
+  ToolPolicyBackend,
+  PresetAwareBackend,
 } from "./agentic-backend.js";
 import { getDb, type Db } from "./db.js";
 import {
@@ -24,9 +26,9 @@ import {
 import { SessionRegistry } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
-import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
+import { SDKBackend, getSdkRunOptionDeclaration, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
-import { AcpBackend, type AcpBackendOptions } from "./backends/acp-backend.js";
+import { AcpBackend, getAcpRunOptionDeclaration, type AcpBackendOptions } from "./backends/acp-backend.js";
 import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import {
   defaultCodexThreadArchiver,
@@ -44,11 +46,19 @@ import type {
   ConsoleTransportLane,
   Logger,
 } from "./types.js";
-import { replaceSessionInstructionArtifacts } from "./presets.js";
+import { listSessionInstructionArtifacts, replaceSessionInstructionArtifacts } from "./presets.js";
 import type { ClientAuthenticator } from "./client-auth/authenticator.js";
 import { getOperator } from "./users/store.js";
 import { resolveSessionOwnerUserId } from "./session-ownership.js";
 import { AttributionReadResolver } from "./identity/read-projection.js";
+import {
+  declaredRunOptionsSnapshot,
+  type AppliedSessionRunOption,
+  type BackendRunOptionDeclaration,
+  type SessionRunOptionValue,
+  type SessionRunOptionsPatch,
+  type SessionRunOptionsSnapshot,
+} from "./session-run-options.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -72,6 +82,7 @@ interface ConsoleSessionRow {
   stopped_at: number | null;
   backend_type: string | null;
   allowed_tools: string | null;
+  run_options_json: string;
   mandible_session_id: string | null;
   resume_at_message: string | null;
   channel_enabled: number;
@@ -298,6 +309,16 @@ function parseAllowedTools(raw: string | null): string[] | null {
   return null;
 }
 
+function parseRunOptions(raw: string | null | undefined): Record<string, SessionRunOptionValue> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, SessionRunOptionValue>
+      : {};
+  } catch { return {}; }
+}
+
 function rowToSession(
   row: ConsoleSessionRow,
   attributionResolver: AttributionReadResolver,
@@ -338,6 +359,7 @@ function rowToSession(
     transport_lane,
     transport_badge: transportLaneBadge(transport_lane),
     allowed_tools: parseAllowedTools(row.allowed_tools),
+    run_options: parseRunOptions(row.run_options_json),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
     channel_enabled: transport_lane === "channel" || Boolean(row.channel_enabled),
@@ -397,6 +419,7 @@ export class SessionManager {
   // constructed. Binding edits must never turn previously admitted plain work
   // into credential-bearing work (or create a temporary unbound auth window).
   private clientIdentities = new Map<string, SessionClientIdentity | null>();
+  private initialRunOptionApplications = new Map<string, Promise<SessionRunOptionsSnapshot>>();
 
   constructor(
     _db: unknown,
@@ -561,8 +584,8 @@ export class SessionManager {
          (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
           backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled,
-          transport_lane, owner_user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          transport_lane, owner_user_id, run_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
@@ -585,6 +608,7 @@ export class SessionManager {
       channel_enabled,
       transport_lane,
       ownerUserId,
+      JSON.stringify({}),
     );
 
     const session = rowToSession({
@@ -614,6 +638,7 @@ export class SessionManager {
       channel_enabled,
       transport_lane,
       owner_user_id: ownerUserId,
+      run_options_json: JSON.stringify({}),
     }, new AttributionReadResolver(db));
 
     // Issue 2181ffd — Store instruction attachments as pinned artifact versions.
@@ -624,8 +649,8 @@ export class SessionManager {
     const backend = this.createBackend(session, backend_type, { allowUnpersistedOperator: allowOperator });
 
     // Bug: 61bee4e — If presetIds are set, update the SDK backend options
-    if (pinnedPresetIds.length > 0 && backend instanceof SDKBackend) {
-      backend.updateOptions({ presetIds: pinnedPresetIds });
+    if (pinnedPresetIds.length > 0 && this.isPresetAwareBackend(backend)) {
+      backend.setPresetIds(pinnedPresetIds);
     }
 
     // Bug: 790433d — If presetIds are set on a PTY session, pass them so the
@@ -638,8 +663,51 @@ export class SessionManager {
     this.wireBackend(backend);
     this.evictExcessTerminalBackends(id);
 
+    if (input.runOptions && Object.keys(input.runOptions).length > 0 && this.isConfigurableBackend(backend)) {
+      const promise = backend.applyRunOptions({ values: input.runOptions }, { phase: "initial" })
+        .then((result) => {
+          this.persistAppliedRunOptions(id, result.applied);
+          return result.snapshot;
+        });
+      this.initialRunOptionApplications.set(id, promise);
+      void promise.finally(() => this.initialRunOptionApplications.delete(id)).catch(() => undefined);
+    }
+
     broadcast("console:session:created", { session });
     return session;
+  }
+
+  async waitForInitialRunOptions(id: string): Promise<SessionRunOptionsSnapshot> {
+    const pending = this.initialRunOptionApplications.get(id);
+    if (pending) return pending;
+    return this.getRunOptions(id);
+  }
+
+  describeRunOptions(backendType: BackendType, command: string): SessionRunOptionsSnapshot {
+    return declaredRunOptionsSnapshot(this.describeRunOptionDeclaration(backendType, command));
+  }
+
+  describeRunOptionDeclaration(backendType: BackendType, command: string): BackendRunOptionDeclaration {
+    return backendType === "acp"
+      ? getAcpRunOptionDeclaration(command)
+      : backendType === "sdk"
+        ? getSdkRunOptionDeclaration(command)
+        : { backendType, command, options: [] };
+  }
+
+  getRunOptions(id: string): SessionRunOptionsSnapshot {
+    const backend = this.requireSession(id);
+    return this.isConfigurableBackend(backend)
+      ? backend.getRunOptions()
+      : declaredRunOptionsSnapshot({ backendType: backend.meta.backend_type, command: backend.meta.command, options: [] });
+  }
+
+  getSessionOptionsControls(id: string): { allowedTools: string[] | null; presetIds: string[] } {
+    const backend = this.requireSession(id);
+    return {
+      allowedTools: backend.meta.allowed_tools,
+      presetIds: listSessionInstructionArtifacts(getDb(), id).map((attachment) => attachment.preset_id),
+    };
   }
 
   get(id: string): AgenticBackend | undefined {
@@ -771,35 +839,83 @@ export class SessionManager {
     return nextMeta;
   }
 
-  updateOptions(id: string, options: SDKBackendOptions | AcpBackendOptions): ConsoleSession {
+  async updateOptions(
+    id: string,
+    options: {
+      runOptions?: Record<string, SessionRunOptionValue>;
+      allowedTools?: string[];
+      presetIds?: string[];
+      model?: string;
+      thinkingEffort?: SDKBackendOptions["thinkingEffort"];
+      permissionMode?: SDKBackendOptions["permissionMode"];
+      maxTurns?: number;
+      maxCostUsd?: number;
+      systemPrompt?: string;
+      settingSourcesOverride?: string[];
+    },
+  ): Promise<{
+    session: ConsoleSession;
+    runOptions: SessionRunOptionsSnapshot;
+    applied: readonly AppliedSessionRunOption[];
+    mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+  }> {
     const session = this.requireSession(id);
-    const requestedPresetIds = (options as SDKBackendOptions).presetIds;
-    const safeOptions = requestedPresetIds !== undefined
-      ? {
-          ...options,
-          presetIds: replaceSessionInstructionArtifacts(getDb(), id, requestedPresetIds),
-        } as SDKBackendOptions | AcpBackendOptions
-      : options;
-    const patch: Partial<Pick<ConsoleSession, "args" | "allowed_tools">> = {};
-
-    if (typeof safeOptions.model === "string") {
-      const nextArgs = stripModelArgs(session.meta.args);
-      const model = safeOptions.model.trim();
-      if (model) {
-        nextArgs.push("--model", model);
+    if (options.allowedTools !== undefined && this.isToolPolicyBackend(session)) {
+      await session.setAllowedTools(options.allowedTools);
+    }
+    let pinnedPresetIds: string[] = [];
+    if (options.presetIds !== undefined) {
+      pinnedPresetIds = replaceSessionInstructionArtifacts(getDb(), id, options.presetIds);
+      if (this.isPresetAwareBackend(session)) await session.setPresetIds(pinnedPresetIds);
+    }
+    const values: Record<string, SessionRunOptionValue> = { ...(options.runOptions ?? {}) };
+    if (options.model !== undefined) values.model = options.model;
+    if (session.meta.backend_type === "sdk") {
+      if (options.thinkingEffort !== undefined) values.thinking_effort = options.thinkingEffort ?? null;
+      if (options.permissionMode !== undefined) values.permission_mode = options.permissionMode;
+      if (options.maxTurns !== undefined) values.max_turns = options.maxTurns;
+      if (options.maxCostUsd !== undefined) values.max_cost_usd = options.maxCostUsd;
+      if (options.systemPrompt !== undefined) values.system_prompt = options.systemPrompt;
+      if (options.settingSourcesOverride !== undefined) values.setting_sources = options.settingSourcesOverride;
+    }
+    let applied: readonly AppliedSessionRunOption[] = [];
+    let snapshot = this.getRunOptions(id);
+    if (Object.keys(values).length > 0) {
+      if (!this.isConfigurableBackend(session)) {
+        throw new Error(`unsupported_session_option:*:${session.meta.backend_type}/${session.meta.command}`);
       }
-      patch.args = nextArgs;
+      const result = await session.applyRunOptions({ values }, { phase: "runtime" });
+      applied = result.applied;
+      snapshot = result.snapshot;
+      this.persistAppliedRunOptions(id, applied);
     }
+    const nextSession = this.requireSession(id).meta;
+    broadcast("console:session:updated", { session: nextSession });
+    return {
+      session: nextSession,
+      runOptions: snapshot,
+      applied,
+      mandibleControls: this.getSessionOptionsControls(id),
+    };
+  }
 
-    if (safeOptions.allowedTools !== undefined) {
-      patch.allowed_tools = [...safeOptions.allowedTools];
+  private persistAppliedRunOptions(id: string, applied: readonly AppliedSessionRunOption[]): void {
+    if (applied.length === 0) return;
+    const backend = this.requireSession(id);
+    const runOptions = { ...backend.meta.run_options };
+    for (const option of applied) runOptions[option.id] = option.currentValue;
+    let args = backend.meta.args;
+    const model = applied.find((option) => option.id === "model");
+    if (model) {
+      args = stripModelArgs(args);
+      if (typeof model.currentValue === "string" && model.currentValue.trim()) {
+        args.push("--model", model.currentValue.trim());
+      }
     }
-
-    const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch, { silent: true }) : session.meta;
-    if (this.isConfigurableBackend<SDKBackendOptions | AcpBackendOptions>(session)) {
-      session.updateOptions(safeOptions);
-    }
-    return nextSession;
+    backend.meta = { ...backend.meta, run_options: runOptions, args, updated_at: Date.now() };
+    getDb().prepare(
+      "UPDATE console_sessions SET run_options_json = ?, args_json = ?, updated_at = ? WHERE id = ?",
+    ).run(JSON.stringify(runOptions), JSON.stringify(args), backend.meta.updated_at, id);
   }
 
   getPermissions(id: string): PermissionRequest[] {
@@ -1237,8 +1353,16 @@ export class SessionManager {
     return "getPendingPermissions" in backend && "resolvePermission" in backend;
   }
 
-  private isConfigurableBackend<TOptions>(backend: AgenticBackend): backend is AgenticBackend & ConfigurableBackend<TOptions> {
-    return "updateOptions" in backend;
+  private isConfigurableBackend(backend: AgenticBackend): backend is AgenticBackend & ConfigurableBackend {
+    return "applyRunOptions" in backend && "getRunOptions" in backend;
+  }
+
+  private isToolPolicyBackend(backend: AgenticBackend): backend is AgenticBackend & ToolPolicyBackend {
+    return "setAllowedTools" in backend;
+  }
+
+  private isPresetAwareBackend(backend: AgenticBackend): backend is AgenticBackend & PresetAwareBackend {
+    return "setPresetIds" in backend;
   }
 
   private isUsageAwareBackend<TUsage>(backend: AgenticBackend): backend is AgenticBackend & UsageAwareBackend<TUsage> {

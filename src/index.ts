@@ -56,11 +56,13 @@ import { registerSpacesRoutes } from "./routes/spaces.js";
 // Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
 import { registerBriefingRoutes } from "./routes/briefing.js";
 import { registerAskRoutes } from "./routes/asks.js";
+import { registerFeedbackRoutes } from "./routes/feedback.js";
 import { startBriefingExpirySweep, stopBriefingExpirySweep } from "./briefing-scheduler.js";
 // Umbrella 99b74d6 / issue ce83a84 — human-initiated agent dispatch.
 import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
 // Issue 0bc2279 — executor task inventory receipts and read-only projection.
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerOperationalIncidentRoutes } from "./routes/operational-incidents.js";
 import { registerManagedReminderRoutes } from "./routes/reminders.js";
 import {
   startManagedReminderScheduler,
@@ -246,10 +248,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
   registerBriefingRoutes(router, db);
   registerAskRoutes(router, db);
+  registerFeedbackRoutes(router, db);
   // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)
   registerTaskRoutes(router, db);
+  // Issue 5308097 — durable executor-reported operational incident ledger.
+  registerOperationalIncidentRoutes(router, db);
   // Issue e257e5c — bounded, attributable, first-party reminder mutations.
   registerManagedReminderRoutes(router, db);
   // Issue: 3d85f43 — canonical project registry CLI/API

@@ -376,6 +376,13 @@ type NavItem = {
   title: string;
   badge?: number;
   badgeClass?: string;
+  /**
+   * A second, independent count rendered beside `badge` (issue 5308097). The
+   * two are never summed and never substituted for one another: they answer
+   * different questions and are sourced from different server counts.
+   */
+  secondaryBadge?: number;
+  secondaryBadgeClass?: string;
   icon: (props: { size?: number }) => JSX.Element;
 };
 
@@ -951,6 +958,19 @@ function App(): JSX.Element {
       }));
       scheduleBadgeRefresh();
     };
+    // Operational incidents (issue 5308097 §8). This handler is deliberately
+    // NARROW: it invalidates only the incident list and the badge aggregate,
+    // forwards the topic to the incident region, and refreshes the badge. It
+    // does not dispatch into app state, because no incident axis is mirrored
+    // there — the server projection is the only authority for all three.
+    const operationalIncidentHandler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
+      invalidateDashboardApiCacheForEvent(payload.type);
+      window.dispatchEvent(new CustomEvent('operational-incident:sse', {
+        detail: { type: payload.type },
+      }));
+      scheduleBadgeRefresh();
+    };
     const managedReminderHandler = (payload: SSEPayload) => {
       handler(payload);
       window.dispatchEvent(new CustomEvent('managed-reminder:sse', {
@@ -959,6 +979,15 @@ function App(): JSX.Element {
       if (routeTabRef.current === 'inbox') {
         void loadVisibleRouteDataRef.current('inbox');
       }
+    };
+    const taskCommandHandler = (payload: SSEPayload) => {
+      handler(payload);
+      const data = typeof payload.data === 'object' && payload.data !== null
+        ? payload.data
+        : payload;
+      window.dispatchEvent(new CustomEvent('task-command:sse', {
+        detail: { type: payload.type, data },
+      }));
     };
     // Heartbeat: liveness signal only — bump freshness, never cache-invalidate,
     // badge-fetch, or dispatch.
@@ -1135,8 +1164,14 @@ function App(): JSX.Element {
       client.on('ask:submitted', feedbackHandler),
       client.on('ask:cancelled', feedbackHandler),
       client.on('ask:expired', feedbackHandler),
+      client.on('feedback:collection-updated', feedbackHandler),
+      client.on('operational-incident:ingested', operationalIncidentHandler),
+      client.on('operational-incident:acknowledged', operationalIncidentHandler),
+      client.on('operational-incident:remediation-changed', operationalIncidentHandler),
+      client.on('operational-incident:closed', operationalIncidentHandler),
       client.on('managed-reminders.changed', managedReminderHandler),
       client.on('managed-reminders.occurred', managedReminderHandler),
+      client.on('tasks.commands.changed', taskCommandHandler),
       client.on('heartbeat', heartbeatHandler),
       client.on('ledger:issue:created', ledgerHandler),
       client.on('ledger:issue:updated', ledgerHandler),
@@ -1196,6 +1231,13 @@ function App(): JSX.Element {
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
       window.dispatchEvent(new CustomEvent('feedback:sse', {
+        detail: { type: 'reconnected' },
+      }));
+      // The same gap may have hidden an incident raise, acknowledgement or
+      // closure. The incident region refetches on this topic, so the three
+      // axes converge on stored server state instead of on whatever was on
+      // screen when the stream dropped.
+      window.dispatchEvent(new CustomEvent('operational-incident:sse', {
         detail: { type: 'reconnected' },
       }));
       // A reconnect gap may have missed graph-affecting events; converge the
@@ -1633,6 +1675,7 @@ function App(): JSX.Element {
     transport_lane,
     channel_enabled,
     presetIds,
+    runOptions,
   }: {
     label: string;
     backend: string;
@@ -1641,12 +1684,14 @@ function App(): JSX.Element {
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
+    runOptions?: Record<string, import('./api').SessionRunOptionValue>;
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type, {
         channel_enabled,
         transport_lane,
         presetIds,
+        runOptions,
       });
       const session = {
         pinned: false,
@@ -1792,6 +1837,13 @@ function App(): JSX.Element {
       // count renders no badge rather than a fabricated zero.
       badge: badges.briefing,
       badgeClass: 'tab-badge--briefing',
+      // Issue 5308097 §8 — a SECOND, independent badge for active and
+      // unacknowledged operational incidents. It is deliberately not folded
+      // into the briefing count: an unattended executor failure and a finding
+      // awaiting review are different obligations, and adding them together
+      // would let either one hide the other.
+      secondaryBadge: badges.incidents,
+      secondaryBadgeClass: 'tab-badge--incidents',
       icon: BriefingIcon,
     },
     {
@@ -1866,6 +1918,13 @@ function App(): JSX.Element {
         {item.badge ? (
           <span className={`tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ''}`}>
             {item.badge}
+          </span>
+        ) : null}
+        {item.secondaryBadge ? (
+          <span
+            className={`tab-badge app-rail__badge app-rail__badge--secondary${item.secondaryBadgeClass ? ` ${item.secondaryBadgeClass}` : ''}`}
+          >
+            {item.secondaryBadge}
           </span>
         ) : null}
       </a>
@@ -2221,6 +2280,7 @@ function App(): JSX.Element {
               initialFilter={tabRoute.params.filter}
               initialCandidateId={tabRoute.params.candidate ?? null}
               initialAskId={tabRoute.params.ask ?? null}
+              initialCollectionId={tabRoute.params.collection ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );

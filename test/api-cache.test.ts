@@ -17,9 +17,10 @@ describe('feedback SSE cache invalidation matrix', () => {
     'briefing:decided',
     'briefing:commented',
     'briefing:expired',
-  ])('%s invalidates only Briefing and badge caches', (topic) => {
+  ])('%s invalidates Briefing, collection, and badge caches', (topic) => {
     expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefing',
+      '/api/feedback/collections',
       '/api/dashboard/badges',
     ]);
   });
@@ -29,11 +30,17 @@ describe('feedback SSE cache invalidation matrix', () => {
     'ask:submitted',
     'ask:cancelled',
     'ask:expired',
-  ])('%s invalidates only ask and badge caches', (topic) => {
+  ])('%s invalidates ask, collection, and badge caches', (topic) => {
     expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/asks',
+      '/api/feedback/collections',
       '/api/dashboard/badges',
     ]);
+  });
+
+  it('invalidates only the collection listing for a collection expiry change', () => {
+    expect(feedbackApiCacheFamiliesForEvent('feedback:collection-updated'))
+      .toEqual(['/api/feedback/collections']);
   });
 
   it('does not classify unrelated or merely prefix-matching topics as feedback', () => {
@@ -55,6 +62,7 @@ describe('feedback SSE cache invalidation matrix', () => {
       '/api/asks',
       '/api/briefing',
       '/api/dashboard/badges',
+      '/api/feedback/collections',
     ]);
   });
 });

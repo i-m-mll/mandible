@@ -3,10 +3,7 @@ import { useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  normalizeAskProjection,
-  normalizeBriefingQueue,
-  projectBoundedAskCollection,
-  projectBriefingRecurringCollections,
+  normalizeFeedbackCollections,
 } from '../ui/src/api';
 import { AppShellProvider } from '../ui/src/app-shell';
 import { BriefingView } from '../ui/src/views/briefing';
@@ -37,35 +34,48 @@ function installMemoryLocalStorage(): void {
   Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true });
 }
 
-const recurring = (source: string, state: FeedbackCollection['state'] = 'open'): FeedbackCollection => ({
-  id: `recurring_feed:${encodeURIComponent(source)}`,
+const recurring = (
+  source: string,
+  state: FeedbackCollection['state'] = 'open',
+  updatedAt = 10,
+): FeedbackCollection => ({
+  id: `feedback_collection:${encodeURIComponent(source)}`,
+  collectionId: source,
   kind: 'recurring_feed',
+  interactionMode: 'immediate_per_item',
   state,
   source,
   label: source,
-  pendingCount: 1,
-  recurring: {
-    health: 'current',
-    publicationRecorded: true,
-    lastPublicationItemCount: 1,
-    lastTaskIdentity: `task/${source}`,
-  },
+  itemCount: 1,
+  expiresAt: null,
+  createdAt: 1,
+  updatedAt,
+  expiryReversible: state === 'expired',
 });
 
 const ask: FeedbackCollection = {
-  id: 'bounded_ask:ask-1',
+  id: 'feedback_collection:ask-1',
+  collectionId: 'ask-1',
   kind: 'bounded_ask',
-  state: 'submitted',
-  source: 'agent',
+  interactionMode: 'explicit_submit',
+  state: 'expired',
+  source: null,
   label: 'Ask one',
+  itemCount: 2,
+  expiresAt: 5,
+  createdAt: 2,
+  updatedAt: 30,
+  expiryReversible: true,
 };
 
 function ViewStateHarness({
   collections,
   sidebarHidden = false,
+  onSetExpiry,
 }: {
   collections: FeedbackCollection[];
   sidebarHidden?: boolean;
+  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
 }): JSX.Element {
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const [refreshes, setRefreshes] = useState(0);
@@ -75,6 +85,7 @@ function ViewStateHarness({
       sidebarHidden={sidebarHidden}
       viewState={viewState}
       setViewState={setViewState}
+      onSetExpiry={onSetExpiry}
     >
       <button type="button" onClick={() => setRefreshes((value) => value + 1)}>Reconcile</button>
       <output data-testid="view-state">{JSON.stringify(viewState)}</output>
@@ -134,59 +145,42 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('recurring collection projection', () => {
-  it('derives health-only and queue-only sources and preserves publication truth', () => {
-    const queue = normalizeBriefingQueue({
-      candidates: [
-        { id: 'queued', source: 'queue-only', revision: { id: 'rev-q' } },
-      ],
-      sources: [
-        {
-          source: 'zero',
-          last_ingested_at: 100,
-          last_ingest_age_ms: 0,
-          last_batch_item_count: 0,
-          pending_count: 0,
-        },
-        {
-          source: 'never',
-          last_ingested_at: null,
-          last_ingest_age_ms: null,
-          last_batch_item_count: null,
-          pending_count: 0,
-        },
-      ],
-    }, 100);
-
-    const bySource = new Map(projectBriefingRecurringCollections(queue).map((row) => [row.source, row]));
-    expect([...bySource.keys()]).toEqual(['never', 'queue-only', 'zero']);
-    expect(bySource.get('zero')?.recurring).toMatchObject({
-      health: 'current',
-      publicationRecorded: true,
-      lastPublicationItemCount: 0,
-    });
-    expect(bySource.get('never')?.recurring).toMatchObject({
-      health: 'unknown',
-      publicationRecorded: false,
-      lastPublicationItemCount: null,
-    });
-    expect(bySource.get('queue-only')).toMatchObject({
-      pendingCount: 1,
-      recurring: { health: 'unknown', publicationRecorded: false },
-    });
+describe('collection-general projection', () => {
+  it('normalizes recurring feeds and bounded asks through one row shape', () => {
+    expect(normalizeFeedbackCollections({ collections: [
+      {
+        id: 'recurring', kind: 'recurring_feed', interaction_mode: 'immediate_per_item',
+        state: 'open', source: 'daily', label: 'daily', item_count: 3,
+        expires_at: null, created_at: 1, updated_at: 8,
+      },
+      {
+        id: 'ask', kind: 'bounded_ask', interaction_mode: 'explicit_submit',
+        state: 'expired', source: null, label: 'Question', item_count: 1,
+        expires_at: 7, created_at: 2, updated_at: 9,
+      },
+    ] })).toEqual([
+      expect.objectContaining({
+        id: 'feedback_collection:recurring', collectionId: 'recurring',
+        kind: 'recurring_feed', interactionMode: 'immediate_per_item', state: 'open',
+      }),
+      expect.objectContaining({
+        id: 'feedback_collection:ask', collectionId: 'ask',
+        kind: 'bounded_ask', interactionMode: 'explicit_submit', state: 'expired',
+      }),
+    ]);
   });
 });
 
 describe('collection filtering and ordering', () => {
-  const rows = [recurring('zeta'), recurring('alpha', 'closed'), ask];
+  const rows = [recurring('zeta', 'open', 10), recurring('alpha', 'expired', 20), ask];
 
   it('filters kind, source, and state independently and in combination', () => {
     expect(filterFeedbackCollections(rows, { kind: 'bounded_ask', source: '', state: 'all' }).map((row) => row.id))
-      .toEqual(['bounded_ask:ask-1']);
+      .toEqual(['feedback_collection:ask-1']);
     expect(filterFeedbackCollections(rows, { kind: 'all', source: 'ALP', state: 'all' }).map((row) => row.source))
       .toEqual(['alpha']);
-    expect(filterFeedbackCollections(rows, { kind: 'all', source: '', state: 'closed' }).map((row) => row.source))
-      .toEqual(['alpha']);
+    expect(filterFeedbackCollections(rows, { kind: 'all', source: '', state: 'expired' }).map((row) => row.source))
+      .toEqual(['alpha', null]);
     expect(filterFeedbackCollections(rows, { kind: 'recurring_feed', source: 'z', state: 'open' }).map((row) => row.source))
       .toEqual(['zeta']);
     expect(filterFeedbackCollections(rows, { kind: 'bounded_ask', source: 'z', state: 'open' }))
@@ -194,35 +188,11 @@ describe('collection filtering and ordering', () => {
   });
 
   it('orders pinned collections first and deterministically within sections', () => {
-    expect(orderFeedbackCollections(rows, ['recurring_feed:zeta']).map((row) => row.id)).toEqual([
-      'recurring_feed:zeta',
-      'bounded_ask:ask-1',
-      'recurring_feed:alpha',
+    expect(orderFeedbackCollections(rows, ['feedback_collection:zeta']).map((row) => row.id)).toEqual([
+      'feedback_collection:zeta',
+      'feedback_collection:ask-1',
+      'feedback_collection:alpha',
     ]);
-  });
-});
-
-describe('bounded collection projection', () => {
-  it('uses stable ask identity and only the loaded projection without inventing a source', () => {
-    const projection = normalizeAskProjection({
-      ask_id: 'ask/one', state: 'submitted', request_key: 'Choose', request_digest: 'd',
-      requester_user_id: 'agent', requester_session_id: 'session', responder_user_ids: ['human'],
-      expires_at: 1, retention_expires_at: null, created_at: 1,
-      lifecycle_event_id: 'life', latest_submission: { id: 'submission', ordinal: 1 },
-      items: [{
-        id: 'item', client_item_key: 'item', parent_item_id: null, item_kind: 'item',
-        revision: { id: 'revision', ordinal: 1, title: 'Title', prompt: 'Prompt', description: null,
-          response_type: 'verdict', required: true, position: 0, options: [] },
-        effective_response: { response_event_id: 'response', value: { verdict: 'keep' } },
-      }],
-    });
-    expect(projectBoundedAskCollection(projection)).toEqual({
-      id: 'bounded_ask:ask%2Fone',
-      kind: 'bounded_ask',
-      state: 'submitted',
-      label: 'Choose',
-      boundedAsk: { askId: 'ask/one', itemCount: 1, requiredCount: 1, answeredRequiredCount: 1 },
-    });
   });
 });
 
@@ -242,7 +212,7 @@ describe('browser-local collection view state', () => {
       pinnedCollectionIds: [],
     });
     expect(normalizeBriefingCollectionViewState({
-      collectionKindFilter: 'wrong',
+      collectionKindFilter: 'Wrong kind!',
       collectionStateFilter: 7,
       pinnedCollectionIds: ['a', 'a', 3, ''],
     })).toMatchObject({
@@ -262,7 +232,7 @@ describe('browser-local collection view state', () => {
     const view = render(<ViewStateHarness collections={rows} />);
     fireEvent.input(screen.getByLabelText('Search collections'), { target: { value: 'alp' } });
     fireEvent.click(screen.getByRole('button', { name: 'Collection filters' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Recurring review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring feed' }));
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
     fireEvent.click(screen.getByRole('button', { name: 'Pin alpha' }));
 
@@ -272,7 +242,7 @@ describe('browser-local collection view state', () => {
         collectionKindFilter: 'recurring_feed',
         collectionSourceFilter: 'alp',
         collectionStateFilter: 'open',
-        pinnedCollectionIds: ['recurring_feed:alpha'],
+        pinnedCollectionIds: ['feedback_collection:alpha'],
       });
     });
 
@@ -280,7 +250,7 @@ describe('browser-local collection view state', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}')).toMatchObject({
       collectionSourceFilter: 'alp',
-      pinnedCollectionIds: ['recurring_feed:alpha'],
+      pinnedCollectionIds: ['feedback_collection:alpha'],
     });
 
     view.unmount();
@@ -293,7 +263,7 @@ describe('browser-local collection view state', () => {
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
       ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
       collectionSourceFilter: 'alpha',
-      pinnedCollectionIds: ['recurring_feed:alpha'],
+      pinnedCollectionIds: ['feedback_collection:alpha'],
     }));
     const view = render(<ViewStateHarness collections={[recurring('alpha')]} />);
     const frame = screen.getByRole('complementary', { name: 'Feedback collections' });
@@ -309,9 +279,9 @@ describe('browser-local collection view state', () => {
     expect(view.container.querySelector('.view-sidebar__resize-handle')).toBeNull();
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}')).toMatchObject({
       collectionSourceFilter: 'alpha',
-      pinnedCollectionIds: ['recurring_feed:alpha'],
+      pinnedCollectionIds: ['feedback_collection:alpha'],
     });
-    await waitFor(() => expect(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY)).toContain('recurring_feed:alpha'));
+    await waitFor(() => expect(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY)).toContain('feedback_collection:alpha'));
   });
 });
 
@@ -346,6 +316,27 @@ describe('collection shell accessibility and reconciliation', () => {
     expect(screen.queryByRole('button', { name: /submit answer|send response/i })).toBeNull();
   });
 
+  it('shows the two-state indicator and exposes reversible expiry without changing row identity', async () => {
+    const setExpiry = vi.fn(async () => undefined);
+    const openAsk = { ...ask, state: 'open' as const, expiresAt: 50 };
+    const view = render(<ViewStateHarness collections={[recurring('alpha'), openAsk]} onSetExpiry={setExpiry} />);
+    expect(screen.getAllByLabelText('State: open').every(
+      (indicator) => indicator.classList.contains('feedback-collection-row__state--open'),
+    )).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Expire alpha' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Expire Ask one' }));
+    await waitFor(() => expect(setExpiry).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'feedback_collection:ask-1', state: 'open',
+    })));
+
+    view.rerender(<ViewStateHarness collections={[recurring('alpha'), ask]} onSetExpiry={setExpiry} />);
+    expect(screen.getByLabelText('State: expired').classList.contains('feedback-collection-row__state--expired')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Un-expire Ask one' }));
+    await waitFor(() => expect(setExpiry).toHaveBeenLastCalledWith(expect.objectContaining({
+      id: 'feedback_collection:ask-1', state: 'expired',
+    })));
+  });
+
   it('uses the shared search, filter popover, dismissal, count, and list navigation idioms', () => {
     const view = render(<ViewStateHarness collections={[recurring('beta'), recurring('alpha'), ask]} />);
     const search = screen.getByRole('searchbox', { name: 'Search collections' });
@@ -356,8 +347,8 @@ describe('collection shell accessibility and reconciliation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Collection filters' }));
     expect(screen.getByRole('dialog', { name: 'Collection filter controls' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Recurring review' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Closed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring feed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expired' }));
     const trigger = screen.getByRole('button', { name: 'Collection filters' });
     expect(trigger.textContent).toContain('2');
     expect(trigger.classList.contains('sidebar-search-filter__trigger--active')).toBe(true);
@@ -396,6 +387,14 @@ describe('collection shell accessibility and reconciliation', () => {
 
   it('reconciles after feedback SSE without resetting filters, pins, selection, or expansion', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/feedback/collections') return new Response(JSON.stringify({
+        state: 'all',
+        collections: [{
+          id: 'recurring', kind: 'recurring_feed', interaction_mode: 'immediate_per_item',
+          state: 'open', source: 'alpha', label: 'alpha', item_count: 1,
+          expires_at: null, created_at: 1, updated_at: 1,
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (String(input) === '/api/briefing/queue') return new Response(JSON.stringify(briefingPayload()), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -410,12 +409,12 @@ describe('collection shell accessibility and reconciliation', () => {
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
       ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
       source: 'alpha',
-      selectedCollectionId: 'recurring_feed:alpha',
+      selectedCollectionId: 'feedback_collection:recurring',
       expandedCandidateId: 'cand-1',
       collectionKindFilter: 'recurring_feed',
       collectionSourceFilter: 'alp',
       collectionStateFilter: 'open',
-      pinnedCollectionIds: ['recurring_feed:alpha'],
+      pinnedCollectionIds: ['feedback_collection:recurring'],
     }));
 
     render(
@@ -429,15 +428,17 @@ describe('collection shell accessibility and reconciliation', () => {
     window.dispatchEvent(new CustomEvent('feedback:sse', { detail: { type: 'briefing:commented' } }));
     await waitFor(() => {
       expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/briefing/queue')).toHaveLength(2);
+      expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/feedback/collections')).toHaveLength(2);
     });
     window.dispatchEvent(new CustomEvent('feedback:sse', { detail: { type: 'ask:created' } }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/briefing/queue')).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/feedback/collections')).toHaveLength(3);
     expect((screen.getByLabelText('Search collections') as HTMLInputElement).value).toBe('alp');
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('briefing-detail-cand-1')).toBeTruthy();
     expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
-      selectedCollectionId: 'recurring_feed:alpha',
+      selectedCollectionId: 'feedback_collection:recurring',
       expandedCandidateId: 'cand-1',
     });
   });
