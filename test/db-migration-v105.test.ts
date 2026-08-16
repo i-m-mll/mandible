@@ -211,14 +211,14 @@ describe("migration v105: canonical Spaces export artifacts", () => {
   it("completes v105 before applying a synthetic later migration", () => {
     const migrations = MIGRATIONS as Migration[];
     const realHead = migrations.pop();
-    expect(realHead?.version).toBe(135);
+    expect(realHead?.version).toBe(136);
     migrations.push({
-      version: 135,
+      version: 136,
       name: "test_v105_ordering_boundary",
       statements: [
         `INSERT INTO meta (key, value)
          VALUES (
-           'test.v135.observed_v105',
+           'test.v136.observed_v105',
            COALESCE((SELECT value FROM meta WHERE key = '${COMPLETION_KEY}'), 'missing')
          )`,
       ],
@@ -226,13 +226,13 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     try {
       expect(() => migrate(db)).not.toThrow();
       expect(db.prepare(
-        "SELECT value FROM meta WHERE key = 'test.v135.observed_v105'",
+        "SELECT value FROM meta WHERE key = 'test.v136.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "135",
+        value: "136",
       });
     } finally {
-      expect(migrations.pop()?.version).toBe(135);
+      expect(migrations.pop()?.version).toBe(136);
       if (realHead) migrations.push(realHead);
     }
   });
@@ -251,7 +251,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     // migrations (v107-v111) and our additive v112, v113, and v114 columns,
     // advancing (never lowering) the schema version.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "135",
+      value: "136",
     });
   });
 
@@ -318,7 +318,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "135",
+      value: "136",
     });
     expect(marker()).toEqual({ value: "done" });
 
