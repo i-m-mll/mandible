@@ -71,7 +71,7 @@ describe("migration v118: canonical project repo ids", () => {
 
     expect(db.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
-    ).get()).toEqual({ value: "134" });
+    ).get()).toEqual({ value: "135" });
     expect(db.prepare(
       "SELECT work_repo_id FROM ledger_project_checkouts WHERE id = 'checkout-main'",
     ).get()).toEqual({ work_repo_id: "feedbax" });

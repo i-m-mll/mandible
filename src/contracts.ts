@@ -1642,40 +1642,148 @@ export const TASK_INVENTORY_EVENTS = Object.freeze({
 // 548bd73. These are deliberately separate from inventory telemetry: Mandible
 // records the desired safety action, while only the addressed executor may
 // attest acceptance and application.
-export const TASK_COMMAND_SCHEMA = 'task-command@1';
-export const TASK_COMMAND_EVENT_SCHEMA = 'task-command-event@1';
+export const TASK_COMMAND_SCHEMA_V1 = 'task-command@1';
+export const TASK_COMMAND_SCHEMA = 'task-command@2';
+export const TASK_COMMAND_EVENT_SCHEMA_V1 = 'task-command-event@1';
+export const TASK_COMMAND_EVENT_SCHEMA = 'task-command-event@2';
 
-export type TaskCommandVerb = 'disable';
-export type TaskCommandState = 'requested' | 'accepted' | 'applied' | 'rejected' | 'cancelled';
-export type TaskCommandExecutorEventType = 'accepted' | 'applied' | 'rejected';
+export type TaskCommandSchema =
+  | typeof TASK_COMMAND_SCHEMA_V1
+  | typeof TASK_COMMAND_SCHEMA;
+export type TaskCommandEventSchema =
+  | typeof TASK_COMMAND_EVENT_SCHEMA_V1
+  | typeof TASK_COMMAND_EVENT_SCHEMA;
+export type Sha256 = string;
+export type EmptyPayload = Record<string, never>;
+export type ExecutionHashPayload = { execution_hash: Sha256 };
+
+type TaskCommandCreateBase = {
+  request_key: string;
+  executor: string;
+  task_id: string;
+};
+
+export type TaskCommandCreateRequest =
+  | (TaskCommandCreateBase & {
+      schema: typeof TASK_COMMAND_SCHEMA_V1;
+      verb: 'disable';
+      payload: EmptyPayload;
+    })
+  | (TaskCommandCreateBase & {
+      schema: typeof TASK_COMMAND_SCHEMA;
+      verb: 'disable';
+      payload: EmptyPayload;
+    })
+  | (TaskCommandCreateBase & {
+      schema: typeof TASK_COMMAND_SCHEMA;
+      verb: 'dry_run' | 'enable';
+      payload: ExecutionHashPayload;
+    });
+
+export type TaskCommandVerb = 'disable' | 'dry_run' | 'enable';
+export type TaskCommandState =
+  | 'requested'
+  | 'accepted'
+  | 'started'
+  | 'applied'
+  | 'rejected'
+  | 'cancelled';
+export type TaskCommandEventType =
+  | 'accepted'
+  | 'started'
+  | 'progress'
+  | 'applied'
+  | 'rejected'
+  | 'cancelled';
 export type TaskCommandRejectionReason =
   | 'unknown_task'
   | 'unsupported_verb'
   | 'invalid_payload'
   | 'stale_target'
+  | 'busy'
+  | 'missing_receipt'
+  | 'stale_receipt'
   | 'policy_refused'
+  | 'dry_run_failed'
   | 'unknown';
+export type TaskCommandFailureClass =
+  | 'budget'
+  | 'collector'
+  | 'config'
+  | 'containment'
+  | 'limit'
+  | 'output-source'
+  | 'runner'
+  | 'schema'
+  | 'stale'
+  | 'supervisor'
+  | 'timeout'
+  | 'unavailable'
+  | 'validation';
+export type TaskCommandProgressStep =
+  | 'preflight_passed'
+  | 'collector_started'
+  | 'snapshot_validated'
+  | 'runner_started'
+  | 'runner_completed'
+  | 'output_validated';
+export type TaskCommandProgressSequence = 1 | 2 | 3 | 4 | 5 | 6;
 
-export type TaskCommandCreateRequest = {
-  schema: typeof TASK_COMMAND_SCHEMA;
-  request_key: string;
-  executor: string;
-  task_id: string;
-  verb: TaskCommandVerb;
-  payload: Record<string, never>;
-};
+type TaskCommandExecutorEventRequestV1 = {
+  schema: typeof TASK_COMMAND_EVENT_SCHEMA_V1;
+  event_digest: Sha256;
+} & (
+  | { event: 'accepted' }
+  | { event: 'applied'; no_op: boolean }
+  | { event: 'rejected'; reason: TaskCommandRejectionReason }
+);
 
-export type TaskCommandExecutorEventRequest = {
+type V2EventBase = {
   schema: typeof TASK_COMMAND_EVENT_SCHEMA;
-  event: TaskCommandExecutorEventType;
-  event_digest: string;
-  no_op?: boolean;
-  reason?: TaskCommandRejectionReason;
+  event_digest: Sha256;
 };
+
+export type TaskCommandExecutorEventRequestV2 =
+  | (V2EventBase & { event: 'accepted' })
+  | (V2EventBase & {
+      event: 'started';
+      execution_hash: Sha256;
+      run_id: string;
+    })
+  | (V2EventBase & {
+      event: 'progress';
+      sequence: TaskCommandProgressSequence;
+      step: TaskCommandProgressStep;
+    })
+  | (V2EventBase & { event: 'applied'; no_op: boolean })
+  | (V2EventBase & {
+      event: 'applied';
+      execution_hash: Sha256;
+      no_op: boolean;
+    })
+  | (V2EventBase & {
+      event: 'applied';
+      execution_hash: Sha256;
+      run_id: string;
+    })
+  | (V2EventBase & {
+      event: 'rejected';
+      reason: Exclude<TaskCommandRejectionReason, 'dry_run_failed'>;
+    })
+  | (V2EventBase & {
+      event: 'rejected';
+      reason: 'dry_run_failed';
+      failure_class: TaskCommandFailureClass;
+    });
+
+export type TaskCommandExecutorEventRequest =
+  | TaskCommandExecutorEventRequestV1
+  | TaskCommandExecutorEventRequestV2;
 
 export type TaskCommandEvent = {
   id: string;
-  event: TaskCommandState;
+  schema: TaskCommandEventSchema;
+  event: TaskCommandEventType;
   event_digest: string;
   payload: Record<string, unknown>;
   actor_user_id: string;
@@ -1685,13 +1793,13 @@ export type TaskCommandEvent = {
 
 export type TaskCommand = {
   id: string;
-  schema: typeof TASK_COMMAND_SCHEMA;
+  schema: TaskCommandSchema;
   request_key: string;
   request_digest: string;
   executor: string;
   task_id: string;
   verb: TaskCommandVerb;
-  payload: Record<string, never>;
+  payload: EmptyPayload | ExecutionHashPayload;
   requested_by_user_id: string;
   requested_by_slug: string | null;
   requested_at: number;

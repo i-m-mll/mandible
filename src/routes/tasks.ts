@@ -13,7 +13,11 @@
 // intent plus executor receipts, never an in-daemon task mutation.
 
 import { requireIdentity, requireOperator, ClientAuthzError } from "../client-auth/authz.js";
-import { TASK_COMMAND_EVENTS, TASK_INVENTORY_EVENTS } from "../contracts.js";
+import {
+  TASK_COMMAND_EVENTS,
+  TASK_COMMAND_SCHEMA,
+  TASK_INVENTORY_EVENTS,
+} from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
@@ -133,9 +137,22 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
   server.post("/api/tasks/commands", (req, res) => {
     try {
       const operator = requireOperator(db, req);
+      const request = parseTaskCommandCreateRequest(req.body);
+      if (request.schema === TASK_COMMAND_SCHEMA) {
+        const executor = getTaskInventoryView(db).executors.find(
+          (candidate) => candidate.name === request.executor,
+        );
+        if (!executor?.capabilities.includes(TASK_COMMAND_SCHEMA)) {
+          throw new TaskCommandError(
+            `executor '${request.executor}' has not declared capability '${TASK_COMMAND_SCHEMA}'`,
+            409,
+            "executor_capability_unknown",
+          );
+        }
+      }
       const result = createTaskCommand(
         db,
-        parseTaskCommandCreateRequest(req.body),
+        request,
         operator.user_id,
       );
       if (result.stored) broadcast(TASK_COMMAND_EVENTS.changed, { command_id: result.command.id });
@@ -175,12 +192,23 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     }
   }, { fileRpc: "allow" });
 
+  // Operator-only point read for the active command modal. SSE is the primary
+  // wake-up signal; the UI polls this route every two seconds while nonterminal.
+  server.get("/api/tasks/commands/:id", (req, res) => {
+    try {
+      requireOperator(db, req);
+      sendJson(res, 200, { command: getTaskCommand(db, req.params.id) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
   server.post("/api/tasks/commands/:id/events", (req, res) => {
     try {
       requireIdentity(req);
       const command = getTaskCommand(db, req.params.id);
       const executor = requireMappedTaskExecutor(db, req, command.executor);
-      const event = parseTaskCommandExecutorEvent(command.id, req.body);
+      const event = parseTaskCommandExecutorEvent(command, req.body);
       const result = appendTaskCommandExecutorEvent(
         db,
         command.id,
