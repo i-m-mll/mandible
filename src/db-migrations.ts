@@ -8776,7 +8776,21 @@ function migrateTaskCommandV2(db: Db): void {
   if (beforeEvents !== JSON.stringify(eventProjection())) {
     throw new Error("task-command v2 migration changed a v1 event projection");
   }
-  const foreignKeyFailures = db.pragma("foreign_key_check") as unknown[];
+  // Scoped to the two tables this migration rebuilds, following the v126
+  // pattern. A bare `PRAGMA foreign_key_check` reports the whole database, so
+  // any pre-existing violation anywhere — orphaned `console_session_usage`
+  // rows left behind before that FK was declared, for instance — would abort a
+  // migration that neither created nor touched them, and keep aborting it on
+  // every restart. A migration verifies what it changed; it is not the place
+  // to discover unrelated historical data problems, and it must never make the
+  // daemon unstartable over one.
+  const foreignKeyFailures: Array<{ table: string }> = [];
+  for (const table of ["task_command_requests", "task_command_events"] as const) {
+    if (!tableExists(db, table)) continue;
+    for (const _violation of db.prepare(`PRAGMA foreign_key_check("${table}")`).all()) {
+      foreignKeyFailures.push({ table });
+    }
+  }
   if (foreignKeyFailures.length > 0) {
     throw new Error(`task-command v2 migration foreign_key_check failed: ${JSON.stringify(foreignKeyFailures)}`);
   }
@@ -9977,7 +9991,15 @@ function ensureFeedbackCollectionExpiryColumn(db: Db): void {
         }
       }
 
-      const violations = db.prepare("PRAGMA foreign_key_check").all();
+      // Scoped to the rebuilt table. A bare `PRAGMA foreign_key_check` covers
+      // the whole database, so an unrelated pre-existing violation would abort
+      // a migration that neither created nor touched it — and keep aborting it
+      // on every restart, leaving the daemon unstartable. This check exists to
+      // prove the rebuild above did not orphan a row, and that is all it
+      // should be able to fail on.
+      const violations = db.prepare(
+        `PRAGMA foreign_key_check("feedback_ask_sessions")`,
+      ).all();
       if (violations.length > 0) {
         throw new Error(
           `feedback ask-session expiry migration left ${violations.length} foreign key violations`,

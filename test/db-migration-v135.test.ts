@@ -91,6 +91,33 @@ function schemaProjection(db: Db): unknown[] {
 }
 
 describe("migration v135: task-command v2", () => {
+  it("migrates_despite_a_pre_existing_unrelated_foreign_key_violation", () => {
+    // A real database had three `console_session_usage` rows whose parent
+    // sessions were gone — orphaned before that foreign key was declared, and
+    // untouched by this migration. A whole-database `foreign_key_check` saw
+    // them, aborted, and left the daemon crash-looping on every restart with
+    // no way forward. A migration verifies what it changed.
+    const db = upgradedDb();
+    insertUser(db);
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      INSERT INTO console_session_usage (id, console_session_id, recorded_at)
+      VALUES ('usage-orphan','session-that-no-longer-exists',10);
+    `);
+
+    expect(() => migrate(db)).not.toThrow();
+
+    expect(db.prepare(
+      "SELECT value FROM meta WHERE key = 'schema_version'",
+    ).get()).toEqual({ value: String(BASELINE_SCHEMA_VERSION) });
+    // The unrelated violation is left exactly as found: not repaired, not
+    // deleted, and not a reason to refuse to start.
+    expect(db.prepare(
+      "SELECT count(*) AS n FROM console_session_usage WHERE id = 'usage-orphan'",
+    ).get()).toEqual({ n: 1 });
+    db.close();
+  });
+
   it("preserves_v1_command_rows_and_events_exactly", () => {
     const db = upgradedDb();
     insertUser(db);

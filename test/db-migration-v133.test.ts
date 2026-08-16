@@ -74,4 +74,33 @@ describe("migration v133 feedback collection expiry", () => {
       db.close();
     }
   });
+
+  it("rebuilds ask sessions despite a pre-existing unrelated foreign key violation", () => {
+    // The ask-session rebuild verified the whole database rather than the
+    // table it rebuilt, so three orphaned `console_session_usage` rows — left
+    // behind before that foreign key was declared, and untouched here — made
+    // the daemon unstartable on every restart. See issue 1a6c674.
+    const db = new Database(":memory:");
+    try {
+      migrate(db);
+      db.pragma("foreign_keys = OFF");
+      db.exec(`
+        INSERT INTO console_session_usage (id, console_session_id, recorded_at)
+        VALUES ('usage-orphan', 'session-that-no-longer-exists', 10);
+        UPDATE meta SET value = '132' WHERE key = 'schema_version';
+      `);
+
+      expect(() => migrate(db)).not.toThrow();
+
+      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
+        .toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
+      // Left exactly as found: not repaired, not deleted, not a reason to refuse
+      // to start. Repairing it is the operator's decision, not a migration's.
+      expect(db.prepare(
+        "SELECT count(*) AS n FROM console_session_usage WHERE id = 'usage-orphan'",
+      ).get()).toEqual({ n: 1 });
+    } finally {
+      db.close();
+    }
+  });
 });
