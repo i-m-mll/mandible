@@ -15,6 +15,7 @@ import {
 } from './feedback/collection-model';
 import type { FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
+import { OperationalIncidentsRegion } from './operational-incidents';
 import { RecurringReviewRenderer } from './feedback/RecurringReviewRenderer';
 
 export * from './feedback/RecurringReviewRenderer';
@@ -150,6 +151,12 @@ export function BriefingView({
       setViewState={setViewState}
       onSetExpiry={setCollectionExpiry}
     >
+      {/* Issue 5308097 spec §8: operational incidents come FIRST, before the
+          recurring findings and bounded asks. An unattended executor failure
+          outranks review work, and it stays visible whichever collection is
+          selected — including while a bounded ask is open — because it is not
+          part of the feedback collection model at all. */}
+      <OperationalIncidentsRegion instance={instance} active={appShell.active} />
       <div hidden={selectedAsk}>
         <AppShellProvider value={{ ...appShell, active: appShell.active && !selectedAsk }}>
           <RecurringReviewRenderer
