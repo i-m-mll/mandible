@@ -30,8 +30,14 @@ import {
   type AgentDispatchSubjectInput,
 } from "../agent-dispatch.js";
 import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
+import { OPERATIONAL_INCIDENT_EVENTS } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
+import {
+  countOperationalIncidents,
+  OperationalIncidentError,
+} from "../operational-incidents.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
 import { sendJson } from "./http.js";
 
@@ -41,7 +47,11 @@ function handleError(res: ResponseLike, error: unknown): void {
     return;
   }
   if (error instanceof AgentDispatchError) {
-    sendJson(res, error.status, { error: error.message });
+    sendJson(res, error.status, { error: error.message, ...error.details });
+    return;
+  }
+  if (error instanceof OperationalIncidentError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -87,9 +97,20 @@ function parseSubject(value: unknown): AgentDispatchSubjectInput {
   if (row.kind === "issue" && typeof row.issue_ref === "string" && row.issue_ref.trim()) {
     return { kind: "issue", issue_ref: row.issue_ref.trim() };
   }
+  if (row.kind === "incident" && typeof row.incident_id === "string" && row.incident_id.trim()) {
+    return { kind: "incident", incident_id: row.incident_id.trim() };
+  }
   throw new AgentDispatchError(
-    "subject must be {kind:'finding',candidate_id} or {kind:'issue',issue_ref}",
+    "subject must be {kind:'finding',candidate_id}, {kind:'issue',issue_ref}, "
+      + "or {kind:'incident',incident_id}",
   );
+}
+
+function requiredSha256(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new AgentDispatchError(`${field} must be a lowercase SHA-256 digest`);
+  }
+  return value;
 }
 
 export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = getDb()): void {
@@ -113,12 +134,33 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
     try {
       const actorUserId = requireHumanDispatcher(db, req);
       const body = bodyRecord(req);
+      const subject = parseSubject(body.subject);
       const outcome = dispatchAgent(db, {
-        subject: parseSubject(body.subject),
+        subject,
         instruction: body.instruction,
         actorUserId,
+        ...(subject.kind === "incident" ? {
+          expectedPromptSha256: requiredSha256(
+            body.expected_prompt_sha256,
+            "expected_prompt_sha256",
+          ),
+          expectedIncidentTelemetrySha256: requiredSha256(
+            body.expected_incident_telemetry_sha256,
+            "expected_incident_telemetry_sha256",
+          ),
+        } : {}),
       });
-      sendJson(res, 200, { ok: outcome.ok, event: outcome.event });
+      if (outcome.incident) {
+        broadcast(OPERATIONAL_INCIDENT_EVENTS.remediationChanged, {
+          incident_ids: [outcome.incident.id],
+          badge_count: countOperationalIncidents(db).active_unacknowledged,
+        });
+      }
+      sendJson(res, 200, {
+        ok: outcome.ok,
+        event: outcome.event,
+        ...(outcome.incident ? { incident: outcome.incident } : {}),
+      });
     } catch (error) {
       handleError(res, error);
     }
@@ -133,10 +175,13 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
       const issueId = typeof req.query?.issue_id === "string" && req.query.issue_id.trim()
         ? req.query.issue_id.trim()
         : undefined;
+      const incidentId = typeof req.query?.incident_id === "string" && req.query.incident_id.trim()
+        ? req.query.incident_id.trim()
+        : undefined;
       const limitRaw = typeof req.query?.limit === "string" ? Number(req.query.limit) : Number.NaN;
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.trunc(limitRaw) : undefined;
       sendJson(res, 200, {
-        events: listAgentDispatchEvents(db, { candidateId, issueId, limit }),
+        events: listAgentDispatchEvents(db, { candidateId, issueId, incidentId, limit }),
       });
     } catch (error) {
       handleError(res, error);
