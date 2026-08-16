@@ -4116,8 +4116,326 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     version: 135,
     name: "task_command_v2",
     statements: [],
+  },
+  {
+    version: 136,
+    name: "operational_incidents",
+    statements: [
+      `CREATE TABLE operational_incidents (
+        id                         TEXT PRIMARY KEY,
+        executor                   TEXT NOT NULL,
+        task                       TEXT NOT NULL,
+        condition                  TEXT NOT NULL
+          CHECK(condition IN (
+            'failed_permanent',
+            'timeout',
+            'circuit_open',
+            'publish_stale',
+            'publish_quarantined',
+            'containment_blocked'
+          )),
+        first_seen                 INTEGER NOT NULL,
+
+        observation_state          TEXT NOT NULL
+          CHECK(observation_state IN ('active','recovered')),
+        attention_state            TEXT NOT NULL DEFAULT 'unacknowledged'
+          CHECK(attention_state IN ('unacknowledged','acknowledged')),
+        remediation_state          TEXT NOT NULL DEFAULT 'none'
+          CHECK(remediation_state IN (
+            'none',
+            'triaging',
+            'fix_prepared',
+            'awaiting_auth',
+            'auth_expired',
+            'awaiting_deploy',
+            'awaiting_verification',
+            'complete'
+          )),
+
+        latest_event_seq           INTEGER NOT NULL CHECK(latest_event_seq IN (1,2)),
+        latest_observed_at         INTEGER NOT NULL,
+        latest_event_id            TEXT NOT NULL,
+        latest_telemetry_json      TEXT NOT NULL CHECK(json_valid(latest_telemetry_json)),
+        latest_telemetry_sha256    TEXT NOT NULL CHECK(length(latest_telemetry_sha256) = 64),
+        provenance                 TEXT NOT NULL DEFAULT 'executor_asserted_unverified'
+          CHECK(provenance = 'executor_asserted_unverified'),
+        posted_by_user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+
+        recovered_at               INTEGER,
+        recovery_run_id            TEXT,
+        acknowledged_at            INTEGER,
+        acknowledged_by_user_id    TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        resolved_at                INTEGER,
+        resolution_kind            TEXT
+          CHECK(resolution_kind IS NULL OR
+                resolution_kind IN ('successful_run','operator_closure')),
+        operator_closed_at         INTEGER,
+        operator_closed_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+
+        UNIQUE(executor, task, condition, first_seen),
+
+        CHECK(
+          (observation_state = 'active'
+            AND recovered_at IS NULL AND recovery_run_id IS NULL)
+          OR
+          (observation_state = 'recovered'
+            AND recovered_at IS NOT NULL AND recovery_run_id IS NOT NULL)
+        ),
+        CHECK(
+          (attention_state = 'unacknowledged'
+            AND acknowledged_at IS NULL AND acknowledged_by_user_id IS NULL)
+          OR
+          (attention_state = 'acknowledged'
+            AND acknowledged_at IS NOT NULL AND acknowledged_by_user_id IS NOT NULL)
+        ),
+        CHECK(
+          (resolution_kind IS NULL AND resolved_at IS NULL)
+          OR
+          (resolution_kind IS NOT NULL AND resolved_at IS NOT NULL)
+        ),
+        CHECK(
+          resolution_kind != 'successful_run'
+          OR observation_state = 'recovered'
+        ),
+        CHECK(
+          resolution_kind != 'operator_closure'
+          OR (operator_closed_at IS NOT NULL
+              AND operator_closed_by_user_id IS NOT NULL)
+        ),
+        CHECK(
+          (resolved_at IS NULL AND remediation_state != 'complete')
+          OR
+          (resolved_at IS NOT NULL AND remediation_state = 'complete')
+        )
+      )`,
+      `CREATE INDEX idx_operational_incidents_queue
+        ON operational_incidents(
+          resolved_at,
+          observation_state,
+          attention_state,
+          first_seen DESC,
+          id
+        )`,
+      `CREATE INDEX idx_operational_incidents_task_history
+        ON operational_incidents(executor, task, condition, first_seen DESC)`,
+      `CREATE INDEX idx_operational_incidents_badge
+        ON operational_incidents(attention_state, first_seen DESC)
+        WHERE resolved_at IS NULL
+          AND observation_state = 'active'
+          AND attention_state = 'unacknowledged'`,
+      `CREATE TABLE operational_incident_observation_events (
+        id                       TEXT PRIMARY KEY,
+        incident_id              TEXT NOT NULL
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        source_event_id          TEXT NOT NULL UNIQUE,
+        event_seq                INTEGER NOT NULL CHECK(event_seq IN (1,2)),
+        observation_state        TEXT NOT NULL
+          CHECK(observation_state IN ('active','recovered')),
+        observed_at              INTEGER NOT NULL,
+        inventory_digest         TEXT NOT NULL CHECK(length(inventory_digest) = 64),
+        telemetry_json           TEXT NOT NULL CHECK(json_valid(telemetry_json)),
+        telemetry_sha256         TEXT NOT NULL CHECK(length(telemetry_sha256) = 64),
+        posted_by_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        received_at              INTEGER NOT NULL,
+        applied                  INTEGER NOT NULL CHECK(applied IN (0,1)),
+        ignored_reason           TEXT
+          CHECK(ignored_reason IS NULL OR ignored_reason IN ('stale_sequence')),
+        UNIQUE(incident_id, event_seq),
+        CHECK(
+          (event_seq = 1 AND observation_state = 'active')
+          OR
+          (event_seq = 2 AND observation_state = 'recovered')
+        ),
+        CHECK(
+          (applied = 1 AND ignored_reason IS NULL)
+          OR
+          (applied = 0 AND ignored_reason IS NOT NULL)
+        )
+      )`,
+      `CREATE INDEX idx_operational_incident_observations_incident
+        ON operational_incident_observation_events(incident_id, event_seq)`,
+      `CREATE INDEX idx_operational_incident_observations_received
+        ON operational_incident_observation_events(received_at DESC, id)`,
+      `CREATE TABLE agent_dispatch_events_v136 (
+        id                        TEXT PRIMARY KEY,
+        subject_kind              TEXT NOT NULL
+          CHECK(subject_kind IN ('finding','issue','incident')),
+        candidate_id              TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        revision_id               TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        comment_id                TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
+        issue_id                  TEXT,
+        incident_id               TEXT
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        incident_telemetry_sha256 TEXT
+          CHECK(incident_telemetry_sha256 IS NULL
+                OR length(incident_telemetry_sha256) = 64),
+        actor_user_id             TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        provider                  TEXT NOT NULL DEFAULT 'claude',
+        instruction               TEXT NOT NULL,
+        cwd                       TEXT NOT NULL,
+        prompt_path               TEXT,
+        prompt_sha256             TEXT,
+        status                    TEXT NOT NULL
+                                  CHECK(status IN ('dispatching','dispatched','failed')),
+        session_handle            TEXT,
+        session_id                TEXT,
+        attach_command            TEXT,
+        error                     TEXT,
+        created_at                INTEGER NOT NULL,
+        settled_at                INTEGER,
+        CHECK(
+          (
+            subject_kind = 'finding'
+            AND candidate_id IS NOT NULL
+            AND revision_id IS NOT NULL
+            AND issue_id IS NULL
+            AND incident_id IS NULL
+          )
+          OR
+          (
+            subject_kind = 'issue'
+            AND issue_id IS NOT NULL
+            AND candidate_id IS NULL
+            AND revision_id IS NULL
+            AND incident_id IS NULL
+          )
+          OR
+          (
+            subject_kind = 'incident'
+            AND incident_id IS NOT NULL
+            AND incident_telemetry_sha256 IS NOT NULL
+            AND candidate_id IS NULL
+            AND revision_id IS NULL
+            AND issue_id IS NULL
+          )
+        )
+      )`,
+      `INSERT INTO agent_dispatch_events_v136 (
+        id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+        incident_id, incident_telemetry_sha256, actor_user_id, provider,
+        instruction, cwd, prompt_path, prompt_sha256, status, session_handle,
+        session_id, attach_command, error, created_at, settled_at
+      ) SELECT
+        id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+        NULL, NULL, actor_user_id, provider, instruction, cwd, prompt_path,
+        prompt_sha256, status, session_handle, session_id, attach_command,
+        error, created_at, settled_at
+      FROM agent_dispatch_events`,
+      `DROP TABLE agent_dispatch_events`,
+      `ALTER TABLE agent_dispatch_events_v136 RENAME TO agent_dispatch_events`,
+      `CREATE INDEX idx_agent_dispatch_events_candidate
+        ON agent_dispatch_events(candidate_id, created_at DESC)`,
+      `CREATE INDEX idx_agent_dispatch_events_issue
+        ON agent_dispatch_events(issue_id, created_at DESC)`,
+      `CREATE INDEX idx_agent_dispatch_events_comment
+        ON agent_dispatch_events(comment_id)`,
+      `CREATE INDEX idx_agent_dispatch_events_incident
+        ON agent_dispatch_events(incident_id, created_at DESC)`,
+      `CREATE TABLE operational_incident_workflow_events (
+        id                       TEXT PRIMARY KEY,
+        incident_id              TEXT NOT NULL
+          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
+        kind                     TEXT NOT NULL
+          CHECK(kind IN (
+            'attention_acknowledged',
+            'operator_closed',
+            'prepare_fix_confirmed',
+            'dispatch_failed',
+            'remediation_transition'
+          )),
+        authority                TEXT NOT NULL CHECK(authority IN ('user','server')),
+        actor_user_id            TEXT REFERENCES users(id) ON DELETE RESTRICT,
+
+        from_attention_state     TEXT
+          CHECK(from_attention_state IS NULL OR
+                from_attention_state IN ('unacknowledged','acknowledged')),
+        to_attention_state       TEXT
+          CHECK(to_attention_state IS NULL OR
+                to_attention_state IN ('unacknowledged','acknowledged')),
+        from_remediation_state   TEXT
+          CHECK(from_remediation_state IS NULL OR
+                from_remediation_state IN (
+                  'none','triaging','fix_prepared','awaiting_auth','auth_expired',
+                  'awaiting_deploy','awaiting_verification','complete'
+                )),
+        to_remediation_state     TEXT
+          CHECK(to_remediation_state IS NULL OR
+                to_remediation_state IN (
+                  'none','triaging','fix_prepared','awaiting_auth','auth_expired',
+                  'awaiting_deploy','awaiting_verification','complete'
+                )),
+
+        agent_dispatch_event_id  TEXT
+          REFERENCES agent_dispatch_events(id) ON DELETE RESTRICT,
+        auth_request_id          TEXT,
+        deploy_ref               TEXT,
+        verification_run_id      TEXT,
+        reason                   TEXT,
+        metadata_json            TEXT CHECK(metadata_json IS NULL OR json_valid(metadata_json)),
+        created_at               INTEGER NOT NULL,
+
+        CHECK(authority != 'user' OR actor_user_id IS NOT NULL)
+      )`,
+      `CREATE INDEX idx_operational_incident_workflow_incident
+        ON operational_incident_workflow_events(incident_id, created_at, id)`,
+      `CREATE INDEX idx_operational_incident_workflow_dispatch
+        ON operational_incident_workflow_events(agent_dispatch_event_id)
+        WHERE agent_dispatch_event_id IS NOT NULL`,
+      `CREATE INDEX idx_operational_incident_workflow_auth
+        ON operational_incident_workflow_events(auth_request_id)
+        WHERE auth_request_id IS NOT NULL`,
+    ],
   }
 ];
+
+function hasColumn(db: Db, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+    .some((entry) => entry.name === column);
+}
+
+function verifyOperationalIncidentV136Schema(db: Db): void {
+  for (const table of [
+    "operational_incidents",
+    "operational_incident_observation_events",
+    "operational_incident_workflow_events",
+    "agent_dispatch_events",
+  ]) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 136 verification: ${table} is missing`);
+    }
+  }
+  for (const column of ["incident_id", "incident_telemetry_sha256"]) {
+    if (!hasColumn(db, "agent_dispatch_events", column)) {
+      throw new Error(`migration 136 verification: agent_dispatch_events.${column} is missing`);
+    }
+  }
+  const dispatchSql = (db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_dispatch_events'",
+  ).get() as { sql: string } | undefined)?.sql ?? "";
+  if (!dispatchSql.includes("'finding','issue','incident'")) {
+    throw new Error("migration 136 verification: incident dispatch subject CHECK is missing");
+  }
+  for (const index of [
+    "idx_operational_incidents_queue",
+    "idx_operational_incidents_task_history",
+    "idx_operational_incidents_badge",
+    "idx_operational_incident_observations_incident",
+    "idx_operational_incident_observations_received",
+    "idx_agent_dispatch_events_incident",
+    "idx_operational_incident_workflow_incident",
+    "idx_operational_incident_workflow_dispatch",
+    "idx_operational_incident_workflow_auth",
+  ]) {
+    const exists = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+    ).get(index);
+    if (!exists) throw new Error(`migration 136 verification: ${index} is missing`);
+  }
+}
 
 export function assertMigrationSequence(migrations: readonly Migration[] = MIGRATIONS): void {
   const seen = new Map<number, string>();
@@ -4238,7 +4556,17 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 135) {
         migrateTaskCommandV2(db);
       }
-      for (const statement of migration.statements) {
+      let statements = migration.statements;
+      if (migration.name === "operational_incidents" && tableExists(db, "operational_incidents")) {
+        // Historical replay tests deliberately rewind schema_version on a fresh
+        // head schema. If v126 rebuilt the dispatch table during that replay,
+        // restore only the v136 dispatch shape; otherwise the complete v136
+        // schema is already present and the migration is a verified no-op.
+        statements = hasColumn(db, "agent_dispatch_events", "incident_id")
+          ? []
+          : migration.statements.slice(7, 15);
+      }
+      for (const statement of statements) {
         db.exec(statement);
       }
       if (migration.version === 103) {
@@ -4246,6 +4574,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 127) {
         ensureBriefingIngestRequestColumn(db);
+      }
+      if (migration.name === "operational_incidents") {
+        verifyOperationalIncidentV136Schema(db);
       }
       setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
     }
@@ -6814,7 +7145,17 @@ function migrateFeedbackRecurringCutover(db: Db): void {
           created_at     INTEGER NOT NULL,
           settled_at     INTEGER
         );
-        INSERT INTO agent_dispatch_events_v126 SELECT * FROM agent_dispatch_events;
+        INSERT INTO agent_dispatch_events_v126 (
+          id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+          actor_user_id, provider, instruction, cwd, prompt_path, prompt_sha256,
+          status, session_handle, session_id, attach_command, error, created_at,
+          settled_at
+        ) SELECT
+          id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+          actor_user_id, provider, instruction, cwd, prompt_path, prompt_sha256,
+          status, session_handle, session_id, attach_command, error, created_at,
+          settled_at
+        FROM agent_dispatch_events;
         DROP TABLE agent_dispatch_events;
         ALTER TABLE agent_dispatch_events_v126 RENAME TO agent_dispatch_events;
         CREATE INDEX idx_agent_dispatch_events_candidate

@@ -62,6 +62,7 @@ import { startBriefingExpirySweep, stopBriefingExpirySweep } from "./briefing-sc
 import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
 // Issue 0bc2279 — executor task inventory receipts and read-only projection.
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerOperationalIncidentRoutes } from "./routes/operational-incidents.js";
 import { registerManagedReminderRoutes } from "./routes/reminders.js";
 import {
   startManagedReminderScheduler,
@@ -252,6 +253,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)
   registerTaskRoutes(router, db);
+  // Issue 5308097 — durable executor-reported operational incident ledger.
+  registerOperationalIncidentRoutes(router, db);
   // Issue e257e5c — bounded, attributable, first-party reminder mutations.
   registerManagedReminderRoutes(router, db);
   // Issue: 3d85f43 — canonical project registry CLI/API

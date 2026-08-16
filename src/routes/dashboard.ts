@@ -1,6 +1,7 @@
 import { countPendingBriefingCandidates } from "../briefing.js";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
+import { countOperationalIncidents } from "../operational-incidents.js";
 import type { RouteRegistrar } from "../server.js";
 import { countGlobalInboxBadge } from "./inbox.js";
 import { sendJson } from "./http.js";
@@ -15,6 +16,8 @@ export type DashboardBadgeCounts = {
    * like a human decision does.
    */
   briefing: number;
+  /** Active, unresolved, unacknowledged operational incidents only. */
+  incidents: number;
 };
 
 export function readDashboardBadgeCounts(
@@ -37,6 +40,7 @@ export function readDashboardBadgeCounts(
     inbox: countGlobalInboxBadge(db),
     work: Number(dirtyWork.count),
     briefing: countPendingBriefingCandidates(db),
+    incidents: countOperationalIncidents(db).active_unacknowledged,
   };
 }
 

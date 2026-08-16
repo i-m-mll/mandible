@@ -183,6 +183,16 @@ export const METADATA_BACKUP_TABLES = [
   "managed_task_create_requests",
   "managed_task_occurrences",
   "managed_task_events",
+  // Operational incidents (issue 5308097, migration 136). The episode carries
+  // operator intent — acknowledgement, closure, remediation state — which
+  // exists nowhere else and cannot be re-derived: a later executor generation
+  // reports observation, never whether a person had already seen it. The
+  // observation events are immutable executor testimony about moments that
+  // have passed, and the workflow events are the audit chain behind
+  // Prepare-fix. Keep the episode before its event children.
+  "operational_incidents",
+  "operational_incident_observation_events",
+  "operational_incident_workflow_events",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

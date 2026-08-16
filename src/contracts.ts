@@ -1638,6 +1638,148 @@ export const TASK_INVENTORY_EVENTS = Object.freeze({
   posted: 'tasks.inventory.posted',
 } as const);
 
+// --- operational incidents (issue 5308097) ---------------------------------
+
+export const OPERATIONAL_INCIDENT_SCHEMA = 'operational-incidents@1';
+export const OPERATIONAL_INCIDENT_RECEIPT_SCHEMA = 'operational-incidents-receipt@1';
+
+export type OperationalIncidentCondition =
+  | 'failed_permanent'
+  | 'timeout'
+  | 'circuit_open'
+  | 'publish_stale'
+  | 'publish_quarantined'
+  | 'containment_blocked';
+
+export type OperationalIncidentObservation = 'active' | 'recovered';
+export type OperationalIncidentAttention = 'unacknowledged' | 'acknowledged';
+export type OperationalIncidentRemediation =
+  | 'none'
+  | 'triaging'
+  | 'fix_prepared'
+  | 'awaiting_auth'
+  | 'auth_expired'
+  | 'awaiting_deploy'
+  | 'awaiting_verification'
+  | 'complete';
+export type OperationalIncidentResolutionKind = 'successful_run' | 'operator_closure';
+
+export type OperationalIncidentFacts = {
+  run_id: string;
+  run_status: string;
+  exit_class: string;
+  finished_at: number;
+};
+
+export type OperationalIncidentRecovery = {
+  basis: 'newer_successful_run';
+  run_id: string;
+  run_status: 'succeeded';
+  finished_at: number;
+};
+
+export type OperationalIncidentTelemetryEvent = {
+  event_id: string;
+  event_seq: 1 | 2;
+  episode: {
+    task: string;
+    condition: OperationalIncidentCondition;
+    first_seen: number;
+  };
+  observation: OperationalIncidentObservation;
+  observed_at: number;
+  facts: OperationalIncidentFacts;
+  recovery: OperationalIncidentRecovery | null;
+};
+
+export type OperationalIncidentIngestEnvelope = {
+  schema: typeof OPERATIONAL_INCIDENT_SCHEMA;
+  executor: { name: string; version: string };
+  generation: {
+    inventory_schema: 'executor-inventory@2';
+    inventory_digest: string;
+    observed_at: number;
+  };
+  provenance: {
+    basis: 'scheduler_computed';
+    verification: 'unverified_by_mandible';
+  };
+  events: OperationalIncidentTelemetryEvent[];
+};
+
+export type OperationalIncidentReceipt = {
+  event_id: string;
+  incident_id: string;
+  result: 'stored' | 'duplicate';
+};
+
+export type OperationalIncidentIngestResponse = {
+  schema: typeof OPERATIONAL_INCIDENT_RECEIPT_SCHEMA;
+  accepted: OperationalIncidentReceipt[];
+};
+
+export type OperationalIncidentProjection = {
+  id: string;
+  executor: string;
+  task: string;
+  condition: OperationalIncidentCondition;
+  first_seen: number;
+  observation: OperationalIncidentObservation;
+  attention: OperationalIncidentAttention;
+  remediation: OperationalIncidentRemediation;
+  resolved: boolean;
+  resolution_kind: OperationalIncidentResolutionKind | null;
+  provenance: {
+    label: 'Executor-reported; not verified by Mandible';
+    value: 'executor_asserted_unverified';
+  };
+  latest_telemetry: { schema: typeof OPERATIONAL_INCIDENT_SCHEMA; event: unknown };
+  latest_telemetry_sha256: string;
+  latest_observed_at: number;
+  recovered_at: number | null;
+  recovery_run_id: string | null;
+  acknowledged_at: number | null;
+  acknowledged_by_user_id: string | null;
+  resolved_at: number | null;
+  operator_closed_at: number | null;
+  operator_closed_by_user_id: string | null;
+  updated_at: number;
+};
+
+export type OperationalIncidentCounts = {
+  active_unacknowledged: number;
+  active_acknowledged: number;
+  resolved: number;
+};
+
+export type OperationalIncidentListResponse = {
+  incidents: OperationalIncidentProjection[];
+  counts: OperationalIncidentCounts;
+  next_cursor: string | null;
+};
+
+export type OperationalIncidentAcknowledgementResponse = {
+  incident_id: string;
+  attention: 'acknowledged';
+  event_id: string;
+  acknowledged_at: number;
+  acknowledged_by_user_id: string;
+};
+
+export type OperationalIncidentCloseResponse = {
+  incident: OperationalIncidentProjection;
+};
+
+export const OPERATIONAL_INCIDENT_EVENTS = Object.freeze({
+  ingested: 'operational-incident:ingested',
+  acknowledged: 'operational-incident:acknowledged',
+  remediationChanged: 'operational-incident:remediation-changed',
+  closed: 'operational-incident:closed',
+} as const);
+
+export type OperationalIncidentEvent =
+  (typeof OPERATIONAL_INCIDENT_EVENTS)[keyof typeof OPERATIONAL_INCIDENT_EVENTS];
+
 // Immutable operator requests plus append-only executor receipts — issue
 // 548bd73. These are deliberately separate from inventory telemetry: Mandible
 // records the desired safety action, while only the addressed executor may
