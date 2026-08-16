@@ -68,6 +68,15 @@
 #   --force / -f             Skip CWD validation checks
 #   --no-watch              Submit only, don't poll
 #
+# Exit codes:
+#   0   Request submitted (and, without --no-watch, resolved)
+#   1   Runtime failure (unreachable daemon, bad server response)
+#   2   Usage/validation error
+#   3   Refused as a duplicate: an existing request in THIS repo already covers
+#       this branch pair. Nothing was queued (issue 608d1db). Duplicate
+#       detection is scoped to the repository, so the same branch name in a
+#       different repo submits normally.
+#
 # Bug: c23f479 -- unified auth request submission + polling
 #
 # NOTE: If this script or the mandible CLI is being renamed/moved in the branch
@@ -931,21 +940,53 @@ if [[ -z "$http_status" || "$http_status" == "000" ]]; then
 fi
 
 if [[ "$http_status" == "409" ]]; then
-  # Bug: 16985e8 — server detected a duplicate. Use the existing request_id.
+  # Bug: 16985e8 — server detected a duplicate.
+  #
+  # Issue 608d1db — this is a refusal, not an outcome. It previously echoed the
+  # caller's own --title and branch under an "Auth request (existing)" heading
+  # and fell through to the SSE watch with exit 0, so a submitter saw its own
+  # arguments printed beside a foreign request's id and concluded it had
+  # queued. Nothing is queued here, so: report only the *stored* request's
+  # identity, say plainly that nothing was queued, and exit non-zero (3, a
+  # conflict distinct from usage errors 2 and runtime failures 1) so no script
+  # or agent can read this as a submission.
   existing_id=$(printf '%s' "$response" | jq -r '.request_id // empty' 2>/dev/null || echo "")
-  existing_status=$(printf '%s' "$response" | jq -r '.status // "pending"' 2>/dev/null || echo "pending")
-  echo "Auth request already exists (${existing_status}): ${existing_id}" >&2
-  echo "Use PUT /api/auth/request/${existing_id} to update it, or check the dashboard." >&2
-  # Output the existing ID on stdout so callers can detect and handle it
-  request_id="$existing_id"
-  if [[ -z "$request_id" ]]; then
+  if [[ -z "$existing_id" ]]; then
     echo "Error: 409 but no existing request_id in response: $response" >&2
     exit 1
   fi
-  # Skip the submit success message and go straight to watching
-  echo "Auth request (existing): ${request_id}"
-  echo "Title: ${title}"
-  echo "Branch: ${head_branch} -> ${base_branch}"
+  existing_status=$(printf '%s' "$response" | jq -r '.existing.status // .status // "pending"' 2>/dev/null || echo "pending")
+  existing_title=$(printf '%s' "$response" | jq -r '.existing.title // empty' 2>/dev/null || echo "")
+  existing_repo=$(printf '%s' "$response" | jq -r '.existing.repo // empty' 2>/dev/null || echo "")
+  existing_head=$(printf '%s' "$response" | jq -r '.existing.head_branch // empty' 2>/dev/null || echo "")
+  existing_base=$(printf '%s' "$response" | jq -r '.existing.base_branch // empty' 2>/dev/null || echo "")
+
+  {
+    echo "Error: auth request REFUSED as a duplicate. Nothing was queued."
+    echo "No new request was created; '${head_branch}' is NOT in the auth queue from this run."
+    echo ""
+    echo "The existing request that caused this refusal:"
+    echo "  ID:     ${existing_id}"
+    echo "  Status: ${existing_status}"
+    # Older daemons answer 409 without the `existing` block. Print nothing
+    # rather than substituting this caller's arguments — an unlabelled echo of
+    # the submitter's own input is exactly what made this refusal misread.
+    [[ -n "$existing_title" ]] && echo "  Title:  ${existing_title}"
+    [[ -n "$existing_repo" ]] && echo "  Repo:   ${existing_repo}"
+    if [[ -n "$existing_head" ]]; then
+      echo "  Branch: ${existing_head} -> ${existing_base:-?}"
+    fi
+    if [[ -z "$existing_title$existing_repo$existing_head" ]]; then
+      echo "  (this daemon did not report the stored request's details;"
+      echo "   run 'mandible auth list' or open the dashboard to inspect it)"
+    fi
+    echo ""
+    echo "If that request is the same work, update it:"
+    echo "  PUT /api/auth/request/${existing_id}"
+    echo "If it is different work that merely shares a branch name, rename this"
+    echo "branch or resolve the existing request first, then resubmit."
+  } >&2
+  exit 3
 elif [[ "$http_status" != "201" ]]; then
   error_msg=$(printf '%s' "$response" | jq -r '.error // empty' 2>/dev/null || echo "")
   echo "Error: POST /api/auth/request returned HTTP ${http_status}" >&2
