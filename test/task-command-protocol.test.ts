@@ -11,6 +11,7 @@ import {
   TASK_COMMAND_SCHEMA,
   TASK_COMMAND_SCHEMA_V1,
   TASK_INVENTORY_SCHEMA,
+  type TaskCommand,
 } from "../src/contracts.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
@@ -416,6 +417,123 @@ describe("task-command v2 frozen protocol", () => {
     expect(taskCommandEventDigest("command-fixture", {
       event: "rejected", reason: "dry_run_failed", failure_class: "runner",
     })).toBe("09a1f2fd5dba299078d985ac654c2cbe674cf49235456fd1d3f5e7eaf189d223");
+    // `policy_gate` follows `reason` in the canonical object.
+    expect(taskCommandEventDigest("command-fixture", {
+      event: "rejected", reason: "policy_refused", policy_gate: "tampered",
+    })).toBe("ec2108e5eb24e547e12fa58651e225bd909d0ddb9ef1c59ed899f9c6c967605b");
+    // And a refusal without one digests exactly as it did before the field
+    // existed, which is what keeps a pre-amendment executor wire-compatible.
+    expect(taskCommandEventDigest("command-fixture", {
+      event: "rejected", reason: "policy_refused",
+    })).toBe("e30b015f1580f1add58652a1bb2bdaae15084aa7b8429d6636d3829ef0177631");
+  });
+
+  it("policy_refused_names_the_gate_that_refused", async () => {
+    // Every closed member round-trips: parsed, digested, stored, projected.
+    const gates = [
+      "kill_switch", "no_bundle", "unprotected", "tampered", "misbound",
+      "unreadable_config",
+    ] as const;
+    for (const [index, policy_gate] of gates.entries()) {
+      declareV2Capability();
+      const created = await create("operator", v2Body("enable", `enable-${index}`));
+      const id = (created.body as { command: { id: string } }).command.id;
+      await executorV2Event(id, { event: "accepted" });
+      const rejected = await executorV2Event(id, {
+        event: "rejected", reason: "policy_refused", policy_gate,
+      });
+      expect(rejected.status).toBe(200);
+      const { command } = rejected.body as { command: TaskCommand };
+      expect(command.state).toBe("rejected");
+      expect(command.rejection_reason).toBe("policy_refused");
+      const terminal = command.events.find((event) => event.event === "rejected");
+      expect(terminal?.payload).toEqual({ reason: "policy_refused", policy_gate });
+    }
+  });
+
+  it("policy_refused_without_a_gate_stays_wire_compatible", async () => {
+    // An executor that predates the field is supported indefinitely. Absence
+    // means exactly that, and never "the gate is unknown".
+    declareV2Capability();
+    const created = await create("operator", v2Body("enable"));
+    const id = (created.body as { command: { id: string } }).command.id;
+    await executorV2Event(id, { event: "accepted" });
+    const rejected = await executorV2Event(id, {
+      event: "rejected", reason: "policy_refused",
+    });
+    expect(rejected.status).toBe(200);
+    const { command } = rejected.body as { command: TaskCommand };
+    expect(command.rejection_reason).toBe("policy_refused");
+    expect(command.events.find((event) => event.event === "rejected")?.payload)
+      .toEqual({ reason: "policy_refused" });
+  });
+
+  it("an_unknown_or_misplaced_policy_gate_is_refused", async () => {
+    declareV2Capability();
+    const created = await create("operator", v2Body("enable"));
+    const id = (created.body as { command: { id: string } }).command.id;
+    await executorV2Event(id, { event: "accepted" });
+
+    // Refused at the wire rather than stored: an unrecognized value is
+    // indistinguishable here from a string that should never have been sent,
+    // and storing it is the path leak the closed enumeration prevents.
+    const rejections: Record<string, unknown>[] = [
+      { event: "rejected", reason: "policy_refused", policy_gate: "/Users/mll/state/bundles" },
+      { event: "rejected", reason: "policy_refused", policy_gate: "TAMPERED" },
+      { event: "rejected", reason: "policy_refused", policy_gate: 7 },
+      { event: "rejected", reason: "policy_refused", policy_gate: null },
+      // A gate belongs to a policy refusal alone, and to no other event.
+      { event: "rejected", reason: "busy", policy_gate: "tampered" },
+      { event: "rejected", reason: "dry_run_failed", failure_class: "runner", policy_gate: "tampered" },
+      { event: "accepted", policy_gate: "tampered" },
+    ];
+    for (const body of rejections) {
+      const response = await router.invoke({
+        method: "POST",
+        url: `/api/tasks/commands/${id}/events`,
+        credential: "agent-schedule",
+        body: { schema: TASK_COMMAND_EVENT_SCHEMA, ...body, event_digest: "a".repeat(64) },
+      });
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ code: "invalid_task_command" });
+    }
+
+    // Nothing was stored: the command is still awaiting a terminal decision.
+    const after = await router.invoke({
+      method: "GET", url: `/api/tasks/commands/${id}`, credential: "operator",
+    });
+    expect((after.body as { command: TaskCommand }).command.state).toBe("accepted");
+  });
+
+  it("a_v1_rejection_never_carries_a_policy_gate", async () => {
+    // task-command@1 reaches no policy gate at all: its rejections come only
+    // from request validation. The v1 wire is untouched by the amendment.
+    const created = await create("operator", createBody({ request_key: "v1-gate" }));
+    const id = (created.body as { command: { id: string } }).command.id;
+    await router.invoke({
+      method: "POST",
+      url: `/api/tasks/commands/${id}/events`,
+      credential: "agent-schedule",
+      body: {
+        schema: TASK_COMMAND_EVENT_SCHEMA_V1,
+        event: "accepted",
+        event_digest: taskCommandEventDigest(id, { event: "accepted" }),
+      },
+    });
+    const response = await router.invoke({
+      method: "POST",
+      url: `/api/tasks/commands/${id}/events`,
+      credential: "agent-schedule",
+      body: {
+        schema: TASK_COMMAND_EVENT_SCHEMA_V1,
+        event: "rejected",
+        reason: "policy_refused",
+        policy_gate: "tampered",
+        event_digest: "a".repeat(64),
+      },
+    });
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ code: "invalid_task_command" });
   });
 
   it("started_and_progress_are_dry_run_only", async () => {
