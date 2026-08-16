@@ -71,7 +71,17 @@ function runAsync(
   });
 }
 
-function listenForAuthRequest(): Promise<{
+/**
+ * `submitResponse` overrides the POST /api/auth/request reply so a test can
+ * drive a non-201 path (Issue 608d1db — the duplicate refusal). Defaults to the
+ * 201 success reply every pre-existing caller expects.
+ */
+function listenForAuthRequest(
+  submitResponse: { status: number; body: Record<string, unknown> } = {
+    status: 201,
+    body: { request_id: "req_cli_close" },
+  },
+): Promise<{
   port: number;
   close: () => Promise<void>;
   bodies: Record<string, unknown>[];
@@ -120,8 +130,8 @@ function listenForAuthRequest(): Promise<{
       });
       req.on("end", () => {
         bodies.push(JSON.parse(raw));
-        res.writeHead(201, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ request_id: "req_cli_close" }));
+        res.writeHead(submitResponse.status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(submitResponse.body));
       });
       return;
     }
@@ -291,6 +301,94 @@ describe("auth request staged close action sugar", () => {
         session_id: "codex-requester-session",
         target_session_id: "mandible-notification-session",
       });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+// Issue 608d1db — a duplicate 409 is a refusal, not an outcome. It used to
+// echo the caller's own --title and branch under "Auth request (existing)" and
+// exit 0, so a submitter read its own arguments back beside a foreign
+// request's id and concluded the work was queued when nothing was.
+describe("auth request duplicate refusal", () => {
+  const CALLER_TITLE = "Caller supplied title";
+  const duplicate409 = {
+    status: 409,
+    body: {
+      error:
+        "Duplicate auth request — this repo already has a pending or approved " +
+        "request for this branch. Nothing was queued.",
+      request_id: "1e412da6-168e-424d-9e93-5e2f1c140c44",
+      status: "pending",
+      existing: {
+        id: "1e412da6-168e-424d-9e93-5e2f1c140c44",
+        status: "pending",
+        title: "Stored request from another repo",
+        repo: "other-repo",
+        head_branch: "feature/demo",
+        base_branch: "main",
+        created_at: 1786845649435,
+      },
+    },
+  };
+
+  it("exits non-zero and reports the existing request's own identity", async () => {
+    const server = await listenForAuthRequest(duplicate409);
+    try {
+      const result = await runAsync([
+        "auth", "request", "feature/demo",
+        "--title", CALLER_TITLE,
+        "--issue", "608d1db",
+        "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+
+      // A refusal must never present as success.
+      expect(result.status).not.toBe(0);
+      expect(result.status).toBe(3);
+
+      const output = `${result.stdout}${result.stderr}`;
+      expect(output).toContain("REFUSED");
+      expect(output).toContain("Nothing was queued");
+      // The stored request's own identity, so the repo mismatch is visible.
+      expect(output).toContain("1e412da6-168e-424d-9e93-5e2f1c140c44");
+      expect(output).toContain("Stored request from another repo");
+      expect(output).toContain("other-repo");
+      // Never the caller's own arguments echoed back as if they were stored.
+      expect(output).not.toContain(CALLER_TITLE);
+      // Nothing on stdout that a caller could parse as a submitted request.
+      expect(result.stdout).toBe("");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("still refuses clearly when an older daemon omits the stored details", async () => {
+    const server = await listenForAuthRequest({
+      status: 409,
+      body: { error: "Duplicate auth request", request_id: "legacy-409-id", status: "pending" },
+    });
+    try {
+      const result = await runAsync([
+        "auth", "request", "feature/demo",
+        "--title", CALLER_TITLE,
+        "--issue", "608d1db",
+        "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+
+      expect(result.status).toBe(3);
+      const output = `${result.stdout}${result.stderr}`;
+      expect(output).toContain("REFUSED");
+      expect(output).toContain("legacy-409-id");
+      // Without stored details, say so rather than substituting the caller's.
+      expect(output).toContain("did not report the stored request's details");
+      expect(output).not.toContain(CALLER_TITLE);
     } finally {
       await server.close();
     }
