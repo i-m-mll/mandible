@@ -427,7 +427,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
     const dispatchDefinitionBefore = definitions(db, ["agent_dispatch_events", ...DISPATCH_INDEXES]);
 
     expect(() => migrate(db)).toThrow(
-      "migration 126 preflight: 1 cutover-scoped foreign key violation(s) in candidate_occurrences",
+      "migration 126 preflight: 1 foreign key violation(s) in candidate_occurrences",
     );
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())

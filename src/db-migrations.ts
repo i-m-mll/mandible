@@ -5818,6 +5818,110 @@ function bodyHash(body: string): string {
   return createHash("sha256").update(body).digest("hex");
 }
 
+/**
+ * The only foreign-key check a migration may run.
+ *
+ * A migration's integrity check exists to prove *the migration broke nothing*.
+ * The bare `PRAGMA foreign_key_check` form reports violations across the whole
+ * database, so using it asserts something far stronger — that the database was
+ * already clean — which any long-lived database can fail for reasons predating
+ * the migration by months. Issue 1a6c674: three `console_session_usage` rows
+ * orphaned before that foreign key was ever declared aborted two unrelated
+ * migrations, and the daemon crash-looped on every restart because a migration
+ * cannot succeed by retrying against data it will not and should not repair.
+ *
+ * `tables` is required and must be non-empty, so there is no way to call this
+ * in the unscoped form. Pass every table the migration rebuilds or writes to,
+ * *plus every child table whose rows the migration could orphan*:
+ * `PRAGMA foreign_key_check("t")` only reports rows of `t` whose parents are
+ * missing, so rebuilding a parent table means naming its children here.
+ * Tables that do not exist yet at this point in the chain are skipped, because
+ * a migration may run against a database where a later table has not been
+ * created.
+ *
+ * Never widen a list to "everything" to make a failure go away, and never
+ * repair or delete the rows a scoped check reports: a check that quietly
+ * deletes what it dislikes is worse than one that is too strict.
+ */
+function assertScopedForeignKeys(
+  db: Db,
+  tables: readonly string[],
+  migrationLabel: string,
+): void {
+  if (tables.length === 0) {
+    throw new Error(
+      `${migrationLabel}: scoped foreign key check requires at least one table`,
+    );
+  }
+  let violationCount = 0;
+  const offendingTables: string[] = [];
+  for (const table of tables) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) {
+      throw new Error(
+        `${migrationLabel}: invalid table name in scoped foreign key check: ${table}`,
+      );
+    }
+    if (!tableExists(db, table)) continue;
+    const violations = db.prepare(`PRAGMA foreign_key_check("${table}")`).all();
+    if (violations.length === 0) continue;
+    violationCount += violations.length;
+    offendingTables.push(table);
+  }
+  if (violationCount > 0) {
+    throw new Error(
+      `${migrationLabel}: ${violationCount} foreign key violation(s) in ` +
+      offendingTables.join(", "),
+    );
+  }
+}
+
+/**
+ * Tables the migration-62 ledger event ID rewrite writes to: `ledger_events`
+ * itself plus the two tables that carry `event_id` foreign keys into it.
+ */
+const V62_FK_CHECK_TABLES = [
+  "ledger_events",
+  "ledger_outbox",
+  "ledger_body_revisions",
+] as const;
+
+/** The single child table migration 70 rebuilds; nothing references it. */
+const V70_FK_CHECK_TABLES = ["ledger_issue_relationship_sources"] as const;
+
+/**
+ * Migration 86 rebuilds `spaces`, the parent of five child tables, so the
+ * children are checked for rows the DROP + RENAME could have orphaned.
+ */
+const V86_FK_CHECK_TABLES = [
+  "spaces",
+  "space_items",
+  "space_occurrences",
+  "space_edges",
+  "space_blocks",
+  "space_exports",
+] as const;
+
+/**
+ * Migrations 90 and 121 rebuild `space_items`; `space_occurrences` and
+ * `space_blocks` hold `(space_id, item_id)` foreign keys into it.
+ */
+const SPACE_ITEMS_FK_CHECK_TABLES = [
+  "space_items",
+  "space_occurrences",
+  "space_blocks",
+] as const;
+
+/** Tables the migration-91 artifact identity backfill writes to. */
+const V91_FK_CHECK_TABLES = [
+  "artifact_blob",
+  "artifact",
+  "artifact_version",
+  "artifact_links",
+] as const;
+
+/** The one table migration 105 adds canonical blob columns to. */
+const V105_FK_CHECK_TABLES = ["space_exports"] as const;
+
 function removeLegacyIssueRelationshipSourceKinds(db: Db): void {
   const table = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issue_relationship_sources'")
@@ -5883,10 +5987,7 @@ function removeLegacyIssueRelationshipSourceKinds(db: Db): void {
     }
   }
 
-  const violations = db.prepare("PRAGMA foreign_key_check").all();
-  if (violations.length > 0) {
-    throw new Error(`Legacy issue ref-kind migration left ${violations.length} foreign key violations`);
-  }
+  assertScopedForeignKeys(db, V70_FK_CHECK_TABLES, "migration 70 verification");
 }
 
 function hasLegacyIssueRelationshipSourceKinds(db: Db): boolean {
@@ -5977,12 +6078,7 @@ function makeSpacesProjectIdNullable(db: Db): void {
     }
   }
 
-  const violations = db.prepare("PRAGMA foreign_key_check").all();
-  if (violations.length > 0) {
-    throw new Error(
-      `spaces nullable project_id migration left ${violations.length} foreign key violations`,
-    );
-  }
+  assertScopedForeignKeys(db, V86_FK_CHECK_TABLES, "migration 86 verification");
 }
 
 /**
@@ -6060,12 +6156,7 @@ function rebuildSpaceItemsWithSpaceRefType(db: Db): void {
     }
   }
 
-  const violations = db.prepare("PRAGMA foreign_key_check").all();
-  if (violations.length > 0) {
-    throw new Error(
-      `space_items linked-space migration left ${violations.length} foreign key violations`,
-    );
-  }
+  assertScopedForeignKeys(db, SPACE_ITEMS_FK_CHECK_TABLES, "migration 90 verification");
 }
 
 /**
@@ -6144,12 +6235,7 @@ function rebuildSpaceItemsWithFindingRefType(db: Db): void {
     }
   }
 
-  const violations = db.prepare("PRAGMA foreign_key_check").all();
-  if (violations.length > 0) {
-    throw new Error(
-      `space_items finding-ref migration left ${violations.length} foreign key violations`,
-    );
-  }
+  assertScopedForeignKeys(db, SPACE_ITEMS_FK_CHECK_TABLES, "migration 121 verification");
 }
 
 function migrateLedgerEventHashIds(db: Db): void {
@@ -6239,10 +6325,7 @@ function migrateLedgerEventHashIds(db: Db): void {
     }
   }
 
-  const violations = db.prepare("PRAGMA foreign_key_check").all();
-  if (violations.length > 0) {
-    throw new Error(`Ledger event ID migration left ${violations.length} foreign key violations`);
-  }
+  assertScopedForeignKeys(db, V62_FK_CHECK_TABLES, "migration 62 verification");
 }
 
 function hasLegacyLedgerEventIds(db: Db): boolean {
@@ -6709,19 +6792,7 @@ function v126StableId(kind: string, ...parts: string[]): string {
 }
 
 function assertV126Checks(db: Db, phase: string): void {
-  const violations: Array<{ table: (typeof V126_FK_CHECK_TABLES)[number] }> = [];
-  for (const table of V126_FK_CHECK_TABLES) {
-    if (!tableExists(db, table)) continue;
-    const tableViolations = db.prepare(`PRAGMA foreign_key_check("${table}")`).all();
-    for (const _violation of tableViolations) violations.push({ table });
-  }
-  if (violations.length > 0) {
-    const tables = [...new Set(violations.map((violation) => violation.table))];
-    throw new Error(
-      `migration 126 ${phase}: ${violations.length} cutover-scoped foreign key ` +
-      `violation(s) in ${tables.join(", ")}`,
-    );
-  }
+  assertScopedForeignKeys(db, V126_FK_CHECK_TABLES, `migration 126 ${phase}`);
   const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
     throw new Error(`migration 126 ${phase}: integrity_check failed`);
@@ -7953,10 +8024,11 @@ function verifyArtifactIdentityBackfill(db: Db): void {
   if (artifactIdentityRowCount(db, "artifact_version") < expectedVersions) {
     throw new Error("migration 91 verification: not every artifact_versions row was backfilled to artifact_version");
   }
-  const violations = db.prepare("PRAGMA foreign_key_check").all();
-  if (violations.length > 0) {
-    throw new Error(`migration 91 verification: ${violations.length} foreign key violation(s) after artifact identity backfill`);
-  }
+  assertScopedForeignKeys(
+    db,
+    V91_FK_CHECK_TABLES,
+    "migration 91 verification after artifact identity backfill",
+  );
 }
 
 function verifyArtifactIdentitySchema(db: Db): void {
@@ -8776,24 +8848,14 @@ function migrateTaskCommandV2(db: Db): void {
   if (beforeEvents !== JSON.stringify(eventProjection())) {
     throw new Error("task-command v2 migration changed a v1 event projection");
   }
-  // Scoped to the two tables this migration rebuilds, following the v126
-  // pattern. A bare `PRAGMA foreign_key_check` reports the whole database, so
-  // any pre-existing violation anywhere — orphaned `console_session_usage`
-  // rows left behind before that FK was declared, for instance — would abort a
-  // migration that neither created nor touched them, and keep aborting it on
-  // every restart. A migration verifies what it changed; it is not the place
-  // to discover unrelated historical data problems, and it must never make the
-  // daemon unstartable over one.
-  const foreignKeyFailures: Array<{ table: string }> = [];
-  for (const table of ["task_command_requests", "task_command_events"] as const) {
-    if (!tableExists(db, table)) continue;
-    for (const _violation of db.prepare(`PRAGMA foreign_key_check("${table}")`).all()) {
-      foreignKeyFailures.push({ table });
-    }
-  }
-  if (foreignKeyFailures.length > 0) {
-    throw new Error(`task-command v2 migration foreign_key_check failed: ${JSON.stringify(foreignKeyFailures)}`);
-  }
+  // Scoped to the two tables this migration rebuilds. See
+  // `assertScopedForeignKeys` for why the bare whole-database form is never
+  // used here.
+  assertScopedForeignKeys(
+    db,
+    ["task_command_requests", "task_command_events"],
+    "task-command v2 migration verification",
+  );
   const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
     throw new Error(`task-command v2 migration integrity_check failed: ${JSON.stringify(integrity)}`);
@@ -9219,13 +9281,11 @@ function rebuildArtifactCanonicalTargets(db: Db): void {
   const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
   try {
     if (!previousForeignKeys) db.pragma("foreign_keys = ON");
-    const initialViolations = db.pragma("foreign_key_check") as unknown[];
-    if (initialViolations.length > 0) {
-      throw new Error(
-        `migration 104 preflight: database has ${initialViolations.length} ` +
-        "foreign key violation(s)",
-      );
-    }
+    assertScopedForeignKeys(
+      db,
+      ARTIFACT_CANONICAL_TARGET_TABLES,
+      "migration 104 preflight",
+    );
     assertMigration104Preconditions(db);
     const preservedIndexes = explicitMigration104Indexes(db);
 
@@ -9430,12 +9490,11 @@ function rebuildArtifactCanonicalTargets(db: Db): void {
       }
       createMigration104Indexes(db, preservedIndexes);
       verifyArtifactCanonicalTargetSchema(db);
-      const violations = db.pragma("foreign_key_check") as unknown[];
-      if (violations.length > 0) {
-        throw new Error(
-          `migration 104 verification: ${violations.length} foreign key violation(s)`,
-        );
-      }
+      assertScopedForeignKeys(
+        db,
+        ARTIFACT_CANONICAL_TARGET_TABLES,
+        "migration 104 verification",
+      );
       const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
       if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
         throw new Error("migration 104 verification: integrity_check failed");
@@ -9445,12 +9504,11 @@ function rebuildArtifactCanonicalTargets(db: Db): void {
     db.pragma(`foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
   }
 
-  const violations = db.pragma("foreign_key_check") as unknown[];
-  if (violations.length > 0) {
-    throw new Error(
-      `migration 104 verification: ${violations.length} foreign key violation(s) after restore`,
-    );
-  }
+  assertScopedForeignKeys(
+    db,
+    ARTIFACT_CANONICAL_TARGET_TABLES,
+    "migration 104 verification after restore",
+  );
   const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
     throw new Error("migration 104 verification: integrity_check failed after restore");
@@ -9748,12 +9806,7 @@ function assertSpaceExportMappingPreconditions(db: Db): void {
       throw new Error(`migration 105 precondition: required mapping table ${table} is missing`);
     }
   }
-  const violations = db.pragma("foreign_key_check") as unknown[];
-  if (violations.length > 0) {
-    throw new Error(
-      `migration 105 preflight: database has ${violations.length} foreign key violation(s)`,
-    );
-  }
+  assertScopedForeignKeys(db, V105_FK_CHECK_TABLES, "migration 105 preflight");
 
   for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
     const rows = db.prepare(
@@ -9897,12 +9950,7 @@ function migrateSpaceExportCanonicalArtifacts(db: Db): void {
   ) {
     throw new Error("migration 105 verification: space_exports index or trigger inventory changed");
   }
-  const violations = db.pragma("foreign_key_check") as unknown[];
-  if (violations.length > 0) {
-    throw new Error(
-      `migration 105 verification: ${violations.length} foreign key violation(s)`,
-    );
-  }
+  assertScopedForeignKeys(db, V105_FK_CHECK_TABLES, "migration 105 verification");
   const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
     throw new Error("migration 105 verification: integrity_check failed");
@@ -9991,20 +10039,14 @@ function ensureFeedbackCollectionExpiryColumn(db: Db): void {
         }
       }
 
-      // Scoped to the rebuilt table. A bare `PRAGMA foreign_key_check` covers
-      // the whole database, so an unrelated pre-existing violation would abort
-      // a migration that neither created nor touched it — and keep aborting it
-      // on every restart, leaving the daemon unstartable. This check exists to
-      // prove the rebuild above did not orphan a row, and that is all it
-      // should be able to fail on.
-      const violations = db.prepare(
-        `PRAGMA foreign_key_check("feedback_ask_sessions")`,
-      ).all();
-      if (violations.length > 0) {
-        throw new Error(
-          `feedback ask-session expiry migration left ${violations.length} foreign key violations`,
-        );
-      }
+      // Scoped to the rebuilt table. This check exists to prove the rebuild
+      // above did not orphan a row, and that is all it should be able to fail
+      // on — see `assertScopedForeignKeys`.
+      assertScopedForeignKeys(
+        db,
+        ["feedback_ask_sessions"],
+        "feedback ask-session expiry migration verification",
+      );
     }
   }
   db.exec(
