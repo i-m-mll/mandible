@@ -23,8 +23,11 @@ import type { JSX } from 'preact';
 
 import {
   ApiError,
+  getTaskCommand,
   getTaskInventory,
   getTaskCommands,
+  requestTaskDryRun,
+  requestTaskEnable,
   requestTaskDisable,
   cancelTaskDisable,
   TASK_INVENTORY_UNKNOWN,
@@ -321,10 +324,11 @@ function CommandSection({
   onRequest: () => void;
   onCancel: (commandId: string) => void;
 }): JSX.Element {
-  const latest = commands[0] ?? null;
+  const disableCommands = commands.filter((command) => command.verb === 'disable');
+  const latest = disableCommands[0] ?? null;
   // Never hide an unresolved safety request merely because a newer historical
   // command is terminal. The selected-target query is complete by contract.
-  const active = commands.find((command) =>
+  const active = disableCommands.find((command) =>
     command.state === 'requested' || command.state === 'accepted') ?? null;
   const displayed = active ?? latest;
   // This prediction mirrors the executor's no-op predicate exactly. Config is
@@ -385,24 +389,71 @@ function CommandSection({
   );
 }
 
+function knownExecutionHash(item: ExecutorTaskInventoryItem): string | null {
+  const hash = item.task.bundle !== TASK_INVENTORY_UNKNOWN
+    ? item.task.bundle.execution_hash
+    : TASK_INVENTORY_UNKNOWN;
+  return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+}
+
+function V2CommandSection({
+  capable,
+  executionHash,
+  busy,
+  onDryRun,
+  onEnable,
+}: {
+  capable: boolean;
+  executionHash: string | null;
+  busy: boolean;
+  onDryRun: () => void;
+  onEnable: () => void;
+}): JSX.Element | null {
+  if (!capable || !executionHash) return null;
+  return (
+    <section className="tasks-section tasks-command tasks-command--v2">
+      <h3 className="tasks-section__title">Behavioral activation</h3>
+      <p className="tasks-note">
+        Dry run records behavioral evidence for these exact execution bytes. Enabling is always a
+        separate operator request.
+      </p>
+      <p className="tasks-command__hash">Execution hash <code>{executionHash}</code></p>
+      <div className="tasks-command__actions">
+        <button type="button" className="btn" disabled={busy} onClick={onDryRun}>
+          Dry run
+        </button>
+        <button type="button" className="btn" disabled={busy} onClick={onEnable}>
+          Enable task
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function ExecutorTaskDetail({
   item,
   executor,
   commands,
   commandAvailable,
-  commandBusy,
+  disableBusy,
+  v2Busy,
   commandError,
   onRequestDisable,
   onCancelDisable,
+  onDryRun,
+  onEnable,
 }: {
   item: ExecutorTaskInventoryItem;
   executor: TaskExecutorSummary | null;
   commands: TaskCommand[];
   commandAvailable: boolean;
-  commandBusy: boolean;
+  disableBusy: boolean;
+  v2Busy: boolean;
   commandError: string | null;
   onRequestDisable: () => void;
   onCancelDisable: (commandId: string) => void;
+  onDryRun: () => void;
+  onEnable: () => void;
 }): JSX.Element {
   const { task } = item;
   return (
@@ -436,10 +487,18 @@ function ExecutorTaskDetail({
         commands={commands}
         activation={task.activation}
         available={commandAvailable}
-        busy={commandBusy}
+        busy={disableBusy}
         error={commandError}
         onRequest={onRequestDisable}
         onCancel={onCancelDisable}
+      />
+
+      <V2CommandSection
+        capable={executor?.capabilities.includes('task-command@2') === true}
+        executionHash={knownExecutionHash(item)}
+        busy={v2Busy}
+        onDryRun={onDryRun}
+        onEnable={onEnable}
       />
 
       <section className="tasks-section">
@@ -564,6 +623,113 @@ function MandibleReminderDetail({ item }: { item: MandibleTaskInventoryItem }): 
   );
 }
 
+type CommandIntent = {
+  executor: string;
+  taskId: string;
+  executionHash: string;
+  verb: 'dry_run' | 'enable';
+  command: TaskCommand | null;
+};
+
+const PROGRESS_TEXT: Record<string, string> = {
+  preflight_passed: 'Preflight passed',
+  collector_started: 'Collector started',
+  snapshot_validated: 'Snapshot validated',
+  runner_started: 'Runner started',
+  runner_completed: 'Runner completed',
+  output_validated: 'Output validated',
+};
+
+function TaskCommandModal({
+  intent,
+  busy,
+  error,
+  onClose,
+  onCancel,
+  onDryRun,
+  onEnable,
+}: {
+  intent: CommandIntent;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onCancel: (commandId: string) => void;
+  onDryRun: () => void;
+  onEnable: () => void;
+}): JSX.Element {
+  const { command } = intent;
+  const failure = command?.events.find((event) => event.event === 'rejected')?.payload;
+  const receiptFailure = command?.state === 'rejected'
+    && (command.rejection_reason === 'missing_receipt'
+      || command.rejection_reason === 'stale_receipt');
+  const dryRunPassed = command?.verb === 'dry_run' && command.state === 'applied';
+  const status = !command
+    ? 'Recording operator intent…'
+    : command.state === 'requested'
+      ? 'Waiting for executor'
+      : command.state === 'accepted'
+        ? 'Accepted; cancellation is closed.'
+        : command.state === 'started'
+          ? 'Executor-owned dry run started.'
+          : command.state === 'cancelled'
+            ? 'Cancelled before executor acceptance.'
+            : command.state === 'rejected'
+              ? `Rejected: ${command.rejection_reason ?? 'unknown'}.`
+              : command.verb === 'dry_run'
+                ? `Dry run passed. Receipt recorded for ${intent.executionHash.slice(0, 12)}. Task remains disabled.`
+                : 'Enable request applied.';
+  return (
+    <div className="tasks-command-modal" role="dialog" aria-modal="true" aria-label={`${intent.verb === 'dry_run' ? 'Dry run' : 'Enable task'} command`}>
+      <div className="tasks-command-modal__panel">
+        <header className="tasks-command-modal__header">
+          <div>
+            <h2>{intent.verb === 'dry_run' ? 'Dry run' : 'Enable task'}</h2>
+            <code>{intent.executionHash}</code>
+          </div>
+          <button type="button" className="btn btn--ghost" onClick={onClose}>Close</button>
+        </header>
+        <div className="tasks-command-modal__terminal" aria-live="polite">
+          <div className="tasks-command-modal__line">{status}</div>
+          {command?.events.filter((event) => event.event === 'started').map((event) => (
+            <div className="tasks-command-modal__line" key={event.id}>Run started</div>
+          ))}
+          {command?.events.filter((event) => event.event === 'progress').map((event) => {
+            const step = typeof event.payload.step === 'string' ? event.payload.step : '';
+            const sequence = typeof event.payload.sequence === 'number' ? event.payload.sequence : '?';
+            return (
+              <div className="tasks-command-modal__line" key={event.id}>
+                {sequence}/6 {PROGRESS_TEXT[step] ?? 'Unknown progress step'}
+              </div>
+            );
+          })}
+          {command?.rejection_reason === 'dry_run_failed'
+            && typeof failure?.failure_class === 'string' ? (
+              <div className="tasks-command-modal__line">Failure class: {failure.failure_class}</div>
+            ) : null}
+        </div>
+        {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
+        <div className="tasks-command__actions">
+          {command?.state === 'requested' ? (
+            <button type="button" className="btn" disabled={busy} onClick={() => onCancel(command.id)}>
+              Cancel unseen request
+            </button>
+          ) : null}
+          {receiptFailure ? (
+            <button type="button" className="btn" disabled={busy} onClick={onDryRun}>
+              Run dry run
+            </button>
+          ) : null}
+          {dryRunPassed ? (
+            <button type="button" className="btn" disabled={busy} onClick={onEnable}>
+              Enable task
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export type TasksViewProps = {
   sidebarHidden?: boolean;
   initialTaskKey?: string | null;
@@ -575,8 +741,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const [loading, setLoading] = useState(true);
   const [commands, setCommands] = useState<TaskCommand[]>([]);
   const [commandAvailable, setCommandAvailable] = useState(false);
-  const [commandBusy, setCommandBusy] = useState(false);
+  const [disableBusy, setDisableBusy] = useState(false);
+  const [v2Busy, setV2Busy] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [activeIntent, setActiveIntent] = useState<CommandIntent | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(initialTaskKey ?? null);
   const mounted = useRef(true);
   // Preserve one client idempotency key across ambiguous transport failures.
@@ -683,7 +851,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     const targetKey = selectedExecutorTask.key;
     const requestKey = pendingRequestKeys.current.get(targetKey) ?? crypto.randomUUID();
     pendingRequestKeys.current.set(targetKey, requestKey);
-    setCommandBusy(true);
+    setDisableBusy(true);
     setCommandError(null);
     try {
       const result = await requestTaskDisable(
@@ -708,12 +876,12 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         setCommandError(mutationError instanceof Error ? mutationError.message : String(mutationError));
       }
     } finally {
-      if (mounted.current) setCommandBusy(false);
+      if (mounted.current) setDisableBusy(false);
     }
   }, [selectedExecutorTask]);
 
   const cancelDisable = useCallback(async (commandId: string) => {
-    setCommandBusy(true);
+    setDisableBusy(true);
     setCommandError(null);
     try {
       const result = await cancelTaskDisable(commandId);
@@ -724,9 +892,111 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         setCommandError(mutationError instanceof Error ? mutationError.message : String(mutationError));
       }
     } finally {
-      if (mounted.current) setCommandBusy(false);
+      if (mounted.current) setDisableBusy(false);
     }
   }, []);
+
+  const requestV2 = useCallback(async (
+    verb: 'dry_run' | 'enable',
+    frozen?: Pick<CommandIntent, 'executor' | 'taskId' | 'executionHash'>,
+  ) => {
+    const target = frozen ?? (selectedExecutorTask ? {
+      executor: selectedExecutorTask.executor,
+      taskId: selectedExecutorTask.task.task_id,
+      executionHash: knownExecutionHash(selectedExecutorTask),
+    } : null);
+    if (!target?.executionHash) return;
+    const intentKey = `${target.executor}/${target.taskId}:${verb}:${target.executionHash}`;
+    const requestKey = pendingRequestKeys.current.get(intentKey) ?? crypto.randomUUID();
+    pendingRequestKeys.current.set(intentKey, requestKey);
+    setActiveIntent({ ...target, verb, command: null });
+    setV2Busy(true);
+    setCommandError(null);
+    try {
+      const result = verb === 'dry_run'
+        ? await requestTaskDryRun(
+          target.executor, target.taskId, target.executionHash, requestKey,
+        )
+        : await requestTaskEnable(
+          target.executor, target.taskId, target.executionHash, requestKey,
+        );
+      if (!mounted.current) return;
+      pendingRequestKeys.current.delete(intentKey);
+      setCommands((current) => [
+        result.command,
+        ...current.filter((row) => row.id !== result.command.id),
+      ]);
+      setActiveIntent({ ...target, verb, command: result.command });
+    } catch (mutationError) {
+      if (mounted.current) {
+        if (mutationError instanceof ApiError
+          && mutationError.status < 500
+          && mutationError.status !== 429) {
+          pendingRequestKeys.current.delete(intentKey);
+        }
+        setCommandError(mutationError instanceof Error ? mutationError.message : String(mutationError));
+      }
+    } finally {
+      if (mounted.current) setV2Busy(false);
+    }
+  }, [selectedExecutorTask]);
+
+  const cancelIntent = useCallback(async (commandId: string) => {
+    setV2Busy(true);
+    setCommandError(null);
+    try {
+      const result = await cancelTaskDisable(commandId);
+      if (!mounted.current) return;
+      setCommands((current) => current.map((row) =>
+        row.id === result.command.id ? result.command : row));
+      setActiveIntent((current) => current?.command?.id === result.command.id
+        ? { ...current, command: result.command }
+        : current);
+    } catch (mutationError) {
+      if (mounted.current) {
+        setCommandError(mutationError instanceof Error ? mutationError.message : String(mutationError));
+      }
+    } finally {
+      if (mounted.current) setV2Busy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const commandId = activeIntent?.command?.id;
+    const state = activeIntent?.command?.state;
+    if (!commandId || state === 'applied' || state === 'rejected' || state === 'cancelled') return;
+    let disposed = false;
+    const reconcile = async () => {
+      try {
+        const command = await getTaskCommand(commandId);
+        if (disposed || !mounted.current) return;
+        setCommands((current) => [command, ...current.filter((row) => row.id !== command.id)]);
+        setActiveIntent((current) => current?.command?.id === command.id
+          ? { ...current, command }
+          : current);
+        if (command.state === 'rejected' && command.rejection_reason === 'stale_target') {
+          void load();
+        }
+      } catch (reconcileError) {
+        if (!disposed && mounted.current) {
+          setCommandError(reconcileError instanceof Error ? reconcileError.message : String(reconcileError));
+        }
+      }
+    };
+    const onSse = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        data?: { command_id?: string };
+      }>).detail;
+      if (detail?.data?.command_id === commandId) void reconcile();
+    };
+    window.addEventListener('task-command:sse', onSse);
+    const timer = window.setInterval(() => { void reconcile(); }, 2_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('task-command:sse', onSse);
+    };
+  }, [activeIntent?.command?.id, activeIntent?.command?.state, load]);
 
   // "No executor has ever posted" and "an executor posted an empty inventory"
   // are different facts and must not share a message.
@@ -830,15 +1100,29 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               executor={selectedExecutor}
               commands={selectedCommands}
               commandAvailable={commandAvailable}
-              commandBusy={commandBusy}
+              disableBusy={disableBusy}
+              v2Busy={v2Busy}
               commandError={commandError}
               onRequestDisable={() => { void requestDisable(); }}
               onCancelDisable={(commandId) => { void cancelDisable(commandId); }}
+              onDryRun={() => { void requestV2('dry_run'); }}
+              onEnable={() => { void requestV2('enable'); }}
             />
           ) : (
             <MandibleReminderDetail item={selected} />
           )
         )}
+        {activeIntent ? (
+          <TaskCommandModal
+            intent={activeIntent}
+            busy={v2Busy}
+            error={commandError}
+            onClose={() => setActiveIntent(null)}
+            onCancel={(commandId) => { void cancelIntent(commandId); }}
+            onDryRun={() => { void requestV2('dry_run', activeIntent); }}
+            onEnable={() => { void requestV2('enable', activeIntent); }}
+          />
+        ) : null}
       </div>
     </div>
   );

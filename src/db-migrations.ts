@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { compressContent } from "./compression.js";
 import { getDaemonLogger } from "./daemon-log.js";
-import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
+import {
+  BASELINE_SCHEMA_VERSION,
+  createFreshSchemaBaseline,
+  TASK_COMMAND_EVENTS_V2_SQL,
+  TASK_COMMAND_REQUESTS_V2_SQL,
+  TASK_COMMAND_V2_INDEX_SQL,
+} from "./db-baseline.js";
 import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
 import { encodeRecurringRevisionContent } from "./feedback/store.js";
@@ -4105,6 +4111,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     version: 134,
     name: "console_session_run_options",
     statements: [],
+  },
+  {
+    version: 135,
+    name: "task_command_v2",
+    statements: [],
   }
 ];
 
@@ -4223,6 +4234,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 134) {
         ensureConsoleSessionRunOptionsColumn(db);
+      }
+      if (migration.version === 135) {
+        migrateTaskCommandV2(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -8343,6 +8357,94 @@ function ensureConsoleSessionRunOptionsColumn(db: Db): void {
   );
 }
 
+function migrateTaskCommandV2(db: Db): void {
+  if (!tableExists(db, "task_command_requests") || !tableExists(db, "task_command_events")) {
+    throw new Error("task-command v2 migration requires both v1 command tables");
+  }
+  const requestColumns = tableColumnNames(db, "task_command_requests");
+  const eventColumns = tableColumnNames(db, "task_command_events");
+  if (eventColumns.has("schema_id") && eventColumns.has("event_ordinal")) {
+    if (!requestColumns.has("schema_id")) {
+      throw new Error("task-command v2 schema is partially materialized");
+    }
+    return;
+  }
+  if (eventColumns.has("schema_id") || eventColumns.has("event_ordinal")) {
+    throw new Error("task-command v2 event schema is partially materialized");
+  }
+
+  const requestProjection = () => db.prepare(
+    `SELECT id, schema_id, request_key, request_digest, executor_name, task_id,
+            verb, payload_json, requested_by_user_id, requested_at
+       FROM task_command_requests ORDER BY rowid`,
+  ).all();
+  const eventProjection = () => db.prepare(
+    `SELECT id, command_id, event_digest, event_type, payload_json, no_op,
+            rejection_reason, actor_user_id, created_at
+       FROM task_command_events ORDER BY rowid`,
+  ).all();
+  const beforeRequests = JSON.stringify(requestProjection());
+  const beforeEvents = JSON.stringify(eventProjection());
+  const beforeRequestCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_requests",
+  ).get() as { count: number }).count;
+  const beforeEventCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_events",
+  ).get() as { count: number }).count;
+
+  db.exec("ALTER TABLE task_command_requests RENAME TO task_command_requests_v134");
+  db.exec("ALTER TABLE task_command_events RENAME TO task_command_events_v134");
+  db.exec(TASK_COMMAND_REQUESTS_V2_SQL);
+  db.exec(TASK_COMMAND_EVENTS_V2_SQL);
+  db.exec(`
+    INSERT INTO task_command_requests (
+      id, schema_id, request_key, request_digest, executor_name, task_id,
+      verb, payload_json, requested_by_user_id, requested_at
+    )
+    SELECT id, schema_id, request_key, request_digest, executor_name, task_id,
+           verb, payload_json, requested_by_user_id, requested_at
+      FROM task_command_requests_v134;
+
+    INSERT INTO task_command_events (
+      id, command_id, schema_id, event_ordinal, event_digest, event_type,
+      payload_json, no_op, rejection_reason, actor_user_id, created_at
+    )
+    SELECT id, command_id, 'task-command-event@1',
+           CASE WHEN event_type = 'accepted' THEN 0 ELSE 8 END,
+           event_digest, event_type, payload_json, no_op, rejection_reason,
+           actor_user_id, created_at
+      FROM task_command_events_v134;
+
+    DROP TABLE task_command_events_v134;
+    DROP TABLE task_command_requests_v134;
+  `);
+  for (const statement of TASK_COMMAND_V2_INDEX_SQL) db.exec(statement);
+
+  const afterRequestCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_requests",
+  ).get() as { count: number }).count;
+  const afterEventCount = (db.prepare(
+    "SELECT count(*) AS count FROM task_command_events",
+  ).get() as { count: number }).count;
+  if (beforeRequestCount !== afterRequestCount || beforeEventCount !== afterEventCount) {
+    throw new Error("task-command v2 migration changed command or event row counts");
+  }
+  if (beforeRequests !== JSON.stringify(requestProjection())) {
+    throw new Error("task-command v2 migration changed a v1 command projection");
+  }
+  if (beforeEvents !== JSON.stringify(eventProjection())) {
+    throw new Error("task-command v2 migration changed a v1 event projection");
+  }
+  const foreignKeyFailures = db.pragma("foreign_key_check") as unknown[];
+  if (foreignKeyFailures.length > 0) {
+    throw new Error(`task-command v2 migration foreign_key_check failed: ${JSON.stringify(foreignKeyFailures)}`);
+  }
+  const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+    throw new Error(`task-command v2 migration integrity_check failed: ${JSON.stringify(integrity)}`);
+  }
+}
+
 function ensureMessageParamsThinkingEffortColumn(db: Db): void {
   if (!tableExists(db, "message_params")) return;
   const columns = tableColumnNames(db, "message_params");
@@ -9577,6 +9679,8 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "session_projects",
     "sessions",
     "space_exports",
+    "task_command_events",
+    "task_command_requests",
     "work_units",
     "workflow_ingest_state",
   ]);

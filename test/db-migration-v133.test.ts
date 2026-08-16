@@ -52,7 +52,7 @@ describe("migration v133 feedback collection expiry", () => {
       `);
 
       expect(() => migrate(db)).not.toThrow();
-      expect(CURRENT_SCHEMA_VERSION).toBe(134);
+      expect(CURRENT_SCHEMA_VERSION).toBe(135);
       expect(db.prepare("SELECT expires_at FROM feedback_collections WHERE id = 'ask'").get())
         .toEqual({ expires_at: null });
       expect(db.prepare("SELECT expires_at FROM feedback_ask_sessions WHERE collection_id = 'ask'").get())
@@ -66,7 +66,7 @@ describe("migration v133 feedback collection expiry", () => {
       expect(db.prepare("SELECT expires_at FROM feedback_collections WHERE id = 'ask'").get())
         .toEqual({ expires_at: null });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-        .toEqual({ value: "134" });
+        .toEqual({ value: "135" });
       expect(db.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_collections_expiry'",
       ).get()).toEqual({ name: "idx_feedback_collections_expiry" });

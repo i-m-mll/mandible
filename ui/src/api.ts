@@ -4798,6 +4798,7 @@ export async function getAgentDispatchEvents(
 import {
   TASK_INVENTORY_UNKNOWN,
   TASK_COMMAND_SCHEMA,
+  TASK_COMMAND_SCHEMA_V1,
   type TaskCommand as ContractTaskCommand,
   type TaskCommandListResponse as ContractTaskCommandListResponse,
   type TaskCommandMutationResult as ContractTaskCommandMutationResult,
@@ -5059,11 +5060,11 @@ export async function getTaskInventory(signal?: AbortSignal): Promise<TaskInvent
 }
 
 const TASK_COMMAND_STATES: readonly TaskCommandState[] = [
-  'requested', 'accepted', 'applied', 'rejected', 'cancelled',
+  'requested', 'accepted', 'started', 'applied', 'rejected', 'cancelled',
 ];
 const TASK_COMMAND_REJECTION_REASONS: readonly TaskCommandRejectionReason[] = [
   'unknown_task', 'unsupported_verb', 'invalid_payload', 'stale_target',
-  'policy_refused', 'unknown',
+  'busy', 'missing_receipt', 'stale_receipt', 'policy_refused', 'dry_run_failed', 'unknown',
 ];
 
 function normalizeTaskCommand(value: unknown): TaskCommand | null {
@@ -5071,7 +5072,15 @@ function normalizeTaskCommand(value: unknown): TaskCommand | null {
   const id = briefingOptionalString(row.id);
   const executor = briefingOptionalString(row.executor);
   const taskId = briefingOptionalString(row.task_id);
-  if (!id || !executor || !taskId || row.verb !== 'disable') return null;
+  if (!id || !executor || !taskId
+    || !['disable', 'dry_run', 'enable'].includes(String(row.verb))) return null;
+  const schema = row.schema === TASK_COMMAND_SCHEMA ? TASK_COMMAND_SCHEMA : TASK_COMMAND_SCHEMA_V1;
+  if (schema === TASK_COMMAND_SCHEMA_V1 && row.verb !== 'disable') return null;
+  const payloadRow = briefingRecord(row.payload);
+  const payload = row.verb === 'disable'
+    ? {}
+    : { execution_hash: briefingString(payloadRow.execution_hash) };
+  if (row.verb !== 'disable' && !/^[0-9a-f]{64}$/.test(payload.execution_hash ?? '')) return null;
   const state = taskMaybeEnum(row.state, TASK_COMMAND_STATES);
   if (state === TASK_INVENTORY_UNKNOWN) return null;
   const rejectionReason = row.rejection_reason === null
@@ -5079,13 +5088,13 @@ function normalizeTaskCommand(value: unknown): TaskCommand | null {
     : taskMaybeEnum(row.rejection_reason, TASK_COMMAND_REJECTION_REASONS);
   return {
     id,
-    schema: TASK_COMMAND_SCHEMA,
+    schema,
     request_key: briefingString(row.request_key),
     request_digest: briefingString(row.request_digest),
     executor,
     task_id: taskId,
-    verb: 'disable',
-    payload: {},
+    verb: row.verb,
+    payload,
     requested_by_user_id: briefingString(row.requested_by_user_id),
     requested_by_slug: briefingOptionalString(row.requested_by_slug),
     requested_at: briefingOptionalNumber(row.requested_at) ?? 0,
@@ -5117,13 +5126,27 @@ export async function getTaskCommands(
   return normalizeTaskCommands(await parseMaybeJson(response));
 }
 
+export async function getTaskCommand(
+  commandId: string,
+  signal?: AbortSignal,
+): Promise<TaskCommand> {
+  const response = await apiGet(
+    `/api/tasks/commands/${encodeURIComponent(commandId)}`,
+    signal ? { signal } : {},
+  );
+  const row = briefingContractRecord<{ command: ContractTaskCommand }>(await parseMaybeJson(response));
+  const command = normalizeTaskCommand(row.command);
+  if (!command) throw new Error('Server returned an invalid task command receipt.');
+  return command;
+}
+
 export async function requestTaskDisable(
   executor: string,
   taskId: string,
   requestKey: string = crypto.randomUUID(),
 ): Promise<TaskCommandMutation> {
   const response = await apiPost('/api/tasks/commands', {
-    schema: TASK_COMMAND_SCHEMA,
+    schema: TASK_COMMAND_SCHEMA_V1,
     request_key: requestKey,
     executor,
     task_id: taskId,
@@ -5135,6 +5158,45 @@ export async function requestTaskDisable(
   if (!command) throw new Error('Server returned an invalid task command receipt.');
   return { command, stored: row.stored === true };
 }
+
+async function requestTaskV2Command(
+  executor: string,
+  taskId: string,
+  executionHash: string,
+  verb: 'dry_run' | 'enable',
+  requestKey: string = crypto.randomUUID(),
+): Promise<TaskCommandMutation> {
+  const response = await apiPost('/api/tasks/commands', {
+    schema: TASK_COMMAND_SCHEMA,
+    request_key: requestKey,
+    executor,
+    task_id: taskId,
+    verb,
+    payload: { execution_hash: executionHash },
+  });
+  const row = briefingContractRecord<ContractTaskCommandMutationResult>(await parseMaybeJson(response));
+  const command = normalizeTaskCommand(row.command);
+  if (!command) throw new Error('Server returned an invalid task command receipt.');
+  return { command, stored: row.stored === true };
+}
+
+export const requestTaskDryRun = (
+  executor: string,
+  taskId: string,
+  executionHash: string,
+  requestKey?: string,
+): Promise<TaskCommandMutation> => requestTaskV2Command(
+  executor, taskId, executionHash, 'dry_run', requestKey,
+);
+
+export const requestTaskEnable = (
+  executor: string,
+  taskId: string,
+  executionHash: string,
+  requestKey?: string,
+): Promise<TaskCommandMutation> => requestTaskV2Command(
+  executor, taskId, executionHash, 'enable', requestKey,
+);
 
 export async function cancelTaskDisable(commandId: string): Promise<TaskCommandMutation> {
   const response = await apiPost(`/api/tasks/commands/${encodeURIComponent(commandId)}/cancel`, {});

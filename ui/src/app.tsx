@@ -960,6 +960,15 @@ function App(): JSX.Element {
         void loadVisibleRouteDataRef.current('inbox');
       }
     };
+    const taskCommandHandler = (payload: SSEPayload) => {
+      handler(payload);
+      const data = typeof payload.data === 'object' && payload.data !== null
+        ? payload.data
+        : payload;
+      window.dispatchEvent(new CustomEvent('task-command:sse', {
+        detail: { type: payload.type, data },
+      }));
+    };
     // Heartbeat: liveness signal only — bump freshness, never cache-invalidate,
     // badge-fetch, or dispatch.
     const heartbeatHandler = () => {
@@ -1138,6 +1147,7 @@ function App(): JSX.Element {
       client.on('feedback:collection-updated', feedbackHandler),
       client.on('managed-reminders.changed', managedReminderHandler),
       client.on('managed-reminders.occurred', managedReminderHandler),
+      client.on('tasks.commands.changed', taskCommandHandler),
       client.on('heartbeat', heartbeatHandler),
       client.on('ledger:issue:created', ledgerHandler),
       client.on('ledger:issue:updated', ledgerHandler),

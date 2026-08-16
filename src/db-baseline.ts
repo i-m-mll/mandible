@@ -9,7 +9,101 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 134;
+export const BASELINE_SCHEMA_VERSION = 135;
+
+export const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests (
+        id                   TEXT PRIMARY KEY,
+        schema_id            TEXT NOT NULL
+                             CHECK(schema_id IN ('task-command@1','task-command@2')),
+        request_key          TEXT NOT NULL CHECK(trim(request_key) != ''),
+        request_digest       TEXT NOT NULL
+                             CHECK(length(request_digest) = 64
+                               AND request_digest NOT GLOB '*[^0-9a-f]*'),
+        executor_name        TEXT NOT NULL CHECK(trim(executor_name) != ''),
+        task_id              TEXT NOT NULL CHECK(trim(task_id) != ''),
+        verb                 TEXT NOT NULL CHECK(verb IN ('disable','dry_run','enable')),
+        payload_json         TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(payload_json)
+                               AND json_type(payload_json) = 'object'
+                               AND (
+                                 (schema_id = 'task-command@1'
+                                   AND verb = 'disable' AND payload_json = '{}')
+                                 OR
+                                 (schema_id = 'task-command@2' AND (
+                                   (verb = 'disable' AND payload_json = '{}')
+                                   OR
+                                   (verb IN ('dry_run','enable')
+                                     AND json_type(payload_json, '$.execution_hash') = 'text'
+                                     AND length(json_extract(payload_json, '$.execution_hash')) = 64
+                                     AND json_extract(payload_json, '$.execution_hash')
+                                       NOT GLOB '*[^0-9a-f]*'
+                                     AND payload_json = '{"execution_hash":"'
+                                       || json_extract(payload_json, '$.execution_hash') || '"}')
+                                 ))
+                               )),
+        requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        requested_at         INTEGER NOT NULL,
+        UNIQUE(requested_by_user_id, request_key)
+      )`;
+
+export const TASK_COMMAND_EVENTS_V2_SQL = `CREATE TABLE task_command_events (
+        id               TEXT PRIMARY KEY,
+        command_id       TEXT NOT NULL
+                         REFERENCES task_command_requests(id) ON DELETE RESTRICT,
+        schema_id        TEXT NOT NULL
+                         CHECK(schema_id IN ('task-command-event@1','task-command-event@2')),
+        event_ordinal    INTEGER NOT NULL CHECK(event_ordinal BETWEEN 0 AND 8),
+        event_digest     TEXT NOT NULL
+                         CHECK(length(event_digest) = 64
+                           AND event_digest NOT GLOB '*[^0-9a-f]*'),
+        event_type       TEXT NOT NULL
+                         CHECK(event_type IN (
+                           'accepted','started','progress','applied','rejected','cancelled'
+                         )),
+        payload_json     TEXT NOT NULL DEFAULT '{}'
+                         CHECK(json_valid(payload_json)
+                           AND json_type(payload_json) = 'object'),
+        no_op            INTEGER CHECK(no_op IS NULL OR no_op IN (0,1)),
+        rejection_reason TEXT CHECK(rejection_reason IS NULL OR rejection_reason IN (
+                           'unknown_task','unsupported_verb','invalid_payload','stale_target',
+                           'busy','missing_receipt','stale_receipt','policy_refused',
+                           'dry_run_failed','unknown'
+                         )),
+        actor_user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at       INTEGER NOT NULL,
+        UNIQUE(command_id, event_ordinal),
+        UNIQUE(command_id, event_digest),
+        CHECK (
+          (event_type = 'accepted' AND event_ordinal = 0)
+          OR (event_type = 'started' AND event_ordinal = 1)
+          OR (event_type = 'progress' AND event_ordinal BETWEEN 2 AND 7)
+          OR (event_type IN ('applied','rejected','cancelled') AND event_ordinal = 8)
+        ),
+        CHECK (schema_id = 'task-command-event@2'
+          OR event_type IN ('accepted','applied','rejected','cancelled')),
+        CHECK (
+          (event_type IN ('accepted','cancelled')
+            AND payload_json = '{}' AND no_op IS NULL AND rejection_reason IS NULL)
+          OR (event_type IN ('started','progress')
+            AND no_op IS NULL AND rejection_reason IS NULL)
+          OR (event_type = 'applied' AND rejection_reason IS NULL)
+          OR (event_type = 'rejected' AND no_op IS NULL AND rejection_reason IS NOT NULL)
+        )
+      )`;
+
+export const TASK_COMMAND_V2_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_task_command_requests_target
+        ON task_command_requests(executor_name, task_id, requested_at DESC)`,
+  `CREATE UNIQUE INDEX uq_task_command_events_accepted
+        ON task_command_events(command_id) WHERE event_type = 'accepted'`,
+  `CREATE UNIQUE INDEX uq_task_command_events_started
+        ON task_command_events(command_id) WHERE event_type = 'started'`,
+  `CREATE UNIQUE INDEX uq_task_command_events_terminal
+        ON task_command_events(command_id)
+        WHERE event_type IN ('applied','rejected','cancelled')`,
+  `CREATE INDEX idx_task_command_events_command
+        ON task_command_events(command_id, event_ordinal)`,
+];
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -386,60 +480,10 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
   `CREATE INDEX idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`,
-  `CREATE TABLE task_command_requests (
-        id                   TEXT PRIMARY KEY,
-        schema_id            TEXT NOT NULL CHECK(schema_id = 'task-command@1'),
-        request_key          TEXT NOT NULL CHECK(trim(request_key) != ''),
-        request_digest       TEXT NOT NULL
-                             CHECK(length(request_digest) = 64
-                               AND request_digest NOT GLOB '*[^0-9a-f]*'),
-        executor_name        TEXT NOT NULL CHECK(trim(executor_name) != ''),
-        task_id              TEXT NOT NULL CHECK(trim(task_id) != ''),
-        verb                 TEXT NOT NULL CHECK(verb = 'disable'),
-        payload_json         TEXT NOT NULL DEFAULT '{}'
-                             CHECK(json_valid(payload_json)
-                               AND json_type(payload_json) = 'object'
-                               AND payload_json = '{}'),
-        requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        requested_at         INTEGER NOT NULL,
-        UNIQUE(requested_by_user_id, request_key)
-      )`,
-  `CREATE INDEX idx_task_command_requests_target
-        ON task_command_requests(executor_name, task_id, requested_at DESC)`,
-  `CREATE TABLE task_command_events (
-        id            TEXT PRIMARY KEY,
-        command_id    TEXT NOT NULL
-                      REFERENCES task_command_requests(id) ON DELETE RESTRICT,
-        event_digest  TEXT NOT NULL
-                      CHECK(length(event_digest) = 64
-                        AND event_digest NOT GLOB '*[^0-9a-f]*'),
-        event_type    TEXT NOT NULL
-                      CHECK(event_type IN ('accepted','applied','rejected','cancelled')),
-        payload_json  TEXT NOT NULL DEFAULT '{}'
-                      CHECK(json_valid(payload_json)
-                        AND json_type(payload_json) = 'object'),
-        no_op         INTEGER CHECK(no_op IS NULL OR no_op IN (0,1)),
-        rejection_reason TEXT CHECK(rejection_reason IS NULL OR rejection_reason IN (
-                           'unknown_task','unsupported_verb','invalid_payload',
-                           'stale_target','policy_refused','unknown'
-                         )),
-        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at    INTEGER NOT NULL,
-        UNIQUE(command_id, event_digest),
-        CHECK (
-          (event_type IN ('accepted','cancelled')
-            AND no_op IS NULL AND rejection_reason IS NULL)
-          OR (event_type = 'applied' AND no_op IS NOT NULL AND rejection_reason IS NULL)
-          OR (event_type = 'rejected' AND no_op IS NULL AND rejection_reason IS NOT NULL)
-        )
-      )`,
-  `CREATE UNIQUE INDEX uq_task_command_events_accepted
-        ON task_command_events(command_id) WHERE event_type = 'accepted'`,
-  `CREATE UNIQUE INDEX uq_task_command_events_terminal
-        ON task_command_events(command_id)
-        WHERE event_type IN ('applied','rejected','cancelled')`,
-  `CREATE INDEX idx_task_command_events_command
-        ON task_command_events(command_id, created_at, id)`,
+  TASK_COMMAND_REQUESTS_V2_SQL,
+  TASK_COMMAND_V2_INDEX_SQL[0],
+  TASK_COMMAND_EVENTS_V2_SQL,
+  ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
   `CREATE TABLE feedback_collections (
         id                TEXT PRIMARY KEY,
         kind              TEXT NOT NULL
