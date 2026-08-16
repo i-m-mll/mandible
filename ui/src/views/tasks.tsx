@@ -640,6 +640,19 @@ const PROGRESS_TEXT: Record<string, string> = {
   output_validated: 'Output validated',
 };
 
+// Which gate refused, in the operator's language. The map is the display-side
+// copy of the closed enumeration: a value outside it renders nothing at all,
+// so a payload that reached storage by some route other than the wire parser
+// still cannot put an executor-authored string on screen.
+const POLICY_GATE_TEXT: Record<string, string> = {
+  kill_switch: 'the kill switch is set on the executor host',
+  no_bundle: 'no active bundle is deployed',
+  unprotected: 'the active bundle was deployed with --allow-unprotected',
+  tampered: 'the active bundle no longer matches its deploy manifest',
+  misbound: 'the active bundle is not the one bound for execution',
+  unreadable_config: "the active bundle's task configuration could not be read",
+};
+
 function TaskCommandModal({
   intent,
   busy,
@@ -659,6 +672,10 @@ function TaskCommandModal({
 }): JSX.Element {
   const { command } = intent;
   const failure = command?.events.find((event) => event.event === 'rejected')?.payload;
+  const policyGateText = command?.rejection_reason === 'policy_refused'
+    && typeof failure?.policy_gate === 'string'
+    ? POLICY_GATE_TEXT[failure.policy_gate]
+    : undefined;
   const receiptFailure = command?.state === 'rejected'
     && (command.rejection_reason === 'missing_receipt'
       || command.rejection_reason === 'stale_receipt');
@@ -706,6 +723,11 @@ function TaskCommandModal({
             && typeof failure?.failure_class === 'string' ? (
               <div className="tasks-command-modal__line">Failure class: {failure.failure_class}</div>
             ) : null}
+          {/* Absent means the executor predates the field, and the plain reason
+              stands on its own. Only a recognized member is ever rendered. */}
+          {policyGateText ? (
+            <div className="tasks-command-modal__line">Refused because {policyGateText}.</div>
+          ) : null}
         </div>
         {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
         <div className="tasks-command__actions">

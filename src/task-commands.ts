@@ -17,6 +17,7 @@ import {
   type TaskCommandEventType,
   type TaskCommandFailureClass,
   type TaskCommandMutationResult,
+  type TaskCommandPolicyGate,
   type TaskCommandProgressSequence,
   type TaskCommandProgressStep,
   type TaskCommandRejectionReason,
@@ -50,6 +51,13 @@ const V1_REJECTION_REASONS: readonly TaskCommandRejectionReason[] = [
 const FAILURE_CLASSES: readonly TaskCommandFailureClass[] = [
   "budget", "collector", "config", "containment", "limit", "output-source",
   "runner", "schema", "stale", "supervisor", "timeout", "unavailable", "validation",
+];
+// Closed on this side too. An unrecognized value is refused rather than stored:
+// "a member a future executor added" is indistinguishable at this boundary from
+// "a string that should never have been sent", and storing the latter is exactly
+// the path leak the closed enumeration exists to prevent.
+const POLICY_GATES: readonly TaskCommandPolicyGate[] = [
+  "kill_switch", "no_bundle", "unprotected", "tampered", "misbound", "unreadable_config",
 ];
 const PROGRESS_PAIRS = Object.freeze([
   [1, "preflight_passed"],
@@ -201,7 +209,13 @@ type CanonicalExecutorEvent =
   | { event: "applied"; no_op: boolean }
   | { event: "applied"; execution_hash: string; no_op: boolean }
   | { event: "applied"; execution_hash: string; run_id: string }
+  // The gate-less arm still covers `policy_refused`: a task-command-event@1
+  // rejection never carries a gate, and neither does a v2 one from an executor
+  // predating the field. Such an event digests as {command_id,event,reason},
+  // exactly as it always did.
   | { event: "rejected"; reason: Exclude<TaskCommandRejectionReason, "dry_run_failed"> }
+  // `policy_gate` follows `reason` in the canonical object.
+  | { event: "rejected"; reason: "policy_refused"; policy_gate: TaskCommandPolicyGate }
   | { event: "rejected"; reason: "dry_run_failed"; failure_class: TaskCommandFailureClass };
 
 export function taskCommandEventDigest(commandId: string, event: CanonicalExecutorEvent): string {
@@ -325,7 +339,32 @@ export function parseTaskCommandExecutorEvent(
         reason: "dry_run_failed",
         failure_class: record.failure_class as TaskCommandFailureClass,
       };
+    } else if (record.reason === "policy_refused"
+      && command.schema === TASK_COMMAND_SCHEMA) {
+      rejectUnknownKeys(
+        record,
+        ["schema", "event", "event_digest", "reason", "policy_gate"],
+        "request body",
+      );
+      // Absent is legal: an executor predating this field is still supported,
+      // and its event must digest as {command_id,event,reason} exactly as before.
+      if (record.policy_gate === undefined) {
+        canonical = { event: "rejected", reason: "policy_refused" };
+      } else {
+        if (typeof record.policy_gate !== "string" || !POLICY_GATES.includes(
+          record.policy_gate as TaskCommandPolicyGate,
+        )) {
+          throw new TaskCommandError(`policy_gate must be one of: ${POLICY_GATES.join(", ")}`);
+        }
+        canonical = {
+          event: "rejected",
+          reason: "policy_refused",
+          policy_gate: record.policy_gate as TaskCommandPolicyGate,
+        };
+      }
     } else {
+      // Includes a task-command-event@1 policy_refused, which never carries a
+      // gate: the v1 executor path produces that reason from no code at all.
       rejectUnknownKeys(
         record,
         ["schema", "event", "event_digest", "reason"],
@@ -534,9 +573,13 @@ function eventPayload(event: TaskCommandExecutorEventRequest): Record<string, un
     return { no_op: event.no_op };
   }
   if (event.event === "rejected") {
-    return event.reason === "dry_run_failed" && "failure_class" in event
-      ? { reason: event.reason, failure_class: event.failure_class }
-      : { reason: event.reason };
+    if (event.reason === "dry_run_failed" && "failure_class" in event) {
+      return { reason: event.reason, failure_class: event.failure_class };
+    }
+    if (event.reason === "policy_refused" && "policy_gate" in event) {
+      return { reason: event.reason, policy_gate: event.policy_gate };
+    }
+    return { reason: event.reason };
   }
   return {};
 }

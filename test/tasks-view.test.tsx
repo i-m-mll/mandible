@@ -906,4 +906,77 @@ describe('TasksView task-command v2', () => {
     expect(screen.queryByText('TOKEN=secret')).toBeNull();
     expect(screen.queryByText('private run note')).toBeNull();
   });
+
+  it('names_the_policy_gate_that_refused', async () => {
+    // The whole point of the field: an operator sees which gate fired without
+    // walking to the machine.
+    const gates: Array<[string, string]> = [
+      ['kill_switch', 'Refused because the kill switch is set on the executor host.'],
+      ['no_bundle', 'Refused because no active bundle is deployed.'],
+      ['unprotected',
+        'Refused because the active bundle was deployed with --allow-unprotected.'],
+      ['tampered',
+        'Refused because the active bundle no longer matches its deploy manifest.'],
+      ['misbound',
+        'Refused because the active bundle is not the one bound for execution.'],
+      ['unreadable_config',
+        "Refused because the active bundle's task configuration could not be read."],
+    ];
+    for (const [policy_gate, line] of gates) {
+      const command = commandFixture('enable', 'rejected', {
+        rejectionReason: 'policy_refused',
+        events: [{
+          id: 'rejected',
+          event: 'rejected',
+          payload: { reason: 'policy_refused', policy_gate },
+        }],
+      });
+      stubV2Fetch({ postCommand: () => command });
+      const view = render(<TasksView />);
+      (await screen.findByRole('button', { name: 'Enable task' })).click();
+      expect(await screen.findByText(line)).toBeTruthy();
+      view.unmount();
+    }
+  });
+
+  it('policy_refusal_without_a_gate_shows_only_the_reason', async () => {
+    // The pre-amendment executor. Absence is legal and must not render a
+    // placeholder that reads like a gate.
+    const command = commandFixture('enable', 'rejected', {
+      rejectionReason: 'policy_refused',
+      events: [{
+        id: 'rejected',
+        event: 'rejected',
+        payload: { reason: 'policy_refused' },
+      }],
+    });
+    stubV2Fetch({ postCommand: () => command });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Enable task' })).click();
+    expect(await screen.findByText('Rejected: policy_refused.')).toBeTruthy();
+    expect(screen.queryByText(/^Refused because/)).toBeNull();
+  });
+
+  it('never_renders_an_unrecognized_policy_gate', async () => {
+    // A payload that reached storage by some route other than the wire parser
+    // — a hand-edited database, a restored backup — degrades to the plain
+    // reason. The raw value never reaches the DOM.
+    const command = commandFixture('enable', 'rejected', {
+      rejectionReason: 'policy_refused',
+      events: [{
+        id: 'rejected',
+        event: 'rejected',
+        payload: {
+          reason: 'policy_refused',
+          policy_gate: '/Users/mll/Library/Application Support/agent-schedule',
+        },
+      }],
+    });
+    stubV2Fetch({ postCommand: () => command });
+    render(<TasksView />);
+    (await screen.findByRole('button', { name: 'Enable task' })).click();
+    expect(await screen.findByText('Rejected: policy_refused.')).toBeTruthy();
+    expect(screen.queryByText(/^Refused because/)).toBeNull();
+    expect(screen.queryByText(/Library\/Application Support/)).toBeNull();
+  });
 });

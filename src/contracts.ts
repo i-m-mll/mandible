@@ -1862,6 +1862,20 @@ export type TaskCommandFailureClass =
   | 'timeout'
   | 'unavailable'
   | 'validation';
+/**
+ * Which gate refused a `policy_refused` command. Closed and validated on both
+ * sides: the executor's gates compute descriptive strings naming bundle roots,
+ * symlink targets and individual file paths, and none of those may reach the
+ * wire. Absent means the event came from an executor predating this field, not
+ * that the gate is unknown.
+ */
+export type TaskCommandPolicyGate =
+  | 'kill_switch'
+  | 'no_bundle'
+  | 'unprotected'
+  | 'tampered'
+  | 'misbound'
+  | 'unreadable_config';
 export type TaskCommandProgressStep =
   | 'preflight_passed'
   | 'collector_started'
@@ -1910,7 +1924,14 @@ export type TaskCommandExecutorEventRequestV2 =
     })
   | (V2EventBase & {
       event: 'rejected';
-      reason: Exclude<TaskCommandRejectionReason, 'dry_run_failed'>;
+      reason: Exclude<TaskCommandRejectionReason, 'dry_run_failed' | 'policy_refused'>;
+    })
+  | (V2EventBase & {
+      event: 'rejected';
+      reason: 'policy_refused';
+      // Optional so an executor predating the field stays wire-compatible.
+      // The amended executor supplies a member on every path it can take.
+      policy_gate?: TaskCommandPolicyGate;
     })
   | (V2EventBase & {
       event: 'rejected';
