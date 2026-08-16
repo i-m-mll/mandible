@@ -1407,19 +1407,35 @@ export class AuthQueue {
    * times (retry logic, curl fallback). We check two conditions:
    * 1. Same session_id + same title (same agent, same logical operation)
    * 2. Same head_branch + same base_branch (any session, branch can only merge once)
+   *
+   * Issue 608d1db — both conditions are scoped to the repository. A branch name
+   * is unique only *within* a repo, and `feature/<issue>-<slug>` naming makes
+   * cross-repo collisions likely for exactly the case that produces two
+   * requests at once: one program delivered across two repos. Matching on the
+   * branch pair alone refused the second repo's request as a duplicate of the
+   * first repo's, so that delivery was silently never queued. The same applies
+   * to session+title: one agent delivering a program across two repos reuses
+   * the title, so that check needs the same scoping.
    */
   findDuplicate(payload: AuthRequestInput): AuthRequest | null {
+    // Repo filtering happens in TS, not SQL, so it can use canonical repo
+    // identity (path/symlink/string aliases) rather than string equality —
+    // the same approach `listActiveRequests` uses for its repo filter.
+    const sameRepo = (row: AuthRequest): boolean => this.dedupRepoMatches(payload, row);
+
     // Check by same branch pair first (strongest signal — a branch can only
-    // merge once regardless of which session submitted it)
+    // merge once regardless of which session submitted it, *in one repo*)
     if (payload.head_branch && payload.base_branch) {
       const byBranch = this.db
         .prepare(
           "SELECT * FROM auth_requests WHERE head_branch = ? AND base_branch = ? " +
-            "AND status IN ('pending', 'approved', 'executing') LIMIT 1"
+            "AND status IN ('pending', 'approved', 'executing') " +
+            "ORDER BY created_at ASC"
         )
-        .get(payload.head_branch, payload.base_branch) as Record<string, unknown> | undefined;
-      if (byBranch) {
-        return mapRow(byBranch);
+        .all(payload.head_branch, payload.base_branch) as Record<string, unknown>[];
+      const match = byBranch.map((row) => mapRow(row)).find(sameRepo);
+      if (match) {
+        return match;
       }
     }
 
@@ -1428,15 +1444,71 @@ export class AuthQueue {
       const bySession = this.db
         .prepare(
           "SELECT * FROM auth_requests WHERE session_id = ? AND title = ? " +
-            "AND status = 'pending' LIMIT 1"
+            "AND status = 'pending' ORDER BY created_at ASC"
         )
-        .get(payload.session_id, payload.title) as Record<string, unknown> | undefined;
-      if (bySession) {
-        return mapRow(bySession);
+        .all(payload.session_id, payload.title) as Record<string, unknown>[];
+      const match = bySession.map((row) => mapRow(row)).find(sameRepo);
+      if (match) {
+        return match;
       }
     }
 
     return null;
+  }
+
+  /**
+   * Issue 608d1db — does an existing request live in the same repository as an
+   * incoming submission? Deliberately asymmetric about missing evidence:
+   *
+   * - Both sides resolve to canonical repo keys: duplicate only when those keys
+   *   intersect. Two distinct physical repos never dedup against each other,
+   *   even when they carry the same branch name or the same repo string.
+   * - Otherwise fall back to exact repo-string equality. This keeps two rows
+   *   that both predate repo capture (`repo` null on each side) deduping as
+   *   they always did, so the 16985e8 retry protection survives on legacy
+   *   rows, while a *known* repo never matches an unknown one — a null-repo
+   *   row cannot silently swallow submissions from every repo.
+   *
+   * Evidence is gathered symmetrically from `repo`, `target_repo_root`, and
+   * `cwd` so a row identified only by path still matches a payload identified
+   * only by name (and vice versa).
+   */
+  private dedupRepoMatches(payload: AuthRequestInput, row: AuthRequest): boolean {
+    const keysA = this.dedupRepoKeys(payload.repo, payload.target_repo_root, payload.cwd);
+    const keysB = this.dedupRepoKeys(row.repo, row.target_repo_root, row.cwd);
+    if (keysA.size > 0 && keysB.size > 0) {
+      for (const key of keysA) {
+        if (keysB.has(key)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return normalizeRepoRef(payload.repo) === normalizeRepoRef(row.repo);
+  }
+
+  /** Issue 608d1db — canonical repo keys implied by a request's repo evidence. */
+  private dedupRepoKeys(
+    repo: string | null | undefined,
+    targetRepoRoot: string | null | undefined,
+    cwd: string | null | undefined,
+  ): Set<string> {
+    const keys = new Set<string>();
+    const repoRef = normalizeRepoRef(repo);
+    if (repoRef) {
+      for (const key of canonicalRepoKeysForRef(this.db, repoRef)) {
+        keys.add(key);
+      }
+    }
+    // A recorded checkout path is stronger evidence than the repo string, and
+    // survives repos whose name was never registered in the ledger.
+    for (const candidate of [targetRepoRoot, cwd]) {
+      const key = canonicalRepoKeyForPath(candidate ?? null);
+      if (key) {
+        keys.add(key);
+      }
+    }
+    return keys;
   }
 
   async replayCodexThreadArchives(requestId: string): Promise<CodexArchiveReplayResult> {
@@ -6212,6 +6284,19 @@ function conflictFilesFromMergeTreeOutput(
     }
   }
   return Array.from(files).sort();
+}
+
+/**
+ * Issue 608d1db — collapse a repo reference to a comparable form. Absent,
+ * empty, and whitespace-only repo strings are all "no repo evidence" (null)
+ * rather than three distinct values that compare unequal to each other.
+ */
+function normalizeRepoRef(repo: string | null | undefined): string | null {
+  if (typeof repo !== "string") {
+    return null;
+  }
+  const trimmed = repo.trim();
+  return trimmed === "" ? null : trimmed;
 }
 
 function mapRow(row: Record<string, unknown>): AuthRequest {

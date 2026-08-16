@@ -172,12 +172,30 @@ export function registerAuthRoutes(
 
     // Bug: 16985e8 — detect duplicate submissions. Return 409 with the existing
     // request_id so the agent can PUT to update it rather than creating a new one.
+    //
+    // Issue 608d1db — the 409 also carries the *stored* request's own identity
+    // under `existing`. The refusal previously returned only an id, leaving the
+    // CLI nothing to print but the caller's own arguments; a submitter then saw
+    // its own title beside a foreign request's id and read the refusal as a
+    // success. Reporting the stored title/repo/branches makes the mismatch that
+    // caused the refusal visible at the point of refusal.
     const duplicate = authQueue.findDuplicate(payload);
     if (duplicate) {
       res.status(409).json({
-        error: "Duplicate auth request — a pending or approved request for this branch already exists.",
+        error:
+          "Duplicate auth request — this repo already has a pending or approved request " +
+          "for this branch. Nothing was queued.",
         request_id: duplicate.id,
-        status: duplicate.status
+        status: duplicate.status,
+        existing: {
+          id: duplicate.id,
+          status: duplicate.status,
+          title: duplicate.title,
+          repo: duplicate.repo ?? null,
+          head_branch: duplicate.head_branch ?? null,
+          base_branch: duplicate.base_branch ?? null,
+          created_at: duplicate.created_at,
+        },
       });
       return;
     }
