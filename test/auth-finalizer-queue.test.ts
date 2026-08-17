@@ -200,7 +200,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = submitSuccessfulRequest(queue, { issue_closures: ["issue-raced"] });
       db.prepare(
         `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
          VALUES ('wu-raced', 'issue-raced', 'finalizer-repo', 'feature/x', 'solo', 'abandoned', 0)`,
@@ -208,6 +208,10 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       db.prepare(
         `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
          VALUES ('wu-other-repo', 'issue-other', 'other-repo', 'feature/x', 'solo', 'abandoned', 0)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-same-issue-old-branch', 'issue-raced', 'finalizer-repo', 'feature/old', 'solo', 'abandoned', 0)`,
       ).run();
 
       queue.setResult(id, 0, "ok");
@@ -226,6 +230,9 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       expect(finalized.resolved_work_unit_ids).toContain("wu-raced");
       expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-other-repo'").get())
         .toEqual({ state: "abandoned" });
+      expect(db.prepare(
+        "SELECT state, auth_request_id FROM work_units WHERE id = 'wu-same-issue-old-branch'",
+      ).get()).toEqual({ state: "abandoned", auth_request_id: null });
     } finally {
       queue.dispose();
       db.close();

@@ -5744,7 +5744,7 @@ export class AuthQueue {
     // and filter in JS.
     if (allIssueIds.length > 0) {
       const allUnresolved = this.db.prepare(
-        "SELECT id, issue_id FROM work_units WHERE state IN ('open', 'committed', 'abandoned')"
+        "SELECT id, issue_id FROM work_units WHERE state IN ('open', 'committed')"
       ).all() as Array<{ id: string; issue_id: string }>;
 
       for (const issueId of allIssueIds) {
@@ -5772,7 +5772,7 @@ export class AuthQueue {
          JOIN work_units wu ON wu.ledger_issue_id = ail.issue_id
          WHERE ail.auth_request_id = ?
            AND ail.link_type IN ('resolves', 'fixed_by')
-           AND wu.state IN ('open', 'committed', 'abandoned')
+           AND wu.state IN ('open', 'committed')
          UNION
          SELECT DISTINCT wu.id
          FROM ledger_auth_issue_links ail
@@ -5780,7 +5780,7 @@ export class AuthQueue {
          JOIN work_units wu ON wu.id = wil.work_unit_id
          WHERE ail.auth_request_id = ?
            AND ail.link_type IN ('resolves', 'fixed_by')
-           AND wu.state IN ('open', 'committed', 'abandoned')`
+           AND wu.state IN ('open', 'committed')`
       ).all(completed.id, completed.id) as Array<{ id: string }>;
 
       for (const row of byLedgerIssue) {
