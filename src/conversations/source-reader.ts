@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
 import { decompressContent } from "../compression.js";
-import { maskActiveCredentialsInText } from "../credential-leak-scan.js";
+import {
+  maskActiveCredentialsInText,
+  maskUnverifiedCandidates,
+} from "../credential-leak-scan.js";
 import type { Db } from "../db.js";
 import { getAllParsers } from "../parsers/index.js";
 import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
@@ -293,16 +296,27 @@ export class ConversationSourceReader {
     row: StructuralRow,
     block: Omit<ConversationBlock, "id" | "conversation_id">,
   ): SourceBackedConversationBlock {
+    // The source snapshot is verified, but its token-shaped text may refer to a
+    // revoked credential or to material that was never registered locally.
+    // Match the disposable search boundary before any source-backed API or
+    // export response can serialize those bytes. Legacy fallback rows retain
+    // their existing behavior until the explicit cutover gate.
+    const content = maskUnverifiedCandidates(
+      maskActiveCredentialsInText(this.db, block.content).text,
+    ).text;
+    const metadataJson = maskUnverifiedCandidates(
+      maskActiveCredentialsInText(this.db, JSON.stringify(block.metadata)).text,
+    ).text;
     return {
       id: row.id,
       conversation_id: row.conversation_id,
       type: block.type,
       role: block.role,
-      content: maskActiveCredentialsInText(this.db, block.content).text,
+      content,
       position: row.position,
       timestamp: block.timestamp ?? row.timestamp,
       parent_id: row.parent_block_id,
-      metadata_json: maskActiveCredentialsInText(this.db, JSON.stringify(block.metadata)).text,
+      metadata_json: metadataJson,
       dag_uuid: block.dag_uuid ?? row.dag_uuid,
       dag_parent_uuid: block.dag_parent_uuid ?? row.dag_parent_uuid,
       locator: locator(row),
