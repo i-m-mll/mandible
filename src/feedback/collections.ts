@@ -224,11 +224,17 @@ export function setFeedbackCollectionExpiry(
     }
 
     const expiresNow = expiresAt !== null && expiresAt <= now;
-    const nextOperation = expiresNow && head.operation === "opened"
+    let nextOperation: LifecycleHead["operation"] | null = expiresNow
+      && (head.operation === "opened"
+        || (collection.kind === "bounded_ask" && head.operation === "submitted"))
       ? "expired"
-      : !expiresNow && head.operation === "expired"
-        ? "opened"
-        : null;
+      : null;
+    if (!expiresNow && head.operation === "expired") {
+      const hasSubmission = collection.kind === "bounded_ask" && Boolean(db.prepare(
+        "SELECT 1 FROM feedback_submissions WHERE collection_id = ? LIMIT 1",
+      ).get(collectionId));
+      nextOperation = hasSubmission ? "submitted" : "opened";
+    }
     if (nextOperation) {
       db.prepare(
         `INSERT INTO feedback_collection_events

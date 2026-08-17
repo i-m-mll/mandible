@@ -1255,7 +1255,7 @@ export type FeedbackResponseValue =
   | FeedbackSingleChoiceValue
   | FeedbackMultiChoiceValue;
 
-export const MANDIBLE_ASK_RESULT_SCHEMA = "mandible-ask-result@1" as const;
+export const MANDIBLE_ASK_RESULT_SCHEMA = "mandible-ask-result@2" as const;
 
 export interface MandibleAskResult {
   schema: typeof MANDIBLE_ASK_RESULT_SCHEMA;
@@ -1263,7 +1263,7 @@ export interface MandibleAskResult {
   state: "open" | "submitted" | "expired" | "cancelled";
   request_digest: string;
   expires_at: number | null;
-  submission: null | {
+  submissions: Array<{
     id: string;
     ordinal: number;
     supersedes_submission_id: string | null;
@@ -1279,7 +1279,19 @@ export interface MandibleAskResult {
       value: FeedbackResponseValue;
       actor_user_id: string;
     }>;
-  };
+    annotations: Array<{
+      annotation_event_id: string;
+      annotation_kind: "comment" | "suggest_replacement";
+      start_offset: number;
+      end_offset: number;
+      quote: string;
+      body: string | null;
+      replacement_text: string | null;
+      actor_user_id: string;
+      created_at: number;
+      position: number;
+    }>;
+  }>;
   wait_timed_out?: true;
 }
 
