@@ -255,6 +255,17 @@ export async function loadCodexSessionIndexTitle(filePath: string, sessionId: st
   return sessionIndexCache.titles.get(sessionId) ?? null;
 }
 
+/** Read the provider-authored session id without accepting the filename fallback. */
+export async function loadCodexNativeSessionId(filePath: string): Promise<string | null> {
+  const { records } = await readJsonlFileRecords<CodexRecord>(filePath);
+  for (const record of records) {
+    if (record.type !== "session_meta") continue;
+    const id = (record.payload as CodexSessionMeta).id;
+    if (typeof id === "string" && id.trim()) return id;
+  }
+  return null;
+}
+
 // --- Parser ---
 
 export class CodexParser implements ConversationParser {

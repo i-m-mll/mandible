@@ -158,6 +158,50 @@ describe("incremental tail ingestion", () => {
       .get(original.id)).toEqual({ count: 3 });
   });
 
+  it("detects a replacement with the exact previously indexed mtime", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("same-mtime-owner-a"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+
+    await fsp.writeFile(sessionPath, initialCodexRows("same-mtime-owner-b"), "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ? ORDER BY session_id",
+    ).all(sessionPath)).toEqual([
+      { session_id: "same-mtime-owner-a" },
+      { session_id: "same-mtime-owner-b" },
+    ]);
+  });
+
+  it("preserves fallback data when a source truncates at the exact indexed mtime", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("same-mtime-truncation"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+    const conversation = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ?",
+    ).get(sessionPath) as { id: string };
+    const before = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id);
+
+    await fsp.writeFile(sessionPath, "", "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id)).toEqual(before);
+    expect(db.prepare(
+      "SELECT availability FROM conversation_sources WHERE conversation_id = ?",
+    ).get(conversation.id)).toEqual({ availability: "missing" });
+  });
+
   it("preserves fallback bodies and source history while the source is empty or truncated", async () => {
     const sessionPath = await makeCodexSession();
     const original = initialCodexRows();
