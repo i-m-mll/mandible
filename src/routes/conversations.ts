@@ -12,10 +12,12 @@ import {
 } from "../client-auth/authz.js";
 import {
   backfillCredentialLeakScan,
+  maskUnverifiedCandidates,
   remediationFor,
 } from "../credential-leak-scan.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
+import { getConversationSearchCache } from "../conversations/search-cache.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
@@ -100,6 +102,16 @@ function mapConversation(row: ConversationRow, sessionManager?: SessionManager) 
     agent_id: row.agent_id ?? null,
     children_count: row.children_count ?? 0,
     attach_state: deriveConversationAttachState(row, getDb(), sessionManager),
+  };
+}
+
+function mapSearchConversation(row: ConversationRow, sessionManager?: SessionManager) {
+  const mapped = mapConversation(row, sessionManager);
+  return {
+    ...mapped,
+    title: maskUnverifiedCandidates(mapped.title).text,
+    summary: mapped.summary == null ? null : maskUnverifiedCandidates(mapped.summary).text,
+    notes: mapped.notes == null ? null : maskUnverifiedCandidates(mapped.notes).text,
   };
 }
 
@@ -399,7 +411,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   //   ?exclude_subagents=true — hide conversations that have a parent (sub-agents)
   //   ?group=true — same as exclude_subagents but also includes children_count on parents
   //   ?parent_id=<id> — list only children of a specific parent conversation
-  server.get("/api/conversations", (req, res) => {
+  server.get("/api/conversations", async (req, res) => {
     const query = req.query ?? {};
     const page = Math.max(1, parseInt(query.page || "1", 10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(query.limit || "50", 10) || 50));
@@ -433,10 +445,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       params.push(query.tag);
     }
 
-    // Search in title
-    if (query.search) {
+    const searchNeedle = (query.search ?? "").trim();
+    const fullTextSearch = query.full_text === "true" || query.full_text === "1";
+
+    // Title mode remains the cheap metadata filter. Full mode resolves exact
+    // source-verified content matches below, through the disposable cache.
+    if (searchNeedle && !fullTextSearch) {
       conditions.push("c.title LIKE ?");
-      params.push(`%${query.search}%`);
+      params.push(`%${searchNeedle}%`);
     }
 
     const minBlocks = parseInt(query.min_blocks || "", 10);
@@ -489,6 +505,40 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const allowedSorts = new Set(["started_at", "ended_at", "title", "block_count", "created_at", "updated_at", "source"]);
     const safeSortField = allowedSorts.has(sortField) ? sortField : "started_at";
 
+    if (searchNeedle && fullTextSearch) {
+      const eligible = db.prepare(
+        `SELECT c.id FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder}`,
+      ).all(...params) as Array<{ id: string }>;
+      const searched = await getConversationSearchCache(db).search({
+        conversationIds: eligible.map((row) => row.id),
+        needle: searchNeedle,
+        limit: eligible.length,
+      });
+      const ids = searched.matches.map((match) => match.conversation_id);
+      const pageIds = ids.slice(offset, offset + limit);
+      const selectCols = groupMode
+        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ch.parent_conversation_id = c.id) AS children_count`
+        : `c.*`;
+      const rows = pageIds.length === 0
+        ? []
+        : db.prepare(
+          `SELECT ${selectCols} FROM conversations c
+           WHERE c.id IN (${pageIds.map(() => "?").join(",")})
+           ORDER BY c.${safeSortField} ${sortOrder}`,
+        ).all(...pageIds) as ConversationRow[];
+      const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
+      rows.sort((left, right) => (pageOrder.get(left.id) ?? 0) - (pageOrder.get(right.id) ?? 0));
+      sendJson(res, 200, {
+        conversations: rows.map((row) => mapSearchConversation(row, sessionManager)),
+        total: ids.length,
+        page,
+        limit,
+        pages: Math.ceil(ids.length / limit),
+        search_metrics: searched.metrics,
+      });
+      return;
+    }
+
     // Count total
     const countRow = db
       .prepare(`SELECT COUNT(*) as total FROM conversations c ${where}`)
@@ -515,7 +565,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   }, { fileRpc: "allow" });
 
   // GET /api/conversations/search — Search the normalized conversation index.
-  server.get("/api/conversations/search", (req, res) => {
+  server.get("/api/conversations/search", async (req, res) => {
     const query = req.query ?? {};
     const needle = (query.q || query.query || "").trim().toLowerCase();
     if (!needle) {
@@ -547,8 +597,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       .all(...convParams) as ConversationRow[];
 
     const results: Array<{
-      conversation: ReturnType<typeof mapConversation>;
-      block: ReturnType<typeof mapBlock> | null;
+      conversation: ReturnType<typeof mapSearchConversation>;
+      block: Omit<ReturnType<typeof mapBlock>, "content"> & { content: string } | null;
       snippet: string;
     }> = [];
 
@@ -561,39 +611,51 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return `${start > 0 ? "..." : ""}${snippet}${end < text.length ? "..." : ""}`;
     };
 
-    for (const conversation of conversations) {
-      if (results.length >= limit) break;
-      if (titleOnly) {
-        const snippet = makeSnippet(conversation.title || "");
+    if (titleOnly) {
+      for (const conversation of conversations) {
+        if (results.length >= limit) break;
+        const snippet = makeSnippet(maskUnverifiedCandidates(conversation.title || "").text);
         if (snippet) {
-          results.push({ conversation: mapConversation(conversation, sessionManager), block: null, snippet });
-        }
-        continue;
-      }
-
-      const blockConditions = ["conversation_id = ?"];
-      const blockParams: unknown[] = [conversation.id];
-      if (blockType) {
-        blockConditions.push("type = ?");
-        blockParams.push(blockType);
-      }
-      const blocks = db
-        .prepare(
-          `SELECT * FROM conversation_blocks WHERE ${blockConditions.join(" AND ")} ORDER BY position ASC`,
-        )
-        .all(...blockParams) as BlockRow[];
-
-      for (const block of blocks) {
-        const mapped = mapBlock(block);
-        const snippet = makeSnippet(mapped.content);
-        if (snippet) {
-          results.push({ conversation: mapConversation(conversation, sessionManager), block: mapped, snippet });
-          break;
+          results.push({ conversation: mapSearchConversation(conversation, sessionManager), block: null, snippet });
         }
       }
+      sendJson(res, 200, { results, total: results.length, limit });
+      return;
     }
 
-    sendJson(res, 200, { results, total: results.length, limit });
+    const searched = await getConversationSearchCache(db).search({
+      conversationIds: conversations.map((conversation) => conversation.id),
+      needle,
+      blockType,
+      limit,
+    });
+    const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+    for (const match of searched.matches) {
+      const conversation = conversationsById.get(match.conversation_id);
+      if (!conversation) continue;
+      const block = db.prepare(
+        `SELECT id, conversation_id, type, role, position, timestamp, parent_id,
+                metadata_json, dag_uuid, dag_parent_uuid
+         FROM conversation_blocks WHERE id = ?`,
+      ).get(match.block_id) as Omit<BlockRow, "content" | "compressed"> | undefined;
+      if (!block) continue;
+      results.push({
+        conversation: mapSearchConversation(conversation, sessionManager),
+        // Search responses carry only structural block metadata plus the
+        // verified masked snippet. Returning the complete durable body here
+        // would duplicate the detail route and could bypass the cache's
+        // fail-closed masking boundary for legacy fixtures.
+        block: { ...block, content: "" },
+        snippet: match.snippet,
+      });
+    }
+
+    sendJson(res, 200, {
+      results,
+      total: results.length,
+      limit,
+      search_metrics: searched.metrics,
+    });
   }, { fileRpc: "allow" });
 
   // GET /api/conversations/:id — Full conversation with blocks + children summary
