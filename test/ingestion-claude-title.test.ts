@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
-import { configureIngestionWorker, triggerTargetedIngest } from "../src/ingestion.js";
+import { configureIngestionWorker, ingestBatchForWorker, triggerTargetedIngest } from "../src/ingestion.js";
 import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "../src/client-auth/tokens.js";
 import { credentialMaskFor } from "../src/credential-leak-scan.js";
@@ -70,6 +70,24 @@ afterEach(() => {
 });
 
 describe("Claude provider title ingestion", () => {
+  it("preserves durable conversation metadata across a forced full re-ingest", async () => {
+    const sessionPath = await writeClaudeSession();
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    db.prepare(`UPDATE conversations
+      SET starred = 1, tags = '["research","KeepCase"]', notes = 'durable note'
+      WHERE source_path = ?`).run(sessionPath);
+
+    await ingestBatchForWorker([sessionPath], true);
+
+    expect(db.prepare(
+      "SELECT starred, tags, notes FROM conversations WHERE source_path = ?",
+    ).get(sessionPath)).toEqual({
+      starred: 1,
+      tags: '["research","KeepCase"]',
+      notes: "durable note",
+    });
+  });
+
   it("masks, persists, and broadcasts an appended custom-title without changing blocks", async () => {
     const sessionPath = await writeClaudeSession();
     createUser(db, { slug: "claude-code", kind: "agent", display_name: "Claude Code" });

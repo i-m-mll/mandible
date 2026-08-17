@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ConversationAttachState } from "../ui/src/api.js";
-import { getConversationAttachPresentation } from "../ui/src/views/conversations.js";
+import type { Conversation, ConversationAttachState } from "../ui/src/api.js";
+import {
+  getConversationAttachPresentation,
+  getConversationTitle,
+  parseConversationTagsInput,
+} from "../ui/src/views/conversations.js";
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -58,5 +62,14 @@ describe("conversation attach presentation", () => {
       label: "History",
       composer: "hidden",
     });
+  });
+
+  it("uses the provider title and canonicalizes the minimal tag editor input", () => {
+    const conversation = {
+      title: "**Provider title**",
+      label: "Legacy override must be ignored",
+    } as unknown as Conversation;
+    expect(getConversationTitle(conversation)).toBe("Provider title");
+    expect(parseConversationTagsInput(" one,Two, one, ,two ")).toEqual(["one", "Two", "two"]);
   });
 });

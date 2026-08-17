@@ -4443,12 +4443,51 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
         ON feedback_submissions(supersedes_submission_id, actor_user_id)
         WHERE supersedes_submission_id IS NOT NULL`,
     ],
-  }
+  },
+  {
+    version: 138,
+    name: "conversation_tags",
+    statements: [
+      `ALTER TABLE conversations ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(tags) AND json_type(tags) = 'array')`,
+      `UPDATE conversations
+          SET tags = json_array(trim(label))
+        WHERE label IS NOT NULL AND trim(label) != ''`,
+      `ALTER TABLE conversations DROP COLUMN label`,
+    ],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function verifyConversationTagsColumn(db: Db): void {
+  const matches = (db.prepare("PRAGMA table_info(conversations)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>).filter((column) => column.name === "tags");
+  const tableSql = (db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversations'",
+  ).get() as { sql: string } | undefined)?.sql ?? "";
+  const hasJsonArrayCheck = /check\s*\(\s*json_valid\s*\(\s*tags\s*\)\s+and\s+json_type\s*\(\s*tags\s*\)\s*=\s*'array'\s*\)/i
+    .test(tableSql);
+  if (
+    matches.length !== 1 ||
+    matches[0].type.toUpperCase() !== "TEXT" ||
+    matches[0].notnull !== 1 ||
+    matches[0].dflt_value !== "'[]'" ||
+    matches[0].pk !== 0 ||
+    !hasJsonArrayCheck
+  ) {
+    throw new Error(
+      "migration 138 precondition: conversations.tags has a divergent definition",
+    );
+  }
 }
 
 function verifyOperationalIncidentV136Schema(db: Db): void {
@@ -4619,6 +4658,21 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         statements = hasColumn(db, "agent_dispatch_events", "incident_id")
           ? []
           : migration.statements.slice(7, 15);
+      }
+      if (migration.name === "conversation_tags") {
+        if (!tableExists(db, "conversations")) {
+          // Narrow legacy-schema fixtures can intentionally omit the
+          // conversations subsystem while still advancing the shared head.
+          statements = [];
+        } else if (hasColumn(db, "conversations", "tags")) {
+          if (hasColumn(db, "conversations", "label")) {
+            throw new Error("migration 138 precondition: conversations has both label and tags");
+          }
+          verifyConversationTagsColumn(db);
+          // Historical convergence tests and interrupted development builds can
+          // rewind only schema_version while retaining the head table shape.
+          statements = [];
+        }
       }
       for (const statement of statements) {
         db.exec(statement);
