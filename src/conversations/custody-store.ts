@@ -46,6 +46,15 @@ function versionDigest(files: CustodyFileRecord[]): string {
   return sha256(stableJson(files.map(({ path: archivePath, size, sha256: digest }) => ({ path: archivePath, size, sha256: digest }))));
 }
 
+function custodyVersionDigest(
+  sourceVersion: string,
+  sourceVersionId?: string,
+  sourceSha256?: string,
+): string {
+  if (!sourceVersionId && !sourceSha256) return sourceVersion;
+  return sha256(stableJson({ source_version: sourceVersion, source_version_id: sourceVersionId, source_sha256: sourceSha256 }));
+}
+
 function assertSafeComponent(value: string, label: string): void {
   if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\\") || value.includes("\0")) {
     throw new CustodyError(`${label} is not a safe path component`, "unsafe_path");
@@ -216,14 +225,33 @@ function extractHistoryBases(data: Buffer): string[] {
   return [...ids].sort();
 }
 
-function findCodexRollout(codexRoot: string, id: string): string | null {
-  for (const rootName of ["sessions", "archived_sessions"]) {
-    const root = path.join(codexRoot, rootName);
-    for (const file of listRegularFiles(root)) {
-      if (file.endsWith(".jsonl") && path.basename(file).includes(id)) return file;
+function extractCodexSessionId(data: Buffer): string | null {
+  for (const line of data.toString("utf8").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (record.type !== "session_meta" || !record.payload || typeof record.payload !== "object") continue;
+      const id = (record.payload as Record<string, unknown>).id;
+      if (typeof id === "string" && id) return id;
+    } catch {
+      // A partial final provider record cannot establish native identity.
     }
   }
   return null;
+}
+
+function findCodexRollout(codexRoot: string, id: string): string | null {
+  const matches: string[] = [];
+  for (const rootName of ["sessions", "archived_sessions"]) {
+    const root = path.join(codexRoot, rootName);
+    for (const file of listRegularFiles(root)) {
+      if (!file.endsWith(".jsonl")) continue;
+      const { data } = readStableFile(file);
+      if (extractCodexSessionId(data) === id) matches.push(file);
+    }
+  }
+  if (matches.length > 1) throw new CustodyError(`Codex native session identity is ambiguous: ${id}`, "dependency_ambiguous", 409);
+  return matches[0] ?? null;
 }
 
 function codexDependencies(source: CustodySource) {
@@ -240,6 +268,11 @@ function codexDependencies(source: CustodySource) {
     if (seen.has(file)) continue;
     seen.add(file);
     const { data } = readStableFile(file);
+    const nativeId = extractCodexSessionId(data);
+    if (!nativeId) throw new CustodyError(`Codex rollout has no parsed native session identity: ${file}`, "invalid_provider_metadata");
+    if (file === sourcePath && nativeId !== source.session_id) {
+      throw new CustodyError("Codex selected rollout identity does not match the conversation source", "source_version_mismatch", 409);
+    }
     const relative = assertRelative(path.relative(codexRoot, file), "Codex rollout path");
     dependencies.push({ source_path: file, archive_path: `providers/codex/${relative}`, provider_relative_path: relative, role: file === sourcePath ? "selected_rollout" : "history_base_rollout", required: true });
     for (const id of extractHistoryBases(data)) {
@@ -266,7 +299,26 @@ function geminiDependencies(source: CustodySource) {
   for (const file of listRegularFiles(projectRoot)) {
     const relativeProject = path.relative(projectRoot, file).replace(/\\/g, "/");
     const isMain = path.resolve(file) === sourcePath;
-    const sessionScoped = file.includes(source.session_id) || relativeProject.split("/").some((part) => part === source.session_id);
+    const exactPathIdentity = relativeProject.split("/").some((part) => part === source.session_id);
+    let parsedIdentity = false;
+    if (!exactPathIdentity) {
+      const { data } = readStableFile(file);
+      try {
+        const parsed = JSON.parse(data.toString("utf8")) as unknown;
+        const visit = (value: unknown, key = ""): void => {
+          if (parsedIdentity) return;
+          if ((key === "sessionId" || key === "session_id") && value === source.session_id) {
+            parsedIdentity = true;
+          } else if (value && typeof value === "object") {
+            for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) visit(child, childKey);
+          }
+        };
+        visit(parsed);
+      } catch {
+        // Non-JSON sidecars require an exact session-id path component.
+      }
+    }
+    const sessionScoped = exactPathIdentity || parsedIdentity;
     if (!isMain && !sessionScoped) continue;
     const relative = assertRelative(path.relative(geminiRoot, file), "Gemini dependency path");
     const role = isMain ? "chat" : /subagent/i.test(relative) ? "subagent_artifact" : /plan/i.test(relative) ? "plan" : /task/i.test(relative) ? "task" : /tool/i.test(relative) ? "tool_output" : /log|activit/i.test(relative) ? "activity_log" : "session_artifact";
@@ -338,6 +390,12 @@ export class ConversationCustodyStore {
   capture(source: CustodySource, options: CustodyCaptureOptions = {}): CustodyCaptureResult {
     assertSafeComponent(source.conversation_id, "conversation id");
     assertSafeComponent(source.session_id, "session id");
+    if (!!source.expected_source_version_id !== !!source.expected_source_sha256) {
+      throw new CustodyError("source version id and SHA-256 must be supplied together", "source_version_mismatch", 409);
+    }
+    if (source.expected_source_sha256 && !/^[0-9a-f]{64}$/.test(source.expected_source_sha256)) {
+      throw new CustodyError("expected source SHA-256 is not sealed", "source_version_mismatch", 409);
+    }
     this.transition(source.conversation_id, "requested");
     this.transition(source.conversation_id, "capturing");
     let staging = "";
@@ -353,14 +411,23 @@ export class ConversationCustodyStore {
       staging = path.join(this.conversationRoot(source.conversation_id), `.capture-${crypto.randomUUID()}`);
       ensureDir(staging);
       const files: CustodyFileRecord[] = [];
+      let selectedSourceMatched = false;
       for (const dependency of discovered.dependencies) {
         const { data } = readStableFile(dependency.source_path, this.hooks.afterSourceRead);
+        if (path.resolve(dependency.source_path) === path.resolve(source.source_path)) {
+          if (selectedSourceMatched) throw new CustodyError("selected transcript was discovered more than once", "archive_collision");
+          selectedSourceMatched = true;
+          if (source.expected_source_sha256 && sha256(data) !== source.expected_source_sha256) {
+            throw new CustodyError("selected transcript bytes no longer match the current sealed source version", "source_changed", 409);
+          }
+        }
         const destination = path.join(staging, dependency.archive_path);
         if (!within(staging, destination)) throw new CustodyError("archive destination escaped staging root", "unsafe_path");
         ensureDir(path.dirname(destination));
         fs.writeFileSync(destination, data, { mode: 0o600, flag: "wx" });
         files.push({ path: dependency.archive_path, provider_relative_path: dependency.provider_relative_path, dependency_role: dependency.role, size: data.length, sha256: sha256(data), required: dependency.required });
       }
+      if (!selectedSourceMatched) throw new CustodyError("selected transcript was not captured", "source_version_mismatch", 409);
       for (const generated of discovered.generated) {
         const archivePath = assertRelative(generated.archive_path, "generated metadata path");
         if (dependencyKeys.has(archivePath)) throw new CustodyError(`duplicate archive path: ${archivePath}`, "archive_collision");
@@ -372,13 +439,19 @@ export class ConversationCustodyStore {
       }
       files.sort((a, b) => a.path.localeCompare(b.path));
       const sourceVersion = versionDigest(files);
-      const custodyVersion = sourceVersion;
+      const custodyVersion = custodyVersionDigest(
+        sourceVersion,
+        source.expected_source_version_id,
+        source.expected_source_sha256,
+      );
       const manifest: CustodyManifest = {
         archive_format: ARCHIVE_FORMAT,
         provider: source.provider,
         provider_adapter_version: ADAPTER_VERSION,
         canonical_conversation_id: source.conversation_id,
         native_identities: [...new Set([...discovered.nativeIdentities, ...(source.native_identities ?? [])])].sort(),
+        ...(source.expected_source_version_id ? { source_version_id: source.expected_source_version_id } : {}),
+        ...(source.expected_source_sha256 ? { source_sha256: source.expected_source_sha256 } : {}),
         source_version: sourceVersion,
         custody_version: custodyVersion,
         capture_consistency: "file-by-file-stable",
@@ -431,8 +504,25 @@ export class ConversationCustodyStore {
     const manifest = this.readManifest(versionPath);
     const errors: string[] = [];
     const computedVersion = versionDigest(manifest.files);
+    const computedCustodyVersion = custodyVersionDigest(
+      computedVersion,
+      manifest.source_version_id,
+      manifest.source_sha256,
+    );
     if (manifest.source_version !== computedVersion) errors.push("manifest source_version does not match its file records");
-    if (manifest.custody_version !== computedVersion) errors.push("manifest custody_version does not match its file records");
+    if (manifest.custody_version !== computedCustodyVersion) errors.push("manifest custody_version does not match its file records and source binding");
+    if (!!manifest.source_version_id !== !!manifest.source_sha256) {
+      errors.push("manifest source binding is incomplete");
+    }
+    if (manifest.source_sha256) {
+      const selectedRole = manifest.provider === "claude_code"
+        ? "main_transcript"
+        : manifest.provider === "codex" ? "selected_rollout" : "chat";
+      const selectedFiles = manifest.files.filter((file) => file.dependency_role === selectedRole);
+      if (selectedFiles.length !== 1 || selectedFiles[0].sha256 !== manifest.source_sha256) {
+        errors.push("manifest source SHA-256 does not match the selected transcript");
+      }
+    }
     const declared = new Set(manifest.files.map((file) => file.path));
     for (const file of manifest.files) {
       try {
@@ -474,6 +564,8 @@ export class ConversationCustodyStore {
         canonical_conversation_id: conversationId,
         provider: result.manifest.provider,
         native_identities: result.manifest.native_identities,
+        source_version_id: result.manifest.source_version_id ?? null,
+        source_sha256: result.manifest.source_sha256 ?? null,
         source_version: result.manifest.source_version,
         custody_version: result.manifest.custody_version,
       });

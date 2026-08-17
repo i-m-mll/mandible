@@ -125,8 +125,10 @@ describe("conversation custody", () => {
     const baseId = "019base";
     const sessionId = "019selected";
     const base = path.join(codexRoot, "archived_sessions", `rollout-2026-01-01T00-00-00-${baseId}.jsonl`);
+    const nearCollision = path.join(codexRoot, "archived_sessions", `rollout-2026-01-01T00-00-00-${baseId}-near.jsonl`);
     const source = path.join(codexRoot, "sessions", "2026", "01", "02", `rollout-2026-01-02T00-00-00-${sessionId}.jsonl`);
     write(base, jsonl({ type: "session_meta", payload: { id: baseId } }));
+    write(nearCollision, jsonl({ type: "session_meta", payload: { id: `${baseId}-near` } }, { type: "event_msg", payload: { message: "wrong near-collision rollout" } }));
     write(source, jsonl({ type: "session_meta", payload: { id: sessionId, history_base: baseId } }));
     write(path.join(codexRoot, "session_index.jsonl"), jsonl({ id: sessionId, thread_name: "selected" }, { id: "other", thread_name: "secret other title" }));
 
@@ -137,6 +139,8 @@ describe("conversation custody", () => {
     const titleBytes = fs.readFileSync(path.join(captured.version_path, title.path), "utf8");
     expect(titleBytes).toContain("selected");
     expect(titleBytes).not.toContain("secret other title");
+    const capturedBase = captured.manifest.files.find((file) => file.dependency_role === "history_base_rollout")!;
+    expect(fs.readFileSync(path.join(captured.version_path, capturedBase.path), "utf8")).not.toContain("wrong near-collision rollout");
     expect(captured.manifest.restore.capability).toBe("partial");
   });
 
@@ -147,13 +151,15 @@ describe("conversation custody", () => {
     const source = path.join(projectRoot, "chats", `${sessionId}.json`);
     write(source, JSON.stringify({ sessionId, messages: [] }));
     write(path.join(projectRoot, "tool-outputs", sessionId, "result.txt"), "tool output");
-    write(path.join(projectRoot, "plans", `${sessionId}.json`), "{}");
+    write(path.join(projectRoot, "plans", `${sessionId}.json`), JSON.stringify({ sessionId, plan: [] }));
+    write(path.join(projectRoot, "plans", `${sessionId}-near.json`), JSON.stringify({ sessionId: `${sessionId}-near`, plan: ["private near collision"] }));
     write(path.join(projectRoot, "chats", "other-session.json"), "private other chat");
     write(path.join(geminiRoot, "projects.json"), JSON.stringify({ projects: { "project-hash": "/work/project", other: "/private/other" } }));
 
     const captured = new ConversationCustodyStore(custodyRoot).capture({ conversation_id: "conv-gemini", provider: "gemini", session_id: sessionId, source_path: source });
     expect(captured.manifest.files.map((file) => file.dependency_role)).toEqual(expect.arrayContaining(["chat", "tool_output", "plan", "project_root_mapping"]));
     expect(captured.manifest.files.some((file) => file.provider_relative_path.includes("other-session"))).toBe(false);
+    expect(captured.manifest.files.some((file) => file.provider_relative_path.includes(`${sessionId}-near`))).toBe(false);
     const mapping = captured.manifest.files.find((file) => file.dependency_role === "project_root_mapping")!;
     expect(fs.readFileSync(path.join(captured.version_path, mapping.path), "utf8")).not.toContain("/private/other");
   });

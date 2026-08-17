@@ -6,6 +6,7 @@ import type { ConversationSource } from "../parsers/types.js";
 import type {
   ConversationSourceAlias,
   ConversationSourceDescriptor,
+  ConversationSourceVersion,
   RecordConversationSourceInput,
   RecordConversationSourceAliasInput,
   RecordNormalizationCheckpointInput,
@@ -200,6 +201,31 @@ export class ConversationSourceStore {
     };
   }
 
+  resolveVersion(versionId: string): ConversationSourceVersion | null {
+    const row = this.db.prepare(`
+      SELECT id, source_id, content_sha256, byte_length, file_mtime_ms,
+             availability, custody_state, generation, parser_format,
+             parser_version, normalization_version, redaction_epoch
+        FROM conversation_source_versions
+       WHERE id = ?
+    `).get(versionId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      sourceId: String(row.source_id),
+      contentSha256: String(row.content_sha256),
+      byteLength: Number(row.byte_length),
+      fileMtimeMs: row.file_mtime_ms == null ? null : Number(row.file_mtime_ms),
+      availability: row.availability as ConversationSourceVersion["availability"],
+      custodyState: row.custody_state as ConversationSourceVersion["custodyState"],
+      generation: row.generation as ConversationSourceVersion["generation"],
+      parserFormat: String(row.parser_format),
+      parserVersion: String(row.parser_version),
+      normalizationVersion: String(row.normalization_version),
+      redactionEpoch: Number(row.redaction_epoch),
+    };
+  }
+
   listAliases(sourceId: string): ConversationSourceAlias[] {
     return (this.db.prepare(`
       SELECT id, source_id, root_kind, root_path, relative_path, path, alias_kind, availability
@@ -270,21 +296,35 @@ export class ConversationSourceStore {
     return id;
   }
 
-  /** Custody adapters update evidence on the immutable version, never its hash. */
-  updateVersionCustody(input: UpdateConversationSourceCustodyInput): void {
-    const result = this.db.prepare(`
-      UPDATE conversation_source_versions
-         SET custody_state = ?, custody_ref = ?, capture_consistency = ?, verification_json = ?
-       WHERE id = ?
-    `).run(
-      input.custodyState, input.custodyRef ?? null, input.captureConsistency ?? null,
-      JSON.stringify(input.verification ?? {}), input.sourceVersionId,
-    );
-    if (result.changes !== 1) throw new Error("conversation source version was not found");
-    this.db.prepare(`
-      UPDATE conversation_sources SET custody_state = ?, updated_at = ?
-       WHERE current_version_id = ?
-    `).run(input.custodyState, Date.now(), input.sourceVersionId);
+  /** Atomically attach custody evidence only while the sealed version remains current. */
+  updateVersionCustody(input: UpdateConversationSourceCustodyInput): boolean {
+    return this.db.transaction(() => {
+      const current = this.db.prepare(`
+        SELECT v.id
+          FROM conversation_sources s
+          JOIN conversation_source_versions v ON v.id = s.current_version_id
+         WHERE s.id = ? AND s.current_version_id = ?
+           AND v.source_id = s.id AND v.content_sha256 = ?
+           AND v.generation = 'sealed_sha256' AND v.availability = 'available'
+      `).get(input.sourceId, input.sourceVersionId, input.sourceContentSha256) as { id: string } | undefined;
+      if (!current) return false;
+      const result = this.db.prepare(`
+        UPDATE conversation_source_versions
+           SET custody_state = ?, custody_ref = ?, capture_consistency = ?, verification_json = ?
+         WHERE id = ? AND source_id = ? AND content_sha256 = ?
+           AND generation = 'sealed_sha256' AND availability = 'available'
+      `).run(
+        input.custodyState, input.custodyRef ?? null, input.captureConsistency ?? null,
+        JSON.stringify(input.verification ?? {}), input.sourceVersionId,
+        input.sourceId, input.sourceContentSha256,
+      );
+      if (result.changes !== 1) return false;
+      const sourceResult = this.db.prepare(`
+        UPDATE conversation_sources SET custody_state = ?, updated_at = ?
+         WHERE id = ? AND current_version_id = ?
+      `).run(input.custodyState, Date.now(), input.sourceId, input.sourceVersionId);
+      return sourceResult.changes === 1;
+    })();
   }
 
   async recordConversation(input: RecordConversationSourceInput): Promise<string> {
