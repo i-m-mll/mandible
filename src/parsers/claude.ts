@@ -150,6 +150,7 @@ export class ClaudeParser implements ConversationParser {
     }
     return this.parseRecords(filePath, records, {
       baseBlockCount: 0,
+      baseRecordCount: 0,
       sourceHash,
       sourceMtime,
     });
@@ -158,6 +159,7 @@ export class ClaudeParser implements ConversationParser {
   async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
     return this.parseRecords(input.filePath, parseJsonlStringRecords<ClaudeRecord>(input.raw), {
       baseBlockCount: input.baseBlockCount,
+      baseRecordCount: input.baseRecordCount ?? 0,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
@@ -166,7 +168,7 @@ export class ClaudeParser implements ConversationParser {
   private async parseRecords(
     filePath: string,
     records: ClaudeRecord[],
-    options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
+    options: { baseBlockCount: number; baseRecordCount: number; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
     let hasSidechainRecord = false;
     for (const record of records) {
@@ -256,7 +258,9 @@ export class ClaudeParser implements ConversationParser {
     const toolUseMap = new Map<string, number>();
     const toolNameMap = new Map<string, string>();
 
-    for (const rec of records) {
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      const rec = records[recordIndex];
+      const firstRecordBlock = blocks.length;
       // Skip non-content records
       if (rec.type === "file-history-snapshot" || rec.isSnapshotUpdate) continue;
       if (rec.type === "progress") continue;
@@ -355,6 +359,10 @@ export class ClaudeParser implements ConversationParser {
               dag_parent_uuid: rec.parentUuid ?? null,
             });
           }
+          for (let index = firstRecordBlock; index < blocks.length; index += 1) {
+            blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
+            blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
+          }
           continue;
         }
 
@@ -427,6 +435,10 @@ export class ClaudeParser implements ConversationParser {
             dag_parent_uuid: rec.parentUuid ?? null,
           });
         }
+      }
+      for (let index = firstRecordBlock; index < blocks.length; index += 1) {
+        blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
+        blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
       }
     }
 

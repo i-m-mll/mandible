@@ -37,6 +37,8 @@ import {
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
+import { ConversationSourceStore } from "./conversations/source-store.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
 
 // --- Watch configuration ---
 
@@ -1359,6 +1361,7 @@ function repointConversationSource(
       .run(toPath, fromPath);
   });
   repoint();
+  new ConversationSourceStore(db).recordRelocation(fromPath, toPath);
   return true;
 }
 
@@ -1386,14 +1389,11 @@ function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePa
   if (relocateMovedCodexSource(db, filePath)) {
     return;
   }
+  // Source loss is a tombstone transition, never a conversation deletion.
+  // Legacy normalized bodies, annotations, relationships, and aliases remain
+  // available for the explicit dual-reader fallback.
+  new ConversationSourceStore(db).recordUnavailable(filePath);
   const remove = db.transaction(() => {
-    const row = db.prepare("SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?")
-      .get(filePath) as { id: string; starred: number; tags: string; notes: string | null } | undefined;
-    if (row && row.starred === 0 && row.tags === "[]" && !row.notes) {
-      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-      db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
-      logger("info", "ingestion_cleanup_missing_source", { file: filePath, id: row.id });
-    }
     deleteAppendState(db, filePath);
     db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
   });
@@ -1966,6 +1966,7 @@ async function ingestFile(
           filePath,
           raw: append.raw,
           baseBlockCount: alreadyIngestedCount,
+          baseRecordCount: appendState?.line_count ?? 0,
           sourceHash: append.sourceHash,
           sourceMtime: stat.mtimeMs,
         });
@@ -2146,6 +2147,7 @@ async function ingestFile(
       block_count: result.conversation.block_count,
     });
     await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
+    await recordDurableConversationSource(db, existing.id, result, filePath);
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
@@ -2243,6 +2245,7 @@ async function ingestFile(
       appendInfo?.nextPartialLine,
       appendInfo?.tailHash,
     );
+    await recordDurableConversationSource(db, conversationId, result, filePath);
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
@@ -2355,7 +2358,9 @@ async function ingestFile(
         ).all(filePath) as Array<{ id: string }>;
         for (const row of staleConversationIds) {
           db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-          db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+          if (row.id !== conversationId) {
+            db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+          }
         }
       }
 
@@ -2374,6 +2379,18 @@ async function ingestFile(
           ?, ?, ?, ?, ?, ?,
           datetime('now'), datetime('now')
         )
+        ON CONFLICT(id) DO UPDATE SET
+          source = excluded.source, source_path = excluded.source_path,
+          source_hash = excluded.source_hash, source_mtime = excluded.source_mtime,
+          title = excluded.title, summary = excluded.summary,
+          started_at = excluded.started_at, ended_at = excluded.ended_at,
+          block_count = excluded.block_count, session_id = excluded.session_id,
+          project_path = excluded.project_path, cwd = excluded.cwd,
+          branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
+          starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
+          parent_conversation_id = excluded.parent_conversation_id,
+          is_sidechain = excluded.is_sidechain, agent_id = excluded.agent_id,
+          updated_at = excluded.updated_at
       `).run(
         conversationId,
         result.conversation.source,
@@ -2542,7 +2559,9 @@ async function ingestFile(
             ).all(filePath) as Array<{ id: string }>;
             for (const row of staleIds) {
               db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-              db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+              if (row.id !== conversationId) {
+                db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+              }
             }
             // Also purge any blocks still attached to this conversation id
             // (orphaned rows from a prior failed transaction that the
@@ -2583,6 +2602,18 @@ async function ingestFile(
                 ?, ?, ?, ?, ?, ?,
                 datetime('now'), datetime('now')
               )
+              ON CONFLICT(id) DO UPDATE SET
+                source = excluded.source, source_path = excluded.source_path,
+                source_hash = excluded.source_hash, source_mtime = excluded.source_mtime,
+                title = excluded.title, summary = excluded.summary,
+                started_at = excluded.started_at, ended_at = excluded.ended_at,
+                block_count = excluded.block_count, session_id = excluded.session_id,
+                project_path = excluded.project_path, cwd = excluded.cwd,
+                branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
+                starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
+                parent_conversation_id = excluded.parent_conversation_id,
+                is_sidechain = excluded.is_sidechain, agent_id = excluded.agent_id,
+                updated_at = excluded.updated_at
             `).run(
               conversationId,
               result.conversation.source,
@@ -2664,6 +2695,7 @@ async function ingestFile(
     appendInfo?.nextPartialLine,
     appendInfo?.tailHash,
   );
+  await recordDurableConversationSource(db, conversationId, result, filePath);
 
   // Bug: e01653d — update last_active on the matching session so the
   // Sessions tab shows real user activity time rather than updated_at.
@@ -2712,6 +2744,32 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+async function recordDurableConversationSource(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  result: ParseResult,
+  filePath: string,
+): Promise<void> {
+  try {
+    await new ConversationSourceStore(db).recordConversation({
+      conversationId,
+      provider: result.conversation.source,
+      nativeSessionId: result.conversation.session_id,
+      filePath,
+      expectedContentHash: result.conversation.source_hash,
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+  } catch (error) {
+    // The legacy body remains the safe default. A failed source snapshot must
+    // never turn a successful ingest into data loss or plausible unverified text.
+    logger("warn", "conversation_source_snapshot_failed", {
+      file: filePath,
+      conversation_id: conversationId,
+      error: String(error),
+    });
+  }
 }
 
 /**
@@ -2947,30 +3005,16 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     !knownPaths.has(sourcePath)
   );
   if (missingPaths.length > 0) {
-    const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
-    const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
-    const findConversation = db.prepare(
-      "SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?"
-    );
-    let removed = 0;
     // A rollout archived while this reconcile was scanning is a move, not a
-    // deletion; relocate it (outside the delete transaction) before cleanup.
-    const deletablePaths = missingPaths.filter(
+    // deletion; relocate it before recording missing-source tombstones.
+    const unavailablePaths = missingPaths.filter(
       (sourcePath) => !relocateMovedCodexSource(db, sourcePath),
     );
-    const cleanupMissing = db.transaction(() => {
-      for (const sourcePath of deletablePaths) {
-        const row = findConversation.get(sourcePath) as
-          { id: string; starred: number; tags: string; notes: string | null } | undefined;
-        if (!row || row.starred || row.tags !== "[]" || row.notes) continue;
-        deleteBlocks.run(row.id);
-        deleteConversation.run(row.id);
-        removed += 1;
-      }
-    });
-    cleanupMissing();
-    if (removed > 0) {
-      logger("info", "ingestion_cleanup_missing_sources", { removed });
+    for (const sourcePath of unavailablePaths) {
+      removeConversationForMissingSource(db, sourcePath);
+    }
+    if (unavailablePaths.length > 0) {
+      logger("info", "ingestion_sources_unavailable", { count: unavailablePaths.length });
     }
   }
 

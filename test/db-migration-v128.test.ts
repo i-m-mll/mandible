@@ -37,7 +37,7 @@ describe("migration 128 task disable command protocol", () => {
     rewindToV127(db);
     migrate(db);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "139" });
+      .toEqual({ value: "140" });
 
     const requestColumns = (db.prepare("PRAGMA table_info(task_command_requests)").all() as
       Array<{ name: string }>).map((column) => column.name);
@@ -71,6 +71,6 @@ describe("migration 128 task disable command protocol", () => {
     db.prepare("UPDATE meta SET value = '127' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "139" });
+      .toEqual({ value: "140" });
   });
 });

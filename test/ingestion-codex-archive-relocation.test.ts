@@ -140,6 +140,15 @@ describe("codex archive relocation", () => {
       db.prepare("SELECT file_path FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
     ).toBeUndefined();
+    expect(db.prepare(`
+      SELECT path, alias_kind, availability
+        FROM conversation_source_aliases
+       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
+       ORDER BY path
+    `).all(ingested!.id)).toEqual([
+      { path: archivedPath, alias_kind: "archive", availability: "available" },
+      { path: sessionPath, alias_kind: "active", availability: "missing" },
+    ].sort((a, b) => a.path.localeCompare(b.path)));
   });
 
   it("survives an archive/unarchive round trip", async () => {
@@ -186,7 +195,7 @@ describe("codex archive relocation", () => {
     expect(blockCount(ingested!.id)).toBe(ingested!.block_count);
   });
 
-  it("still deletes a conversation whose source is genuinely gone", async () => {
+  it("tombstones a genuinely missing source without deleting fallback bodies", async () => {
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
     expect(conversationRow(sessionPath)).toBeDefined();
 
@@ -195,6 +204,11 @@ describe("codex archive relocation", () => {
 
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM conversations").get(),
-    ).toMatchObject({ count: 0 });
+    ).toMatchObject({ count: 1 });
+    expect(db.prepare(`
+      SELECT availability FROM conversation_sources
+       WHERE conversation_id = (SELECT id FROM conversations WHERE source_path = ?)
+    `).get(sessionPath)).toEqual({ availability: "missing" });
+    expect(blockCount(conversationRow(sessionPath)!.id)).toBeGreaterThan(0);
   });
 });

@@ -35,6 +35,10 @@ export interface BlockMetadata {
   visibility?: "default_hidden" | "default_visible";
   truncated?: boolean;
   signature?: string;
+  /** Zero-based native record ordinal used by the verified source reader. */
+  source_record_ordinal?: number;
+  /** Stable order when one native record normalizes into several blocks. */
+  source_sub_block_ordinal?: number;
 }
 
 export interface ConversationBlock {
@@ -88,6 +92,7 @@ export interface IncrementalParseInput {
   filePath: string;
   raw: string;
   baseBlockCount: number;
+  baseRecordCount?: number;
   sourceHash: string;
   sourceMtime: number;
 }
