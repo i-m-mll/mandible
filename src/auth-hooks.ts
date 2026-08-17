@@ -172,7 +172,7 @@ export function buildAuthHookEnv(
   // A finalizer is non-interactive by construction; say so rather than letting
   // a hook inherit an interactive terminal's capabilities.
   env.TERM = "dumb";
-  env.CI = "1";
+  env.CI = "true";
 
   env.MANDIBLE_AUTH_REQUEST_ID = request.id;
   env.MANDIBLE_AUTH_TYPE = request.type;
