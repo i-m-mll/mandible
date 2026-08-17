@@ -145,7 +145,11 @@ validate_bundle() {
 err "[desktop-install] aligning dependencies from package-lock.json"
 bash -lc "$dependency_command"
 err "[desktop-install] running: ${build_command}"
-bash -lc "$build_command"
+if [[ "${CI:-}" == "1" ]]; then
+  CI=true bash -lc "$build_command"
+else
+  bash -lc "$build_command"
+fi
 validate_bundle "$built_app" "built app"
 
 install_parent="$(dirname "$install_app")"

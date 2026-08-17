@@ -149,6 +149,7 @@ describe("auth hook execution environment (issue 27241e6)", () => {
       expect(env.MANDIBLE_HOOK_EXECUTION_ID).toBe("exec-1");
       expect(env.MANDIBLE_AUTH_REQUEST_ID).toBe("req-convergence-1");
       expect(env.MANDIBLE_AUTH_REPO).toBe("probe-repo");
+      expect(env.CI).toBe("true");
 
       // Nothing outside the documented set leaks in.
       const documented = new Set([

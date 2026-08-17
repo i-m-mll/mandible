@@ -58,7 +58,14 @@ esac
 }
 
 function runInstaller(
-  options: { signed?: boolean; running?: boolean; failCodesignAt?: number; installed?: boolean } = {},
+  options: {
+    signed?: boolean;
+    running?: boolean;
+    failCodesignAt?: number;
+    installed?: boolean;
+    ci?: string;
+    buildCommand?: string;
+  } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-desktop-install-"));
   tempRoots.push(root);
@@ -77,9 +84,11 @@ function runInstaller(
     encoding: "utf8",
     env: {
       ...process.env,
+      CI: options.ci ?? process.env.CI,
       MANDIBLE_DESKTOP_PLATFORM: "Darwin",
       MANDIBLE_DESKTOP_DEPENDENCY_COMMAND: ":",
-      MANDIBLE_DESKTOP_BUILD_COMMAND: 'printf "build\\n" > "$MANDIBLE_TEST_BUILD_TRACE"',
+      MANDIBLE_DESKTOP_BUILD_COMMAND:
+        options.buildCommand ?? 'printf "build\\n" > "$MANDIBLE_TEST_BUILD_TRACE"',
       MANDIBLE_TEST_BUILD_TRACE: buildTrace,
       MANDIBLE_DESKTOP_BUNDLE_PATH: built,
       MANDIBLE_DESKTOP_INSTALL_PATH: installed,
@@ -176,6 +185,16 @@ fi
     expect(fs.readFileSync(relaunchTrace, "utf8")).toBe("relaunch\n");
     expect(result.stderr).toContain("previous bundle preserved");
     expect(result.stderr).toContain("scheduled restart");
+  });
+
+  it("normalizes the legacy auth-hook CI value for the Tauri build", () => {
+    const { result, buildTrace } = runInstaller({
+      ci: "1",
+      buildCommand: 'printf "%s\\n" "$CI" > "$MANDIBLE_TEST_BUILD_TRACE"',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(buildTrace, "utf8")).toBe("true\n");
   });
 
   it("leaves the installed app untouched when the built signature is invalid", () => {
