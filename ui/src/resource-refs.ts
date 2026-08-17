@@ -24,7 +24,7 @@
 
 // --- ref grammar -------------------------------------------------------------
 
-export type ResourceRefKind = 'artifact' | 'repo' | 'mandible' | 'issue' | 'comment' | 'unknown';
+export type ResourceRefKind = 'artifact' | 'repo' | 'mandible' | 'issue' | 'comment' | 'submission' | 'unknown';
 
 export interface ParsedResourceRef {
   /** The original matched ref text (trimmed of trailing punctuation). */
@@ -45,6 +45,7 @@ const ARTIFACT_VERSION_REF = /^artifact-version:([^\s]+)$/i;
 const ARTIFACT_BLOB_REF = /^artifact-blob:([0-9a-f]{7,64})$/i;
 const ISSUE_REF = /^issue:([^\s\]]+)$/i;
 const COMMENT_REF = /^comment:([^\s\]]+)$/i;
+const SUBMISSION_REF = /^submission:([0-9a-f][0-9a-f-]{6,})(?:#([1-9][0-9]*))?$/i;
 
 /**
  * A recognizer turns a candidate ref string into a ParsedResourceRef, or null
@@ -115,6 +116,9 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   }
   if (COMMENT_REF.test(raw)) {
     return { raw, canonical: raw, kind: 'comment', display: compactCommentRef(raw) };
+  }
+  if (SUBMISSION_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'submission', display: compactSubmissionRef(raw) };
   }
 
   // mandible://<repo>/issue/<id> and other mandible app-route refs.
@@ -202,6 +206,14 @@ export function compactCommentRef(ref: string): string {
   );
 }
 
+export function compactSubmissionRef(ref: string): string {
+  return ref.replace(
+    /^submission:([0-9a-f-]+)(#[1-9][0-9]*)?$/i,
+    (_match, id: string, ordinal: string | undefined) =>
+      `submission:${id.slice(0, Math.min(7, id.length)).toLowerCase()}${ordinal ?? ''}`,
+  );
+}
+
 /** Compact human-friendly label for a ref; passthrough for unrecognized text. */
 export function displayResourceRef(ref: string): string {
   const parsed = parseResourceRef(ref);
@@ -211,6 +223,9 @@ export function displayResourceRef(ref: string): string {
 // --- nav hrefs ---------------------------------------------------------------
 
 export function resourceRefHref(ref: string): string {
+  if (SUBMISSION_REF.test(ref.trim())) {
+    return `/r/submission/${encodeURIComponent(ref.trim())}`;
+  }
   const series = ARTIFACT_SERIES_REF.exec(ref.trim());
   if (series) {
     const seriesRef = `artifact-series:${series[1]}`;
@@ -245,7 +260,7 @@ export function versionDetailHref(ref: string, versionNo: number): string {
 
 // --- C2 resolver -------------------------------------------------------------
 
-export type ResolverRefKind = 'issue' | 'comment' | 'artifact' | 'mandible' | 'repo' | 'unknown';
+export type ResolverRefKind = 'issue' | 'comment' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
 
 export interface ResolverResult {
   ref: string;
@@ -280,7 +295,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment|submission):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');

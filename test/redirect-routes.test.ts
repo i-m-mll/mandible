@@ -44,6 +44,33 @@ describe("redirect routes", () => {
     expect(String(artifact.body)).toContain("mandible:///artifacts?ref=abcdef123456");
   });
 
+  it("resolves authorized submission refs before building briefing links", async () => {
+    const router = new Router();
+    registerRedirectRoutes(router, {
+      resolveSubmissionLink: () => ({ ok: true, askId: "ask-full", ordinal: 3 }),
+    });
+    const response = await router.invoke({
+      method: "GET",
+      url: "/r/submission/submission%3Aabcdef0%233?agent_session=0198c0de",
+    });
+    const body = String(response.body);
+    expect(body).toContain("mandible:///briefing?");
+    expect(body).toContain("ask=ask-full");
+    expect(body).toContain("submission=3");
+    expect(body).toContain("agent_session=0198c0de");
+  });
+
+  it("uses the existing message page for ambiguous submission refs", async () => {
+    const router = new Router();
+    registerRedirectRoutes(router, {
+      resolveSubmissionLink: () => ({ ok: false, status: 409, message: "ambiguous submission" }),
+    });
+    const response = await router.invoke({ method: "GET", url: "/r/submission/submission%3Aabcdef0" });
+    expect(response.status).toBe(409);
+    expect(String(response.body)).toContain("ambiguous submission");
+    expect(String(response.body)).not.toContain("window.location.replace");
+  });
+
   // Issue f59b5bd (review R2) — inbound refs pass through untouched: /r/ never
   // discards a caller's full UUID, so an 8-char collision stays
   // disambiguatable via /r/. Shortening happens only at emission sites.
