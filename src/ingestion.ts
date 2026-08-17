@@ -1982,16 +1982,47 @@ async function ingestFile(
   const sameMtimeAsExisting = Boolean(
     existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100,
   );
+  // Recursive filesystem watchers can emit redundant events while roots are
+  // attached.  When the indexed extent and its tail are unchanged, a Codex
+  // source is already current.  Probe its bounded native identity so a rare
+  // same-size replacement is still detected, but do not fully parse thousands
+  // of unchanged rollouts merely because their mtime is coarse.
+  let sameMtimeNativeCodexSessionId: string | null | undefined;
+  if (
+    sameMtimeAsExisting
+    && parser.source === "codex"
+    && appendState
+    && appendState.byte_offset === stat.size
+    && await hashFileTailAt(filePath, appendState.byte_offset) === appendState.tail_hash
+  ) {
+    sameMtimeNativeCodexSessionId = await loadCodexNativeSessionId(filePath);
+    if (
+      sameMtimeNativeCodexSessionId === null
+      || existingRows.some((row) => row.session_id === sameMtimeNativeCodexSessionId)
+    ) {
+      const titleOwner = sameMtimeNativeCodexSessionId === null
+        ? existing
+        : existingRows.find((row) => row.session_id === sameMtimeNativeCodexSessionId);
+      if (titleOwner) {
+        await syncCodexIndexedTitle(filePath, titleOwner);
+      }
+      logger("debug", "ingestion_same_mtime_unchanged", { file: filePath });
+      return;
+    }
+  }
   // Same-mtime writes are common on coarse filesystems and can still replace
   // or truncate a path. They must parse the complete provider identity before
   // any unchanged/append shortcut is considered.
   let forceFullReingest = options.forceFull === true || sameMtimeAsExisting;
-  let sameMtimeNativeCodexSessionId: string | null | undefined;
 
   // Parse the file
   let result: ParseResult | null;
   try {
-    if (sameMtimeAsExisting && parser.source === "codex") {
+    if (
+      sameMtimeAsExisting
+      && parser.source === "codex"
+      && sameMtimeNativeCodexSessionId === undefined
+    ) {
       sameMtimeNativeCodexSessionId = await loadCodexNativeSessionId(filePath);
     }
     if (
@@ -2993,13 +3024,24 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 
   // Get all known source_paths from DB
   const rows = db
-    .prepare("SELECT source_path, source_mtime FROM conversations")
-    .all() as Array<{ source_path: string; source_mtime: number }>;
+    .prepare("SELECT source_path, source_mtime, source, session_id FROM conversations")
+    .all() as Array<{
+      source_path: string;
+      source_mtime: number;
+      source: string;
+      session_id: string;
+    }>;
   const dbPaths = new Map<string, number>();
   const conversationPaths = new Set<string>();
+  const codexSessionIds = new Map<string, Set<string>>();
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
     conversationPaths.add(row.source_path);
+    if (row.source === "codex") {
+      const ids = codexSessionIds.get(row.source_path) ?? new Set<string>();
+      ids.add(row.session_id);
+      codexSessionIds.set(row.source_path, ids);
+    }
   }
 
   // Follow `codex archive` / `codex unarchive` relocations before scanning, so
@@ -3020,6 +3062,11 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     }
     dbPaths.set(relocated, sourceMtime);
     conversationPaths.add(relocated);
+    const relocatedIds = codexSessionIds.get(sourcePath);
+    if (relocatedIds) {
+      codexSessionIds.delete(sourcePath);
+      codexSessionIds.set(relocated, relocatedIds);
+    }
   }
 
   const workflowRows = db
@@ -3032,15 +3079,18 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   }
   const appendRows = db
     .prepare(`
-      SELECT file_path, empty_source_mtime, empty_source_size
+      SELECT file_path, byte_offset, tail_hash, empty_source_mtime, empty_source_size
       FROM conversation_ingest_state
     `)
     .all() as Array<{
       file_path: string;
+      byte_offset: number;
+      tail_hash: string;
       empty_source_mtime: number | null;
       empty_source_size: number | null;
     }>;
   const appendPaths = new Set(appendRows.map((row) => row.file_path));
+  const appendStates = new Map(appendRows.map((row) => [row.file_path, row] as const));
   const emptyPaths = new Map(
     appendRows
       .filter((row) => row.empty_source_mtime !== null && row.empty_source_size !== null)
@@ -3076,11 +3126,28 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         ) {
           continue;
         }
-        if (
-          conversationPaths.has(filePath)
-          || dbMtime === undefined
-          || Math.abs(dbMtime - stat.mtimeMs) >= 100
-        ) {
+        const knownConversation = conversationPaths.has(filePath);
+        const mtimeChanged = dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100;
+        let needsIngest = !knownConversation || mtimeChanged;
+        if (knownConversation && !mtimeChanged) {
+          const appendState = appendStates.get(filePath);
+          if (appendState && appendState.byte_offset !== stat.size) {
+            needsIngest = true;
+          } else if (
+            appendState
+            && appendState.tail_hash
+            && await hashFileTailAt(filePath, appendState.byte_offset) !== appendState.tail_hash
+          ) {
+            needsIngest = true;
+          } else {
+            const indexedCodexIds = codexSessionIds.get(filePath);
+            if (indexedCodexIds) {
+              const nativeSessionId = await loadCodexNativeSessionId(filePath);
+              needsIngest = nativeSessionId !== null && !indexedCodexIds.has(nativeSessionId);
+            }
+          }
+        }
+        if (needsIngest) {
           // New or modified file — queue for ingestion
           await ingestChanged(filePath);
         }

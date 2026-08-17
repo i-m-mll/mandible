@@ -38,6 +38,35 @@ export async function readJsonlFileRecords<T>(filePath: string): Promise<JsonlFi
   return { records, sourceHash: sourceHash.digest("hex") };
 }
 
+/** Read only until the first provider record accepted by `match`. */
+export async function findJsonlRecord<T>(
+  filePath: string,
+  match: (record: T) => boolean,
+  maxBytes = 256 * 1024,
+): Promise<T | null> {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    const raw = buffer.subarray(0, bytesRead).toString("utf8");
+    const completePrefix = bytesRead < maxBytes
+      ? raw
+      : raw.slice(0, Math.max(0, raw.lastIndexOf("\n") + 1));
+    for (const line of completePrefix.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line) as T;
+        if (match(record)) return record;
+      } catch {
+        // Ignore an interrupted provider row and keep looking.
+      }
+    }
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Parse an append-sized JSONL string without allocating an array of lines. */
 export function parseJsonlStringRecords<T>(raw: string): T[] {
   const records: T[] = [];

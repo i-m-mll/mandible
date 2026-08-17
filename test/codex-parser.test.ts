@@ -3,7 +3,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CodexParser } from "../src/parsers/codex.js";
+import { CodexParser, loadCodexNativeSessionId } from "../src/parsers/codex.js";
 
 const tempRoots: string[] = [];
 
@@ -105,6 +105,19 @@ afterEach(async () => {
 });
 
 describe("CodexParser", () => {
+  it("bounds native identity probes to the source prefix", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-codex-identity-"));
+    tempRoots.push(root);
+    const sessionPath = path.join(root, "legacy.jsonl");
+    await fs.writeFile(
+      sessionPath,
+      `${JSON.stringify({ type: "event_msg", payload: { type: "user_message" } })}\n${"x".repeat(300_000)}\n${JSON.stringify({ type: "session_meta", payload: { id: "too-late" } })}\n`,
+      "utf8",
+    );
+
+    expect(await loadCodexNativeSessionId(sessionPath)).toBeNull();
+  });
+
   it("uses Codex session_index thread_name as the display title", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-1", {
@@ -115,6 +128,21 @@ describe("CodexParser", () => {
 
     expect(result?.conversation.title).toBe("Find Apple Music to Spotify tool");
     expect(result?.conversation.block_count).toBe(5);
+  });
+
+  it("keeps the first session_meta identity when a fork embeds parent history", async () => {
+    const parser = new CodexParser();
+    const sessionPath = await makeCodexSession("fork-owner");
+    await fs.appendFile(sessionPath, `${JSON.stringify({
+      type: "session_meta",
+      timestamp: "2026-05-15T23:59:00.000Z",
+      payload: { id: "embedded-parent", cwd: "/tmp/parent", model_provider: "openai" },
+    })}\n`, "utf8");
+
+    expect(await loadCodexNativeSessionId(sessionPath)).toBe("fork-owner");
+    expect((await parser.parse(sessionPath))?.conversation).toMatchObject({
+      session_id: "fork-owner",
+    });
   });
 
   it("falls back to the first user_message event when session_index has no title", async () => {
