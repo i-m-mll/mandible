@@ -140,7 +140,11 @@ describe("auth hook execution environment (issue 27241e6)", () => {
       // PATH is controlled by Mandible, not inherited from whatever launched it.
       expect(env.PATH).not.toContain("/attacker/bin");
       expect(env.PATH).toContain("/usr/bin");
-      expect(env.PATH).toContain("/tmp/fake-home/.local/bin");
+      expect(env.PATH?.split(":").slice(0, 3)).toEqual([
+        "/tmp/fake-home/.local/bin",
+        "/tmp/fake-home/.cargo/bin",
+        "/tmp/fake-home/bin",
+      ]);
 
       // The documented hook contract.
       expect(env.MANDIBLE_HOOK_ID).toBe("hook-1");

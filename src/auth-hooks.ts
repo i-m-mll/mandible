@@ -116,7 +116,7 @@ export function authHookPath(db: Db | null, homeDir: string): string {
     return override.trim();
   }
   const userBins = homeDir
-    ? [`${homeDir}/.local/bin`, `${homeDir}/bin`]
+    ? [`${homeDir}/.local/bin`, `${homeDir}/.cargo/bin`, `${homeDir}/bin`]
     : [];
   return [...userBins, AUTH_HOOK_BASE_PATH].join(":");
 }
