@@ -21,6 +21,7 @@ import {
   saveAskDraft,
   type AskDraft,
 } from './ask-view-state';
+import { AskDocumentPanel } from './AskDocumentPanel';
 
 export type BoundedAskRendererProps = {
   askId: string;
@@ -264,6 +265,9 @@ export function BoundedAskRenderer({
           ? { supersedes_submission_id: ask.latest_submission_for_actor.id }
           : {}),
         answers: submissionAnswers,
+        annotations: (ask.annotations ?? []).map((annotation) => ({
+          annotation_event_id: annotation.annotation_event_id,
+        })),
       });
       saveAskDraft(storageOrNull(), userId, ask.ask_id, {});
       if (!mutationIsCurrent()) return;
@@ -400,6 +404,9 @@ export function BoundedAskRenderer({
         <div className="bounded-ask__validation" role="alert">
           Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
         </div>
+      ) : null}
+      {ask.document ? (
+        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy} onRefresh={reconcile} />
       ) : null}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} noValidate>
         {roots.map(renderItem)}

@@ -271,6 +271,206 @@
   opacity: 0.65;
 }
 
+.ask-document {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+}
+
+.ask-document__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.ask-document__header h3,
+.ask-document__annotations h4 {
+  margin: 0;
+}
+
+.ask-document__header code {
+  max-width: 50%;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.ask-document__source {
+  min-height: 12rem;
+  padding: var(--space-4);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+}
+
+.ask-annotation {
+  background: var(--status-info-bg-soft);
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--status-info-fg);
+}
+
+.ask-annotation--suggestion {
+  background: var(--status-purple-bg);
+  text-decoration-color: var(--status-purple-fg);
+}
+
+.ask-document__selection-toolbar,
+.ask-document__popover {
+  z-index: 45;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-popover);
+  box-shadow: var(--shadow-soft);
+}
+
+.ask-document__selection-toolbar {
+  padding: var(--space-1);
+}
+
+.ask-document__selection-toolbar button,
+.ask-document__tabs button {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ask-document__popover {
+  display: grid;
+  gap: var(--space-3);
+  width: min(26rem, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.ask-document__popover-header,
+.ask-document__popover-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ask-document__popover-header button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-lg);
+  cursor: pointer;
+}
+
+.ask-document__popover blockquote {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-muted);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.ask-document__tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.ask-document__tabs button[aria-selected='true'] {
+  border-color: var(--accent-border);
+  color: var(--accent-fg);
+}
+
+.ask-document__popover label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.ask-document__popover textarea {
+  min-height: 6rem;
+  resize: vertical;
+  padding: var(--space-2);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.ask-document__annotations,
+.ask-document__history {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.ask-document__annotations ul,
+.ask-document__history ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-document__annotations li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.ask-document__annotation-row,
+.ask-document__history a {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  text-align: left;
+  text-decoration: none;
+}
+
+.ask-document__annotation-row {
+  font: inherit;
+  cursor: pointer;
+}
+
+.ask-document__annotation-row span,
+.ask-document__history span,
+.ask-document__history small {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.ask-document__annotation-row:focus-visible,
+.ask-document__history a:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.ask-document__history summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ask-document__status {
+  min-height: 1.25em;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
 @media (max-width: 700px) {
   .feedback-collection-shell {
     flex-direction: column;

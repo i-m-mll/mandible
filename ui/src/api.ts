@@ -4299,6 +4299,13 @@ export type AskProjection = {
   lifecycle_event_id: string;
   latest_submission: null | { id: string; ordinal: number };
   latest_submission_for_actor: null | { id: string; ordinal: number };
+  document: null | { artifact_version_id: string; previous_round_id: string | null };
+  annotations?: AskAnnotation[];
+  previous_round: null | {
+    ask_id: string;
+    artifact_version_id: string;
+    annotations: AskPreviousRoundAnnotation[];
+  };
   items: AskItem[];
   valid: boolean;
 };
@@ -4321,6 +4328,42 @@ export type AskSubmissionAnswer = {
   item_revision_id: string;
   response_event_id: string;
 };
+
+export type AskAnnotation = {
+  annotation_event_id: string;
+  annotation_kind: 'comment' | 'suggest_replacement';
+  start_offset: number;
+  end_offset: number;
+  quote: string;
+  body: string | null;
+  replacement_text: string | null;
+  created_at: number;
+};
+
+export type AskPreviousRoundAnnotation = AskAnnotation & {
+  actor_user_id: string;
+  submission_ordinal: number;
+};
+
+export type AskAnnotationOperation =
+  | {
+    operation: 'set';
+    annotation_kind: 'comment';
+    start_offset: number;
+    end_offset: number;
+    quote: string;
+    body: string;
+  }
+  | {
+    operation: 'set';
+    annotation_kind: 'suggest_replacement';
+    start_offset: number;
+    end_offset: number;
+    quote: string;
+    replacement_text: string;
+    body?: string;
+  }
+  | { operation: 'retract'; annotation_event_id: string };
 
 const ASK_STATES = new Set(['open', 'submitted', 'expired', 'cancelled', 'closed']);
 const ASK_RESPONSE_TYPES = new Set<AskResponseType>([
@@ -4363,6 +4406,44 @@ function askResponseValue(
       || new Set(row.option_keys).size !== row.option_keys.length) return null;
   const selected = new Set(row.option_keys as string[]);
   return { option_keys: optionKeys.filter((key) => selected.has(key)) };
+}
+
+function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | AskPreviousRoundAnnotation | null {
+  const row = briefingRecord(value);
+  const annotationKind = row.annotation_kind;
+  const start = row.start_offset;
+  const end = row.end_offset;
+  const body = row.body;
+  const replacement = row.replacement_text;
+  if (!briefingString(row.annotation_event_id)
+      || (annotationKind !== 'comment' && annotationKind !== 'suggest_replacement')
+      || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      || (start as number) < 0 || (end as number) <= (start as number)
+      || typeof row.quote !== 'string' || row.quote.length === 0
+      || (body !== null && typeof body !== 'string')
+      || (replacement !== null && typeof replacement !== 'string')
+      || !Number.isSafeInteger(row.created_at)
+      || (annotationKind === 'comment' && (typeof body !== 'string' || !body.trim() || replacement !== null))
+      || (annotationKind === 'suggest_replacement' && typeof replacement !== 'string')) return null;
+  const annotation: AskAnnotation = {
+    annotation_event_id: briefingString(row.annotation_event_id),
+    annotation_kind: annotationKind,
+    start_offset: start as number,
+    end_offset: end as number,
+    quote: row.quote,
+    body: body as string | null,
+    replacement_text: replacement as string | null,
+    created_at: row.created_at as number,
+  };
+  if (!previousRound) return annotation;
+  if (!briefingString(row.actor_user_id)
+      || !Number.isSafeInteger(row.submission_ordinal)
+      || (row.submission_ordinal as number) < 1) return null;
+  return {
+    ...annotation,
+    actor_user_id: briefingString(row.actor_user_id),
+    submission_ordinal: row.submission_ordinal as number,
+  };
 }
 
 export function normalizeAskProjection(payload: unknown): AskProjection {
@@ -4468,6 +4549,41 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
   };
   if (root.latest_submission_for_actor != null
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
+  const rawDocument = briefingRecord(root.document);
+  const document = root.document === null ? null : {
+    artifact_version_id: briefingString(rawDocument.artifact_version_id),
+    previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
+  };
+  if (root.document !== null
+      && (!document.artifact_version_id
+        || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string'))) valid = false;
+  let annotations: AskAnnotation[] | undefined;
+  if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {
+    if (!Array.isArray(root.annotations)) valid = false;
+    annotations = (Array.isArray(root.annotations) ? root.annotations : []).map((entry) => {
+      const parsed = askAnnotation(entry, false) as AskAnnotation | null;
+      if (!parsed) valid = false;
+      return parsed;
+    }).filter((entry): entry is AskAnnotation => entry !== null);
+  }
+  const rawPreviousRound = briefingRecord(root.previous_round);
+  let previousRound: AskProjection['previous_round'] = null;
+  if (root.previous_round !== null) {
+    const rawAnnotations = rawPreviousRound.annotations;
+    if (!briefingString(rawPreviousRound.ask_id)
+        || !briefingString(rawPreviousRound.artifact_version_id)
+        || !Array.isArray(rawAnnotations)) valid = false;
+    const previousAnnotations = (Array.isArray(rawAnnotations) ? rawAnnotations : []).map((entry) => {
+      const parsed = askAnnotation(entry, true) as AskPreviousRoundAnnotation | null;
+      if (!parsed) valid = false;
+      return parsed;
+    }).filter((entry): entry is AskPreviousRoundAnnotation => entry !== null);
+    previousRound = {
+      ask_id: briefingString(rawPreviousRound.ask_id),
+      artifact_version_id: briefingString(rawPreviousRound.artifact_version_id),
+      annotations: previousAnnotations,
+    };
+  }
   if ((rawState === 'open' && latestSubmission !== null)
       || (rawState === 'submitted' && latestSubmission === null)) valid = false;
   return {
@@ -4484,6 +4600,9 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     lifecycle_event_id: briefingString(root.lifecycle_event_id),
     latest_submission: latestSubmission,
     latest_submission_for_actor: latestSubmissionForActor,
+    document,
+    ...(annotations ? { annotations } : {}),
+    previous_round: previousRound,
     items,
     valid,
   };
@@ -4516,6 +4635,16 @@ export async function postAskAnswers(
   const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/answers`, { answers });
   const root = briefingRecord(await parseMaybeJson(response));
   return { answer_event_ids: briefingStringArray(root.answer_event_ids) };
+}
+
+export async function postAskAnnotations(
+  askId: string,
+  annotations: readonly AskAnnotationOperation[],
+): Promise<{ annotation_event_ids: string[] }> {
+  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/annotations`, { annotations });
+  const root = briefingRecord(await parseMaybeJson(response));
+  invalidateApiGetCache(`/api/asks/${encodeURIComponent(askId)}`);
+  return { annotation_event_ids: briefingStringArray(root.annotation_event_ids) };
 }
 
 export async function postAskSubmission(
