@@ -121,6 +121,71 @@ describe('spaces-doc pipeline: parse to data nodes', () => {
     const parsed = parseSpacesDoc(text);
     expect(parsed.diagnostics.some((d) => d.kind === 'unknown_format')).toBe(true);
   });
+
+  it('preserves unknown directive prose without minting block identity', () => {
+    const parsed = parseSpacesDoc(docText([
+      ':::note',
+      'Some prose with [issue:abc1234].',
+      ':::',
+    ]));
+
+    expect(parsed.html).toContain('Some prose with [issue:abc1234].');
+    expect(parsed.refs).toEqual([]);
+    expect(parsed.blocks).toEqual([]);
+    const diagnostics = parsed.diagnostics.filter((d) => d.kind === 'unknown_directive');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].detail).toContain(':::note');
+  });
+
+  it('does not render unknown directive fences as literal prose', () => {
+    const parsed = parseSpacesDoc(docText([
+      ':::warning',
+      `Careful :ref[artifact]{href="artifact:sha256:${HASH64}"}.`,
+      ':::',
+    ]));
+
+    expect(parsed.html).toContain('Careful artifact.');
+    expect(parsed.html).not.toContain(':::warning');
+    expect(parsed.html).not.toContain(':::');
+    expect(parsed.refs.map((ref) => ref.canonical)).toEqual([`artifact:sha256:${HASH64}`]);
+  });
+
+  it('keeps well-formed block parsing unchanged', () => {
+    const parsed = parseSpacesDoc(docText([
+      ':::block{id="b1" parent="root" sort="m" type="paragraph"}',
+      'Body prose.',
+      ':::',
+    ]));
+
+    expect(parsed.blocks).toHaveLength(1);
+    expect(parsed.blocks[0]).toMatchObject({
+      id: 'b1',
+      parentId: null,
+      blockType: 'paragraph',
+      sortKey: 'm',
+    });
+    expect(parsed.refs).toEqual([]);
+    expect(parsed.diagnostics).toEqual([]);
+  });
+
+  it('preserves mixed fragment order and separates directive and prose diagnostics', () => {
+    const parsed = parseSpacesDoc(docText([
+      ':::block{id="b1" parent="root" sort="m" type="paragraph"}',
+      'First block.',
+      ':::',
+      '',
+      ':::note',
+      'Second directive.',
+      ':::',
+      '',
+      'Third loose prose.',
+    ]));
+
+    expect(parsed.html.indexOf('First block.')).toBeLessThan(parsed.html.indexOf('Second directive.'));
+    expect(parsed.html.indexOf('Second directive.')).toBeLessThan(parsed.html.indexOf('Third loose prose.'));
+    expect(parsed.diagnostics.filter((d) => d.kind === 'unknown_directive')).toHaveLength(1);
+    expect(parsed.diagnostics.filter((d) => d.kind === 'non_block_prose')).toHaveLength(1);
+  });
 });
 
 describe('spaces-doc pipeline: renderer security (standing AC #2)', () => {
