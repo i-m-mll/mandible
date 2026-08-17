@@ -1,4 +1,6 @@
 import { getDb } from "./db.js";
+import { tableExists } from "./db-introspection.js";
+import { canonicalRepoKeysForRef } from "./repo-identity.js";
 import type { Logger } from "./types.js";
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
@@ -102,12 +104,12 @@ export class WorkUnitReconciler {
       // Their branch may be temporarily missing (just merged and cleaned up).
       const committed = db
         .prepare(
-          `SELECT wu.id, wu.branch, wu.repo_id FROM work_units wu
+          `SELECT wu.id, wu.branch, wu.repo_id, wu.created_at FROM work_units wu
            WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
              AND wu.auth_request_id IS NULL
            ORDER BY wu.id`
         )
-        .all() as Array<{ id: string; branch: string; repo_id: string }>;
+        .all() as Array<{ id: string; branch: string; repo_id: string; created_at: number }>;
 
       if (committed.length === 0) return 0;
 
@@ -118,13 +120,26 @@ export class WorkUnitReconciler {
       const abandonStmt = db.prepare(
         "UPDATE work_units SET state = 'abandoned' WHERE id = ?"
       );
+      const resolveStmt = db.prepare(
+        `UPDATE work_units
+         SET state = 'resolved', resolved_at = COALESCE(resolved_at, ?),
+             auth_request_id = COALESCE(auth_request_id, ?)
+         WHERE id = ? AND state = 'committed'`
+      );
 
       let count = 0;
       for (const row of committed) {
         const exists = checkBranch.get(row.branch) as unknown;
         if (!exists) {
-          // Also check if maybe the branch was resolved by an auth merge
-          // (the auth-queue hook should have caught this, but this is a safety net)
+          // A branch may be deleted by auth-merge before the successful result
+          // reaches Stage 2. Keep it committed while a same-repo request is
+          // active, or resolve it here once that request proves success.
+          const authRequest = this.matchingAuthPipelineRequest(row);
+          if (authRequest?.completed) {
+            resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
+            continue;
+          }
+          if (authRequest) continue;
           abandonStmt.run(row.id);
           count++;
         }
@@ -134,6 +149,58 @@ export class WorkUnitReconciler {
     });
 
     return run();
+  }
+
+  private matchingAuthPipelineRequest(workUnit: {
+    branch: string;
+    repo_id: string;
+    created_at: number;
+  }): { id: string; completed: boolean; resolved_at: number | null } | null {
+    const db = getDb();
+    if (!tableExists(db, "auth_requests")) return null;
+    try {
+      const requests = db.prepare(
+        `SELECT id, repo, cwd, target_repo_root, status, resolved_at
+         FROM auth_requests
+         WHERE type = 'merge' AND head_branch = ? AND created_at >= ?
+           AND (
+             status IN ('pending', 'approved', 'executing')
+             OR (status = 'completed' AND exit_code = 0)
+           )`
+      ).all(workUnit.branch, workUnit.created_at) as Array<{
+        id: string;
+        repo: string | null;
+        cwd: string | null;
+        target_repo_root: string | null;
+        status: string;
+        resolved_at: number | null;
+      }>;
+      const workUnitKeys = canonicalRepoKeysForRef(db, workUnit.repo_id);
+      for (const request of requests) {
+        const refs = [request.target_repo_root, request.cwd, request.repo].filter(
+          (value): value is string => Boolean(value),
+        );
+        const requestKeys = new Set<string>();
+        for (const ref of refs) {
+          for (const key of canonicalRepoKeysForRef(db, ref)) requestKeys.add(key);
+        }
+        const matches = workUnitKeys.size > 0 && requestKeys.size > 0
+          ? [...workUnitKeys].some((key) => requestKeys.has(key))
+          : refs.includes(workUnit.repo_id);
+        if (matches) {
+          return {
+            id: request.id,
+            completed: request.status === "completed",
+            resolved_at: request.resolved_at,
+          };
+        }
+      }
+      return null;
+    } catch {
+      // Legacy/lightweight schemas without the full auth columns retain the
+      // previous abandonment behavior.
+      return null;
+    }
   }
 
   /**

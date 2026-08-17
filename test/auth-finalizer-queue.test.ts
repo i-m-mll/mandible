@@ -195,6 +195,43 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     }
   });
 
+  it("recovers a same-head work unit abandoned before successful Stage 2 finalization", async () => {
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
+    try {
+      const id = submitSuccessfulRequest(queue);
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-raced', 'issue-raced', 'finalizer-repo', 'feature/x', 'solo', 'abandoned', 0)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-other-repo', 'issue-other', 'other-repo', 'feature/x', 'solo', 'abandoned', 0)`,
+      ).run();
+
+      queue.setResult(id, 0, "ok");
+      await queue.drainFinalizers();
+
+      expect(db.prepare(
+        "SELECT state, auth_request_id, resolved_at FROM work_units WHERE id = 'wu-raced'",
+      ).get()).toEqual({
+        state: "resolved",
+        auth_request_id: id,
+        resolved_at: expect.any(Number),
+      });
+      const finalized = eventsFor(events, id, "auth:finalized")[0].data as {
+        resolved_work_unit_ids: string[];
+      };
+      expect(finalized.resolved_work_unit_ids).toContain("wu-raced");
+      expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-other-repo'").get())
+        .toEqual({ state: "abandoned" });
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
   it("retries a failing step up to three attempts, then finalizes with the step marked failed", async () => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];

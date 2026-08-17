@@ -5694,16 +5694,18 @@ export class AuthQueue {
     const resolveStmt = this.db.prepare(
       `UPDATE work_units
        SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
-       WHERE id = ? AND state IN ('open', 'committed')`
+       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
 
     const resolvedIds = new Set<string>();
     const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
+    const repoRoots = this.authRequestRepoRoots(completed);
+    const requestKeys = this.canonicalKeysForRequest(completed);
 
     // 1. Match by auth_request_id
     const byAuthId = this.db
       .prepare(
-        "SELECT id FROM work_units WHERE auth_request_id = ? AND state IN ('open', 'committed')"
+        "SELECT id FROM work_units WHERE auth_request_id = ? AND state IN ('open', 'committed', 'abandoned')"
       )
       .all(completed.id) as Array<{ id: string }>;
 
@@ -5716,12 +5718,16 @@ export class AuthQueue {
     if (completed.head_branch) {
       const byBranch = this.db
         .prepare(
-          "SELECT id FROM work_units WHERE branch = ? AND state IN ('open', 'committed')"
+          `SELECT id, repo_id FROM work_units
+           WHERE branch = ? AND state IN ('open', 'committed', 'abandoned')`
         )
-        .all(completed.head_branch) as Array<{ id: string }>;
+        .all(completed.head_branch) as Array<{ id: string; repo_id: string }>;
 
       for (const row of byBranch) {
-        if (!resolvedIds.has(row.id)) {
+        if (
+          !resolvedIds.has(row.id) &&
+          this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys)
+        ) {
           resolveStmt.run(now, completed.id, row.id);
           resolvedIds.add(row.id);
         }
@@ -5738,7 +5744,7 @@ export class AuthQueue {
     // and filter in JS.
     if (allIssueIds.length > 0) {
       const allUnresolved = this.db.prepare(
-        "SELECT id, issue_id FROM work_units WHERE state IN ('open', 'committed')"
+        "SELECT id, issue_id FROM work_units WHERE state IN ('open', 'committed', 'abandoned')"
       ).all() as Array<{ id: string; issue_id: string }>;
 
       for (const issueId of allIssueIds) {
@@ -5766,7 +5772,7 @@ export class AuthQueue {
          JOIN work_units wu ON wu.ledger_issue_id = ail.issue_id
          WHERE ail.auth_request_id = ?
            AND ail.link_type IN ('resolves', 'fixed_by')
-           AND wu.state IN ('open', 'committed')
+           AND wu.state IN ('open', 'committed', 'abandoned')
          UNION
          SELECT DISTINCT wu.id
          FROM ledger_auth_issue_links ail
@@ -5774,7 +5780,7 @@ export class AuthQueue {
          JOIN work_units wu ON wu.id = wil.work_unit_id
          WHERE ail.auth_request_id = ?
            AND ail.link_type IN ('resolves', 'fixed_by')
-           AND wu.state IN ('open', 'committed')`
+           AND wu.state IN ('open', 'committed', 'abandoned')`
       ).all(completed.id, completed.id) as Array<{ id: string }>;
 
       for (const row of byLedgerIssue) {
@@ -5817,7 +5823,17 @@ export class AuthQueue {
        WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
 
-    const resolvedIds = new Set<string>();
+    // Stage 2 already attached direct matches to this request. Carry them into
+    // the durable Stage 3 output so auth:finalized reports the complete set,
+    // not only child branches discovered by the ancestry scan.
+    const resolvedIds = new Set<string>(
+      (this.db.prepare(
+        `SELECT id FROM work_units
+         WHERE auth_request_id = ? AND state = 'resolved'
+         ORDER BY id`,
+      ).all(completed.id) as Array<{ id: string }>).map((row) => row.id),
+    );
+    const directResolvedCount = resolvedIds.size;
     const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
 
     // Issue 93d978e — one batch per pass; its per-(root,target) git build
@@ -5871,11 +5887,11 @@ export class AuthQueue {
       }
     }
 
-    if (resolvedIds.size > 0) {
+    if (resolvedIds.size > directResolvedCount) {
       authLog("info", "auth_work_units_resolved", {
         subsystem: "auth",
         auth_request_id: completed.id,
-        resolved_count: resolvedIds.size,
+        resolved_count: resolvedIds.size - directResolvedCount,
         head_branch: completed.head_branch,
         scope: "ancestry",
       });
