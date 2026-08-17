@@ -3,6 +3,7 @@ import { getDb } from "../db.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { ConversationCustodyStore, CustodyError } from "../conversations/custody-store.js";
 import type { CustodyProvider } from "../conversations/custody-types.js";
+import { ConversationSourceStore } from "../conversations/source-store.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 
@@ -28,6 +29,10 @@ function handleError(res: ResponseLike, error: unknown): void {
   sendJson(res, 500, { error: error instanceof Error ? error.message : String(error), code: "custody_internal_error" });
 }
 
+function isMissingSourceSchema(error: unknown): boolean {
+  return error instanceof Error && /no such table: conversation_sources/i.test(error.message);
+}
+
 function requireConversation(db: Db, id: string): ConversationCustodyRow {
   const row = db.prepare("SELECT id, source, source_path, session_id, starred, tags, notes FROM conversations WHERE id = ?")
     .get(id) as ConversationCustodyRow | undefined;
@@ -48,6 +53,8 @@ export function registerConversationCustodyRoutes(
   db: Db = getDb(),
   store = new ConversationCustodyStore(),
 ): void {
+  const sourceStore = new ConversationSourceStore(db);
+
   router.get("/api/conversations/:id/custody", (req, res) => {
     try {
       requireConversation(db, req.params.id);
@@ -61,16 +68,44 @@ export function registerConversationCustodyRoutes(
     try {
       requireOperator(db, req);
       const conversation = requireConversation(db, req.params.id);
+      const source = (() => {
+        try {
+          return sourceStore.resolveConversation(conversation.id);
+        } catch (error) {
+          if (!isMissingSourceSchema(error)) throw error;
+          // Narrow pre-v140 fixtures retain the conversation-row fallback.
+          return null;
+        }
+      })();
+      const availableAlias = source
+        ? sourceStore.listAliases(source.sourceId).find((alias) => alias.availability === "available")
+        : null;
       const body = bodyRecord(req);
       const result = store.capture({
         conversation_id: conversation.id,
         provider: conversation.source as CustodyProvider,
-        source_path: conversation.source_path,
+        source_path: availableAlias?.path ?? conversation.source_path,
         session_id: conversation.session_id,
+        native_identities: source
+          ? [source.nativeSessionId, ...(source.currentVersionId ? [source.currentVersionId] : [])]
+          : undefined,
       }, {
         rewind: body.rewind === true,
         seal: body.seal !== false,
       });
+      if (source?.currentVersionId) {
+        sourceStore.updateVersionCustody({
+          sourceVersionId: source.currentVersionId,
+          custodyState: result.status.state,
+          custodyRef: result.version_path,
+          captureConsistency: result.manifest.capture_consistency,
+          verification: {
+            custody_version: result.manifest.custody_version,
+            provider_adapter_version: result.manifest.provider_adapter_version,
+            restore_capability: result.manifest.restore.capability,
+          },
+        });
+      }
       sendJson(res, result.reused ? 200 : 201, result);
     } catch (error) {
       handleError(res, error);
@@ -131,4 +166,3 @@ export function registerConversationCustodyRoutes(
     }
   }, { fileRpc: "allow" });
 }
-

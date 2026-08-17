@@ -82,4 +82,3 @@ export interface IntegrityResult {
   errors: string[];
   manifest: CustodyManifest;
 }
-

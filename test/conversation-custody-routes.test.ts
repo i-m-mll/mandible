@@ -53,4 +53,3 @@ describe("conversation custody routes", () => {
     expect(JSON.stringify(status.body)).not.toContain("raw secret bytes");
   });
 });
-

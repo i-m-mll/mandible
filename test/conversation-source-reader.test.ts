@@ -9,6 +9,10 @@ import { migrate } from "../src/db.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import {
+  ConversationSearchCache,
+  SourceBackedConversationSearchSourceAdapter,
+} from "../src/conversations/search-cache.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ParseResult } from "../src/parsers/types.js";
 
@@ -117,6 +121,37 @@ describe("versioned conversation source reader", () => {
       if (legacy.status === "source") expect(legacy.value.content).toBe(block.content);
     }
     db.close();
+  });
+
+  it("feeds the disposable search cache from the verified source version", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const versionId = await record(db, "conversation-a", filePath);
+    const adapter = new SourceBackedConversationSearchSourceAdapter(db);
+    expect(adapter.describe(["conversation-a"])).toEqual([
+      { conversationId: "conversation-a", sourceVersionId: versionId },
+    ]);
+    const cache = new ConversationSearchCache(adapter, {
+      cachePath: path.join(tempDir, "search-cache.db"),
+    });
+    try {
+      const result = await cache.search({
+        conversationIds: ["conversation-a"],
+        needle: "hello result",
+        limit: 10,
+      });
+      expect(result.matches).toEqual([
+        expect.objectContaining({ conversation_id: "conversation-a" }),
+      ]);
+      expect(result.metrics).toMatchObject({ cold_conversations: 1, exact_verified_blocks: 2 });
+    } finally {
+      cache.close();
+      db.close();
+    }
   });
 
   it("keeps structural ids across append, and fails closed to legacy on same-size rewrite", async () => {

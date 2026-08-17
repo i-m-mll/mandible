@@ -8,9 +8,11 @@ import { decompressContentAsync } from "../compression.js";
 import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
 import type { Db } from "../db.js";
 import { getUserHome } from "../platform-paths.js";
+import { ConversationSourceReader } from "./source-reader.js";
+import { ConversationSourceStore } from "./source-store.js";
 
 export const CONVERSATION_SEARCH_EPOCHS = Object.freeze({
-  parser: "legacy-reader-v1",
+  parser: "source-reader-v1",
   normalization: "masked-block-v1",
   tokenizer: "sqlite-trigram-v1",
 });
@@ -88,6 +90,10 @@ export interface ConversationSearchCacheOptions {
   maxCacheBytes?: number;
 }
 
+function isMissingSourceSchema(error: unknown): boolean {
+  return error instanceof Error && /no such table: conversation_(sources|structural_blocks)/i.test(error.message);
+}
+
 export function defaultConversationSearchCachePath(db?: Db): string {
   const override = process.env.MANDIBLE_CONVERSATION_CACHE_DB?.trim();
   if (override) return path.resolve(override);
@@ -158,6 +164,67 @@ export class LegacyConversationSearchSourceAdapter implements ConversationSearch
     }
     const digest = createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 24);
     return `credentials:${digest}`;
+  }
+}
+
+/**
+ * Prefer verified provider bytes while retaining the legacy body adapter as
+ * the explicit migration fallback for legacy-only rows and narrow fixtures.
+ */
+export class SourceBackedConversationSearchSourceAdapter implements ConversationSearchSourceAdapter {
+  private readonly store: ConversationSourceStore;
+  private readonly reader: ConversationSourceReader;
+  private readonly legacy: LegacyConversationSearchSourceAdapter;
+
+  constructor(private readonly db: Db) {
+    this.store = new ConversationSourceStore(db);
+    this.reader = new ConversationSourceReader(db);
+    this.legacy = new LegacyConversationSearchSourceAdapter(db);
+  }
+
+  describe(conversationIds: readonly string[]): SearchConversationSource[] {
+    const legacy = new Map(
+      this.legacy.describe(conversationIds).map((item) => [item.conversationId, item]),
+    );
+    return conversationIds.flatMap((conversationId) => {
+      try {
+        const source = this.store.resolveConversation(conversationId);
+        if (source?.currentVersionId) {
+          return [{ conversationId, sourceVersionId: source.currentVersionId }];
+        }
+      } catch (error) {
+        if (!isMissingSourceSchema(error)) throw error;
+        // Minimal pre-v140 fixtures deliberately exercise the legacy seam.
+      }
+      const fallback = legacy.get(conversationId);
+      return fallback ? [fallback] : [];
+    });
+  }
+
+  async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[]> {
+    try {
+      const result = await this.reader.readAll(conversationId);
+      if (result.status === "source" || result.status === "legacy") {
+        return result.value.map((block) => ({
+          id: block.id,
+          conversationId: block.conversation_id,
+          type: block.type,
+          role: block.role,
+          position: block.position,
+          // Source reads mask active credentials. The disposable search
+          // boundary also masks revoked or unverified token-shaped material.
+          content: maskUnverifiedCandidates(block.content).text,
+        }));
+      }
+    } catch (error) {
+      if (!isMissingSourceSchema(error)) throw error;
+      // Missing v140 tables in a narrow legacy fixture fall through below.
+    }
+    return this.legacy.readMaskedBlocks(conversationId);
+  }
+
+  redactionEpoch(): string {
+    return this.legacy.redactionEpoch();
   }
 }
 
@@ -471,7 +538,7 @@ export function getConversationSearchCache(db: Db): ConversationSearchCache {
   const existing = services.get(db);
   if (existing) return existing;
   const service = new ConversationSearchCache(
-    new LegacyConversationSearchSourceAdapter(db),
+    new SourceBackedConversationSearchSourceAdapter(db),
     { cachePath: defaultConversationSearchCachePath(db) },
   );
   services.set(db, service);
