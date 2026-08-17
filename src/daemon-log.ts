@@ -5,6 +5,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
+import { hasCurrentOperationalLogVerification } from "./operational-log-db.js";
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const DEFAULT_LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");
@@ -507,10 +508,7 @@ function unverifiedLegacyRetentionProtection(db: Db): string {
       (entry) => entry.name === "legacy_ledger",
     );
     if (!attached) return "";
-    const verified = db.prepare(
-      `SELECT 1 FROM operational_log_copy_state
-       WHERE completed_at IS NOT NULL AND verified_at IS NOT NULL LIMIT 1`,
-    ).get();
+    const verified = hasCurrentOperationalLogVerification(db);
     return verified
       ? ""
       : "AND id NOT IN (SELECT id FROM legacy_ledger.daemon_log)";

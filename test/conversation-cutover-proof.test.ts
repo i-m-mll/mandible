@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   auditCutover,
   buildCompactDestination,
+  inspectSourceBinding,
   runRestoreDrill,
   stableJson,
 } from "../scripts/conversation-cutover-proof.mjs";
@@ -101,9 +102,10 @@ function liveProjection() {
   };
 }
 
-function passingEvidence() {
+function passingEvidence(source: string) {
   const metric = { p95_ms: 10, budget_ms: 20, peak_rss_bytes: 100, rss_budget_bytes: 200 };
   return {
+    binding: inspectSourceBinding(source),
     conversation_evidence: [{
       conversation_id: "conv-live",
       classification: "verified-live-source",
@@ -187,12 +189,15 @@ describe("conversation cutover compact rebuild", () => {
 });
 
 describe("conversation cutover audit", () => {
-  it("classifies legacy bodies, checks full projections, and emits one deterministic GO result", () => {
+  it("classifies legacy bodies, checks full projections, and remains a deterministic NO-GO checklist", () => {
     const { root, source } = fixture();
     const destination = path.join(root, "compact.sqlite");
     const rebuild = buildCompactDestination({ source, destination });
     const restore = {
+      binding: inspectSourceBinding(source),
       pass: true,
+      run_id: "restore-one",
+      destination_root: path.join(root, "restore-one"),
       original_provider_roots_used: false,
       metadata: { integrity_check: "ok", foreign_key_violations: [] },
       custody: { pass: true, manifest_present: true },
@@ -200,14 +205,23 @@ describe("conversation cutover audit", () => {
     };
     const options = {
       source,
-      evidence: passingEvidence(),
+      evidence: passingEvidence(source),
       rebuildReport: rebuild,
-      restoreDrillReports: [restore, { ...restore }],
+      restoreDrillReports: [restore, {
+        ...restore,
+        run_id: "restore-two",
+        destination_root: path.join(root, "restore-two"),
+      }],
     };
     const first = auditCutover(options);
     const second = auditCutover(options);
-    expect(first.decision).toBe("GO");
-    expect(first.failed_gates).toEqual([]);
+    expect(first).toMatchObject({
+      report_kind: "source-bound-evidence-checklist",
+      decision: "NO-GO",
+      pass: false,
+      go_authority: false,
+    });
+    expect(first.failed_gates).toEqual(["automated_go_authority"]);
     expect(first.gates.coverage.counts).toEqual({
       "verified-live-source": 1,
       "verified-managed-custody": 0,
@@ -219,7 +233,7 @@ describe("conversation cutover audit", () => {
 
   it("fails closed on projection/search mismatch, missing provider evidence, and missing restore drills", () => {
     const { source } = fixture();
-    const evidence = passingEvidence();
+    const evidence = passingEvidence(source);
     evidence.conversation_evidence[0].projection.blocks[0].role = "assistant";
     delete (evidence.conversation_evidence[0].projection as { annotations?: unknown }).annotations;
     evidence.search.comparisons[0].source_results = [];
@@ -242,6 +256,7 @@ describe("conversation cutover audit", () => {
     const report = auditCutover({
       source,
       evidence: {
+        binding: inspectSourceBinding(source),
         conversation_evidence: [{ conversation_id: "conv-live", error: "missing_provider_root" }],
       },
     });
@@ -249,6 +264,55 @@ describe("conversation cutover audit", () => {
     expect(report.gates.coverage.counts["legacy-body-only"]).toBe(2);
     expect(report.gates.coverage.conversations.find((row: { conversation_id: string }) => row.conversation_id === "conv-live")?.evidence_error)
       .toBe("missing_provider_root");
+    expect(report.decision).toBe("NO-GO");
+  });
+
+  it("rejects unbound pass assertions and duplicate restore-run evidence", () => {
+    const { root, source } = fixture();
+    const evidence = passingEvidence(source);
+    delete (evidence as { binding?: unknown }).binding;
+    const binding = inspectSourceBinding(source);
+    const restore = {
+      binding,
+      pass: true,
+      run_id: "reused-run",
+      destination_root: path.join(root, "same-restore"),
+      original_provider_roots_used: false,
+      metadata: { integrity_check: "ok", foreign_key_violations: [] },
+      custody: { pass: true, manifest_present: true },
+      collision_policy: "destination-must-not-exist",
+    };
+    const report = auditCutover({
+      source,
+      evidence,
+      restoreDrillReports: [restore, { ...restore }],
+    });
+    expect(report.gates.evidence_binding).toMatchObject({
+      pass: false,
+      errors: ["unbound_or_mismatched_evidence_packet"],
+    });
+    expect(report.gates.locator_refresh).toMatchObject({ pass: false, errors: ["unbound_evidence_packet"] });
+    expect(report.gates.fresh_machine_recovery).toMatchObject({
+      pass: false,
+      completed: 2,
+      distinct_run_ids: 1,
+      distinct_destinations: 1,
+    });
+    expect(report.decision).toBe("NO-GO");
+  });
+
+  it("rejects evidence bound before the source database changes", () => {
+    const { source } = fixture();
+    const evidence = passingEvidence(source);
+    const db = new Database(source);
+    db.prepare("UPDATE conversation_blocks SET content = ? WHERE id = ?").run("changed", "block-live");
+    db.close();
+
+    const report = auditCutover({ source, evidence });
+    expect(report.gates.evidence_binding).toMatchObject({
+      pass: false,
+      errors: ["unbound_or_mismatched_evidence_packet"],
+    });
     expect(report.decision).toBe("NO-GO");
   });
 
@@ -282,7 +346,7 @@ describe("conversation cutover audit", () => {
 
 describe("fresh-machine restore drill", () => {
   it("restores metadata plus verified custody without provider roots and detects corrupt custody", () => {
-    const { root } = fixture();
+    const { root, source } = fixture();
     const metadataSql = path.join(root, "metadata.sql");
     fs.writeFileSync(metadataSql, "CREATE TABLE durable (id TEXT PRIMARY KEY); INSERT INTO durable VALUES ('one');", "utf8");
     const custody = path.join(root, "custody-input");
@@ -294,11 +358,18 @@ describe("fresh-machine restore drill", () => {
       `${sha256(fs.readFileSync(path.join(custody, "manifest.json")))}  manifest.json\n${sha256(fs.readFileSync(path.join(custody, "native.jsonl")))}  native.jsonl\n`,
     );
     const restoredRoot = path.join(root, "fresh-machine-one");
-    const report = runRestoreDrill({ metadataSql, custodyRoot: custody, destinationRoot: restoredRoot });
+    const report = runRestoreDrill({ source, metadataSql, custodyRoot: custody, destinationRoot: restoredRoot });
     expect(report).toMatchObject({ pass: true, original_provider_roots_used: false });
-    expect(() => runRestoreDrill({ metadataSql, custodyRoot: custody, destinationRoot: restoredRoot })).toThrow(/already exists/);
+    expect(report).toMatchObject({
+      report_kind: "fresh-machine-restore-evidence",
+      binding: inspectSourceBinding(source),
+      destination_root: fs.realpathSync.native(restoredRoot),
+    });
+    expect(typeof report.run_id).toBe("string");
+    expect(() => runRestoreDrill({ source, metadataSql, custodyRoot: custody, destinationRoot: restoredRoot })).toThrow(/already exists/);
 
     const second = runRestoreDrill({
+      source,
       metadataSql,
       custodyRoot: custody,
       destinationRoot: path.join(root, "fresh-machine-two"),
@@ -307,6 +378,7 @@ describe("fresh-machine restore drill", () => {
 
     fs.writeFileSync(path.join(custody, "native.jsonl"), "corrupt\n");
     expect(() => runRestoreDrill({
+      source,
       metadataSql,
       custodyRoot: custody,
       destinationRoot: path.join(root, "fresh-machine-corrupt"),
@@ -314,7 +386,7 @@ describe("fresh-machine restore drill", () => {
   });
 
   it("rejects symlinked custody inputs even when their target hash matches", () => {
-    const { root } = fixture();
+    const { root, source } = fixture();
     const metadataSql = path.join(root, "metadata.sql");
     fs.writeFileSync(metadataSql, "CREATE TABLE durable (id TEXT PRIMARY KEY);", "utf8");
     const outside = path.join(root, "outside-native.jsonl");
@@ -328,6 +400,7 @@ describe("fresh-machine restore drill", () => {
       `${sha256(fs.readFileSync(path.join(custody, "manifest.json")))}  manifest.json\n${sha256(fs.readFileSync(outside))}  native.jsonl\n`,
     );
     expect(() => runRestoreDrill({
+      source,
       metadataSql,
       custodyRoot: custody,
       destinationRoot: path.join(root, "fresh-machine-symlink"),
