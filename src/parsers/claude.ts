@@ -45,6 +45,7 @@ interface ClaudeRecord {
   uuid: string;
   parentUuid?: string;
   type: string;
+  customTitle?: string;
   message?: ClaudeMessage;
   timestamp?: string;
   sessionId?: string;
@@ -183,8 +184,13 @@ export class ClaudeParser implements ConversationParser {
     let model: string | null = null;
     let startedAt = "";
     let endedAt: string | null = null;
+    let providerTitle = "";
 
     for (const rec of records) {
+      if (rec.type === "custom-title" && typeof rec.customTitle === "string") {
+        const candidate = rec.customTitle.trim();
+        if (candidate) providerTitle = candidate;
+      }
       if (rec.type === "file-history-snapshot" || rec.isSnapshotUpdate) continue;
       if (!sessionId && rec.sessionId) sessionId = rec.sessionId;
       if (!cwd && rec.cwd) cwd = rec.cwd;
@@ -212,6 +218,13 @@ export class ClaudeParser implements ConversationParser {
       title = indexEntry.summary || indexEntry.firstPrompt || "";
       summary = indexEntry.summary || null;
       projectPath = indexEntry.projectPath || null;
+    }
+
+    // Claude Code owns conversation titles. `/rename` appends custom-title
+    // records to the transcript; the latest non-empty value outranks the
+    // generated sessions-index summary/firstPrompt and prompt fallback.
+    if (providerTitle) {
+      title = providerTitle;
     }
 
     // Fallback title: first user message text
@@ -419,7 +432,7 @@ export class ClaudeParser implements ConversationParser {
 
     // Skip empty sessions (e.g., /usage commands, file-history-snapshots only)
     // Bug: d51fbc8 — empty JSONL sessions were polluting the conversation list
-    if (blocks.length === 0) {
+    if (blocks.length === 0 && !(providerTitle && options.baseBlockCount > 0)) {
       return null;
     }
 
@@ -445,6 +458,7 @@ export class ClaudeParser implements ConversationParser {
         agent_id: subagentPath?.agentId ?? null,
       },
       blocks,
+      ...(providerTitle ? { providerTitle: title } : {}),
     };
   }
 }

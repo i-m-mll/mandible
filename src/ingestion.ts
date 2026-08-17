@@ -1571,7 +1571,9 @@ function mergeAppendConversationMetadata(
   return {
     conversation: {
       ...result.conversation,
-      title: existing.title,
+      // Provider-authored title metadata is authoritative even when it arrives
+      // in the incremental tail; derived prompt/index titles are not.
+      title: result.providerTitle ?? existing.title,
       summary: existing.summary,
       started_at: existing.started_at,
       session_id: existing.session_id || result.conversation.session_id,
@@ -1582,6 +1584,7 @@ function mergeAppendConversationMetadata(
       cli_version: result.conversation.cli_version ?? existing.cli_version,
     },
     blocks: result.blocks,
+    ...(result.providerTitle ? { providerTitle: result.providerTitle } : {}),
   };
 }
 
@@ -2014,7 +2017,14 @@ async function ingestFile(
 
   // Skip empty sessions (parser returned null = no meaningful content)
   // Bug: d51fbc8 — empty system sessions were creating "Untitled" entries
-  if (!result || result.blocks.length === 0) {
+  const isProviderTitleOnlyAppend = Boolean(
+    result
+    && existing
+    && ingestMode === "append"
+    && result.blocks.length === 0
+    && result.providerTitle,
+  );
+  if (!result || (result.blocks.length === 0 && !isProviderTitleOnlyAppend)) {
     logger("debug", "ingestion_skip_empty", { file: filePath, source: parser.source });
     // If this file was previously ingested, remove the stale entry
     if (existing) {
@@ -2112,7 +2122,7 @@ async function ingestFile(
   const conversationId = existing?.id ?? randomUUID();
 
   // Bug: 212ed66 — hard guard: never insert conversations with 0 blocks
-  if (result.blocks.length === 0) {
+  if (result.blocks.length === 0 && !isProviderTitleOnlyAppend) {
     logger("warn", "ingestion_zero_block_guard", {
       file: filePath,
       source: result.conversation.source,
@@ -2179,6 +2189,14 @@ async function ingestFile(
     );
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
+    }
+    if (isProviderTitleOnlyAppend) {
+      eventPublisher("conversation:updated", {
+        id: conversationId,
+        source: result.conversation.source,
+        title: result.conversation.title,
+        block_count: result.conversation.block_count,
+      });
     }
     await refreshAppendState(
       db,
