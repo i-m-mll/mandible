@@ -77,6 +77,19 @@ export function registerConversationCustodyRoutes(
           return null;
         }
       })();
+      if (!source?.currentVersionId) {
+        throw new CustodyError("conversation has no current sealed source version", "source_version_mismatch", 409);
+      }
+      const sourceVersion = sourceStore.resolveVersion(source.currentVersionId);
+      if (
+        !sourceVersion
+        || sourceVersion.sourceId !== source.sourceId
+        || sourceVersion.generation !== "sealed_sha256"
+        || sourceVersion.availability !== "available"
+        || !/^[0-9a-f]{64}$/.test(sourceVersion.contentSha256)
+      ) {
+        throw new CustodyError("current conversation source version is not sealed and available", "source_version_mismatch", 409);
+      }
       const availableAlias = source
         ? sourceStore.listAliases(source.sourceId).find((alias) => alias.availability === "available")
         : null;
@@ -89,13 +102,30 @@ export function registerConversationCustodyRoutes(
         native_identities: source
           ? [source.nativeSessionId, ...(source.currentVersionId ? [source.currentVersionId] : [])]
           : undefined,
+        expected_source_version_id: sourceVersion.id,
+        expected_source_sha256: sourceVersion.contentSha256,
       }, {
         rewind: body.rewind === true,
         seal: body.seal !== false,
       });
-      if (source?.currentVersionId) {
-        sourceStore.updateVersionCustody({
-          sourceVersionId: source.currentVersionId,
+      const currentSource = sourceStore.resolveConversation(conversation.id);
+      if (currentSource?.currentVersionId !== sourceVersion.id) {
+        throw new CustodyError("conversation source version changed during custody capture", "source_version_mismatch", 409);
+      }
+      const currentVersion = sourceStore.resolveVersion(currentSource.currentVersionId);
+      if (
+        !currentVersion
+        || currentVersion.sourceId !== currentSource.sourceId
+        || currentVersion.generation !== "sealed_sha256"
+        || currentVersion.contentSha256 !== sourceVersion.contentSha256
+      ) {
+        throw new CustodyError("conversation source version changed during custody capture", "source_version_mismatch", 409);
+      }
+      if (currentSource.currentVersionId) {
+        const attached = sourceStore.updateVersionCustody({
+          sourceId: currentSource.sourceId,
+          sourceVersionId: currentSource.currentVersionId,
+          sourceContentSha256: currentVersion.contentSha256,
           custodyState: result.status.state,
           custodyRef: result.version_path,
           captureConsistency: result.manifest.capture_consistency,
@@ -105,6 +135,9 @@ export function registerConversationCustodyRoutes(
             restore_capability: result.manifest.restore.capability,
           },
         });
+        if (!attached) {
+          throw new CustodyError("conversation source version changed before custody evidence attachment", "source_version_mismatch", 409);
+        }
       }
       sendJson(res, result.reused ? 200 : 201, result);
     } catch (error) {

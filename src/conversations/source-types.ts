@@ -123,7 +123,9 @@ export interface RecordNormalizationCheckpointInput extends ConversationSourceEp
 }
 
 export interface UpdateConversationSourceCustodyInput {
+  sourceId: string;
   sourceVersionId: string;
+  sourceContentSha256: string;
   custodyState: ConversationSourceCustodyState;
   custodyRef?: string | null;
   captureConsistency?: string | null;

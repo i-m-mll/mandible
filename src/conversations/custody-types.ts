@@ -16,6 +16,8 @@ export interface CustodySource {
   session_id: string;
   source_path: string;
   native_identities?: string[];
+  expected_source_version_id?: string;
+  expected_source_sha256?: string;
 }
 
 export interface CustodyCaptureOptions {
@@ -52,6 +54,8 @@ export interface CustodyManifest {
   provider_adapter_version: string;
   canonical_conversation_id: string;
   native_identities: string[];
+  source_version_id?: string;
+  source_sha256?: string;
   source_version: string;
   custody_version: string;
   capture_consistency: "file-by-file-stable";
