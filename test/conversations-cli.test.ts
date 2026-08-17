@@ -239,9 +239,15 @@ describe("conversations CLI file RPC", () => {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });
+      const topLevel = await run(["search", "RPC"], {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("[codex] 2026-06-12 | \"Sandbox session\" | assistant: file RPC route is readable");
+      expect(topLevel.status).toBe(0);
+      expect(topLevel.stdout).toBe(result.stdout);
       expect(seenPaths.some((item) => item.startsWith("/api/conversations/search?"))).toBe(true);
     } finally {
       responder.stop();

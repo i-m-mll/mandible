@@ -2178,6 +2178,7 @@ export async function getConversations(params?: {
   source?: string;
   starred?: boolean;
   search?: string;
+  full_text?: boolean;
   offset?: number;
   limit?: number;
   sort?: string;
@@ -2192,6 +2193,7 @@ export async function getConversations(params?: {
   if (params?.source) query.set('source', params.source);
   if (params?.starred) query.set('starred', '1');
   if (params?.search) query.set('search', params.search);
+  if (params?.full_text) query.set('full_text', 'true');
   if (params?.offset != null) query.set('offset', String(params.offset));
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.sort) query.set('sort', params.sort);

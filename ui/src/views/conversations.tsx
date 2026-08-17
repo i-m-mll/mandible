@@ -227,6 +227,17 @@ export function parseConversationTagsInput(value: string): string[] {
   return [...new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean))];
 }
 
+export function applyConversationSearchParams(
+  params: { search?: string; full_text?: boolean },
+  search: string,
+  mode: 'title' | 'full',
+): void {
+  const query = search.trim();
+  if (!query) return;
+  params.search = query;
+  if (mode === 'full') params.full_text = true;
+}
+
 function isLiveConsoleSession(session: ConsoleSession): boolean {
   return session.status !== 'stopped' && session.status !== 'crashed';
 }
@@ -2813,6 +2824,7 @@ export function ConversationsView({
         source?: string;
         starred?: boolean;
         search?: string;
+        full_text?: boolean;
         offset?: number;
         limit?: number;
         sort?: string;
@@ -2827,7 +2839,7 @@ export function ConversationsView({
       if (sourceFilter !== 'all') params.source = sourceFilter;
       if (starredOnly) params.starred = true;
       if (hideEmpty) params.min_blocks = 1;
-      if (search.trim()) params.search = search.trim();
+      applyConversationSearchParams(params, search, searchMode);
       params.group = true;
       params.exclude_subagents = true;
 
@@ -2843,7 +2855,7 @@ export function ConversationsView({
     } finally {
       setLoading(false);
     }
-  }, [hideEmpty, sourceFilter, starredOnly, sort, search]);
+  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
