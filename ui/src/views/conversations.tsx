@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import {
+  SidebarItemBadge,
+  SidebarItemOverflowMenu,
+  SidebarItemPinAction,
+  SidebarItemRow,
+  type SidebarItemOverflowAction,
+} from '../components/shared/SidebarItemRow';
 import type { ConsoleSession } from '../state';
 import type {
   BlockType,
@@ -2531,7 +2538,6 @@ function ChatEntryItem({
   onRenameSession?: (label: string | null) => void;
   showPinnedIcon?: boolean;
 }): JSX.Element {
-  const [actionsOpen, setActionsOpen] = useState(false);
   const conversation = entry.conversation;
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
@@ -2540,18 +2546,14 @@ function ChatEntryItem({
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = Boolean(conversation?.starred || session?.pinned);
 
-  const handleEditTags = (event: MouseEvent) => {
-    event.stopPropagation();
-    setActionsOpen(false);
+  const handleEditTags = () => {
     if (!onEditTags) return;
     const nextLabel = window.prompt('Edit tags (comma-separated)', conversation?.tags.join(', ') ?? '');
     if (nextLabel === null) return;
     onEditTags(parseConversationTagsInput(nextLabel));
   };
 
-  const handleRenameSession = (event: MouseEvent) => {
-    event.stopPropagation();
-    setActionsOpen(false);
+  const handleRenameSession = () => {
     if (!onRenameSession) return;
     const nextLabel = window.prompt('Rename session', title);
     if (nextLabel === null) return;
@@ -2559,84 +2561,73 @@ function ChatEntryItem({
     onRenameSession(normalized || null);
   };
 
-  const handleTogglePin = (event: MouseEvent) => {
-    event.stopPropagation();
-    setActionsOpen(false);
+  const handleTogglePin = () => {
     onTogglePin?.();
   };
 
+  const overflowActions: SidebarItemOverflowAction[] = [];
+  if (onEditTags) {
+    overflowActions.push({ id: 'edit-tags', label: 'Edit tags', onSelect: handleEditTags });
+  }
+  if (onRenameSession) {
+    overflowActions.push({ id: 'rename-session', label: 'Rename session', onSelect: handleRenameSession });
+  }
+
   return (
-    <div
-      className={`chat-history-item${isSelected ? ' chat-history-item--selected' : ''}${isSubAgent ? ' chat-history-item--subagent' : ''}`}
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
-    >
-      <div className="chat-history-item__line">
-        {showPinnedIcon && (
-          <span className="chat-history-item__pin" title="Pinned">
-            <PinIcon />
-          </span>
-        )}
-        <span className="chat-history-item__title">
-          {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
-          <span>{truncate(title, 70)}</span>
-          {conversation && conversation.tags.length > 0 && (
-            <span className="chat-history-item__tags">{conversation.tags.join(' · ')}</span>
-          )}
-        </span>
-        {session?.owner && (
-          <span
-            className="chat-history-item__owner"
-            title={`${session.owner.display_name} (${session.owner.kind})`}
-          >
-            {session.owner.display_name}
-          </span>
-        )}
-        {canShowActions && (
-          <div className="chat-history-item__actions">
-            <button
-              type="button"
-              className="chat-history-item__menu-btn"
-              onClick={(event) => {
-                event.stopPropagation();
-                setActionsOpen((prev) => !prev);
-              }}
-              title="Chat actions"
-              aria-label="Chat actions"
+    <SidebarItemRow
+      label={title}
+      selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
+      selected={isSelected}
+      ariaCurrent={isSelected ? 'true' : undefined}
+      className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
+      onSelect={onClick}
+      leading={isSubAgent ? (
+        <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span>
+      ) : undefined}
+      badges={(
+        <>
+          {showPinnedIcon ? (
+            <SidebarItemBadge className="chat-history-item__pin" title="Pinned" ariaLabel="Pinned">
+              <PinIcon />
+            </SidebarItemBadge>
+          ) : null}
+          {conversation && conversation.tags.length > 0 ? (
+            <SidebarItemBadge className="chat-history-item__tags" title={conversation.tags.join(' · ')}>
+              {conversation.tags.join(' · ')}
+            </SidebarItemBadge>
+          ) : null}
+          {session?.owner ? (
+            <SidebarItemBadge
+              className="chat-history-item__owner"
+              title={`${session.owner.display_name} (${session.owner.kind})`}
             >
-              ...
-            </button>
-            {actionsOpen && (
-              <div className="chat-history-item__menu" onClick={(event) => event.stopPropagation()}>
-                {onTogglePin && (
-                  <button type="button" onClick={handleTogglePin}>
-                    {isPinned ? 'Unpin' : 'Pin'}
-                  </button>
-                )}
-                {onEditTags && (
-                  <button type="button" onClick={handleEditTags}>
-                    Edit tags
-                  </button>
-                )}
-                {onRenameSession && (
-                  <button type="button" onClick={handleRenameSession}>
-                    Rename session
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        <span
-          className={`agent-mark ${source ? SOURCE_CLASSES[source] || '' : ''}`}
-          title={source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : undefined}
-        >
-          {source ? getSourceMark(source) : session ? getSessionMark(session) : '??'}
-        </span>
-      </div>
-    </div>
+              {session.owner.display_name}
+            </SidebarItemBadge>
+          ) : null}
+          <span
+            className={`agent-mark ${source ? SOURCE_CLASSES[source] || '' : ''}`}
+            title={source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : undefined}
+          >
+            {source ? getSourceMark(source) : session ? getSessionMark(session) : '??'}
+          </span>
+        </>
+      )}
+      actions={canShowActions ? (
+        <>
+          {onTogglePin ? (
+            <SidebarItemPinAction
+              label={title}
+              pressed={isPinned}
+              onPress={handleTogglePin}
+            />
+          ) : null}
+          <SidebarItemOverflowMenu
+            label={`Chat actions for ${title}`}
+            actions={overflowActions}
+          />
+        </>
+      ) : undefined}
+    />
   );
 }
 

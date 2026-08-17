@@ -3,6 +3,13 @@ import { useMemo, useState } from 'preact/hooks';
 
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import {
+  SidebarItemBadge,
+  SidebarItemOverflowMenu,
+  SidebarItemPinAction,
+  SidebarItemRow,
+  type SidebarItemOverflowAction,
+} from '../../components/shared/SidebarItemRow';
 import { useSidebarListNavigation } from '../../hooks/useSidebarListNavigation';
 import {
   filterFeedbackCollections,
@@ -196,56 +203,56 @@ export function CollectionsSidebar({
             {ordered.map((collection, index) => {
               const isPinned = pinned.has(collection.id);
               const navigation = listNavigation.getItemNavigationProps(collection, index);
+              const expiryLabel = collection.state === 'expired' ? 'Un-expire' : 'Expire';
+              const overflowActions: SidebarItemOverflowAction[] = (
+                onSetExpiry && collection.expiryReversible
+              ) ? [{
+                  id: 'expiry',
+                  label: expiryBusyId === collection.id ? 'Saving…' : expiryLabel,
+                  ariaLabel: `${expiryLabel} ${collection.label}`,
+                  disabled: expiryBusyId !== null,
+                  onSelect: () => void toggleExpiry(collection),
+                }] : [];
               return (
                 <li key={collection.id} className="feedback-collection-row">
-                  <button
-                    ref={navigation.ref}
-                    type="button"
+                  <SidebarItemRow
                     tabIndex={navigation.tabIndex}
-                    className={`sidebar-list-item feedback-collection-row__select${selectedCollectionId === collection.id ? ' feedback-collection-row__select--active' : ''}`}
-                    aria-label={`Select collection ${collection.label}`}
-                    aria-current={navigation['aria-current']}
+                    selectRef={navigation.ref}
+                    label={collection.label}
+                    selectionLabel={`Select collection ${collection.label}`}
+                    selected={selectedCollectionId === collection.id}
+                    ariaCurrent={navigation['aria-current']}
                     onKeyDown={navigation.onKeyDown}
-                    onClick={() => onSelect(collection)}
-                  >
-                    <span className="feedback-collection-row__title">
+                    onSelect={() => onSelect(collection)}
+                    leading={(
                       <span
                         className={`feedback-collection-row__state feedback-collection-row__state--${collection.state}`}
                         aria-label={`State: ${collection.state}`}
                         title={collection.state}
                       />
-                      <span className="feedback-collection-row__label">{collection.label}</span>
-                    </span>
-                    <span className="feedback-collection-row__facts">
-                      <span>{kindLabel(collection.kind)}</span>
-                      {collection.source ? <span>Source: {collection.source}</span> : null}
-                      <span>{collection.itemCount} item{collection.itemCount === 1 ? '' : 's'}</span>
-                    </span>
-                  </button>
-                  <span className="feedback-collection-row__actions">
-                    <button
-                      type="button"
-                      className="feedback-collection-row__pin"
-                      aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${collection.label}`}
-                      aria-pressed={isPinned}
-                      onClick={() => togglePin(collection.id)}
-                    >
-                      {isPinned ? 'Pinned' : 'Pin'}
-                    </button>
-                    {onSetExpiry && collection.expiryReversible ? (
-                      <button
-                        type="button"
-                        className="feedback-collection-row__expiry"
-                        aria-label={`${collection.state === 'expired' ? 'Un-expire' : 'Expire'} ${collection.label}`}
-                        disabled={expiryBusyId !== null}
-                        onClick={() => void toggleExpiry(collection)}
+                    )}
+                    badges={(
+                      <SidebarItemBadge
+                        ariaLabel={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
+                        title={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
                       >
-                        {expiryBusyId === collection.id
-                          ? 'Saving…'
-                          : collection.state === 'expired' ? 'Un-expire' : 'Expire'}
-                      </button>
-                    ) : null}
-                  </span>
+                        {collection.itemCount}
+                      </SidebarItemBadge>
+                    )}
+                    actions={(
+                      <>
+                        <SidebarItemPinAction
+                          label={collection.label}
+                          pressed={isPinned}
+                          onPress={() => togglePin(collection.id)}
+                        />
+                        <SidebarItemOverflowMenu
+                          label={`More actions for ${collection.label}`}
+                          actions={overflowActions}
+                        />
+                      </>
+                    )}
+                  />
                 </li>
               );
             })}

@@ -316,6 +316,25 @@ describe('collection shell accessibility and reconciliation', () => {
     expect(screen.queryByRole('button', { name: /submit answer|send response/i })).toBeNull();
   });
 
+  it('uses a single label line, passive count badge, and hover/focus action lane', () => {
+    render(<ViewStateHarness collections={[recurring('alpha'), ask]} onSetExpiry={async () => undefined} />);
+    const alphaSelect = screen.getByRole('button', { name: 'Select collection alpha' });
+    const alphaRow = alphaSelect.closest('.feedback-collection-row');
+    expect(alphaRow?.querySelector('.sidebar-item-row')).toBeTruthy();
+    expect(alphaRow?.querySelector('.sidebar-item-row__label')?.textContent).toBe('alpha');
+    expect(within(alphaRow as HTMLElement).getByLabelText('1 item').textContent).toBe('1');
+    expect(alphaRow?.querySelector('.feedback-collection-row__facts')).toBeNull();
+    expect(alphaRow?.textContent).not.toContain('Recurring feed');
+    expect(alphaRow?.textContent).not.toContain('Source:');
+
+    const askRow = screen.getByRole('button', { name: 'Select collection Ask one' })
+      .closest('.feedback-collection-row') as HTMLElement;
+    const actionButtons = within(askRow).getAllByRole('button');
+    expect(actionButtons.at(-2)?.getAttribute('aria-label')).toBe('Pin Ask one');
+    expect(actionButtons.at(-1)?.getAttribute('aria-label')).toBe('More actions for Ask one');
+    expect(askRow.querySelector('.sidebar-item-row__actions')?.classList.contains('sidebar-item-row__actions--visible')).toBe(false);
+  });
+
   it('shows the two-state indicator and exposes reversible expiry without changing row identity', async () => {
     const setExpiry = vi.fn(async () => undefined);
     const openAsk = { ...ask, state: 'open' as const, expiresAt: 50 };
@@ -324,14 +343,16 @@ describe('collection shell accessibility and reconciliation', () => {
       (indicator) => indicator.classList.contains('feedback-collection-row__state--open'),
     )).toBe(true);
     expect(screen.queryByRole('button', { name: 'Expire alpha' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Expire Ask one' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Ask one' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Expire Ask one' }));
     await waitFor(() => expect(setExpiry).toHaveBeenCalledWith(expect.objectContaining({
       id: 'feedback_collection:ask-1', state: 'open',
     })));
 
     view.rerender(<ViewStateHarness collections={[recurring('alpha'), ask]} onSetExpiry={setExpiry} />);
     expect(screen.getByLabelText('State: expired').classList.contains('feedback-collection-row__state--expired')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Un-expire Ask one' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Ask one' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Un-expire Ask one' }));
     await waitFor(() => expect(setExpiry).toHaveBeenLastCalledWith(expect.objectContaining({
       id: 'feedback_collection:ask-1', state: 'expired',
     })));
