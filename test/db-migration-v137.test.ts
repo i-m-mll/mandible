@@ -42,7 +42,7 @@ describe("migration v137: annotatable ask documents", () => {
   it("builds the additive schema in the fresh baseline and enforces the closed annotation shape", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(138);
+    expect(BASELINE_SCHEMA_VERSION).toBe(139);
     expect(db.prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${TABLES.map(() => "?").join(",")}) ORDER BY name`,
     ).all(...TABLES)).toEqual(TABLES.map((name) => ({ name })).sort((a, b) => a.name.localeCompare(b.name)));
@@ -95,7 +95,7 @@ describe("migration v137: annotatable ask documents", () => {
     `);
     migrate(db);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "138" });
+      .toEqual({ value: "139" });
     db.exec(`
       INSERT INTO feedback_collection_events VALUES ('life-4','round-1','submitted','life-3','actor-1','{}',4);
       INSERT INTO feedback_submissions VALUES ('sub-3','round-1',3,'sub-1','life-4','actor-1',4);

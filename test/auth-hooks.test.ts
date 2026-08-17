@@ -63,6 +63,22 @@ describe("AuthHookManager", () => {
     expect(hook.command).toBe("npm test");
     expect(hook.builtin).toBe(false);
     expect(hook.enabled).toBe(true);
+    // Issue 27241e6 — a hook is part of convergence unless it says otherwise.
+    expect(hook.required).toBe(true);
+  });
+
+  it("records an advisory hook that never withholds convergence", () => {
+    const db = createDbWithHooks();
+    const manager = new AuthHookManager(db);
+    const hook = manager.create({
+      repo_pattern: "feedbax",
+      auth_type: "merge",
+      command: "echo telemetry",
+      label: "Best-effort telemetry",
+      required: false,
+    });
+    expect(hook.required).toBe(false);
+    expect(manager.update(hook.id, { required: true })!.required).toBe(true);
   });
 
   it("updates hook fields", () => {

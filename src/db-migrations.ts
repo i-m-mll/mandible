@@ -4456,6 +4456,87 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
       `ALTER TABLE conversations DROP COLUMN label`,
     ],
   },
+  {
+    version: 139,
+    name: "auth_hook_durable_convergence",
+    // Issue 27241e6 — post-merge hook execution becomes durable, honest, and
+    // bounded. Before this, a hook result existed only as text appended to the
+    // auth request's output: a daemon crash between the merge and hook
+    // completion silently lost convergence, and a failed hook left the request
+    // reading "Completed" while the repository was merged but not live.
+    //
+    // auth_hook_executions holds one row per (request, hook). The row snapshots
+    // the hook id and the exact command bytes (plus their digest) when execution
+    // begins, so a retry reruns that command and never the merge, and a later
+    // edit to the hook definition is visible rather than silently substituted.
+    // The UNIQUE(auth_request_id, hook_id) key is what makes the at-least-once
+    // execution idempotent: planning is INSERT OR IGNORE, so a resumed sweep
+    // adopts the existing row instead of queueing a second run.
+    //
+    // auth_hook_alerts is the deduplicated operator surface. Its unique key is
+    // the same (request, hook) pair, so repeated failures of one hook on one
+    // request can only ever produce one inbox alert — the structure, not the
+    // caller, guarantees "exactly one".
+    statements: [
+      // Partial legacy fixtures can reach this migration without auth_hooks;
+      // earlier hook migrations create it the same way for the same reason.
+      `CREATE TABLE IF NOT EXISTS auth_hooks (
+        id            TEXT PRIMARY KEY,
+        repo_pattern  TEXT NOT NULL DEFAULT '*',
+        auth_type     TEXT NOT NULL DEFAULT 'merge',
+        command       TEXT NOT NULL,
+        label         TEXT NOT NULL DEFAULT '',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        builtin       INTEGER NOT NULL DEFAULT 0,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
+      // `auth_hooks.required` is added by ensureAuthHookRequiredColumn below:
+      // a raw ALTER would fail on the historical-replay tests that rewind
+      // schema_version on a database already carrying the head schema.
+      `CREATE TABLE IF NOT EXISTS auth_hook_executions (
+        id                TEXT PRIMARY KEY,
+        auth_request_id   TEXT NOT NULL,
+        hook_id           TEXT NOT NULL,
+        hook_label        TEXT NOT NULL DEFAULT '',
+        command           TEXT NOT NULL,
+        command_digest    TEXT NOT NULL CHECK(length(command_digest) = 64),
+        position          INTEGER NOT NULL DEFAULT 0,
+        required          INTEGER NOT NULL DEFAULT 1,
+        state             TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(state IN ('pending','running','complete','failed')),
+        attempts          INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+        max_attempts      INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts >= 1),
+        exit_code         INTEGER,
+        output            TEXT NOT NULL DEFAULT '',
+        attempt_history   TEXT NOT NULL DEFAULT '[]',
+        started_at        INTEGER,
+        finished_at       INTEGER,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        UNIQUE(auth_request_id, hook_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_hook_executions_runnable
+        ON auth_hook_executions(state, updated_at)`,
+      `CREATE TABLE IF NOT EXISTS auth_hook_alerts (
+        id                TEXT PRIMARY KEY,
+        auth_request_id   TEXT NOT NULL,
+        hook_id           TEXT NOT NULL,
+        hook_label        TEXT NOT NULL DEFAULT '',
+        session_id        TEXT,
+        repo              TEXT,
+        detail            TEXT NOT NULL DEFAULT '',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        acknowledged_at   INTEGER,
+        acknowledged_by   TEXT,
+        UNIQUE(auth_request_id, hook_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_hook_alerts_open
+        ON auth_hook_alerts(acknowledged_at, created_at DESC)`,
+    ],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
@@ -4682,6 +4763,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 127) {
         ensureBriefingIngestRequestColumn(db);
+      }
+      if (migration.version === 139) {
+        ensureAuthHookRequiredColumn(db);
       }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
@@ -10063,6 +10147,21 @@ function migrateSpaceExportCanonicalArtifacts(db: Db): void {
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
     throw new Error("migration 105 verification: integrity_check failed");
   }
+}
+
+/**
+ * Issue 27241e6 — add auth_hooks.required idempotently.
+ *
+ * A bare `ALTER TABLE ... ADD COLUMN` in the migration statements would abort
+ * the historical-replay tests, which rewind schema_version on a database that
+ * already carries the head schema. The column is the same either way; only the
+ * "is it already there?" check differs.
+ */
+function ensureAuthHookRequiredColumn(db: Db): void {
+  if (!tableExists(db, "auth_hooks")) return;
+  const columns = db.prepare("PRAGMA table_info(auth_hooks)").all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === "required")) return;
+  db.exec("ALTER TABLE auth_hooks ADD COLUMN required INTEGER NOT NULL DEFAULT 1");
 }
 
 function ensureBriefingIngestRequestColumn(db: Db): void {

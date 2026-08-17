@@ -156,10 +156,29 @@ Auth hooks are shell commands that run automatically after a successful auth ope
 | `enabled` | Whether the hook is active. Disabled hooks are skipped during execution. |
 | `builtin` | System-seeded hooks that cannot be deleted (only disabled). |
 | `position` | Execution order — lower values run first. |
+| `required` | Whether this hook is part of convergence (default: true). A required hook that fails leaves the request `merged / convergence failed` and withholds its deferred issue closures. An advisory hook (`required: false`) is reported but never withholds anything. |
 
 ### Hook Environment
 
-Hooks receive these environment variables:
+A hook is operator-registered but not operator-supervised at run time, so it
+receives a **scrubbed allowlist environment**, never the daemon's ambient
+`process.env`. Anything not listed here — API tokens, provider credentials,
+`SSH_AUTH_SOCK`, `MANDIBLE_*` daemon configuration, shell customization — is
+deliberately absent. A hook that needs more must resolve it from the repository
+it runs in.
+
+Inherited from the daemon when set: `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`,
+`LC_CTYPE`, `TZ`.
+
+Controlled by Mandible:
+
+- `PATH` — `$HOME/.local/bin:$HOME/bin` followed by a fixed system path. An
+  inherited PATH would let whatever launched the daemon decide which `git`,
+  `node`, or `npm` a protected-merge finalizer executes. Override with the
+  `auth_hooks.path` setting.
+- `TERM=dumb` and `CI=1` — a finalizer is non-interactive by construction.
+
+Injected facts:
 
 - `MANDIBLE_AUTH_REQUEST_ID` — The completed auth request's ID.
 - `MANDIBLE_AUTH_TYPE` — The type of auth action (merge, commit, etc.).
@@ -168,22 +187,69 @@ Hooks receive these environment variables:
 - `MANDIBLE_AUTH_BASE_BRANCH` — The base (target) branch.
 - `MANDIBLE_HOOK_ID` — The hook's ID.
 - `MANDIBLE_HOOK_LABEL` — The hook's label.
+- `MANDIBLE_HOOK_ATTEMPT` — 1-based attempt number for this execution.
+- `MANDIBLE_HOOK_EXECUTION_ID` — The durable execution row's ID.
+- `MANDIBLE_HOOK_COMMAND_DIGEST` — SHA-256 of the command bytes being run.
 
 ### Execution Behavior
 
 - Hooks run **sequentially** in position order.
 - Each hook has a **5-minute timeout** (SIGTERM, then SIGKILL after 5 seconds).
-- Hook failures do **not** change the auth result. The merge already succeeded — hooks are post-merge side effects. A failing hook is logged and reported in the output, but the auth request still shows as completed successfully.
+- Hook failures do **not** change the auth result and never block the queue.
+  The merge already succeeded; a hook failure never authorizes rerunning it.
 - Hook output is streamed to the same SSE channel as the main execution, prefixed with `[hook: <label>]`.
 
+### Convergence
+
+Merged is not the same as live. Execution state for each (auth request, hook)
+pair is persisted in `auth_hook_executions` **before** the process is spawned,
+so a daemon that dies between the merge and hook completion leaves a durable
+record instead of losing convergence. Each row snapshots the hook ID and the
+exact command bytes plus their SHA-256 digest at the moment execution begins, so
+a retry reruns those bytes and a later edit to the hook definition is visible
+rather than silently substituted.
+
+Execution is at-least-once with a bounded budget of 3 attempts per pair. A
+resumed sweep (daemon startup, and the idle tick) reruns runnable rows. **A
+retry reruns the hook command only — never the merge.**
+
+Auth requests therefore report one of three states alongside `completed`:
+
+| Convergence | Meaning |
+|---|---|
+| `complete` | Merged, and every registered hook succeeded. |
+| `pending` | Merged, but a hook has not finished. The machine is not live yet. |
+| `failed` | Merged, but a required hook exhausted its attempts. Merged, not live. |
+
+A required-hook failure:
+
+- leaves the merge successful and the queue unblocked;
+- **withholds deferred issue closures** until convergence completes;
+- notifies the originating session (`auth:convergence` SSE event) and creates
+  exactly one deduplicated inbox alert keyed by (request, hook);
+- preserves the hook output and full attempt history on the request;
+- does **not** create a ledger issue. An issue is for a repairable defect, not
+  for every transient host failure.
+
+`POST /api/auth/request/:id/retry-convergence` grants one more attempt and
+reruns the snapshotted hook command.
+
 ### Managing Hooks
+
+Registering a hook registers a command that Mandible executes unsupervised on
+the operator's machine after a protected merge. Reading the registry is ordinary
+state; mutating it is an authority grant, so **create, update, and delete
+require the `change_settings` global capability** (`GET` stays open). Reviewed
+protected bytes plus a prior hook registration jointly authorize execution —
+neither alone is sufficient, and a repository cannot opt itself into execution
+by containing an executable file.
 
 Hooks are managed via the API:
 
 - `GET /api/auth/hooks` — List all hooks.
-- `POST /api/auth/hooks` — Create a new hook.
-- `PUT /api/auth/hooks/:id` — Update a hook.
-- `DELETE /api/auth/hooks/:id` — Delete a hook (fails for built-in hooks; disable them instead).
+- `POST /api/auth/hooks` — Create a new hook. Requires `change_settings`.
+- `PUT /api/auth/hooks/:id` — Update a hook. Requires `change_settings`.
+- `DELETE /api/auth/hooks/:id` — Delete a hook. Requires `change_settings`; fails for built-in hooks (disable them instead).
 
 ## Dependency Chains
 

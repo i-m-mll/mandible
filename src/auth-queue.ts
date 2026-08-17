@@ -56,6 +56,7 @@ import { getDb, resolvePrefix } from "./db.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
+  applyWithheldAuthRequestClosures,
   recordAuthRequestMergeSucceededFact,
   resolveOperationalIssueRef,
   syncAuthRequestLedgerLinks,
@@ -88,6 +89,8 @@ import { broadcast as defaultBroadcast } from "./sse.js";
 // Issue 1624ee9 — shared Mandible-Issue trailer parsing.
 import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
+  AuthConvergence,
+  AuthHookRun,
   AuthOutputChunk,
   AuthRequest,
   AuthRequestAction,
@@ -612,6 +615,16 @@ export class AuthQueue {
       // committed). Runs after the stuck-request recovery so it only inspects
       // rows the other recovery paths left pending/approved.
       this.reconcileAlreadyMergedRequests();
+      // Issue 27241e6 — resume hook convergence that a daemon failure between
+      // the merge and hook completion left unfinished. Every `running` row
+      // belongs to the dead process, so reclaim them first; then sweep.
+      // Fire-and-forget: a hook that cannot run must never block startup.
+      try {
+        this.hookManager.reclaimAllInterruptedRuns();
+      } catch {
+        /* hook tables are optional in partial/legacy databases */
+      }
+      void this.resumeHookConvergence().catch(() => undefined);
       this.startExpiryTimer();
     }
   }
@@ -637,6 +650,8 @@ export class AuthQueue {
           // Issue fbf2a58 — periodic backstop for merges whose finalization was
           // lost while the queue was idle (mirrors the startup reconciliation).
           this.reconcileAlreadyMergedRequests();
+          // Issue 27241e6 — same backstop for unfinished hook convergence.
+          void this.resumeHookConvergence().catch(() => undefined);
         }
       } catch (error) {
         if (this.disposed || !this.isDbOpen()) {
@@ -4189,6 +4204,237 @@ export class AuthQueue {
     } catch (error) {
       authLog("warn", "auth_hook_execution_failed", { subsystem: "auth", auth_request_id: request.id, error: errorMessage(error) ?? String(error) });
     }
+    // Issue 27241e6 — settle convergence from the durable rows, not from the
+    // in-memory results: a crash-resumed run has rows but no results here.
+    this.settleConvergence(mergedRequest);
+  }
+
+  // --- Issue 27241e6: durable post-merge convergence ---------------------------
+
+  /**
+   * The convergence projection for one request: `none` when no hook was
+   * registered, otherwise complete / pending / failed derived from the durable
+   * per-hook rows. This is what makes "Completed" honest — a merge whose
+   * required finalizer never ran now reads `merged / convergence pending`
+   * instead of claiming the work is done.
+   */
+  convergenceForRequest(requestId: string): AuthConvergence {
+    try {
+      return this.hookManager.convergence(requestId);
+    } catch {
+      return { state: "none", hooks: [] };
+    }
+  }
+
+  /**
+   * Convergence blocks deferred issue closure, and only that. The merge stays
+   * successful, the queue stays unblocked, and every other finalizer runs: a
+   * host that failed to go live must not be able to un-merge reviewed bytes or
+   * stall the next merge behind it. What it does buy is that Mandible never
+   * reports an issue closed on the strength of a delivery that is not live.
+   */
+  private convergenceWithholdsClosures(requestId: string): boolean {
+    const state = this.convergenceForRequest(requestId).state;
+    return state === "pending" || state === "failed";
+  }
+
+  /**
+   * Post-run bookkeeping shared by the inline path and the resume sweep:
+   * raise or clear the deduplicated alert per (request, hook), notify the
+   * originating session, and release any issue closures that were withheld
+   * while convergence was outstanding.
+   */
+  private settleConvergence(request: AuthRequest): AuthConvergence {
+    let convergence: AuthConvergence = { state: "none", hooks: [] };
+    let runs: AuthHookRun[] = [];
+    try {
+      runs = this.hookManager.listRuns(request.id);
+      convergence = this.hookManager.convergence(request.id);
+    } catch {
+      return convergence;
+    }
+    if (runs.length === 0) return convergence;
+
+    for (const run of runs) {
+      if (run.state === "failed" && run.required) {
+        // One alert per (request, hook). The unique key in auth_hook_alerts is
+        // the dedup, so a hook that fails on every attempt still produces
+        // exactly one inbox entry. No ledger issue is created: an issue is for
+        // a repairable defect, not for every transient host failure.
+        try {
+          this.hookManager.recordFailureAlert(
+            request,
+            run,
+            `Hook "${run.hook_label || run.hook_id}" failed after ${run.attempts} attempt(s)` +
+            (run.exit_code == null ? " (timed out)" : ` (exit ${run.exit_code})`) +
+            ". The merge succeeded; this repository is merged but not live.",
+          );
+        } catch (error) {
+          authLog("warn", "auth_hook_alert_failed", {
+            subsystem: "auth",
+            auth_request_id: request.id,
+            error: errorMessage(error) ?? String(error),
+          });
+        }
+      } else if (run.state === "complete") {
+        try { this.hookManager.resolveAlert(request.id, run.hook_id); } catch { /* alert table optional */ }
+      }
+    }
+
+    if (convergence.state === "complete") {
+      this.releaseWithheldClosures(request);
+    }
+
+    authLog(convergence.state === "failed" ? "warn" : "info", "auth_convergence_settled", {
+      subsystem: "auth",
+      auth_request_id: request.id,
+      convergence: convergence.state,
+    });
+
+    // Notify the originating session (and every other listener) that the
+    // merged/live distinction moved. The channel server filters this by
+    // target_session_id exactly as it filters auth:resolved.
+    this.broadcast({
+      event: "auth:convergence",
+      data: {
+        request_id: request.id,
+        convergence: convergence.state,
+        hooks: convergence.hooks,
+        target_session_id: request.target_session_id ?? null,
+        conversation_id: request.conversation_id ?? null,
+        repo: request.repo ?? null,
+        head_branch: request.head_branch ?? null,
+        title: request.title ?? null,
+      },
+    });
+    return convergence;
+  }
+
+  /**
+   * Apply the issue closures that were staged but withheld while convergence
+   * was outstanding. Idempotent: actions already applied are no longer
+   * `staged`, so a repeat call is a no-op.
+   */
+  private releaseWithheldClosures(request: AuthRequest): void {
+    const current = this.getRequest(request.id);
+    if (!current || current.status !== "completed" || current.exit_code !== 0) return;
+    try {
+      this.executeDeferredLedgerActions(current);
+      applyWithheldAuthRequestClosures(this.db, {
+        auth_request_id: current.id,
+        repo_ref: current.repo ?? current.cwd ?? current.target_repo_root ?? null,
+        merge_output: current.output,
+        approval_source: current.approval_source,
+        approval_lease_id: current.approval_lease_id,
+        approved_by_user_id: current.approved_by_user_id,
+        execution_evidence_id: current.execution_evidence_id,
+      });
+    } catch (error) {
+      authLog("warn", "auth_withheld_closure_release_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        error: errorMessage(error) ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * Resume convergence that a daemon failure interrupted. Runs at startup and
+   * on the idle tick. A resumed attempt reruns the snapshotted hook command
+   * only — the merge is never re-executed, and a request that never merged
+   * successfully is never touched here.
+   */
+  async resumeHookConvergence(limit = 10): Promise<void> {
+    if (this.disposed || !this.isDbOpen()) return;
+    // A sweep can outlive its 30 s tick (the Mandible rebuild hook has a
+    // 30-minute ceiling). Without this guard the next tick would start a second
+    // sweep over the same rows.
+    if (this.convergenceSweepInFlight) return;
+    this.convergenceSweepInFlight = true;
+    try {
+      await this.runConvergenceSweep(limit);
+    } finally {
+      this.convergenceSweepInFlight = false;
+    }
+  }
+
+  private convergenceSweepInFlight = false;
+
+  private async runConvergenceSweep(limit: number): Promise<void> {
+    let ids: string[] = [];
+    try {
+      ids = this.hookManager.listRequestIdsWithRunnableHooks(limit);
+    } catch {
+      return;
+    }
+    for (const id of ids) {
+      if (this.disposed || !this.isDbOpen()) return;
+      const request = this.getRequestById(id);
+      if (!request || request.status !== "completed" || request.exit_code !== 0) continue;
+      try {
+        const results = await this.hookManager.runPending(request, (hookLabel, text) => {
+          this.handleOutput({
+            request_id: request.id,
+            stream: "stderr",
+            text: `[hook: ${hookLabel}] ${text}`,
+            timestamp: Date.now(),
+          });
+        });
+        for (const result of results) {
+          const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
+          this.handleOutput({
+            request_id: request.id,
+            stream: "stderr",
+            text: `[hook: ${result.label}] retry ${status} (${result.duration_ms}ms)\n`,
+            timestamp: Date.now(),
+          });
+        }
+      } catch (error) {
+        authLog("warn", "auth_hook_resume_failed", {
+          subsystem: "auth",
+          auth_request_id: request.id,
+          error: errorMessage(error) ?? String(error),
+        });
+      }
+      this.settleConvergence(this.getRequestById(request.id) ?? request);
+    }
+  }
+
+  /**
+   * Operator-initiated convergence retry: grant one more attempt to the failed
+   * hooks of a merged request and run them. Never re-runs the merge.
+   */
+  async retryHookConvergence(requestId: string, hookId?: string): Promise<AuthConvergence> {
+    const request = this.getRequest(requestId);
+    if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
+    if (request.status !== "completed" || request.exit_code !== 0) {
+      throw new AuthQueueError(
+        "invalid_status",
+        "Convergence retry applies only to a successfully executed request.",
+      );
+    }
+    this.hookManager.grantRetry(request.id, hookId);
+    await this.hookManager.runPending(request, (hookLabel, text) => {
+      this.handleOutput({
+        request_id: request.id,
+        stream: "stderr",
+        text: `[hook: ${hookLabel}] ${text}`,
+        timestamp: Date.now(),
+      });
+    });
+    return this.settleConvergence(this.getRequestById(request.id) ?? request);
+  }
+
+  /** Exact-id lookup with no prefix resolution and no expiry side effect. */
+  private getRequestById(id: string): AuthRequest | null {
+    try {
+      const row = this.db
+        .prepare("SELECT * FROM auth_requests WHERE id = ?")
+        .get(id) as Record<string, unknown> | undefined;
+      return row ? mapRow(row) : null;
+    } catch {
+      return null;
+    }
   }
 
   private schedulePostSuccessRestart(request: AuthRequest): void {
@@ -5018,6 +5264,10 @@ export class AuthQueue {
     try {
       this.executeDeferredLedgerActions(request);
       applyAuthRequestLedgerCompletion(this.db, {
+        // Issue 27241e6 — a `resolves` link closes its issue here even when no
+        // staged action exists, so the convergence gate has to cover this path
+        // too, not only executeDeferredLedgerActions.
+        withhold_issue_closure: this.convergenceWithholdsClosures(request.id),
         auth_request_id: request.id,
         repo_ref: request.repo ?? request.cwd ?? request.target_repo_root ?? null,
         issue_references: request.issue_references ?? null,
@@ -5048,12 +5298,27 @@ export class AuthQueue {
       : [];
     const hasPersistedActions = persistedActions.length > 0;
     const actions = hasPersistedActions ? persistedActions : this.legacyIssueCloseActions(request);
+    // Issue 27241e6 — issue closure is the one deferred action that asserts
+    // the delivery is done. While convergence is pending or failed it stays
+    // staged, and `releaseWithheldClosures` applies it once the hooks
+    // converge. Every other deferred action (comments, worker status, labels)
+    // is a record of what happened and still runs.
+    const withholdClosures = this.convergenceWithholdsClosures(request.id);
     for (const action of actions) {
       if (action.state === "vetoed") {
         this.removeActionResolveLink(request, action);
         continue;
       }
       if (action.state !== "staged") {
+        continue;
+      }
+      if (withholdClosures && action.kind === "issue_close") {
+        authLog("info", "auth_issue_closure_withheld", {
+          subsystem: "auth",
+          auth_request_id: request.id,
+          action_id: action.id,
+          target_issue_ref: action.target_issue_ref,
+        });
         continue;
       }
       try {
@@ -6035,6 +6300,9 @@ export class AuthQueue {
       conversation_id: request.conversation_id,
       execution_evidence_id: request.execution_evidence_id,
       signature_verification: this.signatureVerificationForRequest(request),
+      // Issue 27241e6 — merged is not the same as live. Consumers that treat
+      // `status: completed` as "delivered" must read this too.
+      convergence: this.convergenceForRequest(request.id),
       action_outcomes: this.actionOutcomeSummary(request.id)
     };
   }

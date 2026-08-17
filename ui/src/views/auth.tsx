@@ -326,6 +326,74 @@ function getStatusLabel(request: AuthRequest): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
+/**
+ * Issue 27241e6 — convergence is the second half of "delivered". `Completed`
+ * on its own only says the merge landed; these three values say whether the
+ * registered post-merge hooks actually made the machine live.
+ */
+type ConvergenceHookSummary = {
+  hook_id?: string;
+  label?: string;
+  state?: string;
+  required?: boolean;
+  attempts?: number;
+  max_attempts?: number;
+  exit_code?: number | null;
+};
+
+type ConvergenceSummary = {
+  state: 'complete' | 'pending' | 'failed';
+  hooks: ConvergenceHookSummary[];
+};
+
+function getConvergence(request: AuthRequest): ConvergenceSummary | null {
+  const raw = request.convergence;
+  if (!raw || typeof raw !== 'object') return null;
+  const state = (raw as { state?: unknown }).state;
+  if (state !== 'complete' && state !== 'pending' && state !== 'failed') return null;
+  const hooks = (raw as { hooks?: unknown }).hooks;
+  return { state, hooks: Array.isArray(hooks) ? (hooks as ConvergenceHookSummary[]) : [] };
+}
+
+const CONVERGENCE_LABELS: Record<ConvergenceSummary['state'], string> = {
+  complete: 'live',
+  pending: 'converging',
+  failed: 'merged, not live',
+};
+
+function convergenceTitle(convergence: ConvergenceSummary): string {
+  const hooks = convergence.hooks
+    .map((hook) => {
+      const name = hook.label || hook.hook_id || 'hook';
+      const attempts = hook.attempts != null && hook.max_attempts != null
+        ? ` (${hook.attempts}/${hook.max_attempts} attempts)`
+        : '';
+      return `${name}: ${hook.state ?? 'unknown'}${attempts}`;
+    })
+    .join('\n');
+  const heading = convergence.state === 'complete'
+    ? 'Merged and every registered post-merge hook succeeded.'
+    : convergence.state === 'pending'
+      ? 'Merged. A registered post-merge hook has not finished yet, so this machine is not live.'
+      : 'Merged. A required post-merge hook failed, so this machine is not live. Issue closures are withheld.';
+  return hooks ? `${heading}\n\n${hooks}` : heading;
+}
+
+function ConvergencePill({ request }: { request: AuthRequest }) {
+  const status = getAuthStatus(request);
+  if (status !== 'completed' || (request.exit_code ?? 0) !== 0) return null;
+  const convergence = getConvergence(request);
+  if (!convergence) return null;
+  return (
+    <span
+      className={`convergence-pill convergence-pill--${convergence.state}`}
+      title={convergenceTitle(convergence)}
+    >
+      {CONVERGENCE_LABELS[convergence.state]}
+    </span>
+  );
+}
+
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
   if (isFailedLikeStatus(status, request.exit_code ?? null)) {
@@ -833,6 +901,7 @@ function AuthCard({
     <div className="auth-card__summary">
       <div className="auth-card__row auth-card__row--primary">
         <span className={statusClass}>{statusLabel}</span>
+        <ConvergencePill request={request} />
         <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
         {/* Bug: a44fd6a — render auth request title as inline markdown */}
         <span
@@ -1452,6 +1521,7 @@ function AuthRequestDetail({
               copyLabel={`Copy ${copyRef || 'auth reference'}`}
             >
               <span className={statusClass}>{statusLabel}</span>
+              <ConvergencePill request={request} />
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
               {branchMerged && <span className="branch-merged-tag">branch merged</span>}
             </DetailHeaderIdentity>

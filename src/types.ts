@@ -1509,6 +1509,13 @@ export interface AuthHook {
   enabled: boolean;
   builtin: boolean;            // true for system-seeded hooks (non-deletable)
   position: number;            // execution order (lower = first)
+  /**
+   * Issue 27241e6 — a required hook is part of convergence: while it has not
+   * succeeded the request reads `merged / convergence pending|failed` and its
+   * deferred issue closures are withheld. An advisory hook (required = false)
+   * is reported but never withholds anything.
+   */
+  required: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -1520,6 +1527,7 @@ export interface AuthHookInput {
   label: string;
   enabled?: boolean;
   position?: number;
+  required?: boolean;
 }
 
 export interface AuthHookExecutionResult {
@@ -1528,4 +1536,82 @@ export interface AuthHookExecutionResult {
   exit_code: number | null;
   output: string;
   duration_ms: number;
+}
+
+/**
+ * Issue 27241e6 — durable per-request hook execution state.
+ *
+ * `pending` is runnable, `running` means an attempt was persisted and the
+ * process was spawned (a daemon crash leaves the row here), `complete` and
+ * `failed` are terminal for this row. `failed` is only reached once the
+ * attempt budget is exhausted; before that a failed attempt returns the row to
+ * `pending` so a later sweep reruns the hook command — never the merge.
+ */
+export type AuthHookRunState = "pending" | "running" | "complete" | "failed";
+
+export interface AuthHookRunAttempt {
+  attempt: number;
+  started_at: number;
+  finished_at: number;
+  exit_code: number | null;
+  duration_ms: number;
+  outcome: "ok" | "failed" | "timeout" | "spawn_error" | "interrupted";
+}
+
+export interface AuthHookRun {
+  id: string;
+  auth_request_id: string;
+  hook_id: string;
+  hook_label: string;
+  /** Command bytes snapshotted when execution began; retries rerun exactly these. */
+  command: string;
+  /** SHA-256 of the snapshotted command, so hook edits after the fact are visible. */
+  command_digest: string;
+  position: number;
+  required: boolean;
+  state: AuthHookRunState;
+  attempts: number;
+  max_attempts: number;
+  exit_code: number | null;
+  output: string;
+  attempt_history: AuthHookRunAttempt[];
+  started_at: number | null;
+  finished_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Issue 27241e6 — convergence state of one merged auth request. */
+export type AuthConvergenceState = "none" | "complete" | "pending" | "failed";
+
+export interface AuthConvergenceHookSummary {
+  hook_id: string;
+  label: string;
+  state: AuthHookRunState;
+  required: boolean;
+  attempts: number;
+  max_attempts: number;
+  exit_code: number | null;
+  command_digest: string;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
+export interface AuthConvergence {
+  state: AuthConvergenceState;
+  hooks: AuthConvergenceHookSummary[];
+}
+
+export interface AuthHookAlert {
+  id: string;
+  auth_request_id: string;
+  hook_id: string;
+  hook_label: string;
+  session_id: string | null;
+  repo: string | null;
+  detail: string;
+  created_at: number;
+  updated_at: number;
+  acknowledged_at: number | null;
+  acknowledged_by: string | null;
 }

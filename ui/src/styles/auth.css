@@ -1139,6 +1139,36 @@
   color: var(--accent-yellow);
 }
 
+/*
+ * Issue 27241e6 — convergence pill. "Completed" means the reviewed bytes are on
+ * the protected branch; it does not mean the machine is running them. This pill
+ * carries that second fact so the row never silently overstates delivery.
+ */
+.convergence-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--neutral-alpha-06);
+  color: var(--text-muted);
+}
+
+.convergence-pill--complete {
+  background: rgba(50, 210, 150, 0.14);
+  color: var(--accent-green);
+}
+
+.convergence-pill--pending {
+  background: rgba(245, 194, 92, 0.2);
+  color: var(--accent-yellow);
+}
+
+.convergence-pill--failed {
+  background: rgba(242, 107, 107, 0.2);
+  color: var(--accent-red);
+}
+
 .status-pill--approved,
 .status-pill--success {
   background: rgba(50, 210, 150, 0.2);

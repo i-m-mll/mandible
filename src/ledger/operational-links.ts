@@ -330,6 +330,14 @@ export function applyAuthRequestLedgerCompletion(
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
     resolution?: LedgerIssueResolution;
+    /**
+     * Issue 27241e6 — when a required post-merge hook has not converged, the
+     * merge is real but the delivery is not live, so issue closure is
+     * withheld. Everything else still applies: the completion event is
+     * recorded and the `merged` label is set, because the merge genuinely
+     * happened. Only the "this is done" assertion waits.
+     */
+    withhold_issue_closure?: boolean;
   },
 ): OperationalLinkResult[] {
   const actor = authFinalizationActor(db, input);
@@ -382,6 +390,9 @@ export function applyAuthRequestLedgerCompletion(
         attribution: actor.attribution,
       },
     );
+    if (input.withhold_issue_closure) {
+      continue;
+    }
     if (mergeSha) {
       recordIssueResolution(db, {
         authRequestId: input.auth_request_id,
@@ -403,6 +414,69 @@ export function applyAuthRequestLedgerCompletion(
     );
   }
   return results;
+}
+
+/**
+ * Issue 27241e6 — release the issue closures that `withhold_issue_closure`
+ * deferred, once post-merge convergence completed.
+ *
+ * This deliberately re-runs only the closing half of
+ * `applyAuthRequestLedgerCompletion`: the completion event, the link sync, and
+ * the `merged` label already landed at merge time, and re-recording them would
+ * duplicate history for something that happened once. Issues already closed
+ * are skipped, so the call is idempotent.
+ */
+export function applyWithheldAuthRequestClosures(
+  db: Db,
+  input: {
+    auth_request_id: string;
+    repo_ref?: string | null;
+    merge_output?: string | null;
+    approval_source?: string | null;
+    approval_lease_id?: string | null;
+    approved_by_user_id?: string | null;
+    execution_evidence_id?: string | null;
+    resolution?: LedgerIssueResolution;
+  },
+): string[] {
+  if (!ledgerOperationalLinksAvailable(db)) return [];
+  const actor = authFinalizationActor(db, input);
+  const store = new LedgerStore(db);
+  const mergeSha = parseMergeResult(input.merge_output)?.merge_sha ?? null;
+  const completedAt = authRequestCompletedAt(db, input.auth_request_id);
+  const linked = db.prepare(
+    `SELECT issue_id FROM ledger_auth_issue_links
+     WHERE auth_request_id = ? AND link_type IN ('resolves', 'fixed_by')`,
+  ).all(input.auth_request_id) as Array<{ issue_id: string }>;
+
+  const closed: string[] = [];
+  for (const issueId of Array.from(new Set(linked.map((row) => row.issue_id)))) {
+    const issue = store.getIssue(issueId);
+    if (issue.status !== "open") continue;
+    if (completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) continue;
+    if (hasActiveLabel(db, issueId, "coordination")) continue;
+    if (mergeSha) {
+      recordIssueResolution(db, {
+        authRequestId: input.auth_request_id,
+        issueId,
+        commitSha: mergeSha,
+        repoRef: input.repo_ref ?? "",
+      }, actor);
+    }
+    store.setIssueStatus(
+      issueId,
+      "closed",
+      input.resolution ?? "merged",
+      {
+        actor_type: "system",
+        actor_id: input.approval_lease_id ?? null,
+        attribution: actor.attribution,
+      },
+      "auth_queue",
+    );
+    closed.push(issueId);
+  }
+  return closed;
 }
 
 /**
