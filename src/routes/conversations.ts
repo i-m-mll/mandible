@@ -107,14 +107,17 @@ function mapConversation(row: ConversationRow, sessionManager?: SessionManager) 
   };
 }
 
-function mapSearchConversation(row: ConversationRow, sessionManager?: SessionManager) {
-  const mapped = mapConversation(row, sessionManager);
+function maskSourceBackedConversationRow(row: ConversationRow): ConversationRow {
   return {
-    ...mapped,
-    title: maskUnverifiedCandidates(mapped.title).text,
-    summary: mapped.summary == null ? null : maskUnverifiedCandidates(mapped.summary).text,
-    notes: mapped.notes == null ? null : maskUnverifiedCandidates(mapped.notes).text,
+    ...row,
+    title: maskUnverifiedCandidates(row.title).text,
+    summary: row.summary == null ? null : maskUnverifiedCandidates(row.summary).text,
+    notes: row.notes == null ? null : maskUnverifiedCandidates(row.notes).text,
   };
+}
+
+function mapSearchConversation(row: ConversationRow, sessionManager?: SessionManager) {
+  return mapConversation(maskSourceBackedConversationRow(row), sessionManager);
 }
 
 function canonicalizeTags(value: unknown, field: string): string[] {
@@ -651,12 +654,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     for (const match of searched.matches) {
       const conversation = conversationsById.get(match.conversation_id);
       if (!conversation) continue;
-      const block = db.prepare(
-        `SELECT id, conversation_id, type, role, position, timestamp, parent_id,
-                metadata_json, dag_uuid, dag_parent_uuid
-         FROM conversation_blocks WHERE id = ?`,
-      ).get(match.block_id) as Omit<BlockRow, "content" | "compressed"> | undefined;
-      if (!block) continue;
+      const read = await sourceReader.readBlock(match.block_id);
+      if (read.status !== "source" && read.status !== "legacy") continue;
+      const block = read.value;
       results.push({
         conversation: mapSearchConversation(conversation, sessionManager),
         // Search responses carry only structural block metadata plus the
@@ -807,7 +807,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
       : undefined;
 
-    const mapped = mapConversation(conv, sessionManager);
+    const mapped = useSourceReader
+      ? mapConversation(maskSourceBackedConversationRow(conv), sessionManager)
+      : mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
 
     sendJson(res, 200, {
@@ -1294,14 +1296,18 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     let output: string;
     let contentType: string;
 
+    const exportConversation = body.source_backed
+      ? maskSourceBackedConversationRow(conv)
+      : conv;
+
     if (format === "mdx") {
-      output = exportToMdx(conv, blocks, blockTypes);
+      output = exportToMdx(exportConversation, blocks, blockTypes);
       contentType = "text/mdx";
     } else if (format === "json") {
-      output = exportToJson(conv, blocks, blockTypes);
+      output = exportToJson(exportConversation, blocks, blockTypes);
       contentType = "application/json";
     } else {
-      output = exportToMarkdown(conv, blocks, blockTypes);
+      output = exportToMarkdown(exportConversation, blocks, blockTypes);
       contentType = "text/markdown";
     }
 
