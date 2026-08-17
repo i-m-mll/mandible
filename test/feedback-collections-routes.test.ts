@@ -261,6 +261,57 @@ describe("feedback collection routes", () => {
       .toEqual({ expires_at: null });
   });
 
+  it("expires submitted bounded asks and restores their submitted lifecycle", async () => {
+    const askId = await createAsk("submitted-expiry");
+    const form = (await router.invoke({
+      method: "GET", url: `/api/asks/${askId}`, credential: "responder", transport: "http",
+    })).body as any;
+    const item = form.items[0];
+    const answer = (await router.invoke({
+      method: "POST", url: `/api/asks/${askId}/answers`, credential: "responder", transport: "http",
+      body: { answers: [{
+        item_id: item.id, item_revision_id: item.revision.id, operation: "set",
+        value: { text: "submitted answer" }, expected_response_event_id: null,
+      }] },
+    })).body as { answer_event_ids: string[] };
+    const submitted = await router.invoke({
+      method: "POST", url: `/api/asks/${askId}/submit`, credential: "responder", transport: "http",
+      body: {
+        expected_lifecycle_event_id: form.lifecycle_event_id,
+        answers: [{
+          item_id: item.id, item_revision_id: item.revision.id,
+          response_event_id: answer.answer_event_ids[0],
+        }],
+      },
+    });
+    expect(submitted.body).toMatchObject({ state: "submitted" });
+
+    const now = Date.now();
+    const expired = await router.invoke({
+      method: "PATCH", url: `/api/feedback/collections/${askId}`,
+      credential: "responder", transport: "http", body: { expires_at: now },
+    });
+    expect(expired.status).toBe(200);
+    expect((await router.invoke({
+      method: "GET", url: `/api/asks/${askId}`, credential: "responder", transport: "http",
+    })).body).toMatchObject({ state: "expired", expires_at: now });
+
+    const extended = await router.invoke({
+      method: "PATCH", url: `/api/feedback/collections/${askId}`,
+      credential: "responder", transport: "http", body: { expires_at: null },
+    });
+    expect(extended.status).toBe(200);
+    expect((await router.invoke({
+      method: "GET", url: `/api/asks/${askId}`, credential: "responder", transport: "http",
+    })).body).toMatchObject({ state: "submitted", expires_at: null });
+    expect(db.prepare(
+      "SELECT operation FROM feedback_collection_events WHERE collection_id = ? ORDER BY rowid",
+    ).all(askId)).toEqual([
+      { operation: "opened" }, { operation: "submitted" },
+      { operation: "expired" }, { operation: "submitted" },
+    ]);
+  });
+
   it("keeps last-updated stable when ask detail materializes an already-derived expiry", async () => {
     const askId = await createAsk();
     const createdAt = (db.prepare(
