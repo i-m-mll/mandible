@@ -156,7 +156,7 @@ file_rpc_list() {
 }
 
 conversation_resolve_mutation_target() {
-  local target="$1" current="$2" source="" session_id="" exact_file session_file exact_status response count
+  local target="$1" current="$2" source="" session_id="" exact_file session_file exact_status response count parent_id
   exact_file=$(api_temp_file)
   session_file=$(api_temp_file)
   if (( current )); then
@@ -180,6 +180,20 @@ conversation_resolve_mutation_target() {
   printf '%s\n' "$response" > "$session_file"
   response=$(jq -sc '[ (.[0].conversation? // empty), (.[1].conversations[]? // empty) ] | unique_by(.id)' "$exact_file" "$session_file")
   count=$(printf '%s\n' "$response" | jq 'length')
+  if (( count > 1 )); then
+    parent_id=$(printf '%s\n' "$response" | jq -r '
+      def sidechain: (.is_sidechain == true or .is_sidechain == 1);
+      [ .[] | select((sidechain | not) and (.parent_conversation_id // null) == null) ] as $parents
+      | if ($parents | length) == 1
+          and all(.[]; .id == $parents[0].id or (sidechain and .parent_conversation_id == $parents[0].id))
+        then $parents[0].id
+        else empty
+        end')
+    if [[ -n "$parent_id" ]]; then
+      printf '%s\n' "$parent_id"
+      return 0
+    fi
+  fi
   if [[ "$count" != "1" ]]; then
     echo "Error: conversation reference resolved to ${count} matches; expected exactly one." >&2
     return 2
