@@ -58,6 +58,13 @@ export const METADATA_BACKUP_TABLES = [
   "preset_diffs",
   "convention_setting_links",
   "auth_hooks",
+  // Issue 27241e6 — durable post-merge convergence state. Not reproducible:
+  // the execution rows are the only record of which hook command actually ran
+  // for a merge and how many attempts it took, and the alerts are open operator
+  // notices. Listed after `auth_hooks` and `auth_requests` so their logical
+  // parents restore first.
+  "auth_hook_executions",
+  "auth_hook_alerts",
   "runtime_patches",
   "message_params",
   "providers",

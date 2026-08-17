@@ -1,9 +1,18 @@
 /**
  * Auth hooks CRUD routes.
  * Bug: 4afab83
+ *
+ * Issue 27241e6 — registering a hook is registering a command that Mandible
+ * will execute unsupervised on the operator's machine after a protected merge.
+ * Reading the registry is ordinary state; mutating it is an authority grant, so
+ * create/update/delete require an authenticated client that holds the
+ * `change_settings` global capability. Authentication alone is not
+ * authorization: strict mode proves *who* is calling, and this gate decides
+ * whether that caller may widen what the daemon executes.
  */
 
 import { AuthHookManager } from "../auth-hooks.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import type { AuthHookInput, AuthRequestType } from "../types.js";
 import { readBody } from "./http.js";
@@ -31,8 +40,8 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
     res.json(hook);
   }, { fileRpc: "deny" });
 
-  // Create a new hook
-  app.post("/api/auth/hooks", (req, res) => {
+  // Create a new hook — capability-fenced (issue 27241e6).
+  app.post("/api/auth/hooks", globalCapabilityRoute("change_settings", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     const parsed = parseHookInput(body);
     if (!parsed.ok) {
@@ -41,10 +50,12 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
     }
     const hook = hookManager.create(parsed.input);
     res.status(201).json(hook);
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
-  // Update an existing hook
-  app.put("/api/auth/hooks/:id", (req, res) => {
+  // Update an existing hook — capability-fenced (issue 27241e6). Update is as
+  // powerful as create: it can rewrite the command bytes of an already-trusted
+  // hook, so it carries the same requirement.
+  app.put("/api/auth/hooks/:id", globalCapabilityRoute("change_settings", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     const fields = parseHookUpdateFields(body);
 
@@ -54,10 +65,12 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       return;
     }
     res.json(updated);
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
-  // Delete a hook (built-in hooks cannot be deleted)
-  app.delete("/api/auth/hooks/:id", (req, res) => {
+  // Delete a hook (built-in hooks cannot be deleted) — capability-fenced.
+  // Deleting a required hook removes a convergence guarantee, so it is a
+  // settings-authority change too, not a cleanup convenience.
+  app.delete("/api/auth/hooks/:id", globalCapabilityRoute("change_settings", (req, res) => {
     try {
       const deleted = hookManager.delete(req.params.id);
       if (!deleted) {
@@ -72,7 +85,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       }
       res.status(500).json({ error: "Unexpected error." });
     }
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   return hookManager;
 }
@@ -104,6 +117,7 @@ function parseHookInput(body: Record<string, unknown>): { ok: true; input: AuthH
       label: body.label as string,
       enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
       position: typeof body.position === "number" && Number.isFinite(body.position) ? body.position : undefined,
+      required: typeof body.required === "boolean" ? body.required : undefined,
     },
   };
 }
@@ -119,6 +133,7 @@ function parseHookUpdateFields(body: Record<string, unknown>): Partial<AuthHookI
   if (typeof body.label === "string") fields.label = body.label;
   if (typeof body.enabled === "boolean") fields.enabled = body.enabled;
   if (typeof body.position === "number" && Number.isFinite(body.position)) fields.position = body.position;
+  if (typeof body.required === "boolean") fields.required = body.required;
 
   return fields;
 }

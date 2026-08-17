@@ -252,6 +252,54 @@ function queryAuthResultsForSession(
   return out;
 }
 
+/**
+ * Issue 27241e6 — open convergence alerts. One row per (auth request, hook),
+ * enforced by a UNIQUE constraint, so a hook that fails on every attempt
+ * contributes exactly one inbox item rather than one per attempt. Repo-scoped
+ * when the caller supplied a repo, because a convergence failure is a fact
+ * about one repository's deployed state.
+ */
+function hookAlertItems(
+  db: ReturnType<typeof getDb>,
+  repo?: string | null,
+): Array<Record<string, unknown>> {
+  const present = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_hook_alerts'",
+  ).get();
+  if (!present) return [];
+  const rows = repo
+    ? db.prepare(
+        `SELECT * FROM auth_hook_alerts WHERE acknowledged_at IS NULL AND repo = ?
+         ORDER BY created_at DESC LIMIT 50`,
+      ).all(repo) as Array<Record<string, unknown>>
+    : db.prepare(
+        `SELECT * FROM auth_hook_alerts WHERE acknowledged_at IS NULL
+         ORDER BY created_at DESC LIMIT 50`,
+      ).all() as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: row.id,
+    auth_request_id: row.auth_request_id,
+    hook_id: row.hook_id,
+    hook_label: row.hook_label,
+    session_id: row.session_id,
+    repo: row.repo,
+    detail: row.detail,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }));
+}
+
+function countOpenHookAlerts(db: ReturnType<typeof getDb>): number {
+  const present = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_hook_alerts'",
+  ).get();
+  if (!present) return 0;
+  const row = db.prepare(
+    "SELECT COUNT(*) AS count FROM auth_hook_alerts WHERE acknowledged_at IS NULL",
+  ).get() as { count: number };
+  return Number(row.count);
+}
+
 export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
   const continuation = db.prepare(
     `SELECT COUNT(*) AS count FROM sessions
@@ -266,7 +314,8 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
   const reminderOccurrences = db.prepare(
     "SELECT COUNT(*) AS count FROM managed_task_occurrences WHERE acknowledged_at IS NULL",
   ).get() as { count: number };
-  return Number(continuation.count) + authResults.length + Number(reminderOccurrences.count);
+  return Number(continuation.count) + authResults.length + Number(reminderOccurrences.count)
+    + countOpenHookAlerts(db);
 }
 
 // Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
@@ -533,10 +582,11 @@ export function registerInboxRoutes(
           .all() as WebhookEventRow[]);
 
     const reminderOccurrences = reminderOccurrenceItems(repo);
+    const hookAlerts = hookAlertItems(db, repo ?? null);
 
     const total = continuations.length + authResultTiers.length + openIssues.length
       + workUnits.length + workUnitContinuations.length + pendingWebhooks.length
-      + reminderOccurrences.length;
+      + reminderOccurrences.length + hookAlerts.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -564,6 +614,9 @@ export function registerInboxRoutes(
         data: parseWebhookData(row.data_json),
       })),
       managed_reminder_occurrences: reminderOccurrences,
+      // Issue 27241e6 — deduplicated convergence alerts: a merge landed but the
+      // repository is not live until its required hook succeeds.
+      hook_alerts: hookAlerts,
       total,
     });
   }, { fileRpc: "allow" });
@@ -610,10 +663,11 @@ export function registerInboxRoutes(
       .all() as WebhookEventRow[];
 
     const reminderOccurrences = reminderOccurrenceItems();
+    const hookAlerts = hookAlertItems(db, null);
 
     const total = continuations.length + authResultTiers.length + openIssues.length
       + workUnits.length + workUnitContinuations.length + pendingWebhooks.length
-      + reminderOccurrences.length;
+      + reminderOccurrences.length + hookAlerts.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -642,6 +696,9 @@ export function registerInboxRoutes(
         data: parseWebhookData(row.data_json),
       })),
       managed_reminder_occurrences: reminderOccurrences,
+      // Issue 27241e6 — deduplicated convergence alerts: a merge landed but the
+      // repository is not live until its required hook succeeds.
+      hook_alerts: hookAlerts,
       total,
     });
   }, { fileRpc: "allow" });
@@ -846,6 +903,20 @@ export function registerInboxRoutes(
         return;
       }
       sendJson(res, 200, { ok: true });
+    } else if (type === "hook_alert") {
+      // Issue 27241e6 — acknowledging the alert dismisses the notice only. It
+      // does not mark the request converged; the durable hook row still says
+      // `failed` until a retry actually succeeds.
+      const result = db
+        .prepare(
+          "UPDATE auth_hook_alerts SET acknowledged_at = ?, acknowledged_by = ?, updated_at = ? WHERE id = ? AND acknowledged_at IS NULL",
+        )
+        .run(Date.now(), ack.value, Date.now(), id);
+      if (result.changes === 0) {
+        sendJson(res, 404, { error: "hook alert not found or already acknowledged" });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
     } else if (type === "managed_reminder_occurrence") {
       try {
         acknowledgeManagedReminderOccurrence(db, id, ack.value);
@@ -859,7 +930,7 @@ export function registerInboxRoutes(
       }
     } else {
       sendJson(res, 400, {
-        error: "type must be 'continuation', 'auth_result', or 'managed_reminder_occurrence'",
+        error: "type must be 'continuation', 'auth_result', 'hook_alert', or 'managed_reminder_occurrence'",
       });
     }
   }, { fileRpc: "allow" });

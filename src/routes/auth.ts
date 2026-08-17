@@ -250,6 +250,8 @@ export function registerAuthRoutes(
       depends_on_status: dependsOnStatus,
       error_output: errorOutput,
       signature_verification: authQueue.getSignatureVerification(request.id),
+      // Issue 27241e6 — merged/convergence-complete vs pending vs failed.
+      convergence: authQueue.convergenceForRequest(request.id),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id)
@@ -342,6 +344,22 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
+  // Issue 27241e6 — convergence retry. This reruns the snapshotted hook
+  // command for a merged request; it never reruns the merge, which is why it
+  // does not need (and must not imply) a fresh merge authorization.
+  app.post("/api/auth/request/:id/retry-convergence", async (req, res) => {
+    try {
+      const body = readBody<Record<string, unknown>>(req);
+      const hookId = typeof body.hook_id === "string" && body.hook_id.trim()
+        ? body.hook_id.trim()
+        : undefined;
+      const convergence = await authQueue.retryHookConvergence(req.params.id, hookId);
+      res.status(200).json({ request_id: req.params.id, convergence });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { fileRpc: "allow" });
+
   app.post("/api/auth/request/:id/replay-codex-archives", async (req, res) => {
     try {
       // Issue 75f52ac — archiving is now async (off-loop codex CLI spawn).
@@ -370,6 +388,8 @@ export function registerAuthRoutes(
         ...r,
         depends_on_status: dep ? dep.status : null,
         action_count: authQueue.countActions(r.id),
+        // Issue 27241e6 — the queue row shows merged vs live, not just merged.
+        convergence: authQueue.convergenceForRequest(r.id),
         ...authAttributionReadFields(attributionResolver, r),
       };
     });
@@ -400,6 +420,9 @@ export function registerAuthRoutes(
     res.json({
       requests: requests.map((r) => ({
         ...r,
+        // Issue 27241e6 — history is where "was it actually delivered?" is
+        // asked after the fact, so it carries convergence too.
+        convergence: authQueue.convergenceForRequest(r.id),
         ...authAttributionReadFields(attributionResolver, r),
       })),
     });

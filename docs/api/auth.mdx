@@ -337,6 +337,13 @@ Record the final result of an auth request execution.
 
 Auth hooks are commands that run automatically after successful auth actions. They are configured per-repo and per-action-type.
 
+Reading the hook registry is open. **Creating, updating, or deleting a hook
+requires the `change_settings` global capability** — registering a hook
+registers a command Mandible executes unsupervised after a protected merge, so
+it is an authority change, not ordinary state. Unauthenticated mutations return
+`401` in strict client-auth mode; an authenticated caller without the capability
+returns `403`.
+
 ### GET /api/auth/hooks
 
 List all auth hooks.
@@ -367,6 +374,7 @@ Create a new hook.
 | `label` | string | yes | Human-readable description |
 | `enabled` | boolean | no | Whether the hook is active (default: true) |
 | `position` | number | no | Execution order |
+| `required` | boolean | no | Whether the hook is part of convergence (default: true). A failed required hook makes the request `merged / convergence failed` and withholds its deferred issue closures. |
 
 **Response:** `201 Created` — hook object.
 
@@ -378,16 +386,78 @@ curl -X POST http://localhost:19420/api/auth/hooks \
 
 ### PUT /api/auth/hooks/:id
 
-Update an existing hook. Accepts any subset of the creation fields.
+Update an existing hook. Accepts any subset of the creation fields. Requires
+`change_settings`: an update can rewrite the command bytes of an already-trusted
+hook, so it carries the same authority requirement as create.
 
 **Response:** `200 OK` — updated hook object.
 
 ### DELETE /api/auth/hooks/:id
 
-Delete a hook. Built-in hooks cannot be deleted (returns `403`).
+Delete a hook. Requires `change_settings`. Built-in hooks cannot be deleted (returns `403`).
 
 **Response:** `200 OK`
 
 ```json
 { "deleted": true }
 ```
+
+## Convergence
+
+`status: "completed"` with `exit_code: 0` says the merge landed. It does not say
+the machine is running the merged bytes. Every auth request projection
+(`GET /api/auth/queue`, `GET /api/auth/history`, `GET /api/auth/request/:id`,
+and the `auth:resolved` / `auth:merged` SSE payloads) carries a `convergence`
+object:
+
+```json
+{
+  "convergence": {
+    "state": "failed",
+    "hooks": [
+      {
+        "hook_id": "builtin-mandible-rebuild",
+        "label": "Build Mandible after merge",
+        "state": "failed",
+        "required": true,
+        "attempts": 3,
+        "max_attempts": 3,
+        "exit_code": 1,
+        "command_digest": "…",
+        "started_at": 1786933884126,
+        "finished_at": 1786933899001
+      }
+    ]
+  }
+}
+```
+
+`state` is `none` (no hook registered), `complete`, `pending`, or `failed`.
+A `pending` or `failed` state withholds the request's deferred issue closures
+until convergence completes.
+
+### POST /api/auth/request/:id/retry-convergence
+
+Grant one more attempt to the failed hooks of a merged request and rerun them.
+This reruns the snapshotted hook command only — it never reruns the merge, which
+is why it needs no fresh merge authorization.
+
+**Request body (optional):**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `hook_id` | string | no | Retry only this hook. Omit to retry every failed hook. |
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "…", "convergence": { "state": "complete", "hooks": [] } }
+```
+
+### Convergence alerts
+
+A required hook that exhausts its attempts raises exactly one inbox alert per
+(request, hook) pair, surfaced as `hook_alerts` in `GET /api/inbox` and
+`GET /api/inbox/global`. Acknowledge one with
+`POST /api/inbox/hook_alert/:id/ack`. Acknowledging dismisses the notice only —
+the durable hook row still reads `failed` until a retry actually succeeds.
