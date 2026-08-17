@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
-import { triggerTargetedIngest } from "../src/ingestion.js";
+import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import { decompressContent } from "../src/compression.js";
 
 let tempDir = "";
@@ -19,6 +19,10 @@ async function makeCodexSession(): Promise<string> {
   const sessionDir = path.join(tempDir, "home", ".codex", "sessions", "2026", "07", "02");
   await fsp.mkdir(sessionDir, { recursive: true });
   return path.join(sessionDir, "rollout-2026-07-02T00-00-00-tailtest.jsonl");
+}
+
+function watchConfigs(): Array<{ base: string; glob: string }> {
+  return [{ base: path.join(tempDir, "home", ".codex", "sessions"), glob: "**/*.jsonl" }];
 }
 
 async function writeWithMtime(filePath: string, content: string, tick: number): Promise<void> {
@@ -200,6 +204,56 @@ describe("incremental tail ingestion", () => {
     expect(db.prepare(
       "SELECT availability FROM conversation_sources WHERE conversation_id = ?",
     ).get(conversation.id)).toEqual({ availability: "missing" });
+  });
+
+  it("reconcile detects a replacement with the exact indexed mtime", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("reconcile-same-mtime-a"), 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+
+    await fsp.writeFile(sessionPath, initialCodexRows("reconcile-same-mtime-b"), "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ? ORDER BY session_id",
+    ).all(sessionPath)).toEqual([
+      { session_id: "reconcile-same-mtime-a" },
+      { session_id: "reconcile-same-mtime-b" },
+    ]);
+  });
+
+  it("reconcile preserves fallback data after same-mtime truncation", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("reconcile-same-mtime-truncated"), 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+    const conversation = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ?",
+    ).get(sessionPath) as { id: string };
+    const before = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id);
+
+    await fsp.writeFile(sessionPath, "", "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id)).toEqual(before);
+    expect(db.prepare(`
+      SELECT s.availability AS source_availability, v.availability AS version_availability
+        FROM conversation_sources s
+        JOIN conversation_source_versions v ON v.id = s.current_version_id
+       WHERE s.conversation_id = ?
+    `).get(conversation.id)).toEqual({
+      source_availability: "missing",
+      version_availability: "missing",
+    });
   });
 
   it("preserves fallback bodies and source history while the source is empty or truncated", async () => {

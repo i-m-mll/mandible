@@ -205,6 +205,76 @@ describe("codex archive relocation", () => {
     ).get()).toEqual({ content: "preserve me" });
   });
 
+  it("atomically displaces a source-backed destination owner during verified relocation", async () => {
+    await fsp.writeFile(
+      archivedPath,
+      transcript("archive-destination-owner", "destination history"),
+      "utf8",
+    );
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    const relocating = db.prepare(
+      "SELECT id, block_count FROM conversations WHERE session_id = ?",
+    ).get(SESSION_ID) as { id: string; block_count: number };
+    const destinationOwner = db.prepare(
+      "SELECT id, block_count FROM conversations WHERE session_id = 'archive-destination-owner'",
+    ).get() as { id: string; block_count: number };
+    const relocatingSource = db.prepare(
+      "SELECT id, current_version_id FROM conversation_sources WHERE conversation_id = ?",
+    ).get(relocating.id) as { id: string; current_version_id: string };
+    const destinationSource = db.prepare(
+      "SELECT id, current_version_id FROM conversation_sources WHERE conversation_id = ?",
+    ).get(destinationOwner.id) as { id: string; current_version_id: string };
+    const destinationAlias = db.prepare(
+      "SELECT id FROM conversation_source_aliases WHERE path = ?",
+    ).get(archivedPath) as { id: string };
+
+    // The destination bytes now prove the original identity, while the source
+    // ledger still records a complete historical owner for that locator.
+    await fsp.writeFile(archivedPath, transcript(), "utf8");
+    await fsp.rm(sessionPath);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(db.prepare(
+      "SELECT id, source_path FROM conversations WHERE id = ?",
+    ).get(relocating.id)).toEqual({ id: relocating.id, source_path: archivedPath });
+    expect(db.prepare(
+      "SELECT id, source_path FROM conversations WHERE id = ?",
+    ).get(destinationOwner.id)).toEqual({ id: destinationOwner.id, source_path: archivedPath });
+    expect(blockCount(relocating.id)).toBe(relocating.block_count);
+    expect(blockCount(destinationOwner.id)).toBe(destinationOwner.block_count);
+
+    expect(db.prepare(`
+      SELECT availability, unavailable_reason
+        FROM conversation_sources
+       WHERE id = ?
+    `).get(destinationSource.id)).toEqual({
+      availability: "missing",
+      unavailable_reason: "destination alias transferred during verified relocation",
+    });
+    expect(db.prepare(
+      "SELECT availability FROM conversation_source_versions WHERE id = ?",
+    ).get(destinationSource.current_version_id)).toEqual({ availability: "missing" });
+    expect(db.prepare(`
+      SELECT availability FROM conversation_sources WHERE id = ?
+    `).get(relocatingSource.id)).toEqual({ availability: "available" });
+    expect(db.prepare(
+      "SELECT availability FROM conversation_source_versions WHERE id = ?",
+    ).get(relocatingSource.current_version_id)).toEqual({ availability: "available" });
+    const relocatedAlias = db.prepare(`
+      SELECT id, source_id, availability
+        FROM conversation_source_aliases
+       WHERE path = ?
+    `).all(archivedPath) as Array<{ id: string; source_id: string; availability: string }>;
+    expect(relocatedAlias).toHaveLength(1);
+    expect(relocatedAlias[0]?.id).not.toBe(destinationAlias.id);
+    expect(relocatedAlias[0]).toEqual({
+      id: expect.any(String),
+      source_id: relocatingSource.id,
+      availability: "available",
+    });
+  });
+
   it("rejects an unrelated archive candidate and ingests it independently", async () => {
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
     const original = conversationRow(sessionPath)!;

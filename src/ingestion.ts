@@ -1947,7 +1947,10 @@ async function ingestFile(
   }
 
   const appendState = getAppendState(db, filePath);
-  if (!options.forceFull && matchesEmptyIngestState(appendState, stat)) {
+  // The empty-source cache is only safe before a path has an identity. Once a
+  // conversation exists, even identical mtime/size metadata can describe a
+  // replacement, so native identity parsing must remain authoritative.
+  if (!options.forceFull && !existing && matchesEmptyIngestState(appendState, stat)) {
     return;
   }
   if (appendState?.empty_source_mtime !== null && appendState?.empty_source_mtime !== undefined) {
@@ -2993,8 +2996,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     .prepare("SELECT source_path, source_mtime FROM conversations")
     .all() as Array<{ source_path: string; source_mtime: number }>;
   const dbPaths = new Map<string, number>();
+  const conversationPaths = new Set<string>();
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
+    conversationPaths.add(row.source_path);
   }
 
   // Follow `codex archive` / `codex unarchive` relocations before scanning, so
@@ -3009,10 +3014,12 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     ).get(sourcePath) as { source_mtime: number | null };
     if (remaining.source_mtime === null) {
       dbPaths.delete(sourcePath);
+      conversationPaths.delete(sourcePath);
     } else {
       dbPaths.set(sourcePath, remaining.source_mtime);
     }
     dbPaths.set(relocated, sourceMtime);
+    conversationPaths.add(relocated);
   }
 
   const workflowRows = db
@@ -3063,12 +3070,17 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         const emptyState = emptyPaths.get(filePath);
 
         if (
-          emptyState?.empty_source_mtime === stat.mtimeMs
+          !conversationPaths.has(filePath)
+          && emptyState?.empty_source_mtime === stat.mtimeMs
           && emptyState.empty_source_size === stat.size
         ) {
           continue;
         }
-        if (dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100) {
+        if (
+          conversationPaths.has(filePath)
+          || dbMtime === undefined
+          || Math.abs(dbMtime - stat.mtimeMs) >= 100
+        ) {
           // New or modified file — queue for ingestion
           await ingestChanged(filePath);
         }
