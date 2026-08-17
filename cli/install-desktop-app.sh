@@ -32,8 +32,6 @@ relaunch_installed_app() {
   local executable_name="$2"
   local delay_seconds="$3"
 
-  "$sleep_command" "$delay_seconds"
-
   local attempt pid pids
   pids="$(matching_installed_pids "$install_path" "$executable_name")"
   if [[ -n "$pids" ]]; then
@@ -55,6 +53,12 @@ relaunch_installed_app() {
     done <<<"$pids"
   fi
 
+  # Once the replacement bundle is installed, the old shell may already be
+  # reconnecting to the newly restarted daemon and loading its new UI. Do not
+  # leave that stale native process interactive during the relaunch delay: it
+  # can briefly expose recovery affordances (including a redundant Log in)
+  # against a transition that will disappear as soon as the new shell opens.
+  "$sleep_command" "$delay_seconds"
   "$open_command" -n "$install_path"
 }
 

@@ -127,6 +127,18 @@ The auth queue is the mechanism for protected-branch merges. Full protocol is in
 - Use `--closes-issue <id>` only when a successful protected-branch merge should close that issue
 - `Bug:` commit trailers are work-tracking references. Only explicit `Closes:` / `Resolves:` trailers or `--closes-issue` are closure signals
 
+### Production runtime gate
+
+For a candidate that can affect Mandible daemon or desktop runtime behavior,
+the late pre-auth integration bar must launch the production daemon and
+packaged desktop app together from the exact candidate revision, not use a
+development or preview substitute. Probe startup completion and health,
+exercise one representative interaction, then inspect logs captured from that
+launch for crash or restart loops, repeated-event storms, database or
+foreign-key errors, and event-loop stalls or starvation. Any unexplained
+occurrence fails the gate. Run this once after the candidate stabilizes, and
+rerun it only when a later change can affect the result.
+
 ## Agent interaction tiers
 
 Mandible interacts with agents at four tiers of integration:

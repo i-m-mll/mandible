@@ -145,7 +145,10 @@ fi
       'printf "kill %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_TRACE"\ntouch "$MANDIBLE_TEST_TERMINATED"\n',
     );
     const open = writeTool("open", 'printf "open %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_TRACE"\n');
-    const sleep = writeTool("sleep", ":\n");
+    const sleep = writeTool(
+      "sleep",
+      'printf "sleep %s\\n" "$1" >> "$MANDIBLE_TEST_TRACE"\n',
+    );
 
     const result = spawnSync(
       "bash",
@@ -168,9 +171,14 @@ fi
     );
 
     expect(result.status, result.stderr).toBe(0);
-    expect(fs.readFileSync(trace, "utf8")).toContain("kill -TERM 101");
-    expect(fs.readFileSync(trace, "utf8")).not.toContain("202");
-    expect(fs.readFileSync(trace, "utf8")).toContain(`open -n ${installPath}`);
+    const relaunchTrace = fs.readFileSync(trace, "utf8");
+    expect(relaunchTrace).toContain("kill -TERM 101");
+    expect(relaunchTrace).not.toContain("202");
+    expect(relaunchTrace).toContain(`open -n ${installPath}`);
+    expect(relaunchTrace.indexOf("kill -TERM 101"))
+      .toBeLessThan(relaunchTrace.indexOf("sleep 0"));
+    expect(relaunchTrace.indexOf("sleep 0"))
+      .toBeLessThan(relaunchTrace.indexOf(`open -n ${installPath}`));
   });
 
   it("validates, backs up, installs, and requests relaunch for a running app", () => {
