@@ -18,6 +18,7 @@ export const OPERATIONAL_LOG_BACKUP_CLASSIFICATION = "excluded-runtime-telemetry
 const DEFAULT_COPY_BATCH_SIZE = 1_000;
 const DEFAULT_COPY_INITIAL_DELAY_MS = 2_000;
 const DEFAULT_COPY_CATCH_UP_DELAY_MS = 50;
+const DEFAULT_COPY_RECHECK_DELAY_MS = 30_000;
 const LOG_COLUMNS = [
   "id",
   "ts",
@@ -68,6 +69,9 @@ const OPERATIONAL_LOG_SCHEMA = `
     verified_at  INTEGER,
     verified_legacy_rows INTEGER,
     verified_primary_rows INTEGER,
+    legacy_high_water_ts INTEGER,
+    legacy_high_water_id TEXT,
+    legacy_high_water_rows INTEGER,
     copied_rows  INTEGER NOT NULL DEFAULT 0,
     updated_at   INTEGER NOT NULL
   );
@@ -131,6 +135,7 @@ export interface CopySchedulerOptions {
   initialDelayMs?: number;
   catchUpDelayMs?: number;
   batchSize?: number;
+  recheckDelayMs?: number;
 }
 
 export function getDefaultOperationalLogDbPath(): string {
@@ -200,7 +205,7 @@ export function visibleDaemonLogSource(db: Db): { cte: string; table: string } {
   if (!schemaTableExists(db, LEGACY_LOG_SCHEMA, "daemon_log")) {
     return { cte: "", table: "daemon_log" };
   }
-  if (hasRecordedVerification(db)) {
+  if (hasCurrentOperationalLogVerification(db)) {
     return { cte: "", table: "daemon_log" };
   }
   return {
@@ -228,26 +233,42 @@ export function copyForwardLegacyDaemonLogs(
   const batchSize = boundedInteger(options.batchSize, DEFAULT_COPY_BATCH_SIZE, 1, 10_000);
   const maxBatches = boundedInteger(options.maxBatches, 1, 1, 100);
   const now = finiteInteger(options.now, Date.now());
-  const sourcePath = path.resolve(store.canonicalDbPath);
-  const state = store.db.prepare(
-    `SELECT last_ts, last_id, completed_at, copied_rows
+  const sourcePath = canonicalExistingPath(store.canonicalDbPath);
+  let state = store.db.prepare(
+    `SELECT last_ts, last_id, completed_at, copied_rows,
+            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
      FROM operational_log_copy_state WHERE source_path = ?`,
   ).get(sourcePath) as {
     last_ts: number | null;
     last_id: string | null;
     completed_at: number | null;
     copied_rows: number;
+    legacy_high_water_ts: number | null;
+    legacy_high_water_id: string | null;
+    legacy_high_water_rows: number | null;
   } | undefined;
   if (state?.completed_at) {
-    return {
-      sourcePath,
-      copied: 0,
-      scanned: 0,
-      batches: 0,
-      complete: true,
-      lastTs: state.last_ts,
-      lastId: state.last_id,
-    };
+    if (copyStateMatchesLegacy(store.db, state)) {
+      return {
+        sourcePath,
+        copied: 0,
+        scanned: 0,
+        batches: 0,
+        complete: true,
+        lastTs: state.last_ts,
+        lastId: state.last_id,
+      };
+    }
+    store.db.prepare(
+      `UPDATE operational_log_copy_state
+       SET last_ts = NULL, last_id = NULL, completed_at = NULL, verified_at = NULL,
+           verified_legacy_rows = NULL, verified_primary_rows = NULL,
+           legacy_high_water_ts = NULL, legacy_high_water_id = NULL,
+           legacy_high_water_rows = NULL, updated_at = ?
+       WHERE source_path = ?`,
+    ).run(now, sourcePath);
+    state = { ...state, last_ts: null, last_id: null, completed_at: null,
+      legacy_high_water_ts: null, legacy_high_water_id: null, legacy_high_water_rows: null };
   }
 
   const selectRows = store.db.prepare(
@@ -265,8 +286,9 @@ export function copyForwardLegacyDaemonLogs(
   const persistState = store.db.prepare(
     `INSERT INTO operational_log_copy_state
        (source_path, last_ts, last_id, completed_at, verified_at,
-        verified_legacy_rows, verified_primary_rows, copied_rows, updated_at)
-     VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+        verified_legacy_rows, verified_primary_rows, legacy_high_water_ts,
+        legacy_high_water_id, legacy_high_water_rows, copied_rows, updated_at)
+     VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
      ON CONFLICT(source_path) DO UPDATE SET
        last_ts = excluded.last_ts,
        last_id = excluded.last_id,
@@ -274,10 +296,17 @@ export function copyForwardLegacyDaemonLogs(
        verified_at = NULL,
        verified_legacy_rows = NULL,
        verified_primary_rows = NULL,
+       legacy_high_water_ts = excluded.legacy_high_water_ts,
+       legacy_high_water_id = excluded.legacy_high_water_id,
+       legacy_high_water_rows = excluded.legacy_high_water_rows,
        copied_rows = operational_log_copy_state.copied_rows + excluded.copied_rows,
        updated_at = excluded.updated_at`,
   );
-  const applyBatch = store.db.transaction((rows: DaemonLogRow[], complete: boolean): number => {
+  const applyBatch = store.db.transaction((
+    rows: DaemonLogRow[],
+    complete: boolean,
+    legacySnapshot: LegacyHighWater,
+  ): number => {
     let copied = 0;
     for (const row of rows) {
       const result = insert.run(...LOG_COLUMNS.map((column) => row[column]));
@@ -289,6 +318,9 @@ export function copyForwardLegacyDaemonLogs(
       last?.ts ?? state?.last_ts ?? null,
       last?.id ?? state?.last_id ?? null,
       complete ? now : null,
+      complete ? legacySnapshot.ts : null,
+      complete ? legacySnapshot.id : null,
+      complete ? legacySnapshot.rows : null,
       copied,
       now,
     );
@@ -302,9 +334,10 @@ export function copyForwardLegacyDaemonLogs(
   let batches = 0;
   let complete = false;
   for (let index = 0; index < maxBatches; index += 1) {
+    const legacySnapshot = currentLegacyHighWater(store.db);
     const rows = selectRows.all(cursorTs, cursorTs, cursorTs, cursorId, batchSize) as DaemonLogRow[];
     complete = rows.length < batchSize;
-    copied += applyBatch(rows, complete);
+    copied += applyBatch(rows, complete, legacySnapshot);
     scanned += rows.length;
     batches += 1;
     const last = rows.at(-1);
@@ -324,7 +357,7 @@ export function verifyLegacyDaemonLogCopy(
   if (!store.legacyAttached) {
     const primaryRows = countRows(store.db, "main.daemon_log");
     return {
-      sourcePath: path.resolve(store.canonicalDbPath),
+      sourcePath: canonicalExistingPath(store.canonicalDbPath),
       legacyRows: 0,
       coveredRows: 0,
       missingRows: 0,
@@ -336,7 +369,8 @@ export function verifyLegacyDaemonLogCopy(
       verifiedAt: null,
     };
   }
-  const sourcePath = path.resolve(store.canonicalDbPath);
+  const sourcePath = canonicalExistingPath(store.canonicalDbPath);
+  if (options.record !== false) invalidateStaleCopyState(store.db, sourcePath, finiteInteger(options.now, Date.now()));
   const legacyRows = countRows(store.db, `${LEGACY_LOG_SCHEMA}.daemon_log`);
   const primaryRows = countRows(store.db, "main.daemon_log");
   const coveredRows = numberResult(store.db.prepare(
@@ -357,8 +391,9 @@ export function verifyLegacyDaemonLogCopy(
     `${visible.cte} SELECT COUNT(*) AS count FROM ${visible.table}`,
   ).get());
   const missingRows = legacyRows - coveredRows;
+  const copyComplete = hasCurrentCompletedCopy(store.db, sourcePath);
   const queryParity = visibleRows === primaryRows && missingRows === 0 && mismatchedRows === 0;
-  const verified = queryParity;
+  const verified = copyComplete && queryParity;
   let verifiedAt: number | null = null;
   if (verified && options.record !== false) {
     assertWritableStore(store.db);
@@ -386,22 +421,28 @@ export function verifyLegacyDaemonLogCopy(
 export function planLegacyDaemonLogReclaim(store: OperationalLogStore): ReclaimPlan {
   const verification = verifyLegacyDaemonLogCopy(store, { record: false });
   const state = store.db.prepare(
-    `SELECT completed_at, verified_at, verified_legacy_rows, verified_primary_rows
+    `SELECT completed_at, verified_at, verified_legacy_rows, verified_primary_rows,
+            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
      FROM operational_log_copy_state WHERE source_path = ?`,
-  ).get(path.resolve(store.canonicalDbPath)) as {
+  ).get(canonicalExistingPath(store.canonicalDbPath)) as {
     completed_at: number | null;
     verified_at: number | null;
     verified_legacy_rows: number | null;
     verified_primary_rows: number | null;
+    legacy_high_water_ts: number | null;
+    legacy_high_water_id: string | null;
+    legacy_high_water_rows: number | null;
   } | undefined;
   // Retention is allowed to remove expired primary rows after verification.
   // Reclaim eligibility therefore rests on the recorded verifier snapshot,
   // not on re-proving historical coverage after policy-driven expiry.
   const eligible = Boolean(
-    state?.completed_at
+    state
+    && state.completed_at
     && state.verified_at
     && state.verified_legacy_rows !== null
-    && state.verified_primary_rows !== null,
+    && state.verified_primary_rows !== null
+    && copyStateMatchesLegacy(store.db, state),
   );
   return {
     eligible,
@@ -428,6 +469,7 @@ export function startOperationalLogCopyForward(
 ): { stop(): void } {
   const initialDelayMs = boundedInteger(options.initialDelayMs, DEFAULT_COPY_INITIAL_DELAY_MS, 0, 60_000);
   const catchUpDelayMs = boundedInteger(options.catchUpDelayMs, DEFAULT_COPY_CATCH_UP_DELAY_MS, 0, 60_000);
+  const recheckDelayMs = boundedInteger(options.recheckDelayMs, DEFAULT_COPY_RECHECK_DELAY_MS, 1, 300_000);
   const batchSize = boundedInteger(options.batchSize, DEFAULT_COPY_BATCH_SIZE, 1, 10_000);
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -446,7 +488,7 @@ export function startOperationalLogCopyForward(
           complete: result.complete,
         });
       }
-      if (!result.complete) schedule(catchUpDelayMs);
+      schedule(result.complete ? recheckDelayMs : catchUpDelayMs);
     } catch (error) {
       logger("warn", "operational_log_copy_forward_failed", { error: String(error) });
       schedule(Math.max(catchUpDelayMs, 1_000));
@@ -485,13 +527,91 @@ function ensureCopyStateColumns(db: Db): void {
   if (!columns.has("verified_primary_rows")) {
     db.exec("ALTER TABLE operational_log_copy_state ADD COLUMN verified_primary_rows INTEGER");
   }
+  if (!columns.has("legacy_high_water_ts")) {
+    db.exec("ALTER TABLE operational_log_copy_state ADD COLUMN legacy_high_water_ts INTEGER");
+  }
+  if (!columns.has("legacy_high_water_id")) {
+    db.exec("ALTER TABLE operational_log_copy_state ADD COLUMN legacy_high_water_id TEXT");
+  }
+  if (!columns.has("legacy_high_water_rows")) {
+    db.exec("ALTER TABLE operational_log_copy_state ADD COLUMN legacy_high_water_rows INTEGER");
+  }
 }
 
-function hasRecordedVerification(db: Db): boolean {
+type LegacyHighWater = { ts: number | null; id: string | null; rows: number };
+
+function currentLegacyHighWater(db: Db): LegacyHighWater {
+  const row = db.prepare(
+    `SELECT ts, id FROM ${LEGACY_LOG_SCHEMA}.daemon_log ORDER BY ts DESC, id DESC LIMIT 1`,
+  ).get() as { ts: number; id: string } | undefined;
+  return {
+    ts: row?.ts ?? null,
+    id: row?.id ?? null,
+    rows: countRows(db, `${LEGACY_LOG_SCHEMA}.daemon_log`),
+  };
+}
+
+function copyStateMatchesLegacy(db: Db, state: {
+  legacy_high_water_ts: number | null;
+  legacy_high_water_id: string | null;
+  legacy_high_water_rows: number | null;
+}): boolean {
+  if (state.legacy_high_water_rows === null) return false;
+  const current = currentLegacyHighWater(db);
+  return current.ts === state.legacy_high_water_ts
+    && current.id === state.legacy_high_water_id
+    && current.rows === state.legacy_high_water_rows;
+}
+
+function attachedLegacySourcePath(db: Db): string | null {
+  const row = (db.pragma("database_list") as Array<{ name: string; file: string }>)
+    .find((database) => database.name === LEGACY_LOG_SCHEMA);
+  return row?.file ? canonicalExistingPath(row.file) : null;
+}
+
+function hasCurrentCompletedCopy(db: Db, sourcePath: string): boolean {
   try {
-    return Boolean(db.prepare(
-      "SELECT 1 FROM operational_log_copy_state WHERE completed_at IS NOT NULL AND verified_at IS NOT NULL LIMIT 1",
-    ).get());
+    const state = db.prepare(
+      `SELECT completed_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+       FROM operational_log_copy_state WHERE source_path = ?`,
+    ).get(sourcePath) as ({ completed_at: number | null } & LegacyHighWaterState) | undefined;
+    return Boolean(state?.completed_at && copyStateMatchesLegacy(db, state));
+  } catch {
+    return false;
+  }
+}
+
+type LegacyHighWaterState = {
+  legacy_high_water_ts: number | null;
+  legacy_high_water_id: string | null;
+  legacy_high_water_rows: number | null;
+};
+
+function invalidateStaleCopyState(db: Db, sourcePath: string, now: number): void {
+  const state = db.prepare(
+    `SELECT completed_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+     FROM operational_log_copy_state WHERE source_path = ?`,
+  ).get(sourcePath) as ({ completed_at: number | null } & LegacyHighWaterState) | undefined;
+  if (!state?.completed_at || copyStateMatchesLegacy(db, state)) return;
+  db.prepare(
+    `UPDATE operational_log_copy_state
+     SET last_ts = NULL, last_id = NULL, completed_at = NULL, verified_at = NULL,
+         verified_legacy_rows = NULL, verified_primary_rows = NULL,
+         legacy_high_water_ts = NULL, legacy_high_water_id = NULL,
+         legacy_high_water_rows = NULL, updated_at = ?
+     WHERE source_path = ?`,
+  ).run(now, sourcePath);
+}
+
+export function hasCurrentOperationalLogVerification(db: Db): boolean {
+  try {
+    const sourcePath = attachedLegacySourcePath(db);
+    if (!sourcePath) return false;
+    const state = db.prepare(
+      `SELECT completed_at, verified_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+       FROM operational_log_copy_state WHERE source_path = ?`,
+    ).get(sourcePath) as ({ completed_at: number | null; verified_at: number | null } & LegacyHighWaterState) | undefined;
+    return Boolean(state?.completed_at && state.verified_at && copyStateMatchesLegacy(db, state));
   } catch {
     return false;
   }
@@ -537,4 +657,12 @@ function expandHome(value: string): string {
   if (value === "~") return getUserHome();
   if (value.startsWith("~/")) return path.join(getUserHome(), value.slice(2));
   return value;
+}
+
+function canonicalExistingPath(value: string): string {
+  try {
+    return fs.realpathSync.native(value);
+  } catch {
+    return path.resolve(value);
+  }
 }

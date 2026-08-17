@@ -113,11 +113,16 @@ describe("operational log database lifecycle", () => {
     const scheduler = startOperationalLogCopyForward(
       store,
       (_level, event) => events.push(event),
-      { initialDelayMs: 0, catchUpDelayMs: 0, batchSize: 1 },
+      { initialDelayMs: 0, catchUpDelayMs: 0, recheckDelayMs: 5, batchSize: 1 },
     );
     try {
       expect(store.db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 0 });
       await waitFor(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number }).count) === 3);
+      await waitFor(() => Boolean(store.db.prepare(
+        "SELECT 1 FROM operational_log_copy_state WHERE completed_at IS NOT NULL",
+      ).get()));
+      insert(canonicalDb, "async-after-completion", 10, "async-after-completion");
+      await waitFor(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number }).count) === 4);
       expect(events).toContain("operational_log_copy_forward");
     } finally {
       scheduler.stop();
@@ -204,6 +209,42 @@ describe("operational log database lifecycle", () => {
     expect(planLegacyDaemonLogReclaim(store)).toMatchObject({
       eligible: true,
       productionMutationPerformed: false,
+    });
+  });
+
+  it("invalidates stale completion when a rollback daemon appends legacy rows", () => {
+    insert(canonicalDb, "legacy-first", 100, "legacy-first");
+    expect(copyForwardLegacyDaemonLogs(store, { now: 1_000 })).toMatchObject({ complete: true, copied: 1 });
+    expect(verifyLegacyDaemonLogCopy(store, { record: true, now: 2_000 }).verified).toBe(true);
+    expect(planLegacyDaemonLogReclaim(store).eligible).toBe(true);
+
+    // A downgraded daemon can append both newer and backdated rows. The row
+    // count is part of the persisted high-water snapshot, so neither shape can
+    // hide behind the previously recorded verification.
+    insert(canonicalDb, "legacy-later", 200, "legacy-later");
+    insert(canonicalDb, "legacy-backdated", 50, "legacy-backdated");
+    expect(visibleRows()).toEqual([
+      { id: "legacy-backdated", event: "legacy-backdated" },
+      { id: "legacy-first", event: "legacy-first" },
+      { id: "legacy-later", event: "legacy-later" },
+    ]);
+    expect(planLegacyDaemonLogReclaim(store).eligible).toBe(false);
+
+    const resumed = copyForwardLegacyDaemonLogs(store, { now: 3_000 });
+    expect(resumed).toMatchObject({ complete: true, scanned: 3, copied: 2 });
+    expect(verifyLegacyDaemonLogCopy(store, { record: true, now: 4_000 })).toMatchObject({
+      legacyRows: 3,
+      coveredRows: 3,
+      verified: true,
+      verifiedAt: 4_000,
+    });
+    expect(store.db.prepare(
+      `SELECT legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+       FROM operational_log_copy_state`,
+    ).get()).toEqual({
+      legacy_high_water_ts: 200,
+      legacy_high_water_id: "legacy-later",
+      legacy_high_water_rows: 3,
     });
   });
 

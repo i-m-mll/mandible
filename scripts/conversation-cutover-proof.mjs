@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
@@ -15,7 +15,8 @@ const {
   resolvesToAnyProductionDbPath,
 } = require("../cli/production-db-guard.cjs");
 
-export const REPORT_VERSION = 1;
+export const REPORT_VERSION = 2;
+export const TOOL_VERSION = `conversation-cutover-proof/${REPORT_VERSION}`;
 export const COVERAGE_CLASSES = Object.freeze([
   "verified-live-source",
   "verified-managed-custody",
@@ -156,6 +157,40 @@ function tableDigest(db, schema, table) {
   return { rows: rows.length, sha256: sha256(stableJson(rows)) };
 }
 
+function sourceDatabaseBinding(db, sourcePath, schema = "main") {
+  const sourceSchema = userSchema(db, schema);
+  const schemaObjects = [...sourceSchema.tables, ...sourceSchema.indexes, ...sourceSchema.views, ...sourceSchema.triggers]
+    .map(({ type, name, tbl_name, sql }) => ({ type, name, tbl_name, sql }));
+  const tables = Object.fromEntries(sourceSchema.tables.map((table) => [table.name, tableDigest(db, schema, table.name)]));
+  const stat = fs.statSync(sourcePath);
+  return {
+    tool_version: TOOL_VERSION,
+    schema_head: {
+      user_version: Number(db.pragma(`${schema}.user_version`, { simple: true }) ?? 0),
+      sha256: sha256(stableJson(schemaObjects)),
+    },
+    source_database: {
+      path: canonicalPath(sourcePath),
+      identity: { device: Number(stat.dev), inode: Number(stat.ino) },
+      digest: sha256(stableJson(tables)),
+    },
+  };
+}
+
+function bindingMatches(actual, expected) {
+  return Boolean(actual) && stableJson(actual) === stableJson(expected);
+}
+
+export function inspectSourceBinding(source) {
+  const sourcePath = path.resolve(source);
+  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  try {
+    return sourceDatabaseBinding(db, sourcePath);
+  } finally {
+    db.close();
+  }
+}
+
 function normalizedForeignKeys(db, schema) {
   return db.pragma(`${schema}.foreign_key_check`).map((row) => ({
     table: String(row.table),
@@ -224,6 +259,7 @@ export function buildCompactDestination(options) {
     db.pragma("synchronous = FULL");
     db.pragma("foreign_keys = OFF");
     db.prepare("ATTACH DATABASE ? AS source").run(sourcePath);
+    const binding = sourceDatabaseBinding(db, sourcePath, "source");
     db.exec("BEGIN DEFERRED");
     const schema = userSchema(db, "source");
     const copied = {};
@@ -278,6 +314,8 @@ export function buildCompactDestination(options) {
     fs.rmSync(markerPath, { force: true });
     return {
       version: REPORT_VERSION,
+      report_kind: "compact-rebuild-evidence",
+      binding,
       source: { path: sourcePath, files: sourceBefore },
       destination: { path: destinationPath, size_bytes: fs.statSync(destinationPath).size },
       recovered_partial: recoveredPartial,
@@ -406,7 +444,7 @@ function annotationProjection(db, conversationId) {
   return output;
 }
 
-function assessSearch(packet) {
+function assessSearch(packet, evidenceBound) {
   const comparisons = (packet?.search?.comparisons ?? []).map((item) => {
     const legacy = [...(item.legacy_results ?? [])].map(String);
     const source = [...(item.source_results ?? [])].map(String);
@@ -417,7 +455,7 @@ function assessSearch(packet) {
       source_results: source,
     };
   });
-  const declared = packet?.search?.adapter_verified === true;
+  const declared = evidenceBound && packet?.search?.adapter_verified === true;
   return {
     pass: declared && comparisons.length > 0 && comparisons.every((item) => item.pass),
     adapter_verified: declared,
@@ -425,13 +463,13 @@ function assessSearch(packet) {
   };
 }
 
-function assessPerformance(packet) {
+function assessPerformance(packet, evidenceBound) {
   const modes = ["cold_detail", "hot_detail", "cold_search", "hot_search"];
   const report = {};
   let pass = true;
   for (const mode of modes) {
     const value = packet?.performance?.[mode];
-    const valid = value && Number.isFinite(value.p95_ms) && Number.isFinite(value.budget_ms)
+    const valid = evidenceBound && value && Number.isFinite(value.p95_ms) && Number.isFinite(value.budget_ms)
       && Number.isFinite(value.peak_rss_bytes) && Number.isFinite(value.rss_budget_bytes);
     const modePass = Boolean(valid && value.p95_ms <= value.budget_ms && value.peak_rss_bytes <= value.rss_budget_bytes);
     report[mode] = { ...(value ?? {}), pass: modePass };
@@ -440,18 +478,20 @@ function assessPerformance(packet) {
   return { pass, modes: report };
 }
 
-function namedExternalGate(packet, key) {
+function namedExternalGate(packet, key, evidenceBound) {
   const value = packet?.gates?.[key];
   return {
-    pass: value?.pass === true,
+    pass: evidenceBound && value?.pass === true,
     adapter: value?.adapter ?? null,
     evidence: value?.evidence ?? null,
-    errors: Array.isArray(value?.errors) ? value.errors : value ? [] : ["missing_adapter_evidence"],
+    errors: !evidenceBound
+      ? ["unbound_evidence_packet"]
+      : Array.isArray(value?.errors) ? value.errors : value ? [] : ["missing_adapter_evidence"],
   };
 }
 
-function assessRollbackGate(packet) {
-  const gate = namedExternalGate(packet, "rollback_kill_switch");
+function assessRollbackGate(packet, evidenceBound) {
+  const gate = namedExternalGate(packet, "rollback_kill_switch", evidenceBound);
   const evidence = gate.evidence ?? {};
   const contractPass = Number(evidence.retention_days) >= 31
     && evidence.legacy_database_verified === true
@@ -475,6 +515,8 @@ export function auditCutover(options) {
   const packet = options.evidence ?? {};
   const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
   try {
+    const binding = sourceDatabaseBinding(db, sourcePath);
+    const evidenceBound = bindingMatches(packet.binding, binding);
     const conversations = db.prepare(
       `SELECT id, source, session_id, parent_conversation_id, is_sidechain, agent_id
          FROM conversations ORDER BY id`,
@@ -485,7 +527,7 @@ export function auditCutover(options) {
     for (const conversation of conversations) {
       const legacy = legacyConversationProjection(db, conversation);
       const item = evidence.get(conversation.id);
-      const verifiedClass = COVERAGE_CLASSES.includes(item?.classification) && item?.verified === true
+      const verifiedClass = evidenceBound && COVERAGE_CLASSES.includes(item?.classification) && item?.verified === true
         ? item.classification : null;
       const hasLegacyBodies = legacy.blocks.length > 0;
       let classification = verifiedClass;
@@ -523,11 +565,21 @@ export function auditCutover(options) {
       compared: shadow.length,
       mismatches: shadow.filter((row) => !row.pass),
     };
-    const search = assessSearch(packet);
-    const performance = assessPerformance(packet);
-    const rebuild = options.rebuildReport ?? { pass: false, error: "compact_rebuild_not_run" };
+    const search = assessSearch(packet, evidenceBound);
+    const performance = assessPerformance(packet, evidenceBound);
+    const rebuildInput = options.rebuildReport;
+    const rebuildBound = bindingMatches(rebuildInput?.binding, binding);
+    const rebuild = rebuildInput ? {
+      ...rebuildInput,
+      pass: rebuildInput.pass === true && rebuildBound,
+      binding_valid: rebuildBound,
+      errors: rebuildBound ? (rebuildInput.errors ?? []) : ["source_binding_mismatch"],
+    } : { pass: false, binding_valid: false, error: "compact_rebuild_not_run" };
     const restoreDrills = options.restoreDrillReports ?? [];
     const validRestoreDrill = (report) => report?.pass === true
+      && bindingMatches(report?.binding, binding)
+      && typeof report?.run_id === "string" && report.run_id.length > 0
+      && typeof report?.destination_root === "string" && report.destination_root.length > 0
       && report?.original_provider_roots_used === false
       && report?.metadata?.integrity_check === "ok"
       && Array.isArray(report?.metadata?.foreign_key_violations)
@@ -535,28 +587,46 @@ export function auditCutover(options) {
       && report?.custody?.pass === true
       && report?.custody?.manifest_present === true
       && report?.collision_policy === "destination-must-not-exist";
+    const validRestoreDrills = restoreDrills.filter(validRestoreDrill);
+    const distinctRunIds = new Set(validRestoreDrills.map((report) => report.run_id));
+    const distinctDestinations = new Set(validRestoreDrills.map((report) => canonicalPath(report.destination_root)));
     const recovery = {
-      pass: restoreDrills.length >= 2 && restoreDrills.every(validRestoreDrill),
+      pass: validRestoreDrills.length >= 2
+        && validRestoreDrills.length === restoreDrills.length
+        && distinctRunIds.size === validRestoreDrills.length
+        && distinctDestinations.size === validRestoreDrills.length,
       required: 2,
-      completed: restoreDrills.filter(validRestoreDrill).length,
+      completed: validRestoreDrills.length,
+      distinct_run_ids: distinctRunIds.size,
+      distinct_destinations: distinctDestinations.size,
       drills: restoreDrills,
     };
     const gates = {
+      evidence_binding: {
+        pass: evidenceBound,
+        expected: binding,
+        supplied: packet.binding ?? null,
+        errors: evidenceBound ? [] : ["unbound_or_mismatched_evidence_packet"],
+      },
       coverage: coverageReport,
       dual_read_shadow: shadowReport,
       exact_search_parity: search,
       parser_performance: performance,
-      locator_refresh: namedExternalGate(packet, "locator_refresh"),
-      security_redaction: namedExternalGate(packet, "security_redaction"),
+      locator_refresh: namedExternalGate(packet, "locator_refresh", evidenceBound),
+      security_redaction: namedExternalGate(packet, "security_redaction", evidenceBound),
       compact_rebuild: rebuild,
       fresh_machine_recovery: recovery,
-      rollback_kill_switch: assessRollbackGate(packet),
+      rollback_kill_switch: assessRollbackGate(packet, evidenceBound),
     };
     const failedGates = Object.entries(gates).filter(([, gate]) => gate.pass !== true).map(([name]) => name);
+    failedGates.push("automated_go_authority");
     return {
       version: REPORT_VERSION,
-      decision: failedGates.length === 0 ? "GO" : "NO-GO",
-      pass: failedGates.length === 0,
+      report_kind: "source-bound-evidence-checklist",
+      binding,
+      decision: "NO-GO",
+      pass: false,
+      go_authority: false,
       failed_gates: failedGates,
       gates,
     };
@@ -629,10 +699,12 @@ function verifyCustodyTree(root) {
 }
 
 export function runRestoreDrill(options) {
+  const sourcePath = path.resolve(options.source);
   const metadataSql = path.resolve(options.metadataSql);
   const custodyRoot = path.resolve(options.custodyRoot);
   const destinationRoot = path.resolve(options.destinationRoot);
   if (fs.existsSync(destinationRoot)) throw new Error(`Restore destination already exists: ${destinationRoot}`);
+  if (!fs.existsSync(sourcePath)) throw new Error(`Source database does not exist: ${sourcePath}`);
   const futureDestinationRoot = canonicalFuturePath(destinationRoot);
   for (const production of PRODUCTION_DB_PATHS) {
     const productionRoot = canonicalPath(path.dirname(production));
@@ -644,6 +716,8 @@ export function runRestoreDrill(options) {
   if (!fs.existsSync(custodyRoot)) throw new Error(`Custody root does not exist: ${custodyRoot}`);
   const sourceCustody = verifyCustodyTree(custodyRoot);
   if (!sourceCustody.pass) throw new Error(`Custody input verification failed: ${sourceCustody.mismatches.join(", ")}`);
+  const binding = inspectSourceBinding(sourcePath);
+  const runId = randomUUID();
 
   fs.mkdirSync(destinationRoot, { recursive: false });
   const metadataPath = path.join(destinationRoot, "metadata.sqlite");
@@ -665,6 +739,14 @@ export function runRestoreDrill(options) {
     const manifestPresent = fs.existsSync(path.join(restoredCustody, "manifest.json"));
     return {
       version: REPORT_VERSION,
+      report_kind: "fresh-machine-restore-evidence",
+      binding,
+      run_id: runId,
+      destination_root: canonicalPath(destinationRoot),
+      inputs: {
+        metadata_sql_sha256: hashFile(metadataSql),
+        custody_manifest_sha256: hashFile(path.join(custodyRoot, "SHA256SUMS")),
+      },
       pass: restored.pass && manifestPresent,
       metadata: { path: metadataPath, integrity_check: "ok", foreign_key_violations: [] },
       custody: { ...restored, manifest_present: manifestPresent },
@@ -714,12 +796,13 @@ function usage() {
   console.log(`Usage: node scripts/conversation-cutover-proof.mjs <command> [options]
 
 Commands:
+  binding --source DB [--json]
   rebuild --source DB --destination DB [--exclude-table NAME...] [--json]
-  restore-drill --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
+  restore-drill --source DB --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
   audit --source DB --evidence FILE [--rebuild-report FILE] [--restore-report FILE...] [--json]
 
-The audit command always emits one deterministic machine-readable GO/NO-GO
-result. Missing source/cache/custody/restore evidence fails closed.
+The audit command emits a source-bound evidence checklist. It can only return
+NO-GO; caller-authored evidence is not an automated cutover authority.
 `);
 }
 
@@ -731,12 +814,15 @@ async function main(argv) {
   const options = parseArgs(argv);
   if (options.help || !options.command) { usage(); return options.command ? 0 : 2; }
   let report;
-  if (options.command === "rebuild") {
+  if (options.command === "binding") {
+    if (!options.source) throw new Error("binding requires --source");
+    report = inspectSourceBinding(options.source);
+  } else if (options.command === "rebuild") {
     if (!options.source || !options.destination) throw new Error("rebuild requires --source and --destination");
     report = buildCompactDestination({ source: options.source, destination: options.destination, excludeTables: options.excludeTables });
   } else if (options.command === "restore-drill") {
-    if (!options.metadataSql || !options.custodyRoot || !options.destinationRoot) {
-      throw new Error("restore-drill requires --metadata-sql, --custody-root, and --destination-root");
+    if (!options.source || !options.metadataSql || !options.custodyRoot || !options.destinationRoot) {
+      throw new Error("restore-drill requires --source, --metadata-sql, --custody-root, and --destination-root");
     }
     report = runRestoreDrill(options);
   } else if (options.command === "audit") {
@@ -751,7 +837,7 @@ async function main(argv) {
     throw new Error(`Unknown command: ${options.command}`);
   }
   process.stdout.write(`${JSON.stringify(report, null, options.json ? 2 : 0)}\n`);
-  return report.pass ? 0 : 1;
+  return options.command === "binding" ? 0 : report.pass ? 0 : 1;
 }
 
 const invoked = process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url));
