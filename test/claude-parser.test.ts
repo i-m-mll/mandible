@@ -160,6 +160,36 @@ describe("ClaudeParser", () => {
     });
   });
 
+  it("prefers the latest valid provider custom title over generated index titles", async () => {
+    const parser = new ClaudeParser();
+    const sessionPath = await makeClaudeSession();
+    await fs.writeFile(
+      path.join(path.dirname(sessionPath), "sessions-index.json"),
+      JSON.stringify({
+        version: 1,
+        entries: [{
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          fullPath: sessionPath,
+          summary: "Generated summary",
+          firstPrompt: "Generated first prompt",
+        }],
+      }),
+      "utf8",
+    );
+    await fs.appendFile(sessionPath, [
+      JSON.stringify({ type: "custom-title", customTitle: "First provider title" }),
+      JSON.stringify({ type: "custom-title", customTitle: "   " }),
+      JSON.stringify({ type: "custom-title", customTitle: "Latest provider title" }),
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await parser.parse(sessionPath);
+
+    expect(result?.conversation.title).toBe("Latest provider title");
+    expect(result?.conversation.summary).toBe("Generated summary");
+    expect(result?.providerTitle).toBe("Latest provider title");
+  });
+
   it("computes approximate context from Claude effective input tokens", async () => {
     const parser = new ClaudeParser();
     const sessionPath = await makeClaudeSession();

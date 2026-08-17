@@ -80,6 +80,8 @@ export interface Conversation {
 export interface ParseResult {
   conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "label" | "notes">;
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
+  /** Provider-authored title metadata present in this parse batch. */
+  providerTitle?: string;
 }
 
 export interface IncrementalParseInput {
