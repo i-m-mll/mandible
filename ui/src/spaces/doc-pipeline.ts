@@ -101,7 +101,7 @@ export interface ParsedDocRef {
 
 /** A non-block diagnostic surfaced during parsing (never thrown). */
 export interface DocPipelineDiagnostic {
-  kind: 'unknown_format' | 'unresolved_reference' | 'non_block_prose';
+  kind: 'unknown_format' | 'unresolved_reference' | 'non_block_prose' | 'unknown_directive';
   detail: string;
   ref?: string;
 }
@@ -391,7 +391,20 @@ export function parseSpacesDoc(text: string): ParsedDoc {
         html,
         refs: blockRefs,
       });
-    } else if (node.type !== 'containerDirective') {
+    } else if (node.type === 'containerDirective') {
+      const directiveRefs: ParsedDocRef[] = [];
+      collectRefsFromNode(node, directiveRefs);
+      noteRefs(directiveRefs);
+
+      const directiveMarkdown = blockBodyMarkdown(node, body);
+      const directiveHtml = renderProseToSafeHtml(directiveMarkdown);
+      if (directiveHtml) htmlFragments.push(directiveHtml);
+
+      diagnostics.push({
+        kind: 'unknown_directive',
+        detail: `Container directive ":::${node.name}" is not recognized; its content was rendered as prose.`,
+      });
+    } else {
       // Loose prose outside any block directive: surface its refs and render it,
       // matching C12's "new external block" leniency (no silent drop).
       const looseRefs: ParsedDocRef[] = [];
