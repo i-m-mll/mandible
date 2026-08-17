@@ -1,0 +1,765 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
+import Database from "better-sqlite3";
+
+const require = createRequire(import.meta.url);
+const {
+  PRODUCTION_DB_PATHS,
+  resolvesToAnyProductionDbPath,
+} = require("../cli/production-db-guard.cjs");
+
+export const REPORT_VERSION = 1;
+export const COVERAGE_CLASSES = Object.freeze([
+  "verified-live-source",
+  "verified-managed-custody",
+  "legacy-body-only",
+]);
+
+const DEFAULT_DISPOSABLE_TABLE_PATTERNS = Object.freeze([
+  /^conversation_(?:body_)?cache(?:_|$)/,
+  /^conversation_search(?:_|$)/,
+  /^conversation_fts(?:_|$)/,
+  /^conversation_trigram(?:_|$)/,
+  /^conversation_parser_checkpoint_cache(?:_|$)/,
+]);
+
+class SimulatedInterruption extends Error {
+  constructor(message = "simulated rebuild interruption") {
+    super(message);
+    this.name = "SimulatedInterruption";
+  }
+}
+
+function canonicalPath(target) {
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+function canonicalFuturePath(target) {
+  let probe = path.resolve(target);
+  const suffix = [];
+  while (!fs.existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    suffix.unshift(path.basename(probe));
+    probe = parent;
+  }
+  return path.join(canonicalPath(probe), ...suffix);
+}
+
+function sameFile(left, right) {
+  try {
+    const a = fs.statSync(left);
+    const b = fs.statSync(right);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch {
+    return false;
+  }
+}
+
+function quoteIdentifier(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function sqlReferencesIdentifier(sql, identifier) {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:[\"\`]${escaped}[\"\`]|\\b${escaped}\\b)`, "i").test(sql);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object" && !Buffer.isBuffer(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  if (Buffer.isBuffer(value)) return JSON.stringify({ $blob: value.toString("base64") });
+  return JSON.stringify(value);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hashFile(target) {
+  return sha256(fs.readFileSync(target));
+}
+
+function dbFileSnapshot(dbPath) {
+  const snapshot = {};
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const target = `${dbPath}${suffix}`;
+    if (!fs.existsSync(target)) continue;
+    const stat = fs.statSync(target);
+    snapshot[suffix || "db"] = { size_bytes: stat.size, sha256: hashFile(target) };
+  }
+  return snapshot;
+}
+
+function fsyncFile(target) {
+  const fd = fs.openSync(target, "r");
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function removeDbFamily(target) {
+  for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${target}${suffix}`, { force: true });
+}
+
+function visibleColumns(db, schema, table) {
+  return db.pragma(`${schema}.table_xinfo(${quoteIdentifier(table)})`)
+    .filter((column) => Number(column.hidden ?? 0) === 0);
+}
+
+function orderClause(columns) {
+  const primary = columns.filter((column) => Number(column.pk) > 0)
+    .sort((left, right) => Number(left.pk) - Number(right.pk));
+  if (primary.length === 0) return " ORDER BY rowid";
+  return ` ORDER BY ${primary.map((column) => quoteIdentifier(column.name)).join(", ")}`;
+}
+
+function userSchema(db, schema = "main") {
+  const rows = db.prepare(
+    `SELECT type, name, tbl_name, sql FROM ${schema}.sqlite_master
+      WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+      ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'view' THEN 2 ELSE 3 END, name`,
+  ).all();
+  return {
+    tables: rows.filter((row) => row.type === "table"),
+    indexes: rows.filter((row) => row.type === "index"),
+    views: rows.filter((row) => row.type === "view"),
+    triggers: rows.filter((row) => row.type === "trigger"),
+  };
+}
+
+function normalizedRows(db, schema, table) {
+  const columns = visibleColumns(db, schema, table);
+  const selected = columns.map((column) => quoteIdentifier(column.name)).join(", ");
+  return db.prepare(
+    `SELECT ${selected} FROM ${schema}.${quoteIdentifier(table)}${orderClause(columns)}`,
+  ).all();
+}
+
+function tableDigest(db, schema, table) {
+  const rows = normalizedRows(db, schema, table);
+  return { rows: rows.length, sha256: sha256(stableJson(rows)) };
+}
+
+function normalizedForeignKeys(db, schema) {
+  return db.pragma(`${schema}.foreign_key_check`).map((row) => ({
+    table: String(row.table),
+    rowid: row.rowid === null ? null : Number(row.rowid),
+    parent: String(row.parent),
+    fkid: Number(row.fkid),
+  })).sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
+}
+
+function isDisposableTable(name, explicit) {
+  return explicit.has(name) || DEFAULT_DISPOSABLE_TABLE_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+function assertSafeDestination(sourcePath, destinationPath) {
+  if (canonicalPath(sourcePath) === canonicalFuturePath(destinationPath) || sameFile(sourcePath, destinationPath)) {
+    throw new Error("Rebuild destination must be distinct from the source database");
+  }
+  const futureDestination = canonicalFuturePath(destinationPath);
+  const productionMatch = resolvesToAnyProductionDbPath(destinationPath, PRODUCTION_DB_PATHS)
+    ?? PRODUCTION_DB_PATHS.find((candidate) => canonicalPath(candidate) === futureDestination);
+  if (productionMatch) {
+    throw new Error(`Refusing production database alias as rebuild destination: ${canonicalPath(productionMatch)}`);
+  }
+}
+
+/**
+ * Build a fresh, compact SQLite destination without mutating the source. The
+ * in-progress marker deliberately survives process interruption; the next run
+ * removes only the named partial file and starts from the source again.
+ */
+export function buildCompactDestination(options) {
+  const sourcePath = path.resolve(options.source);
+  const destinationPath = path.resolve(options.destination);
+  const partialPath = `${destinationPath}.partial`;
+  const markerPath = `${destinationPath}.rebuild-in-progress.json`;
+  const explicitExcluded = new Set(options.excludeTables ?? []);
+  assertSafeDestination(sourcePath, destinationPath);
+  if (!fs.existsSync(sourcePath)) throw new Error(`Source database does not exist: ${sourcePath}`);
+  if (fs.existsSync(destinationPath)) throw new Error(`Destination already exists: ${destinationPath}`);
+
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+  let recoveredPartial = false;
+  if (fs.existsSync(markerPath)) {
+    recoveredPartial = true;
+    removeDbFamily(partialPath);
+    fs.rmSync(markerPath, { force: true });
+  } else if (fs.existsSync(partialPath)) {
+    throw new Error(`Unowned partial destination exists without recovery marker: ${partialPath}`);
+  }
+
+  const sourceBefore = dbFileSnapshot(sourcePath);
+  const marker = {
+    version: REPORT_VERSION,
+    source: sourcePath,
+    destination: destinationPath,
+    partial: partialPath,
+  };
+  fs.writeFileSync(markerPath, `${stableJson(marker)}\n`, { encoding: "utf8", flag: "wx" });
+  fsyncFile(markerPath);
+
+  let db;
+  let committed = false;
+  try {
+    db = new Database(partialPath);
+    db.pragma("journal_mode = DELETE");
+    db.pragma("synchronous = FULL");
+    db.pragma("foreign_keys = OFF");
+    db.prepare("ATTACH DATABASE ? AS source").run(sourcePath);
+    db.exec("BEGIN DEFERRED");
+    const schema = userSchema(db, "source");
+    const copied = {};
+    const excluded = schema.tables.map((table) => table.name)
+      .filter((name) => isDisposableTable(name, explicitExcluded));
+    const retainedTables = schema.tables.filter((table) => !excluded.includes(table.name));
+
+    for (const table of retainedTables) db.exec(table.sql);
+    let copiedTables = 0;
+    for (const table of retainedTables) {
+      const columns = visibleColumns(db, "source", table.name);
+      const names = columns.map((column) => quoteIdentifier(column.name)).join(", ");
+      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${names} FROM source.${quoteIdentifier(table.name)}${orderClause(columns)}`;
+      copied[table.name] = db.prepare(sql).run().changes;
+      copiedTables += 1;
+      if (options.interruptAfterTables === copiedTables) throw new SimulatedInterruption();
+    }
+
+    const retainedNames = new Set(retainedTables.map((table) => table.name));
+    for (const object of [...schema.indexes, ...schema.views, ...schema.triggers]) {
+      if (object.type !== "view" && object.tbl_name && !retainedNames.has(object.tbl_name)) continue;
+      if (object.type === "view" && excluded.some((name) => sqlReferencesIdentifier(object.sql, name))) continue;
+      db.exec(object.sql);
+    }
+    db.exec("COMMIT");
+    committed = true;
+
+    const integrity = db.pragma("integrity_check", { simple: true });
+    const foreignKeys = normalizedForeignKeys(db, "main");
+    if (integrity !== "ok") throw new Error(`Compact destination integrity_check failed: ${integrity}`);
+    if (foreignKeys.length > 0) {
+      throw new Error(`Compact destination has ${foreignKeys.length} foreign-key violation(s)`);
+    }
+    const parity = {};
+    for (const table of retainedTables) {
+      parity[table.name] = {
+        source: tableDigest(db, "source", table.name),
+        destination: tableDigest(db, "main", table.name),
+      };
+      parity[table.name].match = stableJson(parity[table.name].source) === stableJson(parity[table.name].destination);
+      if (!parity[table.name].match) throw new Error(`Row parity failed for ${table.name}`);
+    }
+    db.prepare("DETACH DATABASE source").run();
+    const sourceAfter = dbFileSnapshot(sourcePath);
+    if (stableJson(sourceAfter) !== stableJson(sourceBefore)) {
+      throw new Error("Source database or sidecars changed during compact rebuild");
+    }
+    db.close();
+    db = undefined;
+    fsyncFile(partialPath);
+    fs.renameSync(partialPath, destinationPath);
+    fs.rmSync(markerPath, { force: true });
+    return {
+      version: REPORT_VERSION,
+      source: { path: sourcePath, files: sourceBefore },
+      destination: { path: destinationPath, size_bytes: fs.statSync(destinationPath).size },
+      recovered_partial: recoveredPartial,
+      integrity_check: "ok",
+      foreign_key_violations: [],
+      copied_rows: copied,
+      excluded_tables: excluded.sort(),
+      cache_exclusion: { pass: excluded.every((name) => !retainedNames.has(name)), excluded_tables: excluded.sort() },
+      table_parity: parity,
+      row_count_report: Object.fromEntries(Object.entries(parity).map(([name, value]) => [name, {
+        source: value.source.rows,
+        destination: value.destination.rows,
+        match: value.source.rows === value.destination.rows,
+      }])),
+      annotation_relationship_report: Object.fromEntries(Object.entries(parity)
+        .filter(([name]) => /annotation|relationship|(?:^|_)links?(?:_|$)|graph_edges/.test(name))
+        .map(([name, value]) => [name, value])),
+      pass: true,
+    };
+  } catch (error) {
+    if (db) {
+      try {
+        if (db.inTransaction) db.exec("ROLLBACK");
+      } catch {}
+      try { db.close(); } catch {}
+    }
+    if (!(error instanceof SimulatedInterruption)) {
+      removeDbFamily(partialPath);
+      fs.rmSync(markerPath, { force: true });
+    }
+    if (committed && error instanceof SimulatedInterruption) {
+      throw new Error("invalid simulated interruption after commit");
+    }
+    throw error;
+  }
+}
+
+function normalizeMetadata(value) {
+  if (typeof value !== "string") return value ?? null;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+function blockProjection(block) {
+  const content = block.content_sha256
+    ? null
+    : (Number(block.compressed) === 1 && Buffer.isBuffer(block.content)
+      ? gunzipSync(block.content).toString("utf8")
+      : Buffer.isBuffer(block.content) ? block.content.toString("utf8") : String(block.content ?? ""));
+  return {
+    id: String(block.id),
+    type: String(block.type),
+    role: String(block.role),
+    content_sha256: block.content_sha256 ?? sha256(content),
+    metadata: normalizeMetadata(block.metadata ?? block.metadata_json ?? null),
+    position: Number(block.position),
+    parent_id: block.parent_id ?? null,
+    dag_uuid: block.dag_uuid ?? null,
+    dag_parent_uuid: block.dag_parent_uuid ?? null,
+  };
+}
+
+function legacyConversationProjection(db, conversation) {
+  const blocks = db.prepare(
+    `SELECT id, type, role, content, compressed, position, parent_id, metadata_json, dag_uuid, dag_parent_uuid
+       FROM conversation_blocks WHERE conversation_id = ? ORDER BY position, id`,
+  ).all(conversation.id).map(blockProjection);
+  return {
+    identity: {
+      id: conversation.id,
+      source: conversation.source,
+      session_id: conversation.session_id,
+      parent_conversation_id: conversation.parent_conversation_id ?? null,
+      is_sidechain: Number(conversation.is_sidechain ?? 0),
+      agent_id: conversation.agent_id ?? null,
+    },
+    blocks,
+  };
+}
+
+function compareProjection(expected, actual) {
+  const fields = ["identity", "blocks", "annotations", "relationships"];
+  const mismatches = [];
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(actual, field)
+      || stableJson(expected[field] ?? []) !== stableJson(actual[field] ?? [])) mismatches.push(field);
+  }
+  return { pass: mismatches.length === 0, mismatches };
+}
+
+function evidenceByConversation(packet) {
+  const map = new Map();
+  for (const item of packet?.conversation_evidence ?? []) {
+    if (!item || typeof item.conversation_id !== "string") continue;
+    map.set(item.conversation_id, item);
+  }
+  return map;
+}
+
+function relationshipProjection(db, conversationId) {
+  const result = [];
+  const conversations = db.prepare(
+    "SELECT id, parent_conversation_id FROM conversations WHERE id = ? OR parent_conversation_id = ? ORDER BY id",
+  ).all(conversationId, conversationId);
+  for (const row of conversations) {
+    if (row.parent_conversation_id) result.push({ type: "parent_child", source: row.parent_conversation_id, target: row.id });
+  }
+  if (userSchema(db).tables.some((table) => table.name === "workflow_workers")) {
+    for (const row of db.prepare(
+      "SELECT id, workflow_id FROM workflow_workers WHERE conversation_id = ? ORDER BY id",
+    ).all(conversationId)) result.push({ type: "workflow_worker", source: row.workflow_id, target: row.id });
+  }
+  return result;
+}
+
+function annotationProjection(db, conversationId) {
+  const output = [];
+  for (const table of userSchema(db).tables) {
+    if (!/annotation/i.test(table.name)) continue;
+    const columns = visibleColumns(db, "main", table.name).map((column) => column.name);
+    if (!columns.includes("conversation_id")) continue;
+    const rows = db.prepare(
+      `SELECT * FROM ${quoteIdentifier(table.name)} WHERE conversation_id = ? ORDER BY rowid`,
+    ).all(conversationId);
+    output.push({ table: table.name, rows });
+  }
+  return output;
+}
+
+function assessSearch(packet) {
+  const comparisons = (packet?.search?.comparisons ?? []).map((item) => {
+    const legacy = [...(item.legacy_results ?? [])].map(String);
+    const source = [...(item.source_results ?? [])].map(String);
+    return {
+      query: String(item.query ?? ""),
+      pass: stableJson(legacy) === stableJson(source),
+      legacy_results: legacy,
+      source_results: source,
+    };
+  });
+  const declared = packet?.search?.adapter_verified === true;
+  return {
+    pass: declared && comparisons.length > 0 && comparisons.every((item) => item.pass),
+    adapter_verified: declared,
+    comparisons,
+  };
+}
+
+function assessPerformance(packet) {
+  const modes = ["cold_detail", "hot_detail", "cold_search", "hot_search"];
+  const report = {};
+  let pass = true;
+  for (const mode of modes) {
+    const value = packet?.performance?.[mode];
+    const valid = value && Number.isFinite(value.p95_ms) && Number.isFinite(value.budget_ms)
+      && Number.isFinite(value.peak_rss_bytes) && Number.isFinite(value.rss_budget_bytes);
+    const modePass = Boolean(valid && value.p95_ms <= value.budget_ms && value.peak_rss_bytes <= value.rss_budget_bytes);
+    report[mode] = { ...(value ?? {}), pass: modePass };
+    pass &&= modePass;
+  }
+  return { pass, modes: report };
+}
+
+function namedExternalGate(packet, key) {
+  const value = packet?.gates?.[key];
+  return {
+    pass: value?.pass === true,
+    adapter: value?.adapter ?? null,
+    evidence: value?.evidence ?? null,
+    errors: Array.isArray(value?.errors) ? value.errors : value ? [] : ["missing_adapter_evidence"],
+  };
+}
+
+function assessRollbackGate(packet) {
+  const gate = namedExternalGate(packet, "rollback_kill_switch");
+  const evidence = gate.evidence ?? {};
+  const contractPass = Number(evidence.retention_days) >= 31
+    && evidence.legacy_database_verified === true
+    && evidence.kill_switch_tested === true
+    && evidence.default_reader_unchanged === true;
+  return {
+    ...gate,
+    pass: gate.pass && contractPass,
+    contract: {
+      minimum_retention_days: 31,
+      retention_days: Number.isFinite(Number(evidence.retention_days)) ? Number(evidence.retention_days) : null,
+      legacy_database_verified: evidence.legacy_database_verified === true,
+      kill_switch_tested: evidence.kill_switch_tested === true,
+      default_reader_unchanged: evidence.default_reader_unchanged === true,
+    },
+  };
+}
+
+export function auditCutover(options) {
+  const sourcePath = path.resolve(options.source);
+  const packet = options.evidence ?? {};
+  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  try {
+    const conversations = db.prepare(
+      `SELECT id, source, session_id, parent_conversation_id, is_sidechain, agent_id
+         FROM conversations ORDER BY id`,
+    ).all();
+    const evidence = evidenceByConversation(packet);
+    const coverage = [];
+    const shadow = [];
+    for (const conversation of conversations) {
+      const legacy = legacyConversationProjection(db, conversation);
+      const item = evidence.get(conversation.id);
+      const verifiedClass = COVERAGE_CLASSES.includes(item?.classification) && item?.verified === true
+        ? item.classification : null;
+      const hasLegacyBodies = legacy.blocks.length > 0;
+      let classification = verifiedClass;
+      if (!classification && hasLegacyBodies) classification = "legacy-body-only";
+      const retained = classification !== "legacy-body-only" || hasLegacyBodies;
+      coverage.push({
+        conversation_id: conversation.id,
+        classification,
+        legacy_body_count: legacy.blocks.length,
+        retained,
+        evidence_error: item?.error ?? null,
+      });
+      if (classification === "verified-live-source" || classification === "verified-managed-custody") {
+        const actual = item?.projection ?? {};
+        shadow.push({
+          conversation_id: conversation.id,
+          classification,
+          ...compareProjection({
+            ...legacy,
+            annotations: annotationProjection(db, conversation.id),
+            relationships: relationshipProjection(db, conversation.id),
+          }, actual),
+        });
+      }
+    }
+
+    const coverageReport = {
+      pass: coverage.every((row) => row.classification && row.retained),
+      counts: Object.fromEntries(COVERAGE_CLASSES.map((name) => [name, coverage.filter((row) => row.classification === name).length])),
+      unclassified: coverage.filter((row) => !row.classification).map((row) => row.conversation_id),
+      conversations: coverage,
+    };
+    const shadowReport = {
+      pass: shadow.length > 0 && shadow.every((row) => row.pass),
+      compared: shadow.length,
+      mismatches: shadow.filter((row) => !row.pass),
+    };
+    const search = assessSearch(packet);
+    const performance = assessPerformance(packet);
+    const rebuild = options.rebuildReport ?? { pass: false, error: "compact_rebuild_not_run" };
+    const restoreDrills = options.restoreDrillReports ?? [];
+    const validRestoreDrill = (report) => report?.pass === true
+      && report?.original_provider_roots_used === false
+      && report?.metadata?.integrity_check === "ok"
+      && Array.isArray(report?.metadata?.foreign_key_violations)
+      && report.metadata.foreign_key_violations.length === 0
+      && report?.custody?.pass === true
+      && report?.custody?.manifest_present === true
+      && report?.collision_policy === "destination-must-not-exist";
+    const recovery = {
+      pass: restoreDrills.length >= 2 && restoreDrills.every(validRestoreDrill),
+      required: 2,
+      completed: restoreDrills.filter(validRestoreDrill).length,
+      drills: restoreDrills,
+    };
+    const gates = {
+      coverage: coverageReport,
+      dual_read_shadow: shadowReport,
+      exact_search_parity: search,
+      parser_performance: performance,
+      locator_refresh: namedExternalGate(packet, "locator_refresh"),
+      security_redaction: namedExternalGate(packet, "security_redaction"),
+      compact_rebuild: rebuild,
+      fresh_machine_recovery: recovery,
+      rollback_kill_switch: assessRollbackGate(packet),
+    };
+    const failedGates = Object.entries(gates).filter(([, gate]) => gate.pass !== true).map(([name]) => name);
+    return {
+      version: REPORT_VERSION,
+      decision: failedGates.length === 0 ? "GO" : "NO-GO",
+      pass: failedGates.length === 0,
+      failed_gates: failedGates,
+      gates,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function parseChecksums(root) {
+  const checksumPath = path.join(root, "SHA256SUMS");
+  if (!fs.existsSync(checksumPath)) throw new Error(`Missing custody checksum file: ${checksumPath}`);
+  const entries = [];
+  for (const raw of fs.readFileSync(checksumPath, "utf8").split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    const match = /^([a-f0-9]{64})\s+\*?(.+)$/.exec(raw);
+    if (!match) throw new Error(`Invalid SHA256SUMS line: ${raw}`);
+    const relative = match[2];
+    if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes("..")) {
+      throw new Error(`Unsafe custody checksum path: ${relative}`);
+    }
+    entries.push({ sha256: match[1], path: relative });
+  }
+  return entries.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function verifyCustodyTree(root) {
+  const entries = parseChecksums(root);
+  const listed = new Set(entries.map((entry) => entry.path));
+  const mismatches = [];
+  const unlisted = [];
+  const unsafe = [];
+  const visit = (directory) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const target = path.join(directory, name);
+      const relative = path.relative(root, target).split(path.sep).join("/");
+      const stat = fs.lstatSync(target);
+      if (stat.isSymbolicLink()) {
+        unsafe.push(relative);
+      } else if (stat.isDirectory()) {
+        visit(target);
+      } else if (!stat.isFile()) {
+        unsafe.push(relative);
+      } else if (relative !== "SHA256SUMS" && !listed.has(relative)) {
+        unlisted.push(relative);
+      }
+    }
+  };
+  visit(root);
+  for (const entry of entries) {
+    const target = path.join(root, entry.path);
+    let valid = false;
+    try {
+      const stat = fs.lstatSync(target);
+      valid = stat.isFile()
+        && !stat.isSymbolicLink()
+        && canonicalPath(target).startsWith(`${canonicalPath(root)}${path.sep}`)
+        && hashFile(target) === entry.sha256;
+    } catch {
+      valid = false;
+    }
+    if (!valid) mismatches.push(entry.path);
+  }
+  return {
+    pass: entries.length > 0 && mismatches.length === 0 && unlisted.length === 0 && unsafe.length === 0,
+    files: entries.length,
+    mismatches,
+    unlisted,
+    unsafe,
+  };
+}
+
+export function runRestoreDrill(options) {
+  const metadataSql = path.resolve(options.metadataSql);
+  const custodyRoot = path.resolve(options.custodyRoot);
+  const destinationRoot = path.resolve(options.destinationRoot);
+  if (fs.existsSync(destinationRoot)) throw new Error(`Restore destination already exists: ${destinationRoot}`);
+  const futureDestinationRoot = canonicalFuturePath(destinationRoot);
+  for (const production of PRODUCTION_DB_PATHS) {
+    const productionRoot = canonicalPath(path.dirname(production));
+    if (futureDestinationRoot === productionRoot || futureDestinationRoot.startsWith(`${productionRoot}${path.sep}`)) {
+      throw new Error(`Refusing restore destination under production database root: ${destinationRoot}`);
+    }
+  }
+  if (!fs.existsSync(metadataSql)) throw new Error(`Metadata SQL does not exist: ${metadataSql}`);
+  if (!fs.existsSync(custodyRoot)) throw new Error(`Custody root does not exist: ${custodyRoot}`);
+  const sourceCustody = verifyCustodyTree(custodyRoot);
+  if (!sourceCustody.pass) throw new Error(`Custody input verification failed: ${sourceCustody.mismatches.join(", ")}`);
+
+  fs.mkdirSync(destinationRoot, { recursive: false });
+  const metadataPath = path.join(destinationRoot, "metadata.sqlite");
+  const restoredCustody = path.join(destinationRoot, "custody");
+  try {
+    const db = new Database(metadataPath);
+    try {
+      db.exec(fs.readFileSync(metadataSql, "utf8"));
+      const integrity = db.pragma("integrity_check", { simple: true });
+      const foreignKeys = normalizedForeignKeys(db, "main");
+      if (integrity !== "ok" || foreignKeys.length > 0) {
+        throw new Error(`Restored metadata failed SQLite verification (integrity=${integrity}, foreign_keys=${foreignKeys.length})`);
+      }
+    } finally {
+      db.close();
+    }
+    fs.cpSync(custodyRoot, restoredCustody, { recursive: true, dereference: false, errorOnExist: true });
+    const restored = verifyCustodyTree(restoredCustody);
+    const manifestPresent = fs.existsSync(path.join(restoredCustody, "manifest.json"));
+    return {
+      version: REPORT_VERSION,
+      pass: restored.pass && manifestPresent,
+      metadata: { path: metadataPath, integrity_check: "ok", foreign_key_violations: [] },
+      custody: { ...restored, manifest_present: manifestPresent },
+      original_provider_roots_used: false,
+      collision_policy: "destination-must-not-exist",
+    };
+  } catch (error) {
+    fs.rmSync(destinationRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function readJson(target) {
+  return JSON.parse(fs.readFileSync(path.resolve(target), "utf8"));
+}
+
+function requiredValue(argv, index, flag) {
+  const value = argv[index];
+  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
+function parseArgs(argv) {
+  const command = argv[0];
+  const options = { command, excludeTables: [], restoreReports: [] };
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index];
+    switch (arg) {
+      case "--source": options.source = requiredValue(argv, ++index, arg); break;
+      case "--destination": options.destination = requiredValue(argv, ++index, arg); break;
+      case "--exclude-table": options.excludeTables.push(requiredValue(argv, ++index, arg)); break;
+      case "--evidence": options.evidence = requiredValue(argv, ++index, arg); break;
+      case "--rebuild-report": options.rebuildReport = requiredValue(argv, ++index, arg); break;
+      case "--restore-report": options.restoreReports.push(requiredValue(argv, ++index, arg)); break;
+      case "--metadata-sql": options.metadataSql = requiredValue(argv, ++index, arg); break;
+      case "--custody-root": options.custodyRoot = requiredValue(argv, ++index, arg); break;
+      case "--destination-root": options.destinationRoot = requiredValue(argv, ++index, arg); break;
+      case "--json": options.json = true; break;
+      case "--help": case "-h": options.help = true; break;
+      default: throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function usage() {
+  console.log(`Usage: node scripts/conversation-cutover-proof.mjs <command> [options]
+
+Commands:
+  rebuild --source DB --destination DB [--exclude-table NAME...] [--json]
+  restore-drill --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
+  audit --source DB --evidence FILE [--rebuild-report FILE] [--restore-report FILE...] [--json]
+
+The audit command always emits one deterministic machine-readable GO/NO-GO
+result. Missing source/cache/custody/restore evidence fails closed.
+`);
+}
+
+async function main(argv) {
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    usage();
+    return 0;
+  }
+  const options = parseArgs(argv);
+  if (options.help || !options.command) { usage(); return options.command ? 0 : 2; }
+  let report;
+  if (options.command === "rebuild") {
+    if (!options.source || !options.destination) throw new Error("rebuild requires --source and --destination");
+    report = buildCompactDestination({ source: options.source, destination: options.destination, excludeTables: options.excludeTables });
+  } else if (options.command === "restore-drill") {
+    if (!options.metadataSql || !options.custodyRoot || !options.destinationRoot) {
+      throw new Error("restore-drill requires --metadata-sql, --custody-root, and --destination-root");
+    }
+    report = runRestoreDrill(options);
+  } else if (options.command === "audit") {
+    if (!options.source || !options.evidence) throw new Error("audit requires --source and --evidence");
+    report = auditCutover({
+      source: options.source,
+      evidence: readJson(options.evidence),
+      rebuildReport: options.rebuildReport ? readJson(options.rebuildReport) : undefined,
+      restoreDrillReports: options.restoreReports.map(readJson),
+    });
+  } else {
+    throw new Error(`Unknown command: ${options.command}`);
+  }
+  process.stdout.write(`${JSON.stringify(report, null, options.json ? 2 : 0)}\n`);
+  return report.pass ? 0 : 1;
+}
+
+const invoked = process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url));
+if (invoked) {
+  main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 2;
+  });
+}
+
+export { SimulatedInterruption, stableJson };
