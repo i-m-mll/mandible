@@ -146,7 +146,7 @@ describe("migration v115: clear local_default ledger misattribution", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "140",
+      value: "141",
     });
 
     for (const { table, idPrefix, userColumn, legacyType } of AFFECTED) {

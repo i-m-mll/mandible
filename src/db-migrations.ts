@@ -13,7 +13,7 @@ import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
 import { encodeRecurringRevisionContent } from "./feedback/store.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
-import { backfillProjectKeys } from "./ledger/project-registry.js";
+import { backfillProjectKeys, normalizeProjectRepoId } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -4704,6 +4704,15 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
         FROM conversation_blocks`,
     ],
   },
+  {
+    version: 141,
+    name: "canonical_work_unit_repo_ids",
+    // Issue ba1ced2 — work-unit repo identity is the canonical project_key.
+    // The guarded helper rewrites only registry-resolvable aliases and paths;
+    // unresolved historical strings, work-unit IDs, timestamps, state, and all
+    // other provenance remain byte-for-byte unchanged.
+    statements: [],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
@@ -5013,6 +5022,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 139) {
         ensureAuthHookRequiredColumn(db);
+      }
+      if (migration.version === 141) {
+        canonicalizeWorkUnitRepoIds(db);
       }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
@@ -7188,6 +7200,33 @@ function canonicalizeProjectRepoIds(db: Db): void {
         "UPDATE work_repos SET id = ?, updated_at = datetime('now') WHERE root = ? AND id = ?",
       ).run(plan.target_id, plan.root, temporaryIds.get(plan.root));
     }
+  }
+}
+
+function canonicalizeWorkUnitRepoIds(db: Db): void {
+  if (
+    !tableExists(db, "work_units") ||
+    !tableExists(db, "ledger_projects") ||
+    !tableExists(db, "ledger_project_checkouts")
+  ) {
+    return;
+  }
+
+  const refs = db.prepare(
+    "SELECT DISTINCT repo_id FROM work_units WHERE trim(repo_id) != '' ORDER BY repo_id",
+  ).all() as Array<{ repo_id: string }>;
+  const update = db.prepare("UPDATE work_units SET repo_id = ? WHERE repo_id = ?");
+  let changed = 0;
+  for (const row of refs) {
+    const canonical = normalizeProjectRepoId(db, row.repo_id);
+    if (canonical === row.repo_id) continue;
+    changed += update.run(canonical, row.repo_id).changes;
+  }
+  if (changed > 0) {
+    dbLog("info", "db_work_unit_repo_ids_canonicalized", {
+      subsystem: "db",
+      row_count: changed,
+    });
   }
 }
 

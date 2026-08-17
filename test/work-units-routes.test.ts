@@ -23,6 +23,58 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  it("canonicalizes project aliases across claim, activate, and find", async () => {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO ledger_projects (
+        id, project_key, display_name, remote_identity, upstream_identity,
+        namespace_policy, created_at, updated_at
+      ) VALUES ('project-dotfiles', 'dotfiles', 'dotfiles', 'example/dotfiles', '', 'remote', ?, ?)`,
+    ).run(now, now);
+    db.prepare(
+      `INSERT INTO ledger_project_checkouts (
+        id, project_id, work_repo_id, root, name, default_branch, remote_url,
+        created_at, updated_at
+      ) VALUES ('checkout-dotfiles', 'project-dotfiles', '.dotfiles', '/registered/dotfiles',
+                '.dotfiles', 'main', '', ?, ?)`,
+    ).run(now, now);
+
+    const claim = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      body: {
+        issue_id: "dot123",
+        repo_id: ".dotfiles",
+        branch: "feature/dot123",
+      },
+    });
+    expect(claim.status).toBe(201);
+    const id = (claim.body as { id: string }).id;
+    expect(db.prepare("SELECT repo_id FROM work_units WHERE id = ?").get(id))
+      .toEqual({ repo_id: "dotfiles" });
+
+    const activate = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      body: {
+        issue_id: "dot123",
+        repo_id: "/registered/dotfiles",
+        branch: "feature/dot123",
+      },
+    });
+    expect(activate.body).toMatchObject({ id, state: "committed" });
+
+    const found = await router.invoke({
+      method: "GET",
+      url: "/api/work-units?repo_id=.dotfiles&issue_id=dot123",
+    });
+    expect(found.status).toBe(200);
+    expect(found.body).toMatchObject({
+      work_units: [expect.objectContaining({ id, repo_id: "dotfiles", state: "committed" })],
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual({ count: 1 });
+  });
+
   it("reuses an existing issue/repo/branch claim and normalizes blank session ids", async () => {
     const first = await router.invoke({
       method: "POST",
