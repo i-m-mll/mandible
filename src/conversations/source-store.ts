@@ -539,6 +539,23 @@ export class ConversationSourceStore {
     const resolved = path.resolve(toPath);
     const now = Date.now();
     this.db.transaction(() => {
+      const displaced = this.db.prepare(`
+        SELECT source_id
+          FROM conversation_source_aliases
+         WHERE path = ? AND source_id <> ?
+      `).get(resolved, source.source_id) as { source_id: string } | undefined;
+      if (displaced) {
+        const reason = "destination alias transferred during verified relocation";
+        this.db.prepare(`
+          UPDATE conversation_sources
+             SET availability = 'missing', unavailable_reason = ?, updated_at = ?
+           WHERE id = ?
+        `).run(reason, now, displaced.source_id);
+        this.db.prepare(`
+          UPDATE conversation_source_versions SET availability = 'missing'
+           WHERE id = (SELECT current_version_id FROM conversation_sources WHERE id = ?)
+        `).run(displaced.source_id);
+      }
       this.db.prepare(
         `UPDATE conversation_source_aliases
             SET availability = 'missing', last_seen_at = ?
@@ -549,10 +566,11 @@ export class ConversationSourceStore {
           id, source_id, root_kind, root_path, relative_path, path, alias_kind,
           availability, first_seen_at, last_seen_at
         ) VALUES (?, ?, 'provider', ?, ?, ?, ?, 'available', ?, ?)
-        ON CONFLICT(path) DO UPDATE SET source_id = excluded.source_id,
+        ON CONFLICT(path) DO UPDATE SET id = excluded.id,
+          source_id = excluded.source_id, root_kind = excluded.root_kind,
           root_path = excluded.root_path, relative_path = excluded.relative_path,
           alias_kind = excluded.alias_kind, availability = 'available',
-          last_seen_at = excluded.last_seen_at
+          first_seen_at = excluded.first_seen_at, last_seen_at = excluded.last_seen_at
       `).run(
         stableId("csa", source.source_id, resolved), source.source_id, root.rootPath,
         root.relativePath, resolved, root.aliasKind, now, now,
@@ -561,6 +579,10 @@ export class ConversationSourceStore {
         UPDATE conversation_sources SET availability = 'available', unavailable_reason = NULL, updated_at = ?
          WHERE id = ?
       `).run(now, source.source_id);
+      this.db.prepare(`
+        UPDATE conversation_source_versions SET availability = 'available'
+         WHERE id = (SELECT current_version_id FROM conversation_sources WHERE id = ?)
+      `).run(source.source_id);
     })();
   }
 }
