@@ -11,6 +11,12 @@ import {
   readAsk,
   submitAsk,
 } from "../src/feedback/asks.js";
+import {
+  exportSubmissionMarkdown,
+  markdownBlockquote,
+  markdownHeading,
+  resolveSubmissionRef,
+} from "../src/feedback/submissions.js";
 import { migrate, type Db } from "../src/db.js";
 import { addGrant } from "../src/permissions/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
@@ -71,6 +77,13 @@ afterEach(() => {
 });
 
 describe("annotatable ask store", () => {
+  it("pins submission-export Markdown escaping and blockquote line bytes", () => {
+    expect(markdownBlockquote("first\r\nsecond\rthird\nfourth"))
+      .toBe("> first\n> second\n> third\n> fourth");
+    expect(markdownHeading("Title #1\nnext"))
+      .toBe("Title \\#1 next");
+  });
+
   it("pins exact version bytes, validates UTF-16 ranges, freezes membership, and scopes chains per responder", () => {
     const v1 = record("A 😀 plan\n", 100);
     record("A changed plan\n", 101);
@@ -101,10 +114,22 @@ describe("annotatable ask store", () => {
       expected_lifecycle_event_id: opened.lifecycle_event_id,
       answers: [], annotations: [{ annotation_event_id: replacement.annotation_event_ids[0] }],
     }, 1_200);
+    const firstResolution = resolveSubmissionRef(
+      db,
+      `submission:${created.ask_id}#1`,
+      { userId: human1, isOperator: false },
+    );
+    expect(firstResolution.ok).toBe(true);
+    const frozenExport = exportSubmissionMarkdown(db, firstResolution as Extract<typeof firstResolution, { ok: true }>);
     const later = applyAskAnnotations(db, created.ask_id, human1, [{
       operation: "set", annotation_kind: "suggest_replacement", start_offset: 0, end_offset: 1,
       quote: "A", replacement_text: "", body: "Delete it.",
     }], 1_250);
+    expect(exportSubmissionMarkdown(db, firstResolution as Extract<typeof firstResolution, { ok: true }>))
+      .toBe(frozenExport);
+    expect(frozenExport).toContain(`document_artifact_version: ${v1.version.id}`);
+    expect(frozenExport).toContain("### 1. comment [2–4]\n> 😀\n\nKeep this emoji.");
+    expect(frozenExport.endsWith("A 😀 plan\n")).toBe(true);
     expect(submitted1.result.submissions[0].annotations.map((entry) => entry.annotation_event_id))
       .toEqual(replacement.annotation_event_ids);
 
@@ -127,6 +152,24 @@ describe("annotatable ask store", () => {
     expect(correction.ordinal).toBe(3);
     expect(correction.result.submissions.find((entry) => entry.actor_user_id === human1)?.annotations
       .map((entry) => [entry.quote, entry.position])).toEqual([["A", 0], ["😀", 1]]);
+  });
+
+  it("fails deterministic export rather than emitting a partial document when pinned bytes disappear", () => {
+    const version = record("Pinned plan without a trailing newline", 100);
+    const created = createAsk(db, packet(version.version.id, { request_key: "missing-export" }), {
+      requesterUserId: agentId, now: 1_000,
+    });
+    const opened = readAsk(db, created.ask_id, { answerActorUserId: human1, now: 1_100 })!.ask;
+    submitAsk(db, created.ask_id, human1, {
+      expected_lifecycle_event_id: opened.lifecycle_event_id, answers: [], annotations: [],
+    }, 1_200);
+    const resolved = resolveSubmissionRef(db, `submission:${created.ask_id}#1`, {
+      userId: human1, isOperator: false,
+    });
+    expect(resolved.ok).toBe(true);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    expect(() => exportSubmissionMarkdown(db, resolved as Extract<typeof resolved, { ok: true }>))
+      .toThrowError(expect.objectContaining({ code: "document_unavailable", status: 409 }));
   });
 
   it("expires after a responder submits and binds explicit same-artifact round lineage", () => {

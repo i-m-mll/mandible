@@ -18,6 +18,11 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
 import { sendJson } from "./http.js";
+import {
+  exportSubmissionMarkdown,
+  readSubmissionFactPacket,
+  resolveSubmissionRef,
+} from "../feedback/submissions.js";
 
 const DEFAULT_WAIT_MS = 25_000;
 const MAX_WAIT_MS = 55_000;
@@ -141,6 +146,53 @@ export function registerAskRoutes(server: RouteRegistrar, db: Db = getDb()): voi
         replay: result.replay,
         dashboard_url: result.dashboard_url,
       });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/submissions/:ref", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      const resolved = resolveSubmissionRef(db, req.params.ref, {
+        userId: identity.user_id,
+        isOperator: isOperator(db, identity),
+      });
+      if (!resolved.ok) {
+        throw new AskStoreError(
+          resolved.error === "ambiguous" ? "submission reference is ambiguous" : "submission not found",
+          resolved.error === "ambiguous" ? 409 : 404,
+          resolved.error === "ambiguous" ? "ambiguous_ref" : "not_found",
+        );
+      }
+      sendJson(res, 200, readSubmissionFactPacket(db, resolved));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/asks/:id/submissions/:ordinal/export", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      if (!/^[1-9][0-9]*$/.test(req.params.ordinal)) {
+        throw new AskStoreError("submission not found", 404, "not_found");
+      }
+      const resolved = resolveSubmissionRef(
+        db,
+        `submission:${req.params.id}#${req.params.ordinal}`,
+        { userId: identity.user_id, isOperator: isOperator(db, identity) },
+      );
+      if (!resolved.ok) {
+        throw new AskStoreError(
+          resolved.error === "ambiguous" ? "submission reference is ambiguous" : "submission not found",
+          resolved.error === "ambiguous" ? 409 : 404,
+          resolved.error === "ambiguous" ? "ambiguous_ref" : "not_found",
+        );
+      }
+      const body = exportSubmissionMarkdown(db, resolved);
+      if (res.text) res.text(body, "text/markdown; charset=utf-8");
+      else if (res.html) res.html(body);
+      else res.json(body);
     } catch (error) {
       handleError(res, error);
     }

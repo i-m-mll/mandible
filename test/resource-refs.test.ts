@@ -4,6 +4,7 @@ import {
   attachResourceRefResolution,
   compactArtifactBlobRef,
   compactArtifactRef,
+  compactSubmissionRef,
   displayResourceRef,
   isResourceRef,
   linkifyResourceRefs,
@@ -86,6 +87,19 @@ describe('parseResourceRef recognizes canonical ref forms', () => {
     expect(parsed?.display).toBe('comment:ceb5963#c8819b4');
   });
 
+  it('submission refs accept only the closed direct and ask-ordinal grammar', () => {
+    const ask = 'abcdef0-1234-5678-9abc-def012345678';
+    expect(parseResourceRef(`submission:${ask}`)).toMatchObject({ kind: 'submission' });
+    expect(parseResourceRef(`submission:${ask}#3`)).toMatchObject({
+      kind: 'submission',
+      display: 'submission:abcdef0#3',
+    });
+    for (const invalid of ['submission:', 'submission:abcdef#1', 'submission:abcdef0#0',
+      'submission:abcdef0#', 'submission:abcdef_0#1', 'submission:abcdef%0#1', 'submission:-------#1']) {
+      expect(parseResourceRef(invalid)).toBeNull();
+    }
+  });
+
   it('rejects plain http(s)/mailto navigation links', () => {
     expect(isResourceRef('https://example.com/x')).toBe(false);
     expect(isResourceRef('mailto:a@b.com')).toBe(false);
@@ -140,6 +154,10 @@ describe('display helpers', () => {
     expect(compactArtifactBlobRef(`artifact-blob:${HASH64}`)).toBe('artifact-blob:aaaaaaaaaaaa');
   });
 
+  it('compacts only the submission uuid segment', () => {
+    expect(compactSubmissionRef('submission:abcdef0123456789#12')).toBe('submission:abcdef0#12');
+  });
+
   it('displayResourceRef passes through unrecognized text', () => {
     expect(displayResourceRef('hello world')).toBe('hello world');
   });
@@ -170,6 +188,10 @@ describe('artifact nav hrefs', () => {
       '#/artifacts?series=artifact-series%3Aabcdef0&version=2',
     );
     expect(resourceRefHref(`artifact-blob:${HASH64}`)).toBe(`#/artifacts?ref=artifact-blob%3A${HASH64}`);
+  });
+
+  it('routes the whole submission ref through the redirect with an encoded ordinal separator', () => {
+    expect(resourceRefHref('submission:abcdef0#3')).toBe('/r/submission/submission%3Aabcdef0%233');
   });
 });
 

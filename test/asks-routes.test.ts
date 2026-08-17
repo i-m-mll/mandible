@@ -9,6 +9,7 @@ import { migrate, setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { addGrant, addGroup, addGroupMember } from "../src/permissions/store.js";
 import { registerAskRoutes } from "../src/routes/asks.js";
+import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { setSseManager } from "../src/sse.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
@@ -99,6 +100,8 @@ describe("ask routes", () => {
     expect(router.listRoutePolicies().map(({ method, path, fileRpc }) => ({ method, path, fileRpc })))
       .toEqual([
         { method: "POST", path: "/api/asks", fileRpc: "allow" },
+        { method: "GET", path: "/api/submissions/:ref", fileRpc: "allow" },
+        { method: "GET", path: "/api/asks/:id/submissions/:ordinal/export", fileRpc: "allow" },
         { method: "GET", path: "/api/asks/:id", fileRpc: "allow" },
         { method: "GET", path: "/api/asks/:id/result", fileRpc: "allow" },
         { method: "GET", path: "/api/asks/:id/wait", fileRpc: "allow" },
@@ -107,6 +110,64 @@ describe("ask routes", () => {
         { method: "POST", path: "/api/asks/:id/submit", fileRpc: "deny" },
         { method: "DELETE", path: "/api/asks/:id", fileRpc: "deny" },
       ]);
+  });
+
+  it("resolves submissions only inside the caller-authorized set and exports deterministic bytes", async () => {
+    addGrant(db, { subject_type: "user", subject: agentId, resource_type: "global", permission: "ask.create" });
+    const otherHuman = createUser(db, { slug: "other-human", kind: "human", display_name: "Other Human" });
+    const firstId = ((await create({ ...packet(), request_key: "submission-ref-a", items: [] })).body as any).ask_id;
+    const secondId = ((await create({
+      ...packet(), request_key: "submission-ref-b", responder_user_ids: [otherHuman.id], items: [],
+    })).body as any).ask_id;
+    const firstForm = (await router.invoke({ method: "GET", url: `/api/asks/${firstId}`, credential: "human" })).body as any;
+    const secondForm = (await router.invoke({ method: "GET", url: `/api/asks/${secondId}`, credential: "other-human" })).body as any;
+    const firstSubmit = (await router.invoke({
+      method: "POST", url: `/api/asks/${firstId}/submit`, credential: "human", transport: "http",
+      body: { expected_lifecycle_event_id: firstForm.lifecycle_event_id, answers: [], annotations: [] },
+    })).body as any;
+    const secondSubmit = (await router.invoke({
+      method: "POST", url: `/api/asks/${secondId}/submit`, credential: "other-human", transport: "http",
+      body: { expected_lifecycle_event_id: secondForm.lifecycle_event_id, answers: [], annotations: [] },
+    })).body as any;
+    const firstSubmission = firstSubmit.submissions[0].id;
+    const secondSubmission = secondSubmit.submissions[0].id;
+    db.prepare("UPDATE feedback_submissions SET id = ? WHERE id = ?").run("abcdef0-1111", firstSubmission);
+    db.prepare("UPDATE feedback_submissions SET id = ? WHERE id = ?").run("abcdef0-2222", secondSubmission);
+
+    const humanVisible = await router.invoke({
+      method: "GET", url: "/api/submissions/submission%3Aabcdef0", credential: "human",
+    });
+    expect(humanVisible.status).toBe(200);
+    expect(humanVisible.body).toMatchObject({
+      submission_id: "abcdef0-1111", ask_id: firstId, ordinal: 1,
+      canonical_ref: `submission:${firstId}#1`, document: null, answers: [], annotations: [],
+    });
+    const spacesRouter = new Router({ clientAuth: new SlugGate() });
+    registerSpacesRoutes(spacesRouter);
+    const sharedResolution = await spacesRouter.invoke({
+      method: "GET",
+      url: `/api/spaces/resolve?ref=${encodeURIComponent(`submission:${firstId}#1`)}`,
+      credential: "human",
+    });
+    expect(sharedResolution.status).toBe(200);
+    expect(sharedResolution.body).toMatchObject({
+      resolution: { kind: "submission", resolved: true, entity: { ask_id: firstId, ordinal: 1 } },
+    });
+    expect((await router.invoke({
+      method: "GET", url: "/api/submissions/submission%3Aabcdef0", credential: "agent",
+    }))).toMatchObject({ status: 409, body: { code: "ambiguous_ref" } });
+    expect((await router.invoke({
+      method: "GET", url: "/api/submissions/submission%3Aabcdef0-1111", credential: "other-human",
+    }))).toMatchObject({ status: 404, body: { code: "not_found" } });
+
+    const exportPath = `/api/asks/${firstId}/submissions/1/export`;
+    const firstExport = await router.invoke({ method: "GET", url: exportPath, credential: "human" });
+    const secondExport = await router.invoke({ method: "GET", url: exportPath, credential: "human" });
+    expect(firstExport.status).toBe(200);
+    expect(firstExport.body).toBe(secondExport.body);
+    expect(String(firstExport.body)).toContain(`submission_ref: submission:${firstId}#1`);
+    expect(String(firstExport.body)).toContain("## Annotations\nNone.\n\n## Answers\nNone.");
+    expect(String(firstExport.body)).toContain("## Document\nNone.\n");
   });
 
   it("requires an active granted agent and makes create replay idempotent", async () => {
