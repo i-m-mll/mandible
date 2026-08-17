@@ -133,13 +133,18 @@ describe("incremental tail ingestion", () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, `${initialCodexRows()}${assistantRow("before", 3)}`, 1);
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const original = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ? AND session_id = 'tailtest'",
+    ).get(sessionPath) as { id: string };
 
     const rewritten = initialCodexRows("tailtest-rewritten").replace("hello", "rewritten hello");
     await writeWithMtime(sessionPath, `${rewritten}${assistantRow("after rewrite", 3)}`, 2);
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
 
-    const conversation = db.prepare("SELECT id, session_id, block_count FROM conversations WHERE source_path = ?")
-      .get(sessionPath) as { id: string; session_id: string; block_count: number };
+    const conversation = db.prepare(`
+      SELECT id, session_id, block_count FROM conversations
+       WHERE source_path = ? AND session_id = 'tailtest-rewritten'
+    `).get(sessionPath) as { id: string; session_id: string; block_count: number };
     expect(conversation).toMatchObject({ session_id: "tailtest-rewritten", block_count: 3 });
     const firstBlock = db.prepare(
       "SELECT content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
@@ -149,5 +154,98 @@ describe("incremental tail ingestion", () => {
       db.prepare("SELECT byte_offset FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+      .get(original.id)).toEqual({ count: 3 });
+  });
+
+  it("preserves fallback bodies and source history while the source is empty or truncated", async () => {
+    const sessionPath = await makeCodexSession();
+    const original = initialCodexRows();
+    await writeWithMtime(sessionPath, original, 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    const beforeBlocks = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id);
+    const beforeVersions = db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_source_versions
+       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
+    `).get(conversation.id);
+    const beforeAliases = db.prepare(`
+      SELECT alias, block_id FROM conversation_block_aliases
+       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
+       ORDER BY alias
+    `).all(conversation.id);
+
+    await writeWithMtime(sessionPath, "", 2);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+    await writeWithMtime(sessionPath, initialCodexRows().split("\n", 1)[0] + "\n", 3);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+
+    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get(conversation.id))
+      .toBeDefined();
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id)).toEqual(beforeBlocks);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_source_versions
+       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
+    `).get(conversation.id)).toEqual(beforeVersions);
+    expect(db.prepare(`
+      SELECT alias, block_id FROM conversation_block_aliases
+       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
+       ORDER BY alias
+    `).all(conversation.id)).toEqual(beforeAliases);
+    expect(db.prepare(
+      "SELECT availability, unavailable_reason FROM conversation_sources WHERE conversation_id = ?",
+    ).get(conversation.id)).toEqual({
+      availability: "missing",
+      unavailable_reason: "source parsed as empty or temporarily truncated",
+    });
+  });
+
+  it("treats a reused path as an alias and preserves both conversation identities", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("path-owner-a"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const original = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ? AND session_id = 'path-owner-a'",
+    ).get(sessionPath) as { id: string };
+    const originalBlocks = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(original.id);
+
+    await writeWithMtime(sessionPath, initialCodexRows("path-owner-b"), 2);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+    await appendWithMtime(sessionPath, assistantRow("current owner append", 3), 3);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ? ORDER BY session_id",
+    ).all(sessionPath)).toEqual([
+      { session_id: "path-owner-a" },
+      { session_id: "path-owner-b" },
+    ]);
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(original.id)).toEqual(originalBlocks);
+    expect(db.prepare(
+      "SELECT block_count FROM conversations WHERE source_path = ? AND session_id = 'path-owner-b'",
+    ).get(sessionPath)).toEqual({ block_count: 3 });
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM conversation_sources WHERE conversation_id = ?",
+    ).get(original.id)).toEqual({ count: 1 });
+    expect(db.prepare(
+      "SELECT availability, unavailable_reason FROM conversation_sources WHERE conversation_id = ?",
+    ).get(original.id)).toEqual({
+      availability: "missing",
+      unavailable_reason: "source path reused by a distinct conversation identity",
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_block_aliases
+       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
+    `).get(original.id)).toEqual({ count: originalBlocks.length });
   });
 });

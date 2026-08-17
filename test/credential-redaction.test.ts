@@ -445,7 +445,10 @@ describe("ingest-time credential redaction", () => {
     // the truncated-hash collision that is the only way a foreign row can hold
     // an id this file will derive.
     db.prepare("DELETE FROM conversation_blocks WHERE id = ?").run(collidingId);
-    seedConversation("conv-bystander", { blocks: ["someone else's work"] });
+    seedConversation("conv-bystander", {
+      blocks: ["someone else's work"],
+      sourcePath: transcript,
+    });
     db.prepare("UPDATE conversation_blocks SET id = ? WHERE id = 'conv-bystander-b0'")
       .run(collidingId);
 
@@ -483,6 +486,8 @@ describe("ingest-time credential redaction", () => {
       .toBe("someone else's work");
     expect(db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id = 'conv-bystander'").get())
       .toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE source_path = ?").get(transcript))
+      .toEqual({ n: 2 });
 
     // The clash really did drive the unique-conflict recovery path, and that
     // path refused to resolve it by deleting a row it does not own.

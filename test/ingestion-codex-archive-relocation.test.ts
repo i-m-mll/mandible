@@ -173,6 +173,38 @@ describe("codex archive relocation", () => {
     ).toMatchObject({ count: 1 });
   });
 
+  it("does not collapse a distinct identity already using the archive path", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const ingested = conversationRow(sessionPath)!;
+    db.prepare(`
+      INSERT INTO conversations (
+        id, source, source_path, source_hash, source_mtime, title, started_at,
+        block_count, session_id
+      ) VALUES ('archive-path-bystander', 'codex', ?, 'bystander-hash', 0,
+        'Bystander', datetime('now'), 1, 'archive-path-bystander')
+    `).run(archivedPath);
+    db.prepare(`
+      INSERT INTO conversation_blocks (
+        id, conversation_id, type, role, content, position, metadata_json
+      ) VALUES ('archive-path-bystander-block', 'archive-path-bystander',
+        'assistant_message', 'assistant', 'preserve me', 0, '{}')
+    `).run();
+
+    await archiveRollout();
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ? ORDER BY id",
+    ).all(archivedPath)).toEqual([
+      { id: "archive-path-bystander" },
+      { id: ingested.id },
+    ].sort((a, b) => a.id.localeCompare(b.id)));
+    expect(blockCount(ingested.id)).toBe(ingested.block_count);
+    expect(db.prepare(
+      "SELECT content FROM conversation_blocks WHERE id = 'archive-path-bystander-block'",
+    ).get()).toEqual({ content: "preserve me" });
+  });
+
   it("follows the move when the watcher reports the source as gone", async () => {
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
     const ingested = conversationRow(sessionPath);
