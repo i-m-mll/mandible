@@ -29,12 +29,12 @@ function row(record: unknown): string {
   return `${JSON.stringify(record)}\n`;
 }
 
-function transcript(): string {
+function transcript(sessionId = SESSION_ID, prompt = "archive me"): string {
   return [
     row({
       type: "session_meta",
       timestamp: "2026-08-11T09:15:00.000Z",
-      payload: { id: SESSION_ID, cwd: "/tmp/project", model_provider: "openai" },
+      payload: { id: sessionId, cwd: "/tmp/project", model_provider: "openai" },
     }),
     row({
       type: "response_item",
@@ -42,7 +42,7 @@ function transcript(): string {
       payload: {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: "archive me" }],
+        content: [{ type: "input_text", text: prompt }],
       },
     }),
     row({
@@ -203,6 +203,64 @@ describe("codex archive relocation", () => {
     expect(db.prepare(
       "SELECT content FROM conversation_blocks WHERE id = 'archive-path-bystander-block'",
     ).get()).toEqual({ content: "preserve me" });
+  });
+
+  it("rejects an unrelated archive candidate and ingests it independently", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const original = conversationRow(sessionPath)!;
+    await fsp.rm(sessionPath);
+    await fsp.writeFile(
+      archivedPath,
+      transcript("unrelated-archive-candidate", "different conversation"),
+      "utf8",
+    );
+
+    // Exercise the watcher/unlink path: it must tombstone the missing locator
+    // and explicitly ingest the unrelated candidate without a broad scan.
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(db.prepare(
+      "SELECT id, source_path FROM conversations WHERE id = ?",
+    ).get(original.id)).toEqual({ id: original.id, source_path: sessionPath });
+    expect(blockCount(original.id)).toBe(original.block_count);
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ?",
+    ).get(archivedPath)).toEqual({ session_id: "unrelated-archive-candidate" });
+    expect(db.prepare(
+      "SELECT availability FROM conversation_sources WHERE conversation_id = ?",
+    ).get(original.id)).toEqual({ availability: "missing" });
+  });
+
+  it("repoints only the matching identity when an old locator has multiple histories", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const matching = conversationRow(sessionPath)!;
+    db.prepare(`
+      INSERT INTO conversations (
+        id, source, source_path, source_hash, source_mtime, title, started_at,
+        block_count, session_id
+      ) VALUES ('old-locator-history', 'codex', ?, 'historical-hash', 0,
+        'Historical', datetime('now'), 1, 'old-locator-history')
+    `).run(sessionPath);
+    db.prepare(`
+      INSERT INTO conversation_blocks (
+        id, conversation_id, type, role, content, position, metadata_json
+      ) VALUES ('old-locator-history-block', 'old-locator-history',
+        'assistant_message', 'assistant', 'historical body', 0, '{}')
+    `).run();
+
+    await archiveRollout();
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare(
+      "SELECT id, source_path FROM conversations WHERE id = ?",
+    ).get(matching.id)).toEqual({ id: matching.id, source_path: archivedPath });
+    expect(db.prepare(
+      "SELECT id, source_path FROM conversations WHERE id = 'old-locator-history'",
+    ).get()).toEqual({ id: "old-locator-history", source_path: sessionPath });
+    expect(db.prepare(
+      "SELECT content FROM conversation_blocks WHERE id = 'old-locator-history-block'",
+    ).get()).toEqual({ content: "historical body" });
+    expect(blockCount(matching.id)).toBe(matching.block_count);
   });
 
   it("follows the move when the watcher reports the source as gone", async () => {

@@ -522,10 +522,14 @@ export class ConversationSourceStore {
     })();
   }
 
-  recordRelocation(fromPath: string, toPath: string): void {
-    const source = this.db.prepare(
-      "SELECT source_id FROM conversation_source_aliases WHERE path = ?",
-    ).get(path.resolve(fromPath)) as { source_id: string } | undefined;
+  recordRelocation(fromPath: string, toPath: string, expectedSourceId?: string): void {
+    const source = expectedSourceId
+      ? this.db.prepare(
+        "SELECT id AS source_id FROM conversation_sources WHERE id = ?",
+      ).get(expectedSourceId) as { source_id: string } | undefined
+      : this.db.prepare(
+        "SELECT source_id FROM conversation_source_aliases WHERE path = ?",
+      ).get(path.resolve(fromPath)) as { source_id: string } | undefined;
     if (!source) return;
     const descriptor = this.db.prepare(
       "SELECT provider FROM conversation_sources WHERE id = ?",
@@ -536,8 +540,10 @@ export class ConversationSourceStore {
     const now = Date.now();
     this.db.transaction(() => {
       this.db.prepare(
-        "UPDATE conversation_source_aliases SET availability = 'missing', last_seen_at = ? WHERE path = ?",
-      ).run(now, path.resolve(fromPath));
+        `UPDATE conversation_source_aliases
+            SET availability = 'missing', last_seen_at = ?
+          WHERE path = ? AND source_id = ?`,
+      ).run(now, path.resolve(fromPath), source.source_id);
       this.db.prepare(`
         INSERT INTO conversation_source_aliases (
           id, source_id, root_kind, root_path, relative_path, path, alias_kind,
