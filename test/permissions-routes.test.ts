@@ -12,7 +12,7 @@ import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
-import { associateProjectArtifact, ingestArtifact } from "../src/provider-artifacts.js";
+import { associateProjectArtifact, ingestArtifact, recordArtifactVersion } from "../src/provider-artifacts.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
@@ -210,6 +210,32 @@ describe("restricted project route enforcement", () => {
     expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(200);
     expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(200);
     expect(workScanner.refreshRepoAsync).toHaveBeenCalledOnce();
+  });
+
+  it("authorizes artifact content against the original pinned version ref", async () => {
+    const project = addProject(db, { project_key: "version-project", display_name: "Version Project" });
+    setProjectRestricted(db, project.id, true);
+    const recorded = recordArtifactVersion(db, {
+      source_kind: "managed", provider_id: "permission-route-test", content: "pinned bytes\n",
+      media_type: "text/plain", logical_name: "pinned-document",
+    }, 1_000, tempDir);
+    db.prepare("UPDATE artifact_version SET source_project_id = ? WHERE id = ?")
+      .run(project.id, recorded.version.id);
+    registerProviderRoutes(router);
+    const agent = createUser(db, { slug: "version-reader", kind: "agent", display_name: "Version Reader" });
+    const { token } = authenticator.mintApiToken(agent.id);
+    const invoke = () => router.invoke({
+      method: "GET",
+      url: `/api/artifacts/${encodeURIComponent(recorded.version.id)}/content`,
+      credential: token,
+      transport: "http",
+    });
+    expect((await invoke()).status).toBe(403);
+    addGrant(db, {
+      subject_type: "user", subject: agent.id, resource_type: "project",
+      resource: project.id, permission: "read",
+    });
+    expect((await invoke()).status).toBe(200);
   });
 });
 

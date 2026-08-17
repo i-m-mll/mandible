@@ -175,7 +175,7 @@ export function BoundedAskRenderer({
     && userKind === 'human'
     && ask.responder_user_ids.includes(userId)
     && ask.items.every((item) => item.responseVisible)
-    && (ask.state === 'open' || (ask.state === 'submitted' && ask.latest_submission !== null))
+    && (ask.state === 'open' || ask.state === 'submitted')
     && (!instance || instance.operational_mutations === 'allow'),
   );
 
@@ -260,8 +260,8 @@ export function BoundedAskRenderer({
       }
       await postAskSubmission(ask.ask_id, {
         expected_lifecycle_event_id: ask.lifecycle_event_id,
-        ...(ask.state === 'submitted' && ask.latest_submission
-          ? { supersedes_submission_id: ask.latest_submission.id }
+        ...(ask.latest_submission_for_actor
+          ? { supersedes_submission_id: ask.latest_submission_for_actor.id }
           : {}),
         answers: submissionAnswers,
       });

@@ -4298,6 +4298,7 @@ export type AskProjection = {
   created_at: number;
   lifecycle_event_id: string;
   latest_submission: null | { id: string; ordinal: number };
+  latest_submission_for_actor: null | { id: string; ordinal: number };
   items: AskItem[];
   valid: boolean;
 };
@@ -4460,6 +4461,13 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     ordinal: briefingOptionalNumber(latest.ordinal) ?? 0,
   };
   if (root.latest_submission !== null && (!latestSubmission.id || latestSubmission.ordinal < 1)) valid = false;
+  const actorLatest = briefingRecord(root.latest_submission_for_actor);
+  const latestSubmissionForActor = root.latest_submission_for_actor == null ? null : {
+    id: briefingString(actorLatest.id),
+    ordinal: briefingOptionalNumber(actorLatest.ordinal) ?? 0,
+  };
+  if (root.latest_submission_for_actor != null
+      && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   if ((rawState === 'open' && latestSubmission !== null)
       || (rawState === 'submitted' && latestSubmission === null)) valid = false;
   return {
@@ -4475,6 +4483,7 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     created_at: briefingOptionalNumber(root.created_at) ?? 0,
     lifecycle_event_id: briefingString(root.lifecycle_event_id),
     latest_submission: latestSubmission,
+    latest_submission_for_actor: latestSubmissionForActor,
     items,
     valid,
   };
@@ -4515,6 +4524,7 @@ export async function postAskSubmission(
     expected_lifecycle_event_id: string;
     supersedes_submission_id?: string;
     answers: readonly AskSubmissionAnswer[];
+    annotations?: ReadonlyArray<{ annotation_event_id: string }>;
   },
 ): Promise<unknown> {
   const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/submit`, input);

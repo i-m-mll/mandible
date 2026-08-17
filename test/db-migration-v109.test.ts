@@ -38,7 +38,7 @@ describe("migration v109: auth request user attribution", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "136",
+      value: "137",
     });
     const columns = db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([

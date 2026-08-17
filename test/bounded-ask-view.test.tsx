@@ -78,6 +78,7 @@ function askPayload(overrides: Record<string, unknown> = {}) {
     created_at: Date.now(),
     lifecycle_event_id: 'life-open',
     latest_submission: null,
+    latest_submission_for_actor: null,
     lifecycle: { id: 'life-open', operation: 'opened', actor_user_id: null, created_at: 1 },
     items: [
       item('group', null, [], { title: '<b>Questions</b>', position: 0 }),
@@ -196,6 +197,7 @@ describe('bounded ask renderer', () => {
       state: 'submitted',
       lifecycle_event_id: 'life-previous',
       latest_submission: { id: 'authoritative-submission', ordinal: 4 },
+      latest_submission_for_actor: { id: 'authoritative-submission', ordinal: 4 },
       items: [
         item('single', 'single_choice', [
           { option_key: 'a', label: 'A' }, { option_key: 'b', label: 'B' },
@@ -250,6 +252,7 @@ describe('bounded ask renderer', () => {
               state: 'submitted',
               lifecycle_event_id: 'life-authoritative',
               latest_submission: { id: 'submission-authoritative', ordinal: 1 },
+              latest_submission_for_actor: { id: 'submission-authoritative', ordinal: 1 },
               items: [item('text', 'free_text', [], {
                 required: true,
                 effective_response: { response_event_id: 'landed-answer', value: { text: 'unsaved local value' } },

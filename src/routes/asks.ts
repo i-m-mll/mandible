@@ -1,4 +1,5 @@
 import {
+  applyAskAnnotations,
   applyAskAnswers,
   askAudience,
   AskStoreError,
@@ -161,7 +162,11 @@ export function registerAskRoutes(server: RouteRegistrar, db: Db = getDb()): voi
       } else if (!operator) {
         throw new AskStoreError("ask not found", 404, "not_found");
       }
-      const projection = readAsk(db, req.params.id, { answerActorUserId });
+      const projection = readAsk(db, req.params.id, {
+        answerActorUserId,
+        viewerUserId: identity.user_id,
+        viewerIsOperator: operator,
+      });
       if (!projection) throw new AskStoreError("ask not found", 404, "not_found");
       emitTransition(projection.transition);
       sendJson(res, 200, projection.ask);
@@ -206,6 +211,20 @@ export function registerAskRoutes(server: RouteRegistrar, db: Db = getDb()): voi
     }
   }, { fileRpc: "deny" });
 
+  server.post("/api/asks/:id/annotations", (req, res) => {
+    try {
+      const actorUserId = activeUser(db, req, "human").user.id;
+      const now = Date.now();
+      const observed = observeAndEmit(db, req.params.id, now);
+      if (!observed) throw new AskStoreError("ask not found", 404, "not_found");
+      const body = bodyRecord(req);
+      const result = applyAskAnnotations(db, req.params.id, actorUserId, body.annotations as never[], now);
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
   server.post("/api/asks/:id/submit", (req, res) => {
     try {
       const actorUserId = activeUser(db, req, "human").user.id;
@@ -224,6 +243,7 @@ export function registerAskRoutes(server: RouteRegistrar, db: Db = getDb()): voi
         expected_lifecycle_event_id: body.expected_lifecycle_event_id,
         supersedes_submission_id: body.supersedes_submission_id as string | null | undefined,
         answers: body.answers as never[],
+        annotations: body.annotations as never[] | undefined,
       }, now);
       const ask = askAudience(db, req.params.id)!;
       broadcast(ASK_EVENTS.submitted, {
@@ -234,7 +254,7 @@ export function registerAskRoutes(server: RouteRegistrar, db: Db = getDb()): voi
         submission_id: outcome.submission_id,
         ordinal: outcome.ordinal,
         lifecycle_event_id: outcome.lifecycle_event_id,
-        created_at: outcome.result.submission?.created_at,
+        created_at: outcome.result.submissions.find((submission) => submission.id === outcome.submission_id)?.created_at,
       });
       sendJson(res, 200, outcome.result);
     } catch (error) {

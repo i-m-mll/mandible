@@ -123,7 +123,7 @@ describe("bounded ask store", () => {
       expected_response_event_id: null,
     };
     const set = applyAskAnswers(db, created.ask_id, humanId, [answer], 1_200);
-    expect(observeAsk(db, created.ask_id, 1_201)!.result.submission).toBeNull();
+    expect(observeAsk(db, created.ask_id, 1_201)!.result.submissions).toEqual([]);
     expect(() => applyAskAnswers(db, created.ask_id, humanId, [answer], 1_201))
       .toThrowError(/stale/);
     const result = submitAsk(db, created.ask_id, humanId, {
@@ -134,11 +134,11 @@ describe("bounded ask store", () => {
         response_event_id: set.answer_event_ids[0],
       }],
     }, 1_300).result;
-    expect(result).toMatchObject({ schema: "mandible-ask-result@1", state: "submitted" });
-    expect(result.submission?.answers[0]).toMatchObject({ value: { option_key: "a" } });
+    expect(result).toMatchObject({ schema: "mandible-ask-result@2", state: "submitted" });
+    expect(result.submissions[0]?.answers[0]).toMatchObject({ value: { option_key: "a" } });
   });
 
-  it("appends immutable corrected submissions and expires only open bounded asks", () => {
+  it("appends immutable corrected submissions and expires answerable bounded asks", () => {
     const created = createAsk(db, packet(), { requesterUserId: agentId, now: 1_000 });
     const projection = readAsk(db, created.ask_id, { now: 1_100 })!.ask;
     expect(projection.latest_submission).toBeNull();
@@ -164,13 +164,13 @@ describe("bounded ask store", () => {
       supersedes_submission_id: first.submission_id,
       answers: [{ item_id: choice.id, item_revision_id: choice.revision.id, response_event_id: secondSet }],
     }, 1_500);
-    expect(second.result.submission).toMatchObject({ ordinal: 2, supersedes_submission_id: first.submission_id });
+    expect(second.result.submissions[0]).toMatchObject({ ordinal: 2, supersedes_submission_id: first.submission_id });
     const afterSecond = readAsk(db, created.ask_id, { answerActorUserId: humanId, now: 1_501 })!.ask;
     expect(afterSecond.latest_submission).toEqual({ id: second.submission_id, ordinal: 2 });
     expect(afterSecond.lifecycle_event_id).toBe(second.lifecycle_event_id);
     expect(afterSecond.lifecycle_event_id).not.toBe(second.submission_id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM feedback_submissions").get()).toEqual({ n: 2 });
-    expect(observeAsk(db, created.ask_id, 5_000)!.result.state).toBe("submitted");
+    expect(observeAsk(db, created.ask_id, 5_000)!.result.state).toBe("expired");
   });
 
   it("canonicalizes object keys and responder sets while preserving item and option order", () => {

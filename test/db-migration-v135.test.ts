@@ -225,10 +225,10 @@ describe("migration v135: task-command v2", () => {
     migrate(fresh);
     const upgraded = upgradedDb();
     migrate(upgraded);
-    expect(BASELINE_SCHEMA_VERSION).toBe(136);
+    expect(BASELINE_SCHEMA_VERSION).toBe(137);
     expect(schemaProjection(upgraded)).toEqual(schemaProjection(fresh));
     expect(upgraded.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "136" });
+      .toEqual({ value: "137" });
     fresh.close();
     upgraded.close();
   });

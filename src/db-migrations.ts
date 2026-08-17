@@ -4389,6 +4389,60 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
         ON operational_incident_workflow_events(auth_request_id)
         WHERE auth_request_id IS NOT NULL`,
     ],
+  },
+  {
+    version: 137,
+    name: "annotatable_ask_documents",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS feedback_collection_documents (
+        collection_id TEXT PRIMARY KEY REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+        previous_round_id TEXT REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        created_at INTEGER NOT NULL,
+        CHECK(previous_round_id IS NULL OR previous_round_id != collection_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_collection_documents_version
+        ON feedback_collection_documents(artifact_version_id)`,
+      `CREATE TABLE IF NOT EXISTS feedback_annotation_events (
+        id TEXT PRIMARY KEY,
+        collection_id TEXT NOT NULL REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        operation TEXT NOT NULL CHECK(operation IN ('set','retract')),
+        annotation_kind TEXT CHECK(annotation_kind IS NULL OR annotation_kind IN ('comment','suggest_replacement')),
+        start_offset INTEGER,
+        end_offset INTEGER,
+        quote TEXT,
+        body TEXT,
+        replacement_text TEXT,
+        retracts_event_id TEXT REFERENCES feedback_annotation_events(id) ON DELETE RESTRICT,
+        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at INTEGER NOT NULL,
+        CHECK((operation = 'set' AND annotation_kind IS NOT NULL
+          AND start_offset IS NOT NULL AND start_offset >= 0
+          AND end_offset IS NOT NULL AND end_offset > start_offset
+          AND quote IS NOT NULL AND quote != '' AND retracts_event_id IS NULL)
+          OR (operation = 'retract' AND annotation_kind IS NULL
+          AND start_offset IS NULL AND end_offset IS NULL AND quote IS NULL
+          AND body IS NULL AND replacement_text IS NULL AND retracts_event_id IS NOT NULL)),
+        CHECK(operation != 'set'
+          OR (annotation_kind = 'comment' AND body IS NOT NULL AND trim(body) != '' AND replacement_text IS NULL)
+          OR (annotation_kind = 'suggest_replacement' AND replacement_text IS NOT NULL
+            AND (body IS NULL OR trim(body) != '')))
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_annotation_retraction
+        ON feedback_annotation_events(retracts_event_id) WHERE operation = 'retract'`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_annotation_events_collection_actor
+        ON feedback_annotation_events(collection_id, actor_user_id, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS feedback_submission_annotations (
+        submission_id TEXT NOT NULL REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
+        annotation_event_id TEXT NOT NULL REFERENCES feedback_annotation_events(id) ON DELETE RESTRICT,
+        position INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
+        PRIMARY KEY(submission_id, annotation_event_id)
+      )`,
+      `DROP INDEX IF EXISTS uq_feedback_submission_superseded_once`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_submission_superseded_once_actor
+        ON feedback_submissions(supersedes_submission_id, actor_user_id)
+        WHERE supersedes_submission_id IS NOT NULL`,
+    ],
   }
 ];
 

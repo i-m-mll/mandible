@@ -47,7 +47,7 @@ const FEEDBACK_INDEXES = [
   "uq_feedback_response_retraction",
   "idx_feedback_response_events_revision",
   "idx_feedback_response_events_collection_actor",
-  "uq_feedback_submission_superseded_once",
+  "uq_feedback_submission_superseded_once_actor",
   "idx_feedback_comments_item",
 ] as const;
 
@@ -188,7 +188,7 @@ describe.sequential("migration v125: feedback schema foundation", () => {
 
   it("creates the complete fresh schema and converges with the v124 upgrade path", () => {
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "136",
+      value: "137",
     });
 
     const requiredObjects = [...FEEDBACK_TABLES, ...FEEDBACK_INDEXES];
@@ -220,7 +220,7 @@ describe.sequential("migration v125: feedback schema foundation", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "136",
+      value: "137",
     });
     expect(rows(db, "permission_grants")).toEqual(grantsBefore);
     for (const table of BRIEFING_TABLES) {
@@ -284,7 +284,7 @@ describe.sequential("migration v125: feedback schema foundation", () => {
       ...PERMISSION_INDEXES,
     ])).toEqual(definitionsBefore);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "136",
+      value: "137",
     });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);

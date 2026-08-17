@@ -44,7 +44,7 @@ const FEEDBACK_INDEXES = [
   "uq_feedback_collection_event_successor", "idx_feedback_collection_events_head",
   "idx_feedback_item_events_revision", "uq_feedback_response_retraction",
   "idx_feedback_response_events_revision", "idx_feedback_response_events_collection_actor",
-  "uq_feedback_submission_superseded_once", "idx_feedback_comments_item",
+  "uq_feedback_submission_superseded_once_actor", "idx_feedback_comments_item",
 ] as const;
 
 const DISPATCH_INDEXES = [
@@ -257,7 +257,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "136" });
+      .toEqual({ value: "137" });
     expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
     expect(definitions(db, [...FEEDBACK_TABLES, ...FEEDBACK_INDEXES]).map((row) => row.name).sort())
       .toEqual([...FEEDBACK_TABLES, ...FEEDBACK_INDEXES].sort());
@@ -377,7 +377,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
       .toEqual(definitionsBefore);
     expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "136" });
+      .toEqual({ value: "137" });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
   });
@@ -396,7 +396,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "136" });
+      .toEqual({ value: "137" });
     expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
     expect(db.prepare("SELECT id FROM feedback_items ORDER BY id").all()).toEqual([
       { id: "candidate-a" }, { id: "candidate-b" },
