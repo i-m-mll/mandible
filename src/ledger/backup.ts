@@ -143,6 +143,8 @@ export const METADATA_BACKUP_TABLES = [
   "feedback_collections",
   "feedback_recurring_profiles",
   "feedback_ask_sessions",
+  "feedback_collection_documents",
+  "feedback_annotation_events",
   "feedback_ingest_requests",
   "feedback_publications",
   "feedback_items",
@@ -153,6 +155,7 @@ export const METADATA_BACKUP_TABLES = [
   "feedback_item_events",
   "feedback_response_events",
   "feedback_submissions",
+  "feedback_submission_annotations",
   "feedback_submission_answers",
   "feedback_comments",
   // Agent-dispatch handling events are the audit chain (comment -> handling
