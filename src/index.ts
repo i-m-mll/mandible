@@ -39,6 +39,7 @@ import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { registerConversationCustodyRoutes } from "./routes/conversation-custody.js";
 import { WorkScanner } from "./work-scanner.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
@@ -267,6 +268,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
+  registerConversationCustodyRoutes(router, db);
 
   try {
     materializeCoworkCliCache({

@@ -21,6 +21,12 @@ Usage:
   mandible conversations tag add <conversation-ref|--current> <tag...> [--json]
   mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]
   mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]
+  mandible conversations custody status <id|session-id> [--json]
+  mandible conversations custody capture <id|session-id> [--rewind] [--mirroring] [--json]
+  mandible conversations custody verify <id|session-id> [--version VERSION] [--json]
+  mandible conversations custody archive <id|session-id> --destination PATH [--json]
+  mandible conversations custody stage-restore <id|session-id> --staging-root PATH --provider-root PATH [--json]
+  mandible conversations custody import <archive-root> [--json]
   mandible conversations scan-credentials [--conversation <id>] [--limit N] [--dry-run] [--json]
 
 These commands read Mandible's normalized SQLite conversation index. Use
@@ -39,6 +45,66 @@ The session-scoped predicate is reserved for a future persisted shape. Use
 --dry-run to report without recording or revoking. No token material is ever
 printed or stored.
 EOF
+}
+
+conversation_custody_command() {
+  local operation="${1:-}" target="${2:-}" json=0 rewind=0 mirroring=0
+  local version="" destination="" staging_root="" provider_root="" payload response conv_id
+  [[ -n "$operation" ]] || { usage >&2; return 2; }
+  shift || true
+  shift || true
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --rewind) rewind=1; shift ;;
+      --mirroring) mirroring=1; shift ;;
+      --version) version="${2:?--version requires a value}"; shift 2 ;;
+      --destination) destination="${2:?--destination requires a value}"; shift 2 ;;
+      --staging-root) staging_root="${2:?--staging-root requires a value}"; shift 2 ;;
+      --provider-root) provider_root="${2:?--provider-root requires a value}"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) echo "Unknown option: $1" >&2; return 2 ;;
+    esac
+  done
+  [[ -n "$target" ]] || { echo "Error: custody $operation requires a target." >&2; return 2; }
+
+  if [[ "$operation" == "import" ]]; then
+    payload=$(jq -nc --arg archive_root "$target" '{archive_root:$archive_root}')
+    response=$(api_send POST "/api/conversation-custody/import" "$payload") || return $?
+  else
+    conv_id=$(conversation_resolve_id "$target") || return $?
+    case "$operation" in
+      status) response=$(api_get "/api/conversations/$(urlencode "$conv_id")/custody") || return $? ;;
+      capture)
+        payload=$(jq -nc --argjson rewind "$rewind" --argjson seal "$(( mirroring ? 0 : 1 ))" '{rewind:($rewind == 1),seal:($seal == 1)}')
+        response=$(api_send POST "/api/conversations/$(urlencode "$conv_id")/custody/capture" "$payload") || return $? ;;
+      verify)
+        payload=$(jq -nc --arg version "$version" 'if $version == "" then {} else {version:$version} end')
+        response=$(api_send POST "/api/conversations/$(urlencode "$conv_id")/custody/verify" "$payload") || return $? ;;
+      archive)
+        [[ -n "$destination" ]] || { echo "Error: custody archive requires --destination." >&2; return 2; }
+        payload=$(jq -nc --arg destination "$destination" '{destination:$destination}')
+        response=$(api_send POST "/api/conversations/$(urlencode "$conv_id")/custody/archive" "$payload") || return $? ;;
+      stage-restore)
+        [[ -n "$staging_root" && -n "$provider_root" ]] || { echo "Error: stage-restore requires --staging-root and --provider-root." >&2; return 2; }
+        payload=$(jq -nc --arg staging_root "$staging_root" --arg provider_root "$provider_root" '{staging_root:$staging_root,provider_root:$provider_root}')
+        response=$(api_send POST "/api/conversations/$(urlencode "$conv_id")/custody/stage-restore" "$payload") || return $? ;;
+      *) echo "Unknown custody operation: $operation" >&2; return 2 ;;
+    esac
+  fi
+
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      if .status then
+        (.status | "\(.conversation_id): \(.state)" + (if .active_version then " version \(.active_version)" else "" end))
+      elif .archive_path then "Archive: \(.archive_path)"
+      elif .staging_path then "Staged \(.files) files at \(.staging_path)\nProvider restore: \(.capability.capability)"
+      elif .ok != null then "Integrity: " + (if .ok then "verified" else "FAILED\n" + (.errors | join("\n")) end)
+      else .
+      end'
+  fi
 }
 
 conversation_source() {
@@ -370,6 +436,7 @@ file_rpc_main() {
 if api_is_file_rpc; then
   case "${1:-}" in
     star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
+    custody) shift; conversation_custody_command "$@"; exit $? ;;
   esac
   file_rpc_main "$@"
   exit $?
@@ -377,6 +444,7 @@ fi
 
 case "${1:-}" in
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
+  custody) shift; conversation_custody_command "$@"; exit $? ;;
 esac
 
 # Issue 71a287e — scan-credentials is daemon-side in every transport: only the
