@@ -312,7 +312,7 @@ export type Conversation = {
   is_sidechain: boolean;
   agent_id: string | null;
   starred: boolean;
-  label: string | null;
+  tags: string[];
   notes: string | null;
   parent_conversation_id: string | null;
   children_count: number;

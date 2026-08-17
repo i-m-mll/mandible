@@ -20,7 +20,13 @@ api_send() {
 }
 api_get() {
   printf '%s\\t%s\\t%s\\t%s\\n' "$1" "\${MANDIBLE_HTTP_TIMEOUT:-}" "\${MANDIBLE_FILE_RPC_TIMEOUT:-}" "\${MANDIBLE_BASE:-}" >> "${callLog}"
-  printf '%s' '{"schema":"mandible-ask-result@2","ask_id":"ask-1","state":"open","request_digest":"digest","expires_at":999999,"submissions":[],"wait_timed_out":true}'
+  if [[ "$1" == */export ]]; then
+    printf '%s' $'---\\nexport_schema: mandible-submission-export@1\\n---\\n'
+  elif [[ "\${ASK_TEST_LATEST:-}" == "1" ]]; then
+    printf '%s' '{"schema":"mandible-ask-result@2","ask_id":"ask-1","state":"open","request_digest":"digest","expires_at":999999,"submissions":[{"ordinal":3}],"wait_timed_out":true}'
+  else
+    printf '%s' '{"schema":"mandible-ask-result@2","ask_id":"ask-1","state":"open","request_digest":"digest","expires_at":999999,"submissions":[],"wait_timed_out":true}'
+  fi
 }
 api_temp_file() { mktemp "${temp}/response.XXXXXX"; }
 api_capture() {
@@ -71,9 +77,26 @@ async function runRealFileRpc(args: string[], transport: FileRpcTransport) {
 describe("mandible ask CLI", () => {
   it("is dispatched and documented by the top-level help", () => {
     const help = execFileSync(path.join(root, "bin/mandible"), ["help"], { encoding: "utf8" });
-    expect(help).toContain("ask submit|wait|result");
+    expect(help).toContain("ask submit|wait|result|export");
     const askHelp = execFileSync(path.join(root, "bin/mandible"), ["ask", "--help"], { encoding: "utf8" });
     expect(askHelp).toContain("mandible ask submit");
+  });
+
+  it("exports the latest or selected frozen submission to stdout or a file", () => {
+    const latest = run(["export", "ask-1"], { customEnv: { ...env, ASK_TEST_LATEST: "1" } });
+    expect(latest.status).toBe(0);
+    expect(latest.stdout).toBe("---\nexport_schema: mandible-submission-export@1\n---\n");
+    const calls = fs.readFileSync(path.join(temp, "calls"), "utf8");
+    expect(calls).toContain("/api/asks/ask-1/result");
+    expect(calls).toContain("/api/asks/ask-1/submissions/3/export");
+
+    fs.rmSync(path.join(temp, "calls"));
+    const outputPath = path.join(temp, "submission.md");
+    const selected = run(["export", "ask-1", "--ordinal", "2", "--out", outputPath]);
+    expect(selected.status).toBe(0);
+    expect(selected.stdout).toBe("");
+    expect(fs.readFileSync(outputPath, "utf8")).toBe(latest.stdout);
+    expect(fs.readFileSync(path.join(temp, "calls"), "utf8")).not.toContain("/result");
   });
 
   it("submits JSON unchanged from a file and stdin with JSON or human output", () => {
@@ -174,6 +197,9 @@ printf '200'
     const rpcRouter = new Router();
     rpcRouter.get("/api/asks/:id/result", (_req, res) => res.json(canonical), { fileRpc: "allow" });
     rpcRouter.get("/api/asks/:id/wait", (req, res) => res.json({ ...canonical, wait_timed_out: true, timeout_seen: req.query.timeout_ms }), { fileRpc: "allow" });
+    rpcRouter.get("/api/asks/:id/submissions/:ordinal/export", (_req, res) => {
+      res.text?.("---\nexport_schema: mandible-submission-export@1\n---\n", "text/markdown; charset=utf-8");
+    }, { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router: rpcRouter, dir: rpcDir, responseTtlMs: 60_000 });
     const result = await runRealFileRpc(["ask", "result", "rpc-ask", "--json"], transport);
     expect(result.status).toBe(0);
@@ -181,6 +207,9 @@ printf '200'
     const wait = await runRealFileRpc(["ask", "wait", "rpc-ask", "--timeout", "500ms", "--json"], transport);
     expect(wait.status).toBe(0);
     expect(JSON.parse(wait.stdout)).toEqual({ ...canonical, wait_timed_out: true, timeout_seen: "500" });
+    const exported = await runRealFileRpc(["ask", "export", "rpc-ask", "--ordinal", "1"], transport);
+    expect(exported.status).toBe(0);
+    expect(exported.stdout).toBe("---\nexport_schema: mandible-submission-export@1\n---\n");
   });
 
   it("returns nonzero API failures without printing staged secrets", () => {

@@ -2186,6 +2186,7 @@ export async function getConversations(params?: {
   exclude_subagents?: boolean;
   parent_id?: string;
   session_id?: string;
+  tag?: string;
 }): Promise<{ conversations: Conversation[]; total: number }> {
   const query = new URLSearchParams();
   if (params?.source) query.set('source', params.source);
@@ -2199,6 +2200,7 @@ export async function getConversations(params?: {
   if (params?.exclude_subagents) query.set('exclude_subagents', 'true');
   if (params?.parent_id) query.set('parent_id', params.parent_id);
   if (params?.session_id) query.set('session_id', params.session_id);
+  if (params?.tag) query.set('tag', params.tag);
   const qs = query.toString();
   return cachedApiGetJson<{ conversations: Conversation[]; total: number }>(
     `/api/conversations${qs ? '?' + qs : ''}`,
@@ -2237,7 +2239,14 @@ export async function getConversationBlocks(id: string, params?: {
   return (await parseMaybeJson(resp)) as { blocks: ConversationBlock[]; total: number };
 }
 
-export async function updateConversation(id: string, data: { starred?: boolean; label?: string; notes?: string }): Promise<Conversation> {
+export async function updateConversation(id: string, data: {
+  starred?: boolean;
+  tags?: string[];
+  tags_add?: string[];
+  tags_remove?: string[];
+  notes?: string | null;
+  notes_append?: string;
+}): Promise<Conversation> {
   const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
   return (await parseMaybeJson(resp)) as Conversation;
 }

@@ -4446,6 +4446,18 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
   },
   {
     version: 138,
+    name: "conversation_tags",
+    statements: [
+      `ALTER TABLE conversations ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(tags) AND json_type(tags) = 'array')`,
+      `UPDATE conversations
+          SET tags = json_array(trim(label))
+        WHERE label IS NOT NULL AND trim(label) != ''`,
+      `ALTER TABLE conversations DROP COLUMN label`,
+    ],
+  },
+  {
+    version: 139,
     name: "auth_hook_durable_convergence",
     // Issue 27241e6 — post-merge hook execution becomes durable, honest, and
     // bounded. Before this, a hook result existed only as text appended to the
@@ -4524,12 +4536,39 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
       `CREATE INDEX IF NOT EXISTS idx_auth_hook_alerts_open
         ON auth_hook_alerts(acknowledged_at, created_at DESC)`,
     ],
-  }
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function verifyConversationTagsColumn(db: Db): void {
+  const matches = (db.prepare("PRAGMA table_info(conversations)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>).filter((column) => column.name === "tags");
+  const tableSql = (db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversations'",
+  ).get() as { sql: string } | undefined)?.sql ?? "";
+  const hasJsonArrayCheck = /check\s*\(\s*json_valid\s*\(\s*tags\s*\)\s+and\s+json_type\s*\(\s*tags\s*\)\s*=\s*'array'\s*\)/i
+    .test(tableSql);
+  if (
+    matches.length !== 1 ||
+    matches[0].type.toUpperCase() !== "TEXT" ||
+    matches[0].notnull !== 1 ||
+    matches[0].dflt_value !== "'[]'" ||
+    matches[0].pk !== 0 ||
+    !hasJsonArrayCheck
+  ) {
+    throw new Error(
+      "migration 138 precondition: conversations.tags has a divergent definition",
+    );
+  }
 }
 
 function verifyOperationalIncidentV136Schema(db: Db): void {
@@ -4701,6 +4740,21 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           ? []
           : migration.statements.slice(7, 15);
       }
+      if (migration.name === "conversation_tags") {
+        if (!tableExists(db, "conversations")) {
+          // Narrow legacy-schema fixtures can intentionally omit the
+          // conversations subsystem while still advancing the shared head.
+          statements = [];
+        } else if (hasColumn(db, "conversations", "tags")) {
+          if (hasColumn(db, "conversations", "label")) {
+            throw new Error("migration 138 precondition: conversations has both label and tags");
+          }
+          verifyConversationTagsColumn(db);
+          // Historical convergence tests and interrupted development builds can
+          // rewind only schema_version while retaining the head table shape.
+          statements = [];
+        }
+      }
       for (const statement of statements) {
         db.exec(statement);
       }
@@ -4710,7 +4764,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 127) {
         ensureBriefingIngestRequestColumn(db);
       }
-      if (migration.version === 138) {
+      if (migration.version === 139) {
         ensureAuthHookRequiredColumn(db);
       }
       if (migration.name === "operational_incidents") {

@@ -1,10 +1,16 @@
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
+import type { RequestLike } from "../server.js";
+import { requireIdentity, isOperator } from "../client-auth/authz.js";
+import { resolveSubmissionRef } from "../feedback/submissions.js";
 
-type RedirectKind = "issue" | "auth" | "artifact";
+type RedirectKind = "issue" | "auth" | "artifact" | "submission";
 type IssueRedirectResolution =
   | { ok: true; repoId: string; issueId: string }
+  | { ok: false; status: 404 | 409; message: string };
+type SubmissionRedirectResolution =
+  | { ok: true; askId: string; ordinal: number }
   | { ok: false; status: 404 | 409; message: string };
 
 const REDIRECT_CONFIG: Record<RedirectKind, {
@@ -31,10 +37,17 @@ const REDIRECT_CONFIG: Record<RedirectKind, {
     targetPath: "artifacts",
     targetParam: "ref",
   },
+  submission: {
+    route: "/r/submission/:ref",
+    label: "submission",
+    targetPath: "briefing",
+    targetParam: "submission",
+  },
 };
 
 export interface RedirectRouteOptions {
   resolveIssueLink?: (ref: string) => IssueRedirectResolution;
+  resolveSubmissionLink?: (ref: string, req: RequestLike) => SubmissionRedirectResolution;
 }
 
 export function registerRedirectRoutes(
@@ -42,6 +55,7 @@ export function registerRedirectRoutes(
   options: RedirectRouteOptions = {},
 ): void {
   const resolveIssueLink = options.resolveIssueLink ?? resolveLedgerIssueLink;
+  const resolveSubmissionLink = options.resolveSubmissionLink ?? resolveAuthorizedSubmissionLink;
   const entries = Object.entries(REDIRECT_CONFIG) as Array<
     [RedirectKind, typeof REDIRECT_CONFIG[RedirectKind]]
   >;
@@ -71,6 +85,25 @@ export function registerRedirectRoutes(
         });
         return;
       }
+      if (kind === "submission") {
+        const resolved = resolveSubmissionLink(ref, req);
+        if (!resolved.ok) {
+          sendMessagePage(res.status(resolved.status), {
+            title: "Mandible submission link",
+            message: resolved.message,
+          });
+          return;
+        }
+        const query = buildTargetQuery(req.query, {
+          ask: resolved.askId,
+          submission: String(resolved.ordinal),
+        });
+        sendRedirectPage(res, {
+          label: config.label,
+          target: `mandible:///briefing?${query.toString()}`,
+        });
+        return;
+      }
       sendRedirectPage(res, {
         label: config.label,
         target: buildMandibleTarget(config.targetPath, config.targetParam, {
@@ -82,6 +115,29 @@ export function registerRedirectRoutes(
         }),
       });
     }, { fileRpc: "deny" });
+  }
+}
+
+function resolveAuthorizedSubmissionLink(ref: string, req: RequestLike): SubmissionRedirectResolution {
+  try {
+    const db = getDb();
+    const identity = requireIdentity(req);
+    const resolved = resolveSubmissionRef(db, ref, {
+      userId: identity.user_id,
+      isOperator: isOperator(db, identity),
+    });
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        status: resolved.error === "ambiguous" ? 409 : 404,
+        message: resolved.error === "ambiguous"
+          ? `Submission reference '${ref}' is ambiguous.`
+          : `Submission reference '${ref}' was not found.`,
+      };
+    }
+    return { ok: true, askId: resolved.ask_id, ordinal: resolved.submission.ordinal };
+  } catch {
+    return { ok: false, status: 404, message: `Submission reference '${ref}' was not found.` };
   }
 }
 

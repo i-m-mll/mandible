@@ -11,11 +11,16 @@ MANDIBLE_DB="$(api_live_db_path)"
 usage() {
   cat <<'EOF'
 Usage:
-  mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
+  mandible conversations list [--provider claude|codex|gemini|all] [--tag TAG] [--since Nd] [--limit N] [--json]
   mandible conversations show <id|session-id> [--json] [--blocks]
   mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
   mandible conversations search "<query>" [search options...]
+  mandible conversations star <conversation-ref|--current> [--json]
+  mandible conversations unstar <conversation-ref|--current> [--json]
+  mandible conversations tag add <conversation-ref|--current> <tag...> [--json]
+  mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]
+  mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]
   mandible conversations scan-credentials [--conversation <id>] [--limit N] [--dry-run] [--json]
 
 These commands read Mandible's normalized SQLite conversation index. Use
@@ -59,10 +64,11 @@ conversation_resolve_id() {
 }
 
 file_rpc_list() {
-  local provider="all" since="" limit=20 json=0 source request response
+  local provider="all" tag="" since="" limit=20 json=0 source request response
   while (( $# > 0 )); do
     case "$1" in
       --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
+      --tag) tag="${2:?--tag requires a value}"; shift 2 ;;
       --since) since="${2:?--since requires a value}"; shift 2 ;;
       --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
       --json) json=1; shift ;;
@@ -73,6 +79,7 @@ file_rpc_list() {
   source=$(conversation_source "$provider")
   request="/api/conversations?limit=$(urlencode "$limit")"
   if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
+  if [[ -n "$tag" ]]; then request="${request}&tag=$(urlencode "$tag")"; fi
   if [[ -n "$since" ]]; then request="${request}&since=$(urlencode "$since")"; fi
   response=$(api_get "$request")
   if (( json )); then
@@ -80,6 +87,93 @@ file_rpc_list() {
   else
     printf '%s\n' "$response" | jq -r '.conversations[] | "\(.id[0:8])\t\(.source)\t\(.started_at)\t\(.block_count)\t\(.title)"'
   fi
+}
+
+conversation_resolve_mutation_target() {
+  local target="$1" current="$2" source="" session_id="" exact_file session_file exact_status response count
+  exact_file=$(api_temp_file)
+  session_file=$(api_temp_file)
+  if (( current )); then
+    source=$(api_ambient_provider)
+    session_id=$(api_ambient_session_id)
+    [[ -n "$source" && -n "$session_id" ]] || {
+      echo "Error: --current requires an ambient provider session/thread id." >&2
+      return 2
+    }
+    source=$(conversation_source "$source")
+    printf '{}\n' > "$exact_file"
+  else
+    session_id="$target"
+    exact_status=$(api_capture GET "/api/conversations/$(urlencode "$target")" "" "$exact_file")
+    [[ "$exact_status" == "404" || "$exact_status" =~ ^2 ]] || {
+      cat "$exact_file" >&2
+      return 22
+    }
+  fi
+  response=$(api_get "/api/conversations?session_id=$(urlencode "$session_id")&limit=200${source:+&source=$(urlencode "$source")}")
+  printf '%s\n' "$response" > "$session_file"
+  response=$(jq -sc '[ (.[0].conversation? // empty), (.[1].conversations[]? // empty) ] | unique_by(.id)' "$exact_file" "$session_file")
+  count=$(printf '%s\n' "$response" | jq 'length')
+  if [[ "$count" != "1" ]]; then
+    echo "Error: conversation reference resolved to ${count} matches; expected exactly one." >&2
+    return 2
+  fi
+  printf '%s\n' "$response" | jq -r '.[0].id'
+}
+
+conversation_render_mutation() {
+  local response="$1" json="$2"
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '"\(.id) [\(.source)] \(.title)\nstarred: \(.starred)\ntags: \(.tags | join(", "))\nnotes: \(.notes // "-")"'
+  fi
+}
+
+conversation_metadata_command() {
+  local command="$1"; shift
+  local operation="" target="" current=0 json=0 message="" payload="" conv_id response
+  local -a tags=()
+  if [[ "$command" == "tag" ]]; then
+    operation="${1:-}"; shift || true
+    [[ "$operation" == "add" || "$operation" == "rm" ]] || { usage >&2; return 2; }
+  else
+    operation="$command"
+  fi
+  while (( $# > 0 )); do
+    case "$1" in
+      --current) current=1; shift ;;
+      --json) json=1; shift ;;
+      -m)
+        [[ "$operation" == "comment" ]] || { echo "Error: -m is only valid for comment." >&2; return 2; }
+        message="${2:?comment -m requires markdown}"; shift 2 ;;
+      --*) echo "Unknown option: $1" >&2; return 2 ;;
+      *)
+        if [[ -z "$target" && "$current" -eq 0 ]]; then target="$1"; else tags+=("$1"); fi
+        shift ;;
+    esac
+  done
+  if (( current )); then
+    [[ -z "$target" ]] || { echo "Error: use a conversation ref or --current, not both." >&2; return 2; }
+  else
+    [[ -n "$target" ]] || { echo "Error: conversation ref or --current is required." >&2; return 2; }
+  fi
+  case "$operation" in
+    star) payload='{"starred":true}' ;;
+    unstar) payload='{"starred":false}' ;;
+    add)
+      (( ${#tags[@]} > 0 )) || { echo "Error: at least one tag is required." >&2; return 2; }
+      payload=$(printf '%s\n' "${tags[@]}" | jq -Rsc 'split("\n")[:-1] | {tags_add:.}') ;;
+    rm)
+      (( ${#tags[@]} > 0 )) || { echo "Error: at least one tag is required." >&2; return 2; }
+      payload=$(printf '%s\n' "${tags[@]}" | jq -Rsc 'split("\n")[:-1] | {tags_remove:.}') ;;
+    comment)
+      [[ -n "${message//[[:space:]]/}" ]] || { echo "Error: comment -m requires non-empty markdown." >&2; return 2; }
+      payload=$(jq -nc --arg notes_append "$message" '{notes_append:$notes_append}') ;;
+  esac
+  conv_id=$(conversation_resolve_mutation_target "$target" "$current") || return $?
+  response=$(api_send PATCH "/api/conversations/$(urlencode "$conv_id")" "$payload") || return $?
+  conversation_render_mutation "$response" "$json"
 }
 
 file_rpc_show() {
@@ -274,9 +368,16 @@ file_rpc_main() {
 }
 
 if api_is_file_rpc; then
+  case "${1:-}" in
+    star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
+  esac
   file_rpc_main "$@"
   exit $?
 fi
+
+case "${1:-}" in
+  star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
+esac
 
 # Issue 71a287e — scan-credentials is daemon-side in every transport: only the
 # daemon holds the token pepper needed to verify a candidate.
@@ -317,7 +418,7 @@ from typing import Any
 
 def usage() -> None:
     print("""Usage:
-  mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
+  mandible conversations list [--provider claude|codex|gemini|all] [--tag TAG] [--since Nd] [--limit N] [--json]
   mandible conversations show <id|session-id> [--json] [--blocks]
   mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
@@ -340,7 +441,10 @@ def parse_since(value: str | None) -> str | None:
 
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {key: row[key] for key in row.keys()}
+    item = {key: row[key] for key in row.keys()}
+    if "tags" in item:
+        item["tags"] = json.loads(item["tags"])
+    return item
 
 
 def decompress(content: bytes | str, compressed: int) -> str:
@@ -385,6 +489,9 @@ def list_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     if source:
         where.append("source = ?")
         params.append(source)
+    if args.tag:
+        where.append("EXISTS (SELECT 1 FROM json_each(conversations.tags) WHERE json_each.value = ?)")
+        params.append(args.tag)
     since = parse_since(args.since)
     if since:
         where.append("started_at >= ?")
@@ -392,7 +499,7 @@ def list_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     params.append(args.limit)
     rows = conn.execute(
         f"""
-        SELECT id, source, title, started_at, updated_at, block_count, session_id, cwd, branch, model, source_path
+        SELECT id, source, title, started_at, updated_at, block_count, session_id, cwd, branch, model, source_path, tags
         FROM conversations
         WHERE {' AND '.join(where)}
         ORDER BY started_at DESC
@@ -497,6 +604,7 @@ def main() -> int:
     list_parser = sub.add_parser("list")
     list_parser.add_argument("--provider", default="all", choices=["claude", "codex", "gemini", "all"])
     list_parser.add_argument("--since")
+    list_parser.add_argument("--tag")
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.add_argument("--json", action="store_true")
     show_parser = sub.add_parser("show")

@@ -26,7 +26,7 @@ function conversation(blocks: ConversationBlock[]): Conversation & {
     model: null,
     cli_version: null,
     starred: false,
-    label: null,
+    tags: [],
     notes: null,
     parent_conversation_id: null,
     children_count: 0,

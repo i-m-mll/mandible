@@ -37,7 +37,7 @@ describe("migration v123: canonical change message digest", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "138",
+      value: "139",
     });
     const column = (db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{
       name: string;
@@ -62,7 +62,7 @@ describe("migration v123: canonical change message digest", () => {
 
     expect(() => migrate(db)).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "138",
+      value: "139",
     });
   });
 

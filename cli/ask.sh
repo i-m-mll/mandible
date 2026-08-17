@@ -10,6 +10,7 @@ usage() {
 Usage: mandible ask submit <packet.json|-> [--json]
        mandible ask wait <id> [--timeout <duration>] [--json]
        mandible ask result <id> [--json]
+       mandible ask export <ask-id> [--ordinal <n>] [--out <path>]
 
 Wait durations accept milliseconds, with optional ms, s, or m suffix.
 The final timeout must be between 0 and 55000 milliseconds.
@@ -148,6 +149,60 @@ case "$command" in
     done
     response="$(ask_api_request GET "/api/asks/$(urlencode "$ask_id")/result")"
     if (( json )); then printf '%s\n' "$response"; else printf '%s\n' "$response" | print_result_summary; fi
+    ;;
+  export)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    ask_id="$1"
+    shift
+    ordinal=""
+    out_path=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ordinal)
+          [[ $# -ge 2 ]] || fail "--ordinal requires a positive integer"
+          ordinal="$2"
+          shift
+          ;;
+        --out)
+          [[ $# -ge 2 ]] || fail "--out requires a path"
+          out_path="$2"
+          shift
+          ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unknown export option '$1'" ;;
+      esac
+      shift
+    done
+    if [[ -n "$ordinal" && ! "$ordinal" =~ ^[1-9][0-9]*$ ]]; then
+      fail "--ordinal requires a positive integer"
+    fi
+    if [[ -z "$ordinal" ]]; then
+      result_response="$(ask_api_request GET "/api/asks/$(urlencode "$ask_id")/result")"
+      ordinal="$(printf '%s' "$result_response" | jq -r '[.submissions[].ordinal] | max // empty')"
+      [[ "$ordinal" =~ ^[1-9][0-9]*$ ]] || fail "ask has no submissions"
+    fi
+    response_file="$(api_temp_file)"
+    status="$(api_capture GET "/api/asks/$(urlencode "$ask_id")/submissions/${ordinal}/export" "" "$response_file")"
+    if [[ ! "$status" =~ ^2 ]]; then
+      code="$(jq -r '.code // empty' "$response_file" 2>/dev/null || true)"
+      rm -f "$response_file"
+      printf 'mandible ask: request failed (status=%s' "$status" >&2
+      if [[ "$code" =~ ^[A-Za-z0-9_-]+$ ]]; then printf ', code=%s' "$code" >&2; fi
+      printf ')\n' >&2
+      exit 22
+    fi
+    if declare -F api_is_file_rpc >/dev/null && api_is_file_rpc; then
+      decoded_file="$(api_temp_file)"
+      jq -jr '.' "$response_file" > "$decoded_file" || fail "invalid export response"
+      rm -f "$response_file"
+      response_file="$decoded_file"
+    fi
+    if [[ -n "$out_path" ]]; then
+      mv "$response_file" "$out_path"
+    else
+      cat "$response_file"
+      rm -f "$response_file"
+    fi
     ;;
   *) fail "unknown subcommand '$command'" ;;
 esac

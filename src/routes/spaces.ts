@@ -5,6 +5,8 @@ import {
   recurringStoreAvailable,
 } from "../feedback/store.js";
 import { getDb, type Db } from "../db.js";
+import { requireIdentity, isOperator } from "../client-auth/authz.js";
+import { readSubmissionFactPacket, resolveSubmissionRef, type SubmissionViewer } from "../feedback/submissions.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
@@ -502,7 +504,7 @@ export function listFindingCandidates(
 
 // --- unified ref resolver ----------------------------------------------------
 
-type ResolverRefKind = "issue" | "comment" | "artifact" | "mandible" | "repo" | "unknown";
+type ResolverRefKind = "issue" | "comment" | "artifact" | "mandible" | "repo" | "submission" | "unknown";
 
 interface ResolverResult {
   ref: string;
@@ -513,7 +515,7 @@ interface ResolverResult {
   error?: string;
 }
 
-function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
+function resolveUnifiedRef(db: Db, rawRef: string, submissionViewer?: SubmissionViewer): ResolverResult {
   const ref = rawRef.trim();
   const store = new LedgerStore(db);
 
@@ -544,6 +546,20 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
     if (prefix === "issue") return resolveIssueRef(store, rest, ref);
     if (prefix === "comment") return resolveCommentRef(db, rest, ref);
     if (prefix === "artifact") return resolveArtifactResult(db, ref);
+    if (prefix === "submission") {
+      if (!submissionViewer) {
+        return { ref, kind: "submission", resolved: false, entity: null, error: "not_found" };
+      }
+      const resolved = resolveSubmissionRef(db, ref, submissionViewer);
+      return resolved.ok
+        ? {
+          ref,
+          kind: "submission",
+          resolved: true,
+          entity: readSubmissionFactPacket(db, resolved) as unknown as Record<string, unknown>,
+        }
+        : { ref, kind: "submission", resolved: false, entity: null, error: resolved.error };
+    }
     if (prefix === "uri" && rest) return resolveArtifactResult(db, rest);
   }
 
@@ -645,7 +661,13 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try {
       const ref = queryString(req, "ref") ?? queryString(req, "uri");
       if (!ref) throw new HttpError(400, "ref query parameter required");
-      sendJson(res, 200, { resolution: resolveUnifiedRef(getDb(), ref) });
+      const db = getDb();
+      let submissionViewer: SubmissionViewer | undefined;
+      if (/^submission:/i.test(ref.trim())) {
+        const identity = requireIdentity(req);
+        submissionViewer = { userId: identity.user_id, isOperator: isOperator(db, identity) };
+      }
+      sendJson(res, 200, { resolution: resolveUnifiedRef(db, ref, submissionViewer) });
     } catch (error) {
       handleError(res, error);
     }

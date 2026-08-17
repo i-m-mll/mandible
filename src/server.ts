@@ -128,6 +128,7 @@ export interface ResponseLike {
   status(code: number): ResponseLike;
   json(payload: unknown): void;
   html?(payload: string): void;
+  text?(payload: string, contentType?: string): void;
 }
 
 export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
@@ -247,6 +248,17 @@ class HttpResponse implements ResponseLike {
     });
     this.res.end(payload);
   }
+
+  text(payload: string, contentType = "text/plain; charset=utf-8"): void {
+    if (this._sent) return;
+    this._sent = true;
+    this.res.writeHead(this._statusCode, {
+      "Content-Type": contentType,
+      "Content-Length": Buffer.byteLength(payload),
+      "Cache-Control": "no-store",
+    });
+    this.res.end(payload);
+  }
 }
 
 class CapturedResponse implements ResponseLike {
@@ -266,6 +278,12 @@ class CapturedResponse implements ResponseLike {
   }
 
   html(payload: string): void {
+    if (this.sent) return;
+    this.sent = true;
+    this.body = payload;
+  }
+
+  text(payload: string): void {
     if (this.sent) return;
     this.sent = true;
     this.body = payload;
