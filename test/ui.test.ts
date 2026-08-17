@@ -672,6 +672,22 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
+  it('aligns shared header identity and route title on one baseline', () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/briefing');
+
+    const { container } = render(h(App, {}));
+    const css = readResolvedStylesheet();
+    const identity = container.querySelector('.app-header__identity');
+
+    expect(identity?.querySelector(':scope > .app-header__brand')).toBeTruthy();
+    expect(identity?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
+    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*baseline;/s);
+    expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
+    expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
+  });
+
   it('keeps the app rail visible while sidebar=hidden hides the view sidebar', async () => {
     stubAppShellFetch();
     stubEventSource();

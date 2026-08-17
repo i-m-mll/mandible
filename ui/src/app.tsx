@@ -2050,13 +2050,15 @@ function App(): JSX.Element {
         </div>
       )}
       <header className="app-header" data-tauri-drag-region>
-        <div className="app-header__brand" title="Mandible">
-          <span className="app-header__mark" aria-hidden="true">
-            <MandibleHeaderLogo />
-          </span>
-          <span className="app-header__brand-text">Mandible</span>
+        <div className="app-header__identity">
+          <div className="app-header__brand" title="Mandible">
+            <span className="app-header__mark" aria-hidden="true">
+              <MandibleHeaderLogo />
+            </span>
+            <span className="app-header__brand-text">Mandible</span>
+          </div>
+          <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
         </div>
-        <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
         <div className="app-header__actions">
           <DesktopLoginStatus />
           {bottomPanelAvailable ? (
