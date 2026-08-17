@@ -181,6 +181,20 @@ describe("incremental tail ingestion", () => {
     ]);
   });
 
+  it("does not fully parse a redundant same-mtime Codex watcher event", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("same-mtime-unchanged"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    const readFileSpy = vi.spyOn(fsp, "readFile");
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(readFileSpy.mock.calls.some((call) => call[0] === sessionPath)).toBe(false);
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ?",
+    ).all(sessionPath)).toEqual([{ session_id: "same-mtime-unchanged" }]);
+  });
+
   it("preserves fallback data when a source truncates at the exact indexed mtime", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows("same-mtime-truncation"), 1);
@@ -223,6 +237,21 @@ describe("incremental tail ingestion", () => {
       { session_id: "reconcile-same-mtime-a" },
       { session_id: "reconcile-same-mtime-b" },
     ]);
+  });
+
+  it("reconcile does not reparse an unchanged known transcript", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("reconcile-unchanged"), 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const events: string[] = [];
+
+    await triggerReconcileForTest({
+      watchConfigs: watchConfigs(),
+      log: (_level, event) => events.push(event),
+    });
+
+    expect(events).not.toContain("ingestion_complete");
+    expect(events).not.toContain("conversation_source_snapshot_failed");
   });
 
   it("reconcile preserves fallback data after same-mtime truncation", async () => {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   LEGACY_PRODUCTION_DB_PATH,
@@ -107,6 +107,21 @@ describe("operational log database lifecycle", () => {
     });
   });
 
+  it("does not count the full legacy log while a bounded copy remains incomplete", () => {
+    for (let index = 0; index < 3; index += 1) {
+      insert(canonicalDb, `bounded-${index}`, 100 + index, `bounded-${index}`);
+    }
+    const prepareSpy = vi.spyOn(store.db, "prepare");
+
+    expect(copyForwardLegacyDaemonLogs(store, { batchSize: 1, maxBatches: 2 })).toMatchObject({
+      scanned: 2,
+      complete: false,
+    });
+    expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes("COUNT(*)"))).toBe(false);
+    expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes("(ts, id) > (?, ?)"))).toBe(true);
+    expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes("? IS NULL OR"))).toBe(false);
+  });
+
   it("starts copy-forward asynchronously and yields between bounded batches", async () => {
     for (let index = 0; index < 3; index += 1) insert(canonicalDb, `async-${index}`, index, `async-${index}`);
     const events: string[] = [];
@@ -124,6 +139,28 @@ describe("operational log database lifecycle", () => {
       insert(canonicalDb, "async-after-completion", 10, "async-after-completion");
       await waitFor(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number }).count) === 4);
       expect(events).toContain("operational_log_copy_forward");
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it("keeps the default scheduled batch small enough to yield on a large store", async () => {
+    for (let index = 0; index < 101; index += 1) {
+      insert(canonicalDb, `scheduled-${index}`, index, `scheduled-${index}`);
+    }
+    const batches: number[] = [];
+    const scheduler = startOperationalLogCopyForward(
+      store,
+      (_level, event, details) => {
+        if (event === "operational_log_copy_forward") {
+          batches.push(Number(details?.scanned));
+        }
+      },
+      { initialDelayMs: 0, catchUpDelayMs: 60_000, recheckDelayMs: 60_000 },
+    );
+    try {
+      await waitFor(() => batches.length > 0);
+      expect(batches).toEqual([100]);
     } finally {
       scheduler.stop();
     }

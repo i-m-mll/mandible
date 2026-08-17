@@ -19,6 +19,7 @@ export const LEGACY_LOG_SCHEMA = "legacy_ledger";
 export const OPERATIONAL_LOG_BACKUP_CLASSIFICATION = "excluded-runtime-telemetry" as const;
 
 const DEFAULT_COPY_BATCH_SIZE = 1_000;
+const DEFAULT_SCHEDULED_COPY_BATCH_SIZE = 100;
 const DEFAULT_COPY_INITIAL_DELAY_MS = 2_000;
 const DEFAULT_COPY_CATCH_UP_DELAY_MS = 50;
 const DEFAULT_COPY_RECHECK_DELAY_MS = 30_000;
@@ -274,10 +275,16 @@ export function copyForwardLegacyDaemonLogs(
       legacy_high_water_ts: null, legacy_high_water_id: null, legacy_high_water_rows: null };
   }
 
-  const selectRows = store.db.prepare(
+  const selectInitialRows = store.db.prepare(
     `SELECT ${LOG_COLUMNS.join(", ")}
      FROM ${LEGACY_LOG_SCHEMA}.daemon_log
-     WHERE (? IS NULL OR ts > ? OR (ts = ? AND id > ?))
+     ORDER BY ts ASC, id ASC
+     LIMIT ?`,
+  );
+  const selectRowsAfterCursor = store.db.prepare(
+    `SELECT ${LOG_COLUMNS.join(", ")}
+     FROM ${LEGACY_LOG_SCHEMA}.daemon_log
+     WHERE (ts, id) > (?, ?)
      ORDER BY ts ASC, id ASC
      LIMIT ?`,
   );
@@ -337,9 +344,20 @@ export function copyForwardLegacyDaemonLogs(
   let batches = 0;
   let complete = false;
   for (let index = 0; index < maxBatches; index += 1) {
-    const legacySnapshot = currentLegacyHighWater(store.db);
-    const rows = selectRows.all(cursorTs, cursorTs, cursorTs, cursorId, batchSize) as DaemonLogRow[];
+    // Keep the nullable initial case out of the cursor predicate. A single
+    // `? IS NULL OR ...` statement makes SQLite scan from the beginning of a
+    // multi-million-row legacy log on every batch instead of seeking into the
+    // timestamp index.
+    const rows = (cursorTs === null
+      ? selectInitialRows.all(batchSize)
+      : selectRowsAfterCursor.all(cursorTs, cursorId ?? "", batchSize)) as DaemonLogRow[];
     complete = rows.length < batchSize;
+    // Counting the entire legacy log is only needed to seal a completed copy.
+    // Doing it before every 1,000-row catch-up batch synchronously rescanned
+    // millions of rows on the daemon thread and starved health requests.
+    const legacySnapshot = complete
+      ? currentLegacyHighWater(store.db)
+      : { ts: null, id: null, rows: 0 };
     copied += applyBatch(rows, complete, legacySnapshot);
     scanned += rows.length;
     batches += 1;
@@ -473,7 +491,7 @@ export function startOperationalLogCopyForward(
   const initialDelayMs = boundedInteger(options.initialDelayMs, DEFAULT_COPY_INITIAL_DELAY_MS, 0, 60_000);
   const catchUpDelayMs = boundedInteger(options.catchUpDelayMs, DEFAULT_COPY_CATCH_UP_DELAY_MS, 0, 60_000);
   const recheckDelayMs = boundedInteger(options.recheckDelayMs, DEFAULT_COPY_RECHECK_DELAY_MS, 1, 300_000);
-  const batchSize = boundedInteger(options.batchSize, DEFAULT_COPY_BATCH_SIZE, 1, 10_000);
+  const batchSize = boundedInteger(options.batchSize, DEFAULT_SCHEDULED_COPY_BATCH_SIZE, 1, 10_000);
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const schedule = (delayMs: number): void => {
