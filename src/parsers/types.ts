@@ -71,14 +71,14 @@ export interface Conversation {
   is_sidechain: boolean;
   agent_id: string | null;
   starred: boolean;
-  label: string | null;
+  tags: string[];
   notes: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface ParseResult {
-  conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "label" | "notes">;
+  conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "tags" | "notes">;
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
   /** Provider-authored title metadata present in this parse batch. */
   providerTitle?: string;

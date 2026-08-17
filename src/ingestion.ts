@@ -1306,7 +1306,7 @@ function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void
  * instead of being treated as a deleted source. Any row already created for the
  * destination path (an earlier reconcile that ingested the moved file as a new
  * conversation) is folded into the original row so conversation ids, stars,
- * labels, notes, and blocks survive.
+ * tags, notes, and blocks survive.
  *
  * Bug: c927726 — archiving a Codex thread silently deleted its conversation
  * and every block from SQLite on the next reconcile.
@@ -1317,21 +1317,28 @@ function repointConversationSource(
   toPath: string,
 ): boolean {
   const original = db.prepare(`
-    SELECT id, starred
+    SELECT id, starred, tags, notes
     FROM conversations
     WHERE source_path = ?
     ORDER BY block_count DESC, updated_at DESC
-  `).all(fromPath) as Array<{ id: string; starred: number }>;
+  `).all(fromPath) as Array<{ id: string; starred: number; tags: string; notes: string | null }>;
   if (original.length === 0) return false;
 
   const keep = original[0];
   const repoint = db.transaction(() => {
-    const duplicates = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?")
-      .all(toPath) as Array<{ id: string; starred: number }>;
+    const duplicates = db.prepare("SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?")
+      .all(toPath) as Array<{ id: string; starred: number; tags: string; notes: string | null }>;
     let starred = keep.starred;
+    const tags = new Set<string>(JSON.parse(keep.tags) as string[]);
+    let notes = keep.notes;
+    for (const row of [...original.slice(1), ...duplicates]) {
+      if (row.id === keep.id) continue;
+      if (row.starred) starred = 1;
+      for (const tag of JSON.parse(row.tags) as string[]) tags.add(tag);
+      if (!notes && row.notes) notes = row.notes;
+    }
     for (const duplicate of duplicates) {
       if (duplicate.id === keep.id) continue;
-      if (duplicate.starred) starred = 1;
       db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(duplicate.id);
       db.prepare("DELETE FROM conversations WHERE id = ?").run(duplicate.id);
     }
@@ -1342,9 +1349,9 @@ function repointConversationSource(
     }
     db.prepare(`
       UPDATE conversations
-      SET source_path = ?, starred = ?, updated_at = datetime('now')
+      SET source_path = ?, starred = ?, tags = ?, notes = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(toPath, starred, keep.id);
+    `).run(toPath, starred, JSON.stringify([...tags]), notes, keep.id);
     // Append state is keyed by path; move it so incremental ingestion of the
     // relocated file continues from the already-ingested offset.
     db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(toPath);
@@ -1380,9 +1387,9 @@ function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePa
     return;
   }
   const remove = db.transaction(() => {
-    const row = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?")
-      .get(filePath) as { id: string; starred: number } | undefined;
-    if (row && row.starred === 0) {
+    const row = db.prepare("SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?")
+      .get(filePath) as { id: string; starred: number; tags: string; notes: string | null } | undefined;
+    if (row && row.starred === 0 && row.tags === "[]" && !row.notes) {
       db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
       db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
       logger("info", "ingestion_cleanup_missing_source", { file: filePath, id: row.id });
@@ -1391,6 +1398,34 @@ function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePa
     db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
   });
   remove();
+}
+
+interface ConversationMetadata {
+  starred: number;
+  tags: string;
+  notes: string | null;
+}
+
+function preservedConversationMetadata(
+  db: ReturnType<typeof getDb>,
+  sourcePath: string,
+  preferredId: string,
+): ConversationMetadata {
+  const rows = db.prepare(`
+    SELECT starred, tags, notes
+      FROM conversations
+     WHERE source_path = ?
+     ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
+  `).all(sourcePath, preferredId) as ConversationMetadata[];
+  const tags = new Set<string>();
+  let starred = 0;
+  let notes: string | null = null;
+  for (const row of rows) {
+    if (row.starred) starred = 1;
+    for (const tag of JSON.parse(row.tags) as string[]) tags.add(tag);
+    if (!notes && row.notes) notes = row.notes;
+  }
+  return { starred, tags: JSON.stringify([...tags]), notes };
 }
 
 function writeAppendState(
@@ -2312,6 +2347,7 @@ async function ingestFile(
   // for delta append, insert only new blocks and update conversation metadata.
   const upsert = db.transaction(() => {
     if (!isDeltaAppend) {
+      const metadata = preservedConversationMetadata(db, filePath, conversationId);
       // Full re-ingest path: delete existing rows and re-insert from scratch
       if (!isNew) {
         const staleConversationIds = db.prepare(
@@ -2329,13 +2365,13 @@ async function ingestFile(
           id, source, source_path, source_hash, source_mtime,
           title, summary, started_at, ended_at, block_count,
           session_id, project_path, cwd, branch, model, cli_version,
-          starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
+          starred, tags, notes, parent_conversation_id, is_sidechain, agent_id,
           created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?,
-          0, NULL, NULL, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?,
           datetime('now'), datetime('now')
         )
       `).run(
@@ -2355,6 +2391,9 @@ async function ingestFile(
         result.conversation.branch,
         result.conversation.model,
         result.conversation.cli_version,
+        metadata.starred,
+        metadata.tags,
+        metadata.notes,
         parentConversationId,
         isSidechain ? 1 : 0,
         agentId,
@@ -2496,6 +2535,7 @@ async function ingestFile(
         );
         try {
           const recoveryUpsert = db.transaction(() => {
+            const metadata = preservedConversationMetadata(db, filePath, conversationId);
             // Purge all stale rows for this source_path, then do a clean full insert
             const staleIds = db.prepare(
               "SELECT id FROM conversations WHERE source_path = ?"
@@ -2534,13 +2574,13 @@ async function ingestFile(
                 id, source, source_path, source_hash, source_mtime,
                 title, summary, started_at, ended_at, block_count,
                 session_id, project_path, cwd, branch, model, cli_version,
-                starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
+                starred, tags, notes, parent_conversation_id, is_sidechain, agent_id,
                 created_at, updated_at
               ) VALUES (
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                0, NULL, NULL, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
                 datetime('now'), datetime('now')
               )
             `).run(
@@ -2560,6 +2600,9 @@ async function ingestFile(
               result.conversation.branch,
               result.conversation.model,
               result.conversation.cli_version,
+              metadata.starred,
+              metadata.tags,
+              metadata.notes,
               parentConversationId,
               isSidechain ? 1 : 0,
               agentId,
@@ -2907,7 +2950,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
     const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
     const findConversation = db.prepare(
-      "SELECT id, starred FROM conversations WHERE source_path = ?"
+      "SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?"
     );
     let removed = 0;
     // A rollout archived while this reconcile was scanning is a move, not a
@@ -2917,8 +2960,9 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     );
     const cleanupMissing = db.transaction(() => {
       for (const sourcePath of deletablePaths) {
-        const row = findConversation.get(sourcePath) as { id: string; starred: number } | undefined;
-        if (!row || row.starred) continue;
+        const row = findConversation.get(sourcePath) as
+          { id: string; starred: number; tags: string; notes: string | null } | undefined;
+        if (!row || row.starred || row.tags !== "[]" || row.notes) continue;
         deleteBlocks.run(row.id);
         deleteConversation.run(row.id);
         removed += 1;
@@ -2981,7 +3025,7 @@ function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
     const orphanRows = db.prepare(`
       SELECT c.id
       FROM conversations c
-      WHERE c.starred = 0
+      WHERE c.starred = 0 AND c.tags = '[]' AND c.notes IS NULL
         AND (c.block_count = 0 OR NOT EXISTS (
           SELECT 1 FROM conversation_blocks b
           WHERE b.conversation_id = c.id

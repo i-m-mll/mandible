@@ -27,9 +27,9 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   // silently escaping the route-policy coverage lint.
   "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
-  "cli/conversations.sh:77 api_get \"$request\")",
-  "cli/conversations.sh:142 api_get \"$request\")",
-  "cli/conversations.sh:193 api_get \"$request\")",
+  "cli/conversations.sh:84 api_get \"$request\")",
+  "cli/conversations.sh:236 api_get \"$request\")",
+  "cli/conversations.sh:287 api_get \"$request\")",
   "cli/inbox.sh:38 api_get \"$url\")",
   "cli/inbox.sh:84 api_get \"$url\")",
   "cli/issue.sh:920 api_get \"$checkpoint_path\") \\",

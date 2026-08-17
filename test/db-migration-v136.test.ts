@@ -83,7 +83,7 @@ describe("migration v136: durable operational incidents", () => {
       "SELECT incident_id, incident_telemetry_sha256 FROM agent_dispatch_events",
     ).get()).toEqual({ incident_id: null, incident_telemetry_sha256: null });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "137" });
+      .toEqual({ value: "138" });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
     db.close();

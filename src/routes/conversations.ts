@@ -40,7 +40,7 @@ interface ConversationRow {
   model: string | null;
   cli_version: string | null;
   starred: number;
-  label: string | null;
+  tags: string;
   notes: string | null;
   parent_conversation_id: string | null;
   is_sidechain: number;
@@ -66,8 +66,34 @@ interface BlockRow {
 }
 
 function mapConversation(row: ConversationRow, sessionManager?: SessionManager) {
+  let tags: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(row.tags);
+    if (Array.isArray(parsed)) tags = parsed.filter((tag): tag is string => typeof tag === "string");
+  } catch {
+    // The schema validates storage. Keep corrupt external fixtures readable.
+  }
   return {
-    ...row,
+    id: row.id,
+    source: row.source,
+    source_path: row.source_path,
+    source_hash: row.source_hash,
+    source_mtime: row.source_mtime,
+    title: row.title,
+    summary: row.summary,
+    started_at: row.started_at,
+    ended_at: row.ended_at,
+    block_count: row.block_count,
+    session_id: row.session_id,
+    project_path: row.project_path,
+    cwd: row.cwd,
+    branch: row.branch,
+    model: row.model,
+    cli_version: row.cli_version,
+    notes: row.notes,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    tags,
     starred: row.starred === 1,
     parent_conversation_id: row.parent_conversation_id ?? null,
     is_sidechain: row.is_sidechain === 1,
@@ -75,6 +101,21 @@ function mapConversation(row: ConversationRow, sessionManager?: SessionManager) 
     children_count: row.children_count ?? 0,
     attach_state: deriveConversationAttachState(row, getDb(), sessionManager),
   };
+}
+
+function canonicalizeTags(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((tag) => typeof tag !== "string")) {
+    throw new Error(`${field} must be an array of strings`);
+  }
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value as string[]) {
+    const tag = raw.trim();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
 }
 
 // Bug: bce7370 — return metadata_json as a raw string so the client type
@@ -385,6 +426,11 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       conditions.push("c.starred = 1");
     } else if (query.starred === "false" || query.starred === "0") {
       conditions.push("c.starred = 0");
+    }
+
+    if (query.tag) {
+      conditions.push("EXISTS (SELECT 1 FROM json_each(c.tags) WHERE json_each.value = ?)");
+      params.push(query.tag);
     }
 
     // Search in title
@@ -1029,7 +1075,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     });
   }, { fileRpc: "allow" });
 
-  // PATCH /api/conversations/:id — Update starred/label/notes
+  // PATCH /api/conversations/:id — Update durable Mandible-owned metadata.
   server.patch("/api/conversations/:id", (req, res) => {
     const id = req.params.id;
     if (!id) {
@@ -1038,62 +1084,66 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     const body = readBody<Record<string, unknown>>(req);
-    const updates: string[] = [];
-    const params: Record<string, unknown> = { id };
-
-    if ("starred" in body) {
-      const starred = body.starred === true || body.starred === 1;
-      updates.push("starred = @starred");
-      params.starred = starred ? 1 : 0;
-    }
-
-    if ("label" in body) {
-      if (body.label === null) {
-        updates.push("label = @label");
-        params.label = null;
-      } else if (typeof body.label === "string") {
-        updates.push("label = @label");
-        params.label = body.label.trim() || null;
-      } else {
-        sendJson(res, 400, { error: "Invalid label" });
-        return;
-      }
-    }
-
-    if ("notes" in body) {
-      if (body.notes === null) {
-        updates.push("notes = @notes");
-        params.notes = null;
-      } else if (typeof body.notes === "string") {
-        updates.push("notes = @notes");
-        params.notes = body.notes.trim() || null;
-      } else {
-        sendJson(res, 400, { error: "Invalid notes" });
-        return;
-      }
-    }
-
-    if (updates.length === 0) {
+    const allowed = new Set(["starred", "tags", "tags_add", "tags_remove", "notes", "notes_append"]);
+    const supplied = Object.keys(body);
+    if (supplied.length === 0 || supplied.some((key) => !allowed.has(key))) {
       sendJson(res, 400, { error: "No updates provided" });
       return;
     }
 
-    updates.push("updated_at = datetime('now')");
+    try {
+      if ("starred" in body && body.starred !== true && body.starred !== false && body.starred !== 0 && body.starred !== 1) {
+        throw new Error("starred must be a boolean");
+      }
+      if ("notes" in body && body.notes !== null && typeof body.notes !== "string") {
+        throw new Error("notes must be a string or null");
+      }
+      if ("notes_append" in body && (typeof body.notes_append !== "string" || !body.notes_append.trim())) {
+        throw new Error("notes_append must be a non-empty string");
+      }
+      // The read-modify-write is one IMMEDIATE transaction so concurrent tag
+      // or comment appends serialize instead of silently overwriting one another.
+      const result = db.transaction(() => {
+        const current = db.prepare("SELECT * FROM conversations WHERE id = ?")
+          .get(id) as ConversationRow | undefined;
+        if (!current) return null;
+        let tags = canonicalizeTags(JSON.parse(current.tags), "stored tags");
+        if ("tags" in body) tags = canonicalizeTags(body.tags, "tags");
+        if ("tags_add" in body) tags = canonicalizeTags([...tags, ...canonicalizeTags(body.tags_add, "tags_add")], "tags");
+        if ("tags_remove" in body) {
+          const remove = new Set(canonicalizeTags(body.tags_remove, "tags_remove"));
+          tags = tags.filter((tag) => !remove.has(tag));
+        }
 
-    const result = db
-      .prepare(`UPDATE conversations SET ${updates.join(", ")} WHERE id = @id`)
-      .run(params);
+        const changedFields: string[] = [];
+        const nextStarred = "starred" in body ? (body.starred === true || body.starred === 1 ? 1 : 0) : current.starred;
+        if (nextStarred !== current.starred) changedFields.push("starred");
+        const nextTags = JSON.stringify(tags);
+        if (nextTags !== current.tags) changedFields.push("tags");
+        let nextNotes = current.notes;
+        if ("notes" in body) nextNotes = body.notes === null ? null : (body.notes as string).trim() || null;
+        if ("notes_append" in body) {
+          const append = (body.notes_append as string).trim();
+          nextNotes = nextNotes?.trim() ? `${nextNotes.trim()}\n\n${append}` : append;
+        }
+        if (nextNotes !== current.notes) changedFields.push("notes");
 
-    if (result.changes === 0) {
-      sendJson(res, 404, { error: "Conversation not found" });
-      return;
+        db.prepare(`UPDATE conversations
+          SET starred = ?, tags = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
+          .run(nextStarred, nextTags, nextNotes, id);
+        const updated = db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as ConversationRow;
+        return { updated, changedFields };
+      }).immediate();
+      if (!result) {
+        sendJson(res, 404, { error: "Conversation not found" });
+        return;
+      }
+      broadcast("conversation:updated", { id, updates: result.changedFields });
+      sendJson(res, 200, mapConversation(result.updated, sessionManager));
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid metadata update" });
     }
-
-    // Broadcast update
-    broadcast("conversation:updated", { id, updates: Object.keys(body) });
-
-    sendJson(res, 200, { ok: true });
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
   // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
   server.post("/api/conversations/:id/export", (req, res) => {

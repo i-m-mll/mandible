@@ -143,6 +143,26 @@
       "description": "Link an existing Mandible session to an issue/repo pair through the supported client surface."
     },
     {
+      "name": "mandible conversations star <conversation-ref|--current> [--json]",
+      "description": "Star exactly one durable conversation resolved by exact conversation id, exact provider session id, or the ambient provider session."
+    },
+    {
+      "name": "mandible conversations unstar <conversation-ref|--current> [--json]",
+      "description": "Unstar exactly one durable conversation resolved without prefix ambiguity."
+    },
+    {
+      "name": "mandible conversations tag add <conversation-ref|--current> <tag...> [--json]",
+      "description": "Append ordered, trimmed, exact-case-deduplicated tags to one durable conversation."
+    },
+    {
+      "name": "mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]",
+      "description": "Remove exact-case tags from one durable conversation."
+    },
+    {
+      "name": "mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]",
+      "description": "Append Markdown to durable conversation notes with one blank-line separator; existing notes are never overwritten."
+    },
+    {
       "name": "mandible artifact ingest <path...> [--blob-only] [--json]",
       "description": "Register a logical artifact version by default. --blob-only is the explicit low-level escape hatch for registering immutable bytes without a logical artifact/version identity."
     },

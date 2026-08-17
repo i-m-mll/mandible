@@ -218,9 +218,13 @@ function stripMarkdownText(src: string | null | undefined): string {
     .trim();
 }
 
-function getConversationTitle(conversation: Conversation | null | undefined): string {
-  const raw = conversation?.label || conversation?.title || 'Untitled';
+export function getConversationTitle(conversation: Conversation | null | undefined): string {
+  const raw = conversation?.title || 'Untitled';
   return stripMarkdownText(raw) || 'Untitled';
+}
+
+export function parseConversationTagsInput(value: string): string[] {
+  return [...new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean))];
 }
 
 function isLiveConsoleSession(session: ConsoleSession): boolean {
@@ -2504,14 +2508,16 @@ function ChatEntryItem({
   isSelected,
   onClick,
   onTogglePin,
-  onRename,
+  onEditTags,
+  onRenameSession,
   showPinnedIcon = false,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
   onClick: () => void;
   onTogglePin?: () => void;
-  onRename?: (label: string | null) => void;
+  onEditTags?: (tags: string[]) => void;
+  onRenameSession?: (label: string | null) => void;
   showPinnedIcon?: boolean;
 }): JSX.Element {
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -2520,17 +2526,26 @@ function ChatEntryItem({
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
-  const canShowActions = Boolean(onTogglePin || onRename);
+  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = Boolean(conversation?.starred || session?.pinned);
 
-  const handleRename = (event: MouseEvent) => {
+  const handleEditTags = (event: MouseEvent) => {
     event.stopPropagation();
     setActionsOpen(false);
-    if (!onRename) return;
-    const nextLabel = window.prompt('Rename chat', title);
+    if (!onEditTags) return;
+    const nextLabel = window.prompt('Edit tags (comma-separated)', conversation?.tags.join(', ') ?? '');
+    if (nextLabel === null) return;
+    onEditTags(parseConversationTagsInput(nextLabel));
+  };
+
+  const handleRenameSession = (event: MouseEvent) => {
+    event.stopPropagation();
+    setActionsOpen(false);
+    if (!onRenameSession) return;
+    const nextLabel = window.prompt('Rename session', title);
     if (nextLabel === null) return;
     const normalized = stripMarkdownText(nextLabel);
-    onRename(normalized || null);
+    onRenameSession(normalized || null);
   };
 
   const handleTogglePin = (event: MouseEvent) => {
@@ -2556,6 +2571,9 @@ function ChatEntryItem({
         <span className="chat-history-item__title">
           {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
           <span>{truncate(title, 70)}</span>
+          {conversation && conversation.tags.length > 0 && (
+            <span className="chat-history-item__tags">{conversation.tags.join(' · ')}</span>
+          )}
         </span>
         {session?.owner && (
           <span
@@ -2586,9 +2604,14 @@ function ChatEntryItem({
                     {isPinned ? 'Unpin' : 'Pin'}
                   </button>
                 )}
-                {onRename && (
-                  <button type="button" onClick={handleRename}>
-                    Rename
+                {onEditTags && (
+                  <button type="button" onClick={handleEditTags}>
+                    Edit tags
+                  </button>
+                )}
+                {onRenameSession && (
+                  <button type="button" onClick={handleRenameSession}>
+                    Rename session
                   </button>
                 )}
               </div>
@@ -3055,13 +3078,19 @@ export function ConversationsView({
     }
   };
 
-  const handleRenameEntry = async (entry: ChatEntry, label: string | null) => {
+  const handleEditEntryTags = async (entry: ChatEntry, tags: string[]) => {
     try {
       if (entry.conversation) {
-        const updated = await updateConversation(entry.conversation.id, { label });
+        const updated = await updateConversation(entry.conversation.id, { tags });
         updateConversationInList(updated);
-        return;
       }
+    } catch {
+      // keep the current list state if persistence fails
+    }
+  };
+
+  const handleRenameSession = async (entry: ChatEntry, label: string | null) => {
+    try {
       if (entry.session && label) {
         await updateConsoleSession(entry.session.id, { label });
       }
@@ -3093,7 +3122,10 @@ export function ConversationsView({
         : selectedSessionId === entry.session?.id}
       showPinnedIcon={showPinnedIcon}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
-      onRename={(label) => { void handleRenameEntry(entry, label); }}
+      onEditTags={entry.conversation ? (tags) => { void handleEditEntryTags(entry, tags); } : undefined}
+      onRenameSession={!entry.conversation && entry.session
+        ? (label) => { void handleRenameSession(entry, label); }
+        : undefined}
       onClick={() => {
         if (entry.kind === 'conversation' && entry.conversation) {
           setSelection({ type: 'conversation', id: entry.conversation.id });
