@@ -60,14 +60,19 @@ async function waitForBlockCount(filePath: string, expected: number, timeoutMs =
   throw new Error(`Timed out waiting for block_count=${expected}`);
 }
 
-async function waitForConversationGone(filePath: string, timeoutMs = 3000): Promise<void> {
+async function waitForSourceUnavailable(filePath: string, timeoutMs = 3000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const existing = db?.prepare("SELECT id FROM conversations WHERE source_path = ?").get(filePath);
-    if (!existing) return;
+    const source = db?.prepare(`
+      SELECT s.availability
+        FROM conversation_sources s
+        JOIN conversation_source_aliases a ON a.source_id = s.id
+       WHERE a.path = ?
+    `).get(filePath) as { availability: string } | undefined;
+    if (source?.availability === "missing") return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error("Timed out waiting for deleted watched conversation cleanup");
+  throw new Error("Timed out waiting for watched source tombstone");
 }
 
 beforeEach(async () => {
@@ -135,7 +140,7 @@ describe("watched tail ingestion latency", () => {
     ).toBe(true);
   });
 
-  it("transactionally removes an unstarred conversation when its watched source disappears", async () => {
+  it("tombstones a missing watched source while preserving the conversation fallback", async () => {
     const ingestion = await import("../src/ingestion.js");
     const sessionDir = path.join(process.env.HOME!, ".codex", "sessions", "2026", "07", "02");
     await fsp.mkdir(sessionDir, { recursive: true });
@@ -147,7 +152,15 @@ describe("watched tail ingestion latency", () => {
     ingestion.startIngestion(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 500));
     await fsp.rm(sessionPath);
-    await waitForConversationGone(sessionPath);
+    await waitForSourceUnavailable(sessionPath);
+
+    expect(
+      db?.prepare("SELECT block_count FROM conversations WHERE source_path = ?").get(sessionPath),
+    ).toEqual({ block_count: 1 });
+    expect(
+      db?.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = (SELECT id FROM conversations WHERE source_path = ?)")
+        .get(sessionPath),
+    ).toMatchObject({ count: 1 });
 
     expect(
       db?.prepare(`

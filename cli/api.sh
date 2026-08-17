@@ -909,6 +909,7 @@ api_operational_mutation_category() {
     /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;
     /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
+    /api/conversation-custody|/api/conversation-custody/*) printf 'conversations'; return 0 ;;
     /api/inbox|/api/inbox/*) printf 'inbox'; return 0 ;;
     /api/ledger|/api/ledger/*) printf 'ledger'; return 0 ;;
     /api/issues|/api/issues/*) printf 'issues'; return 0 ;;

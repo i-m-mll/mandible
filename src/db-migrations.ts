@@ -4985,15 +4985,21 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           "conversation_structural_blocks",
           "conversation_block_aliases",
         ];
-        const present = v140Tables.filter((table) => tableExists(db, table));
-        if (present.length > 0 && present.length !== v140Tables.length) {
-          throw new Error("migration 140 precondition: conversation source schema is partially applied");
-        }
-        if (present.length === v140Tables.length) {
-          verifyConversationSourceV140Schema(db);
-          // Historical convergence tests rewind only schema_version on a fresh
-          // head database. The complete additive schema is already canonical.
+        if (!tableExists(db, "conversations")) {
+          // Narrow legacy-schema fixtures can intentionally omit the entire
+          // conversation subsystem while still advancing the shared head.
           statements = [];
+        } else {
+          const present = v140Tables.filter((table) => tableExists(db, table));
+          if (present.length > 0 && present.length !== v140Tables.length) {
+            throw new Error("migration 140 precondition: conversation source schema is partially applied");
+          }
+          if (present.length === v140Tables.length) {
+            verifyConversationSourceV140Schema(db);
+            // Historical convergence tests rewind only schema_version on a fresh
+            // head database. The complete additive schema is already canonical.
+            statements = [];
+          }
         }
       }
       for (const statement of statements) {
