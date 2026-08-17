@@ -1906,7 +1906,7 @@ async function ingestFile(
 
   // Check if we already have this version
   const db = getDb();
-  const existingRows = db.prepare(`
+  let existingRows = db.prepare(`
     SELECT
       c.id,
       c.source_hash,
@@ -1938,13 +1938,6 @@ async function ingestFile(
     actual_count DESC, c.updated_at DESC
   `).all(filePath) as ExistingConversationRow[];
   let existing: ExistingConversationRow | undefined = existingRows[0];
-  if (existingRows.length > 1 && existing) {
-    logger("warn", "ingestion_duplicate_conversation_rows", {
-      file: filePath,
-      rows: existingRows.length,
-      chosen_conversation_id: existing.id,
-    });
-  }
 
   const appendState = getAppendState(db, filePath);
   // The empty-source cache is only safe before a path has an identity. Once a
@@ -1996,6 +1989,22 @@ async function ingestFile(
     && await hashFileTailAt(filePath, appendState.byte_offset) === appendState.tail_hash
   ) {
     sameMtimeNativeCodexSessionId = await loadCodexNativeSessionId(filePath);
+    if (sameMtimeNativeCodexSessionId !== null) {
+      const identityOwner = existingRows.find((row) =>
+        row.source === parser.source && row.session_id === sameMtimeNativeCodexSessionId
+      );
+      const repaired = reconcileDuplicateConversationPathOwnership(
+        db,
+        filePath,
+        parser.source,
+        sameMtimeNativeCodexSessionId,
+        identityOwner?.id,
+      );
+      if (repaired.size > 0) {
+        existingRows = existingRows.filter((row) => !repaired.has(row.id));
+        existing = existingRows[0];
+      }
+    }
     if (
       sameMtimeNativeCodexSessionId === null
       || existingRows.some((row) => row.session_id === sameMtimeNativeCodexSessionId)
@@ -2006,6 +2015,12 @@ async function ingestFile(
       if (titleOwner) {
         await syncCodexIndexedTitle(filePath, titleOwner);
       }
+      logDuplicateConversationRows(
+        filePath,
+        existingRows,
+        parser.source,
+        sameMtimeNativeCodexSessionId ?? undefined,
+      );
       logger("debug", "ingestion_same_mtime_unchanged", { file: filePath });
       return;
     }
@@ -2103,6 +2118,7 @@ async function ingestFile(
       result = await parser.parse(filePath);
     }
   } catch (error) {
+    logDuplicateConversationRows(filePath, existingRows);
     logger("warn", "ingestion_parse_error", {
       file: filePath,
       source: parser.source,
@@ -2148,6 +2164,7 @@ async function ingestFile(
     && result.providerTitle,
   );
   if (!result || (result.blocks.length === 0 && !isProviderTitleOnlyAppend)) {
+    logDuplicateConversationRows(filePath, existingRows);
     logger("debug", "ingestion_skip_empty", { file: filePath, source: parser.source });
     // An empty parse is not evidence that a previously ingested identity ceased
     // to exist. Providers can expose a zero-byte or partially rewritten file
@@ -2166,6 +2183,27 @@ async function ingestFile(
     writeEmptyIngestState(db, filePath, stat);
     return;
   }
+
+  const repairedDuplicateIds = reconcileDuplicateConversationPathOwnership(
+    db,
+    filePath,
+    result.conversation.source,
+    result.conversation.session_id,
+    existingRows.find((row) =>
+      row.source === result.conversation.source
+      && row.session_id === result.conversation.session_id
+    )?.id,
+  );
+  if (repairedDuplicateIds.size > 0) {
+    existingRows = existingRows.filter((row) => !repairedDuplicateIds.has(row.id));
+    existing = existingRows[0];
+  }
+  logDuplicateConversationRows(
+    filePath,
+    existingRows,
+    result.conversation.source,
+    result.conversation.session_id,
+  );
 
   // A path is only an alias. If it has been reused for a different native
   // session, preserve the old conversation and create (or update) the row that
@@ -3209,6 +3247,174 @@ export async function reconcileForWorker(repairLegacyOrphans = false): Promise<v
   await reconcile(runToken, {
     repairLegacyOrphans,
     ingestChanged: (filePath) => ingestFile(filePath),
+  });
+}
+
+interface DuplicateConversationPathRow {
+  conversation_id: string;
+  source: string;
+  session_id: string;
+  source_path: string;
+  owner_conversation_id: string;
+  owner_source: string;
+  owner_session_id: string;
+}
+
+/**
+ * Converge the legacy conversations.source_path projection on the row that
+ * ingestion deterministically selected for a freshly proven provider identity.
+ *
+ * Migration v140 deliberately made aliases unique by path, but pre-v140
+ * databases could already contain several conversation rows for one path. The
+ * migration preserved every row and used INSERT OR IGNORE for aliases, leaving
+ * the non-owner rows with a misleading legacy projection. Provider session ids
+ * alone are not unique conversation identities, so the caller must prove the
+ * file's native identity and both rows must carry matching source-backed
+ * provider/native records. This repair never merges or deletes conversations.
+ * It only follows another proven available alias for the non-owner, or assigns
+ * a deterministic non-file locator and leaves its normalized blocks available
+ * as the safe fallback.
+ */
+function reconcileDuplicateConversationPathOwnership(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  provider: string,
+  nativeSessionId: string,
+  ownerConversationId?: string,
+): Set<string> {
+  if (!ownerConversationId) return new Set<string>();
+  const duplicates = db.prepare(`
+    SELECT
+      duplicate.id AS conversation_id,
+      duplicate.source,
+      duplicate.session_id,
+      duplicate.source_path,
+      owner.id AS owner_conversation_id,
+      owner.source AS owner_source,
+      owner.session_id AS owner_session_id
+    FROM conversations owner
+    JOIN conversation_sources owner_source
+      ON owner_source.conversation_id = owner.id
+     AND owner_source.provider = owner.source
+     AND owner_source.native_session_id = owner.session_id
+    JOIN conversations duplicate
+      ON duplicate.source_path = owner.source_path
+     AND duplicate.id != owner.id
+    JOIN conversation_sources duplicate_source
+      ON duplicate_source.conversation_id = duplicate.id
+     AND duplicate_source.provider = duplicate.source
+     AND duplicate_source.native_session_id = duplicate.session_id
+     AND duplicate_source.provider = ?
+     AND duplicate_source.native_session_id = ?
+    WHERE owner.id = ?
+      AND owner.source_path = ?
+      AND owner_source.provider = ?
+      AND owner_source.native_session_id = ?
+    ORDER BY duplicate.source_path, duplicate.id
+  `).all(
+    provider,
+    nativeSessionId,
+    ownerConversationId,
+    filePath,
+    provider,
+    nativeSessionId,
+  ) as DuplicateConversationPathRow[];
+  if (duplicates.length === 0) return new Set<string>();
+
+  const availableAlias = db.prepare(`
+    SELECT alias.path
+      FROM conversation_sources source
+      JOIN conversation_source_aliases alias ON alias.source_id = source.id
+     WHERE source.conversation_id = ?
+       AND alias.availability = 'available'
+       AND alias.path != ?
+       AND NOT EXISTS (
+         SELECT 1 FROM conversations other
+          WHERE other.source_path = alias.path
+            AND other.id != ?
+       )
+     ORDER BY alias.last_seen_at DESC, alias.id
+     LIMIT 1
+  `);
+  const updateConversationPath = db.prepare(
+    "UPDATE conversations SET source_path = ? WHERE id = ? AND source_path = ?",
+  );
+  const markSourcesMissing = db.prepare(`
+    UPDATE conversation_sources
+       SET availability = 'missing',
+           unavailable_reason = 'legacy source path projection detached; no available alias',
+           updated_at = ?
+     WHERE conversation_id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM conversation_source_aliases alias
+          WHERE alias.source_id = conversation_sources.id
+            AND alias.availability = 'available'
+       )
+  `);
+  const markVersionsMissing = db.prepare(`
+    UPDATE conversation_source_versions
+       SET availability = 'missing'
+     WHERE id IN (
+       SELECT current_version_id FROM conversation_sources
+        WHERE conversation_id = ?
+          AND availability = 'missing'
+     )
+  `);
+
+  let repaired = 0;
+  let sameNativeIdentity = 0;
+  const repairedIds = new Set<string>();
+  const repair = db.transaction(() => {
+    for (const duplicate of duplicates) {
+      const alias = availableAlias.get(
+        duplicate.conversation_id,
+        duplicate.source_path,
+        duplicate.conversation_id,
+      ) as { path: string } | undefined;
+      const preservedPath = alias?.path
+        ?? `mandible-preserved://conversation/${encodeURIComponent(duplicate.conversation_id)}`;
+      const updated = updateConversationPath.run(
+        preservedPath,
+        duplicate.conversation_id,
+        duplicate.source_path,
+      );
+      if (updated.changes !== 1) continue;
+      repaired += 1;
+      repairedIds.add(duplicate.conversation_id);
+      sameNativeIdentity += 1;
+      if (!alias) {
+        markSourcesMissing.run(Date.now(), duplicate.conversation_id);
+        markVersionsMissing.run(duplicate.conversation_id);
+      }
+    }
+  });
+  repair();
+
+  if (repaired > 0) {
+    logger("info", "ingestion_duplicate_path_ownership_reconciled", {
+      repaired,
+      same_native_identity: sameNativeIdentity,
+      conversations_preserved: repaired,
+    });
+  }
+  return repairedIds;
+}
+
+function logDuplicateConversationRows(
+  filePath: string,
+  rows: ExistingConversationRow[],
+  provider?: string,
+  nativeSessionId?: string,
+): void {
+  const duplicateRows = provider && nativeSessionId
+    ? rows.filter((row) => row.source === provider && row.session_id === nativeSessionId)
+    : rows;
+  const chosen = duplicateRows[0];
+  if (duplicateRows.length <= 1 || !chosen) return;
+  logger("warn", "ingestion_duplicate_conversation_rows", {
+    file: filePath,
+    rows: duplicateRows.length,
+    chosen_conversation_id: chosen.id,
   });
 }
 
