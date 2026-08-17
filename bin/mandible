@@ -17,7 +17,7 @@
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth merge <branch> [opts]       Execute authenticated merge
-#   logs <subcommand>                Inspect provider-native source logs
+#   logs <subcommand>                Inspect source logs and retained daemon telemetry
 #   conversations <subcommand>       Inspect DB-backed conversations
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   ask <subcommand>                 Submit and await bounded asks
@@ -63,7 +63,7 @@ Commands:
   auth request <branch> [opts]     Submit auth merge request
   auth replay-archives <id>        Replay Codex archive attempts
   auth merge <branch> [opts]       Execute authenticated merge
-  logs <subcommand>                Inspect provider-native source logs
+  logs <subcommand>                Inspect source logs and retained daemon telemetry
   conversations <subcommand>       Inspect DB-backed conversations
   artifact <subcommand>            Register, resolve, link, and check artifacts
   ask submit|wait|result|export    Submit, await, and export bounded asks

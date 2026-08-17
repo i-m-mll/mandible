@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Db } from "../db.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { tableExists } from "../db-introspection.js";
+import { visibleDaemonLogSource } from "../operational-log-db.js";
 import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
@@ -291,8 +292,9 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   has_older: boolean;
 } {
   const where = buildDaemonLogWhere(filters);
+  const source = visibleDaemonLogSource(db);
   const total = Number((db
-    .prepare(`SELECT COUNT(*) AS count FROM daemon_log ${where.sql}`)
+    .prepare(`${source.cte} SELECT COUNT(*) AS count FROM ${source.table} ${where.sql}`)
     .get(...where.params) as { count?: number } | undefined)?.count ?? 0);
   const pageWhere = filters.before
     ? {
@@ -302,8 +304,8 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     : where;
   const rows = db
     .prepare(
-      `SELECT *
-       FROM daemon_log
+      `${source.cte} SELECT *
+       FROM ${source.table}
        ${pageWhere.sql}
        ORDER BY ts DESC, id DESC
        LIMIT ? OFFSET ?`,
@@ -348,7 +350,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     log_file: LOG_FILE_PATH,
     exists: true,
     source: "daemon_log",
-    facets: queryDaemonLogFacets(db, where),
+    facets: queryDaemonLogFacets(db, source, where),
     older_cursor: hasOlder && pageRows.length > 0
       ? encodeLogCursor(pageRows[pageRows.length - 1])
       : null,
@@ -480,16 +482,18 @@ function buildDaemonLogWhere(filters: LogFilters): { sql: string; params: unknow
 
 function queryDaemonLogFacets(
   db: Db,
+  source: { cte: string; table: string },
   where: { sql: string; params: unknown[] },
 ): LogFacets {
   return {
-    levels: queryFacet(db, "level", where, 10),
-    subsystems: queryFacet(db, "subsystem", where, 50),
-    events: queryFacet(db, "event", where, 80),
-    entity_refs: queryEntityFacets(db, where),
-    latest_ts: isoFromMs(queryMaxTs(db, where.sql, where.params)),
+    levels: queryFacet(db, source, "level", where, 10),
+    subsystems: queryFacet(db, source, "subsystem", where, 50),
+    events: queryFacet(db, source, "event", where, 80),
+    entity_refs: queryEntityFacets(db, source, where),
+    latest_ts: isoFromMs(queryMaxTs(db, source, where.sql, where.params)),
     latest_heartbeat_ts: isoFromMs(queryMaxTs(
       db,
+      source,
       `${where.sql ? `${where.sql} AND` : "WHERE"} level = 'debug'
         AND (event LIKE '%tick%' OR event LIKE '%heartbeat%' OR event LIKE '%reconcile%' OR event LIKE '%reaper%')`,
       where.params,
@@ -499,14 +503,15 @@ function queryDaemonLogFacets(
 
 function queryFacet(
   db: Db,
+  source: { cte: string; table: string },
   column: "level" | "subsystem" | "event",
   where: { sql: string; params: unknown[] },
   limit: number,
 ): LogFacetValue[] {
   return (db
     .prepare(
-      `SELECT ${column} AS value, COUNT(*) AS count
-       FROM daemon_log
+      `${source.cte} SELECT ${column} AS value, COUNT(*) AS count
+       FROM ${source.table}
        ${where.sql}
        GROUP BY ${column}
        ORDER BY count DESC, ${column} ASC
@@ -520,6 +525,7 @@ function queryFacet(
 
 function queryEntityFacets(
   db: Db,
+  source: { cte: string; table: string },
   where: { sql: string; params: unknown[] },
 ): LogEntityFacetValue[] {
   const specs: Array<{ type: LogEntityFacetValue["type"]; column: string }> = [
@@ -533,8 +539,8 @@ function queryEntityFacets(
   for (const spec of specs) {
     const rows = db
       .prepare(
-        `SELECT ${spec.column} AS value, COUNT(*) AS count
-         FROM daemon_log
+        `${source.cte} SELECT ${spec.column} AS value, COUNT(*) AS count
+         FROM ${source.table}
          ${where.sql ? `${where.sql} AND` : "WHERE"} ${spec.column} IS NOT NULL AND ${spec.column} != ''
          GROUP BY ${spec.column}
          ORDER BY count DESC, ${spec.column} ASC
@@ -550,9 +556,14 @@ function queryEntityFacets(
   return values.sort((a, b) => b.count - a.count || a.type.localeCompare(b.type) || a.value.localeCompare(b.value)).slice(0, 80);
 }
 
-function queryMaxTs(db: Db, whereSql: string, params: unknown[]): number | null {
+function queryMaxTs(
+  db: Db,
+  source: { cte: string; table: string },
+  whereSql: string,
+  params: unknown[],
+): number | null {
   const row = db
-    .prepare(`SELECT MAX(ts) AS ts FROM daemon_log ${whereSql}`)
+    .prepare(`${source.cte} SELECT MAX(ts) AS ts FROM ${source.table} ${whereSql}`)
     .get(...params) as { ts?: number | null } | undefined;
   return typeof row?.ts === "number" ? row.ts : null;
 }

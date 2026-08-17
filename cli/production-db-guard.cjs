@@ -48,7 +48,16 @@ const LEGACY_PRODUCTION_DB_PATH = path.join(
   "mandible",
   "mandible.db",
 );
-const PRODUCTION_DB_PATHS = Object.freeze([PRODUCTION_DB_PATH, LEGACY_PRODUCTION_DB_PATH]);
+const PRODUCTION_OPERATIONAL_LOG_DB_PATH = path.join(
+  realSystemHomeDir(),
+  ".mandible",
+  "operational-logs.db",
+);
+const PRODUCTION_DB_PATHS = Object.freeze([
+  PRODUCTION_DB_PATH,
+  LEGACY_PRODUCTION_DB_PATH,
+  PRODUCTION_OPERATIONAL_LOG_DB_PATH,
+]);
 
 function isUnderTestRunner() {
   return (
@@ -120,6 +129,7 @@ function assertNotProductionDbUnderTest(dbPath, productionPaths = PRODUCTION_DB_
 module.exports = {
   PRODUCTION_DB_PATH,
   LEGACY_PRODUCTION_DB_PATH,
+  PRODUCTION_OPERATIONAL_LOG_DB_PATH,
   PRODUCTION_DB_PATHS,
   resolvesToProductionDbPath,
   resolvesToAnyProductionDbPath,
