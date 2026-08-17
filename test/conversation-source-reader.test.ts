@@ -96,6 +96,35 @@ async function record(db: Database.Database, id: string, filePath: string): Prom
 }
 
 describe("versioned conversation source reader", () => {
+  it("creates and advances source versions with production foreign keys enabled", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    db.pragma("foreign_keys = ON");
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    let parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+
+    const firstVersion = await record(db, "conversation-a", filePath);
+    expect(db.prepare(`
+      SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
+    `).get("conversation-a")).toEqual({ current_version_id: firstVersion });
+
+    writeRecords(filePath, records([
+      { type: "response_item", timestamp: "2026-08-17T00:00:04Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "changed" }] } },
+    ]));
+    parsed = await parse(filePath);
+    replaceBlocks(db, "conversation-a", parsed);
+    const secondVersion = await record(db, "conversation-a", filePath);
+
+    expect(secondVersion).not.toBe(firstVersion);
+    expect(db.prepare(`
+      SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
+    `).get("conversation-a")).toEqual({ current_version_id: secondVersion });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    db.close();
+  });
+
   it("reads verified multi-record tool linkage and resolves every legacy block id", async () => {
     const db = new Database(":memory:");
     migrate(db);
