@@ -13,6 +13,9 @@ Usage: mandible ask submit <packet.json|-> [--json]
 
 Wait durations accept milliseconds, with optional ms, s, or m suffix.
 The final timeout must be between 0 and 55000 milliseconds.
+Ask packets may include document.artifact_version and document.previous_round_id.
+wait returns on the first responder submission or a terminal lifecycle event.
+It does not implement all-responder completion; inspect submissions[] for that policy.
 EOF
 }
 
@@ -61,8 +64,9 @@ ask_api_request() {
 print_result_summary() {
   jq -r '
     "Ask \(.ask_id): \(.state)"
-    + (if .submission == null then ""
-       else " (submission \(.submission.id), ordinal \(.submission.ordinal))" end)
+    + (if (.submissions | length) == 0 then ""
+       else " (latest submissions: "
+         + ([.submissions[] | "\(.id)@\(.ordinal)"] | join(", ")) + ")" end)
     + (if .wait_timed_out == true then " (wait timed out)" else "" end)
   '
 }

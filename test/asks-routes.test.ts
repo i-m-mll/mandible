@@ -103,6 +103,7 @@ describe("ask routes", () => {
         { method: "GET", path: "/api/asks/:id/result", fileRpc: "allow" },
         { method: "GET", path: "/api/asks/:id/wait", fileRpc: "allow" },
         { method: "POST", path: "/api/asks/:id/answers", fileRpc: "deny" },
+        { method: "POST", path: "/api/asks/:id/annotations", fileRpc: "deny" },
         { method: "POST", path: "/api/asks/:id/submit", fileRpc: "deny" },
         { method: "DELETE", path: "/api/asks/:id", fileRpc: "deny" },
       ]);
@@ -145,12 +146,32 @@ describe("ask routes", () => {
     });
     expect(answer.status).toBe(200);
     const result = await router.invoke({ method: "GET", url: `/api/asks/${askId}/result`, credential: "agent" });
-    expect(result.body).toMatchObject({ schema: "mandible-ask-result@1", state: "open", submission: null });
+    expect(result.body).toMatchObject({ schema: "mandible-ask-result@2", state: "open", submissions: [] });
     expect(JSON.stringify(result.body)).not.toContain("private draft");
     const stranger = createUser(db, { slug: "stranger", kind: "agent", display_name: "Stranger" });
     addGrant(db, { subject_type: "user", subject: stranger.id, resource_type: "global", permission: "ask.create" });
     expect((await router.invoke({ method: "GET", url: `/api/asks/${askId}/result`, credential: "stranger" })).status)
       .toBe(404);
+  });
+
+  it("enforces annotation route identity, audience privacy, and document gating", async () => {
+    addGrant(db, { subject_type: "user", subject: agentId, resource_type: "global", permission: "ask.create" });
+    const askId = ((await create()).body as { ask_id: string }).ask_id;
+    const outsider = createUser(db, { slug: "outsider-human", kind: "human", display_name: "Outsider" });
+    expect((await router.invoke({
+      method: "POST", url: `/api/asks/${askId}/annotations`, credential: "agent", transport: "http",
+      body: { annotations: [] },
+    })).body).toMatchObject({ code: "human_responder_required" });
+    expect((await router.invoke({
+      method: "POST", url: `/api/asks/${askId}/annotations`, credential: outsider.slug, transport: "http",
+      body: { annotations: [] },
+    })).body).toMatchObject({ code: "not_found" });
+    const audience = await router.invoke({
+      method: "POST", url: `/api/asks/${askId}/annotations`, credential: "human", transport: "http",
+      body: { annotations: [] },
+    });
+    expect(audience.status).toBe(409);
+    expect(audience.body).toMatchObject({ code: "ask_has_no_document" });
   });
 
   it("submits atomically, returns the canonical envelope, and emits no answer values", async () => {
@@ -169,8 +190,8 @@ describe("ask routes", () => {
         answers: [{ item_id: item.id, item_revision_id: item.revision.id, response_event_id: set.answer_event_ids[0] }],
       },
     });
-    expect(submitted.body).toMatchObject({ schema: "mandible-ask-result@1", state: "submitted" });
-    const submission = (submitted.body as any).submission;
+    expect(submitted.body).toMatchObject({ schema: "mandible-ask-result@2", state: "submitted" });
+    const submission = (submitted.body as any).submissions[0];
     const refreshed = await router.invoke({
       method: "GET", url: `/api/asks/${askId}`, credential: "human", transport: "http",
     });
@@ -262,8 +283,8 @@ describe("ask routes", () => {
     expect(JSON.stringify(requesterRead.body)).not.toContain("unpublished secret");
     expect(JSON.stringify(requesterRead.body)).not.toContain("effective_response");
     expect(result.body).toEqual({
-      schema: "mandible-ask-result@1", ask_id: created.ask_id, state: "open",
-      request_digest: created.request_digest, expires_at: 4_000_000_000_000, submission: null,
+      schema: "mandible-ask-result@2", ask_id: created.ask_id, state: "open",
+      request_digest: created.request_digest, expires_at: 4_000_000_000_000, submissions: [],
     });
   });
 

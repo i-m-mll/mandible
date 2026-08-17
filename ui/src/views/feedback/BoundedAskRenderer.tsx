@@ -21,6 +21,7 @@ import {
   saveAskDraft,
   type AskDraft,
 } from './ask-view-state';
+import { AskDocumentPanel } from './AskDocumentPanel';
 
 export type BoundedAskRendererProps = {
   askId: string;
@@ -175,7 +176,7 @@ export function BoundedAskRenderer({
     && userKind === 'human'
     && ask.responder_user_ids.includes(userId)
     && ask.items.every((item) => item.responseVisible)
-    && (ask.state === 'open' || (ask.state === 'submitted' && ask.latest_submission !== null))
+    && (ask.state === 'open' || ask.state === 'submitted')
     && (!instance || instance.operational_mutations === 'allow'),
   );
 
@@ -260,10 +261,13 @@ export function BoundedAskRenderer({
       }
       await postAskSubmission(ask.ask_id, {
         expected_lifecycle_event_id: ask.lifecycle_event_id,
-        ...(ask.state === 'submitted' && ask.latest_submission
-          ? { supersedes_submission_id: ask.latest_submission.id }
+        ...(ask.latest_submission_for_actor
+          ? { supersedes_submission_id: ask.latest_submission_for_actor.id }
           : {}),
         answers: submissionAnswers,
+        annotations: (ask.annotations ?? []).map((annotation) => ({
+          annotation_event_id: annotation.annotation_event_id,
+        })),
       });
       saveAskDraft(storageOrNull(), userId, ask.ask_id, {});
       if (!mutationIsCurrent()) return;
@@ -400,6 +404,9 @@ export function BoundedAskRenderer({
         <div className="bounded-ask__validation" role="alert">
           Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
         </div>
+      ) : null}
+      {ask.document ? (
+        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy} onRefresh={reconcile} />
       ) : null}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} noValidate>
         {roots.map(renderItem)}

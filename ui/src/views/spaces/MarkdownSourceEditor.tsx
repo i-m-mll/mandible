@@ -1,9 +1,12 @@
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import {
   Annotation,
+  Compartment,
   EditorSelection,
   EditorState,
   RangeSetBuilder,
+  StateEffect,
+  StateField,
   type Extension,
 } from '@codemirror/state';
 import {
@@ -40,6 +43,13 @@ export type MarkdownSourceItemCommand = {
 type CaretRange = { start: number; end: number };
 export type MarkdownSourceBoundaryDirection = 'up' | 'down';
 
+export type MarkdownSourceDecoration = {
+  id: string;
+  start: number;
+  end: number;
+  className: string;
+};
+
 export type MarkdownSourceEditorProps = {
   blockId: string;
   value: string;
@@ -52,6 +62,9 @@ export type MarkdownSourceEditorProps = {
   onItemCommand: (command: MarkdownSourceItemCommand) => void;
   onOpenReference: (ref: string) => void;
   onBoundaryArrow?: (blockId: string, direction: MarkdownSourceBoundaryDirection) => boolean;
+  readOnly?: boolean;
+  decorations?: ReadonlyArray<MarkdownSourceDecoration>;
+  onDecorationClick?: (id: string) => void;
 };
 
 type CallbackSet = Pick<
@@ -66,8 +79,67 @@ type CallbackSet = Pick<
 >;
 
 const externalUpdate = Annotation.define<boolean>();
+const setExternalDecorations = StateEffect.define<ReadonlyArray<MarkdownSourceDecoration>>();
+const NO_EXTERNAL_DECORATIONS: ReadonlyArray<MarkdownSourceDecoration> = [];
 const BRACKET_REF_PATTERN = /\[((?:artifact|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
 const EMPHASIS_DELIMITERS = ['**', '__', '*', '_'] as const;
+
+export function normalizeMarkdownSourceDecorations(
+  docLength: number,
+  decorations: ReadonlyArray<MarkdownSourceDecoration>,
+): MarkdownSourceDecoration[] {
+  return decorations
+    .flatMap((decoration) => {
+      if (!Number.isSafeInteger(decoration.start) || !Number.isSafeInteger(decoration.end)) {
+        return [];
+      }
+      const start = Math.max(0, Math.min(docLength, decoration.start));
+      const end = Math.max(0, Math.min(docLength, decoration.end));
+      return start < end ? [{ ...decoration, start, end }] : [];
+    })
+    .sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id));
+}
+
+function buildExternalDecorations(
+  docLength: number,
+  decorations: ReadonlyArray<MarkdownSourceDecoration>,
+): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const decoration of normalizeMarkdownSourceDecorations(docLength, decorations)) {
+    builder.add(
+      decoration.start,
+      decoration.end,
+      Decoration.mark({
+        class: decoration.className,
+        attributes: { 'data-annotation-id': decoration.id },
+      }),
+    );
+  }
+  return builder.finish();
+}
+
+export function markdownSourceDecorationIdFromTarget(target: EventTarget | null): string | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest<HTMLElement>('[data-annotation-id]')?.dataset.annotationId ?? null;
+}
+
+const externalDecorationsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decorations, transaction) {
+    let next = decorations.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(setExternalDecorations)) {
+        next = buildExternalDecorations(transaction.state.doc.length, effect.value);
+      }
+    }
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
+function readOnlyExtension(readOnly: boolean): Extension {
+  return [EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)];
+}
 
 type InlineDecoration = {
   from: number;
@@ -553,10 +625,16 @@ export function MarkdownSourceEditor({
   onItemCommand,
   onOpenReference,
   onBoundaryArrow,
+  readOnly = false,
+  decorations = NO_EXTERNAL_DECORATIONS,
+  onDecorationClick,
 }: MarkdownSourceEditorProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const readOnlyCompartmentRef = useRef(new Compartment());
   const pendingLocalValueRef = useRef<string | null>(null);
+  const onDecorationClickRef = useRef(onDecorationClick);
+  onDecorationClickRef.current = onDecorationClick;
   const callbacksRef = useRef<CallbackSet>({
     onChange,
     onBlur,
@@ -586,6 +664,8 @@ export function MarkdownSourceEditor({
         EditorView.lineWrapping,
         editorTheme,
         markdownDecorations(callbacksRef),
+        readOnlyCompartmentRef.current.of(readOnlyExtension(readOnly)),
+        externalDecorationsField.init(() => buildExternalDecorations(value.length, decorations)),
         EditorView.contentAttributes.of({
           'aria-label': ariaLabel,
           spellcheck: 'true',
@@ -609,6 +689,12 @@ export function MarkdownSourceEditor({
         EditorView.domEventHandlers({
           blur: (_event, view) => {
             callbacksRef.current.onBlur(view.state.doc.toString());
+          },
+          click: (event) => {
+            const id = markdownSourceDecorationIdFromTarget(event.target);
+            if (!id) return false;
+            onDecorationClickRef.current?.(id);
+            return true;
           },
         }),
         EditorView.updateListener.of((update) => {
@@ -664,6 +750,20 @@ export function MarkdownSourceEditor({
     });
     pendingLocalValueRef.current = null;
   }, [value]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: readOnlyCompartmentRef.current.reconfigure(readOnlyExtension(readOnly)),
+    });
+  }, [readOnly]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: setExternalDecorations.of(decorations) });
+  }, [decorations, value]);
 
   return (
     <div

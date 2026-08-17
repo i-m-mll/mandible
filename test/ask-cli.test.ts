@@ -20,7 +20,7 @@ api_send() {
 }
 api_get() {
   printf '%s\\t%s\\t%s\\t%s\\n' "$1" "\${MANDIBLE_HTTP_TIMEOUT:-}" "\${MANDIBLE_FILE_RPC_TIMEOUT:-}" "\${MANDIBLE_BASE:-}" >> "${callLog}"
-  printf '%s' '{"schema":"mandible-ask-result@1","ask_id":"ask-1","state":"open","request_digest":"digest","expires_at":999999,"submission":null,"wait_timed_out":true}'
+  printf '%s' '{"schema":"mandible-ask-result@2","ask_id":"ask-1","state":"open","request_digest":"digest","expires_at":999999,"submissions":[],"wait_timed_out":true}'
 }
 api_temp_file() { mktemp "${temp}/response.XXXXXX"; }
 api_capture() {
@@ -107,7 +107,7 @@ describe("mandible ask CLI", () => {
       if (duration) args.splice(2, 0, "--timeout", duration);
       const result = run(args);
       expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ schema: "mandible-ask-result@1", submission: null });
+      expect(JSON.parse(result.stdout)).toMatchObject({ schema: "mandible-ask-result@2", submissions: [] });
       const fields = fs.readFileSync(path.join(temp, "calls"), "utf8").trim().split("\t");
       expect(fields[0]).toContain(`/wait?timeout_ms=${expected}`);
       expect(Number(fields[1]) * 1000).toBeGreaterThan(Number(expected));
@@ -128,12 +128,12 @@ describe("mandible ask CLI", () => {
         customEnv: { ...env, MANDIBLE_BASE: base },
       });
       expect(JSON.parse(result.stdout)).toEqual({
-        schema: "mandible-ask-result@1",
+        schema: "mandible-ask-result@2",
         ask_id: "ask-1",
         state: "open",
         request_digest: "digest",
         expires_at: 999999,
-        submission: null,
+        submissions: [],
         wait_timed_out: true,
       });
     }
@@ -144,7 +144,7 @@ describe("mandible ask CLI", () => {
     fs.mkdirSync(binDir);
     const response = path.join(temp, "http-response.json");
     const curlLog = path.join(temp, "curl-log");
-    fs.writeFileSync(response, '{"schema":"mandible-ask-result@1","ask_id":"http-ask","state":"open","request_digest":"digest","expires_at":999999,"submission":null}');
+    fs.writeFileSync(response, '{"schema":"mandible-ask-result@2","ask_id":"http-ask","state":"open","request_digest":"digest","expires_at":999999,"submissions":[]}');
     fs.writeFileSync(path.join(binDir, "curl"), `#!/usr/bin/env bash
 out=""
 while (($#)); do
@@ -164,13 +164,13 @@ printf '200'
       encoding: "utf8",
     });
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({ schema: "mandible-ask-result@1", ask_id: "http-ask", state: "open", request_digest: "digest", expires_at: 999999, submission: null });
+    expect(JSON.parse(result.stdout)).toEqual({ schema: "mandible-ask-result@2", ask_id: "http-ask", state: "open", request_digest: "digest", expires_at: 999999, submissions: [] });
     expect(fs.readFileSync(curlLog, "utf8").trim()).toBe("15");
   });
 
   it("uses the real shared file-RPC helper for result and wait envelopes", async () => {
     const rpcDir = path.join(temp, "rpc-real");
-    const canonical = { schema: "mandible-ask-result@1", ask_id: "rpc-ask", state: "open", request_digest: "digest", expires_at: 999999, submission: null };
+    const canonical = { schema: "mandible-ask-result@2", ask_id: "rpc-ask", state: "open", request_digest: "digest", expires_at: 999999, submissions: [] };
     const rpcRouter = new Router();
     rpcRouter.get("/api/asks/:id/result", (_req, res) => res.json(canonical), { fileRpc: "allow" });
     rpcRouter.get("/api/asks/:id/wait", (req, res) => res.json({ ...canonical, wait_timed_out: true, timeout_seen: req.query.timeout_ms }), { fileRpc: "allow" });

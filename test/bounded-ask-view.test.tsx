@@ -78,6 +78,10 @@ function askPayload(overrides: Record<string, unknown> = {}) {
     created_at: Date.now(),
     lifecycle_event_id: 'life-open',
     latest_submission: null,
+    latest_submission_for_actor: null,
+    document: null,
+    annotations: [],
+    previous_round: null,
     lifecycle: { id: 'life-open', operation: 'opened', actor_user_id: null, created_at: 1 },
     items: [
       item('group', null, [], { title: '<b>Questions</b>', position: 0 }),
@@ -113,6 +117,39 @@ afterEach(() => {
 });
 
 describe('bounded ask renderer', () => {
+  it('normalizes the exact document, annotation, and previous-round projection shapes', () => {
+    const current = {
+      annotation_event_id: 'annotation-current',
+      annotation_kind: 'suggest_replacement',
+      start_offset: 0,
+      end_offset: 4,
+      quote: 'Plan',
+      body: null,
+      replacement_text: '',
+      created_at: 2,
+    };
+    const projection = normalizeAskProjection(askPayload({
+      document: { artifact_version_id: 'artifact-version:current', previous_round_id: 'ask-old' },
+      annotations: [current],
+      previous_round: {
+        ask_id: 'ask-old',
+        artifact_version_id: 'artifact-version:old',
+        annotations: [{ ...current, annotation_event_id: 'annotation-old', actor_user_id: 'human-2', submission_ordinal: 3 }],
+      },
+    }));
+    expect(projection.valid).toBe(true);
+    expect(projection.document).toEqual({ artifact_version_id: 'artifact-version:current', previous_round_id: 'ask-old' });
+    expect(projection.annotations).toEqual([current]);
+    expect(projection.previous_round?.annotations[0]).toMatchObject({
+      annotation_event_id: 'annotation-old', actor_user_id: 'human-2', submission_ordinal: 3,
+    });
+
+    const malformed = normalizeAskProjection(askPayload({
+      annotations: [{ ...current, annotation_kind: 'comment', body: 'Note', replacement_text: 'forbidden' }],
+    }));
+    expect(malformed.valid).toBe(false);
+  });
+
   it('loads the deep-linked ask, renders all frozen types and groups as inert composition, and mutates only on Submit', async () => {
     const requests: Array<{ url: string; body: any }> = [];
     let projection = askPayload();
@@ -166,6 +203,40 @@ describe('bounded ask renderer', () => {
       { item_id: 'single', item_revision_id: 'rev-single', response_event_id: 'event-2' },
       { item_id: 'multi', item_revision_id: 'rev-multi', response_event_id: 'event-3' },
     ]);
+    expect(requests[1].body.annotations).toEqual([]);
+  });
+
+  it('submits the exact effective annotation event membership', async () => {
+    const submissions: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('whoami')) return json({ authenticated: true, user: { id: 'human-1', kind: 'human' } });
+      if (url === '/api/asks/ask-1' && !init?.method) return json(askPayload({
+        items: [],
+        annotations: [
+          {
+            annotation_event_id: 'annotation-current',
+            annotation_kind: 'comment',
+            start_offset: 0,
+            end_offset: 4,
+            quote: 'Plan',
+            body: 'Clarify this.',
+            replacement_text: null,
+            created_at: 1,
+          },
+        ],
+      }));
+      if (url.endsWith('/submit')) {
+        submissions.push(JSON.parse(String(init?.body)));
+        return json({ state: 'submitted', submissions: [] });
+      }
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(shell(<BoundedAskRenderer askId="ask-1" instance={null} />));
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(submissions).toHaveLength(1));
+    expect(submissions[0].annotations).toEqual([{ annotation_event_id: 'annotation-current' }]);
   });
 
   it('validates every required type before either network mutation', async () => {
@@ -196,6 +267,7 @@ describe('bounded ask renderer', () => {
       state: 'submitted',
       lifecycle_event_id: 'life-previous',
       latest_submission: { id: 'authoritative-submission', ordinal: 4 },
+      latest_submission_for_actor: { id: 'authoritative-submission', ordinal: 4 },
       items: [
         item('single', 'single_choice', [
           { option_key: 'a', label: 'A' }, { option_key: 'b', label: 'B' },
@@ -250,6 +322,7 @@ describe('bounded ask renderer', () => {
               state: 'submitted',
               lifecycle_event_id: 'life-authoritative',
               latest_submission: { id: 'submission-authoritative', ordinal: 1 },
+              latest_submission_for_actor: { id: 'submission-authoritative', ordinal: 1 },
               items: [item('text', 'free_text', [], {
                 required: true,
                 effective_response: { response_event_id: 'landed-answer', value: { text: 'unsaved local value' } },
@@ -277,6 +350,7 @@ describe('bounded ask renderer', () => {
       expected_lifecycle_event_id: 'life-authoritative',
       supersedes_submission_id: 'submission-authoritative',
       answers: [{ item_id: 'text', item_revision_id: 'rev-text', response_event_id: 'landed-answer' }],
+      annotations: [],
     });
   });
 

@@ -140,8 +140,11 @@ function enforceArtifactRefAccess(
   role: "read" | "write",
 ): boolean {
   try {
+    if (/^artifact-version:/i.test(ref.trim())) {
+      return enforceArtifactAccess(req, res, ref.trim(), role);
+    }
     const resolved = resolveArtifactSurfaceRefReadonlyFull(getDb(), ref);
-    const id = resolved.artifact?.id ?? resolved.version?.artifact_id ?? null;
+    const id = resolved.version?.id ?? resolved.artifact?.id ?? null;
     if (!id && resolved.status === "ambiguous") {
       sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
       return false;
@@ -790,8 +793,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/content", async (req, res) => {
+    if (!enforceArtifactRefAccess(req, res, req.params.id, "read")) return;
     const artifact = resolveArtifactRouteRecord(req.params.id);
-    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
     const content = artifact ? await getArtifactContentAsync(getDb(), artifact.id) : null;
     if (!content) {
       sendJson(res, 404, { error: "artifact not found" });
