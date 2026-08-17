@@ -5,7 +5,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
-import { hasCurrentOperationalLogVerification } from "./operational-log-db.js";
+import { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const DEFAULT_LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");

@@ -8,8 +8,11 @@ import {
   getDefaultDbPath,
   getDbPath,
 } from "./db.js";
+import { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import type { Logger } from "./types.js";
+
+export { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
 
 export const OPERATIONAL_LOG_DB_FILENAME = "operational-logs.db";
 export const LEGACY_LOG_SCHEMA = "legacy_ledger";
@@ -601,20 +604,6 @@ function invalidateStaleCopyState(db: Db, sourcePath: string, now: number): void
          legacy_high_water_rows = NULL, updated_at = ?
      WHERE source_path = ?`,
   ).run(now, sourcePath);
-}
-
-export function hasCurrentOperationalLogVerification(db: Db): boolean {
-  try {
-    const sourcePath = attachedLegacySourcePath(db);
-    if (!sourcePath) return false;
-    const state = db.prepare(
-      `SELECT completed_at, verified_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
-       FROM operational_log_copy_state WHERE source_path = ?`,
-    ).get(sourcePath) as ({ completed_at: number | null; verified_at: number | null } & LegacyHighWaterState) | undefined;
-    return Boolean(state?.completed_at && state.verified_at && copyStateMatchesLegacy(db, state));
-  } catch {
-    return false;
-  }
 }
 
 function assertWritableStore(db: Db): void {
