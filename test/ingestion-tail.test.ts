@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
-import { triggerTargetedIngest } from "../src/ingestion.js";
+import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import { decompressContent } from "../src/compression.js";
 
 let tempDir = "";
@@ -19,6 +19,10 @@ async function makeCodexSession(): Promise<string> {
   const sessionDir = path.join(tempDir, "home", ".codex", "sessions", "2026", "07", "02");
   await fsp.mkdir(sessionDir, { recursive: true });
   return path.join(sessionDir, "rollout-2026-07-02T00-00-00-tailtest.jsonl");
+}
+
+function watchConfigs(): Array<{ base: string; glob: string }> {
+  return [{ base: path.join(tempDir, "home", ".codex", "sessions"), glob: "**/*.jsonl" }];
 }
 
 async function writeWithMtime(filePath: string, content: string, tick: number): Promise<void> {
@@ -133,13 +137,18 @@ describe("incremental tail ingestion", () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, `${initialCodexRows()}${assistantRow("before", 3)}`, 1);
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const original = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ? AND session_id = 'tailtest'",
+    ).get(sessionPath) as { id: string };
 
     const rewritten = initialCodexRows("tailtest-rewritten").replace("hello", "rewritten hello");
     await writeWithMtime(sessionPath, `${rewritten}${assistantRow("after rewrite", 3)}`, 2);
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
 
-    const conversation = db.prepare("SELECT id, session_id, block_count FROM conversations WHERE source_path = ?")
-      .get(sessionPath) as { id: string; session_id: string; block_count: number };
+    const conversation = db.prepare(`
+      SELECT id, session_id, block_count FROM conversations
+       WHERE source_path = ? AND session_id = 'tailtest-rewritten'
+    `).get(sessionPath) as { id: string; session_id: string; block_count: number };
     expect(conversation).toMatchObject({ session_id: "tailtest-rewritten", block_count: 3 });
     const firstBlock = db.prepare(
       "SELECT content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
@@ -149,5 +158,192 @@ describe("incremental tail ingestion", () => {
       db.prepare("SELECT byte_offset FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+      .get(original.id)).toEqual({ count: 3 });
+  });
+
+  it("detects a replacement with the exact previously indexed mtime", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("same-mtime-owner-a"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+
+    await fsp.writeFile(sessionPath, initialCodexRows("same-mtime-owner-b"), "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ? ORDER BY session_id",
+    ).all(sessionPath)).toEqual([
+      { session_id: "same-mtime-owner-a" },
+      { session_id: "same-mtime-owner-b" },
+    ]);
+  });
+
+  it("preserves fallback data when a source truncates at the exact indexed mtime", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("same-mtime-truncation"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+    const conversation = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ?",
+    ).get(sessionPath) as { id: string };
+    const before = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id);
+
+    await fsp.writeFile(sessionPath, "", "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id)).toEqual(before);
+    expect(db.prepare(
+      "SELECT availability FROM conversation_sources WHERE conversation_id = ?",
+    ).get(conversation.id)).toEqual({ availability: "missing" });
+  });
+
+  it("reconcile detects a replacement with the exact indexed mtime", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("reconcile-same-mtime-a"), 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+
+    await fsp.writeFile(sessionPath, initialCodexRows("reconcile-same-mtime-b"), "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ? ORDER BY session_id",
+    ).all(sessionPath)).toEqual([
+      { session_id: "reconcile-same-mtime-a" },
+      { session_id: "reconcile-same-mtime-b" },
+    ]);
+  });
+
+  it("reconcile preserves fallback data after same-mtime truncation", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("reconcile-same-mtime-truncated"), 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
+    const conversation = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ?",
+    ).get(sessionPath) as { id: string };
+    const before = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id);
+
+    await fsp.writeFile(sessionPath, "", "utf8");
+    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
+    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id)).toEqual(before);
+    expect(db.prepare(`
+      SELECT s.availability AS source_availability, v.availability AS version_availability
+        FROM conversation_sources s
+        JOIN conversation_source_versions v ON v.id = s.current_version_id
+       WHERE s.conversation_id = ?
+    `).get(conversation.id)).toEqual({
+      source_availability: "missing",
+      version_availability: "missing",
+    });
+  });
+
+  it("preserves fallback bodies and source history while the source is empty or truncated", async () => {
+    const sessionPath = await makeCodexSession();
+    const original = initialCodexRows();
+    await writeWithMtime(sessionPath, original, 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    const beforeBlocks = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id);
+    const beforeVersions = db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_source_versions
+       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
+    `).get(conversation.id);
+    const beforeAliases = db.prepare(`
+      SELECT alias, block_id FROM conversation_block_aliases
+       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
+       ORDER BY alias
+    `).all(conversation.id);
+
+    await writeWithMtime(sessionPath, "", 2);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+    await writeWithMtime(sessionPath, initialCodexRows().split("\n", 1)[0] + "\n", 3);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+
+    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get(conversation.id))
+      .toBeDefined();
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(conversation.id)).toEqual(beforeBlocks);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_source_versions
+       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
+    `).get(conversation.id)).toEqual(beforeVersions);
+    expect(db.prepare(`
+      SELECT alias, block_id FROM conversation_block_aliases
+       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
+       ORDER BY alias
+    `).all(conversation.id)).toEqual(beforeAliases);
+    expect(db.prepare(
+      "SELECT availability, unavailable_reason FROM conversation_sources WHERE conversation_id = ?",
+    ).get(conversation.id)).toEqual({
+      availability: "missing",
+      unavailable_reason: "source parsed as empty or temporarily truncated",
+    });
+  });
+
+  it("treats a reused path as an alias and preserves both conversation identities", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("path-owner-a"), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const original = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ? AND session_id = 'path-owner-a'",
+    ).get(sessionPath) as { id: string };
+    const originalBlocks = db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(original.id);
+
+    await writeWithMtime(sessionPath, initialCodexRows("path-owner-b"), 2);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+    await appendWithMtime(sessionPath, assistantRow("current owner append", 3), 3);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+
+    expect(db.prepare(
+      "SELECT session_id FROM conversations WHERE source_path = ? ORDER BY session_id",
+    ).all(sessionPath)).toEqual([
+      { session_id: "path-owner-a" },
+      { session_id: "path-owner-b" },
+    ]);
+    expect(db.prepare(
+      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(original.id)).toEqual(originalBlocks);
+    expect(db.prepare(
+      "SELECT block_count FROM conversations WHERE source_path = ? AND session_id = 'path-owner-b'",
+    ).get(sessionPath)).toEqual({ block_count: 3 });
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM conversation_sources WHERE conversation_id = ?",
+    ).get(original.id)).toEqual({ count: 1 });
+    expect(db.prepare(
+      "SELECT availability, unavailable_reason FROM conversation_sources WHERE conversation_id = ?",
+    ).get(original.id)).toEqual({
+      availability: "missing",
+      unavailable_reason: "source path reused by a distinct conversation identity",
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_block_aliases
+       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
+    `).get(original.id)).toEqual({ count: originalBlocks.length });
   });
 });

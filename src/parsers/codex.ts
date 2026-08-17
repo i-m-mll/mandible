@@ -255,6 +255,17 @@ export async function loadCodexSessionIndexTitle(filePath: string, sessionId: st
   return sessionIndexCache.titles.get(sessionId) ?? null;
 }
 
+/** Read the provider-authored session id without accepting the filename fallback. */
+export async function loadCodexNativeSessionId(filePath: string): Promise<string | null> {
+  const { records } = await readJsonlFileRecords<CodexRecord>(filePath);
+  for (const record of records) {
+    if (record.type !== "session_meta") continue;
+    const id = (record.payload as CodexSessionMeta).id;
+    if (typeof id === "string" && id.trim()) return id;
+  }
+  return null;
+}
+
 // --- Parser ---
 
 export class CodexParser implements ConversationParser {
@@ -277,6 +288,7 @@ export class CodexParser implements ConversationParser {
     }
     return this.parseRecords(filePath, records, {
       baseBlockCount: 0,
+      baseRecordCount: 0,
       sourceHash,
       sourceMtime,
     });
@@ -285,6 +297,7 @@ export class CodexParser implements ConversationParser {
   async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
     return this.parseRecords(input.filePath, parseJsonlStringRecords<CodexRecord>(input.raw), {
       baseBlockCount: input.baseBlockCount,
+      baseRecordCount: input.baseRecordCount ?? 0,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
@@ -293,7 +306,7 @@ export class CodexParser implements ConversationParser {
   private async parseRecords(
     filePath: string,
     records: CodexRecord[],
-    options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
+    options: { baseBlockCount: number; baseRecordCount: number; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
     // Extract session metadata
     let sessionId = "";
@@ -392,7 +405,9 @@ export class CodexParser implements ConversationParser {
     const callMap = new Map<string, number>();
     const callNameMap = new Map<string, string>();
 
-    for (const rec of records) {
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      const rec = records[recordIndex];
+      const firstRecordBlock = blocks.length;
       if (!rec.type) continue;
       const ts = rec.timestamp || startedAt || new Date().toISOString();
 
@@ -552,6 +567,10 @@ export class CodexParser implements ConversationParser {
         }
         // agent_reasoning, context_compacted, turn_aborted — skip
         // user_message events are duplicates of response_item user messages
+      }
+      for (let index = firstRecordBlock; index < blocks.length; index += 1) {
+        blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
+        blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
       }
     }
 

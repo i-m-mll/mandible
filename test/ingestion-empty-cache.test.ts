@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 describe("empty conversation ingest state", () => {
-  it("repairs legacy orphan ownership once without recurring block-index sweeps", async () => {
+  it("audits legacy orphan ownership once without deleting the identity", async () => {
     const insertOrphan = db.prepare(`
       INSERT INTO conversations (
         id, source, source_path, source_hash, source_mtime,
@@ -76,7 +76,7 @@ describe("empty conversation ingest state", () => {
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
 
     expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get("legacy-orphan-1"))
-      .toBeUndefined();
+      .toBeDefined();
     expect(db.prepare("SELECT value FROM meta WHERE key = ?").get("ingestion_orphan_repair_v1"))
       .toBeDefined();
 

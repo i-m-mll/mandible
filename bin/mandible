@@ -17,8 +17,9 @@
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth merge <branch> [opts]       Execute authenticated merge
-#   logs <subcommand>                Inspect provider-native source logs
+#   logs <subcommand>                Inspect source logs and retained daemon telemetry
 #   conversations <subcommand>       Inspect DB-backed conversations
+#   conversation-cutover <command>   Build and audit source-backed cutover proof
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   ask <subcommand>                 Submit and await bounded asks
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
@@ -63,8 +64,9 @@ Commands:
   auth request <branch> [opts]     Submit auth merge request
   auth replay-archives <id>        Replay Codex archive attempts
   auth merge <branch> [opts]       Execute authenticated merge
-  logs <subcommand>                Inspect provider-native source logs
+  logs <subcommand>                Inspect source logs and retained daemon telemetry
   conversations <subcommand>       Inspect DB-backed conversations
+  conversation-cutover <command>   Build and audit source-backed cutover proof
   artifact <subcommand>            Register, resolve, link, and check artifacts
   ask submit|wait|result|export    Submit, await, and export bounded asks
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
@@ -121,6 +123,7 @@ case "${1:-}" in
     ;;
   logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
+  conversation-cutover) shift; exec "$MANDIBLE_CLI_DIR/conversation-cutover.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
   ask) shift; exec "$MANDIBLE_CLI_DIR/ask.sh" "$@" ;;
   space) shift; exec "$MANDIBLE_CLI_DIR/space.sh" "$@" ;;

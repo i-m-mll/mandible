@@ -15,6 +15,7 @@ import {
   codexRelocationCandidates,
   getCodexSessionIndexPath,
   isCodexRolloutPath,
+  loadCodexNativeSessionId,
   loadCodexSessionIndexTitle,
 } from "./parsers/codex.js";
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
@@ -37,6 +38,8 @@ import {
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
+import { ConversationSourceStore } from "./conversations/source-store.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
 
 // --- Watch configuration ---
 
@@ -1302,11 +1305,9 @@ function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void
  *
  * `codex archive` / `codex unarchive` rename a rollout between
  * `~/.codex/sessions/**` and `~/.codex/archived_sessions/**`. The bytes and the
- * conversation identity are unchanged, so the ingested row must follow the move
- * instead of being treated as a deleted source. Any row already created for the
- * destination path (an earlier reconcile that ingested the moved file as a new
- * conversation) is folded into the original row so conversation ids, stars,
- * tags, notes, and blocks survive.
+ * conversation identity is unchanged, but the path may have historical rows
+ * for other identities. The caller proves provider/session identity first, so
+ * only that exact row and source alias follow the move.
  *
  * Bug: c927726 — archiving a Codex thread silently deleted its conversation
  * and every block from SQLite on the next reconcile.
@@ -1315,50 +1316,28 @@ function repointConversationSource(
   db: ReturnType<typeof getDb>,
   fromPath: string,
   toPath: string,
+  conversationId: string,
+  sourceId: string | null,
 ): boolean {
-  const original = db.prepare(`
-    SELECT id, starred, tags, notes
-    FROM conversations
-    WHERE source_path = ?
-    ORDER BY block_count DESC, updated_at DESC
-  `).all(fromPath) as Array<{ id: string; starred: number; tags: string; notes: string | null }>;
-  if (original.length === 0) return false;
+  const original = db.prepare(
+    "SELECT id FROM conversations WHERE id = ? AND source_path = ?",
+  ).get(conversationId, fromPath);
+  if (!original) return false;
 
-  const keep = original[0];
   const repoint = db.transaction(() => {
-    const duplicates = db.prepare("SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?")
-      .all(toPath) as Array<{ id: string; starred: number; tags: string; notes: string | null }>;
-    let starred = keep.starred;
-    const tags = new Set<string>(JSON.parse(keep.tags) as string[]);
-    let notes = keep.notes;
-    for (const row of [...original.slice(1), ...duplicates]) {
-      if (row.id === keep.id) continue;
-      if (row.starred) starred = 1;
-      for (const tag of JSON.parse(row.tags) as string[]) tags.add(tag);
-      if (!notes && row.notes) notes = row.notes;
-    }
-    for (const duplicate of duplicates) {
-      if (duplicate.id === keep.id) continue;
-      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(duplicate.id);
-      db.prepare("DELETE FROM conversations WHERE id = ?").run(duplicate.id);
-    }
-    for (const stale of original) {
-      if (stale.id === keep.id) continue;
-      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(stale.id);
-      db.prepare("DELETE FROM conversations WHERE id = ?").run(stale.id);
-    }
     db.prepare(`
       UPDATE conversations
-      SET source_path = ?, starred = ?, tags = ?, notes = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(toPath, starred, JSON.stringify([...tags]), notes, keep.id);
-    // Append state is keyed by path; move it so incremental ingestion of the
-    // relocated file continues from the already-ingested offset.
-    db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(toPath);
-    db.prepare("UPDATE conversation_ingest_state SET file_path = ? WHERE file_path = ?")
-      .run(toPath, fromPath);
+      SET source_path = ?, updated_at = datetime('now')
+      WHERE id = ? AND source_path = ?
+    `).run(toPath, conversationId, fromPath);
+    // Path-keyed append state cannot prove which historical row owned it.
+    // Discard it here; the parsed relocation candidate gets a fresh checkpoint.
+    db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(fromPath);
   });
   repoint();
+  if (sourceId) {
+    new ConversationSourceStore(db).recordRelocation(fromPath, toPath, sourceId);
+  }
   return true;
 }
 
@@ -1367,37 +1346,100 @@ function repointConversationSource(
  * follow the move and return its new path. Returns null when the file is really
  * gone (or is not a Codex rollout), leaving normal cleanup to the caller.
  */
-function relocateMovedCodexSource(
+async function relocateMovedCodexSource(
   db: ReturnType<typeof getDb>,
   filePath: string,
-): string | null {
+): Promise<string | null> {
   if (!isCodexRolloutPath(filePath)) return null;
   if (fs.existsSync(filePath)) return null;
   for (const candidate of codexRelocationCandidates(filePath)) {
     if (!fs.existsSync(candidate)) continue;
-    if (!repointConversationSource(db, filePath, candidate)) continue;
-    logger("info", "ingestion_source_relocated", { from: filePath, to: candidate });
+    const parser = getParserForFile(candidate);
+    if (!parser || parser.source !== "codex") continue;
+    let nativeSessionId: string | null;
+    let parsed: ParseResult | null;
+    try {
+      nativeSessionId = await loadCodexNativeSessionId(candidate);
+      parsed = await parser.parse(candidate);
+    } catch (error) {
+      logger("warn", "ingestion_relocation_probe_failed", {
+        from: filePath,
+        candidate,
+        error: String(error),
+      });
+      continue;
+    }
+    if (!parsed || !nativeSessionId || parsed.conversation.session_id !== nativeSessionId) continue;
+    const match = db.prepare(`
+      SELECT c.id,
+             (SELECT cs.id FROM conversation_sources cs
+               WHERE cs.conversation_id = c.id AND cs.provider = ?
+               ORDER BY cs.updated_at DESC LIMIT 1) AS source_id
+        FROM conversations c
+       WHERE c.source_path = ? AND c.source = ? AND c.session_id = ?
+       ORDER BY CASE WHEN EXISTS (
+         SELECT 1
+           FROM conversation_sources cs
+           JOIN conversation_source_aliases alias ON alias.source_id = cs.id
+          WHERE cs.conversation_id = c.id
+            AND alias.path = ? AND alias.availability = 'available'
+       ) THEN 0 ELSE 1 END,
+       c.updated_at DESC, c.id
+       LIMIT 1
+    `).get(
+      parsed.conversation.source,
+      filePath,
+      parsed.conversation.source,
+      nativeSessionId,
+      filePath,
+    ) as { id: string; source_id: string | null } | undefined;
+    if (!match) {
+      logger("info", "ingestion_relocation_identity_mismatch", {
+        from: filePath,
+        candidate,
+        candidate_source: parsed.conversation.source,
+        candidate_session_id: nativeSessionId,
+      });
+      continue;
+    }
+    if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
+    const stat = await fs.promises.stat(candidate);
+    await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
+    logger("info", "ingestion_source_relocated", {
+      from: filePath,
+      to: candidate,
+      conversation_id: match.id,
+      session_id: nativeSessionId,
+    });
     return candidate;
   }
   return null;
 }
 
-function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePath: string): void {
-  if (relocateMovedCodexSource(db, filePath)) {
-    return;
+async function removeConversationForMissingSource(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+): Promise<boolean> {
+  if (await relocateMovedCodexSource(db, filePath)) {
+    return true;
   }
+  // Source loss is a tombstone transition, never a conversation deletion.
+  // Legacy normalized bodies, annotations, relationships, and aliases remain
+  // available for the explicit dual-reader fallback.
+  new ConversationSourceStore(db).recordUnavailable(filePath);
   const remove = db.transaction(() => {
-    const row = db.prepare("SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?")
-      .get(filePath) as { id: string; starred: number; tags: string; notes: string | null } | undefined;
-    if (row && row.starred === 0 && row.tags === "[]" && !row.notes) {
-      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-      db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
-      logger("info", "ingestion_cleanup_missing_source", { file: filePath, id: row.id });
-    }
     deleteAppendState(db, filePath);
     db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
   });
   remove();
+  // A same-shaped archive path can hold an unrelated rollout. It is not a
+  // relocation, but watcher-driven ingestion still needs to index it on its
+  // own identity instead of waiting for the next broad reconcile.
+  for (const candidate of codexRelocationCandidates(filePath)) {
+    if (!fs.existsSync(candidate)) continue;
+    await ingestFile(candidate);
+  }
+  return false;
 }
 
 interface ConversationMetadata {
@@ -1408,24 +1450,14 @@ interface ConversationMetadata {
 
 function preservedConversationMetadata(
   db: ReturnType<typeof getDb>,
-  sourcePath: string,
-  preferredId: string,
+  conversationId: string,
 ): ConversationMetadata {
-  const rows = db.prepare(`
+  const row = db.prepare(`
     SELECT starred, tags, notes
       FROM conversations
-     WHERE source_path = ?
-     ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
-  `).all(sourcePath, preferredId) as ConversationMetadata[];
-  const tags = new Set<string>();
-  let starred = 0;
-  let notes: string | null = null;
-  for (const row of rows) {
-    if (row.starred) starred = 1;
-    for (const tag of JSON.parse(row.tags) as string[]) tags.add(tag);
-    if (!notes && row.notes) notes = row.notes;
-  }
-  return { starred, tags: JSON.stringify([...tags]), notes };
+     WHERE id = ?
+  `).get(conversationId) as ConversationMetadata | undefined;
+  return row ?? { starred: 0, tags: "[]", notes: null };
 }
 
 function writeAppendState(
@@ -1865,7 +1897,7 @@ async function ingestFile(
   } catch {
     logger("debug", "ingestion_file_gone", { file: filePath });
     try {
-      removeConversationForMissingSource(getDb(), filePath);
+      await removeConversationForMissingSource(getDb(), filePath);
     } catch {
       // Best effort cleanup only.
     }
@@ -1896,9 +1928,16 @@ async function ingestFile(
       ), 0) AS actual_count
     FROM conversations c
     WHERE c.source_path = ?
-    ORDER BY actual_count DESC, c.updated_at DESC
+    ORDER BY CASE WHEN c.id = (
+      SELECT cs.conversation_id
+        FROM conversation_source_aliases alias
+        JOIN conversation_sources cs ON cs.id = alias.source_id
+       WHERE alias.path = c.source_path AND alias.availability = 'available'
+       LIMIT 1
+    ) THEN 0 ELSE 1 END,
+    actual_count DESC, c.updated_at DESC
   `).all(filePath) as ExistingConversationRow[];
-  const existing = existingRows[0];
+  let existing: ExistingConversationRow | undefined = existingRows[0];
   if (existingRows.length > 1 && existing) {
     logger("warn", "ingestion_duplicate_conversation_rows", {
       file: filePath,
@@ -1908,22 +1947,14 @@ async function ingestFile(
   }
 
   const appendState = getAppendState(db, filePath);
-  if (!options.forceFull && matchesEmptyIngestState(appendState, stat)) {
+  // The empty-source cache is only safe before a path has an identity. Once a
+  // conversation exists, even identical mtime/size metadata can describe a
+  // replacement, so native identity parsing must remain authoritative.
+  if (!options.forceFull && !existing && matchesEmptyIngestState(appendState, stat)) {
     return;
   }
   if (appendState?.empty_source_mtime !== null && appendState?.empty_source_mtime !== undefined) {
     clearEmptyIngestState(db, filePath);
-  }
-
-  // Quick mtime check first — if mtime hasn't changed, skip the expensive hash
-  if (existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100) {
-    if (parser.source === "codex") {
-      await syncCodexIndexedTitle(filePath, existing);
-    }
-    if (isClaudeWorkflowTranscriptPath(filePath)) {
-      await ingestWorkflowArtifact(filePath);
-    }
-    return;
   }
 
   let alreadyIngestedCount = 0;
@@ -1948,13 +1979,23 @@ async function ingestFile(
     nextPartialLine: string;
     tailHash: string;
   } | null = null;
-  let forceFullReingest = options.forceFull === true;
+  const sameMtimeAsExisting = Boolean(
+    existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100,
+  );
+  // Same-mtime writes are common on coarse filesystems and can still replace
+  // or truncate a path. They must parse the complete provider identity before
+  // any unchanged/append shortcut is considered.
+  let forceFullReingest = options.forceFull === true || sameMtimeAsExisting;
+  let sameMtimeNativeCodexSessionId: string | null | undefined;
 
   // Parse the file
   let result: ParseResult | null;
   try {
+    if (sameMtimeAsExisting && parser.source === "codex") {
+      sameMtimeNativeCodexSessionId = await loadCodexNativeSessionId(filePath);
+    }
     if (
-      !options.forceFull
+      !forceFullReingest
       && existing
       && alreadyIngestedCount > 0
       && parser.parseIncremental
@@ -1966,6 +2007,7 @@ async function ingestFile(
           filePath,
           raw: append.raw,
           baseBlockCount: alreadyIngestedCount,
+          baseRecordCount: appendState?.line_count ?? 0,
           sourceHash: append.sourceHash,
           sourceMtime: stat.mtimeMs,
         });
@@ -2050,6 +2092,21 @@ async function ingestFile(
     return;
   }
 
+  if (
+    result
+    && sameMtimeAsExisting
+    && parser.source === "codex"
+    && (!sameMtimeNativeCodexSessionId
+      || result.conversation.session_id !== sameMtimeNativeCodexSessionId)
+  ) {
+    new ConversationSourceStore(db).recordUnavailable(
+      filePath,
+      "same-mtime source lacked an exact native session identity",
+    );
+    logger("warn", "ingestion_same_mtime_identity_unverified", { file: filePath });
+    return;
+  }
+
   // Skip empty sessions (parser returned null = no meaningful content)
   // Bug: d51fbc8 — empty system sessions were creating "Untitled" entries
   const isProviderTitleOnlyAppend = Boolean(
@@ -2061,23 +2118,58 @@ async function ingestFile(
   );
   if (!result || (result.blocks.length === 0 && !isProviderTitleOnlyAppend)) {
     logger("debug", "ingestion_skip_empty", { file: filePath, source: parser.source });
-    // If this file was previously ingested, remove the stale entry
+    // An empty parse is not evidence that a previously ingested identity ceased
+    // to exist. Providers can expose a zero-byte or partially rewritten file
+    // while replacing it. Preserve every normalized body and durable source
+    // record, and mark the provider source unavailable so readers use fallback.
     if (existing) {
-      const convId = (db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(filePath) as { id: string } | undefined)?.id;
-      if (convId) {
-        const isStarred = db.prepare("SELECT starred FROM conversations WHERE id = ?").get(convId) as { starred: number } | undefined;
-        if (!isStarred || isStarred.starred === 0) {
-          db.transaction(() => {
-            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(convId);
-            db.prepare("DELETE FROM conversations WHERE id = ?").run(convId);
-            deleteAppendState(db, filePath);
-          })();
-          logger("info", "ingestion_removed_empty", { file: filePath, id: convId });
-        }
-      }
+      new ConversationSourceStore(db).recordUnavailable(
+        filePath,
+        "source parsed as empty or temporarily truncated",
+      );
+      logger("warn", "ingestion_source_temporarily_unavailable", {
+        file: filePath,
+        conversation_ids: existingRows.map((row) => row.id),
+      });
     }
     writeEmptyIngestState(db, filePath, stat);
     return;
+  }
+
+  // A path is only an alias. If it has been reused for a different native
+  // session, preserve the old conversation and create (or update) the row that
+  // matches the parsed provider identity. Never choose an identity merely
+  // because it currently occupies this path.
+  if (
+    existing
+    && (existing.source !== result.conversation.source
+      || existing.session_id !== result.conversation.session_id)
+  ) {
+    new ConversationSourceStore(db).recordUnavailable(
+      filePath,
+      "source path reused by a distinct conversation identity",
+    );
+    const identityMatch = existingRows.find((row) =>
+      row.source === result.conversation.source
+      && row.session_id === result.conversation.session_id
+    );
+    existing = identityMatch;
+    ingestMode = "full";
+    forceFullReingest = true;
+    if (existing) {
+      const actualCount = existing.actual_count ?? 0;
+      alreadyIngestedCount = Math.max(actualCount, existing.block_count ?? 0);
+    } else {
+      alreadyIngestedCount = 0;
+    }
+    logger("info", "ingestion_source_path_reused", {
+      file: filePath,
+      parsed_session_id: result.conversation.session_id,
+      preserved_conversation_ids: existingRows
+        .filter((row) => row.id !== existing?.id)
+        .map((row) => row.id),
+      matched_conversation_id: existing?.id ?? null,
+    });
   }
 
   const subagentPath = parseClaudeSubagentPath(filePath);
@@ -2122,7 +2214,7 @@ async function ingestFile(
         is_sidechain = ?,
         agent_id = ?,
         updated_at = datetime('now')
-      WHERE source_path = ?
+      WHERE id = ?
     `).run(
       stat.mtimeMs,
       result.conversation.title,
@@ -2134,7 +2226,7 @@ async function ingestFile(
       parentConversationId,
       isSidechain ? 1 : 0,
       agentId,
-      filePath,
+      existing.id,
     );
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
@@ -2146,6 +2238,7 @@ async function ingestFile(
       block_count: result.conversation.block_count,
     });
     await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
+    await recordDurableConversationSource(db, existing.id, result, filePath);
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
@@ -2243,6 +2336,7 @@ async function ingestFile(
       appendInfo?.nextPartialLine,
       appendInfo?.tailHash,
     );
+    await recordDurableConversationSource(db, conversationId, result, filePath);
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
@@ -2347,16 +2441,11 @@ async function ingestFile(
   // for delta append, insert only new blocks and update conversation metadata.
   const upsert = db.transaction(() => {
     if (!isDeltaAppend) {
-      const metadata = preservedConversationMetadata(db, filePath, conversationId);
+      const metadata = preservedConversationMetadata(db, conversationId);
       // Full re-ingest path: delete existing rows and re-insert from scratch
       if (!isNew) {
-        const staleConversationIds = db.prepare(
-          "SELECT id FROM conversations WHERE source_path = ?"
-        ).all(filePath) as Array<{ id: string }>;
-        for (const row of staleConversationIds) {
-          db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-          db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
-        }
+        db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
+          .run(conversationId);
       }
 
       // Insert conversation
@@ -2374,6 +2463,18 @@ async function ingestFile(
           ?, ?, ?, ?, ?, ?,
           datetime('now'), datetime('now')
         )
+        ON CONFLICT(id) DO UPDATE SET
+          source = excluded.source, source_path = excluded.source_path,
+          source_hash = excluded.source_hash, source_mtime = excluded.source_mtime,
+          title = excluded.title, summary = excluded.summary,
+          started_at = excluded.started_at, ended_at = excluded.ended_at,
+          block_count = excluded.block_count, session_id = excluded.session_id,
+          project_path = excluded.project_path, cwd = excluded.cwd,
+          branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
+          starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
+          parent_conversation_id = excluded.parent_conversation_id,
+          is_sidechain = excluded.is_sidechain, agent_id = excluded.agent_id,
+          updated_at = excluded.updated_at
       `).run(
         conversationId,
         result.conversation.source,
@@ -2535,15 +2636,7 @@ async function ingestFile(
         );
         try {
           const recoveryUpsert = db.transaction(() => {
-            const metadata = preservedConversationMetadata(db, filePath, conversationId);
-            // Purge all stale rows for this source_path, then do a clean full insert
-            const staleIds = db.prepare(
-              "SELECT id FROM conversations WHERE source_path = ?"
-            ).all(filePath) as Array<{ id: string }>;
-            for (const row of staleIds) {
-              db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-              db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
-            }
+            const metadata = preservedConversationMetadata(db, conversationId);
             // Also purge any blocks still attached to this conversation id
             // (orphaned rows from a prior failed transaction that the
             // FK-disabled DB did not cascade). Scoped to this conversation —
@@ -2583,6 +2676,18 @@ async function ingestFile(
                 ?, ?, ?, ?, ?, ?,
                 datetime('now'), datetime('now')
               )
+              ON CONFLICT(id) DO UPDATE SET
+                source = excluded.source, source_path = excluded.source_path,
+                source_hash = excluded.source_hash, source_mtime = excluded.source_mtime,
+                title = excluded.title, summary = excluded.summary,
+                started_at = excluded.started_at, ended_at = excluded.ended_at,
+                block_count = excluded.block_count, session_id = excluded.session_id,
+                project_path = excluded.project_path, cwd = excluded.cwd,
+                branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
+                starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
+                parent_conversation_id = excluded.parent_conversation_id,
+                is_sidechain = excluded.is_sidechain, agent_id = excluded.agent_id,
+                updated_at = excluded.updated_at
             `).run(
               conversationId,
               result.conversation.source,
@@ -2664,6 +2769,7 @@ async function ingestFile(
     appendInfo?.nextPartialLine,
     appendInfo?.tailHash,
   );
+  await recordDurableConversationSource(db, conversationId, result, filePath);
 
   // Bug: e01653d — update last_active on the matching session so the
   // Sessions tab shows real user activity time rather than updated_at.
@@ -2712,6 +2818,32 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+async function recordDurableConversationSource(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  result: ParseResult,
+  filePath: string,
+): Promise<void> {
+  try {
+    await new ConversationSourceStore(db).recordConversation({
+      conversationId,
+      provider: result.conversation.source,
+      nativeSessionId: result.conversation.session_id,
+      filePath,
+      expectedContentHash: result.conversation.source_hash,
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+  } catch (error) {
+    // The legacy body remains the safe default. A failed source snapshot must
+    // never turn a successful ingest into data loss or plausible unverified text.
+    logger("warn", "conversation_source_snapshot_failed", {
+      file: filePath,
+      conversation_id: conversationId,
+      error: String(error),
+    });
+  }
 }
 
 /**
@@ -2864,8 +2996,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     .prepare("SELECT source_path, source_mtime FROM conversations")
     .all() as Array<{ source_path: string; source_mtime: number }>;
   const dbPaths = new Map<string, number>();
+  const conversationPaths = new Set<string>();
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
+    conversationPaths.add(row.source_path);
   }
 
   // Follow `codex archive` / `codex unarchive` relocations before scanning, so
@@ -2873,10 +3007,19 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   // of being ingested as a new row and then deleted as a missing source.
   // Bug: c927726.
   for (const [sourcePath, sourceMtime] of Array.from(dbPaths)) {
-    const relocated = relocateMovedCodexSource(db, sourcePath);
+    const relocated = await relocateMovedCodexSource(db, sourcePath);
     if (!relocated) continue;
-    dbPaths.delete(sourcePath);
+    const remaining = db.prepare(
+      "SELECT MAX(source_mtime) AS source_mtime FROM conversations WHERE source_path = ?",
+    ).get(sourcePath) as { source_mtime: number | null };
+    if (remaining.source_mtime === null) {
+      dbPaths.delete(sourcePath);
+      conversationPaths.delete(sourcePath);
+    } else {
+      dbPaths.set(sourcePath, remaining.source_mtime);
+    }
     dbPaths.set(relocated, sourceMtime);
+    conversationPaths.add(relocated);
   }
 
   const workflowRows = db
@@ -2927,12 +3070,17 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         const emptyState = emptyPaths.get(filePath);
 
         if (
-          emptyState?.empty_source_mtime === stat.mtimeMs
+          !conversationPaths.has(filePath)
+          && emptyState?.empty_source_mtime === stat.mtimeMs
           && emptyState.empty_source_size === stat.size
         ) {
           continue;
         }
-        if (dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100) {
+        if (
+          conversationPaths.has(filePath)
+          || dbMtime === undefined
+          || Math.abs(dbMtime - stat.mtimeMs) >= 100
+        ) {
           // New or modified file — queue for ingestion
           await ingestChanged(filePath);
         }
@@ -2947,30 +3095,16 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     !knownPaths.has(sourcePath)
   );
   if (missingPaths.length > 0) {
-    const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
-    const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
-    const findConversation = db.prepare(
-      "SELECT id, starred, tags, notes FROM conversations WHERE source_path = ?"
-    );
-    let removed = 0;
     // A rollout archived while this reconcile was scanning is a move, not a
-    // deletion; relocate it (outside the delete transaction) before cleanup.
-    const deletablePaths = missingPaths.filter(
-      (sourcePath) => !relocateMovedCodexSource(db, sourcePath),
-    );
-    const cleanupMissing = db.transaction(() => {
-      for (const sourcePath of deletablePaths) {
-        const row = findConversation.get(sourcePath) as
-          { id: string; starred: number; tags: string; notes: string | null } | undefined;
-        if (!row || row.starred || row.tags !== "[]" || row.notes) continue;
-        deleteBlocks.run(row.id);
-        deleteConversation.run(row.id);
-        removed += 1;
+    // deletion; relocate it before recording missing-source tombstones.
+    let unavailableCount = 0;
+    for (const sourcePath of missingPaths) {
+      if (!(await removeConversationForMissingSource(db, sourcePath))) {
+        unavailableCount += 1;
       }
-    });
-    cleanupMissing();
-    if (removed > 0) {
-      logger("info", "ingestion_cleanup_missing_sources", { removed });
+    }
+    if (unavailableCount > 0) {
+      logger("info", "ingestion_sources_unavailable", { count: unavailableCount });
     }
   }
 
@@ -3012,9 +3146,10 @@ export async function reconcileForWorker(repairLegacyOrphans = false): Promise<v
 }
 
 /**
- * One-time repair for databases produced before conversation/block ownership
- * was maintained transactionally. The correlated lookup uses idx_blocks_conv
- * and never scans the complete block index during ordinary reconciliation.
+ * One-time audit for databases produced before conversation/block ownership
+ * was maintained transactionally. A blockless legacy row can still carry
+ * relationships, annotations, or source history, so ingestion records the
+ * observation but never treats absence of normalized blocks as deletion proof.
  */
 function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
   const marker = db.prepare("SELECT value FROM meta WHERE key = ?")
@@ -3032,19 +3167,13 @@ function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
           LIMIT 1
         ))
     `).all() as Array<{ id: string }>;
-    const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
-    const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
-    for (const row of orphanRows) {
-      deleteBlocks.run(row.id);
-      deleteConversation.run(row.id);
-    }
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("ingestion_orphan_repair_v1", String(Date.now()));
     return orphanRows.length;
   });
-  const removed = repair();
-  if (removed > 0) {
-    logger("info", "ingestion_legacy_orphan_repair", { removed });
+  const observed = repair();
+  if (observed > 0) {
+    logger("info", "ingestion_legacy_orphan_audit", { observed, removed: 0 });
   }
 }
 

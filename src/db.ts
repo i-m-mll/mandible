@@ -90,10 +90,18 @@ export const LEGACY_PRODUCTION_DB_PATH = path.join(
   "mandible.db",
 );
 
+/** Dedicated retained operational telemetry database (issue cb49400). */
+export const PRODUCTION_OPERATIONAL_LOG_DB_PATH = path.join(
+  realSystemHomeDir(),
+  ".mandible",
+  "operational-logs.db",
+);
+
 /** Every path that must never be opened under the test runner. */
 export const PRODUCTION_DB_PATHS: readonly string[] = Object.freeze([
   PRODUCTION_DB_PATH,
   LEGACY_PRODUCTION_DB_PATH,
+  PRODUCTION_OPERATIONAL_LOG_DB_PATH,
 ]);
 
 // Issue 07edc0d — structural isolation guard. On 2026-07-23 an unmerged

@@ -9,7 +9,76 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 139;
+export const BASELINE_SCHEMA_VERSION = 140;
+
+const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE conversation_sources (
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL CHECK(provider IN ('claude_code','codex','gemini')),
+    native_session_id TEXT NOT NULL, parser_format TEXT NOT NULL, parser_version TEXT NOT NULL,
+    normalization_version TEXT NOT NULL, redaction_epoch INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+    availability TEXT NOT NULL DEFAULT 'unchecked' CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
+    custody_state TEXT NOT NULL DEFAULT 'provider' CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
+    current_version_id TEXT, unavailable_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, provider)
+  )`,
+  `CREATE INDEX idx_conversation_sources_native_session ON conversation_sources(provider, native_session_id)`,
+  `CREATE INDEX idx_conversation_sources_availability ON conversation_sources(availability, custody_state)`,
+  `CREATE TABLE conversation_source_aliases (
+    id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES conversation_sources(id) ON DELETE CASCADE,
+    root_kind TEXT NOT NULL CHECK(root_kind IN ('provider','managed_custody')), root_path TEXT NOT NULL,
+    relative_path TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
+    alias_kind TEXT NOT NULL CHECK(alias_kind IN ('active','archive','provider','managed')),
+    availability TEXT NOT NULL DEFAULT 'unchecked' CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
+    first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX idx_conversation_source_aliases_source ON conversation_source_aliases(source_id, availability, last_seen_at DESC)`,
+  `CREATE TABLE conversation_source_versions (
+    id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES conversation_sources(id) ON DELETE CASCADE,
+    content_sha256 TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length >= 0), file_mtime_ms REAL,
+    generation TEXT NOT NULL CHECK(generation IN ('sealed_sha256','legacy_hash')),
+    parser_format TEXT NOT NULL, parser_version TEXT NOT NULL, normalization_version TEXT NOT NULL,
+    redaction_epoch INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+    availability TEXT NOT NULL DEFAULT 'unchecked' CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
+    custody_state TEXT NOT NULL DEFAULT 'provider' CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
+    custody_ref TEXT, capture_consistency TEXT,
+    verification_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(verification_json)), created_at INTEGER NOT NULL,
+    UNIQUE(source_id, content_sha256)
+  )`,
+  `CREATE INDEX idx_conversation_source_versions_source ON conversation_source_versions(source_id, created_at DESC)`,
+  `CREATE INDEX idx_conversation_source_versions_custody ON conversation_source_versions(custody_state, availability)`,
+  `CREATE TABLE conversation_normalization_checkpoints (
+    id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL REFERENCES conversation_source_versions(id) ON DELETE CASCADE,
+    record_ordinal INTEGER NOT NULL, prefix_offset INTEGER NOT NULL CHECK(prefix_offset >= 0),
+    parser_format TEXT NOT NULL, parser_version TEXT NOT NULL, normalization_version TEXT NOT NULL,
+    redaction_epoch INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+    state_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(state_json)), created_at INTEGER NOT NULL,
+    UNIQUE(source_version_id, record_ordinal, parser_version, normalization_version, redaction_epoch)
+  )`,
+  `CREATE TABLE conversation_structural_blocks (
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    source_version_id TEXT REFERENCES conversation_source_versions(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','retired')), provider_key TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0), type TEXT NOT NULL, role TEXT NOT NULL, timestamp TEXT,
+    parent_block_id TEXT REFERENCES conversation_structural_blocks(id) ON DELETE SET NULL,
+    dag_uuid TEXT, dag_parent_uuid TEXT,
+    record_offset INTEGER CHECK(record_offset IS NULL OR record_offset >= 0),
+    record_length INTEGER CHECK(record_length IS NULL OR record_length >= 0), record_hash TEXT, record_ordinal INTEGER,
+    sub_block_ordinal INTEGER NOT NULL DEFAULT 0 CHECK(sub_block_ordinal >= 0),
+    normalization_checkpoint_id TEXT REFERENCES conversation_normalization_checkpoints(id) ON DELETE SET NULL,
+    parser_format TEXT NOT NULL, parser_version TEXT NOT NULL, normalization_version TEXT NOT NULL,
+    redaction_epoch INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, provider_key)
+  )`,
+  `CREATE UNIQUE INDEX idx_conversation_structural_blocks_current_position ON conversation_structural_blocks(conversation_id, position) WHERE status = 'current'`,
+  `CREATE INDEX idx_conversation_structural_blocks_version ON conversation_structural_blocks(source_version_id, record_offset)`,
+  `CREATE INDEX idx_conversation_structural_blocks_parent ON conversation_structural_blocks(parent_block_id) WHERE parent_block_id IS NOT NULL`,
+  `CREATE TABLE conversation_block_aliases (
+    alias TEXT PRIMARY KEY, block_id TEXT NOT NULL REFERENCES conversation_structural_blocks(id) ON DELETE CASCADE,
+    alias_kind TEXT NOT NULL CHECK(alias_kind IN ('legacy','provider','external')), created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX idx_conversation_block_aliases_block ON conversation_block_aliases(block_id)`,
+];
 
 export const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests (
         id                   TEXT PRIMARY KEY,
@@ -1057,6 +1126,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
       )`,
   `CREATE INDEX idx_feedback_comments_item
         ON feedback_comments(item_id, created_at)`,
+  ...CONVERSATION_SOURCE_SCHEMA_SQL,
 ];
 
 const COMPLETED_POST_MIGRATIONS: readonly string[] = [

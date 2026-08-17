@@ -13,6 +13,7 @@ import {
   runDaemonLogMaintenance,
 } from "../src/daemon-log.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { openOperationalLogStore } from "../src/operational-log-db.js";
 import { registerSystemRoutes } from "../src/routes/system.js";
 import { Router, createServer, type RouteHandler, type RouteOptions, type RouteRegistrar } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
@@ -366,6 +367,63 @@ describe("request logging", () => {
 });
 
 describe("system log route daemon_log source", () => {
+  it("preserves filters, facets, and cursor pagination while both stores coexist", async () => {
+    const canonicalPath = path.join(tempDir, "mandible.db");
+    const opened = openOperationalLogStore(canonicalPath);
+    if (!opened) throw new Error("expected operational log store");
+    try {
+      const insertLegacy = db.prepare(
+        `INSERT INTO daemon_log
+         (id, ts, level, event, subsystem, fields_json, issue_id)
+         VALUES (?, ?, ?, ?, ?, '{}', ?)`,
+      );
+      const insertPrimary = opened.db.prepare(
+        `INSERT INTO daemon_log
+         (id, ts, level, event, subsystem, fields_json, issue_id)
+         VALUES (?, ?, ?, ?, ?, '{}', ?)`,
+      );
+      insertLegacy.run("a", 1_000, "warn", "legacy-a", "auth", "issue-1");
+      insertLegacy.run("b", 2_000, "error", "duplicate-b", "auth", "issue-1");
+      insertPrimary.run("b", 2_000, "error", "duplicate-b", "auth", "issue-1");
+      insertPrimary.run("c", 3_000, "warn", "primary-c", "auth", "issue-1");
+
+      const routes = new TestRoutes();
+      registerSystemRoutes(routes, { getRepos: () => [] }, opened.db);
+      const newest = createResponse();
+      await routes.handler("GET", "/api/system/logs")(request({
+        levels: "warn,error",
+        subsystem: "auth",
+        related: "issue:issue-1",
+        limit: "2",
+      }), newest);
+      const payload = newest.payload as {
+        total: number;
+        entries: Array<{ id: string }>;
+        older_cursor: string;
+        facets: { levels: Array<{ value: string; count: number }> };
+      };
+      expect(payload.total).toBe(3);
+      expect(payload.entries.map((entry) => entry.id)).toEqual(["b", "c"]);
+      expect(payload.facets.levels).toEqual([
+        { value: "warn", count: 2 },
+        { value: "error", count: 1 },
+      ]);
+
+      insertPrimary.run("d", 4_000, "warn", "new-d", "auth", "issue-1");
+      const older = createResponse();
+      await routes.handler("GET", "/api/system/logs")(request({
+        levels: "warn,error",
+        subsystem: "auth",
+        related: "issue:issue-1",
+        limit: "2",
+        before: payload.older_cursor,
+      }), older);
+      expect((older.payload as { entries: Array<{ id: string }> }).entries.map((entry) => entry.id)).toEqual(["a"]);
+    } finally {
+      opened.close();
+    }
+  });
+
   it("pages older rows with a stable cursor when newer rows arrive", async () => {
     const insert = db.prepare(
       `INSERT INTO daemon_log

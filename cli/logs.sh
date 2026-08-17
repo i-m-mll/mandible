@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mandible logs: inspect provider-native source logs.
+# mandible logs: inspect provider-native source logs and retained daemon telemetry.
 
 set -euo pipefail
 
@@ -14,13 +14,21 @@ Usage:
   mandible logs missing [--provider codex|claude|gemini|all] [--json]
   mandible logs orphans [--provider codex|claude|gemini|all] [--json]
   mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
+  mandible logs daemon copy|reconcile|verify|reclaim-plan|export [options]
 
 Filters for --parse: --role ROLE --type TYPE --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N --offset N
 
 Raw provider source logs are the veridical transcript source. These commands do
-not import, reconcile, or mutate the Mandible database.
+not import, reconcile, or mutate the Mandible database. The daemon subcommands
+operate only on the dedicated operational-log lifecycle; reclaim-plan is always
+read-only and copy is bounded and resumable.
 EOF
 }
+
+if [[ "${1:-}" == "daemon" ]]; then
+  shift
+  exec node "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
+fi
 
 logs_source() {
   case "$1" in

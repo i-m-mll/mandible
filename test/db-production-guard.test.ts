@@ -8,6 +8,7 @@ import {
   LEGACY_PRODUCTION_DB_PATH,
   PRODUCTION_DB_PATH,
   PRODUCTION_DB_PATHS,
+  PRODUCTION_OPERATIONAL_LOG_DB_PATH,
   assertNotProductionDbUnderTest,
   openDb,
   resolvesToAnyProductionDbPath,
@@ -47,7 +48,11 @@ describe("production database isolation guard (issue 07edc0d)", () => {
   it("refuses BOTH the durable and the pre-split production paths", () => {
     expect(PRODUCTION_DB_PATH).toMatch(/[/\\]\.mandible[/\\]mandible\.db$/);
     expect(LEGACY_PRODUCTION_DB_PATH).toMatch(/[/\\]\.cache[/\\]mandible[/\\]mandible\.db$/);
-    expect(PRODUCTION_DB_PATHS).toEqual([PRODUCTION_DB_PATH, LEGACY_PRODUCTION_DB_PATH]);
+    expect(PRODUCTION_DB_PATHS).toEqual([
+      PRODUCTION_DB_PATH,
+      LEGACY_PRODUCTION_DB_PATH,
+      PRODUCTION_OPERATIONAL_LOG_DB_PATH,
+    ]);
     for (const guarded of PRODUCTION_DB_PATHS) {
       expect(() => assertNotProductionDbUnderTest(guarded)).toThrow(
         /production Mandible database/i,

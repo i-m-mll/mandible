@@ -12,13 +12,17 @@ import {
 } from "../client-auth/authz.js";
 import {
   backfillCredentialLeakScan,
+  maskUnverifiedCandidates,
   remediationFor,
 } from "../credential-leak-scan.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
+import { getConversationSearchCache } from "../conversations/search-cache.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
+import { ConversationSourceReader } from "../conversations/source-reader.js";
+import type { SourceBackedConversationBlock } from "../conversations/source-types.js";
 
 // --- Row mapping helpers ---
 
@@ -103,6 +107,19 @@ function mapConversation(row: ConversationRow, sessionManager?: SessionManager) 
   };
 }
 
+function maskSourceBackedConversationRow(row: ConversationRow): ConversationRow {
+  return {
+    ...row,
+    title: maskUnverifiedCandidates(row.title).text,
+    summary: row.summary == null ? null : maskUnverifiedCandidates(row.summary).text,
+    notes: row.notes == null ? null : maskUnverifiedCandidates(row.notes).text,
+  };
+}
+
+function mapSearchConversation(row: ConversationRow, sessionManager?: SessionManager) {
+  return mapConversation(maskSourceBackedConversationRow(row), sessionManager);
+}
+
 function canonicalizeTags(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.some((tag) => typeof tag !== "string")) {
     throw new Error(`${field} must be an array of strings`);
@@ -137,6 +154,21 @@ function mapBlock(row: BlockRow) {
     dag_uuid: row.dag_uuid ?? null,
     dag_parent_uuid: row.dag_parent_uuid ?? null,
   };
+}
+
+function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
+  return "compressed" in row ? mapBlock(row) : row;
+}
+
+async function readAllBlocks(
+  reader: ConversationSourceReader,
+  conversationId: string,
+): Promise<{ blocks: SourceBackedConversationBlock[]; bodySource: "source" | "legacy" }> {
+  const result = await reader.readAll(conversationId);
+  if (result.status !== "source" && result.status !== "legacy") {
+    return { blocks: [], bodySource: "legacy" };
+  }
+  return { blocks: result.value, bodySource: result.status };
 }
 
 function parseSinceQuery(value: string | undefined): string | null {
@@ -270,6 +302,7 @@ function exportToJson(
 
 export function registerConversationRoutes(server: RouteRegistrar, sessionManager?: SessionManager): void {
   const db = getDb();
+  const sourceReader = new ConversationSourceReader(db);
 
   // --- Static routes MUST be registered before parameterized :id routes ---
 
@@ -399,7 +432,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   //   ?exclude_subagents=true — hide conversations that have a parent (sub-agents)
   //   ?group=true — same as exclude_subagents but also includes children_count on parents
   //   ?parent_id=<id> — list only children of a specific parent conversation
-  server.get("/api/conversations", (req, res) => {
+  server.get("/api/conversations", async (req, res) => {
     const query = req.query ?? {};
     const page = Math.max(1, parseInt(query.page || "1", 10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(query.limit || "50", 10) || 50));
@@ -433,10 +466,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       params.push(query.tag);
     }
 
-    // Search in title
-    if (query.search) {
+    const searchNeedle = (query.search ?? "").trim();
+    const fullTextSearch = query.full_text === "true" || query.full_text === "1";
+
+    // Title mode remains the cheap metadata filter. Full mode resolves exact
+    // source-verified content matches below, through the disposable cache.
+    if (searchNeedle && !fullTextSearch) {
       conditions.push("c.title LIKE ?");
-      params.push(`%${query.search}%`);
+      params.push(`%${searchNeedle}%`);
     }
 
     const minBlocks = parseInt(query.min_blocks || "", 10);
@@ -489,6 +526,40 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const allowedSorts = new Set(["started_at", "ended_at", "title", "block_count", "created_at", "updated_at", "source"]);
     const safeSortField = allowedSorts.has(sortField) ? sortField : "started_at";
 
+    if (searchNeedle && fullTextSearch) {
+      const eligible = db.prepare(
+        `SELECT c.id FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder}`,
+      ).all(...params) as Array<{ id: string }>;
+      const searched = await getConversationSearchCache(db).search({
+        conversationIds: eligible.map((row) => row.id),
+        needle: searchNeedle,
+        limit: eligible.length,
+      });
+      const ids = searched.matches.map((match) => match.conversation_id);
+      const pageIds = ids.slice(offset, offset + limit);
+      const selectCols = groupMode
+        ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ch.parent_conversation_id = c.id) AS children_count`
+        : `c.*`;
+      const rows = pageIds.length === 0
+        ? []
+        : db.prepare(
+          `SELECT ${selectCols} FROM conversations c
+           WHERE c.id IN (${pageIds.map(() => "?").join(",")})
+           ORDER BY c.${safeSortField} ${sortOrder}`,
+        ).all(...pageIds) as ConversationRow[];
+      const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
+      rows.sort((left, right) => (pageOrder.get(left.id) ?? 0) - (pageOrder.get(right.id) ?? 0));
+      sendJson(res, 200, {
+        conversations: rows.map((row) => mapSearchConversation(row, sessionManager)),
+        total: ids.length,
+        page,
+        limit,
+        pages: Math.ceil(ids.length / limit),
+        search_metrics: searched.metrics,
+      });
+      return;
+    }
+
     // Count total
     const countRow = db
       .prepare(`SELECT COUNT(*) as total FROM conversations c ${where}`)
@@ -515,7 +586,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   }, { fileRpc: "allow" });
 
   // GET /api/conversations/search — Search the normalized conversation index.
-  server.get("/api/conversations/search", (req, res) => {
+  server.get("/api/conversations/search", async (req, res) => {
     const query = req.query ?? {};
     const needle = (query.q || query.query || "").trim().toLowerCase();
     if (!needle) {
@@ -547,8 +618,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       .all(...convParams) as ConversationRow[];
 
     const results: Array<{
-      conversation: ReturnType<typeof mapConversation>;
-      block: ReturnType<typeof mapBlock> | null;
+      conversation: ReturnType<typeof mapSearchConversation>;
+      block: Omit<ReturnType<typeof mapBlock>, "content"> & { content: string } | null;
       snippet: string;
     }> = [];
 
@@ -561,44 +632,53 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return `${start > 0 ? "..." : ""}${snippet}${end < text.length ? "..." : ""}`;
     };
 
-    for (const conversation of conversations) {
-      if (results.length >= limit) break;
-      if (titleOnly) {
-        const snippet = makeSnippet(conversation.title || "");
+    if (titleOnly) {
+      for (const conversation of conversations) {
+        if (results.length >= limit) break;
+        const snippet = makeSnippet(maskUnverifiedCandidates(conversation.title || "").text);
         if (snippet) {
-          results.push({ conversation: mapConversation(conversation, sessionManager), block: null, snippet });
-        }
-        continue;
-      }
-
-      const blockConditions = ["conversation_id = ?"];
-      const blockParams: unknown[] = [conversation.id];
-      if (blockType) {
-        blockConditions.push("type = ?");
-        blockParams.push(blockType);
-      }
-      const blocks = db
-        .prepare(
-          `SELECT * FROM conversation_blocks WHERE ${blockConditions.join(" AND ")} ORDER BY position ASC`,
-        )
-        .all(...blockParams) as BlockRow[];
-
-      for (const block of blocks) {
-        const mapped = mapBlock(block);
-        const snippet = makeSnippet(mapped.content);
-        if (snippet) {
-          results.push({ conversation: mapConversation(conversation, sessionManager), block: mapped, snippet });
-          break;
+          results.push({ conversation: mapSearchConversation(conversation, sessionManager), block: null, snippet });
         }
       }
+      sendJson(res, 200, { results, total: results.length, limit });
+      return;
     }
 
-    sendJson(res, 200, { results, total: results.length, limit });
+    const searched = await getConversationSearchCache(db).search({
+      conversationIds: conversations.map((conversation) => conversation.id),
+      needle,
+      blockType,
+      limit,
+    });
+    const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+    for (const match of searched.matches) {
+      const conversation = conversationsById.get(match.conversation_id);
+      if (!conversation) continue;
+      const read = await sourceReader.readBlock(match.block_id);
+      if (read.status !== "source" && read.status !== "legacy") continue;
+      const block = read.value;
+      results.push({
+        conversation: mapSearchConversation(conversation, sessionManager),
+        // Search responses carry only structural block metadata plus the
+        // verified masked snippet. Returning the complete durable body here
+        // would duplicate the detail route and could bypass the cache's
+        // fail-closed masking boundary for legacy fixtures.
+        block: { ...block, content: "" },
+        snippet: match.snippet,
+      });
+    }
+
+    sendJson(res, 200, {
+      results,
+      total: results.length,
+      limit,
+      search_metrics: searched.metrics,
+    });
   }, { fileRpc: "allow" });
 
   // GET /api/conversations/:id — Full conversation with blocks + children summary
   // Bug: 40f0298 — optional ?leaf=<dag_uuid> param for DAG path resolution
-  server.get("/api/conversations/:id", (req, res) => {
+  server.get("/api/conversations/:id", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -615,8 +695,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
     const query = req.query ?? {};
     const leafDagUuid = query.leaf || null;
+    const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
 
-    let blocks: BlockRow[];
+    let blocks: Array<BlockRow | SourceBackedConversationBlock>;
+    let bodySource: "source" | "legacy" = "legacy";
 
     if (leafDagUuid) {
       // DAG path resolution: walk backward from leaf to root via dag_parent_uuid
@@ -660,6 +742,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       if (blocks.length === 0) {
         blocks = allBlocks;
       }
+    } else if (useSourceReader) {
+      const sourceBlocks = await readAllBlocks(sourceReader, id);
+      blocks = sourceBlocks.blocks;
+      bodySource = sourceBlocks.bodySource;
     } else {
       blocks = db
         .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
@@ -721,12 +807,15 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
       : undefined;
 
-    const mapped = mapConversation(conv, sessionManager);
+    const mapped = useSourceReader
+      ? mapConversation(maskSourceBackedConversationRow(conv), sessionManager)
+      : mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
 
     sendJson(res, 200, {
       conversation: mapped,
-      blocks: blocks.map(mapBlock),
+      blocks: blocks.map(mapReadableBlock),
+      body_source: bodySource,
       children: childrenWithDuration,
       parent: parent ?? null,
     });
@@ -1013,7 +1102,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   }), { fileRpc: "deny" });
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
-  server.get("/api/conversations/:id/blocks", (req, res) => {
+  server.get("/api/conversations/:id/blocks", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -1038,40 +1127,60 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       ? offsetRaw
       : (page - 1) * limit;
 
-    const conditions: string[] = ["conversation_id = ?"];
-    const params: unknown[] = [id];
-
     // Filter by block type(s)
+    let types: string[] | undefined;
     if (query.type) {
-      const types = query.type.split(",").map((t) => t.trim()).filter(Boolean);
-      if (types.length > 0) {
+      types = query.type.split(",").map((t) => t.trim()).filter(Boolean);
+    }
+    const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
+    if (!useSourceReader) {
+      const params: unknown[] = [id];
+      const conditions = ["conversation_id = ?"];
+      if (types && types.length > 0) {
         conditions.push(`type IN (${types.map(() => "?").join(",")})`);
         params.push(...types);
       }
+      const where = conditions.join(" AND ");
+      const total = (db.prepare(`SELECT COUNT(*) AS total FROM conversation_blocks WHERE ${where}`)
+        .get(...params) as { total: number }).total;
+      const blocks = db.prepare(`
+        SELECT * FROM conversation_blocks WHERE ${where}
+         ORDER BY position ASC LIMIT ? OFFSET ?
+      `).all(...params, limit, offset) as BlockRow[];
+      sendJson(res, 200, {
+        blocks: blocks.map(mapBlock),
+        body_source: "legacy",
+        total,
+        offset,
+        page: Math.floor(offset / limit) + 1,
+        limit,
+        requested_limit: requestedLimit,
+        cap: 500,
+        pages: Math.ceil(total / limit),
+        truncated: offset + blocks.length < total,
+      });
+      return;
     }
 
-    const where = `WHERE ${conditions.join(" AND ")}`;
-
-    const countRow = db
-      .prepare(`SELECT COUNT(*) as total FROM conversation_blocks ${where}`)
-      .get(...params) as { total: number };
-
-    const blocks = db
-      .prepare(
-        `SELECT * FROM conversation_blocks ${where} ORDER BY position ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...params, limit, offset) as BlockRow[];
+    const result = await sourceReader.readPage(id, { offset, limit, types });
+    if (result.status !== "source" && result.status !== "legacy") {
+      sendJson(res, result.status === "not_found" ? 404 : 409, { error: result.reason, status: result.status });
+      return;
+    }
+    const blocks = result.value.blocks;
+    const total = result.value.total;
 
     sendJson(res, 200, {
-      blocks: blocks.map(mapBlock),
-      total: countRow.total,
+      blocks,
+      body_source: result.status,
+      total,
       offset,
       page: Math.floor(offset / limit) + 1,
       limit,
       requested_limit: requestedLimit,
       cap: 500,
-      pages: Math.ceil(countRow.total / limit),
-      truncated: offset + blocks.length < countRow.total,
+      pages: Math.ceil(total / limit),
+      truncated: offset + blocks.length < total,
     });
   }, { fileRpc: "allow" });
 
@@ -1146,7 +1255,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   }, { fileRpc: "allow" });
 
   // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
-  server.post("/api/conversations/:id/export", (req, res) => {
+  server.post("/api/conversations/:id/export", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -1156,6 +1265,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const body = readBody<{
       format?: "markdown" | "mdx" | "json";
       block_types?: string[];
+      source_backed?: boolean;
     }>(req);
 
     const format = body.format || "markdown";
@@ -1172,26 +1282,32 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return;
     }
 
-    const rawBlocks = db
-      .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-      .all(id) as BlockRow[];
-
-    // Bug: e5a945d — decompress before passing to export helpers
-    const blocks = decompressBlocks(rawBlocks);
+    const readable = body.source_backed
+      ? await readAllBlocks(sourceReader, id)
+      : null;
+    const blocks = readable
+      ? readable.blocks.map((block) => ({ ...block, compressed: 0 })) as DecompressedBlock[]
+      : decompressBlocks(db.prepare(
+        "SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC",
+      ).all(id) as BlockRow[]);
 
     const blockTypes = body.block_types ? new Set(body.block_types) : undefined;
 
     let output: string;
     let contentType: string;
 
+    const exportConversation = body.source_backed
+      ? maskSourceBackedConversationRow(conv)
+      : conv;
+
     if (format === "mdx") {
-      output = exportToMdx(conv, blocks, blockTypes);
+      output = exportToMdx(exportConversation, blocks, blockTypes);
       contentType = "text/mdx";
     } else if (format === "json") {
-      output = exportToJson(conv, blocks, blockTypes);
+      output = exportToJson(exportConversation, blocks, blockTypes);
       contentType = "application/json";
     } else {
-      output = exportToMarkdown(conv, blocks, blockTypes);
+      output = exportToMarkdown(exportConversation, blocks, blockTypes);
       contentType = "text/markdown";
     }
 
@@ -1202,6 +1318,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       block_count: blockTypes
         ? blocks.filter((b) => blockTypes.has(b.type)).length
         : blocks.length,
+      body_source: readable?.bodySource ?? "legacy",
     });
   }, { fileRpc: "deny" });
 
