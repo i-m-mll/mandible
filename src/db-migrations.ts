@@ -4537,11 +4537,232 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
         ON auth_hook_alerts(acknowledged_at, created_at DESC)`,
     ],
   },
+  {
+    version: 140,
+    name: "conversation_source_identity",
+    statements: [
+      `CREATE TABLE conversation_sources (
+        id                    TEXT PRIMARY KEY,
+        conversation_id       TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        provider              TEXT NOT NULL CHECK(provider IN ('claude_code','codex','gemini')),
+        native_session_id     TEXT NOT NULL,
+        parser_format         TEXT NOT NULL,
+        parser_version        TEXT NOT NULL,
+        normalization_version TEXT NOT NULL,
+        redaction_epoch       INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+        availability          TEXT NOT NULL DEFAULT 'unchecked'
+          CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
+        custody_state         TEXT NOT NULL DEFAULT 'provider'
+          CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
+        current_version_id    TEXT,
+        unavailable_reason    TEXT,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL,
+        UNIQUE(conversation_id, provider)
+      )`,
+      `CREATE INDEX idx_conversation_sources_native_session
+        ON conversation_sources(provider, native_session_id)`,
+      `CREATE INDEX idx_conversation_sources_availability
+        ON conversation_sources(availability, custody_state)`,
+      `CREATE TABLE conversation_source_aliases (
+        id             TEXT PRIMARY KEY,
+        source_id      TEXT NOT NULL REFERENCES conversation_sources(id) ON DELETE CASCADE,
+        root_kind      TEXT NOT NULL CHECK(root_kind IN ('provider','managed_custody')),
+        root_path      TEXT NOT NULL,
+        relative_path  TEXT NOT NULL,
+        path           TEXT NOT NULL UNIQUE,
+        alias_kind     TEXT NOT NULL CHECK(alias_kind IN ('active','archive','provider','managed')),
+        availability   TEXT NOT NULL DEFAULT 'unchecked'
+          CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
+        first_seen_at  INTEGER NOT NULL,
+        last_seen_at   INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_conversation_source_aliases_source
+        ON conversation_source_aliases(source_id, availability, last_seen_at DESC)`,
+      `CREATE TABLE conversation_source_versions (
+        id                    TEXT PRIMARY KEY,
+        source_id             TEXT NOT NULL REFERENCES conversation_sources(id) ON DELETE CASCADE,
+        content_sha256        TEXT NOT NULL,
+        byte_length           INTEGER NOT NULL CHECK(byte_length >= 0),
+        file_mtime_ms         REAL,
+        generation            TEXT NOT NULL CHECK(generation IN ('sealed_sha256','legacy_hash')),
+        parser_format         TEXT NOT NULL,
+        parser_version        TEXT NOT NULL,
+        normalization_version TEXT NOT NULL,
+        redaction_epoch       INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+        availability          TEXT NOT NULL DEFAULT 'unchecked'
+          CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
+        custody_state         TEXT NOT NULL DEFAULT 'provider'
+          CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
+        custody_ref           TEXT,
+        capture_consistency   TEXT,
+        verification_json     TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(verification_json)),
+        created_at            INTEGER NOT NULL,
+        UNIQUE(source_id, content_sha256)
+      )`,
+      `CREATE INDEX idx_conversation_source_versions_source
+        ON conversation_source_versions(source_id, created_at DESC)`,
+      `CREATE INDEX idx_conversation_source_versions_custody
+        ON conversation_source_versions(custody_state, availability)`,
+      `CREATE TABLE conversation_normalization_checkpoints (
+        id                    TEXT PRIMARY KEY,
+        source_version_id     TEXT NOT NULL REFERENCES conversation_source_versions(id) ON DELETE CASCADE,
+        record_ordinal        INTEGER NOT NULL,
+        prefix_offset         INTEGER NOT NULL CHECK(prefix_offset >= 0),
+        parser_format         TEXT NOT NULL,
+        parser_version        TEXT NOT NULL,
+        normalization_version TEXT NOT NULL,
+        redaction_epoch       INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+        state_json            TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(state_json)),
+        created_at            INTEGER NOT NULL,
+        UNIQUE(source_version_id, record_ordinal, parser_version, normalization_version, redaction_epoch)
+      )`,
+      `CREATE TABLE conversation_structural_blocks (
+        id                          TEXT PRIMARY KEY,
+        conversation_id             TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        source_version_id           TEXT REFERENCES conversation_source_versions(id) ON DELETE SET NULL,
+        status                      TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','retired')),
+        provider_key                TEXT NOT NULL,
+        position                    INTEGER NOT NULL CHECK(position >= 0),
+        type                        TEXT NOT NULL,
+        role                        TEXT NOT NULL,
+        timestamp                   TEXT,
+        parent_block_id             TEXT REFERENCES conversation_structural_blocks(id) ON DELETE SET NULL,
+        dag_uuid                    TEXT,
+        dag_parent_uuid             TEXT,
+        record_offset               INTEGER CHECK(record_offset IS NULL OR record_offset >= 0),
+        record_length               INTEGER CHECK(record_length IS NULL OR record_length >= 0),
+        record_hash                 TEXT,
+        record_ordinal              INTEGER,
+        sub_block_ordinal           INTEGER NOT NULL DEFAULT 0 CHECK(sub_block_ordinal >= 0),
+        normalization_checkpoint_id TEXT REFERENCES conversation_normalization_checkpoints(id) ON DELETE SET NULL,
+        parser_format               TEXT NOT NULL,
+        parser_version              TEXT NOT NULL,
+        normalization_version       TEXT NOT NULL,
+        redaction_epoch             INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
+        created_at                  INTEGER NOT NULL,
+        updated_at                  INTEGER NOT NULL,
+        UNIQUE(conversation_id, provider_key)
+      )`,
+      `CREATE UNIQUE INDEX idx_conversation_structural_blocks_current_position
+        ON conversation_structural_blocks(conversation_id, position) WHERE status = 'current'`,
+      `CREATE INDEX idx_conversation_structural_blocks_version
+        ON conversation_structural_blocks(source_version_id, record_offset)`,
+      `CREATE INDEX idx_conversation_structural_blocks_parent
+        ON conversation_structural_blocks(parent_block_id) WHERE parent_block_id IS NOT NULL`,
+      `CREATE TABLE conversation_block_aliases (
+        alias       TEXT PRIMARY KEY,
+        block_id    TEXT NOT NULL REFERENCES conversation_structural_blocks(id) ON DELETE CASCADE,
+        alias_kind  TEXT NOT NULL CHECK(alias_kind IN ('legacy','provider','external')),
+        created_at  INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_conversation_block_aliases_block
+        ON conversation_block_aliases(block_id)`,
+      `INSERT INTO conversation_sources (
+        id, conversation_id, provider, native_session_id, parser_format, parser_version,
+        normalization_version, redaction_epoch, availability, custody_state,
+        current_version_id, unavailable_reason, created_at, updated_at
+      )
+      SELECT 'legacy-source:' || id, id, source, session_id, 'provider-jsonl', 'legacy',
+             'legacy', 0, 'unchecked', 'provider', 'legacy-version:' || id, NULL,
+             CAST(strftime('%s','now') AS INTEGER) * 1000,
+             CAST(strftime('%s','now') AS INTEGER) * 1000
+        FROM conversations`,
+      `INSERT OR IGNORE INTO conversation_source_aliases (
+        id, source_id, root_kind, root_path, relative_path, path, alias_kind,
+        availability, first_seen_at, last_seen_at
+      )
+      SELECT 'legacy-alias:' || id, 'legacy-source:' || id, 'provider', '', source_path,
+             source_path, 'provider', 'unchecked',
+             CAST(strftime('%s','now') AS INTEGER) * 1000,
+             CAST(strftime('%s','now') AS INTEGER) * 1000
+        FROM conversations`,
+      `INSERT INTO conversation_source_versions (
+        id, source_id, content_sha256, byte_length, file_mtime_ms, generation,
+        parser_format, parser_version, normalization_version, redaction_epoch,
+        availability, custody_state, created_at
+      )
+      SELECT 'legacy-version:' || id, 'legacy-source:' || id, source_hash, 0, source_mtime,
+             'legacy_hash', 'provider-jsonl', 'legacy', 'legacy', 0,
+             'unchecked', 'provider', CAST(strftime('%s','now') AS INTEGER) * 1000
+        FROM conversations`,
+      `INSERT INTO conversation_structural_blocks (
+        id, conversation_id, source_version_id, status, provider_key, position,
+        type, role, timestamp, parent_block_id, dag_uuid, dag_parent_uuid,
+        record_offset, record_length, record_hash, record_ordinal,
+        sub_block_ordinal, normalization_checkpoint_id, parser_format,
+        parser_version, normalization_version, redaction_epoch, created_at, updated_at
+      )
+      SELECT 'legacy-block:' || id, conversation_id, NULL, 'current', 'legacy:' || id,
+             position, type, role, timestamp, NULL, dag_uuid, dag_parent_uuid,
+             NULL, NULL, NULL, NULL, position, NULL, 'provider-jsonl', 'legacy', 'legacy', 0,
+             CAST(strftime('%s','now') AS INTEGER) * 1000,
+             CAST(strftime('%s','now') AS INTEGER) * 1000
+        FROM conversation_blocks`,
+      `INSERT INTO conversation_block_aliases (alias, block_id, alias_kind, created_at)
+      SELECT id, 'legacy-block:' || id, 'legacy', CAST(strftime('%s','now') AS INTEGER) * 1000
+        FROM conversation_blocks`,
+    ],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function verifyConversationSourceV140Schema(db: Db): void {
+  const required: Record<string, readonly string[]> = {
+    conversation_sources: [
+      "id", "conversation_id", "provider", "native_session_id", "parser_format",
+      "parser_version", "normalization_version", "redaction_epoch", "availability",
+      "custody_state", "current_version_id", "unavailable_reason", "created_at", "updated_at",
+    ],
+    conversation_source_aliases: [
+      "id", "source_id", "root_kind", "root_path", "relative_path", "path",
+      "alias_kind", "availability", "first_seen_at", "last_seen_at",
+    ],
+    conversation_source_versions: [
+      "id", "source_id", "content_sha256", "byte_length", "file_mtime_ms", "generation",
+      "parser_format", "parser_version", "normalization_version", "redaction_epoch",
+      "availability", "custody_state", "custody_ref", "capture_consistency",
+      "verification_json", "created_at",
+    ],
+    conversation_normalization_checkpoints: [
+      "id", "source_version_id", "record_ordinal", "prefix_offset", "parser_format",
+      "parser_version", "normalization_version", "redaction_epoch", "state_json", "created_at",
+    ],
+    conversation_structural_blocks: [
+      "id", "conversation_id", "source_version_id", "status", "provider_key", "position",
+      "type", "role", "timestamp", "parent_block_id", "dag_uuid", "dag_parent_uuid",
+      "record_offset", "record_length", "record_hash", "record_ordinal", "sub_block_ordinal",
+      "normalization_checkpoint_id", "parser_format", "parser_version",
+      "normalization_version", "redaction_epoch", "created_at", "updated_at",
+    ],
+    conversation_block_aliases: ["alias", "block_id", "alias_kind", "created_at"],
+  };
+  for (const [table, expected] of Object.entries(required)) {
+    const actual = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    if (actual.length !== expected.length || expected.some((name) => !actual.includes(name))) {
+      throw new Error(`migration 140 precondition: ${table} has a divergent definition`);
+    }
+  }
+  for (const index of [
+    "idx_conversation_sources_native_session",
+    "idx_conversation_sources_availability",
+    "idx_conversation_source_aliases_source",
+    "idx_conversation_source_versions_source",
+    "idx_conversation_source_versions_custody",
+    "idx_conversation_structural_blocks_current_position",
+    "idx_conversation_structural_blocks_version",
+    "idx_conversation_structural_blocks_parent",
+    "idx_conversation_block_aliases_block",
+  ]) {
+    if (!indexExists(db, index)) {
+      throw new Error(`migration 140 precondition: required index ${index} is missing`);
+    }
+  }
 }
 
 function verifyConversationTagsColumn(db: Db): void {
@@ -4752,6 +4973,26 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           verifyConversationTagsColumn(db);
           // Historical convergence tests and interrupted development builds can
           // rewind only schema_version while retaining the head table shape.
+          statements = [];
+        }
+      }
+      if (migration.name === "conversation_source_identity") {
+        const v140Tables = [
+          "conversation_sources",
+          "conversation_source_aliases",
+          "conversation_source_versions",
+          "conversation_normalization_checkpoints",
+          "conversation_structural_blocks",
+          "conversation_block_aliases",
+        ];
+        const present = v140Tables.filter((table) => tableExists(db, table));
+        if (present.length > 0 && present.length !== v140Tables.length) {
+          throw new Error("migration 140 precondition: conversation source schema is partially applied");
+        }
+        if (present.length === v140Tables.length) {
+          verifyConversationSourceV140Schema(db);
+          // Historical convergence tests rewind only schema_version on a fresh
+          // head database. The complete additive schema is already canonical.
           statements = [];
         }
       }

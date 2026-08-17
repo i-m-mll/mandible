@@ -19,6 +19,8 @@ import { transformContent } from "../transform.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
+import { ConversationSourceReader } from "../conversations/source-reader.js";
+import type { SourceBackedConversationBlock } from "../conversations/source-types.js";
 
 // --- Row mapping helpers ---
 
@@ -137,6 +139,21 @@ function mapBlock(row: BlockRow) {
     dag_uuid: row.dag_uuid ?? null,
     dag_parent_uuid: row.dag_parent_uuid ?? null,
   };
+}
+
+function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
+  return "compressed" in row ? mapBlock(row) : row;
+}
+
+async function readAllBlocks(
+  reader: ConversationSourceReader,
+  conversationId: string,
+): Promise<{ blocks: SourceBackedConversationBlock[]; bodySource: "source" | "legacy" }> {
+  const result = await reader.readAll(conversationId);
+  if (result.status !== "source" && result.status !== "legacy") {
+    return { blocks: [], bodySource: "legacy" };
+  }
+  return { blocks: result.value, bodySource: result.status };
 }
 
 function parseSinceQuery(value: string | undefined): string | null {
@@ -270,6 +287,7 @@ function exportToJson(
 
 export function registerConversationRoutes(server: RouteRegistrar, sessionManager?: SessionManager): void {
   const db = getDb();
+  const sourceReader = new ConversationSourceReader(db);
 
   // --- Static routes MUST be registered before parameterized :id routes ---
 
@@ -598,7 +616,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // GET /api/conversations/:id — Full conversation with blocks + children summary
   // Bug: 40f0298 — optional ?leaf=<dag_uuid> param for DAG path resolution
-  server.get("/api/conversations/:id", (req, res) => {
+  server.get("/api/conversations/:id", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -615,8 +633,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
     const query = req.query ?? {};
     const leafDagUuid = query.leaf || null;
+    const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
 
-    let blocks: BlockRow[];
+    let blocks: Array<BlockRow | SourceBackedConversationBlock>;
+    let bodySource: "source" | "legacy" = "legacy";
 
     if (leafDagUuid) {
       // DAG path resolution: walk backward from leaf to root via dag_parent_uuid
@@ -660,6 +680,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       if (blocks.length === 0) {
         blocks = allBlocks;
       }
+    } else if (useSourceReader) {
+      const sourceBlocks = await readAllBlocks(sourceReader, id);
+      blocks = sourceBlocks.blocks;
+      bodySource = sourceBlocks.bodySource;
     } else {
       blocks = db
         .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
@@ -726,7 +750,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
     sendJson(res, 200, {
       conversation: mapped,
-      blocks: blocks.map(mapBlock),
+      blocks: blocks.map(mapReadableBlock),
+      body_source: bodySource,
       children: childrenWithDuration,
       parent: parent ?? null,
     });
@@ -1013,7 +1038,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   }), { fileRpc: "deny" });
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
-  server.get("/api/conversations/:id/blocks", (req, res) => {
+  server.get("/api/conversations/:id/blocks", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -1038,40 +1063,60 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       ? offsetRaw
       : (page - 1) * limit;
 
-    const conditions: string[] = ["conversation_id = ?"];
-    const params: unknown[] = [id];
-
     // Filter by block type(s)
+    let types: string[] | undefined;
     if (query.type) {
-      const types = query.type.split(",").map((t) => t.trim()).filter(Boolean);
-      if (types.length > 0) {
+      types = query.type.split(",").map((t) => t.trim()).filter(Boolean);
+    }
+    const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
+    if (!useSourceReader) {
+      const params: unknown[] = [id];
+      const conditions = ["conversation_id = ?"];
+      if (types && types.length > 0) {
         conditions.push(`type IN (${types.map(() => "?").join(",")})`);
         params.push(...types);
       }
+      const where = conditions.join(" AND ");
+      const total = (db.prepare(`SELECT COUNT(*) AS total FROM conversation_blocks WHERE ${where}`)
+        .get(...params) as { total: number }).total;
+      const blocks = db.prepare(`
+        SELECT * FROM conversation_blocks WHERE ${where}
+         ORDER BY position ASC LIMIT ? OFFSET ?
+      `).all(...params, limit, offset) as BlockRow[];
+      sendJson(res, 200, {
+        blocks: blocks.map(mapBlock),
+        body_source: "legacy",
+        total,
+        offset,
+        page: Math.floor(offset / limit) + 1,
+        limit,
+        requested_limit: requestedLimit,
+        cap: 500,
+        pages: Math.ceil(total / limit),
+        truncated: offset + blocks.length < total,
+      });
+      return;
     }
 
-    const where = `WHERE ${conditions.join(" AND ")}`;
-
-    const countRow = db
-      .prepare(`SELECT COUNT(*) as total FROM conversation_blocks ${where}`)
-      .get(...params) as { total: number };
-
-    const blocks = db
-      .prepare(
-        `SELECT * FROM conversation_blocks ${where} ORDER BY position ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...params, limit, offset) as BlockRow[];
+    const result = await sourceReader.readPage(id, { offset, limit, types });
+    if (result.status !== "source" && result.status !== "legacy") {
+      sendJson(res, result.status === "not_found" ? 404 : 409, { error: result.reason, status: result.status });
+      return;
+    }
+    const blocks = result.value.blocks;
+    const total = result.value.total;
 
     sendJson(res, 200, {
-      blocks: blocks.map(mapBlock),
-      total: countRow.total,
+      blocks,
+      body_source: result.status,
+      total,
       offset,
       page: Math.floor(offset / limit) + 1,
       limit,
       requested_limit: requestedLimit,
       cap: 500,
-      pages: Math.ceil(countRow.total / limit),
-      truncated: offset + blocks.length < countRow.total,
+      pages: Math.ceil(total / limit),
+      truncated: offset + blocks.length < total,
     });
   }, { fileRpc: "allow" });
 
@@ -1146,7 +1191,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   }, { fileRpc: "allow" });
 
   // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
-  server.post("/api/conversations/:id/export", (req, res) => {
+  server.post("/api/conversations/:id/export", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -1156,6 +1201,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const body = readBody<{
       format?: "markdown" | "mdx" | "json";
       block_types?: string[];
+      source_backed?: boolean;
     }>(req);
 
     const format = body.format || "markdown";
@@ -1172,12 +1218,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return;
     }
 
-    const rawBlocks = db
-      .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-      .all(id) as BlockRow[];
-
-    // Bug: e5a945d — decompress before passing to export helpers
-    const blocks = decompressBlocks(rawBlocks);
+    const readable = body.source_backed
+      ? await readAllBlocks(sourceReader, id)
+      : null;
+    const blocks = readable
+      ? readable.blocks.map((block) => ({ ...block, compressed: 0 })) as DecompressedBlock[]
+      : decompressBlocks(db.prepare(
+        "SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC",
+      ).all(id) as BlockRow[]);
 
     const blockTypes = body.block_types ? new Set(body.block_types) : undefined;
 
@@ -1202,6 +1250,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       block_count: blockTypes
         ? blocks.filter((b) => blockTypes.has(b.type)).length
         : blocks.length,
+      body_source: readable?.bodySource ?? "legacy",
     });
   }, { fileRpc: "deny" });
 
