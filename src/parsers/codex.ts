@@ -18,7 +18,7 @@ import type {
   ParseResult,
 } from "./types.js";
 import { extractCodexTokenCountContextUsage } from "./context-usage.js";
-import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
+import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
 // --- Raw record shapes ---
 
@@ -257,13 +257,12 @@ export async function loadCodexSessionIndexTitle(filePath: string, sessionId: st
 
 /** Read the provider-authored session id without accepting the filename fallback. */
 export async function loadCodexNativeSessionId(filePath: string): Promise<string | null> {
-  const { records } = await readJsonlFileRecords<CodexRecord>(filePath);
-  for (const record of records) {
-    if (record.type !== "session_meta") continue;
-    const id = (record.payload as CodexSessionMeta).id;
-    if (typeof id === "string" && id.trim()) return id;
-  }
-  return null;
+  const record = await findJsonlRecord<CodexRecord>(
+    filePath,
+    (candidate) => candidate.type === "session_meta",
+  );
+  const id = record ? (record.payload as CodexSessionMeta).id : null;
+  return typeof id === "string" && id.trim() ? id : null;
 }
 
 // --- Parser ---
@@ -317,6 +316,7 @@ export class CodexParser implements ConversationParser {
     let modelProvider: string | null = null;
     let startedAt = "";
     let endedAt: string | null = null;
+    let seenSessionMeta = false;
 
     // Check for legacy format (single-line sessions with top-level fields)
     const firstRec = records[0];
@@ -337,13 +337,19 @@ export class CodexParser implements ConversationParser {
       }
 
       if (rec.type === "session_meta") {
-        const meta = rec.payload as CodexSessionMeta;
-        if (meta.id) sessionId = meta.id;
-        if (meta.cwd) cwd = meta.cwd;
-        if (meta.cli_version) cliVersion = meta.cli_version;
-        if (meta.model_provider) modelProvider = meta.model_provider;
-        if (meta.git?.branch) branch = meta.git.branch;
-        if (meta.timestamp && !startedAt) startedAt = meta.timestamp;
+        // Forked Codex rollouts may include parent history containing another
+        // session_meta record. The first record owns this file; later records
+        // describe embedded ancestry and must not replace its identity.
+        if (!seenSessionMeta) {
+          const meta = rec.payload as CodexSessionMeta;
+          if (meta.id) sessionId = meta.id;
+          if (meta.cwd) cwd = meta.cwd;
+          if (meta.cli_version) cliVersion = meta.cli_version;
+          if (meta.model_provider) modelProvider = meta.model_provider;
+          if (meta.git?.branch) branch = meta.git.branch;
+          if (meta.timestamp && !startedAt) startedAt = meta.timestamp;
+          seenSessionMeta = true;
+        }
       } else if (rec.type === "turn_context") {
         const ctx = rec.payload as CodexTurnContext;
         if (ctx.model && !model) model = ctx.model;

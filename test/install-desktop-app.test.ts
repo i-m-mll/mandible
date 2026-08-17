@@ -58,7 +58,14 @@ esac
 }
 
 function runInstaller(
-  options: { signed?: boolean; running?: boolean; failCodesignAt?: number; installed?: boolean } = {},
+  options: {
+    signed?: boolean;
+    running?: boolean;
+    failCodesignAt?: number;
+    installed?: boolean;
+    ci?: string;
+    buildCommand?: string;
+  } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-desktop-install-"));
   tempRoots.push(root);
@@ -77,9 +84,11 @@ function runInstaller(
     encoding: "utf8",
     env: {
       ...process.env,
+      CI: options.ci ?? process.env.CI,
       MANDIBLE_DESKTOP_PLATFORM: "Darwin",
       MANDIBLE_DESKTOP_DEPENDENCY_COMMAND: ":",
-      MANDIBLE_DESKTOP_BUILD_COMMAND: 'printf "build\\n" > "$MANDIBLE_TEST_BUILD_TRACE"',
+      MANDIBLE_DESKTOP_BUILD_COMMAND:
+        options.buildCommand ?? 'printf "build\\n" > "$MANDIBLE_TEST_BUILD_TRACE"',
       MANDIBLE_TEST_BUILD_TRACE: buildTrace,
       MANDIBLE_DESKTOP_BUNDLE_PATH: built,
       MANDIBLE_DESKTOP_INSTALL_PATH: installed,
@@ -136,7 +145,10 @@ fi
       'printf "kill %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_TRACE"\ntouch "$MANDIBLE_TEST_TERMINATED"\n',
     );
     const open = writeTool("open", 'printf "open %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_TRACE"\n');
-    const sleep = writeTool("sleep", ":\n");
+    const sleep = writeTool(
+      "sleep",
+      'printf "sleep %s\\n" "$1" >> "$MANDIBLE_TEST_TRACE"\n',
+    );
 
     const result = spawnSync(
       "bash",
@@ -159,9 +171,14 @@ fi
     );
 
     expect(result.status, result.stderr).toBe(0);
-    expect(fs.readFileSync(trace, "utf8")).toContain("kill -TERM 101");
-    expect(fs.readFileSync(trace, "utf8")).not.toContain("202");
-    expect(fs.readFileSync(trace, "utf8")).toContain(`open -n ${installPath}`);
+    const relaunchTrace = fs.readFileSync(trace, "utf8");
+    expect(relaunchTrace).toContain("kill -TERM 101");
+    expect(relaunchTrace).not.toContain("202");
+    expect(relaunchTrace).toContain(`open -n ${installPath}`);
+    expect(relaunchTrace.indexOf("kill -TERM 101"))
+      .toBeLessThan(relaunchTrace.indexOf("sleep 0"));
+    expect(relaunchTrace.indexOf("sleep 0"))
+      .toBeLessThan(relaunchTrace.indexOf(`open -n ${installPath}`));
   });
 
   it("validates, backs up, installs, and requests relaunch for a running app", () => {
@@ -176,6 +193,16 @@ fi
     expect(fs.readFileSync(relaunchTrace, "utf8")).toBe("relaunch\n");
     expect(result.stderr).toContain("previous bundle preserved");
     expect(result.stderr).toContain("scheduled restart");
+  });
+
+  it("normalizes the legacy auth-hook CI value for the Tauri build", () => {
+    const { result, buildTrace } = runInstaller({
+      ci: "1",
+      buildCommand: 'printf "%s\\n" "$CI" > "$MANDIBLE_TEST_BUILD_TRACE"',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(buildTrace, "utf8")).toBe("true\n");
   });
 
   it("leaves the installed app untouched when the built signature is invalid", () => {

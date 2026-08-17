@@ -337,7 +337,15 @@ export class ConversationSourceStore {
       SELECT id FROM conversation_sources WHERE conversation_id = ? AND provider = ?
     `).get(input.conversationId, input.provider) as { id: string } | undefined;
     const sourceId = existingSource?.id ?? stableId("csrc", input.conversationId, input.provider);
-    const versionId = stableId("cver", sourceId, snapshot.contentHash);
+    const existingVersion = this.db.prepare(`
+      SELECT id
+        FROM conversation_source_versions
+       WHERE source_id = ? AND content_sha256 = ?
+    `).get(sourceId, snapshot.contentHash) as { id: string } | undefined;
+    // Migration v140 may already have backfilled this exact provider hash under
+    // a legacy id. Preserve that referenced identity instead of manufacturing a
+    // new id that the UNIQUE(source_id, content_sha256) upsert will not insert.
+    const versionId = existingVersion?.id ?? stableId("cver", sourceId, snapshot.contentHash);
     const alias = sourceRoot(input.provider, input.filePath);
     const aliasPath = path.resolve(input.filePath);
     const aliasId = stableId("csa", sourceId, aliasPath);
@@ -356,7 +364,7 @@ export class ConversationSourceStore {
           id, conversation_id, provider, native_session_id, parser_format, parser_version,
           normalization_version, redaction_epoch, availability, custody_state,
           current_version_id, unavailable_reason, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', 'provider', ?, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', 'provider', NULL, NULL, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           native_session_id = excluded.native_session_id,
           parser_format = excluded.parser_format,
@@ -364,13 +372,12 @@ export class ConversationSourceStore {
           normalization_version = excluded.normalization_version,
           redaction_epoch = excluded.redaction_epoch,
           availability = 'available',
-          current_version_id = excluded.current_version_id,
           unavailable_reason = NULL,
           updated_at = excluded.updated_at
       `).run(
         sourceId, input.conversationId, input.provider, input.nativeSessionId,
         input.parserFormat, input.parserVersion, input.normalizationVersion, input.redactionEpoch,
-        versionId, now, now,
+        now, now,
       );
       this.db.prepare(`
         INSERT INTO conversation_source_aliases (
@@ -390,13 +397,31 @@ export class ConversationSourceStore {
           availability, custody_state, created_at
         ) VALUES (?, ?, ?, ?, ?, 'sealed_sha256', ?, ?, ?, ?, 'available', 'provider', ?)
         ON CONFLICT(source_id, content_sha256) DO UPDATE SET
+          byte_length = excluded.byte_length,
           file_mtime_ms = excluded.file_mtime_ms,
+          generation = 'sealed_sha256',
+          parser_format = excluded.parser_format,
+          parser_version = excluded.parser_version,
+          normalization_version = excluded.normalization_version,
+          redaction_epoch = excluded.redaction_epoch,
           availability = 'available'
       `).run(
         versionId, sourceId, snapshot.contentHash, snapshot.size, snapshot.mtimeMs,
         input.parserFormat, input.parserVersion, input.normalizationVersion,
         input.redactionEpoch, now,
       );
+      // conversation_sources.current_version_id and
+      // conversation_source_versions.source_id form a deliberate cycle. Insert
+      // the source without a current version, insert or refresh the version,
+      // then complete the pointer while both rows exist. SQLite checks these
+      // immediate foreign keys after each statement, not only at transaction
+      // commit; assigning a newly generated version id in the first INSERT
+      // therefore fails on every changed source when foreign_keys is enabled.
+      this.db.prepare(`
+        UPDATE conversation_sources
+           SET current_version_id = ?, updated_at = ?
+         WHERE id = ?
+      `).run(versionId, now, sourceId);
 
       this.db.prepare(
         "UPDATE conversation_structural_blocks SET status = 'retired', updated_at = ? WHERE conversation_id = ? AND status = 'current'",
