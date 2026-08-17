@@ -4,6 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { fileURLToPath } from "node:url";
 import { CURRENT_SCHEMA_VERSION, openDb, migrate } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
@@ -144,6 +145,20 @@ describe.sequential("mandible daemon", () => {
     expect(health?.status).toBe("ok");
 
     await daemon.close();
+
+    const canonical = new Database(temp!.dbPath, { readonly: true });
+    const operational = new Database(
+      path.join(temp!.dir, "mandible.operational-logs.db"),
+      { readonly: true },
+    );
+    try {
+      expect(canonical.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 0 });
+      expect(Number((operational.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number }).count))
+        .toBeGreaterThan(0);
+    } finally {
+      operational.close();
+      canonical.close();
+    }
   });
 
   it("streams SSE events", async () => {

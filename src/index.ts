@@ -12,7 +12,13 @@ import {
   flushDaemonLogger,
   getDaemonLogger,
   startDaemonLogRetention,
+  stopDaemonLogger,
 } from "./daemon-log.js";
+import {
+  openOperationalLogStore,
+  startOperationalLogCopyForward,
+  type OperationalLogStore,
+} from "./operational-log-db.js";
 import { allowsOperationalMutations, resolveInstanceInfo } from "./instance-policy.js";
 import { AuthAutoApproveManager } from "./auth-auto-approve.js";
 import { AuthQueue } from "./auth-queue.js";
@@ -114,6 +120,7 @@ export interface StartOptions {
   dbPath?: string;
   pidFilePath?: string;
   handleSignals?: boolean;
+  operationalLogDbPath?: string;
 }
 
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
@@ -148,7 +155,25 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // transient contention, so keep this bounded while the ingestion actor uses
   // its own connection and explicit backoff.
   db.pragma("busy_timeout = 250");
-  logger = configureDaemonLogger(db, { persist: operationalMutationsAllowed });
+  let operationalLogStore: OperationalLogStore | null = null;
+  if (operationalMutationsAllowed) {
+    try {
+      operationalLogStore = openOperationalLogStore(dbPath, {
+        dbPath: options.operationalLogDbPath,
+      });
+    } catch (error) {
+      process.stderr.write(`${JSON.stringify({
+        level: "error",
+        event: "operational_log_db_open_failed",
+        time: new Date().toISOString(),
+        error: String(error),
+      })}\n`);
+    }
+  }
+  logger = configureDaemonLogger(operationalLogStore?.db ?? db, {
+    persist: Boolean(operationalLogStore),
+    settingsDb: db,
+  });
   const eventLoopDiagnostics = new EventLoopLagDiagnostics(
     (level, message, details) => logger(level, message, details),
   );
@@ -210,7 +235,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
-  registerSystemRoutes(router, workScanner, db);
+  registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
   registerBackupRoutes(router);
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
@@ -583,8 +608,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
   // paced passes. Disk-reclaiming VACUUM remains an explicit maintenance task.
-  const daemonLogRetention = operationalMutationsAllowed
-    ? startDaemonLogRetention(db, logger)
+  const daemonLogCopyForward = operationalLogStore
+    ? startOperationalLogCopyForward(operationalLogStore, logger)
+    : { stop: () => undefined };
+  const daemonLogRetention = operationalLogStore
+    ? startDaemonLogRetention(operationalLogStore.db, logger, { settingsDb: db })
     : { stop: () => undefined };
 
   let closing = false;
@@ -619,6 +647,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopTrashGcScheduler();
     stopBriefingExpirySweep();
     stopManagedReminderScheduler();
+    daemonLogCopyForward.stop();
     daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();
@@ -641,6 +670,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Persist the final batch of queued daemon_log rows before the connection
     // closes so recent activity is not lost on a clean shutdown.
     flushDaemonLogger();
+    stopDaemonLogger();
+    operationalLogStore?.close();
     db.close();
     removePidFile(options.pidFilePath);
     logger("info", "server_stopped");
