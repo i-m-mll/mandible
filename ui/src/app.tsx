@@ -2224,6 +2224,7 @@ function App(): JSX.Element {
               initialSessionId={tabRoute.params.session ?? null}
               initialPresetId={tabRoute.params.preset ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
+              instance={instanceInfo}
               onSelectSession={handleConsoleSelectSession}
               onNewSession={handleConsoleNewSession}
             />

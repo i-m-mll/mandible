@@ -19,6 +19,7 @@ import type {
   ConversationAttachState,
   ConversationBlock,
   ConversationChild,
+  InstanceInfo,
   ConversationParent,
   ConversationSource,
   WorkflowRun,
@@ -514,6 +515,7 @@ export type ConversationsViewProps = {
   initialSessionId: string | null;
   initialPresetId?: string | null;
   sidebarHidden?: boolean;
+  instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
     label: string;
@@ -2531,6 +2533,7 @@ function ChatEntryItem({
   isSelected,
   onClick,
   onTogglePin,
+  pinned,
   pinActionRef,
   onEditTags,
   onRenameSession,
@@ -2540,6 +2543,7 @@ function ChatEntryItem({
   isSelected: boolean;
   onClick: () => void;
   onTogglePin?: () => void;
+  pinned?: boolean;
   pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
@@ -2551,7 +2555,7 @@ function ChatEntryItem({
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
-  const isPinned = Boolean(conversation?.starred || session?.pinned);
+  const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
 
   const handleEditTags = () => {
     if (!onEditTags) return;
@@ -2711,6 +2715,7 @@ export function ConversationsView({
   initialSessionId,
   initialPresetId,
   sidebarHidden = false,
+  instance = null,
   onSelectSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
@@ -2746,6 +2751,13 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
+  const previewMutationsRejected = instance?.operational_mutations === 'reject';
+  const isConversationPinned = useCallback((conversation: Conversation): boolean => {
+    if (!previewMutationsRejected) return conversation.starred;
+    return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)
+      ? chatViewState.previewPinOverrides[conversation.id]
+      : conversation.starred;
+  }, [chatViewState.previewPinOverrides, previewMutationsRejected]);
 
   const liveSessions = useMemo(() => {
     return consoleSessions
@@ -3000,13 +3012,16 @@ export function ConversationsView({
     };
     const sortEntries = (items: ChatEntry[]) => [...items].sort(compareEntries);
 
+    const entryIsPinned = (entry: ChatEntry) => entry.conversation
+      ? isConversationPinned(entry.conversation)
+      : Boolean(entry.session?.pinned);
     const pinned = orderByPinnedIds(
-      entries.filter((entry) => Boolean(entry.conversation?.starred || entry.session?.pinned)),
+      entries.filter(entryIsPinned),
       chatViewState.pinnedConversationIds,
       (entry) => entry.conversation?.id ?? `session:${entry.session?.id ?? entry.key}`,
       compareEntries,
     );
-    const unpinned = entries.filter((entry) => !entry.conversation?.starred && !entry.session?.pinned);
+    const unpinned = entries.filter((entry) => !entryIsPinned(entry));
     const looseChats = sortEntries(unpinned.filter((entry) => entry.project === 'No Project'));
     const groupMap = new Map<string, ChatEntry[]>();
     for (const entry of unpinned) {
@@ -3023,19 +3038,19 @@ export function ConversationsView({
       }))
       .sort((a, b) => a.project.localeCompare(b.project));
     return { pinned, projects, chats: looseChats };
-  }, [chatViewState.pinnedConversationIds, displayedConversations, liveByProviderSession, liveSessions, sort, workRepos]);
+  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, sort, workRepos]);
 
   useEffect(() => {
-    const durablePinnedIds = displayedConversations
-      .filter((conversation) => conversation.starred)
+    const effectivePinnedIds = displayedConversations
+      .filter(isConversationPinned)
       .map((conversation) => conversation.id);
     setChatViewState((current) => {
-      const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, durablePinnedIds);
+      const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, effectivePinnedIds);
       return reconciled.length === current.pinnedConversationIds.length
         ? current
         : { ...current, pinnedConversationIds: reconciled };
     });
-  }, [displayedConversations, setChatViewState]);
+  }, [displayedConversations, isConversationPinned, setChatViewState]);
 
   const firstChatEntry =
     chatSections.pinned[0] ??
@@ -3110,16 +3125,31 @@ export function ConversationsView({
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
-    const starred = !entry.conversation.starred;
+    const conversationId = entry.conversation.id;
+    const starred = !isConversationPinned(entry.conversation);
+    if (previewMutationsRejected) {
+      pendingPinFocusKey.current = entry.key;
+      setChatViewState((current) => ({
+        ...current,
+        pinnedConversationIds: starred
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
+          : current.pinnedConversationIds.filter((id) => id !== conversationId),
+        previewPinOverrides: {
+          ...current.previewPinOverrides,
+          [conversationId]: starred,
+        },
+      }));
+      return;
+    }
     try {
-      const updated = await updateConversation(entry.conversation.id, { starred });
+      const updated = await updateConversation(conversationId, { starred });
       pendingPinFocusKey.current = entry.key;
       updateConversationInList(updated);
       setChatViewState((current) => ({
         ...current,
         pinnedConversationIds: starred
-          ? reconcileOrderedPinIds(current.pinnedConversationIds, [entry.conversation!.id])
-          : current.pinnedConversationIds.filter((id) => id !== entry.conversation!.id),
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
+          : current.pinnedConversationIds.filter((id) => id !== conversationId),
       }));
     } catch {
       // keep the current list state if persistence fails
@@ -3169,6 +3199,7 @@ export function ConversationsView({
         ? selectedConversationId === entry.conversation?.id
         : selectedSessionId === entry.session?.id}
       showPinnedIcon={showPinnedIcon}
+      pinned={entry.conversation ? isConversationPinned(entry.conversation) : undefined}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
       pinActionRef={entry.conversation ? (element) => {
         if (element) pinActionRefs.current.set(entry.key, element);

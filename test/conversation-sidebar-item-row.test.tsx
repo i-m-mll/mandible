@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation } from '../ui/src/api.js';
+import type { Conversation, InstanceInfo } from '../ui/src/api.js';
 import { CHAT_VIEW_STATE_KEY } from '../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
 
@@ -79,6 +79,14 @@ const existingPinnedConversation: Conversation = {
   session_id: 'session-existing-pin',
   started_at: '2026-08-16T12:00:00.000Z',
   starred: true,
+};
+
+const rejectModePreview: InstanceInfo = {
+  role: 'preview',
+  operational_mutations: 'reject',
+  operational_mutations_overridden: true,
+  db_path: '/tmp/mandible-preview.db',
+  db_path_source: 'iab-preview-copy',
 };
 
 describe('conversation sidebar labeled-item rows', () => {
@@ -208,5 +216,72 @@ describe('conversation sidebar labeled-item rows', () => {
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').pinnedConversationIds).toEqual([
       existingPinnedConversation.id,
     ]));
+  });
+
+  it('uses persisted browser pin membership without PATCH in explicit reject-mode previews', async () => {
+    const serverRows = [conversation, existingPinnedConversation];
+    vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: serverRows, total: serverRows.length });
+    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
+      ...(serverRows.find((row) => row.id === id) ?? conversation),
+      blocks: [],
+      children: [],
+      parent: null,
+    }));
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
+    const updateConversation = vi.spyOn(api, 'updateConversation');
+    window.localStorage.setItem(CHAT_VIEW_STATE_KEY, JSON.stringify({
+      pinnedConversationIds: [existingPinnedConversation.id],
+    }));
+
+    const renderPreview = () => render(
+      <ConversationsView
+        conversations={serverRows}
+        consoleSessions={[]}
+        workRepos={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        instance={rejectModePreview}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    renderPreview();
+    const targetRow = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
+    fireEvent.click(targetRow);
+    const pin = screen.getByRole('button', { name: `Pin ${conversation.title}` });
+    pin.focus();
+    fireEvent.click(pin);
+
+    const unpin = await screen.findByRole('button', { name: `Unpin ${conversation.title}` });
+    await waitFor(() => expect(document.activeElement).toBe(unpin));
+    expect(updateConversation).not.toHaveBeenCalled();
+    const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('.chat-sidebar-section')!;
+    expect(within(pinnedSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
+      pinnedConversationIds: [existingPinnedConversation.id, conversation.id],
+      previewPinOverrides: { [conversation.id]: true },
+    }));
+
+    cleanup();
+    renderPreview();
+    const reloadedPinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('.chat-sidebar-section')!;
+    expect(within(reloadedPinnedSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: `Open conversation ${conversation.title}` }));
+    const reloadedUnpin = screen.getByRole('button', { name: `Unpin ${conversation.title}` });
+    reloadedUnpin.focus();
+    fireEvent.click(reloadedUnpin);
+
+    const restoredPin = await screen.findByRole('button', { name: `Pin ${conversation.title}` });
+    await waitFor(() => expect(document.activeElement).toBe(restoredPin));
+    expect(updateConversation).not.toHaveBeenCalled();
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('.chat-sidebar-section')!;
+    expect(within(chatsSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
+      pinnedConversationIds: [existingPinnedConversation.id],
+      previewPinOverrides: { [conversation.id]: false },
+    }));
   });
 });
