@@ -200,6 +200,9 @@
   opacity: 0.65;
 }
 
+.bounded-ask__submit-bar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-top: 1px solid var(--border-muted); background: var(--surface-panel); }
+.bounded-ask__submit-reason { color: var(--text-muted); font-size: var(--text-sm); }
+
 .ask-document {
   display: grid;
   gap: var(--space-3);
@@ -235,6 +238,17 @@
   border-radius: var(--radius-sm);
   background: var(--surface-card);
 }
+
+.ask-document__rendered { display: grid; gap: var(--space-3); }
+.ask-document__prose > :first-child { margin-top: 0; }
+.ask-document__prose > :last-child { margin-bottom: 0; }
+.briefing-directive { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); padding: var(--space-2); border-left: 2px solid transparent; border-radius: var(--radius-sm); }
+.briefing-directive:hover, .briefing-directive:focus-within, .briefing-directive--selected { border-left-color: var(--accent-border); background: var(--surface-card); }
+.briefing-directive__actions { display: flex; align-items: start; gap: var(--space-1); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.briefing-directive:hover .briefing-directive__actions, .briefing-directive:focus-within .briefing-directive__actions, .briefing-directive--selected .briefing-directive__actions { opacity: 1; pointer-events: auto; }
+.briefing-directive__actions button { font: inherit; font-size: var(--text-sm); }
+.ask-document__source-disclosure summary { cursor: pointer; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .briefing-directive__actions { transition: none; } }
 
 .ask-annotation {
   background: var(--status-info-bg-soft);

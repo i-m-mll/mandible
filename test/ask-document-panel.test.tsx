@@ -94,6 +94,23 @@ afterEach(() => {
 });
 
 describe('AskDocumentPanel', () => {
+  it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
+      ...content().content,
+      preview: { encoding: 'utf-8', text: 'Intro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail', raw_text: 'Intro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail', truncated: false },
+    } })));
+    const source = 'Intro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
+    const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
+    render(<AskDocumentPanel ask={ask({
+      document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
+      directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
+      items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
+    })} canMutate onRefresh={async () => null} onDirectiveVerdict={() => undefined} />);
+    expect(await screen.findByRole('button', { name: 'Keep' })).toBeTruthy();
+    expect(screen.queryByText(':::spec-item{key="verdict" required="true"}')).toBeNull();
+    expect(screen.getByText(/Body/).querySelector('img')).toBeNull();
+  });
+
   it('renders the full pinned source read-only and saves one selected-range suggestion before refetching', async () => {
     const posts: any[] = [];
     const refresh = vi.fn(async () => ask());

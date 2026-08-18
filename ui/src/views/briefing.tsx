@@ -122,9 +122,8 @@ export function BriefingView({
 
   const selectedCollection = useMemo(() => (
     collections.find((collection) => collection.id === viewState.selectedCollectionId)
-      ?? collections.find((collection) => collection.source !== null && collection.source === viewState.source)
       ?? null
-  ), [collections, viewState.selectedCollectionId, viewState.source]);
+  ), [collections, viewState.selectedCollectionId]);
   const routedAskId = initialAskId && viewState.selectedCollectionId === feedbackCollectionIdentity(initialAskId)
     ? initialAskId
     : null;
@@ -166,6 +165,7 @@ export function BriefingView({
             initialFilter={initialFilter}
             initialCandidateId={initialCandidateId}
             nowMs={nowMs}
+            selectedCollectionSource={selectedCollection?.source ?? null}
           />
         </AppShellProvider>
       </div>

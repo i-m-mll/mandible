@@ -61,6 +61,7 @@ function item(
       options: options.map((option, position) => ({ ...option, description: null, position })),
     },
     effective_response: extra.effective_response ?? null,
+    ...(extra.directive ? { directive: extra.directive } : {}),
   };
 }
 
@@ -117,6 +118,24 @@ afterEach(() => {
 });
 
 describe('bounded ask renderer', () => {
+  it('fails closed for malformed profiled directive projections', () => {
+    const profiled = askPayload({
+      document: { artifact_version_id: 'artifact-version:current', previous_round_id: null, profile: 'mandible-briefing.v1' },
+      directive_binding: { status: 'valid', reason: null },
+      latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
+      items: [item('verdict', 'verdict', [], {
+        required: true,
+        directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: 0, end_offset: 32, body_start_offset: 20, body_end_offset: 28 },
+      })],
+    });
+    expect(normalizeAskProjection(profiled).valid).toBe(true);
+    expect(normalizeAskProjection({ ...profiled, directive_binding: { status: 'valid', reason: 1 } }).valid).toBe(false);
+    expect(normalizeAskProjection({ ...profiled, document: { ...profiled.document as object, profile: 'unknown.v1' } }).valid).toBe(false);
+    expect(normalizeAskProjection({ ...profiled, items: [item('verdict', 'free_text', [], {
+      directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: 0, end_offset: 32, body_start_offset: 20, body_end_offset: 28 },
+    })] }).valid).toBe(false);
+  });
+
   it('normalizes the exact document, annotation, and previous-round projection shapes', () => {
     const current = {
       annotation_event_id: 'annotation-current',
@@ -571,7 +590,7 @@ describe('bounded ask renderer', () => {
     expect(((await screen.findByRole('textbox')) as HTMLTextAreaElement).value).toBe('keep this draft');
   });
 
-  it('reconciles an unavailable persisted bounded selection to the retained recurring source', async () => {
+  it('keeps an unavailable persisted selection authoritative over a stale recurring source', async () => {
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
       ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
       source: 'alpha',
@@ -598,7 +617,7 @@ describe('bounded ask renderer', () => {
     }));
     render(shell(<BriefingView instance={null} />));
     expect(await screen.findByTestId('briefing-view')).toBeTruthy();
-    expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBe('true');
+    expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBeNull();
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
       selectedCollectionId: 'bounded_ask:unavailable',
       collectionKindFilter: 'recurring_feed',

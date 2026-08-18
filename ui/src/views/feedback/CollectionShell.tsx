@@ -22,14 +22,7 @@ export function CollectionShell({
   onSetExpiry,
   children,
 }: CollectionShellProps): JSX.Element {
-  const storedSelectionIsVisible = collections.some(
-    (collection) => collection.id === viewState.selectedCollectionId,
-  );
-  const selectedCollectionId = storedSelectionIsVisible
-    ? viewState.selectedCollectionId
-    : collections.find((collection) => collection.source === viewState.source)?.id
-      ?? viewState.selectedCollectionId
-      ?? null;
+  const selectedCollectionId = viewState.selectedCollectionId;
   const selectCollection = (collection: FeedbackCollection) => {
     setViewState((current) => ({
       ...current,

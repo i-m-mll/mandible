@@ -145,6 +145,7 @@ export function BoundedAskRenderer({
   }, [askId, draft, draftScope, userId]);
 
   const ask = load.ask;
+  const profile = ask?.document?.profile === 'mandible-briefing.v1';
   const itemById = useMemo(
     () => new Map((ask?.items ?? []).map((item) => [item.id, item])),
     [ask],
@@ -179,6 +180,24 @@ export function BoundedAskRenderer({
     && (ask.state === 'open' || ask.state === 'submitted')
     && (!instance || instance.operational_mutations === 'allow'),
   );
+  const requiredIncomplete = Boolean(ask?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
+  const draftDiffers = Boolean(ask?.items.some((item) => item.item_kind === 'item'
+    && !responseValuesEqual(draft[item.id] ?? null, item.effective_response?.value ?? null)));
+  const currentAnswerIds = (ask?.items ?? []).flatMap((item) => item.effective_response ? [item.effective_response.response_event_id] : []);
+  const currentAnnotationIds = (ask?.annotations ?? []).map((annotation) => annotation.annotation_event_id);
+  const frozenMatches = Boolean(ask?.latest_frozen_membership
+    && currentAnswerIds.length === ask.latest_frozen_membership.answer_event_ids.length
+    && currentAnnotationIds.length === ask.latest_frozen_membership.annotation_event_ids.length
+    && currentAnswerIds.every((id) => ask.latest_frozen_membership!.answer_event_ids.includes(id))
+    && currentAnnotationIds.every((id) => ask.latest_frozen_membership!.annotation_event_ids.includes(id)));
+  const submitReason = !canMutate
+    ? (ask?.directive_binding?.reason || 'This ask is read-only for the current identity or instance.')
+    : profile && ask?.directive_binding?.status !== 'valid'
+      ? (ask.directive_binding.reason || 'The directive binding is unavailable.')
+      : busy ? 'Submitting changes…'
+        : requiredIncomplete ? 'Complete the required directives before submitting.'
+          : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
+            : null;
 
   const submit = async () => {
     if (!ask || !canMutate || busy) return;
@@ -406,11 +425,17 @@ export function BoundedAskRenderer({
         </div>
       ) : null}
       {ask.document ? (
-        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy} onRefresh={reconcile} />
+        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy} onRefresh={reconcile}
+          draft={Object.fromEntries(Object.entries(draft).filter(([, value]) => !value || 'verdict' in value)) as Record<string, { verdict: 'keep' | 'dismiss' } | null>}
+          onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })} />
       ) : null}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} noValidate>
-        {roots.map(renderItem)}
-        {canMutate ? <button type="submit" className="briefing-primary" disabled={busy}>{busy ? 'Submitting…' : 'Submit'}</button> : null}
+        {!profile ? roots.map(renderItem) : null}
+        {(!profile && canMutate) ? <button type="submit" className="briefing-primary" disabled={busy}>{busy ? 'Submitting…' : 'Submit'}</button> : null}
+        {profile ? <div className="bounded-ask__submit-bar" role="region" aria-label="Round submission">
+          <button type="submit" className="briefing-primary" disabled={Boolean(submitReason)}>{busy ? 'Submitting…' : ask.latest_submission_for_actor ? 'Submit correction' : 'Submit'}</button>
+          {submitReason ? <span className="bounded-ask__submit-reason">{submitReason}</span> : null}
+        </div> : null}
       </form>
       <div className="bounded-ask__status" role="status" aria-live="polite">{status}</div>
     </article>

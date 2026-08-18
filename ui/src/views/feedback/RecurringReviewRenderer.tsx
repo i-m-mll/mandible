@@ -131,6 +131,7 @@ export type RecurringReviewRendererProps = {
   initialCandidateId?: string | null;
   /** Test seam: inject a fixed clock so relative ages are deterministic. */
   nowMs?: number;
+  selectedCollectionSource?: string | null;
 };
 
 // --- formatting --------------------------------------------------------------
@@ -867,6 +868,7 @@ export function RecurringReviewRenderer({
   initialFilter,
   initialCandidateId,
   nowMs,
+  selectedCollectionSource = null,
 }: RecurringReviewRendererProps): JSX.Element {
   // Keep-alive routes stay mounted when hidden. Everything with a heartbeat —
   // polling and the global key handler — is gated on this flag so a hidden
@@ -1029,7 +1031,8 @@ export function RecurringReviewRenderer({
   }, [queue.data, judgedKeys]);
 
   const sources = queue.data?.sources ?? [];
-  const selectedSource = viewState.source;
+  const selectedSource = selectedCollectionSource ?? viewState.source;
+  const aggregateMode = selectedCollectionSource === null && viewState.selectedCollectionId === null;
 
   // The producer axis and the pending/judged axis compose: the producer scopes
   // WHICH findings this page is about, the filter scopes what has happened to
@@ -1389,7 +1392,7 @@ export function RecurringReviewRenderer({
         but a live selection always keeps its "All producers" way back out, even
         if the selected source has since left the health list entirely.
       */}
-      {producers.length > 1 || selectedSource !== null ? (
+      {aggregateMode && (producers.length > 1 || selectedSource !== null) ? (
         <div
           className="briefing-producers"
           role="group"
@@ -1403,7 +1406,7 @@ export function RecurringReviewRenderer({
             data-testid="briefing-producer-all"
             onClick={() => setSource(null)}
           >
-            <span className="briefing-tab__name">All producers</span>
+            <span className="briefing-tab__name">All recurring sources</span>
             <span className="briefing-tab__count">{pendingItems.length}</span>
           </button>
           {producers.map((producer) => (
