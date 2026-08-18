@@ -141,6 +141,53 @@ describe("conversation sidebar projection", () => {
       .toEqual(groups.find((group) => group.kind === "chats")!.conversations.map((row) => row.id));
   });
 
+  it("continues the selected total order across date and block-count ties", async () => {
+    insertConversation({
+      id: "date-a",
+      title: "Zulu title",
+      startedAt: "2026-08-18T12:00:00Z",
+      blocks: 2,
+      cwd: "/Users/me/Main/repo-a",
+    });
+    insertConversation({
+      id: "date-b",
+      title: "Alpha title",
+      startedAt: "2026-08-18T12:00:00Z",
+      blocks: 2,
+      cwd: "/Users/me/Main/repo-a",
+    });
+    insertConversation({
+      id: "older-high",
+      startedAt: "2026-08-18T11:00:00Z",
+      blocks: 5,
+      cwd: "/Users/me/Main/repo-a",
+    });
+    const router = new Router();
+    registerConversationRoutes(router);
+
+    const initialDate = groupsOf(await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=1",
+    })).find((group) => group.label === "Repo A")!;
+    const nextDate = groupsOf(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?limit=1&group_key=${encodeURIComponent(initialDate.key)}&cursor=${encodeURIComponent(initialDate.next_cursor!)}`,
+    }))[0];
+    expect([...initialDate.conversations, ...nextDate.conversations].map((row) => row.id))
+      .toEqual(["date-a", "date-b"]);
+
+    const initialBlocks = groupsOf(await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=2&sort=block_count",
+    })).find((group) => group.label === "Repo A")!;
+    const nextBlocks = groupsOf(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?limit=2&sort=block_count&group_key=${encodeURIComponent(initialBlocks.key)}&cursor=${encodeURIComponent(initialBlocks.next_cursor!)}`,
+    }))[0];
+    expect([...initialBlocks.conversations, ...nextBlocks.conversations].map((row) => row.id))
+      .toEqual(["older-high", "date-a", "date-b"]);
+  });
+
   it("preserves filters, exact full-text authority, subagent exclusion, and both sorts", async () => {
     insertConversation({
       id: "alpha-high",
