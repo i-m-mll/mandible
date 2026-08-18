@@ -78,6 +78,7 @@ import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import type { WorkRepo } from './work';
 import { useChatViewState } from './conversation-view-state';
+import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
@@ -506,11 +507,6 @@ type ConversationAppendSseDetail = {
 };
 function conversationShell(conversation: Conversation): ConversationWithDetails {
   return { ...conversation, blocks: [], children: [], parent: null };
-}
-
-function getEntryTitle(entry: ChatEntry): string {
-  if (entry.conversation) return getConversationTitle(entry.conversation);
-  return stripMarkdownText(entry.session?.label) || 'Untitled';
 }
 
 // ── Props ──
@@ -2945,11 +2941,16 @@ export function ConversationsView({
         return;
       }
       const currentGroup = groupsRef.current[groupIndex];
+      const currentConversation = currentGroup.conversations.find((conversation) => conversation.id === data.id)!;
+      const sortKeyChanged = sort === 'blocks'
+        ? typeof data.block_count === 'number' && data.block_count !== currentConversation.block_count
+        : typeof data.started_at === 'string' && data.started_at !== currentConversation.started_at;
       const result = mergeConversationSummaryIntoList(currentGroup.conversations, data);
       if (result.applied) {
         setServerGroups(groupsRef.current.map((group, index) => (
           index === groupIndex ? { ...group, conversations: result.conversations } : group
         )));
+        if (sortKeyChanged) scheduleListRefetch();
       } else if (result.refetch) {
         scheduleListRefetch();
       }
@@ -3099,14 +3100,16 @@ export function ConversationsView({
       });
     }
 
-    const compareEntries = (a: ChatEntry, b: ChatEntry) => {
-      if (sort === 'blocks') {
-        const aBlocks = a.conversation?.block_count ?? 0;
-        const bBlocks = b.conversation?.block_count ?? 0;
-        if (aBlocks !== bBlocks) return bBlocks - aBlocks;
-      }
-      return b.time - a.time || getEntryTitle(a).localeCompare(getEntryTitle(b));
+    const entryOrderRow = (entry: ChatEntry) => entry.conversation ?? {
+      id: entry.key,
+      started_at: Number.isFinite(entry.time) ? new Date(entry.time).toISOString() : '',
+      block_count: 0,
     };
+    const compareEntries = (a: ChatEntry, b: ChatEntry) => compareConversationSidebarRows(
+      entryOrderRow(a),
+      entryOrderRow(b),
+      sort === 'blocks' ? 'block_count' : 'started_at',
+    );
     const sortEntries = (items: ChatEntry[]) => [...items].sort(compareEntries);
 
     for (const group of groups) {

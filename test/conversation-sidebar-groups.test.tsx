@@ -7,6 +7,7 @@ import { ConversationsView } from '../ui/src/views/conversations.js';
 import { normalizeSidebarGroupLimit } from '../ui/src/components/shared/sidebar-group-settings.js';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../ui/src/state.js';
+import { compareConversationSidebarRows } from '../src/conversations/sidebar-order.js';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -184,6 +185,72 @@ describe('conversation sidebar groups', () => {
     });
     await screen.findByRole('button', { name: 'Open conversation Pinned renamed' });
     expect(screen.getByRole('button', { name: 'Open conversation Pinned two' })).toBeTruthy();
+  });
+
+  it('keeps the rendered project prefix stable when a date continuation conflicts with ended time and title', async () => {
+    const first = {
+      ...projectOne,
+      id: 'date-a',
+      title: 'Zulu first',
+      started_at: '2026-08-18T12:00:00.000Z',
+      ended_at: '2026-08-18T12:01:00.000Z',
+    };
+    const second = {
+      ...projectTwo,
+      id: 'date-b',
+      title: 'Alpha second',
+      started_at: '2026-08-18T11:00:00.000Z',
+      ended_at: '2026-08-18T13:00:00.000Z',
+    };
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => (
+      params.group_key
+        ? { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [second], next_cursor: null })] }
+        : { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [first], next_cursor: 'date-cursor' })] }
+    ));
+    renderView();
+
+    const section = (await screen.findByRole('button', { name: /^Mandible/ })).closest('section') as HTMLElement;
+    const original = within(section).getByRole('button', { name: 'Open conversation Zulu first' });
+    await waitFor(() => expect(original.getAttribute('aria-current')).toBe('true'));
+    const originalHtml = original.outerHTML;
+    fireEvent.click(within(section).getByRole('button', { name: 'Show more' }));
+    await within(section).findByRole('button', { name: 'Open conversation Alpha second' });
+
+    const rows = within(section).getAllByRole('button', { name: /^Open conversation/ });
+    expect(rows.map((row) => row.getAttribute('aria-label'))).toEqual([
+      'Open conversation Zulu first',
+      'Open conversation Alpha second',
+    ]);
+    expect(rows[0]).toBe(original);
+    expect(rows[0].outerHTML).toBe(originalHtml);
+  });
+
+  it('uses id order for block-count ties and refetches only for a true sort-key update', async () => {
+    FakeEventSource.instances = [];
+    __resetSharedSseForTests(FakeEventSource as unknown as typeof EventSource);
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const first = { ...projectOne, id: 'block-a', title: 'Zulu first', block_count: 4, started_at: '2026-08-18T14:00:00.000Z' };
+    const second = { ...projectTwo, id: 'block-b', title: 'Alpha second', block_count: 4, started_at: '2026-08-18T13:00:00.000Z' };
+    expect(compareConversationSidebarRows(first, second, 'block_count')).toBeLessThan(0);
+    const getSidebar = vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => (
+      params.group_key
+        ? { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [second], next_cursor: null })] }
+        : { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [first], next_cursor: 'block-cursor' })] }
+    ));
+    renderView();
+    await screen.findByRole('button', { name: 'Open conversation Zulu first' });
+    const section = screen.getByRole('button', { name: /^Mandible/ }).closest('section') as HTMLElement;
+    fireEvent.click(within(section).getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(within(section).getByRole('button', { name: 'Open conversation Alpha second' })).toBeTruthy());
+    expect(within(section).getAllByRole('button', { name: /^Open conversation/ }).map((row) => row.getAttribute('aria-label')))
+      .toEqual(['Open conversation Zulu first', 'Open conversation Alpha second']);
+    expect(getSidebar).toHaveBeenCalledTimes(2);
+
+    FakeEventSource.instances[0].emit({
+      type: 'conversation:updated',
+      data: { id: first.id, block_count: 4, started_at: '2026-08-18T12:00:00.000Z' },
+    });
+    await waitFor(() => expect(getSidebar).toHaveBeenCalledTimes(4), { timeout: 1500 });
   });
 
   it('deduplicates provider-backed live sessions, preserves sort, and consumes local overflow before another request', async () => {

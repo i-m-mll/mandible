@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 
-export type ConversationSidebarSort = "started_at" | "block_count";
+import {
+  compareConversationSidebarRows,
+  type ConversationSidebarSort,
+} from "./sidebar-order.js";
+
+export type { ConversationSidebarSort } from "./sidebar-order.js";
 export type ConversationSidebarGroupKind = "pinned" | "project" | "chats";
 
 export interface ConversationSidebarRow {
@@ -120,20 +125,6 @@ function sortValue(row: ConversationSidebarRow, sort: ConversationSidebarSort): 
   return sort === "block_count" ? row.block_count : row.started_at;
 }
 
-function compareRows(
-  left: ConversationSidebarRow,
-  right: ConversationSidebarRow,
-  sort: ConversationSidebarSort,
-): number {
-  if (sort === "block_count" && left.block_count !== right.block_count) {
-    return right.block_count - left.block_count;
-  }
-  if (sort === "started_at" && left.started_at !== right.started_at) {
-    return right.started_at.localeCompare(left.started_at);
-  }
-  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
-}
-
 function encodeCursor(payload: CursorPayload): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
@@ -234,7 +225,9 @@ export function projectConversationSidebar<Row extends ConversationSidebarRow>(o
     ? groups.filter((group) => group.key === options.groupKey)
     : groups;
   return selected.map((group) => {
-    const sorted = [...group.rows].sort((left, right) => compareRows(left, right, options.sort));
+    const sorted = [...group.rows].sort((left, right) => (
+      compareConversationSidebarRows(left, right, options.sort)
+    ));
     const page = paginate(
       sorted,
       group.key,
