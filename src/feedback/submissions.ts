@@ -139,7 +139,7 @@ export interface SubmissionFactPacket {
   supersedes_submission_id: string | null;
   superseded_by_submission_id: string | null;
   canonical_ref: string;
-  document: null | { artifact_version_id: string; previous_round_id: string | null };
+  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: string | null };
   answers: FrozenAnswer[];
   annotations: FrozenAnnotation[];
 }
@@ -155,8 +155,8 @@ export function readSubmissionFactPacket(
       ORDER BY ordinal LIMIT 1`,
   ).get(submission.collection_id, submission.actor_user_id, submission.id) as { id: string } | undefined;
   const document = db.prepare(
-    "SELECT artifact_version_id, previous_round_id FROM feedback_collection_documents WHERE collection_id = ?",
-  ).get(submission.collection_id) as { artifact_version_id: string; previous_round_id: string | null } | undefined;
+    "SELECT artifact_version_id, previous_round_id, profile FROM feedback_collection_documents WHERE collection_id = ?",
+  ).get(submission.collection_id) as { artifact_version_id: string; previous_round_id: string | null; profile: string | null } | undefined;
   const answerRows = db.prepare(
     `SELECT sa.item_id, i.client_item_key, sa.item_revision_id, sa.response_event_id,
             r.response_type, e.value_json, e.actor_user_id
@@ -244,6 +244,7 @@ export function exportSubmissionMarkdown(
     `submitted_at: ${new Date(packet.created_at).toISOString()}`,
     `document_artifact_version: ${document?.artifact_version_id ?? "none"}`,
     `document_content_hash: ${documentHash ?? "none"}`,
+    `document_profile: ${document?.profile ?? "none"}`,
     `previous_round: ${document?.previous_round_id ?? "none"}`,
     "---",
     "",

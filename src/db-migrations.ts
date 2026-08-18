@@ -4704,11 +4704,54 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
         FROM conversation_blocks`,
     ],
   },
+  {
+    version: 141,
+    name: "briefing_directive_bindings",
+    statements: [
+      `ALTER TABLE feedback_collection_documents ADD COLUMN profile TEXT CHECK(profile IS NULL OR profile = 'mandible-briefing.v1')`,
+      `CREATE TABLE feedback_item_directives (
+        collection_id TEXT NOT NULL REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        item_revision_id TEXT PRIMARY KEY REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        directive_key TEXT NOT NULL CHECK(length(directive_key) BETWEEN 1 AND 128),
+        definition_digest TEXT NOT NULL CHECK(length(definition_digest) = 64),
+        start_offset INTEGER NOT NULL CHECK(start_offset >= 0),
+        end_offset INTEGER NOT NULL CHECK(end_offset > start_offset),
+        body_start_offset INTEGER NOT NULL CHECK(body_start_offset >= start_offset),
+        body_end_offset INTEGER NOT NULL CHECK(body_end_offset > body_start_offset AND body_end_offset <= end_offset),
+        created_at INTEGER NOT NULL,
+        UNIQUE(collection_id, directive_key)
+      )`,
+    ],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function verifyBriefingDirectiveV141Schema(db: Db): void {
+  const documentColumns = (db.prepare("PRAGMA table_info(feedback_collection_documents)").all() as Array<{ name: string }>)
+    .map((column) => column.name);
+  if (!documentColumns.includes("profile") || !tableExists(db, "feedback_item_directives")) {
+    throw new Error("migration 141 verification: directive profile schema is incomplete");
+  }
+  const required = ["collection_id", "item_revision_id", "directive_key", "definition_digest", "start_offset", "end_offset", "body_start_offset", "body_end_offset", "created_at"];
+  const columns = (db.prepare("PRAGMA table_info(feedback_item_directives)").all() as Array<{ name: string }>)
+    .map((column) => column.name);
+  if (required.some((column) => !columns.includes(column))) {
+    throw new Error("migration 141 verification: directive binding columns diverge");
+  }
+  const sql = ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'feedback_item_directives'")
+    .get() as { sql: string } | undefined)?.sql ?? "").replace(/\s+/g, " ");
+  for (const fragment of [
+    "REFERENCES feedback_collections(id) ON DELETE RESTRICT",
+    "PRIMARY KEY REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT",
+    "UNIQUE(collection_id, directive_key)",
+    "body_end_offset > body_start_offset",
+  ]) {
+    if (!sql.includes(fragment)) throw new Error(`migration 141 verification: missing ${fragment}`);
+  }
 }
 
 function verifyConversationSourceV140Schema(db: Db): void {
@@ -5000,6 +5043,22 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
             // head database. The complete additive schema is already canonical.
             statements = [];
           }
+        }
+      }
+      if (migration.name === "briefing_directive_bindings") {
+        const table = "feedback_item_directives";
+        if (!tableExists(db, "feedback_collection_documents")) {
+          statements = [];
+        } else if (hasColumn(db, "feedback_collection_documents", "profile")) {
+          if (!tableExists(db, table)) {
+            throw new Error("migration 141 precondition: document profile exists without directive bindings");
+          }
+          // Rewound head-shaped test databases already have the full additive
+          // v141 shape. Never replay ALTER TABLE against that shape.
+          verifyBriefingDirectiveV141Schema(db);
+          statements = [];
+        } else if (tableExists(db, table)) {
+          throw new Error("migration 141 precondition: directive bindings exist without document profile");
         }
       }
       for (const statement of statements) {

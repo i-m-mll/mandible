@@ -11,6 +11,7 @@ import { readArtifactBytesFull } from "../artifact-content.js";
 import { resolveArtifactProject } from "../permissions/resources.js";
 import { evaluateGlobalCapability, evaluateProjectAccess } from "../permissions/store.js";
 import { getCanonicalArtifactVersion } from "../provider-artifacts.js";
+import { BRIEFING_PROFILE, BriefingDirectiveError, parseBriefingDirectives, type BriefingDirective } from "./briefing-directives.js";
 
 export interface AskCreateItem {
   client_item_key: string;
@@ -31,7 +32,7 @@ export interface AskCreatePacket {
   expires_at: number;
   retention_expires_at?: number | null;
   items: AskCreateItem[];
-  document?: { artifact_version: string; previous_round_id?: string | null };
+  document?: { artifact_version: string; previous_round_id?: string | null; profile?: typeof BRIEFING_PROFILE };
 }
 
 export interface AskCreationResult {
@@ -83,7 +84,7 @@ type NormalizedPacket = {
   expires_at: number;
   retention_expires_at: number | null;
   items: NormalizedItem[];
-  document?: { artifact_version: string; previous_round_id: string | null };
+  document?: { artifact_version: string; previous_round_id: string | null; profile: typeof BRIEFING_PROFILE | null };
 };
 
 type AskRow = {
@@ -240,7 +241,7 @@ function normalizePacket(value: unknown, createdAt: number | null): NormalizedPa
   let document: NormalizedPacket["document"];
   if (packet.document !== undefined) {
     const rawDocument = plainRecord(packet.document, "document");
-    assertOnlyKeys(rawDocument, ["artifact_version", "previous_round_id"], "document");
+    assertOnlyKeys(rawDocument, ["artifact_version", "previous_round_id", "profile"], "document");
     const artifactVersion = nonblank(rawDocument.artifact_version, "document.artifact_version");
     if (!/^artifact-version:[0-9a-z-]+$/.test(artifactVersion)) {
       throw new AskStoreError("document.artifact_version must be a canonical full artifact-version id", 400, "invalid_document_version");
@@ -248,7 +249,12 @@ function normalizePacket(value: unknown, createdAt: number | null): NormalizedPa
     document = {
       artifact_version: artifactVersion,
       previous_round_id: nullableString(rawDocument.previous_round_id, "document.previous_round_id"),
+      profile: rawDocument.profile === undefined ? null : rawDocument.profile === BRIEFING_PROFILE ? BRIEFING_PROFILE
+        : (() => { throw new AskStoreError("document.profile is unsupported"); })(),
     };
+    if (document.profile && items.length !== 0) {
+      throw new AskStoreError("profiled documents require items: []");
+    }
   }
   return {
     request_key: requestKey,
@@ -259,6 +265,16 @@ function normalizePacket(value: unknown, createdAt: number | null): NormalizedPa
     items,
     ...(document ? { document } : {}),
   };
+}
+
+function directiveItems(directives: BriefingDirective[]): NormalizedItem[] {
+  return directives.map((directive) => ({
+    client_item_key: directive.key, item_kind: "item", parent_client_item_key: null,
+    title: directive.key, prompt: directive.body, description: null, response_type: "verdict",
+    required: directive.required,
+    // Verdict keeps its two values in the response contract, not options.
+    options: [],
+  }));
 }
 
 function canonicalJson(value: unknown): string {
@@ -351,6 +367,46 @@ function requireDocumentReaders(db: Db, versionId: string, userIds: readonly str
   }
 }
 
+type BindingValidation = { status: "valid" | "invalid" | "unavailable"; reason?: string; directives: BriefingDirective[] };
+
+function verifyDirectiveBindings(db: Db, askId: string, unavailableIsError = true): BindingValidation {
+  const document = db.prepare("SELECT artifact_version_id, profile FROM feedback_collection_documents WHERE collection_id = ?")
+    .get(askId) as { artifact_version_id: string; profile: string | null } | undefined;
+  if (!document?.profile) return { status: "valid", directives: [] };
+  try {
+    const directives = parseBriefingDirectives(pinnedDocument(db, document.artifact_version_id, "document_unavailable").source);
+    const bindings = db.prepare(
+      `SELECT d.item_revision_id AS binding_revision_id, d.directive_key, d.definition_digest, d.start_offset, d.end_offset, d.body_start_offset, d.body_end_offset,
+              i.collection_id AS item_collection_id, i.current_revision_id, i.client_item_key,
+              r.response_type, r.required, r.prompt,
+              (SELECT COUNT(*) FROM feedback_item_options o WHERE o.revision_id = r.id) AS option_count
+         FROM feedback_item_directives d
+         JOIN feedback_item_revisions r ON r.id = d.item_revision_id
+         JOIN feedback_items i ON i.id = r.item_id
+        WHERE d.collection_id = ?`,
+    ).all(askId) as Array<{ binding_revision_id: string; directive_key: string; definition_digest: string; start_offset: number; end_offset: number; body_start_offset: number; body_end_offset: number; item_collection_id: string; current_revision_id: string; client_item_key: string | null; response_type: FeedbackResponseType | null; required: 0 | 1; prompt: string; option_count: number }>;
+    const match = bindings.length === directives.length && directives.every((directive) => bindings.some((binding) =>
+      binding.directive_key === directive.key && binding.definition_digest === directive.definition_digest
+      && binding.start_offset === directive.start_offset && binding.end_offset === directive.end_offset
+      && binding.body_start_offset === directive.body_start_offset && binding.body_end_offset === directive.body_end_offset
+      && binding.item_collection_id === askId && binding.current_revision_id === binding.binding_revision_id
+      && binding.client_item_key === directive.key && binding.response_type === "verdict"
+      && binding.required === (directive.required ? 1 : 0) && binding.prompt === directive.body
+      && binding.option_count === 0));
+    if (!match) return { status: "invalid", reason: "directive bindings no longer match the pinned document", directives };
+    return { status: "valid", directives };
+  } catch (error) {
+    if (error instanceof BriefingDirectiveError) return { status: "invalid", reason: "pinned document no longer satisfies the briefing profile", directives: [] };
+    if (unavailableIsError && error instanceof AskStoreError) throw error;
+    return { status: "unavailable", reason: "pinned document bytes are unavailable", directives: [] };
+  }
+}
+
+function requireValidDirectiveBindings(db: Db, askId: string): void {
+  const check = verifyDirectiveBindings(db, askId);
+  if (check.status !== "valid") throw new AskStoreError(check.reason ?? "directive bindings are invalid", 409, "directive_binding_invalid");
+}
+
 export function createAsk(
   db: Db,
   packetValue: unknown,
@@ -377,8 +433,13 @@ export function createAsk(
     requireRequesterSession(db, packet.session_id, options.requesterUserId);
     requireResponders(db, packet.responder_user_ids);
     let documentVersion: ReturnType<typeof pinnedDocument>["version"] | null = null;
+    let directives: BriefingDirective[] = [];
     if (packet.document) {
       documentVersion = pinnedDocument(db, packet.document.artifact_version, "invalid_document_version").version;
+      if (packet.document.profile) {
+        try { directives = parseBriefingDirectives(pinnedDocument(db, packet.document.artifact_version, "invalid_document_version").source); }
+        catch (error) { throw new AskStoreError(error instanceof Error ? error.message : "invalid briefing document", 400, "invalid_briefing_document"); }
+      }
       requireDocumentReaders(db, documentVersion.id, [options.requesterUserId, ...packet.responder_user_ids]);
       if (packet.document.previous_round_id) {
         const previous = db.prepare(
@@ -412,13 +473,14 @@ export function createAsk(
     if (packet.document && documentVersion) {
       db.prepare(
         `INSERT INTO feedback_collection_documents
-           (collection_id, artifact_version_id, previous_round_id, created_at)
-         VALUES (?, ?, ?, ?)`,
-      ).run(askId, documentVersion.id, packet.document.previous_round_id, now);
+           (collection_id, artifact_version_id, previous_round_id, profile, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(askId, documentVersion.id, packet.document.previous_round_id, packet.document.profile, now);
     }
+    const materializedItems = packet.document?.profile ? directiveItems(directives) : packet.items;
     const itemIds = new Map<string, string>();
     const revisionIds = new Map<string, string>();
-    packet.items.forEach((item) => {
+    materializedItems.forEach((item) => {
       const itemId = randomUUID();
       itemIds.set(item.client_item_key, itemId);
       db.prepare(
@@ -428,7 +490,7 @@ export function createAsk(
          VALUES (?, ?, NULL, ?, 'opaque', NULL, ?, NULL, ?, NULL)`,
       ).run(itemId, askId, item.item_kind, item.client_item_key, now);
     });
-    packet.items.forEach((item, position) => {
+    materializedItems.forEach((item, position) => {
       const itemId = itemIds.get(item.client_item_key)!;
       const revisionId = randomUUID();
       revisionIds.set(item.client_item_key, revisionId);
@@ -448,7 +510,7 @@ export function createAsk(
         ).run(revisionId, option.option_key, option.label, option.description, optionPosition);
       });
     });
-    packet.items.forEach((item) => {
+    materializedItems.forEach((item) => {
       db.prepare("UPDATE feedback_items SET parent_item_id = ?, current_revision_id = ? WHERE id = ?")
         .run(
           item.parent_client_item_key ? itemIds.get(item.parent_client_item_key)! : null,
@@ -456,6 +518,16 @@ export function createAsk(
           itemIds.get(item.client_item_key)!,
         );
     });
+    if (packet.document?.profile) {
+      for (const directive of directives) {
+        db.prepare(
+          `INSERT INTO feedback_item_directives (collection_id, item_revision_id, directive_key, definition_digest,
+             start_offset, end_offset, body_start_offset, body_end_offset, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(askId, revisionIds.get(directive.key), directive.key, directive.definition_digest,
+          directive.start_offset, directive.end_offset, directive.body_start_offset, directive.body_end_offset, now);
+      }
+    }
     db.prepare(
       `INSERT INTO feedback_collection_events
          (id, collection_id, operation, previous_event_id, actor_user_id, metadata_json, created_at)
@@ -625,7 +697,9 @@ export type AskReadProjection = {
     ordinal: number;
   };
   latest_submission_for_actor?: null | { id: string; ordinal: number };
-  document: null | { artifact_version_id: string; previous_round_id: string | null };
+  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
+  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: typeof BRIEFING_PROFILE | null };
+  directive_binding: { status: "valid" | "invalid" | "unavailable"; reason?: string } | null;
   annotations?: Array<{
     annotation_event_id: string; annotation_kind: "comment" | "suggest_replacement";
     start_offset: number; end_offset: number; quote: string; body: string | null;
@@ -658,6 +732,7 @@ export type AskReadProjection = {
       options: Array<{ option_key: string; label: string; description: string | null; position: number }>;
     };
     effective_response?: null | { response_event_id: string; value: FeedbackResponseValue };
+    directive?: { key: string; definition_digest: string; start_offset: number; end_offset: number; body_start_offset: number; body_end_offset: number };
   }>;
 };
 
@@ -683,10 +758,22 @@ export function readAsk(
       `SELECT id, ordinal FROM feedback_submissions
         WHERE collection_id = ? AND actor_user_id = ? ORDER BY ordinal DESC LIMIT 1`,
     ).get(askId, options.answerActorUserId) as { id: string; ordinal: number } | undefined : undefined;
+    const latestFrozenMembership = latestSubmissionForActor ? {
+      answer_event_ids: (db.prepare("SELECT response_event_id FROM feedback_submission_answers WHERE submission_id = ? ORDER BY position, response_event_id")
+        .all(latestSubmissionForActor.id) as Array<{ response_event_id: string }>).map((row) => row.response_event_id),
+      annotation_event_ids: (db.prepare("SELECT annotation_event_id FROM feedback_submission_annotations WHERE submission_id = ? ORDER BY position, annotation_event_id")
+        .all(latestSubmissionForActor.id) as Array<{ annotation_event_id: string }>).map((row) => row.annotation_event_id),
+    } : null;
     const document = db.prepare(
-      `SELECT artifact_version_id, previous_round_id
+      `SELECT artifact_version_id, previous_round_id, profile
          FROM feedback_collection_documents WHERE collection_id = ?`,
-    ).get(askId) as { artifact_version_id: string; previous_round_id: string | null } | undefined;
+    ).get(askId) as { artifact_version_id: string; previous_round_id: string | null; profile: typeof BRIEFING_PROFILE | null } | undefined;
+    const binding = document?.profile ? verifyDirectiveBindings(db, askId, false) : null;
+    const bindingRows = db.prepare(
+      `SELECT item_revision_id, directive_key, definition_digest, start_offset, end_offset, body_start_offset, body_end_offset
+         FROM feedback_item_directives WHERE collection_id = ?`,
+    ).all(askId) as Array<{ item_revision_id: string; directive_key: string; definition_digest: string; start_offset: number; end_offset: number; body_start_offset: number; body_end_offset: number }>;
+    const bindingByRevision = new Map(bindingRows.map((row) => [row.item_revision_id, row]));
     const annotations = options.answerActorUserId ? db.prepare(
       `SELECT e.id AS annotation_event_id, e.annotation_kind, e.start_offset, e.end_offset,
               e.quote, e.body, e.replacement_text, e.created_at
@@ -762,7 +849,9 @@ export function readAsk(
         lifecycle_event_id: head.id,
         latest_submission: latestSubmission ?? null,
         ...(options.answerActorUserId ? { latest_submission_for_actor: latestSubmissionForActor ?? null } : {}),
+        ...(options.answerActorUserId ? { latest_frozen_membership: latestFrozenMembership } : {}),
         document: document ?? null,
+        directive_binding: binding ? { status: binding.status, ...(binding.reason ? { reason: binding.reason } : {}) } : null,
         ...(options.answerActorUserId ? { annotations } : {}),
         previous_round: previousRound,
         lifecycle: {
@@ -775,6 +864,7 @@ export function readAsk(
           const effective = options.answerActorUserId
             ? responseStatement.get(row.revision_id, options.answerActorUserId) as { id: string; value_json: string } | undefined
             : undefined;
+          const directive = bindingByRevision.get(row.revision_id);
           return {
             id: row.id,
             client_item_key: row.client_item_key,
@@ -798,6 +888,11 @@ export function readAsk(
                 ? { response_event_id: effective.id, value: parseResponseValue(effective.value_json) }
                 : null,
             } : {}),
+            ...(directive ? { directive: {
+              key: directive.directive_key, definition_digest: directive.definition_digest,
+              start_offset: directive.start_offset, end_offset: directive.end_offset,
+              body_start_offset: directive.body_start_offset, body_end_offset: directive.body_end_offset,
+            } } : {}),
           };
         }),
       },
@@ -879,6 +974,7 @@ export function applyAskAnswers(
     const ask = getAskRow(db, askId);
     if (!ask) throw new AskStoreError("ask not found", 404, "not_found");
     requireAudience(ask, actorUserId);
+    requireValidDirectiveBindings(db, askId);
     materializeExpiryInTransaction(db, ask, now);
     const state = lifecycleState(lifecycleHead(db, askId).operation);
     if (state === "expired" || state === "cancelled") {
@@ -973,6 +1069,7 @@ export function applyAskAnnotations(
     const ask = getAskRow(db, askId);
     if (!ask) throw new AskStoreError("ask not found", 404, "not_found");
     requireAudience(ask, actorUserId);
+    requireValidDirectiveBindings(db, askId);
     materializeExpiryInTransaction(db, ask, now);
     const state = lifecycleState(lifecycleHead(db, askId).operation);
     if (state === "expired" || state === "cancelled") {
@@ -1067,6 +1164,7 @@ export function submitAsk(
     const ask = getAskRow(db, askId);
     if (!ask) throw new AskStoreError("ask not found", 404, "not_found");
     requireAudience(ask, actorUserId);
+    requireValidDirectiveBindings(db, askId);
     materializeExpiryInTransaction(db, ask, now);
     const head = lifecycleHead(db, askId);
     if (head.id !== input.expected_lifecycle_event_id) {
@@ -1141,6 +1239,24 @@ export function submitAsk(
         409,
         "stale_submission_annotations",
       );
+    }
+    // A correction freezes membership, not merely its rendered values. Reusing
+    // the exact answer and annotation events would create a semantically empty
+    // immutable submission, so reject it server-side too.
+    if (latest) {
+      const previousAnswers = db.prepare(
+        "SELECT response_event_id FROM feedback_submission_answers WHERE submission_id = ? ORDER BY response_event_id",
+      ).all(latest.id) as Array<{ response_event_id: string }>;
+      const previousAnnotations = db.prepare(
+        "SELECT annotation_event_id FROM feedback_submission_annotations WHERE submission_id = ? ORDER BY annotation_event_id",
+      ).all(latest.id) as Array<{ annotation_event_id: string }>;
+      const sameAnswers = previousAnswers.length === effective.length
+        && previousAnswers.every((entry, index) => entry.response_event_id === [...effective].map((answer) => answer.response_event_id).sort()[index]);
+      const sameAnnotations = previousAnnotations.length === effectiveAnnotations.length
+        && previousAnnotations.every((entry, index) => entry.annotation_event_id === [...effectiveAnnotations].map((annotation) => annotation.annotation_event_id).sort()[index]);
+      if (sameAnswers && sameAnnotations) {
+        throw new AskStoreError("submission has no changes from the latest frozen membership", 409, "no_op_correction");
+      }
     }
     const lifecycleEventId = randomUUID();
     db.prepare(

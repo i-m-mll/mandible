@@ -166,6 +166,7 @@ export const METADATA_BACKUP_TABLES = [
   "feedback_publications",
   "feedback_items",
   "feedback_item_revisions",
+  "feedback_item_directives",
   "feedback_item_options",
   "feedback_publication_items",
   "feedback_collection_events",
