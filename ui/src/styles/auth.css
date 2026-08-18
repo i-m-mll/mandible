@@ -245,56 +245,17 @@
   z-index: 2;
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  background: var(--bg);
 }
 
 .auth-detail--with-preview-notice .auth-detail__header {
   margin-top: 0;
 }
 
-.auth-detail__header-primary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
-  padding: 20px 24px;
-}
-
-.auth-detail__header-main {
+.auth-detail__secondary-metadata {
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.auth-detail__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.auth-detail__repo {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.auth-detail__short-ref {
-  color: var(--text-muted);
-  font-size: 12px;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.auth-detail__eyebrow .status-pill,
-.auth-detail__eyebrow .attempt-tag,
-.auth-detail__eyebrow .branch-merged-tag {
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .auth-detail__header-actions {
@@ -329,15 +290,6 @@
   width: 17px;
   height: 17px;
   fill: currentColor;
-}
-
-.auth-detail__title {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 22px;
-  line-height: 1.25;
-  font-weight: 650;
-  overflow-wrap: anywhere;
 }
 
 .auth-detail__subtitle {
@@ -2412,21 +2364,10 @@
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .auth-detail__header {
-  background: var(--surface-popover);
-  border-bottom-color: var(--neutral-alpha-08);
-  box-shadow: var(--shadow-header);
-}
-
 :root[data-theme='light'] .auth-sidebar-layout {
   position: relative;
   z-index: 2;
   isolation: isolate;
-}
-
-:root[data-theme='light'] .auth-detail__header {
-  background: #ffffff;
-  box-shadow: none;
 }
 
 :root[data-theme='light'] .auth-detail__body .panel,

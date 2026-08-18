@@ -51,6 +51,16 @@ For Timeline specifically, the shared global time axis is a contract: changing
 expansion or row visibility changes the visible row tree, never the meaning of
 horizontal time coordinates.
 
+## Data-view composition
+
+Build data views from the shared composition primitives first. Detail panes use
+`DetailPaneShell` for one anchored header, one scrolling body, and an optional
+anchored footer; compose the header with the typed `DetailPaneHeader` standard,
+compact, or versioned variant. A bespoke shell or header requires a concrete written
+justification naming the missing shared-contract capability before it is added.
+Do not reproduce identity/copy controls, long canonical IDs, or action bars in
+the scrolling body.
+
 ## Production runtime gate
 
 For a candidate that can affect Mandible daemon or desktop runtime behavior,

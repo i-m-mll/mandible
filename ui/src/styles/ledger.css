@@ -24,21 +24,11 @@
 .ledger-issue-detail__header {
   position: relative;
   z-index: 2;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.ledger-issue-detail__header-primary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 14px;
 }
 
 .issues-detail .ledger-issue-detail__header {
   position: relative;
   z-index: 12;
-  padding: 24px 24px 14px;
-  background: #0b0f14;
 }
 
 .issues-detail .ledger-issue-detail__body {
@@ -64,67 +54,12 @@
   max-width: none;
 }
 
-.ledger-issue-detail__heading {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-}
-
-.ledger-issue-detail__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.ledger-issue-detail__eyebrow code {
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.ledger-issue-detail__eyebrow .status-pill {
-  margin-left: 2px;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.ledger-issue-detail h2 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 22px;
-  line-height: 1.25;
-  letter-spacing: 0;
-}
-
-.ledger-issue-detail__title-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.ledger-issue-detail--compact h2 {
-  font-size: 16px;
-}
-
-.ledger-issue-detail__header-actions,
 .ledger-issue-detail__actions,
 .ledger-issue-detail__labels {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.ledger-issue-detail__header-actions {
-  justify-content: flex-end;
-  flex-shrink: 0;
 }
 
 .ledger-status-button {

@@ -14,6 +14,7 @@ export type DetailPaneShellProps = {
   footerClassName?: string;
   headerRef?: Ref<HTMLElement>;
   bodyRef?: Ref<HTMLDivElement>;
+  /** One anchored header composition. Prefer DetailPaneHeader for data views. */
   header: ComponentChildren;
   subheader?: ComponentChildren;
   footer?: ComponentChildren;
