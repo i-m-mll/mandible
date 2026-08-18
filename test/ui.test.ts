@@ -1278,11 +1278,15 @@ describe('AuthQueueView', () => {
     const authPane = document.querySelector('.auth-detail-pane');
     const authHeader = document.querySelector('.auth-detail__header');
     const authBody = document.querySelector('.auth-detail__body');
+    const canonicalHeaders = authHeader?.querySelectorAll('[data-detail-pane-header-variant="standard"]');
+    const canonicalHeader = canonicalHeaders?.[0] as HTMLElement | undefined;
     expect(authPane).toBeTruthy();
     expect(authPane?.classList.contains('detail-pane-shell')).toBe(true);
     expect(authHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
     expect(authBody?.classList.contains('detail-pane-shell__body')).toBe(true);
     expect(authHeader?.querySelector('.detail-pane-shell__header-primary.auth-detail__header-primary')).toBeTruthy();
+    expect(canonicalHeaders).toHaveLength(1);
+    expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
     expect(authPane?.contains(authHeader as Node)).toBe(true);
     expect(authPane?.contains(authBody as Node)).toBe(true);
     expect(authHeader?.nextElementSibling).toBe(authBody);
@@ -1294,22 +1298,28 @@ describe('AuthQueueView', () => {
     expect(screen.queryByText('Branch flow')).toBeNull();
     expect(screen.queryByText('Request')).toBeNull();
     expect(screen.queryByText('Metadata')).toBeNull();
-    expect(document.querySelector('.auth-detail__repo')?.textContent).toBe('mandible');
-    expect(document.querySelector('.auth-detail__short-ref')?.textContent).toBe('req-stru');
-    expect(document.querySelector('.auth-detail__eyebrow .type-badge')).toBeNull();
+    expect(canonicalHeader?.querySelector('.detail-pane-header__entity')?.textContent).toBe('mandible');
+    expect(canonicalHeader?.querySelector('.detail-pane-header__display-ref')?.textContent).toBe('req-stru');
+    expect(canonicalHeader?.querySelector('.detail-pane-header__identity .type-badge')).toBeNull();
     expect(document.querySelector('.auth-detail-meta')).toBeNull();
     expect(document.querySelector('.auth-detail__header-side')).toBeNull();
     expect(screen.getByText('merge · feature/detail → main')).toBeTruthy();
     expect(screen.getByText('Approve')).toBeTruthy();
 
-    const eyebrow = document.querySelector('.auth-detail__eyebrow') as HTMLElement | null;
+    const topline = canonicalHeader?.querySelector('.detail-pane-header__topline') as HTMLElement | null;
+    const identity = canonicalHeader?.querySelector('.detail-pane-header__identity') as HTMLElement | null;
+    const status = canonicalHeader?.querySelector('.detail-pane-header__status') as HTMLElement | null;
+    const controls = status?.parentElement;
     const copyButton = screen.getByRole('button', { name: 'Copy auth:req-stru' });
-    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
-    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+    const statusPill = status?.querySelector('.status-pill') as HTMLElement | null;
+    const toplineChildren = Array.from(topline?.children ?? []);
     expect(statusPill?.textContent).toBe('Pending');
-    expect(copyButton.parentElement).toBe(eyebrow);
-    expect(statusPill?.parentElement).toBe(eyebrow);
-    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(copyButton.parentElement).toBe(identity);
+    expect(statusPill?.parentElement).toBe(status);
+    expect(toplineChildren.indexOf(controls as Element)).toBe(toplineChildren.indexOf(identity as Element) + 1);
+    const overflowAction = screen.getByRole('button', { name: 'Auth actions' });
+    expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.contains(overflowAction)).toBe(true);
+    expect(authBody?.contains(overflowAction)).toBe(false);
     expect(document.querySelector('.auth-detail__aux-header .auth-detail__action-strip .auth-actions')).toBeTruthy();
     const diffToggle = screen.getByRole('button', { name: 'Show changes diff' });
     expect(diffToggle.closest('.auth-detail__aux-header')).toBeTruthy();
@@ -1335,7 +1345,7 @@ describe('AuthQueueView', () => {
     expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
 
     fireEvent.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith('auth:req-stru');
+    expect(writeText).toHaveBeenCalledWith('req-structured-detail');
 
     fireEvent.click(diffToggle);
     const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
@@ -2779,25 +2789,35 @@ describe('API contract helpers', () => {
 
 describe('LedgerIssueDetail', () => {
   it('renders issue status in the top metadata row after the copy affordance', () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     const detail = issueDetailProjection({
       displayId: 'abc123',
       title: 'Status placement',
     });
+    detail.id = 'abc123-full-canonical-id';
 
     render(h(LedgerIssueDetail, { detail }));
 
-    const eyebrow = document.querySelector('.ledger-issue-detail__eyebrow') as HTMLElement | null;
+    const canonicalHeaders = document.querySelectorAll('[data-detail-pane-header-variant="standard"]');
+    const canonicalHeader = canonicalHeaders[0] as HTMLElement | undefined;
+    const topline = canonicalHeader?.querySelector('.detail-pane-header__topline') as HTMLElement | null;
+    const identity = canonicalHeader?.querySelector('.detail-pane-header__identity') as HTMLElement | null;
+    const status = canonicalHeader?.querySelector('.detail-pane-header__status') as HTMLElement | null;
+    const controls = status?.parentElement;
     const copyButton = screen.getByRole('button', { name: 'Copy mandible/abc123' });
-    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
-    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+    const statusPill = status?.querySelector('.status-pill') as HTMLElement | null;
+    const toplineChildren = Array.from(topline?.children ?? []);
 
-    expect(eyebrow).toBeTruthy();
+    expect(canonicalHeaders).toHaveLength(1);
+    expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
     expect(statusPill?.textContent).toBe('open');
-    expect(copyButton.parentElement).toBe(eyebrow);
-    expect(statusPill?.parentElement).toBe(eyebrow);
-    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
-    expect(document.querySelector('.ledger-issue-detail__title-row .status-pill')).toBeNull();
-    expect(document.querySelector('.ledger-issue-detail__header-actions .status-pill')).toBeNull();
+    expect(copyButton.parentElement).toBe(identity);
+    expect(statusPill?.parentElement).toBe(status);
+    expect(toplineChildren.indexOf(controls as Element)).toBe(toplineChildren.indexOf(identity as Element) + 1);
     const detailPane = document.querySelector('.ledger-issue-detail');
     const header = document.querySelector('.ledger-issue-detail__header');
     const body = document.querySelector('.ledger-issue-detail__body');
@@ -2809,6 +2829,12 @@ describe('LedgerIssueDetail', () => {
     expect(detailPane?.contains(body as Node)).toBe(true);
     expect(header?.nextElementSibling).toBe(body);
     expect(body?.contains(header as Node)).toBe(false);
+    const overflowAction = screen.getByRole('button', { name: 'Issue actions' });
+    expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.contains(overflowAction)).toBe(true);
+    expect(body?.contains(overflowAction)).toBe(false);
+
+    fireEvent.click(copyButton);
+    expect(writeText).toHaveBeenCalledWith('mandible/abc123-full-canonical-id');
   });
 
   it('prefers canonical project keys over checkout repo ids in copy refs', () => {
@@ -4605,7 +4631,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.issues-detail__content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*gap:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*12;[^}]*padding:\s*24px 24px 14px;[^}]*background:\s*#0b0f14;/s);
+    expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*12;/s);
+    expect(css).not.toMatch(/(?:^|\n)\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*(?:padding|background):/s);
     expect(css).not.toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*sticky;/s);
     expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;/s);
     expect(css).toMatch(/\.issues-detail--metadata-open \.ledger-issue-detail__body\s*\{[^}]*overflow:\s*hidden;/s);
@@ -4648,7 +4675,7 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
     expect(css).not.toMatch(/\.auth-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
     expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*20px 24px 24px;/s);
-    expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
+    expect(css).not.toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*padding:\s*20px 24px;/s);
     expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
     expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
     expect(css).toMatch(/\.auth-detail__panels--single\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
@@ -4660,7 +4687,6 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line,\s*\.auth-diff-file \.d2h-code-side-line\s*\{[^}]*display:\s*flex;[^}]*height:\s*18px;[^}]*line-height:\s*18px;[^}]*overflow:\s*visible;[^}]*white-space:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-ctn\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 auto;[^}]*overflow-wrap:\s*normal;[^}]*white-space:\s*pre;[^}]*word-break:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-prefix\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 12px;[^}]*line-height:\s*18px;/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__header\s*\{[^}]*background:\s*#ffffff;[^}]*box-shadow:\s*none;/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
   });
