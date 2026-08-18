@@ -5,14 +5,13 @@ import { ViewSidebar } from '../../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
 import {
   SidebarItemBadge,
-  SidebarItemOverflowMenu,
   SidebarItemPinAction,
   SidebarItemRow,
-  type SidebarItemOverflowAction,
 } from '../../components/shared/SidebarItemRow';
 import { useSidebarListNavigation } from '../../hooks/useSidebarListNavigation';
 import {
   filterFeedbackCollections,
+  moveVisiblePinnedCollection,
   orderFeedbackCollections,
   type FeedbackCollection,
 } from './collection-model';
@@ -25,7 +24,6 @@ export type CollectionsSidebarProps = {
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
   onSelect(collection: FeedbackCollection): void;
-  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
 };
 
 function kindLabel(kind: FeedbackCollection['kind']): string {
@@ -40,10 +38,9 @@ export function CollectionsSidebar({
   viewState,
   setViewState,
   onSelect,
-  onSetExpiry,
 }: CollectionsSidebarProps): JSX.Element {
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
-  const [expiryBusyId, setExpiryBusyId] = useState<string | null>(null);
+  const [draggedPinnedId, setDraggedPinnedId] = useState<string | null>(null);
   const ordered = useMemo(() => orderFeedbackCollections(
     filterFeedbackCollections(collections, {
       kind: viewState.collectionKindFilter,
@@ -62,18 +59,33 @@ export function CollectionsSidebar({
     () => new Set(viewState.pinnedCollectionIds),
     [viewState.pinnedCollectionIds],
   );
+  const visiblePinned = useMemo(
+    () => ordered.filter((collection) => pinned.has(collection.id)),
+    [ordered, pinned],
+  );
+  const ordinary = useMemo(
+    () => ordered.filter((collection) => !pinned.has(collection.id)),
+    [ordered, pinned],
+  );
   const kinds = useMemo(
     () => [...new Set(collections.map((collection) => collection.kind))].sort(),
     [collections],
   );
   const activeFilterCount = Number(viewState.collectionKindFilter !== 'all')
     + Number(viewState.collectionStateFilter !== 'all');
+  const navigable = viewState.pinnedSectionCollapsed
+    ? ordinary
+    : [...visiblePinned, ...ordinary];
+  const navigableIds = new Set(navigable.map((collection) => collection.id));
   const listNavigation = useSidebarListNavigation({
-    items: ordered,
+    items: navigable,
     getKey: (collection) => collection.id,
-    selectedKey: selectedCollectionId,
+    selectedKey: selectedCollectionId && navigableIds.has(selectedCollectionId)
+      ? selectedCollectionId
+      : null,
     onSelect,
   });
+  const navigationIndex = new Map(navigable.map((collection, index) => [collection.id, index]));
 
   const togglePin = (collectionId: string) => {
     setViewState((current) => {
@@ -87,14 +99,110 @@ export function CollectionsSidebar({
     });
   };
 
-  const toggleExpiry = async (collection: FeedbackCollection) => {
-    if (!onSetExpiry || expiryBusyId) return;
-    setExpiryBusyId(collection.id);
-    try {
-      await onSetExpiry(collection);
-    } finally {
-      setExpiryBusyId(null);
-    }
+  const movePinned = (collectionId: string, targetIndex: number) => {
+    const visibleIds = visiblePinned.map((collection) => collection.id);
+    setViewState((current) => {
+      const next = moveVisiblePinnedCollection(
+        current.pinnedCollectionIds,
+        visibleIds,
+        collectionId,
+        targetIndex,
+      );
+      return next.every((id, index) => id === current.pinnedCollectionIds[index])
+        ? current
+        : { ...current, pinnedCollectionIds: next };
+    });
+  };
+
+  const renderCollection = (collection: FeedbackCollection, pinnedIndex: number | null) => {
+    const navigation = listNavigation.getItemNavigationProps(
+      collection,
+      navigationIndex.get(collection.id) ?? 0,
+    );
+    const isPinned = pinnedIndex !== null;
+    return (
+      <li
+        key={collection.id}
+        className={`feedback-collection-row${draggedPinnedId === collection.id ? ' feedback-collection-row--dragging' : ''}`}
+        draggable={isPinned}
+        onDragStart={isPinned ? (event) => {
+          setDraggedPinnedId(collection.id);
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', collection.id);
+        } : undefined}
+        onDragOver={isPinned ? (event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+        } : undefined}
+        onDrop={isPinned ? (event) => {
+          event.preventDefault();
+          const movedId = draggedPinnedId || event.dataTransfer.getData('text/plain');
+          if (movedId) movePinned(movedId, pinnedIndex);
+          setDraggedPinnedId(null);
+        } : undefined}
+        onDragEnd={isPinned ? () => setDraggedPinnedId(null) : undefined}
+      >
+        <SidebarItemRow
+          tabIndex={navigation.tabIndex}
+          selectRef={navigation.ref}
+          label={collection.label}
+          selectionLabel={`Select collection ${collection.label}`}
+          selectionDescription={`Briefing state: ${collection.state}`}
+          selected={selectedCollectionId === collection.id}
+          ariaCurrent={navigation['aria-current']}
+          onKeyDown={navigation.onKeyDown}
+          onSelect={() => onSelect(collection)}
+          badges={(
+            <SidebarItemBadge
+              className="feedback-collection-row__count"
+              ariaLabel={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
+              title={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
+            >
+              {collection.itemCount}
+            </SidebarItemBadge>
+          )}
+          actions={(
+            <>
+              {isPinned ? (
+                <span className="feedback-collection-row__move-actions">
+                  <button
+                    type="button"
+                    className="sidebar-item-row__action"
+                    aria-label={`Move ${collection.label} up`}
+                    title={`Move ${collection.label} up`}
+                    disabled={pinnedIndex === 0}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      movePinned(collection.id, pinnedIndex - 1);
+                    }}
+                  >
+                    <span aria-hidden="true">↑</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="sidebar-item-row__action"
+                    aria-label={`Move ${collection.label} down`}
+                    title={`Move ${collection.label} down`}
+                    disabled={pinnedIndex === visiblePinned.length - 1}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      movePinned(collection.id, pinnedIndex + 1);
+                    }}
+                  >
+                    <span aria-hidden="true">↓</span>
+                  </button>
+                </span>
+              ) : null}
+              <SidebarItemPinAction
+                label={collection.label}
+                pressed={isPinned}
+                onPress={() => togglePin(collection.id)}
+              />
+            </>
+          )}
+        />
+      </li>
+    );
   };
 
   return (
@@ -190,6 +298,29 @@ export function CollectionsSidebar({
       bodyClassName="feedback-collections-sidebar__body"
     >
       <div data-testid="feedback-collections-sidebar">
+        <section className="feedback-collections-sidebar__pinned" aria-labelledby="briefing-pinned-heading">
+          <button
+            id="briefing-pinned-heading"
+            type="button"
+            className="feedback-collections-sidebar__section-heading"
+            aria-expanded={!viewState.pinnedSectionCollapsed}
+            aria-controls="briefing-pinned-list"
+            onClick={() => setViewState((current) => ({
+              ...current,
+              pinnedSectionCollapsed: !current.pinnedSectionCollapsed,
+            }))}
+          >
+            <strong>Pinned</strong>
+            <em aria-label={`${visiblePinned.length} pinned briefing${visiblePinned.length === 1 ? '' : 's'}`}>
+              {visiblePinned.length}
+            </em>
+          </button>
+          {!viewState.pinnedSectionCollapsed ? (
+            <ul id="briefing-pinned-list" className="feedback-collections-sidebar__list">
+              {visiblePinned.map((collection, index) => renderCollection(collection, index))}
+            </ul>
+          ) : null}
+        </section>
         {ordered.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="status">
@@ -200,57 +331,7 @@ export function CollectionsSidebar({
           </div>
         ) : (
           <ul className="feedback-collections-sidebar__list">
-            {ordered.map((collection, index) => {
-              const isPinned = pinned.has(collection.id);
-              const navigation = listNavigation.getItemNavigationProps(collection, index);
-              const expiryLabel = collection.state === 'expired' ? 'Un-expire' : 'Expire';
-              const overflowActions: SidebarItemOverflowAction[] = (
-                onSetExpiry && collection.expiryReversible
-              ) ? [{
-                  id: 'expiry',
-                  label: expiryBusyId === collection.id ? 'Saving…' : expiryLabel,
-                  ariaLabel: `${expiryLabel} ${collection.label}`,
-                  disabled: expiryBusyId !== null,
-                  onSelect: () => void toggleExpiry(collection),
-                }] : [];
-              return (
-                <li key={collection.id} className="feedback-collection-row">
-                  <SidebarItemRow
-                    tabIndex={navigation.tabIndex}
-                    selectRef={navigation.ref}
-                    label={collection.label}
-                    selectionLabel={`Select collection ${collection.label}`}
-                    selectionDescription={`Briefing state: ${collection.state}`}
-                    selected={selectedCollectionId === collection.id}
-                    ariaCurrent={navigation['aria-current']}
-                    onKeyDown={navigation.onKeyDown}
-                    onSelect={() => onSelect(collection)}
-                    badges={(
-                      <SidebarItemBadge
-                        className="feedback-collection-row__count"
-                        ariaLabel={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
-                        title={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
-                      >
-                        {collection.itemCount}
-                      </SidebarItemBadge>
-                    )}
-                    actions={(
-                      <>
-                        <SidebarItemPinAction
-                          label={collection.label}
-                          pressed={isPinned}
-                          onPress={() => togglePin(collection.id)}
-                        />
-                        <SidebarItemOverflowMenu
-                          label={`More actions for ${collection.label}`}
-                          actions={overflowActions}
-                        />
-                      </>
-                    )}
-                  />
-                </li>
-              );
-            })}
+            {ordinary.map((collection) => renderCollection(collection, null))}
           </ul>
         )}
       </div>

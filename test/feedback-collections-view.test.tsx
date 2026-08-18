@@ -10,6 +10,7 @@ import { BriefingView } from '../ui/src/views/briefing';
 import { CollectionShell } from '../ui/src/views/feedback/CollectionShell';
 import {
   filterFeedbackCollections,
+  moveVisiblePinnedCollection,
   orderFeedbackCollections,
   type FeedbackCollection,
 } from '../ui/src/views/feedback/collection-model';
@@ -71,11 +72,9 @@ const ask: FeedbackCollection = {
 function ViewStateHarness({
   collections,
   sidebarHidden = false,
-  onSetExpiry,
 }: {
   collections: FeedbackCollection[];
   sidebarHidden?: boolean;
-  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
 }): JSX.Element {
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const [refreshes, setRefreshes] = useState(0);
@@ -85,7 +84,6 @@ function ViewStateHarness({
       sidebarHidden={sidebarHidden}
       viewState={viewState}
       setViewState={setViewState}
-      onSetExpiry={onSetExpiry}
     >
       <button type="button" onClick={() => setRefreshes((value) => value + 1)}>Reconcile</button>
       <output data-testid="view-state">{JSON.stringify(viewState)}</output>
@@ -187,12 +185,25 @@ describe('collection filtering and ordering', () => {
       .toEqual([]);
   });
 
-  it('orders pinned collections first and deterministically within sections', () => {
-    expect(orderFeedbackCollections(rows, ['feedback_collection:zeta']).map((row) => row.id)).toEqual([
+  it('uses manual pin order independently of the deterministic ordinary sort', () => {
+    expect(orderFeedbackCollections(rows, [
+      'feedback_collection:alpha',
+      'missing',
+      'feedback_collection:zeta',
+    ]).map((row) => row.id)).toEqual([
+      'feedback_collection:alpha',
       'feedback_collection:zeta',
       'feedback_collection:ask-1',
-      'feedback_collection:alpha',
     ]);
+  });
+
+  it('moves only visible pins while preserving unavailable and filtered pin slots', () => {
+    expect(moveVisiblePinnedCollection(
+      ['alpha', 'missing', 'beta', 'filtered', 'gamma'],
+      ['alpha', 'beta', 'gamma'],
+      'gamma',
+      0,
+    )).toEqual(['gamma', 'missing', 'alpha', 'filtered', 'beta']);
   });
 });
 
@@ -219,6 +230,7 @@ describe('browser-local collection view state', () => {
       collectionKindFilter: 'all',
       collectionStateFilter: 'all',
       pinnedCollectionIds: ['a'],
+      pinnedSectionCollapsed: false,
     });
 
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, '{not json');
@@ -257,6 +269,44 @@ describe('browser-local collection view state', () => {
     render(<ViewStateHarness collections={rows} />);
     expect((screen.getByLabelText('Search briefings') as HTMLInputElement).value).toBe('alp');
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('folds the explicit pinned section with a persisted filtered count', async () => {
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
+      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+      pinnedCollectionIds: ['feedback_collection:beta', 'missing', 'feedback_collection:alpha'],
+    }));
+    const view = render(<ViewStateHarness collections={[recurring('alpha'), recurring('beta')]} />);
+    const heading = screen.getByRole('button', { name: /Pinned 2 pinned briefings/ });
+    expect(heading.getAttribute('aria-expanded')).toBe('true');
+    expect(within(screen.getByRole('region', { name: /Pinned 2 pinned briefings/ }))
+      .getAllByRole('button', { name: /Select collection/ }).map((button) => button.getAttribute('aria-label')))
+      .toEqual(['Select collection beta', 'Select collection alpha']);
+
+    fireEvent.click(heading);
+    expect(heading.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('button', { name: 'Select collection beta' })).toBeNull();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}'))
+      .toMatchObject({ pinnedSectionCollapsed: true }));
+
+    view.unmount();
+    render(<ViewStateHarness collections={[recurring('alpha'), recurring('beta')]} />);
+    expect(screen.getByRole('button', { name: /Pinned 2 pinned briefings/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('appends new pins and removes unpinned ids without disturbing unavailable intent', async () => {
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
+      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+      pinnedCollectionIds: ['missing'],
+    }));
+    render(<ViewStateHarness collections={[recurring('alpha'), recurring('beta')]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Pin alpha' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pin beta' }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').pinnedCollectionIds)
+      .toEqual(['missing', 'feedback_collection:alpha', 'feedback_collection:beta']));
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin alpha' }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').pinnedCollectionIds)
+      .toEqual(['missing', 'feedback_collection:beta']));
   });
 
   it('uses the shared sidebar frame and hides it without deleting stored state', async () => {
@@ -324,7 +374,7 @@ describe('collection shell accessibility and reconciliation', () => {
   });
 
   it('uses a single label line, passive count badge, and hover/focus action lane', () => {
-    render(<ViewStateHarness collections={[recurring('alpha'), ask]} onSetExpiry={async () => undefined} />);
+    render(<ViewStateHarness collections={[recurring('alpha'), ask]} />);
     const alphaSelect = screen.getByRole('button', { name: 'Select collection alpha' });
     const alphaRow = alphaSelect.closest('.feedback-collection-row');
     expect(alphaRow?.querySelector('.sidebar-item-row')).toBeTruthy();
@@ -339,33 +389,80 @@ describe('collection shell accessibility and reconciliation', () => {
     const askRow = screen.getByRole('button', { name: 'Select collection Ask one' })
       .closest('.feedback-collection-row') as HTMLElement;
     const actionButtons = within(askRow).getAllByRole('button');
-    expect(actionButtons.at(-2)?.getAttribute('aria-label')).toBe('Pin Ask one');
-    expect(actionButtons.at(-1)?.getAttribute('aria-label')).toBe('More actions for Ask one');
+    expect(actionButtons.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Select collection Ask one',
+      'Pin Ask one',
+    ]);
     expect(askRow.querySelector('.sidebar-item-row__actions')?.classList.contains('sidebar-item-row__actions--visible')).toBe(false);
   });
 
-  it('keeps state in the model, filters, and accessible selection without a leading indicator', async () => {
-    const setExpiry = vi.fn(async () => undefined);
+  it('keeps state accessible without a leading indicator or unsupported lifecycle overflow', () => {
     const openAsk = { ...ask, state: 'open' as const, expiresAt: 50 };
-    const view = render(<ViewStateHarness collections={[recurring('alpha'), openAsk]} onSetExpiry={setExpiry} />);
+    const view = render(<ViewStateHarness collections={[recurring('alpha'), openAsk]} />);
     expect(screen.getByRole('button', { name: 'Select collection alpha' }).getAttribute('aria-description')).toBe('Briefing state: open');
     expect(screen.getByRole('button', { name: 'Select collection Ask one' }).getAttribute('aria-description')).toBe('Briefing state: open');
     expect(view.container.querySelector('.feedback-collection-row__state')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Expire alpha' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'More actions for Ask one' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Expire Ask one' }));
-    await waitFor(() => expect(setExpiry).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'feedback_collection:ask-1', state: 'open',
-    })));
+    expect(screen.queryByRole('button', { name: 'More actions for Ask one' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Expire Ask one' })).toBeNull();
 
-    view.rerender(<ViewStateHarness collections={[recurring('alpha'), ask]} onSetExpiry={setExpiry} />);
+    view.rerender(<ViewStateHarness collections={[recurring('alpha'), ask]} />);
     expect(screen.getByRole('button', { name: 'Select collection Ask one' }).getAttribute('aria-description')).toBe('Briefing state: expired');
     expect(view.container.querySelector('.feedback-collection-row__state')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'More actions for Ask one' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Un-expire Ask one' }));
-    await waitFor(() => expect(setExpiry).toHaveBeenLastCalledWith(expect.objectContaining({
-      id: 'feedback_collection:ask-1', state: 'expired',
-    })));
+    expect(screen.queryByRole('button', { name: 'More actions for Ask one' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Un-expire Ask one' })).toBeNull();
+  });
+
+  it('reorders visible pins through move controls and pointer drag with shared persisted order', async () => {
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
+      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+      pinnedCollectionIds: [
+        'feedback_collection:alpha',
+        'missing',
+        'feedback_collection:beta',
+        'feedback_collection:gamma',
+      ],
+    }));
+    render(<ViewStateHarness collections={[recurring('alpha'), recurring('beta'), recurring('gamma')]} />);
+
+    expect((screen.getByRole('button', { name: 'Move alpha up' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Move gamma down' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Move beta up' }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').pinnedCollectionIds)
+      .toEqual(['feedback_collection:beta', 'missing', 'feedback_collection:alpha', 'feedback_collection:gamma']));
+
+    const transfer = {
+      data: new Map<string, string>(),
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData(type: string, value: string) { this.data.set(type, value); },
+      getData(type: string) { return this.data.get(type) ?? ''; },
+    };
+    const gammaRow = screen.getByRole('button', { name: 'Select collection gamma' })
+      .closest('.feedback-collection-row') as HTMLElement;
+    const betaRow = screen.getByRole('button', { name: 'Select collection beta' })
+      .closest('.feedback-collection-row') as HTMLElement;
+    fireEvent.dragStart(gammaRow, { dataTransfer: transfer });
+    fireEvent.dragOver(betaRow, { dataTransfer: transfer });
+    fireEvent.drop(betaRow, { dataTransfer: transfer });
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').pinnedCollectionIds)
+      .toEqual(['feedback_collection:gamma', 'missing', 'feedback_collection:beta', 'feedback_collection:alpha']));
+  });
+
+  it('keeps selection and focused keyed rows stable through data reconciliation', () => {
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
+      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+      pinnedCollectionIds: ['feedback_collection:beta'],
+      selectedCollectionId: 'feedback_collection:beta',
+    }));
+    const view = render(<ViewStateHarness collections={[recurring('alpha'), recurring('beta')]} />);
+    const before = screen.getByRole('button', { name: 'Select collection beta' });
+    before.focus();
+    view.rerender(<ViewStateHarness collections={[recurring('alpha', 'open', 50), recurring('beta', 'open', 60)]} />);
+    const after = screen.getByRole('button', { name: 'Select collection beta' });
+    expect(after).toBe(before);
+    expect(document.activeElement).toBe(after);
+    expect(after.getAttribute('aria-current')).toBe('true');
   });
 
   it('uses the shared search, filter popover, dismissal, count, and list navigation idioms', () => {
