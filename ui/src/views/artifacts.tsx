@@ -1352,20 +1352,18 @@ export function ArtifactDetail({
           selector={{
             label: 'Artifact version',
             control: (
-              <label className="artifact-detail__version-control">
-                <select
-                  aria-label="Artifact version"
-                  value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
-                  onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
-                >
-                  <option value="">Latest</option>
-                  {versions.map((version) => (
-                    <option key={version.id} value={String(version.version_no)}>
-                      v{version.version_no}{version.label ? ` · ${version.label}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <select
+                aria-label="Artifact version"
+                value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
+                onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
+              >
+                <option value="">Latest</option>
+                {versions.map((version) => (
+                  <option key={version.id} value={String(version.version_no)}>
+                    v{version.version_no}{version.label ? ` · ${version.label}` : ''}
+                  </option>
+                ))}
+              </select>
             ),
             selectedCanonicalRef: selectedArtifactRef,
             copyLabel: 'Copy selected artifact-version reference',

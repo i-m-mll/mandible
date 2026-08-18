@@ -242,17 +242,6 @@
   z-index: 8;
 }
 
-.briefing-detail .detail-pane-header__selector select {
-  max-width: 18rem;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: var(--surface-inset);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--text-sm);
-}
-
 .briefing-detail__actions-trigger {
   display: grid;
   width: 30px;
@@ -372,17 +361,20 @@
 }
 
 .briefing-directive {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-3);
   padding: var(--space-3);
   border-left: 2px solid var(--border-faint);
   border-radius: 0;
 }
 
-.briefing-directive:hover,
-.briefing-directive:focus-within {
+.briefing-directive__interaction {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover),
+.briefing-directive:not(.briefing-directive--selected):focus-within {
   border-left-color: var(--border-default);
   background: var(--surface-card);
 }
@@ -401,7 +393,7 @@
   transition: opacity 120ms ease;
 }
 
-.briefing-directive:hover .briefing-directive__actions,
+.briefing-directive__interaction:hover .briefing-directive__actions,
 .briefing-directive:focus-within .briefing-directive__actions,
 .briefing-directive--selected .briefing-directive__actions {
   opacity: 1;

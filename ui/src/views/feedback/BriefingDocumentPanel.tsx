@@ -198,14 +198,16 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <section className={`briefing-directive${current || selectedDirectiveId === item.id ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
           onClick={() => setSelectedDirectiveId(item.id)}
           onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
-          <div className="briefing-directive__passage">
-            <div className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
-            {inlineAnnotations(directive.start_offset, directive.end_offset)}
-          </div>
-          <div className="briefing-directive__actions" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
-            <button type="button" aria-label="Keep" title="Keep" aria-pressed={current?.verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'keep')}><CheckIcon /></button>
-            <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={current?.verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'dismiss')}><DismissIcon /></button>
-            <button type="button" aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></button>
+          <div className="briefing-directive__interaction">
+            <div className="briefing-directive__passage">
+              <div className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+              {inlineAnnotations(directive.start_offset, directive.end_offset)}
+            </div>
+            <div className="briefing-directive__actions" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
+              <button type="button" aria-label="Keep" title="Keep" aria-pressed={current?.verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'keep')}><CheckIcon /></button>
+              <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={current?.verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'dismiss')}><DismissIcon /></button>
+              <button type="button" aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></button>
+            </div>
           </div>
         </section>,
       );
