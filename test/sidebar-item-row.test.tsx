@@ -86,7 +86,7 @@ describe('SidebarItemRow', () => {
     expect(coarsePointerRule).toContain('pointer-events: auto');
   });
 
-  it('keeps an accessible provider in an exact-width gutter and reveals its dot only through interaction or selection', () => {
+  it('keeps an accessible provider outside the canonical title column and reveals its dot only through interaction or selection', () => {
     render(
       <SidebarItemRow
         label="Provider row"
@@ -103,14 +103,20 @@ describe('SidebarItemRow', () => {
     expect(dot.parentElement?.classList.contains('sidebar-item-row__provider-gutter')).toBe(true);
     expect(select.querySelector('.sidebar-item-row__badges')).toBeNull();
 
+    const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
+    expect(selectRule).toContain('position: relative');
+    expect(selectRule).toContain('padding: 5px 7px 5px var(--sidebar-title-column-inset, 7px)');
     const gutterRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-gutter \{([^}]*)\}/)?.[1] ?? '';
-    expect(gutterRule).toContain('width: 7px');
-    expect(gutterRule).toContain('flex: 0 0 7px');
-    expect(gutterRule).toContain('margin-right: calc(-1 * var(--space-2))');
+    expect(gutterRule).toContain('position: absolute');
+    expect(gutterRule).toContain('left: calc(var(--sidebar-title-column-inset, 7px) - 14px)');
+    expect(gutterRule).toContain('width: 14px');
+    expect(gutterRule).toContain('justify-content: center');
+    expect(gutterRule).not.toMatch(/flex:|margin-right/);
     const dotRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1] ?? '';
+    expect(dotRule).toContain('width: 7px');
     expect(dotRule).toContain('opacity: 0');
     const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot \{([^}]*)\}/,
+      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(revealRule).toContain('opacity: 1');
   });

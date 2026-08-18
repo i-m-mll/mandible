@@ -9,6 +9,8 @@ import type { FeedbackCollection } from '../ui/src/views/feedback/collection-mod
 import * as api from '../ui/src/api.js';
 
 const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
+const sidebarItemStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
+const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
 const tokenStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
 
 afterEach(() => {
@@ -18,7 +20,7 @@ afterEach(() => {
 });
 
 describe('shared sidebar group presentation', () => {
-  it('renders Briefing Pinned through the normal-case shared heading', () => {
+  it('keeps Briefing as the flat-list exception while reusing shared rows', () => {
     const briefing: FeedbackCollection = {
       id: 'briefing:one', collectionId: 'one', label: 'One', itemCount: 2,
       latestRoundId: 'round-1', createdAt: 1, updatedAt: 2,
@@ -28,18 +30,21 @@ describe('shared sidebar group presentation', () => {
       selectedCollectionId={briefing.id}
       viewState={{
         collectionSourceFilter: '', pinnedCollectionIds: [briefing.id],
-        pinnedSectionCollapsed: false, selectedCollectionId: briefing.id, selectedRoundIds: {},
+        pinnedSectionCollapsed: true, selectedCollectionId: briefing.id, selectedRoundIds: {},
       }}
       setViewState={() => undefined}
       onSelect={() => undefined}
     />);
 
-    const heading = screen.getByRole('button', { name: /^Pinned/ });
-    expect(heading.textContent).toContain('Pinned');
-    expect(heading.classList.contains('sidebar-group-node__heading')).toBe(true);
-    expect(heading.classList.contains('feedback-collections-sidebar__section-heading')).toBe(false);
-    expect(heading.querySelector('.sidebar-group-node__count')).toBeNull();
-    expect(heading.getAttribute('aria-description')).toBe('1 pinned briefing');
+    const sidebar = screen.getByTestId('feedback-collections-sidebar');
+    expect(screen.queryByRole('button', { name: /^Pinned/ })).toBeNull();
+    expect(screen.queryByRole('region', { name: /^Pinned/ })).toBeNull();
+    expect(sidebar.querySelectorAll('ul.feedback-collections-sidebar__list')).toHaveLength(1);
+    const row = screen.getByRole('button', { name: 'Select briefing One' })
+      .closest('.feedback-collection-row');
+    expect(row?.classList.contains('feedback-collection-row--pinned')).toBe(true);
+    expect(row?.querySelector('.sidebar-item-row')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Unpin One' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('supports count-free aggregate headings and stable interaction-only leaf counts', () => {
@@ -99,13 +104,39 @@ describe('shared sidebar group presentation', () => {
       /\.sidebar-group-node--category > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(categoryHeading).toContain('color: var(--text-subdued)');
+    expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
+    const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
+    const headingTypography = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node > \.sidebar-group-node__heading \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(headingTypography).toContain('font: 400 var(--text-md)/1.35 var(--font-sans)');
+    const labelTypography = sidebarItemStylesheet.match(
+      /\.sidebar-item-row__label \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(labelTypography).toContain('font-size: var(--text-md)');
+    const strongTypography = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node__heading strong \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(strongTypography).toContain('font-weight: 400');
     const folderHeading = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--folder > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
-    expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
-    const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
-    expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
+    const rootColumn = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--category > :is\(div, ul\) \{([^}]*)\}/,
+    )?.[1] ?? '';
+    const folderColumn = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--folder > :is\(div, ul\) \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(rootColumn).toContain('--sidebar-title-column-inset: 7px');
+    expect(folderColumn).toContain('--sidebar-title-column-inset: 29px');
+    const showMoreRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node__show-more \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(showMoreRule).toContain('padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px)');
+    expect(showMoreRule).toContain('font-size: var(--text-md)');
+    expect(chatHistoryStylesheet).not.toMatch(/chat-project-group__items[\s\S]*padding-left/);
     expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
   });
 

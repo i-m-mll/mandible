@@ -13,7 +13,7 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font: 600 11px var(--font-sans);
+  font: 400 var(--text-md)/1.35 var(--font-sans);
   text-align: left;
 }
 
@@ -32,7 +32,6 @@
 .sidebar-group-node--with-icon > .sidebar-group-node__heading {
   grid-template-columns: 16px minmax(0, 1fr) auto;
   padding-block: 6px;
-  font-size: 13px;
 }
 
 .sidebar-group-node--without-count > .sidebar-group-node__heading {
@@ -51,6 +50,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebar-group-node__heading strong {
+  font-weight: 400;
 }
 
 .sidebar-group-node__count {
@@ -104,14 +107,22 @@
 
 .sidebar-group-node__show-more {
   width: 100%;
-  padding: 6px 7px;
+  padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px);
   border: 0;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-md);
   text-align: left;
+}
+
+.sidebar-group-node--category > :is(div, ul) {
+  --sidebar-title-column-inset: 7px;
+}
+
+.sidebar-group-node--folder > :is(div, ul) {
+  --sidebar-title-column-inset: 29px;
 }
 
 .sidebar-group-node__show-more:hover {
