@@ -147,7 +147,7 @@ function IdentityRow({ label, value }: { label: string; value: string }): JSX.El
   );
 }
 
-function CopyRefButton({ value, label }: { value: string; label: string }): JSX.Element {
+export function CopyRefButton({ value, label }: { value: string; label: string }): JSX.Element {
   const [copied, setCopied] = useState(false);
   const effectiveLabel = copied ? 'Copied reference' : label;
 
