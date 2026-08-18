@@ -1,6 +1,7 @@
 // jsdom cannot exercise CodeMirror selection geometry. This suite substitutes
 // the editor boundary and tests the panel contract; decoration normalization
 // and click resolution are covered by markdown-source-editor-annotations.test.tsx.
+import { createHash } from 'node:crypto';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -54,7 +55,6 @@ function round(overrides: Partial<BriefingRoundProjection> = {}): BriefingRoundP
     briefing_key: 'review-plan',
     binding_digest: 'digest',
     created_at: 1,
-    latest_submission: null,
     latest_submission_for_actor: null,
     document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: null },
     directive_binding: null,
@@ -89,7 +89,7 @@ afterEach(() => {
 
 describe('Briefing document panel', () => {
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
-    const profiledSource = 'Intro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
+    const profiledSource = '# Review plan\n\nIntro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
     vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
       ...content().content,
       size_bytes: new TextEncoder().encode(profiledSource).byteLength,
@@ -97,20 +97,28 @@ describe('Briefing document panel', () => {
     } })));
     const source = profiledSource;
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
-    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round({
+    const definitionDigest = createHash('sha256').update(source.slice(start, bodyEnd + 4)).digest('hex');
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({
       document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
       directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
-      items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
+      annotations: [annotation({ start_offset: bodyStart, end_offset: bodyEnd, quote: 'Body', body: 'Current actor note.' })] as any,
+      items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: definitionDigest, start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
     })} canMutate onRefresh={async () => null} onDirectiveVerdict={() => undefined} />);
     const keep = await screen.findByRole('button', { name: 'Keep' });
     expect(keep).toBeTruthy();
     expect(screen.queryByText(':::spec-item{key="verdict" required="true"}')).toBeNull();
-    expect(screen.getByText(/Body/).querySelector('img')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Review plan' })).toBeNull();
+    expect(screen.getByLabelText('Pinned briefing document').querySelector('img')).toBeNull();
+    expect(screen.getByRole('button', { name: /Body.*Comment.*Current actor note/ })).toBeTruthy();
     const region = keep.closest('.briefing-directive') as HTMLElement;
     fireEvent.click(region);
     expect(region.className).toContain('briefing-directive--selected');
     fireEvent.keyDown(region, { key: 'Enter' });
     expect(region.className).not.toContain('briefing-directive--selected');
+    const comment = screen.getByRole('button', { name: 'Comment' });
+    fireEvent.click(comment);
+    expect(comment.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('dialog', { name: 'Add annotation' })).toBeTruthy();
   });
 
   it('renders the full pinned source read-only and saves one selected-range suggestion before refetching', async () => {
@@ -123,7 +131,7 @@ describe('Briefing document panel', () => {
       return json({ annotation_event_ids: ['annotation-new'] });
     }));
 
-    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
     expect((await screen.findByTestId('document-editor')).getAttribute('data-read-only')).toBe('true');
     expect(editorHarness.props.value).toBe('Plan source text');
 
@@ -162,11 +170,10 @@ describe('Briefing document panel', () => {
       posts.push(body);
       return json({ annotation_event_ids: body.annotations.map((_: unknown, index: number) => `event-${index}`) });
     }));
-    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
 
-    const row = await screen.findByRole('button', { name: /Plan.*Comment.*Clarify this/ });
-    expect(row.tabIndex).toBe(0);
-    fireEvent.click(row);
+    await screen.findByTestId('document-editor');
+    fireEvent.click(screen.getByRole('button', { name: 'Open decoration' }));
     fireEvent.input(screen.getByLabelText('Comment'), { target: { value: 'Revised note.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));
@@ -179,7 +186,7 @@ describe('Briefing document panel', () => {
     ]);
     await screen.findByText('Annotation updated.');
 
-    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open decoration' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);

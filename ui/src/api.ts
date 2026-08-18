@@ -3813,7 +3813,6 @@ export type BriefingRoundProjection = {
   briefing_key: string;
   binding_digest: string;
   created_at: number;
-  latest_submission: null | { id: string; ordinal: number };
   latest_submission_for_actor: null | { id: string; ordinal: number };
   document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v1' | null };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
@@ -3825,6 +3824,7 @@ export type BriefingRoundProjection = {
 
 export type BriefingRoundSummary = {
   id: string;
+  ordinal: number;
   artifact_version_id: string;
   created_at: number;
   origin: null | { source: string | null; run_id: string | null; task_identity: string | null };
@@ -4064,12 +4064,6 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       parent = itemById.get(parent)?.parent_item_id ?? null;
     }
   }
-  const latest = briefingRecord(root.latest_submission);
-  const latestSubmission = root.latest_submission === null ? null : {
-    id: briefingString(latest.id),
-    ordinal: briefingOptionalNumber(latest.ordinal) ?? 0,
-  };
-  if (root.latest_submission !== null && (!latestSubmission.id || latestSubmission.ordinal < 1)) valid = false;
   const actorLatest = briefingRecord(root.latest_submission_for_actor);
   const latestSubmissionForActor = root.latest_submission_for_actor == null ? null : {
     id: briefingString(actorLatest.id),
@@ -4133,15 +4127,14 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       return parsed;
     }).filter((entry): entry is BriefingAnnotation => entry !== null);
   }
-  if ((rawState === 'open' && latestSubmission !== null)
-      || (rawState === 'submitted' && latestSubmission === null)) valid = false;
+  if ((rawState === 'open' && latestSubmissionForActor !== null)
+      || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
   return {
     round_id: roundId,
     state: BRIEFING_ROUND_STATES.has(rawState) ? rawState as BriefingRoundProjection['state'] : 'open',
     briefing_key: briefingString(root.briefing_key),
     binding_digest: briefingString(root.binding_digest),
     created_at: briefingOptionalNumber(root.created_at) ?? 0,
-    latest_submission: latestSubmission,
     latest_submission_for_actor: latestSubmissionForActor,
     document,
     directive_binding: directiveBinding ?? null,
@@ -4253,7 +4246,6 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     briefing_key: briefingString(briefing.briefing_key, selectedId),
     binding_digest: briefingString(selected.binding_digest),
     created_at: briefingOptionalNumber(selected.created_at) ?? 0,
-    latest_submission: latestSubmission,
     latest_submission_for_actor: latestSubmission,
     document: selected.document ?? null,
     directive_binding: selected.binding ?? null,
@@ -4266,6 +4258,7 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     const origin = briefingRecord(row.origin);
     return {
       id: briefingString(row.id),
+      ordinal: briefingOptionalNumber(row.ordinal) ?? 0,
       artifact_version_id: briefingString(row.artifact_version_id),
       created_at: briefingOptionalNumber(row.created_at) ?? 0,
       origin: row.origin == null ? null : {
@@ -4274,7 +4267,7 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
         task_identity: briefingOptionalString(origin.task_identity),
       },
     };
-  }).filter((round) => Boolean(round.id && round.artifact_version_id));
+  }).filter((round) => Boolean(round.id && round.ordinal > 0 && round.artifact_version_id));
   return {
     ...projection,
     briefing_id: briefingString(briefing.id),
