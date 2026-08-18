@@ -4917,6 +4917,8 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   if (migrations.length === 0) return;
   db.transaction(() => {
     for (const migration of migrations) {
+      const canonicalBriefingCutover = tableExists(db, "briefings")
+        && !tableExists(db, "feedback_collections");
       if (migration.version === 71) {
         ensureIssueCoordinationColumns(db);
       }
@@ -4995,7 +4997,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 123) {
         ensureAuthRequestCanonicalChangeMessageColumn(db);
       }
-      if (migration.version === 125) {
+      if (migration.version === 125 && !canonicalBriefingCutover) {
         ensureAskCreateGlobalCapability(db);
       }
       if (migration.version === 131) {
@@ -5008,6 +5010,12 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         migrateTaskCommandV2(db);
       }
       let statements = migration.statements;
+      // Rewinding only schema_version on a v142 database must not resurrect or
+      // reference the retired feedback product. Advance those historical
+      // markers as no-ops while continuing every unrelated migration.
+      if (canonicalBriefingCutover && [125, 127, 133, 137, 141].includes(migration.version)) {
+        statements = [];
+      }
       if (migration.name === "operational_incidents" && tableExists(db, "operational_incidents")) {
         // Historical replay tests deliberately rewind schema_version on a fresh
         // head schema. If v126 rebuilt the dispatch table during that replay,
@@ -5090,13 +5098,13 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         verifyConversationEmptyIngestSchema(db);
       }
       if (migration.version === 127) {
-        ensureBriefingIngestRequestColumn(db);
+        if (tableExists(db, "feedback_publications")) ensureBriefingIngestRequestColumn(db);
       }
       if (migration.version === 139) {
         ensureAuthHookRequiredColumn(db);
       }
       if (migration.version === 141) {
-        verifyBriefingDirectiveV141Schema(db);
+        if (tableExists(db, "feedback_collection_documents")) verifyBriefingDirectiveV141Schema(db);
       }
       if (migration.version === 142) {
         migrateLegacyFeedbackToBriefings(db);
@@ -5413,10 +5421,11 @@ export function migrate(db: Db): void {
     } finally {
       db.pragma("foreign_keys = ON");
     }
-    const violations = db.pragma("foreign_key_check") as unknown[];
-    if (violations.length > 0) {
-      throw new Error(`migration 142 verification: ${violations.length} foreign key violation(s)`);
-    }
+    assertScopedForeignKeys(
+      db,
+      [...BRIEFING_SCHEMA_TABLES, "agent_dispatch_events", "space_items"],
+      "migration 142 verification",
+    );
   }
 
   // v133 was exercised by development daemons before release, under its

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import { getBriefings, getCachedBriefings, type BriefingProjection, type InstanceInfo } from '../api';
 import { useAppShell } from '../app-shell';
-import { BriefingDocumentRenderer } from './feedback/BoundedAskRenderer';
+import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { CollectionShell } from './feedback/CollectionShell';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
@@ -72,9 +72,9 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
       if (timer !== null) return;
       timer = window.setTimeout(() => { timer = null; setReloadNonce((value) => value + 1); }, 100);
     };
-    window.addEventListener('feedback:sse', reconcile);
+    window.addEventListener('briefing:sse', reconcile);
     return () => {
-      window.removeEventListener('feedback:sse', reconcile);
+      window.removeEventListener('briefing:sse', reconcile);
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [appShell.active]);

@@ -46,7 +46,6 @@ import { BriefingView } from '../ui/src/views/briefing';
 import { OperationalIncidentsRegion } from '../ui/src/views/operational-incidents';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import type {
-  BriefingQueueResponse,
   OperationalIncidentListResponse,
   OperationalIncidentProjection,
 } from '../src/contracts.js';
@@ -174,7 +173,6 @@ type RegionStubOptions = {
   preview?: Record<string, unknown>;
   /** When set, the dispatch route answers with this status (409 = stale plan). */
   dispatchStatus?: number;
-  briefingQueue?: BriefingQueueResponse;
 };
 
 function stubRegionFetch(options: RegionStubOptions): FetchCall[] {
@@ -255,14 +253,6 @@ function stubRegionFetch(options: RegionStubOptions): FetchCall[] {
         },
         incident: { id: 'inc-1', remediation: 'triaging' },
       }));
-    }
-    if (url === '/api/briefing/queue') {
-      return Promise.resolve(jsonResponse(
-        options.briefingQueue ?? { candidates: [], sources: [] },
-      ));
-    }
-    if (url === '/api/feedback/collections') {
-      return Promise.resolve(jsonResponse({ collections: [] }));
     }
     if (url === '/api/dashboard/badges') {
       return Promise.resolve(jsonResponse({ auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0 }));
@@ -578,7 +568,7 @@ describe('incident_sse_invalidates_only_incidents_and_badges', () => {
         '/api/dashboard/badges',
       ]);
     }
-    expect(operationalIncidentApiCacheFamiliesForEvent('briefing:ingested')).toEqual([]);
+    expect(operationalIncidentApiCacheFamiliesForEvent('briefing:created')).toEqual([]);
   });
 
   it('leaves unrelated API families cached', async () => {

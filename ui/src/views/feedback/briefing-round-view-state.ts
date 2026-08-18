@@ -1,9 +1,9 @@
-import type { AskItem, AskResponseValue } from '../../api';
+import type { BriefingDirectiveItem, BriefingResponseValue } from '../../api';
 
-export const ASK_DRAFT_VERSION = 1;
-export const ASK_DRAFT_KEY_PREFIX = 'mandible.ask.draft:v1';
+export const BRIEFING_DRAFT_VERSION = 1;
+export const BRIEFING_DRAFT_KEY_PREFIX = 'mandible.briefing.draft:v1';
 
-export type AskDraft = Record<string, AskResponseValue | null>;
+export type BriefingDraft = Record<string, BriefingResponseValue | null>;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -11,7 +11,7 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function normalizeValue(value: unknown, item: AskItem): AskResponseValue | null | undefined {
+function normalizeValue(value: unknown, item: BriefingDirectiveItem): BriefingResponseValue | null | undefined {
   if (value === null) return null;
   const row = record(value);
   const type = item.revision.response_type;
@@ -36,15 +36,15 @@ function normalizeValue(value: unknown, item: AskItem): AskResponseValue | null 
   return undefined;
 }
 
-export function askDraftStorageKey(userId: string, askId: string): string {
-  return `${ASK_DRAFT_KEY_PREFIX}:${encodeURIComponent(userId)}:${encodeURIComponent(askId)}`;
+export function briefingDraftStorageKey(userId: string, roundScope: string): string {
+  return `${BRIEFING_DRAFT_KEY_PREFIX}:${encodeURIComponent(userId)}:${encodeURIComponent(roundScope)}`;
 }
 
-export function normalizeAskDraft(value: unknown, items: readonly AskItem[]): AskDraft {
+export function normalizeBriefingDraft(value: unknown, items: readonly BriefingDirectiveItem[]): BriefingDraft {
   const root = record(value);
-  const rawAnswers = root.version === ASK_DRAFT_VERSION ? record(root.answers) : root;
+  const rawAnswers = root.version === BRIEFING_DRAFT_VERSION ? record(root.answers) : root;
   const byId = new Map(items.filter((item) => item.item_kind === 'item').map((item) => [item.id, item]));
-  const draft: AskDraft = {};
+  const draft: BriefingDraft = {};
   for (const [itemId, rawValue] of Object.entries(rawAnswers)) {
     const item = byId.get(itemId);
     if (!item) continue;
@@ -54,42 +54,42 @@ export function normalizeAskDraft(value: unknown, items: readonly AskItem[]): As
   return draft;
 }
 
-export function loadAskDraft(
+export function loadBriefingDraft(
   storage: Pick<Storage, 'getItem'> | null,
   userId: string | null,
-  askId: string,
-  items: readonly AskItem[],
-): AskDraft {
+  roundScope: string,
+  items: readonly BriefingDirectiveItem[],
+): BriefingDraft {
   if (!storage || !userId) return {};
   try {
-    const raw = storage.getItem(askDraftStorageKey(userId, askId));
-    return raw ? normalizeAskDraft(JSON.parse(raw), items) : {};
+    const raw = storage.getItem(briefingDraftStorageKey(userId, roundScope));
+    return raw ? normalizeBriefingDraft(JSON.parse(raw), items) : {};
   } catch {
     return {};
   }
 }
 
-export function saveAskDraft(
+export function saveBriefingDraft(
   storage: Pick<Storage, 'setItem' | 'removeItem'> | null,
   userId: string | null,
-  askId: string,
-  draft: Readonly<AskDraft>,
+  roundScope: string,
+  draft: Readonly<BriefingDraft>,
 ): void {
   if (!storage || !userId) return;
   try {
-    const key = askDraftStorageKey(userId, askId);
+    const key = briefingDraftStorageKey(userId, roundScope);
     if (Object.keys(draft).length === 0) storage.removeItem(key);
-    else storage.setItem(key, JSON.stringify({ version: ASK_DRAFT_VERSION, answers: draft }));
+    else storage.setItem(key, JSON.stringify({ version: BRIEFING_DRAFT_VERSION, answers: draft }));
   } catch {
     // Disabled storage and quota failures leave the in-memory draft intact.
   }
 }
 
-export function responseValuesEqual(left: AskResponseValue | null, right: AskResponseValue | null): boolean {
+export function responseValuesEqual(left: BriefingResponseValue | null, right: BriefingResponseValue | null): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-export function effectiveDraft(items: readonly AskItem[]): AskDraft {
+export function effectiveDraft(items: readonly BriefingDirectiveItem[]): BriefingDraft {
   return Object.fromEntries(items
     .filter((item) => item.item_kind === 'item')
     .map((item) => [item.id, item.effective_response?.value ?? null]));

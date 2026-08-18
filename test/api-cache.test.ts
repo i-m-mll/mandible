@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addSpaceItem,
-  feedbackApiCacheFamiliesForEvent,
+  briefingApiCacheFamiliesForEvent,
   getBriefings,
   getCachedBriefings,
   getSpace,
@@ -19,7 +19,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
     'briefing:annotated',
     'briefing:submitted',
   ])('%s invalidates logical Briefing and badge caches', (topic) => {
-    expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
+    expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefings',
       '/api/dashboard/badges',
     ]);
@@ -27,7 +27,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
 
   it('does not classify removed compatibility or merely prefix-matching topics', () => {
     for (const topic of ['ledger:issue:updated', 'auth:new', 'briefing:unknown', 'ask:answered', 'feedback:collection-updated']) {
-      expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([]);
+      expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([]);
     }
   });
 
@@ -38,7 +38,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
       'briefing:answered',
       'briefing:submitted',
     ];
-    const families = new Set(burst.flatMap((topic) => feedbackApiCacheFamiliesForEvent(topic)));
+    const families = new Set(burst.flatMap((topic) => briefingApiCacheFamiliesForEvent(topic)));
     expect([...families].sort()).toEqual([
       '/api/briefings',
       '/api/dashboard/badges',

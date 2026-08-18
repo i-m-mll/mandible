@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShellProvider } from '../ui/src/app-shell';
 import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings } from '../ui/src/api';
 import { BriefingView } from '../ui/src/views/briefing';
-import { BriefingDocumentRenderer } from '../ui/src/views/feedback/BoundedAskRenderer';
+import { BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
 
 const source = 'Intro\n:::spec-item{key="decision" required="true"}\nReview this round\n:::\n';
@@ -14,32 +14,32 @@ const bodyEnd = source.indexOf('\n:::', bodyStart);
 const directiveEnd = bodyEnd + '\n:::'.length;
 const digest = createHash('sha256').update(source.slice(source.indexOf(':::'), directiveEnd)).digest('hex');
 
-function projection(roundId: string, artifactVersion: string, submitted = false) {
+function selectedRound(roundId: string, artifactVersion: string, submitted = false) {
   return {
-    ask_id: roundId, state: submitted ? 'submitted' : 'open', request_key: roundId,
-    request_digest: `digest-${roundId}`, requester_user_id: 'agent', requester_session_id: 'session',
-    responder_user_ids: ['human'], expires_at: null, retention_expires_at: null, created_at: 1,
-    lifecycle_event_id: `life-${roundId}`, latest_submission: submitted ? { id: `submission-${roundId}`, ordinal: 1 } : null,
-    latest_submission_for_actor: submitted ? { id: `submission-${roundId}`, ordinal: 1 } : null,
-    document: { artifact_version_id: artifactVersion, previous_round_id: null, profile: 'mandible-briefing.v1' },
-    directive_binding: { status: 'valid' }, latest_frozen_membership: submitted ? { answer_event_ids: ['answer-old'], annotation_event_ids: [] } : null,
-    annotations: [], previous_round: null,
-    items: [{ id: `item-${roundId}`, client_item_key: 'decision', parent_item_id: null, item_kind: 'item', revision: {
-      id: `revision-${roundId}`, ordinal: 1, title: 'Decision', prompt: 'Review this round', description: null,
-      response_type: 'verdict', required: true, position: 0, options: [],
-    }, effective_response: submitted ? { response_event_id: 'answer-old', value: { verdict: 'keep' } } : null,
-    directive: { key: 'decision', definition_digest: digest, start_offset: source.indexOf(':::'), end_offset: directiveEnd, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
+    id: roundId, ordinal: roundId === 'round-1' ? 1 : 2, artifact_version_id: artifactVersion,
+    previous_round_id: roundId === 'round-1' ? null : 'round-1', profile: 'mandible-briefing.v1',
+    binding_digest: `binding-${roundId}`, created_at: roundId === 'round-1' ? 1 : 2,
+    document: { artifact_version_id: artifactVersion, previous_round_id: roundId === 'round-1' ? null : 'round-1', profile: 'mandible-briefing.v1' },
+    binding: { status: 'valid' },
+    items: [{ id: `item-${roundId}`, directive_key: 'decision', position: 0, definition_digest: digest,
+      response_type: 'verdict', required: 1, prompt: 'Review this round', options: [],
+      start_offset: source.indexOf(':::'), end_offset: directiveEnd, body_start_offset: bodyStart, body_end_offset: bodyEnd }],
+    answers: submitted ? [{ response_event_id: 'answer-old', directive_instance_id: `item-${roundId}`,
+      directive_key: 'decision', response_type: 'verdict', value: { verdict: 'keep' }, created_at: 1 }] : [],
+    annotations: [], latest_submission: submitted ? { id: `submission-${roundId}`, ordinal: 1 } : null,
+    latest_frozen_membership: submitted ? { answer_event_ids: ['answer-old'], annotation_event_ids: [] } : null,
   };
 }
 
 function detail(roundId = 'round-2') {
   return {
-    id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2',
+    briefing: { id: 'briefing-1', briefing_key: 'recurring-review', title: 'Recurring review',
+      latest_round_id: 'round-2', round_count: 2, created_at: 1, updated_at: 2 },
     rounds: [
       { id: 'round-1', artifact_version_id: 'artifact-version:v1', created_at: 1, origin: { source: 'scheduled-review', run_id: 'run-1', task_identity: 'task-1' } },
       { id: 'round-2', artifact_version_id: 'artifact-version:v1', created_at: 2, origin: { source: 'scheduled-review', run_id: 'run-2', task_identity: 'task-1' } },
     ],
-    selected_round: { id: roundId, artifact_version_id: 'artifact-version:v1', projection: projection(roundId, 'artifact-version:v1', roundId === 'round-1') },
+    selected_round: selectedRound(roundId, 'artifact-version:v1', roundId === 'round-1'),
   };
 }
 
@@ -96,7 +96,7 @@ describe('artifact-backed Briefing rounds', () => {
     roundSelect.value = 'round-1';
     fireEvent.input(roundSelect);
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': 'round-1' }));
-    window.dispatchEvent(new CustomEvent('feedback:sse', { detail: { type: 'briefing:round-published' } }));
+    window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'briefing:round-published' } }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect((screen.getByRole('combobox', { name: 'Briefing round' }) as HTMLSelectElement).value).toBe('round-1');
     expect(screen.getByTestId('briefing-round-context').textContent).toContain('run-1');

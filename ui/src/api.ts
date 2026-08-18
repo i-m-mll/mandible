@@ -471,7 +471,7 @@ export function invalidateApiGetCache(
   }
 }
 
-const BRIEFING_FEEDBACK_EVENTS = new Set([
+const BRIEFING_EVENTS = new Set([
   'briefing:created',
   'briefing:round-published',
   'briefing:answered',
@@ -479,17 +479,17 @@ const BRIEFING_FEEDBACK_EVENTS = new Set([
   'briefing:submitted',
 ]);
 
-/** Exact cache families affected by a feedback lifecycle event. */
-export function feedbackApiCacheFamiliesForEvent(type: string): readonly string[] {
-  if (BRIEFING_FEEDBACK_EVENTS.has(type)) {
+/** Exact cache families affected by a Briefing lifecycle event. */
+export function briefingApiCacheFamiliesForEvent(type: string): readonly string[] {
+  if (BRIEFING_EVENTS.has(type)) {
     return ['/api/briefings', '/api/dashboard/badges'];
   }
   return [];
 }
 
-/** Narrow feedback invalidation; returns whether the event was handled. */
-export function invalidateFeedbackApiCacheForEvent(type: string): boolean {
-  const families = feedbackApiCacheFamiliesForEvent(type);
+/** Narrow Briefing invalidation; returns whether the event was handled. */
+export function invalidateBriefingApiCacheForEvent(type: string): boolean {
+  const families = briefingApiCacheFamiliesForEvent(type);
   for (const family of families) invalidateApiGetCache(family);
   return families.length > 0;
 }
@@ -522,7 +522,7 @@ export function invalidateOperationalIncidentApiCacheForEvent(type: string): boo
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
-  if (invalidateFeedbackApiCacheForEvent(type)) return;
+  if (invalidateBriefingApiCacheForEvent(type)) return;
   if (invalidateOperationalIncidentApiCacheForEvent(type)) return;
   // Streamed auth output does not change any dashboard count, so the badge
   // cache is left intact for that event; every other family below can move a
@@ -3763,23 +3763,23 @@ function briefingStringArray(value: unknown): string[] {
   return [];
 }
 
-// --- bounded ask form -------------------------------------------------------
+// --- immutable Briefing rounds ----------------------------------------------
 
-export type AskResponseType = 'verdict' | 'free_text' | 'single_choice' | 'multi_choice';
-export type AskResponseValue =
+export type BriefingResponseType = 'verdict' | 'free_text' | 'single_choice' | 'multi_choice';
+export type BriefingResponseValue =
   | { verdict: 'keep' | 'dismiss' }
   | { text: string }
   | { option_key: string }
   | { option_keys: string[] };
 
-export type AskOption = {
+export type BriefingDirectiveOption = {
   option_key: string;
   label: string;
   description: string | null;
   position: number;
 };
 
-export type AskItem = {
+export type BriefingDirectiveItem = {
   id: string;
   client_item_key: string | null;
   parent_item_id: string | null;
@@ -3790,12 +3790,12 @@ export type AskItem = {
     title: string;
     prompt: string;
     description: string | null;
-    response_type: AskResponseType | null;
+    response_type: BriefingResponseType | null;
     required: boolean;
     position: number;
-    options: AskOption[];
+    options: BriefingDirectiveOption[];
   };
-  effective_response: null | { response_event_id: string; value: AskResponseValue };
+  effective_response: null | { response_event_id: string; value: BriefingResponseValue };
   responseVisible: boolean;
   directive?: {
     key: string;
@@ -3807,30 +3807,19 @@ export type AskItem = {
   };
 };
 
-export type AskProjection = {
-  ask_id: string;
-  state: 'open' | 'submitted' | 'expired' | 'cancelled' | 'closed';
-  request_key: string;
-  request_digest: string;
-  requester_user_id: string;
-  requester_session_id: string;
-  responder_user_ids: string[];
-  expires_at: number | null;
-  retention_expires_at: number | null;
+export type BriefingRoundProjection = {
+  round_id: string;
+  state: 'open' | 'submitted';
+  briefing_key: string;
+  binding_digest: string;
   created_at: number;
-  lifecycle_event_id: string;
   latest_submission: null | { id: string; ordinal: number };
   latest_submission_for_actor: null | { id: string; ordinal: number };
   document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v1' | null };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
-  annotations?: AskAnnotation[];
-  previous_round: null | {
-    ask_id: string;
-    artifact_version_id: string;
-    annotations: AskPreviousRoundAnnotation[];
-  };
-  items: AskItem[];
+  annotations?: BriefingAnnotation[];
+  items: BriefingDirectiveItem[];
   valid: boolean;
 };
 
@@ -3841,7 +3830,7 @@ export type BriefingRoundSummary = {
   origin: null | { source: string | null; run_id: string | null; task_identity: string | null };
 };
 
-export type BriefingProjection = AskProjection & {
+export type BriefingProjection = BriefingRoundProjection & {
   briefing_id: string;
   title: string;
   latest_round_id: string;
@@ -3854,21 +3843,19 @@ export type ClientAuthWhoami = {
   user: null | { id: string; slug: string; kind: string | null; display_name: string | null };
 };
 
-export type AskAnswerOperation = {
-  item_id: string;
-  item_revision_id: string;
+export type BriefingAnswerOperation = {
+  directive_key: string;
   operation: 'set' | 'retract';
   expected_response_event_id: string | null;
-  value?: AskResponseValue;
+  value?: BriefingResponseValue;
 };
 
-export type AskSubmissionAnswer = {
-  item_id: string;
-  item_revision_id: string;
+export type BriefingSubmissionAnswer = {
+  directive_key: string;
   response_event_id: string;
 };
 
-export type AskAnnotation = {
+export type BriefingAnnotation = {
   annotation_event_id: string;
   annotation_kind: 'comment' | 'suggest_replacement';
   start_offset: number;
@@ -3879,12 +3866,7 @@ export type AskAnnotation = {
   created_at: number;
 };
 
-export type AskPreviousRoundAnnotation = AskAnnotation & {
-  actor_user_id: string;
-  submission_ordinal: number;
-};
-
-export type AskAnnotationOperation =
+export type BriefingAnnotationOperation =
   | {
     operation: 'set';
     annotation_kind: 'comment';
@@ -3904,41 +3886,41 @@ export type AskAnnotationOperation =
   }
   | { operation: 'retract'; annotation_event_id: string };
 
-const ASK_STATES = new Set(['open', 'submitted', 'expired', 'cancelled', 'closed']);
-const ASK_RESPONSE_TYPES = new Set<AskResponseType>([
+const BRIEFING_ROUND_STATES = new Set(['open', 'submitted']);
+const BRIEFING_RESPONSE_TYPES = new Set<BriefingResponseType>([
   'verdict', 'free_text', 'single_choice', 'multi_choice',
 ]);
 
-function exactAskValueKeys(row: Record<string, unknown>, expected: readonly string[]): boolean {
+function exactBriefingValueKeys(row: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(row).sort();
   const sortedExpected = [...expected].sort();
   return keys.length === sortedExpected.length
     && keys.every((key, index) => key === sortedExpected[index]);
 }
 
-function askResponseValue(
+function briefingResponseValue(
   value: unknown,
-  responseType: AskResponseType,
+  responseType: BriefingResponseType,
   optionKeys: readonly string[],
-): AskResponseValue | null {
+): BriefingResponseValue | null {
   const row = briefingRecord(value);
   if (responseType === 'verdict') {
-    return exactAskValueKeys(row, ['verdict']) && (row.verdict === 'keep' || row.verdict === 'dismiss')
+    return exactBriefingValueKeys(row, ['verdict']) && (row.verdict === 'keep' || row.verdict === 'dismiss')
       ? { verdict: row.verdict }
       : null;
   }
   if (responseType === 'free_text') {
-    return exactAskValueKeys(row, ['text']) && typeof row.text === 'string' ? { text: row.text } : null;
+    return exactBriefingValueKeys(row, ['text']) && typeof row.text === 'string' ? { text: row.text } : null;
   }
   const allowed = new Set(optionKeys);
   if (responseType === 'single_choice') {
-    return exactAskValueKeys(row, ['option_key'])
+    return exactBriefingValueKeys(row, ['option_key'])
       && typeof row.option_key === 'string'
       && allowed.has(row.option_key)
       ? { option_key: row.option_key }
       : null;
   }
-  if (!exactAskValueKeys(row, ['option_keys'])
+  if (!exactBriefingValueKeys(row, ['option_keys'])
       || !Array.isArray(row.option_keys)
       || row.option_keys.some((key) => typeof key !== 'string')
       || row.option_keys.some((key) => !allowed.has(key as string))
@@ -3947,7 +3929,7 @@ function askResponseValue(
   return { option_keys: optionKeys.filter((key) => selected.has(key)) };
 }
 
-function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | AskPreviousRoundAnnotation | null {
+function briefingAnnotation(value: unknown): BriefingAnnotation | null {
   const row = briefingRecord(value);
   const annotationKind = row.annotation_kind;
   const start = row.start_offset;
@@ -3964,7 +3946,7 @@ function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | 
       || !Number.isSafeInteger(row.created_at)
       || (annotationKind === 'comment' && (typeof body !== 'string' || !body.trim() || replacement !== null))
       || (annotationKind === 'suggest_replacement' && typeof replacement !== 'string')) return null;
-  const annotation: AskAnnotation = {
+  const annotation: BriefingAnnotation = {
     annotation_event_id: briefingString(row.annotation_event_id),
     annotation_kind: annotationKind,
     start_offset: start as number,
@@ -3974,34 +3956,26 @@ function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | 
     replacement_text: replacement as string | null,
     created_at: row.created_at as number,
   };
-  if (!previousRound) return annotation;
-  if (!briefingString(row.actor_user_id)
-      || !Number.isSafeInteger(row.submission_ordinal)
-      || (row.submission_ordinal as number) < 1) return null;
-  return {
-    ...annotation,
-    actor_user_id: briefingString(row.actor_user_id),
-    submission_ordinal: row.submission_ordinal as number,
-  };
+  return annotation;
 }
 
-export function normalizeAskProjection(payload: unknown): AskProjection {
+export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoundProjection {
   const root = briefingRecord(payload);
   let valid = true;
-  const askId = briefingString(root.ask_id);
+  const roundId = briefingString(root.round_id);
   const rawState = briefingString(root.state);
-  if (!askId || !ASK_STATES.has(rawState) || !briefingString(root.lifecycle_event_id)) valid = false;
+  if (!roundId || !BRIEFING_ROUND_STATES.has(rawState)) valid = false;
   const rawItems = Array.isArray(root.items) ? root.items : [];
   if (!Array.isArray(root.items)) valid = false;
-  const items = rawItems.map((entry): AskItem | null => {
+  const items = rawItems.map((entry): BriefingDirectiveItem | null => {
     const row = briefingRecord(entry);
     const revision = briefingRecord(row.revision);
     const id = briefingString(row.id);
     const revisionId = briefingString(revision.id);
     const itemKind = row.item_kind;
     const rawType = revision.response_type;
-    const responseType = typeof rawType === 'string' && ASK_RESPONSE_TYPES.has(rawType as AskResponseType)
-      ? rawType as AskResponseType
+    const responseType = typeof rawType === 'string' && BRIEFING_RESPONSE_TYPES.has(rawType as BriefingResponseType)
+      ? rawType as BriefingResponseType
       : null;
     if (!id || !revisionId || (itemKind !== 'item' && itemKind !== 'group')) {
       valid = false;
@@ -4028,12 +4002,12 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     const hasEffective = Object.prototype.hasOwnProperty.call(row, 'effective_response');
     const effective = briefingRecord(row.effective_response);
     const effectiveValue = responseType && hasEffective && row.effective_response !== null
-      ? askResponseValue(effective.value, responseType, options.map((option) => option.option_key))
+      ? briefingResponseValue(effective.value, responseType, options.map((option) => option.option_key))
       : null;
     if (hasEffective && row.effective_response !== null
         && (!briefingString(effective.response_event_id) || !effectiveValue)) valid = false;
     const rawDirective = briefingRecord(row.directive);
-    let directive: AskItem['directive'];
+    let directive: BriefingDirectiveItem['directive'];
     if (Object.prototype.hasOwnProperty.call(row, 'directive')) {
       const key = briefingString(rawDirective.key);
       const definitionDigest = briefingString(rawDirective.definition_digest);
@@ -4068,7 +4042,7 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
       responseVisible: hasEffective,
       ...(directive ? { directive } : {}),
     };
-  }).filter((item): item is AskItem => item !== null)
+  }).filter((item): item is BriefingDirectiveItem => item !== null)
     .sort((left, right) => left.revision.position - right.revision.position || left.id.localeCompare(right.id));
   const itemIds = new Set<string>();
   for (const item of items) {
@@ -4134,7 +4108,7 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     if (!directiveBinding) valid = false;
     const keys = new Set<string>();
     let previousEnd = -1;
-    const sortedDirectives = items.map((item) => item.directive).filter((directive): directive is NonNullable<AskItem['directive']> => Boolean(directive))
+    const sortedDirectives = items.map((item) => item.directive).filter((directive): directive is NonNullable<BriefingDirectiveItem['directive']> => Boolean(directive))
       .sort((left, right) => left.start_offset - right.start_offset);
     for (const directive of sortedDirectives) {
       if (directive.start_offset < previousEnd) valid = false;
@@ -4150,54 +4124,29 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
   } else if (items.some((item) => item.directive)) {
     valid = false;
   }
-  let annotations: AskAnnotation[] | undefined;
+  let annotations: BriefingAnnotation[] | undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {
     if (!Array.isArray(root.annotations)) valid = false;
     annotations = (Array.isArray(root.annotations) ? root.annotations : []).map((entry) => {
-      const parsed = askAnnotation(entry, false) as AskAnnotation | null;
+      const parsed = briefingAnnotation(entry);
       if (!parsed) valid = false;
       return parsed;
-    }).filter((entry): entry is AskAnnotation => entry !== null);
-  }
-  const rawPreviousRound = briefingRecord(root.previous_round);
-  let previousRound: AskProjection['previous_round'] = null;
-  if (root.previous_round !== null) {
-    const rawAnnotations = rawPreviousRound.annotations;
-    if (!briefingString(rawPreviousRound.ask_id)
-        || !briefingString(rawPreviousRound.artifact_version_id)
-        || !Array.isArray(rawAnnotations)) valid = false;
-    const previousAnnotations = (Array.isArray(rawAnnotations) ? rawAnnotations : []).map((entry) => {
-      const parsed = askAnnotation(entry, true) as AskPreviousRoundAnnotation | null;
-      if (!parsed) valid = false;
-      return parsed;
-    }).filter((entry): entry is AskPreviousRoundAnnotation => entry !== null);
-    previousRound = {
-      ask_id: briefingString(rawPreviousRound.ask_id),
-      artifact_version_id: briefingString(rawPreviousRound.artifact_version_id),
-      annotations: previousAnnotations,
-    };
+    }).filter((entry): entry is BriefingAnnotation => entry !== null);
   }
   if ((rawState === 'open' && latestSubmission !== null)
       || (rawState === 'submitted' && latestSubmission === null)) valid = false;
   return {
-    ask_id: askId,
-    state: ASK_STATES.has(rawState) ? rawState as AskProjection['state'] : 'closed',
-    request_key: briefingString(root.request_key),
-    request_digest: briefingString(root.request_digest),
-    requester_user_id: briefingString(root.requester_user_id),
-    requester_session_id: briefingString(root.requester_session_id),
-    responder_user_ids: briefingStringArray(root.responder_user_ids),
-    expires_at: briefingOptionalNumber(root.expires_at),
-    retention_expires_at: briefingOptionalNumber(root.retention_expires_at),
+    round_id: roundId,
+    state: BRIEFING_ROUND_STATES.has(rawState) ? rawState as BriefingRoundProjection['state'] : 'open',
+    briefing_key: briefingString(root.briefing_key),
+    binding_digest: briefingString(root.binding_digest),
     created_at: briefingOptionalNumber(root.created_at) ?? 0,
-    lifecycle_event_id: briefingString(root.lifecycle_event_id),
     latest_submission: latestSubmission,
     latest_submission_for_actor: latestSubmissionForActor,
     document,
     directive_binding: directiveBinding ?? null,
     ...(latestFrozenMembership !== undefined ? { latest_frozen_membership: latestFrozenMembership } : {}),
     ...(annotations ? { annotations } : {}),
-    previous_round: previousRound,
     items,
     valid,
   };
@@ -4254,8 +4203,64 @@ export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollec
 
 export function normalizeBriefingProjection(payload: unknown): BriefingProjection {
   const root = briefingRecord(payload);
+  const briefing = briefingRecord(root.briefing);
   const selected = briefingRecord(root.selected_round);
-  const projection = normalizeAskProjection(selected.projection ?? selected);
+  const answers = Array.isArray(selected.answers) ? selected.answers.map(briefingRecord) : [];
+  const answerByInstance = new Map(answers.map((answer) => [
+    briefingString(answer.directive_instance_id),
+    answer,
+  ]));
+  const items = (Array.isArray(selected.items) ? selected.items : []).map((entry) => {
+    const item = briefingRecord(entry);
+    const id = briefingString(item.id);
+    const answer = answerByInstance.get(id);
+    return {
+      id,
+      client_item_key: briefingString(item.directive_key),
+      parent_item_id: null,
+      item_kind: 'item',
+      revision: {
+        id: briefingString(item.definition_digest),
+        ordinal: 1,
+        title: briefingString(item.directive_key),
+        prompt: briefingString(item.prompt),
+        description: null,
+        response_type: item.response_type,
+        required: item.required === true || item.required === 1,
+        position: briefingOptionalNumber(item.position) ?? 0,
+        options: Array.isArray(item.options) ? item.options : [],
+      },
+      effective_response: answer ? {
+        response_event_id: briefingString(answer.response_event_id),
+        value: answer.value,
+      } : null,
+      responseVisible: true,
+      directive: {
+        key: briefingString(item.directive_key),
+        definition_digest: briefingString(item.definition_digest),
+        start_offset: item.start_offset,
+        end_offset: item.end_offset,
+        body_start_offset: item.body_start_offset,
+        body_end_offset: item.body_end_offset,
+      },
+    };
+  });
+  const selectedId = briefingString(selected.id);
+  const latestSubmission = selected.latest_submission ?? null;
+  const projection = normalizeBriefingRoundProjection({
+    round_id: selectedId,
+    state: latestSubmission ? 'submitted' : 'open',
+    briefing_key: briefingString(briefing.briefing_key, selectedId),
+    binding_digest: briefingString(selected.binding_digest),
+    created_at: briefingOptionalNumber(selected.created_at) ?? 0,
+    latest_submission: latestSubmission,
+    latest_submission_for_actor: latestSubmission,
+    document: selected.document ?? null,
+    directive_binding: selected.binding ?? null,
+    latest_frozen_membership: selected.latest_frozen_membership ?? null,
+    annotations: selected.annotations ?? [],
+    items,
+  });
   const rounds = (Array.isArray(root.rounds) ? root.rounds : []).map((entry): BriefingRoundSummary => {
     const row = briefingRecord(entry);
     const origin = briefingRecord(row.origin);
@@ -4272,10 +4277,10 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
   }).filter((round) => Boolean(round.id && round.artifact_version_id));
   return {
     ...projection,
-    briefing_id: briefingString(root.id),
-    title: briefingString(root.title),
-    latest_round_id: briefingString(root.latest_round_id),
-    selected_round_id: briefingString(selected.id, projection.ask_id),
+    briefing_id: briefingString(briefing.id),
+    title: briefingString(briefing.title),
+    latest_round_id: briefingString(briefing.latest_round_id),
+    selected_round_id: briefingString(selected.id, projection.round_id),
     rounds,
   };
 }
@@ -4289,9 +4294,16 @@ export async function getBriefing(briefingId: string, roundId?: string | null, s
 export async function postBriefingAnswers(
   briefingId: string,
   roundId: string,
-  answers: readonly AskAnswerOperation[],
+  answers: readonly BriefingAnswerOperation[],
 ): Promise<{ answer_event_ids: string[] }> {
-  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/answers`, { answers });
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/answers`, {
+    answers: answers.map((answer) => ({
+      directive_key: answer.directive_key,
+      operation: answer.operation,
+      expected_response_event_id: answer.expected_response_event_id,
+      ...(answer.operation === 'set' ? { value: answer.value } : {}),
+    })),
+  });
   const root = briefingRecord(await parseMaybeJson(response));
   return { answer_event_ids: briefingStringArray(root.answer_event_ids) };
 }
@@ -4299,9 +4311,23 @@ export async function postBriefingAnswers(
 export async function postBriefingAnnotations(
   briefingId: string,
   roundId: string,
-  annotations: readonly AskAnnotationOperation[],
+  annotations: readonly BriefingAnnotationOperation[],
 ): Promise<{ annotation_event_ids: string[] }> {
-  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/annotations`, { annotations });
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/annotations`, {
+    annotations: annotations.map((annotation) => annotation.operation === 'retract'
+      ? annotation
+      : {
+        operation: 'set',
+        kind: annotation.annotation_kind,
+        start_offset: annotation.start_offset,
+        end_offset: annotation.end_offset,
+        quote: annotation.quote,
+        body: annotation.body ?? null,
+        replacement_text: annotation.operation === 'set' && annotation.annotation_kind === 'suggest_replacement'
+          ? annotation.replacement_text
+          : null,
+      }),
+  });
   const root = briefingRecord(await parseMaybeJson(response));
   invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   return { annotation_event_ids: briefingStringArray(root.annotation_event_ids) };
@@ -4311,13 +4337,19 @@ export async function postBriefingSubmission(
   briefingId: string,
   roundId: string,
   input: {
-    expected_lifecycle_event_id: string;
     supersedes_submission_id?: string;
-    answers: readonly AskSubmissionAnswer[];
+    answers: readonly BriefingSubmissionAnswer[];
     annotations?: ReadonlyArray<{ annotation_event_id: string }>;
   },
 ): Promise<unknown> {
-  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/submit`, input);
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/submit`, {
+    supersedes_submission_id: input.supersedes_submission_id ?? null,
+    answers: input.answers.map((answer) => ({
+      directive_key: answer.directive_key,
+      response_event_id: answer.response_event_id,
+    })),
+    annotation_event_ids: (input.annotations ?? []).map((annotation) => annotation.annotation_event_id),
+  });
   invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   invalidateApiGetCache('/api/dashboard/badges');
   return parseMaybeJson(response);

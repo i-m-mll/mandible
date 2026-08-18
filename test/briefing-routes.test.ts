@@ -82,7 +82,8 @@ describe("plural Briefing routes", () => {
     const detail = await router.invoke({ method: "GET", url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`, credential: "human" });
     expect(detail.body).toMatchObject({ selected_round: { id: ids.round_id, binding: { status: "valid" }, items: [{ directive_key: "paper" }] } });
     const answer = await router.invoke({ method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
-      credential: "human", body: { answers: [{ directive_key: "paper", value: { verdict: "keep" } }] } });
+      credential: "human", body: { answers: [{ directive_key: "paper", operation: "set",
+        expected_response_event_id: null, value: { verdict: "keep" } }] } });
     expect(answer.status).toBe(200);
     const responseEventId = ((answer.body as { answers: Array<{ response_event_id: string }> }).answers[0]).response_event_id;
     const submitted = await router.invoke({ method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,

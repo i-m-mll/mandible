@@ -374,10 +374,27 @@ export function readBriefing(
        FROM briefings WHERE id = ?`,
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;
-  const rounds = db.prepare(
-    `SELECT id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at
-       FROM briefing_rounds WHERE briefing_id = ? ORDER BY ordinal DESC`,
-  ).all(briefingId) as Array<{ id: string; ordinal: number; artifact_version_id: string; previous_round_id: string | null; profile: string; binding_digest: string; created_at: number }>;
+  const roundRows = db.prepare(
+    `SELECT r.id, r.ordinal, r.artifact_version_id, r.previous_round_id, r.profile,
+            r.binding_digest, r.created_at,
+            (SELECT json_extract(run.source_health_json, '$.source')
+               FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_source,
+            (SELECT run.run_id FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_run_id,
+            (SELECT run.task_identity FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_task_identity
+       FROM briefing_rounds r WHERE r.briefing_id = ? ORDER BY r.ordinal DESC`,
+  ).all(briefingId) as Array<{
+    id: string; ordinal: number; artifact_version_id: string; previous_round_id: string | null;
+    profile: string; binding_digest: string; created_at: number; origin_source: string | null;
+    origin_run_id: string | null; origin_task_identity: string | null;
+  }>;
+  const rounds = roundRows.map(({ origin_source, origin_run_id, origin_task_identity, ...round }) => ({
+    ...round,
+    origin: origin_run_id === null ? null : {
+      source: origin_source,
+      run_id: origin_run_id,
+      task_identity: origin_task_identity,
+    },
+  }));
   const selected = options.roundId
     ? rounds.find((round) => round.id === options.roundId)
     : rounds[0];
@@ -403,21 +420,30 @@ export function readBriefing(
   const latestSubmission = db.prepare(
     `SELECT id, ordinal, supersedes_submission_id, actor_user_id, created_at
        FROM briefing_submissions WHERE round_id = ? AND actor_user_id = ? ORDER BY ordinal DESC LIMIT 1`,
-  ).get(selected.id, options.actorUserId) ?? null;
+  ).get(selected.id, options.actorUserId) as { id: string; ordinal: number } | undefined;
+  const latestFrozenMembership = latestSubmission ? {
+    answer_event_ids: (db.prepare(
+      "SELECT response_event_id FROM briefing_submission_answers WHERE submission_id = ? ORDER BY position",
+    ).all(latestSubmission.id) as Array<{ response_event_id: string }>).map((row) => row.response_event_id),
+    annotation_event_ids: (db.prepare(
+      "SELECT annotation_event_id FROM briefing_submission_annotations WHERE submission_id = ? ORDER BY position",
+    ).all(latestSubmission.id) as Array<{ annotation_event_id: string }>).map((row) => row.annotation_event_id),
+  } : null;
   return {
     briefing,
     rounds,
     selected_round: {
       ...selected,
       document: { artifact_version_id: selected.artifact_version_id, content_hash: document.content_hash,
-        profile: selected.profile, source: document.source },
+        previous_round_id: selected.previous_round_id, profile: selected.profile, source: document.source },
       binding: { status: bindingStatus },
       items: items.map(({ options_json, ...item }) => ({ ...item, options: JSON.parse(options_json) })),
       answers: effectiveAnswers(db, selected.id, options.actorUserId).map(({ value_json, ...answer }) => ({
         ...answer, value: JSON.parse(value_json),
       })),
       annotations: effectiveAnnotations(db, selected.id, options.actorUserId),
-      latest_submission: latestSubmission,
+      latest_submission: latestSubmission ?? null,
+      latest_frozen_membership: latestFrozenMembership,
     },
   };
 }
@@ -459,41 +485,64 @@ export function applyBriefingAnswers(
   requireRoundMember(db, briefingId, roundId, actorUserId);
   if (!Array.isArray(answers)) throw new BriefingStoreError("answers must be an array");
   return db.transaction(() => {
-    let stored = 0;
+    const answerEventIds: string[] = [];
     for (const [index, raw] of answers.entries()) {
       const answer = record(raw, `answers[${index}]`);
-      only(answer, ["directive_key", "value"], `answers[${index}]`);
+      only(answer, ["directive_key", "operation", "expected_response_event_id", "value"], `answers[${index}]`);
       const key = text(answer.directive_key, `answers[${index}].directive_key`);
+      if (answer.operation !== "set" && answer.operation !== "retract") {
+        throw new BriefingStoreError(`answers[${index}].operation must be set or retract`);
+      }
       const directive = db.prepare(
         `SELECT i.id, d.response_type FROM briefing_directive_instances i
           JOIN briefing_directive_definitions d ON d.id = i.definition_id
          WHERE i.round_id = ? AND i.directive_key = ?`,
       ).get(roundId, key) as { id: string; response_type: FeedbackResponseType } | undefined;
       if (!directive) throw new BriefingStoreError(`directive '${key}' not found`, 404, "directive_not_found");
-      const value = validateValue(directive.response_type, answer.value);
-      const serialized = canonical(value);
       const current = db.prepare(
         `SELECT e.id, e.value_json FROM briefing_response_events e
           WHERE e.round_id = ? AND e.directive_instance_id = ? AND e.actor_user_id = ? AND e.operation = 'set'
             AND NOT EXISTS (SELECT 1 FROM briefing_response_events r WHERE r.retracts_event_id = e.id)
           ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
       ).get(roundId, directive.id, actorUserId) as { id: string; value_json: string } | undefined;
-      if (current && canonical(JSON.parse(current.value_json)) === serialized) continue;
-      if (current) {
+      const expected = answer.expected_response_event_id === null
+        ? null : text(answer.expected_response_event_id, `answers[${index}].expected_response_event_id`);
+      if ((current?.id ?? null) !== expected) {
+        throw new BriefingStoreError("answer changed since it was read", 409, "stale_answer");
+      }
+      if (answer.operation === "retract") {
+        if (Object.hasOwn(answer, "value") || !current) {
+          throw new BriefingStoreError("retract requires one current answer and no value");
+        }
+        const retractionId = randomUUID();
         db.prepare(
           `INSERT INTO briefing_response_events
             (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
            VALUES (?, ?, ?, 'retract', NULL, ?, ?, ?)`,
-        ).run(randomUUID(), roundId, directive.id, current.id, actorUserId, now);
+        ).run(retractionId, roundId, directive.id, current.id, actorUserId, now);
+        answerEventIds.push(retractionId);
+        continue;
       }
+      if (!Object.hasOwn(answer, "value")) throw new BriefingStoreError("set requires value");
+      const value = validateValue(directive.response_type, answer.value);
+      const serialized = canonical(value);
+      if (current && canonical(JSON.parse(current.value_json)) === serialized) {
+        throw new BriefingStoreError("answer is unchanged", 409, "answer_noop");
+      }
+      if (current) db.prepare(
+        `INSERT INTO briefing_response_events
+          (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+         VALUES (?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+      ).run(randomUUID(), roundId, directive.id, current.id, actorUserId, now);
+      const eventId = randomUUID();
       db.prepare(
         `INSERT INTO briefing_response_events
           (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
          VALUES (?, ?, ?, 'set', ?, NULL, ?, ?)`,
-      ).run(randomUUID(), roundId, directive.id, serialized, actorUserId, now);
-      stored += 1;
+      ).run(eventId, roundId, directive.id, serialized, actorUserId, now);
+      answerEventIds.push(eventId);
     }
-    return { stored, answers: effectiveAnswers(db, roundId, actorUserId).map(({ value_json, ...answer }) => ({
+    return { answer_event_ids: answerEventIds, answers: effectiveAnswers(db, roundId, actorUserId).map(({ value_json, ...answer }) => ({
       ...answer, value: JSON.parse(value_json),
     })) };
   })();
@@ -515,7 +564,27 @@ export function applyBriefingAnnotations(
     const ids: string[] = [];
     for (const [index, raw] of annotations.entries()) {
       const annotation = record(raw, `annotations[${index}]`);
-      only(annotation, ["kind", "start_offset", "end_offset", "quote", "body", "replacement_text"], `annotations[${index}]`);
+      if (annotation.operation === "retract") {
+        only(annotation, ["operation", "annotation_event_id"], `annotations[${index}]`);
+        const targetId = text(annotation.annotation_event_id, "annotation.annotation_event_id");
+        const target = db.prepare(
+          `SELECT id FROM briefing_annotation_events e
+            WHERE id = ? AND round_id = ? AND actor_user_id = ? AND operation = 'set'
+              AND NOT EXISTS (SELECT 1 FROM briefing_annotation_events r WHERE r.retracts_event_id = e.id)`,
+        ).get(targetId, roundId, actorUserId);
+        if (!target) throw new BriefingStoreError("annotation changed since it was read", 409, "stale_annotation");
+        const retractionId = randomUUID();
+        db.prepare(
+          `INSERT INTO briefing_annotation_events
+            (id, round_id, operation, annotation_kind, start_offset, end_offset, quote, body,
+             replacement_text, retracts_event_id, actor_user_id, created_at)
+           VALUES (?, ?, 'retract', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+        ).run(retractionId, roundId, targetId, actorUserId, now);
+        ids.push(retractionId);
+        continue;
+      }
+      only(annotation, ["operation", "kind", "start_offset", "end_offset", "quote", "body", "replacement_text"], `annotations[${index}]`);
+      if (annotation.operation !== "set") throw new BriefingStoreError("annotation.operation must be set or retract");
       const kind = annotation.kind;
       if (kind !== "comment" && kind !== "suggest_replacement") {
         throw new BriefingStoreError("annotation kind must be comment or suggest_replacement");
@@ -538,7 +607,7 @@ export function applyBriefingAnnotations(
             AND NOT EXISTS (SELECT 1 FROM briefing_annotation_events r WHERE r.retracts_event_id = e.id)
           LIMIT 1`,
       ).get(roundId, actorUserId, kind, start, end, quote, body, replacement) as { id: string } | undefined;
-      if (duplicate) { ids.push(duplicate.id); continue; }
+      if (duplicate) throw new BriefingStoreError("annotation is unchanged", 409, "annotation_noop");
       const id = randomUUID();
       db.prepare(
         `INSERT INTO briefing_annotation_events

@@ -92,18 +92,19 @@ describe("artifact-backed Briefing rounds", () => {
     const source = selected.document.source as string;
     const quote = "Daily";
     const annotations = applyBriefingAnnotations(db, first.briefing_id, first.round_id!, humanId, [{
-      kind: "comment", start_offset: source.indexOf(quote), end_offset: source.indexOf(quote) + quote.length,
+      operation: "set", kind: "comment", start_offset: source.indexOf(quote), end_offset: source.indexOf(quote) + quote.length,
       quote, body: "Good framing", replacement_text: null,
     }], 1_100);
     expect(annotations.annotation_event_ids).toHaveLength(1);
 
     const set = applyBriefingAnswers(db, first.briefing_id, first.round_id!, humanId, [{
-      directive_key: "paper", value: { verdict: "keep" },
+      directive_key: "paper", operation: "set", expected_response_event_id: null, value: { verdict: "keep" },
     }], 1_200);
-    expect(set.stored).toBe(1);
-    expect(applyBriefingAnswers(db, first.briefing_id, first.round_id!, humanId, [{
-      directive_key: "paper", value: { verdict: "keep" },
-    }], 1_201).stored).toBe(0);
+    expect(set.answer_event_ids).toHaveLength(1);
+    expect(() => applyBriefingAnswers(db, first.briefing_id, first.round_id!, humanId, [{
+      directive_key: "paper", operation: "set", expected_response_event_id: set.answer_event_ids[0],
+      value: { verdict: "keep" },
+    }], 1_201)).toThrowError(/unchanged/);
     const answer = set.answers[0] as { response_event_id: string };
     const submission = submitBriefingRound(db, first.briefing_id, first.round_id!, humanId, {
       answers: [{ directive_key: "paper", response_event_id: answer.response_event_id }],
@@ -117,7 +118,8 @@ describe("artifact-backed Briefing rounds", () => {
     }, 1_301)).toThrowError(/unchanged/);
 
     const correctionSet = applyBriefingAnswers(db, first.briefing_id, first.round_id!, humanId, [{
-      directive_key: "paper", value: { verdict: "dismiss" },
+      directive_key: "paper", operation: "set", expected_response_event_id: answer.response_event_id,
+      value: { verdict: "dismiss" },
     }], 1_400);
     const corrected = submitBriefingRound(db, first.briefing_id, first.round_id!, humanId, {
       answers: [{ directive_key: "paper", response_event_id: (correctionSet.answers[0] as { response_event_id: string }).response_event_id }],
@@ -136,7 +138,7 @@ describe("artifact-backed Briefing rounds", () => {
     expect(readBriefing(db, first.briefing_id, { actorUserId: outsider, operator: false })).toBeNull();
     expect(() => applyBriefingAnswers(db, first.briefing_id, first.round_id!, outsider, [])).toThrowError(/not found/);
     expect(() => applyBriefingAnnotations(db, first.briefing_id, first.round_id!, humanId, [{
-      kind: "comment", start_offset: 0, end_offset: 4, quote: "nope", body: "x", replacement_text: null,
+      operation: "set", kind: "comment", start_offset: 0, end_offset: 4, quote: "nope", body: "x", replacement_text: null,
     }])).toThrowError(/quote/);
     expect(() => submitBriefingRound(db, first.briefing_id, first.round_id!, humanId, {
       answers: [], annotation_event_ids: [], supersedes_submission_id: null,

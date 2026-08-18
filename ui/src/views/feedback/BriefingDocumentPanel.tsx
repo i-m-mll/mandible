@@ -3,9 +3,9 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import {
   getArtifactContent,
   postBriefingAnnotations,
-  type AskAnnotation,
-  type AskAnnotationOperation,
-  type AskProjection,
+  type BriefingAnnotation,
+  type BriefingAnnotationOperation,
+  type BriefingRoundProjection,
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
 import {
@@ -13,19 +13,19 @@ import {
   type MarkdownSourceSelection,
 } from '../spaces/MarkdownSourceEditor';
 
-export type AskDocumentPanelProps = {
+export type BriefingDocumentPanelProps = {
   briefingId: string;
   roundId: string;
-  ask: AskProjection;
+  round: BriefingRoundProjection;
   canMutate: boolean;
-  onRefresh(): Promise<AskProjection | null>;
+  onRefresh(): Promise<BriefingRoundProjection | null>;
   draft?: Record<string, { verdict: 'keep' | 'dismiss' } | null>;
   onDirectiveVerdict?(itemId: string, value: 'keep' | 'dismiss'): void;
   onContentGateChange?(reason: string): void;
 };
 
 type AnnotationEditor = {
-  annotation: AskAnnotation | null;
+  annotation: BriefingAnnotation | null;
   start: number;
   end: number;
   quote: string;
@@ -33,7 +33,7 @@ type AnnotationEditor = {
   left: number;
 };
 
-function annotationKindLabel(kind: AskAnnotation['annotation_kind']): string {
+function annotationKindLabel(kind: BriefingAnnotation['annotation_kind']): string {
   return kind === 'comment' ? 'Comment' : 'Suggested replacement';
 }
 
@@ -57,13 +57,13 @@ async function sha256(value: string): Promise<string> {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: AskDocumentPanelProps): JSX.Element | null {
-  const document = ask.document;
+export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
+  const document = round.document;
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
   const [selection, setSelection] = useState<MarkdownSourceSelection | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
-  const [kind, setKind] = useState<AskAnnotation['annotation_kind']>('comment');
+  const [kind, setKind] = useState<BriefingAnnotation['annotation_kind']>('comment');
   const [body, setBody] = useState('');
   const [replacement, setReplacement] = useState('');
   const [busy, setBusy] = useState(false);
@@ -96,11 +96,11 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
     return () => controller.abort();
   }, [document?.artifact_version_id, onContentGateChange]);
 
-  const annotations = ask.annotations ?? [];
+  const annotations = round.annotations ?? [];
   const profile = document?.profile === 'mandible-briefing.v1';
-  const directiveItems = useMemo(() => ask.items
+  const directiveItems = useMemo(() => round.items
     .filter((item) => item.directive)
-    .sort((left, right) => left.directive!.start_offset - right.directive!.start_offset), [ask.items]);
+    .sort((left, right) => left.directive!.start_offset - right.directive!.start_offset), [round.items]);
   const documentIntegrityError = useMemo(() => {
     if (!profile || source === null) return null;
     let cursor = 0;
@@ -132,7 +132,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
     id: annotation.annotation_event_id,
     start: annotation.start_offset,
     end: annotation.end_offset,
-    className: `ask-annotation${annotation.annotation_kind === 'suggest_replacement' ? ' ask-annotation--suggestion' : ''}`,
+    className: `briefing-annotation${annotation.annotation_kind === 'suggest_replacement' ? ' briefing-annotation--suggestion' : ''}`,
   })), [annotations]);
 
   if (!document) return null;
@@ -145,7 +145,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
     setStatus(null);
   };
 
-  const openExisting = (annotation: AskAnnotation) => openEditor({
+  const openExisting = (annotation: BriefingAnnotation) => openEditor({
     annotation,
     start: annotation.start_offset,
     end: annotation.end_offset,
@@ -155,7 +155,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
   });
 
   const openDirectiveComment = (itemId: string) => {
-    const item = ask.items.find((candidate) => candidate.id === itemId);
+    const item = round.items.find((candidate) => candidate.id === itemId);
     const directive = item?.directive;
     if (!item || !directive || source === null) return;
     const quote = source.slice(directive.body_start_offset, directive.body_end_offset);
@@ -169,7 +169,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
     for (const item of directiveItems) {
       const directive = item.directive!;
       const prose = source.slice(cursor, directive.start_offset);
-      if (prose.trim()) parts.push(<div className="ask-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />);
+      if (prose.trim()) parts.push(<div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />);
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
       const current = draft[item.id] ?? (item.effective_response?.value && 'verdict' in item.effective_response.value ? item.effective_response.value : null);
       parts.push(
@@ -187,11 +187,11 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
       cursor = directive.end_offset;
     }
     const tail = source.slice(cursor);
-    if (tail.trim()) parts.push(<div className="ask-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />);
-    return <div className="ask-document__rendered" aria-label="Pinned briefing document">{parts}</div>;
+    if (tail.trim()) parts.push(<div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />);
+    return <div className="briefing-document__rendered" aria-label="Pinned briefing document">{parts}</div>;
   };
 
-  const mutate = async (operations: AskAnnotationOperation[], success: string) => {
+  const mutate = async (operations: BriefingAnnotationOperation[], success: string) => {
     if (busy) return;
     setBusy(true);
     setStatus(null);
@@ -214,7 +214,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
 
   const save = async () => {
     if (!editor || !canMutate) return;
-    const setOperation: AskAnnotationOperation = kind === 'comment'
+    const setOperation: BriefingAnnotationOperation = kind === 'comment'
       ? {
         operation: 'set',
         annotation_kind: 'comment',
@@ -236,13 +236,13 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
       setStatus('Comment text is required.');
       return;
     }
-    const operations: AskAnnotationOperation[] = editor.annotation
+    const operations: BriefingAnnotationOperation[] = editor.annotation
       ? [{ operation: 'retract', annotation_event_id: editor.annotation.annotation_event_id }, setOperation]
       : [setOperation];
     await mutate(operations, editor.annotation ? 'Annotation updated.' : 'Annotation saved.');
   };
 
-  const remove = async (annotation: AskAnnotation) => {
+  const remove = async (annotation: BriefingAnnotation) => {
     if (!canMutate) return;
     await mutate(
       [{ operation: 'retract', annotation_event_id: annotation.annotation_event_id }],
@@ -251,22 +251,22 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
   };
 
   return (
-    <section className="ask-document" aria-labelledby="ask-document-title">
-      <header className="ask-document__header">
+    <section className="briefing-document" aria-labelledby="briefing-document-title">
+      <header className="briefing-document__header">
         <div>
           <span className="briefing-eyebrow">Pinned document</span>
-          <h3 id="ask-document-title">Review source</h3>
+          <h3 id="briefing-document-title">Review source</h3>
         </div>
         <code>{document.artifact_version_id}</code>
       </header>
 
       {contentError ? <p className="briefing-error" role="alert">{contentError}</p> : null}
-      {profile && ask.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{ask.directive_binding?.reason || 'The directive binding is unavailable; this document is read-only.'}</p> : null}
+      {profile && round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The directive binding is unavailable; this document is read-only.'}</p> : null}
       {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
       {source === null && !contentError ? <p className="briefing-empty" role="status">Loading document…</p> : null}
       {profile ? renderProfileDocument() : null}
       {source !== null && !profile ? (
-        <div className="ask-document__source">
+        <div className="briefing-document__source">
           <MarkdownSourceEditor
             blockId={`briefing-document:${briefingId}:${roundId}`}
             value={source}
@@ -290,7 +290,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
 
       {!profile && selection && source !== null && canMutate ? (
         <div
-          className="ask-document__selection-toolbar"
+          className="briefing-document__selection-toolbar"
           role="toolbar"
           aria-label="Document annotation"
           style={{ position: 'fixed', top: `${selection.top}px`, left: `${selection.left}px` }}
@@ -314,18 +314,18 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
 
       {editor ? (
         <div
-          className="ask-document__popover"
+          className="briefing-document__popover"
           role="dialog"
           aria-modal="false"
           aria-label={editor.annotation ? 'Edit annotation' : 'Add annotation'}
           style={{ position: 'fixed', top: `${Math.max(8, editor.top + 40)}px`, left: `${Math.max(8, editor.left)}px` }}
         >
-          <div className="ask-document__popover-header">
+          <div className="briefing-document__popover-header">
             <strong>{editor.annotation ? 'Edit annotation' : 'Annotate selection'}</strong>
             <button type="button" aria-label="Close annotation editor" onClick={() => setEditor(null)}>×</button>
           </div>
           <blockquote>{editor.quote}</blockquote>
-          <div className="ask-document__tabs" role="tablist" aria-label="Annotation type">
+          <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
             <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
             <button type="button" role="tab" aria-selected={kind === 'suggest_replacement'} onClick={() => setKind('suggest_replacement')}>Suggest replacement</button>
           </div>
@@ -339,7 +339,7 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
             {kind === 'comment' ? 'Comment' : 'Note (optional)'}
             <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canMutate || busy} />
           </label>
-          <div className="ask-document__popover-actions">
+          <div className="briefing-document__popover-actions">
             {editor.annotation && canMutate ? (
               <button type="button" className="btn btn--ghost btn--sm" onClick={() => void remove(editor.annotation!)} disabled={busy}>Delete</button>
             ) : null}
@@ -349,18 +349,18 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
       ) : null}
 
       {profile && source !== null ? (
-        <details className="ask-document__source-disclosure">
+        <details className="briefing-document__source-disclosure">
           <summary>Source and existing annotations</summary>
-          <div className="ask-document__source"><MarkdownSourceEditor blockId={`briefing-document:${briefingId}:${roundId}`} value={source} ariaLabel="Pinned briefing document source" readOnly decorations={decorations} onDecorationClick={(id) => { const annotation = annotations.find((entry) => entry.annotation_event_id === id); if (annotation) openExisting(annotation); }} onChange={() => undefined} onBlur={() => undefined} onCaretChange={() => undefined} onSelectionChange={() => undefined} onItemCommand={() => undefined} onOpenReference={() => undefined} onBoundaryArrow={() => false} /></div>
+          <div className="briefing-document__source"><MarkdownSourceEditor blockId={`briefing-document:${briefingId}:${roundId}`} value={source} ariaLabel="Pinned briefing document source" readOnly decorations={decorations} onDecorationClick={(id) => { const annotation = annotations.find((entry) => entry.annotation_event_id === id); if (annotation) openExisting(annotation); }} onChange={() => undefined} onBlur={() => undefined} onCaretChange={() => undefined} onSelectionChange={() => undefined} onItemCommand={() => undefined} onOpenReference={() => undefined} onBoundaryArrow={() => false} /></div>
         </details>
       ) : null}
       {annotations.length > 0 ? (
-        <section className="ask-document__annotations" aria-labelledby="ask-annotations-title">
-          <h4 id="ask-annotations-title">Annotations</h4>
+        <section className="briefing-document__annotations" aria-labelledby="briefing-annotations-title">
+          <h4 id="briefing-annotations-title">Annotations</h4>
           <ul>
             {annotations.map((annotation) => (
               <li key={annotation.annotation_event_id}>
-                <button type="button" className="ask-document__annotation-row" onClick={() => openExisting(annotation)}>
+                <button type="button" className="briefing-document__annotation-row" onClick={() => openExisting(annotation)}>
                   <strong>“{excerpt(annotation.quote)}”</strong>
                   <span>{annotationKindLabel(annotation.annotation_kind)}</span>
                   {annotation.replacement_text !== null ? <span>Replace with “{excerpt(annotation.replacement_text)}”</span> : null}
@@ -377,9 +377,9 @@ export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefres
         </section>
       ) : null}
 
-      <div className="ask-document__status" role="status" aria-live="polite">{status}</div>
+      <div className="briefing-document__status" role="status" aria-live="polite">{status}</div>
     </section>
   );
 }
 
-export default AskDocumentPanel;
+export default BriefingDocumentPanel;

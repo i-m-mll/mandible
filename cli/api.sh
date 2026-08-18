@@ -902,10 +902,9 @@ api_operational_mutation_category() {
     /api/admin|/api/admin/*) printf 'system'; return 0 ;;
     /api/agent-dispatch|/api/agent-dispatch/*) printf 'agent_dispatch'; return 0 ;;
     /api/artifacts|/api/artifacts/*) printf 'artifacts'; return 0 ;;
-    /api/asks|/api/asks/*) printf 'asks'; return 0 ;;
     /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
     /api/backup|/api/backup/*) printf 'backup'; return 0 ;;
-    /api/briefing|/api/briefing/*) printf 'briefing'; return 0 ;;
+    /api/briefings|/api/briefings/*) printf 'briefing'; return 0 ;;
     /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;
     /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
@@ -1416,7 +1415,6 @@ api_file_rpc_exchange() {
   (( rpc_token_traced == 0 )) || set -x
   rm -f "$body_tmp"
   mv "$request_tmp" "$request_file"
-  chmod 600 "$request_file"
 
   deadline=$(( $(date +%s) + ${MANDIBLE_FILE_RPC_TIMEOUT:-15} ))
   while [[ $(date +%s) -le "$deadline" ]]; do
