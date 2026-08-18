@@ -8,6 +8,10 @@ import {
   SidebarItemRow,
   type SidebarItemOverflowAction,
 } from '../components/shared/SidebarItemRow';
+import {
+  orderByPinnedIds,
+  reconcileOrderedPinIds,
+} from '../components/shared/orderedPins';
 import type { ConsoleSession } from '../state';
 import type {
   BlockType,
@@ -65,6 +69,7 @@ import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import type { WorkRepo } from './work';
+import { useChatViewState } from './conversation-view-state';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
@@ -2526,6 +2531,7 @@ function ChatEntryItem({
   isSelected,
   onClick,
   onTogglePin,
+  pinActionRef,
   onEditTags,
   onRenameSession,
   showPinnedIcon = false,
@@ -2534,6 +2540,7 @@ function ChatEntryItem({
   isSelected: boolean;
   onClick: () => void;
   onTogglePin?: () => void;
+  pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
   showPinnedIcon?: boolean;
@@ -2618,6 +2625,7 @@ function ChatEntryItem({
             <SidebarItemPinAction
               label={title}
               pressed={isPinned}
+              actionRef={pinActionRef}
               onPress={handleTogglePin}
             />
           ) : null}
@@ -2717,12 +2725,24 @@ export function ConversationsView({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const [chatViewState, setChatViewState] = useChatViewState();
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const conversationsRef = useRef(conversations);
+  const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingPinFocusKey = useRef<string | null>(null);
   conversationsRef.current = conversations;
+
+  useLayoutEffect(() => {
+    const key = pendingPinFocusKey.current;
+    if (!key) return;
+    const action = pinActionRefs.current.get(key);
+    if (!action) return;
+    action.focus({ preventScroll: true });
+    pendingPinFocusKey.current = null;
+  });
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
@@ -2970,16 +2990,22 @@ export function ConversationsView({
       });
     }
 
-    const sortEntries = (items: ChatEntry[]) => [...items].sort((a, b) => {
+    const compareEntries = (a: ChatEntry, b: ChatEntry) => {
       if (sort === 'blocks') {
         const aBlocks = a.conversation?.block_count ?? 0;
         const bBlocks = b.conversation?.block_count ?? 0;
         if (aBlocks !== bBlocks) return bBlocks - aBlocks;
       }
       return b.time - a.time || getEntryTitle(a).localeCompare(getEntryTitle(b));
-    });
+    };
+    const sortEntries = (items: ChatEntry[]) => [...items].sort(compareEntries);
 
-    const pinned = sortEntries(entries.filter((entry) => Boolean(entry.conversation?.starred || entry.session?.pinned)));
+    const pinned = orderByPinnedIds(
+      entries.filter((entry) => Boolean(entry.conversation?.starred || entry.session?.pinned)),
+      chatViewState.pinnedConversationIds,
+      (entry) => entry.conversation?.id ?? `session:${entry.session?.id ?? entry.key}`,
+      compareEntries,
+    );
     const unpinned = entries.filter((entry) => !entry.conversation?.starred && !entry.session?.pinned);
     const looseChats = sortEntries(unpinned.filter((entry) => entry.project === 'No Project'));
     const groupMap = new Map<string, ChatEntry[]>();
@@ -2997,7 +3023,19 @@ export function ConversationsView({
       }))
       .sort((a, b) => a.project.localeCompare(b.project));
     return { pinned, projects, chats: looseChats };
-  }, [displayedConversations, liveByProviderSession, liveSessions, sort, workRepos]);
+  }, [chatViewState.pinnedConversationIds, displayedConversations, liveByProviderSession, liveSessions, sort, workRepos]);
+
+  useEffect(() => {
+    const durablePinnedIds = displayedConversations
+      .filter((conversation) => conversation.starred)
+      .map((conversation) => conversation.id);
+    setChatViewState((current) => {
+      const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, durablePinnedIds);
+      return reconciled.length === current.pinnedConversationIds.length
+        ? current
+        : { ...current, pinnedConversationIds: reconciled };
+    });
+  }, [displayedConversations, setChatViewState]);
 
   const firstChatEntry =
     chatSections.pinned[0] ??
@@ -3075,7 +3113,14 @@ export function ConversationsView({
     const starred = !entry.conversation.starred;
     try {
       const updated = await updateConversation(entry.conversation.id, { starred });
+      pendingPinFocusKey.current = entry.key;
       updateConversationInList(updated);
+      setChatViewState((current) => ({
+        ...current,
+        pinnedConversationIds: starred
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [entry.conversation!.id])
+          : current.pinnedConversationIds.filter((id) => id !== entry.conversation!.id),
+      }));
     } catch {
       // keep the current list state if persistence fails
     }
@@ -3125,6 +3170,10 @@ export function ConversationsView({
         : selectedSessionId === entry.session?.id}
       showPinnedIcon={showPinnedIcon}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
+      pinActionRef={entry.conversation ? (element) => {
+        if (element) pinActionRefs.current.set(entry.key, element);
+        else pinActionRefs.current.delete(entry.key);
+      } : undefined}
       onEditTags={entry.conversation ? (tags) => { void handleEditEntryTags(entry, tags); } : undefined}
       onRenameSession={!entry.conversation && entry.session
         ? (label) => { void handleRenameSession(entry, label); }
