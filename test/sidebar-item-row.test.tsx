@@ -6,7 +6,6 @@ import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
   SidebarItemPinAction,
-  SidebarItemProviderDot,
   SidebarItemRow,
 } from '../ui/src/components/shared/SidebarItemRow';
 
@@ -87,30 +86,33 @@ describe('SidebarItemRow', () => {
     expect(coarsePointerRule).toContain('pointer-events: auto');
   });
 
-  it('renders provider identity as accessible fixed leading dots instead of row badges', () => {
+  it('keeps an accessible provider in an exact-width gutter and reveals its dot only through interaction or selection', () => {
     render(
       <SidebarItemRow
         label="Provider row"
         selectionLabel="Select provider row"
-        selectionDescription="Provider: Codex"
+        provider={{ label: 'Codex', tone: 'codex' }}
         onSelect={() => undefined}
-        leading={(
-          <>
-            <SidebarItemProviderDot label="Claude" tone="claude" />
-            <SidebarItemProviderDot label="Codex" tone="codex" />
-            <SidebarItemProviderDot label="Gemini" tone="gemini" />
-          </>
-        )}
       />,
     );
 
     const select = screen.getByRole('button', { name: 'Select provider row' });
     expect(select.getAttribute('aria-description')).toBe('Provider: Codex');
-    for (const provider of ['Claude', 'Codex', 'Gemini']) {
-      const dot = screen.getByRole('img', { name: `Provider: ${provider}` });
-      expect(dot.classList.contains('sidebar-item-row__provider-dot')).toBe(true);
-    }
+    const dot = screen.getByRole('img', { name: 'Provider: Codex' });
+    expect(dot.classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
+    expect(dot.parentElement?.classList.contains('sidebar-item-row__provider-gutter')).toBe(true);
     expect(select.querySelector('.sidebar-item-row__badges')).toBeNull();
+
+    const gutterRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-gutter \{([^}]*)\}/)?.[1] ?? '';
+    expect(gutterRule).toContain('width: 7px');
+    expect(gutterRule).toContain('flex: 0 0 7px');
+    expect(gutterRule).toContain('margin-right: calc(-1 * var(--space-2))');
+    const dotRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1] ?? '';
+    expect(dotRule).toContain('opacity: 0');
+    const revealRule = sidebarItemRowStylesheet.match(
+      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(revealRule).toContain('opacity: 1');
   });
 
   it('reveals actions through focus-within and returns focus when Escape closes overflow', () => {

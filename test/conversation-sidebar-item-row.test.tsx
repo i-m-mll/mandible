@@ -143,7 +143,10 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(within(row as HTMLElement).getByRole('img', { name: 'Provider: Codex' })
       .classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
     expect(row?.querySelector('.agent-mark')).toBeNull();
-    expect(screen.getByRole('button', { name: /^Chats/ }).classList.contains('sidebar-item-row')).toBe(false);
+    const chatsHeading = screen.getByRole('button', { name: /^Chats/ });
+    expect(chatsHeading.classList.contains('sidebar-item-row')).toBe(false);
+    expect(chatsHeading.querySelector('.sidebar-group-node__count')).toBeNull();
+    expect(chatsHeading.getAttribute('aria-description')).toBe('1 chat');
     await waitFor(() => expect(select.getAttribute('aria-current')).toBe('true'));
 
     fireEvent.click(screen.getByRole('button', { name: `Pin ${conversation.title}` }));
@@ -201,6 +204,9 @@ describe('conversation sidebar labeled-item rows', () => {
     await waitFor(() => expect(document.activeElement).toBe(unpin));
     expect(screen.getByRole('button', { name: `Open conversation ${conversation.title}` }).getAttribute('aria-current')).toBe('true');
     const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
+    const pinnedHeading = within(pinnedSection).getByRole('button', { name: /^Pinned/ });
+    expect(pinnedHeading.querySelector('.sidebar-group-node__count')).toBeNull();
+    expect(pinnedHeading.getAttribute('aria-description')).toBe('2 pinned chats');
     expect(pinnedSection.querySelector('.chat-history-item__pin')).toBeNull();
     expect(within(pinnedSection).getAllByRole('button', { name: /^Open conversation/ }).map((row) => row.getAttribute('aria-label'))).toEqual([
       `Open conversation ${existingPinnedConversation.title}`,
