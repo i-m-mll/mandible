@@ -2,6 +2,7 @@ import type { Dispatch, StateUpdater } from 'preact/hooks';
 import { useMemo, useState } from 'preact/hooks';
 
 import { ViewSidebar } from '../../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
 import {
   SidebarItemBadge,
@@ -194,9 +195,7 @@ export function CollectionsSidebar({
   return (
     <ViewSidebar
       hidden={hidden}
-      storageKey="sidebar-width:briefing"
-      defaultWidth={360}
-      minWidth={230}
+      {...VIEW_SIDEBAR_GEOMETRY.briefing}
       ariaLabel="Briefings"
       className="feedback-collections-sidebar"
       header={(

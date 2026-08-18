@@ -388,13 +388,18 @@ describe("losing a dashboard session mid-session", () => {
         },
       },
     };
-    render(h(DesktopLoginStatus, {}));
+    render(h(DesktopLoginStatus, { placement: "rail", showRailLabel: false }));
     expect(screen.queryByRole("button", { name: "Log in" })).toBeNull();
 
     window.fetch = vi.fn(async () => new Response(null, { status: 401 })) as typeof window.fetch;
     await ensureClientAuthToken();
     const retry = await screen.findByRole("button", { name: "Log in" });
     expect(keychainAttempts).toBe(1);
+    expect(retry.classList.contains("app-rail__item")).toBe(true);
+    expect(retry.querySelector(".app-rail__label")).toBeNull();
+    expect(retry.querySelector(".app-rail__tooltip")?.textContent)
+      .toBe("Not logged in: login keychain is locked");
+    expect(screen.getByRole("status").textContent).toContain("Not logged in");
 
     window.fetch = vi.fn(async () => new Response(
       JSON.stringify({ token: "recovered-session-2" }),

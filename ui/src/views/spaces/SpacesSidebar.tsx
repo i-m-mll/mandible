@@ -36,6 +36,7 @@ import {
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
@@ -658,9 +659,7 @@ export function SpacesSidebar({
   return (
     <ViewSidebar
       hidden={hidden}
-      storageKey="sidebar-width:spaces"
-      defaultWidth={300}
-      minWidth={220}
+      {...VIEW_SIDEBAR_GEOMETRY.spaces}
       ariaLabel="Spaces"
       className="spaces-tree"
       as="div"

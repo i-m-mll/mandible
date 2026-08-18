@@ -1,5 +1,6 @@
 import type { ComponentChildren, JSX, Ref } from 'preact';
-import { useCallback } from 'preact/hooks';
+import { useCallback, useLayoutEffect } from 'preact/hooks';
+import { useAppShell } from '../app-shell';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 
 // Shared view-sidebar container (issue e29a8c5). Owns the frame element, the
@@ -71,11 +72,20 @@ export type ViewSidebarProps = {
 };
 
 export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
+  const { active, setViewSidebarWidth } = useAppShell();
   const { width, handleMouseDown, setWidth } = useSidebarResize({
     defaultWidth: props.defaultWidth,
     minWidth: props.minWidth,
     storageKey: props.storageKey,
   });
+
+  // Width stays owned by the existing resize hook. Publish that exact value to
+  // the app-shell CSS variable in the layout phase so the header boundary and
+  // sidebar boundary move in the same paint (including route restores).
+  useLayoutEffect(() => {
+    if (!active || props.hidden) return;
+    setViewSidebarWidth(width);
+  }, [active, props.hidden, setViewSidebarWidth, width]);
 
   // Keyboard resize: Left/Right arrows nudge the width directly through the
   // hook's clamped `setWidth` (min..50% viewport, persisted to storageKey by

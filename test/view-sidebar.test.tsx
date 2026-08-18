@@ -5,12 +5,13 @@
 // renders the headerless single-block vs. header/body variant, and forwards
 // containerRef to the frame element.
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRef } from 'preact';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { ViewSidebar } from '../ui/src/components/ViewSidebar';
+import { AppShellProvider, type AppShellContextValue } from '../ui/src/app-shell';
 import { readResolvedStylesheet } from './helpers/css-manifest';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
@@ -100,6 +101,33 @@ describe('ViewSidebar', () => {
     );
     const frame = container.querySelector('.view-sidebar') as HTMLElement;
     expect(frame.style.width).toBe('512px');
+  });
+
+  it('publishes the exact active resize width to shared app chrome in the same render cycle', () => {
+    localStorage.setItem('sidebar-width:issues', '420');
+    const setViewSidebarWidth = vi.fn();
+    const shell: AppShellContextValue = {
+      active: true,
+      bottomPanel: null,
+      registerBottomPanel: () => () => undefined,
+      setViewSidebarWidth,
+    };
+    const { container } = render(
+      <AppShellProvider value={shell}>
+        <ViewSidebar storageKey="sidebar-width:issues" defaultWidth={420} minWidth={280} ariaLabel="Issues" as="div">
+          <div>content</div>
+        </ViewSidebar>
+      </AppShellProvider>,
+    );
+    const frame = container.querySelector('.view-sidebar') as HTMLElement;
+    const handle = container.querySelector('.view-sidebar__resize-handle') as HTMLElement;
+
+    expect(frame.style.width).toBe('420px');
+    expect(setViewSidebarWidth).toHaveBeenLastCalledWith(420);
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(frame.style.width).toBe('428px');
+    expect(setViewSidebarWidth).toHaveBeenLastCalledWith(428);
   });
 
   it('renders single-block children when no header is provided', () => {

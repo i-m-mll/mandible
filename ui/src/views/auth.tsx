@@ -7,6 +7,7 @@ import {
   type DiffViewMode,
 } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
@@ -3363,9 +3364,7 @@ export function AuthQueueView({
       )}
 
       <ViewSidebar
-        storageKey="sidebar-width:auth"
-        defaultWidth={320}
-        minWidth={190}
+        {...VIEW_SIDEBAR_GEOMETRY.auth}
         className="auth-sidebar"
         ariaLabel="Auth requests"
         hidden={sidebarHidden}

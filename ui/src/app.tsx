@@ -1,6 +1,6 @@
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 
 import {
   acknowledgeInboxItem,
@@ -83,6 +83,10 @@ import {
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
 import type { BugRef, ConsoleSession } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
+import {
+  readInitialViewSidebarWidth,
+  viewSidebarGeometryForRoute,
+} from './view-sidebar-geometry';
 import {
   ChatIcon,
   IssuesIcon,
@@ -224,6 +228,7 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   bottomPanel: null,
   registerBottomPanel: () => () => undefined,
+  setViewSidebarWidth: () => undefined,
   active: false,
 };
 
@@ -385,18 +390,6 @@ type NavItem = {
   secondaryBadgeClass?: string;
   icon: (props: { size?: number }) => JSX.Element;
 };
-
-const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
-  'console',
-  'graph',
-  'timeline',
-  'auth',
-  'issues',
-  'artifacts',
-  'inbox',
-  'spaces',
-  'tasks',
-]);
 
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
 // full-bleed content (no .app-content gutters). Issue e29a8c5.
@@ -581,6 +574,7 @@ function MandibleHeaderLogo(): JSX.Element {
 }
 
 function App(): JSX.Element {
+  const appShellRef = useRef<HTMLDivElement>(null);
   const [state, dispatch] = useReducer(appReducer, undefined, () => ({
     ...initialState,
     ...loadCachedState(),
@@ -654,11 +648,21 @@ function App(): JSX.Element {
     };
   }, []);
 
+  const setViewSidebarWidth = useCallback((width: number | null) => {
+    const shell = appShellRef.current;
+    if (!shell) return;
+    shell.style.setProperty(
+      '--app-view-sidebar-width',
+      width === null ? 'calc(100% - var(--app-rail-width))' : `${width}px`,
+    );
+  }, []);
+
   const appShellContext = useMemo<AppShellContextValue>(() => ({
     bottomPanel,
     registerBottomPanel,
+    setViewSidebarWidth,
     active: true,
-  }), [bottomPanel, registerBottomPanel]);
+  }), [bottomPanel, registerBottomPanel, setViewSidebarWidth]);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
@@ -1935,7 +1939,8 @@ function App(): JSX.Element {
   );
   const bottomPanelAvailable = Boolean(bottomPanel?.content);
   const bottomPanelOpen = Boolean(bottomPanelAvailable && bottomPanel?.open);
-  const viewSidebarAvailable = VIEW_SIDEBAR_TABS.has(route.tab);
+  const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
+  const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
@@ -1951,6 +1956,11 @@ function App(): JSX.Element {
   const nextAppThemeModeLabel = APP_THEME_MODE_LABELS[nextAppThemeMode];
   const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
   const appThemeModeTooltipLabel = 'App theme';
+
+  useLayoutEffect(() => {
+    if (!viewSidebarOpen || !viewSidebarGeometry) return;
+    setViewSidebarWidth(readInitialViewSidebarWidth(viewSidebarGeometry));
+  }, [route.tab, setViewSidebarWidth, viewSidebarGeometry, viewSidebarOpen]);
 
   const startBottomPanelResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
     if (!bottomPanel) {
@@ -2005,7 +2015,10 @@ function App(): JSX.Element {
   }
 
   return (
-    <div className="app-shell">
+    <div
+      ref={appShellRef}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}`}
+    >
       {!daemonWarm && (
         <div className="daemon-warm-status" role="status" aria-live="polite">
           Still loading workspace data…
@@ -2042,29 +2055,21 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      <header className="app-header" data-tauri-drag-region>
-        <div className="app-header__identity">
-          <div className="app-header__brand" title="Mandible">
-            <span className="app-header__mark" aria-hidden="true">
-              <MandibleHeaderLogo />
-            </span>
-            <span className="app-header__brand-text">Mandible</span>
-          </div>
-          <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
-        </div>
-        <div className="app-header__actions">
-          <DesktopLoginStatus />
-          {bottomPanelAvailable ? (
-            <button
-              type="button"
-              className={`app-header__icon-button${bottomPanelOpen ? ' app-header__icon-button--active' : ''}`}
-              onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
-              aria-label={bottomPanelToggleLabel}
-              aria-pressed={bottomPanelOpen}
-              title={bottomPanelToggleLabel}
-            >
-              <BottomPanelIcon open={bottomPanelOpen} />
-            </button>
+      <header
+        className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
+        data-tauri-drag-region
+      >
+        <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
+          <span className="app-header__mark" aria-hidden="true">
+            <MandibleHeaderLogo />
+          </span>
+          {viewSidebarOpen ? (
+            <div className="app-header__text">
+              <div className="app-header__brand">
+                <span className="app-header__brand-text">Mandible</span>
+              </div>
+              <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
+            </div>
           ) : null}
         </div>
       </header>
@@ -2085,6 +2090,22 @@ function App(): JSX.Element {
                 </div>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
+                {bottomPanelAvailable ? (
+                  <button
+                    type="button"
+                    className={`app-rail__item app-rail__bottom-panel-toggle${bottomPanelOpen ? ' app-rail__item--active' : ''}`}
+                    onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
+                    aria-label={bottomPanelToggleLabel}
+                    aria-pressed={bottomPanelOpen}
+                    title={bottomPanelToggleLabel}
+                  >
+                    <span className="app-rail__icon">
+                      <BottomPanelIcon open={bottomPanelOpen} />
+                    </span>
+                    {railDisplayMode === 'both' && <span className="app-rail__label">{bottomPanel?.title}</span>}
+                    {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{bottomPanelToggleLabel}</span>}
+                  </button>
+                ) : null}
                 {viewSidebarAvailable ? (
                   <div className="app-rail__sidebar-controls">
                     <button
@@ -2103,6 +2124,10 @@ function App(): JSX.Element {
                     </button>
                   </div>
                 ) : null}
+                <DesktopLoginStatus
+                  placement="rail"
+                  showRailLabel={railDisplayMode === 'both'}
+                />
                 <button
                   type="button"
                   className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}

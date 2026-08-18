@@ -11,6 +11,7 @@ import {
   type LedgerIssueDetailProjection,
 } from '../api';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -953,9 +954,7 @@ export function IssuesView({
     <div className="issues-view">
       <ViewSidebar
         hidden={sidebarHidden}
-        storageKey="sidebar-width:issues"
-        defaultWidth={420}
-        minWidth={280}
+        {...VIEW_SIDEBAR_GEOMETRY.issues}
         ariaLabel="Issues"
         className="issues-tree"
         as="div"

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { getProjectTimeline } from '../api';
 import { useAppShell, useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -1768,9 +1769,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       <div className={`timeline-layout${sidebarHidden ? ' timeline-layout--sidebar-hidden' : ''}`}>
         <ViewSidebar
           hidden={sidebarHidden}
-          storageKey="mandible_timeline_sidebar_width:v1"
-          defaultWidth={320}
-          minWidth={260}
+          {...VIEW_SIDEBAR_GEOMETRY.timeline}
           ariaLabel="Timeline controls"
           className="timeline-sidebar"
         >
