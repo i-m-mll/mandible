@@ -186,6 +186,40 @@ describe("operational log database lifecycle", () => {
     ].sort((left, right) => left.source_path.localeCompare(right.source_path)));
   });
 
+  it("bootstraps completed legacy state and detects late appends without counting", () => {
+    for (let index = 0; index < 3; index += 1) {
+      insert(canonicalDb, `upgrade-${index}`, index, `upgrade-${index}`);
+    }
+    copyForwardLegacyDaemonLogs(store, { now: 1_000 });
+    expect(verifyLegacyDaemonLogCopy(store, { record: true, now: 2_000 }).verified).toBe(true);
+    store.db.prepare(
+      "UPDATE operational_log_copy_state SET legacy_generation_rowid = NULL",
+    ).run();
+
+    const prepareSpy = vi.spyOn(store.db, "prepare");
+    expect(copyForwardLegacyDaemonLogs(store, { now: 3_000 })).toMatchObject({
+      scanned: 0,
+      copied: 0,
+      complete: true,
+      lastTs: 2,
+      lastId: "upgrade-2",
+    });
+    expect(store.db.prepare(
+      "SELECT completed_at, verified_at, legacy_generation_rowid FROM operational_log_copy_state",
+    ).get()).toEqual({ completed_at: 1_000, verified_at: 2_000, legacy_generation_rowid: 3 });
+    expect(visibleRows()).toHaveLength(3);
+    expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes("COUNT(*)"))).toBe(false);
+
+    insert(canonicalDb, "upgrade-backdated", -1, "upgrade-backdated");
+    prepareSpy.mockClear();
+    expect(copyForwardLegacyDaemonLogs(store, { now: 4_000 })).toMatchObject({
+      scanned: 4,
+      copied: 1,
+      complete: true,
+    });
+    expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes("COUNT(*)"))).toBe(false);
+  });
+
   it("does not count the full legacy log while a bounded copy remains incomplete", () => {
     for (let index = 0; index < 3; index += 1) {
       insert(canonicalDb, `bounded-${index}`, 100 + index, `bounded-${index}`);
@@ -291,6 +325,22 @@ describe("operational log database lifecycle", () => {
     expect(visibleRows()).toHaveLength(3);
   });
 
+  it("adds the append-generation marker to an existing operational sidecar", () => {
+    store.db.exec(
+      "ALTER TABLE operational_log_copy_state DROP COLUMN legacy_generation_rowid",
+    );
+    const logPath = store.dbPath;
+    store.close();
+    const reopened = openOperationalLogStore(canonicalPath, { dbPath: logPath });
+    if (!reopened) throw new Error("expected reopened operational-log store");
+    store = reopened;
+
+    const columns = store.db.prepare(
+      "PRAGMA table_info(operational_log_copy_state)",
+    ).all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("legacy_generation_rowid");
+  });
+
   it("prunes the operational store independently and keeps canonical rollback rows", async () => {
     const now = Date.UTC(2026, 7, 17);
     const day = 24 * 60 * 60 * 1_000;
@@ -334,9 +384,9 @@ describe("operational log database lifecycle", () => {
     expect(verifyLegacyDaemonLogCopy(store, { record: true, now: 2_000 }).verified).toBe(true);
     expect(planLegacyDaemonLogReclaim(store).eligible).toBe(true);
 
-    // A downgraded daemon can append both newer and backdated rows. The row
-    // count is part of the persisted high-water snapshot, so neither shape can
-    // hide behind the previously recorded verification.
+    // A downgraded daemon can append both newer and backdated rows. The rowid
+    // generation changes for either shape, so neither can hide behind the
+    // previously recorded verification.
     insert(canonicalDb, "legacy-later", 200, "legacy-later");
     insert(canonicalDb, "legacy-backdated", 50, "legacy-backdated");
     expect(visibleRows()).toEqual([
