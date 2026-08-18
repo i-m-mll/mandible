@@ -4318,9 +4318,9 @@ export type AskProjection = {
   lifecycle_event_id: string;
   latest_submission: null | { id: string; ordinal: number };
   latest_submission_for_actor: null | { id: string; ordinal: number };
-  document: null | { artifact_version_id: string; previous_round_id: string | null; profile?: 'mandible-briefing.v1' };
-  directive_binding?: { status: 'valid' | 'invalid' | 'unavailable'; reason: string | null };
-  latest_frozen_membership?: { answer_event_ids: string[]; annotation_event_ids: string[] };
+  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v1' | null };
+  directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
+  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: AskAnnotation[];
   previous_round: null | {
     ask_id: string;
@@ -4523,7 +4523,7 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
       const end = rawDirective.end_offset;
       const bodyStart = rawDirective.body_start_offset;
       const bodyEnd = rawDirective.body_end_offset;
-      if (!key || !definitionDigest || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || !/^[0-9a-f]{64}$/.test(definitionDigest) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
           || !Number.isSafeInteger(bodyStart) || !Number.isSafeInteger(bodyEnd)
           || start < 0 || start >= bodyStart || bodyStart >= bodyEnd || bodyEnd > end) valid = false;
       else directive = { key, definition_digest: definitionDigest, start_offset: start, end_offset: end, body_start_offset: bodyStart, body_end_offset: bodyEnd };
@@ -4590,31 +4590,38 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
   const document = root.document === null ? null : {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
-    ...(profile === 'mandible-briefing.v1' ? { profile } : {}),
+    profile: profile === 'mandible-briefing.v1' ? profile : null,
   };
   if (root.document !== null
       && (!document.artifact_version_id
         || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string'))) valid = false;
-  if (root.document !== null && profile !== undefined && profile !== 'mandible-briefing.v1') valid = false;
+  if (root.document !== null && profile !== null && profile !== undefined && profile !== 'mandible-briefing.v1') valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
   const bindingStatus = bindingRow.status;
-  const directiveBinding = Object.prototype.hasOwnProperty.call(root, 'directive_binding')
+  const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
     && (bindingStatus === 'valid' || bindingStatus === 'invalid' || bindingStatus === 'unavailable')
-    && (bindingRow.reason === null || typeof bindingRow.reason === 'string')
-    ? { status: bindingStatus, reason: bindingRow.reason as string | null }
+    && (bindingRow.reason === undefined || typeof bindingRow.reason === 'string')
+    ? { status: bindingStatus, ...(typeof bindingRow.reason === 'string' ? { reason: bindingRow.reason } : {}) }
     : undefined;
-  if (Object.prototype.hasOwnProperty.call(root, 'directive_binding') && !directiveBinding) valid = false;
+  if (Object.prototype.hasOwnProperty.call(root, 'directive_binding') && directiveBinding === undefined) valid = false;
   const frozenRow = briefingRecord(root.latest_frozen_membership);
-  const latestFrozenMembership = Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership')
+  const latestFrozenMembership = root.latest_frozen_membership === null ? null : Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership')
     && Array.isArray(frozenRow.answer_event_ids) && Array.isArray(frozenRow.annotation_event_ids)
     && frozenRow.answer_event_ids.every((id) => briefingString(id))
     && frozenRow.annotation_event_ids.every((id) => briefingString(id))
     ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids) }
     : undefined;
-  if (Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership') && !latestFrozenMembership) valid = false;
+  if (Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership') && latestFrozenMembership === undefined) valid = false;
   if (document?.profile === 'mandible-briefing.v1') {
-    if (!directiveBinding || directiveBinding.status !== 'valid' || !latestFrozenMembership) valid = false;
+    if (!directiveBinding) valid = false;
     const keys = new Set<string>();
+    let previousEnd = -1;
+    const sortedDirectives = items.map((item) => item.directive).filter((directive): directive is NonNullable<AskItem['directive']> => Boolean(directive))
+      .sort((left, right) => left.start_offset - right.start_offset);
+    for (const directive of sortedDirectives) {
+      if (directive.start_offset < previousEnd) valid = false;
+      previousEnd = directive.end_offset;
+    }
     for (const item of items) {
       const directive = item.directive;
       if (item.item_kind !== 'item' || item.revision.response_type !== 'verdict' || item.revision.options.length !== 0
@@ -4622,6 +4629,8 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
       if (directive) keys.add(directive.key);
     }
     if (items.length === 0) valid = false;
+  } else if (items.some((item) => item.directive)) {
+    valid = false;
   }
   let annotations: AskAnnotation[] | undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {
@@ -4667,8 +4676,8 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     latest_submission: latestSubmission,
     latest_submission_for_actor: latestSubmissionForActor,
     document,
-    ...(directiveBinding ? { directive_binding: directiveBinding } : {}),
-    ...(latestFrozenMembership ? { latest_frozen_membership: latestFrozenMembership } : {}),
+    directive_binding: directiveBinding ?? null,
+    ...(latestFrozenMembership !== undefined ? { latest_frozen_membership: latestFrozenMembership } : {}),
     ...(annotations ? { annotations } : {}),
     previous_round: previousRound,
     items,

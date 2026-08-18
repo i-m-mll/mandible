@@ -121,8 +121,8 @@ describe('bounded ask renderer', () => {
   it('fails closed for malformed profiled directive projections', () => {
     const profiled = askPayload({
       document: { artifact_version_id: 'artifact-version:current', previous_round_id: null, profile: 'mandible-briefing.v1' },
-      directive_binding: { status: 'valid', reason: null },
-      latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
+      directive_binding: { status: 'valid' },
+      latest_frozen_membership: null,
       items: [item('verdict', 'verdict', [], {
         required: true,
         directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: 0, end_offset: 32, body_start_offset: 20, body_end_offset: 28 },
@@ -134,6 +134,7 @@ describe('bounded ask renderer', () => {
     expect(normalizeAskProjection({ ...profiled, items: [item('verdict', 'free_text', [], {
       directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: 0, end_offset: 32, body_start_offset: 20, body_end_offset: 28 },
     })] }).valid).toBe(false);
+    expect(normalizeAskProjection(askPayload({ document: { artifact_version_id: 'artifact-version:legacy', previous_round_id: null, profile: null }, directive_binding: null })).valid).toBe(true);
   });
 
   it('normalizes the exact document, annotation, and previous-round projection shapes', () => {
@@ -157,7 +158,7 @@ describe('bounded ask renderer', () => {
       },
     }));
     expect(projection.valid).toBe(true);
-    expect(projection.document).toEqual({ artifact_version_id: 'artifact-version:current', previous_round_id: 'ask-old' });
+    expect(projection.document).toEqual({ artifact_version_id: 'artifact-version:current', previous_round_id: 'ask-old', profile: null });
     expect(projection.annotations).toEqual([current]);
     expect(projection.previous_round?.annotations[0]).toMatchObject({
       annotation_event_id: 'annotation-old', actor_user_id: 'human-2', submission_ordinal: 3,

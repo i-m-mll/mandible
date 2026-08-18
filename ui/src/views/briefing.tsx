@@ -55,6 +55,11 @@ export function BriefingView({
       }));
     }
   }, [initialAskId, initialCollectionId, setViewState]);
+  useEffect(() => {
+    if (initialCandidateId && !initialAskId && !initialCollectionId) {
+      setViewState((current) => current.selectedCollectionId === null ? current : { ...current, selectedCollectionId: null, source: null });
+    }
+  }, [initialAskId, initialCandidateId, initialCollectionId, setViewState]);
 
   const loadCollections = useCallback(async (signal: AbortSignal) => {
     const sequence = ++loadSequence.current;
@@ -131,6 +136,7 @@ export function BriefingView({
     ? selectedCollection.collectionId
     : selectedCollection === null ? routedAskId : null;
   const selectedAsk = selectedAskId !== null;
+  const selectedCollectionUnavailable = viewState.selectedCollectionId !== null && selectedCollection === null && !routedAskId;
 
   const setCollectionExpiry = useCallback(async (collection: FeedbackCollection) => {
     const updated = await patchFeedbackCollectionExpiry(
@@ -156,7 +162,7 @@ export function BriefingView({
           selected — including while a bounded ask is open — because it is not
           part of the feedback collection model at all. */}
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
-      <div hidden={selectedAsk}>
+      <div hidden={selectedAsk || selectedCollectionUnavailable}>
         <AppShellProvider value={{ ...appShell, active: appShell.active && !selectedAsk }}>
           <RecurringReviewRenderer
             instance={instance}
@@ -169,6 +175,7 @@ export function BriefingView({
           />
         </AppShellProvider>
       </div>
+      {selectedCollectionUnavailable ? <div className="briefing-error" role="alert">The selected feedback collection is unavailable.</div> : null}
       {selectedAskId ? (
         <div hidden={!selectedAsk}>
           <AppShellProvider value={{ ...appShell, active: appShell.active && selectedAsk }}>

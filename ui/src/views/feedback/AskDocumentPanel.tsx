@@ -19,6 +19,7 @@ export type AskDocumentPanelProps = {
   onRefresh(): Promise<AskProjection | null>;
   draft?: Record<string, { verdict: 'keep' | 'dismiss' } | null>;
   onDirectiveVerdict?(itemId: string, value: 'keep' | 'dismiss'): void;
+  onContentGateChange?(reason: string): void;
 };
 
 type AnnotationEditor = {
@@ -43,12 +44,18 @@ function excerpt(value: string, limit = 140): string {
 // boundary, while this narrow prefilter deliberately omits image syntax rather
 // than treating a sanitized image as an allowed document capability.
 function renderBriefingProse(value: string): string {
-  return renderMarkdown(value
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/<img\b[^>]*>/gi, ''));
+  const document = new DOMParser().parseFromString(renderMarkdown(value), 'text/html');
+  document.querySelectorAll('img, picture, source').forEach((node) => node.remove());
+  return document.body.innerHTML;
 }
 
-export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDirectiveVerdict }: AskDocumentPanelProps): JSX.Element | null {
+async function sha256(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: AskDocumentPanelProps): JSX.Element | null {
   const document = ask.document;
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
@@ -59,12 +66,14 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
   const [replacement, setReplacement] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [selectedDirectiveId, setSelectedDirectiveId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!document) return undefined;
     const controller = new AbortController();
     setSource(null);
     setContentError(null);
+    onContentGateChange?.('Loading pinned document…');
     void getArtifactContent(document.artifact_version_id, { signal: controller.signal })
       .then((content) => {
         if (content.status !== 'available' || !content.preview) {
@@ -73,14 +82,17 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
         if (content.preview.truncated) {
           throw new Error('The pinned document content was truncated and cannot be annotated safely.');
         }
-        setSource(content.preview.raw_text ?? content.preview.text);
+        const next = content.preview.raw_text ?? content.preview.text;
+        if (new TextEncoder().encode(next).byteLength !== content.size_bytes) throw new Error('The pinned document content is incomplete.');
+        setSource(next);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setContentError(error instanceof Error ? error.message : String(error));
+        onContentGateChange?.(error instanceof Error ? error.message : String(error));
       });
     return () => controller.abort();
-  }, [document?.artifact_version_id]);
+  }, [document?.artifact_version_id, onContentGateChange]);
 
   const annotations = ask.annotations ?? [];
   const profile = document?.profile === 'mandible-briefing.v1';
@@ -99,6 +111,20 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
     }
     return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
   }, [directiveItems, profile, source]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!profile) { onContentGateChange?.(''); return undefined; }
+    if (source === null) return undefined;
+    if (documentIntegrityError) { onContentGateChange?.(documentIntegrityError); return undefined; }
+    void Promise.all(directiveItems.map(async (item) => {
+      const directive = item.directive!;
+      const body = source.slice(directive.body_start_offset, directive.body_end_offset);
+      if (body !== item.revision.prompt) throw new Error('Pinned directive text does not match its materialized prompt.');
+      if (await sha256(source.slice(directive.start_offset, directive.end_offset)) !== directive.definition_digest) throw new Error('Pinned directive content does not match its binding.');
+    })).then(() => { if (!cancelled) onContentGateChange?.(''); })
+      .catch((error) => { if (!cancelled) onContentGateChange?.(error instanceof Error ? error.message : String(error)); });
+    return () => { cancelled = true; };
+  }, [directiveItems, documentIntegrityError, onContentGateChange, profile, source]);
   const decorations = useMemo(() => annotations.map((annotation) => ({
     id: annotation.annotation_event_id,
     start: annotation.start_offset,
@@ -144,7 +170,9 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
       const current = draft[item.id] ?? (item.effective_response?.value && 'verdict' in item.effective_response.value ? item.effective_response.value : null);
       parts.push(
-        <section className={`briefing-directive${current ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0} onClick={() => undefined}>
+        <section className={`briefing-directive${current || selectedDirectiveId === item.id ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
+          onClick={() => setSelectedDirectiveId(item.id)}
+          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
           <div className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
           <div className="briefing-directive__actions" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
             <button type="button" aria-pressed={current?.verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'keep')}>Keep</button>

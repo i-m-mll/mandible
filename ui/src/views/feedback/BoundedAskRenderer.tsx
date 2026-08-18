@@ -64,6 +64,7 @@ export function BoundedAskRenderer({
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [contentGate, setContentGate] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const loadSequence = useRef(0);
   const mutationSequence = useRef(0);
@@ -106,6 +107,7 @@ export function BoundedAskRenderer({
     setUserId(null);
     setUserKind(null);
     setBusy(false);
+    setContentGate(null);
     setDraftScope(null);
     setValidationErrors({});
     setStatus(null);
@@ -178,6 +180,7 @@ export function BoundedAskRenderer({
     && ask.responder_user_ids.includes(userId)
     && ask.items.every((item) => item.responseVisible)
     && (ask.state === 'open' || ask.state === 'submitted')
+    && (!profile || ask.directive_binding?.status === 'valid')
     && (!instance || instance.operational_mutations === 'allow'),
   );
   const requiredIncomplete = Boolean(ask?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
@@ -194,6 +197,8 @@ export function BoundedAskRenderer({
     ? (ask?.directive_binding?.reason || 'This ask is read-only for the current identity or instance.')
     : profile && ask?.directive_binding?.status !== 'valid'
       ? (ask.directive_binding.reason || 'The directive binding is unavailable.')
+      : profile && contentGate === null ? 'Loading pinned document…'
+      : contentGate ? contentGate
       : busy ? 'Submitting changes…'
         : requiredIncomplete ? 'Complete the required directives before submitting.'
           : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
@@ -427,7 +432,8 @@ export function BoundedAskRenderer({
       {ask.document ? (
         <AskDocumentPanel ask={ask} canMutate={canMutate && !busy} onRefresh={reconcile}
           draft={Object.fromEntries(Object.entries(draft).filter(([, value]) => !value || 'verdict' in value)) as Record<string, { verdict: 'keep' | 'dismiss' } | null>}
-          onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })} />
+          onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })}
+          onContentGateChange={setContentGate} />
       ) : null}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} noValidate>
         {!profile ? roots.map(renderItem) : null}
