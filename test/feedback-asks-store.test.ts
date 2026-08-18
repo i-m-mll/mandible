@@ -66,6 +66,25 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe("bounded ask store", () => {
+  it("preserves pre-v141 document packet digests and replays their seeded asks", () => {
+    const legacy = {
+      request_key: "legacy-doc", session_id: "session-1", responder_user_ids: ["human-legacy"],
+      expires_at: 2_000, items: [], document: { artifact_version: "artifact-version:legacy-doc" },
+    };
+    const digest = askRequestDigest(legacy);
+    expect(digest).toBe("0a5a304bf3ec15f6781200087d94725735431c2347fc563b6218394acf2781ae");
+    db.prepare(
+      "INSERT INTO feedback_collections (id, kind, interaction_mode, source, expires_at, created_at, tombstoned_at) VALUES ('legacy-ask','bounded_ask','explicit_submit',NULL,NULL,1,NULL)",
+    ).run();
+    db.prepare(
+      `INSERT INTO feedback_ask_sessions
+       (collection_id, requester_user_id, requester_session_id, request_key, request_digest, responder_user_ids_json, expires_at, retention_expires_at, created_at)
+       VALUES ('legacy-ask', ?, 'session-1', 'legacy-doc', ?, '["human-legacy"]', 2000, NULL, 1)`,
+    ).run(agentId, digest);
+    expect(createAsk(db, legacy, { requesterUserId: agentId, now: 1_001 }))
+      .toMatchObject({ ask_id: "legacy-ask", request_digest: digest, replay: true });
+  });
+
   it("creates the complete ordered graph and replays the canonical digest", () => {
     const first = createAsk(db, packet(), { requesterUserId: agentId, now: 1_000 });
     const replay = createAsk(db, {

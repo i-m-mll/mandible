@@ -84,7 +84,7 @@ type NormalizedPacket = {
   expires_at: number;
   retention_expires_at: number | null;
   items: NormalizedItem[];
-  document?: { artifact_version: string; previous_round_id: string | null; profile: typeof BRIEFING_PROFILE | null };
+  document?: { artifact_version: string; previous_round_id: string | null; profile?: typeof BRIEFING_PROFILE };
 };
 
 type AskRow = {
@@ -249,8 +249,8 @@ function normalizePacket(value: unknown, createdAt: number | null): NormalizedPa
     document = {
       artifact_version: artifactVersion,
       previous_round_id: nullableString(rawDocument.previous_round_id, "document.previous_round_id"),
-      profile: rawDocument.profile === undefined ? null : rawDocument.profile === BRIEFING_PROFILE ? BRIEFING_PROFILE
-        : (() => { throw new AskStoreError("document.profile is unsupported"); })(),
+      ...(rawDocument.profile === undefined ? {} : rawDocument.profile === BRIEFING_PROFILE ? { profile: BRIEFING_PROFILE }
+        : (() => { throw new AskStoreError("document.profile is unsupported"); })()),
     };
     if (document.profile && items.length !== 0) {
       throw new AskStoreError("profiled documents require items: []");
@@ -435,12 +435,18 @@ export function createAsk(
     let documentVersion: ReturnType<typeof pinnedDocument>["version"] | null = null;
     let directives: BriefingDirective[] = [];
     if (packet.document) {
-      documentVersion = pinnedDocument(db, packet.document.artifact_version, "invalid_document_version").version;
-      if (packet.document.profile) {
-        try { directives = parseBriefingDirectives(pinnedDocument(db, packet.document.artifact_version, "invalid_document_version").source); }
-        catch (error) { throw new AskStoreError(error instanceof Error ? error.message : "invalid briefing document", 400, "invalid_briefing_document"); }
-      }
+      const pinned = pinnedDocument(db, packet.document.artifact_version, "invalid_document_version");
+      documentVersion = pinned.version;
       requireDocumentReaders(db, documentVersion.id, [options.requesterUserId, ...packet.responder_user_ids]);
+      if (packet.document.profile) {
+        try { directives = parseBriefingDirectives(pinned.source); }
+        catch (error) {
+          if (error instanceof BriefingDirectiveError) {
+            throw new AskStoreError(error.message, 400, "invalid_briefing_document");
+          }
+          throw error;
+        }
+      }
       if (packet.document.previous_round_id) {
         const previous = db.prepare(
           `SELECT d.artifact_version_id, v.artifact_id
@@ -475,7 +481,7 @@ export function createAsk(
         `INSERT INTO feedback_collection_documents
            (collection_id, artifact_version_id, previous_round_id, profile, created_at)
          VALUES (?, ?, ?, ?, ?)`,
-      ).run(askId, documentVersion.id, packet.document.previous_round_id, packet.document.profile, now);
+      ).run(askId, documentVersion.id, packet.document.previous_round_id, packet.document.profile ?? null, now);
     }
     const materializedItems = packet.document?.profile ? directiveItems(directives) : packet.items;
     const itemIds = new Map<string, string>();

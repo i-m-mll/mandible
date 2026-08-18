@@ -83,6 +83,12 @@ describe("annotatable ask store", () => {
       document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" },
     }), { requesterUserId: agentId, now: 1_000 });
     const opened = readAsk(db, created.ask_id, { answerActorUserId: human1, now: 1_001 })!.ask;
+    expect(opened.document).toMatchObject({ profile: "mandible-briefing.v1" });
+    expect(opened.directive_binding).toEqual({ status: "valid" });
+    expect(opened.items).toHaveLength(1);
+    expect(opened.items[0]).toMatchObject({ client_item_key: "ship", revision: { response_type: "verdict", required: false, prompt: "Ship it" }, directive: { key: "ship" } });
+    expect(db.prepare("SELECT directive_key, start_offset, end_offset FROM feedback_item_directives WHERE collection_id = ?")
+      .all(created.ask_id)).toEqual([{ directive_key: "ship", start_offset: 0, end_offset: 36 }]);
     submitAsk(db, created.ask_id, human1, {
       expected_lifecycle_event_id: opened.lifecycle_event_id, answers: [], annotations: [],
     }, 1_002);
@@ -90,6 +96,31 @@ describe("annotatable ask store", () => {
     expect(resolved.ok).toBe(true);
     const packetOut = exportSubmissionMarkdown(db, resolved as Extract<typeof resolved, { ok: true }>);
     expect(packetOut).toContain("document_profile: mandible-briefing.v1");
+  });
+
+  it("rejects malformed profiled packets atomically and permits independent rounds on one version", () => {
+    const good = record(":::spec-item{key=\"a\"}\nA\n:::\n", 100);
+    const malformed = [
+      ":::spec-item{key=\"a\"}\n\n:::\n",
+      ":::spec-item{key=\"a\"}\nA\n:::\n\n:::spec-item{key=\"a\"}\nB\n:::\n",
+      ":::other{key=\"a\"}\nA\n:::\n",
+      ":::spec-item{key=\"a\"}\n:::spec-item{key=\"b\"}\nB\n:::\n:::\n",
+    ];
+    for (const [index, content] of malformed.entries()) {
+      const version = record(content, 110 + index, `managed:test:bad-${index}`);
+      const before = db.prepare("SELECT COUNT(*) AS n FROM feedback_collections").get() as { n: number };
+      expect(() => createAsk(db, packet(version.version.id, {
+        request_key: `bad-${index}`, document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" },
+      }), { requesterUserId: agentId, now: 1_000 })).toThrowError(expect.objectContaining({ code: "invalid_briefing_document" }));
+      expect(db.prepare("SELECT COUNT(*) AS n FROM feedback_collections").get()).toEqual(before);
+    }
+    expect(() => createAsk(db, packet(good.version.id, {
+      request_key: "caller-items", items: [{ client_item_key: "x", item_kind: "item", title: "x", prompt: "x", response_type: "free_text" }],
+      document: { artifact_version: good.version.id, profile: "mandible-briefing.v1" },
+    }), { requesterUserId: agentId, now: 1_000 })).toThrow(/items/);
+    const one = createAsk(db, packet(good.version.id, { request_key: "one", document: { artifact_version: good.version.id, profile: "mandible-briefing.v1" } }), { requesterUserId: agentId, now: 1_000 });
+    const two = createAsk(db, packet(good.version.id, { request_key: "two", document: { artifact_version: good.version.id, profile: "mandible-briefing.v1" } }), { requesterUserId: agentId, now: 1_001 });
+    expect(one.ask_id).not.toBe(two.ask_id);
   });
 
   it("pins submission-export Markdown escaping and blockquote line bytes", () => {
