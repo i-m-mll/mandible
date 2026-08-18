@@ -7,6 +7,7 @@ import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings 
 import { BriefingView } from '../ui/src/views/briefing';
 import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
+import { RICH_BRIEFING_DEMO } from '../src/feedback/rich-briefing-demo';
 
 const source = 'Intro\n:::spec-item{key="decision" required="true"}\nReview this round\n:::\n';
 const bodyStart = source.indexOf('Review this round');
@@ -66,6 +67,33 @@ describe('artifact-backed Briefing rounds', () => {
     const projection = normalizeBriefingProjection(detail(ROUND_ONE));
     expect(projection).toMatchObject({ briefing_id: 'briefing-1', selected_round_id: ROUND_ONE, latest_round_id: ROUND_TWO, latest_submission_for_actor: { id: `submission-${ROUND_ONE}` }, document: { artifact_version_id: ARTIFACT_VERSION } });
     expect(projection).not.toHaveProperty('latest_submission');
+  });
+
+  it('keeps the rich demo old submission and empty revised round pinned to distinct artifact versions', () => {
+    const versionOne = 'artifact-version:11111111-aaaa-4111-8111-111111111111';
+    const versionTwo = 'artifact-version:22222222-bbbb-4222-8222-222222222222';
+    const oldPayload = detail(ROUND_ONE) as any;
+    oldPayload.briefing.title = RICH_BRIEFING_DEMO.title;
+    oldPayload.rounds[0].artifact_version_id = versionOne;
+    oldPayload.rounds[1].artifact_version_id = versionTwo;
+    oldPayload.selected_round.artifact_version_id = versionOne;
+    oldPayload.selected_round.document.artifact_version_id = versionOne;
+    const latestPayload = detail(ROUND_TWO) as any;
+    latestPayload.briefing.title = RICH_BRIEFING_DEMO.title;
+    latestPayload.rounds[0].artifact_version_id = versionOne;
+    latestPayload.rounds[1].artifact_version_id = versionTwo;
+    latestPayload.selected_round.artifact_version_id = versionTwo;
+    latestPayload.selected_round.document.artifact_version_id = versionTwo;
+    const oldRound = normalizeBriefingProjection(oldPayload);
+    const latestRound = normalizeBriefingProjection(latestPayload);
+
+    expect(oldRound.document?.artifact_version_id).toBe(versionOne);
+    expect(oldRound.latest_submission_for_actor).toMatchObject({ id: `submission-${ROUND_ONE}` });
+    expect(oldRound.items[0].effective_response?.value).toEqual({ verdict: 'keep' });
+    expect(latestRound.document?.artifact_version_id).toBe(versionTwo);
+    expect(latestRound.latest_submission_for_actor).toBeNull();
+    expect(latestRound.items[0].effective_response).toBeNull();
+    expect(versionTwo).not.toBe(versionOne);
   });
 
   it.each([
