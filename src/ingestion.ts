@@ -791,6 +791,7 @@ type ExistingConversationRow = {
   branch: string | null;
   model: string | null;
   cli_version: string | null;
+  distinct_identity_projection_detached: number;
   actual_count: number;
 };
 
@@ -1923,6 +1924,17 @@ async function ingestFile(
       c.branch,
       c.model,
       c.cli_version,
+      EXISTS (
+        SELECT 1
+          FROM conversation_sources source
+         WHERE source.conversation_id = c.id
+           AND source.availability = 'missing'
+           AND source.unavailable_reason = 'source path reused by a distinct conversation identity'
+           AND NOT EXISTS (
+             SELECT 1 FROM conversation_source_aliases alias
+              WHERE alias.source_id = source.id
+           )
+      ) AS distinct_identity_projection_detached,
       COALESCE((
         SELECT COUNT(*) FROM conversation_blocks b WHERE b.conversation_id = c.id
       ), 0) AS actual_count
@@ -3406,9 +3418,10 @@ function logDuplicateConversationRows(
   provider?: string,
   nativeSessionId?: string,
 ): void {
+  const actionableRows = rows.filter((row) => !row.distinct_identity_projection_detached);
   const duplicateRows = provider && nativeSessionId
-    ? rows.filter((row) => row.source === provider && row.session_id === nativeSessionId)
-    : rows;
+    ? actionableRows.filter((row) => row.source === provider && row.session_id === nativeSessionId)
+    : actionableRows;
   const chosen = duplicateRows[0];
   if (duplicateRows.length <= 1 || !chosen) return;
   logger("warn", "ingestion_duplicate_conversation_rows", {
