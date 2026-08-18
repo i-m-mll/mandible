@@ -92,6 +92,36 @@ describe("plural Briefing routes", () => {
     expect(submitted).toMatchObject({ status: 200, body: { ordinal: 1, actor_user_id: humanId } });
   });
 
+  it("resolves round refs only inside the authorized Briefing and rejects ambiguous prefixes", async () => {
+    const published = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    const seed = db.prepare(
+      "SELECT artifact_version_id, profile, binding_digest FROM briefing_rounds WHERE id = ?",
+    ).get(ids.round_id) as { artifact_version_id: string; profile: string; binding_digest: string };
+    const insert = db.prepare(
+      `INSERT INTO briefing_rounds
+         (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const firstCollision = "aaaaaaaa-1111-4111-8111-111111111111";
+    const secondCollision = "aaaaaaaa-2222-4222-8222-222222222222";
+    insert.run(firstCollision, ids.briefing_id, 2, seed.artifact_version_id, ids.round_id, seed.profile, seed.binding_digest, 2);
+    insert.run(secondCollision, ids.briefing_id, 3, seed.artifact_version_id, firstCollision, seed.profile, seed.binding_digest, 3);
+
+    const exact = await router.invoke({
+      method: "GET", url: `/api/briefings/${ids.briefing_id}?round=${firstCollision}`, credential: "human",
+    });
+    expect(exact).toMatchObject({ status: 200, body: { selected_round: { id: firstCollision } } });
+
+    const ambiguous = await router.invoke({
+      method: "GET", url: `/api/briefings/${ids.briefing_id}?round=aaaaaaaa`, credential: "human",
+    });
+    expect(ambiguous).toMatchObject({
+      status: 409,
+      body: { code: "ambiguous_round", error: expect.stringContaining("ambiguous") },
+    });
+  });
+
   it("records quiet source-health receipts without creating a round", async () => {
     const quiet = await router.invoke({ method: "POST", url: "/api/briefings/runs", credential: "agent-schedule", body: payload({
       document: null, quiet_reason: "no changes", occurrences: [], run_key: "quiet-1", run_id: "quiet-1",

@@ -6,10 +6,13 @@ import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearch
 import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import {
   SidebarItemBadge,
+  SidebarItemOverflowMenu,
   SidebarItemPinAction,
   SidebarItemRow,
+  type SidebarItemOverflowAction,
 } from '../../components/shared/SidebarItemRow';
 import { useSidebarListNavigation } from '../../hooks/useSidebarListNavigation';
+import { briefingRoute } from '../../routing';
 import {
   filterFeedbackCollections,
   moveVisiblePinnedCollection,
@@ -99,12 +102,41 @@ export function CollectionsSidebar({
     });
   };
 
+  const copyBriefingLink = (briefingId: string) => {
+    const target = new URL(briefingRoute(briefingId), window.location.origin).href;
+    navigator.clipboard?.writeText(target).catch(() => {});
+  };
+
   const renderCollection = (collection: FeedbackCollection, pinnedIndex: number | null) => {
     const navigation = listNavigation.getItemNavigationProps(
       collection,
       navigationIndex.get(collection.id) ?? 0,
     );
     const isPinned = pinnedIndex !== null;
+    const overflowActions: SidebarItemOverflowAction[] = [{
+      id: 'copy-link',
+      label: 'Copy link',
+      ariaLabel: `Copy link to ${collection.label}`,
+      onSelect: () => copyBriefingLink(collection.collectionId),
+    }];
+    if (isPinned) {
+      overflowActions.push(
+        {
+          id: 'move-up',
+          label: 'Move up',
+          ariaLabel: `Move ${collection.label} up`,
+          disabled: pinnedIndex === 0,
+          onSelect: () => movePinned(collection.id, pinnedIndex - 1),
+        },
+        {
+          id: 'move-down',
+          label: 'Move down',
+          ariaLabel: `Move ${collection.label} down`,
+          disabled: pinnedIndex === visiblePinned.length - 1,
+          onSelect: () => movePinned(collection.id, pinnedIndex + 1),
+        },
+      );
+    }
     return (
       <li
         key={collection.id}
@@ -148,40 +180,14 @@ export function CollectionsSidebar({
           )}
           actions={(
             <>
-              {isPinned ? (
-                <span className="feedback-collection-row__move-actions">
-                  <button
-                    type="button"
-                    className="sidebar-item-row__action"
-                    aria-label={`Move ${collection.label} up`}
-                    title={`Move ${collection.label} up`}
-                    disabled={pinnedIndex === 0}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      movePinned(collection.id, pinnedIndex - 1);
-                    }}
-                  >
-                    <span aria-hidden="true">↑</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="sidebar-item-row__action"
-                    aria-label={`Move ${collection.label} down`}
-                    title={`Move ${collection.label} down`}
-                    disabled={pinnedIndex === visiblePinned.length - 1}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      movePinned(collection.id, pinnedIndex + 1);
-                    }}
-                  >
-                    <span aria-hidden="true">↓</span>
-                  </button>
-                </span>
-              ) : null}
               <SidebarItemPinAction
                 label={collection.label}
                 pressed={isPinned}
                 onPress={() => togglePin(collection.id)}
+              />
+              <SidebarItemOverflowMenu
+                label={`Briefing actions for ${collection.label}`}
+                actions={overflowActions}
               />
             </>
           )}

@@ -74,6 +74,9 @@ describe("artifact-backed Briefing rounds", () => {
     expect(changed.artifact_version_id).not.toBe(first.artifact_version_id);
     expect(readBriefing(db, first.briefing_id, { roundId: first.round_id!, actorUserId: humanId, operator: false })
       ?.selected_round.document.source).toContain("Keep this paper?");
+    expect(readBriefing(db, first.briefing_id, {
+      roundId: first.round_id!.slice(0, 8), actorUserId: humanId, operator: false,
+    })?.selected_round.id).toBe(first.round_id);
 
     const quiet = publishBriefingRun(db, request(undefined, {
       run_id: "run-4", run_key: "run-key-4", document: null, quiet_reason: "no new evidence", occurrences: [],

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { getBriefings, getCachedBriefings, isApiErrorStatus, type BriefingProjection, type InstanceInfo } from '../api';
+import { getBriefings, getCachedBriefings, isApiErrorStatus, type InstanceInfo } from '../api';
 import { useAppShell } from '../app-shell';
+import { briefingRoute } from '../routing';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { CollectionShell } from './feedback/CollectionShell';
-import { feedbackCollectionIdentity, type FeedbackCollection } from './feedback/collection-model';
+import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
 import { OperationalIncidentsRegion } from './operational-incidents';
 
@@ -17,23 +18,22 @@ export type BriefingViewProps = {
 };
 
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
-  const params = new URLSearchParams({ briefing: briefingId });
-  if (roundId) params.set('round', roundId);
-  window.history.replaceState(null, '', `/#/briefing?${params.toString()}`);
+  window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
 }
 
 export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const [briefings, setBriefings] = useState<FeedbackCollection[]>(() => getCachedBriefings(nowMs) ?? []);
-  const [detail, setDetail] = useState<BriefingProjection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const sequence = useRef(0);
 
   useEffect(() => {
     if (!initialBriefingId) return;
-    const id = feedbackCollectionIdentity(initialBriefingId);
+    const briefing = resolveFeedbackCollection(briefings, initialBriefingId);
+    if (!briefing) return;
+    const id = briefing.id;
     setViewState((current) => ({
       ...current,
       selectedCollectionId: id,
@@ -41,7 +41,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
         ? { ...current.selectedRoundIds, [id]: initialRoundId }
         : current.selectedRoundIds,
     }));
-  }, [initialBriefingId, initialRoundId, setViewState]);
+  }, [briefings, initialBriefingId, initialRoundId, setViewState]);
 
   const load = useCallback(async (signal: AbortSignal) => {
     const request = ++sequence.current;
@@ -87,14 +87,12 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
   const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
 
   const selectBriefing = (briefing: FeedbackCollection) => {
-    setDetail(null);
     setViewState((current) => ({ ...current, selectedCollectionId: briefing.id }));
     replaceBriefingRoute(briefing.collectionId, viewState.selectedRoundIds[briefing.id] ?? null);
   };
 
   const selectRound = (roundId: string | null) => {
     if (!selected) return;
-    setDetail(null);
     setViewState((current) => {
       const selectedRoundIds = { ...current.selectedRoundIds };
       if (roundId) selectedRoundIds[selected.id] = roundId;
@@ -109,30 +107,14 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
       {error ? <p className="briefing-error" role="alert">{error}</p> : null}
       {!selected ? <p className="briefing-empty">Select a Briefing to review its latest immutable round.</p> : (
-        <section className="briefing-document-detail" aria-label={`Briefing ${selected.label}`}>
-          {detail ? (
-            <header className="briefing-round-header">
-              <div>
-                <span className="briefing-eyebrow">Immutable round</span>
-                <h2>{detail.title || selected.label}</h2>
-              </div>
-              <label>
-                Round
-                <select aria-label="Briefing round" value={detail.selected_round_id} onInput={(event) => selectRound(event.currentTarget.value === detail.latest_round_id ? null : event.currentTarget.value)}>
-                  {detail.rounds.map((round) => <option key={round.id} value={round.id}>{round.id === detail.latest_round_id ? 'Latest · ' : ''}{round.id}</option>)}
-                </select>
-              </label>
-              {detail.rounds.find((round) => round.id === detail.selected_round_id)?.origin ? (
-                <p className="briefing-round-context" data-testid="briefing-round-context">
-                  {[detail.rounds.find((round) => round.id === detail.selected_round_id)?.origin?.source,
-                    detail.rounds.find((round) => round.id === detail.selected_round_id)?.origin?.run_id]
-                    .filter(Boolean).join(' · ')}
-                </p>
-              ) : null}
-            </header>
-          ) : null}
-          <BriefingDocumentRenderer key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`} briefingId={selected.collectionId} roundId={explicitRoundId} instance={instance} onBriefingChange={setDetail} />
-        </section>
+        <BriefingDocumentRenderer
+          key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`}
+          briefingId={selected.collectionId}
+          briefingTitle={selected.label}
+          roundId={explicitRoundId}
+          instance={instance}
+          onRoundChange={selectRound}
+        />
       )}
     </CollectionShell>
   );

@@ -49,6 +49,7 @@ import {
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
@@ -2101,25 +2102,23 @@ function ConversationDetail({
     );
   }
 
-  return (
-    <div className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
-      {/* Parent link for sub-agent conversations */}
-      {conversation.parent_conversation_id && (
-        <div className="conv-parent-link">
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => onNavigate(conversation.parent_conversation_id!)}
-          >
-            Subagent of {conversation.parent?.title ? truncate(stripMarkdownText(conversation.parent.title), 80) : 'parent conversation'}
-          </button>
-        </div>
-      )}
+  const parentLink = conversation.parent_conversation_id ? (
+    <div className="conv-parent-link">
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm"
+        onClick={() => onNavigate(conversation.parent_conversation_id!)}
+      >
+        Subagent of {conversation.parent?.title ? truncate(stripMarkdownText(conversation.parent.title), 80) : 'parent conversation'}
+      </button>
+    </div>
+  ) : undefined;
 
-      <div className="conv-detail__header">
-        <div className="conv-detail__header-left">
+  const detailHeader = (
+    <>
+      <div className="conv-detail__header-left">
           <div className="conv-detail__title-row">
-            <h2 className="conv-detail__title">
+            <h2 className="detail-pane-shell__title conv-detail__title">
               {conversation.parent_conversation_id && (
                 <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
               )}
@@ -2166,8 +2165,8 @@ function ConversationDetail({
               )}
             </div>
           </div>
-        </div>
-        <div className="conv-detail__header-right">
+      </div>
+      <div className="detail-pane-shell__actions conv-detail__header-right">
           <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
           <button
             type="button"
@@ -2178,9 +2177,184 @@ function ConversationDetail({
           >
             <InfoCircleIcon />
           </button>
-        </div>
       </div>
+    </>
+  );
 
+  const detailFooter = (
+    <>
+      <Shelf
+        conversationId={conversation.id}
+        title="Activity"
+        items={shelfItems}
+        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
+      />
+
+      {isReadOnlyChild ? (
+        <div className="conv-compose conv-compose--readonly">
+          <span>Read-only subagent transcript</span>
+        </div>
+      ) : attachPresentation?.composer !== 'hidden' ? (
+      <div className="conv-compose">
+        {attachPresentation?.hint && (
+          <div className="conv-compose__hint">{attachPresentation.hint}</div>
+        )}
+        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
+          <textarea
+            className="conv-compose__input"
+            value={continueDraft}
+            onInput={(event) => setContinueDraft(event.currentTarget.value)}
+            onKeyDown={handleComposerKeyDown}
+            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
+            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
+            rows={3}
+          />
+          <button
+            type="submit"
+            className="conv-compose__send"
+            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
+            title="Send message"
+            aria-label="Send message"
+          >
+            {continueBusy ? '...' : '↑'}
+          </button>
+        </form>
+        {attachState?.kind === 'live-external' && (
+          <div className="conv-compose__actions">
+            {attachState.external_session_id && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => { void handleFocusExternalSession(); }}
+              >
+                Go to terminal
+              </button>
+            )}
+            {attachState.can_fork && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={continueBusy || !latestDagUuid}
+                onClick={() => { void handleForkHere(); }}
+              >
+                Fork here
+              </button>
+            )}
+          </div>
+        )}
+        <div className="conv-compose__footer">
+          <div className="conv-compose__runtime">
+            <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
+              {getSourceMark(conversation.source)}
+            </span>
+            <select
+              className="conv-compose__model"
+              value={composerModel}
+              disabled={continueBusy || modelOptions.length === 0}
+              title="Model"
+              aria-label="Model"
+              onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
+            >
+              <option value={currentModel === 'default' ? '' : currentModel}>
+                {currentModel === 'default' ? 'Default' : currentModel}
+              </option>
+              {modelOptions
+                .filter((model) => model !== currentModel)
+                .map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+            </select>
+          </div>
+          {canShowSessionControls && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => setComposerControlsOpen((prev) => !prev)}
+            >
+              Controls
+            </button>
+          )}
+        </div>
+        {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
+          <div className="conv-compose__controls">
+            <SessionControls
+              sessionId={linkedConsoleSession.id}
+              runOptions={sessionRunOptions}
+              allowedTools={linkedConsoleSession.allowed_tools}
+            />
+          </div>
+        )}
+        {(continueError || continueDisabledReason) && (
+          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
+            {continueError ?? continueDisabledReason}
+          </div>
+        )}
+        {resumeErrorDetails && (
+          <details className="conv-compose__details">
+            <summary>Details</summary>
+            <pre>{resumeErrorDetails}</pre>
+          </details>
+        )}
+      </div>
+      ) : null}
+    </>
+  );
+  const shouldRenderDetailFooter = shelfItems.length > 0
+    || isReadOnlyChild
+    || attachPresentation?.composer !== 'hidden';
+
+  const detailOverlays = (
+    <>
+      <ChatOverlay
+        open={usageModalOpen}
+        titleId="conversation-usage-modal-title"
+        onClose={() => setUsageModalOpen(false)}
+      >
+        <UsageModal
+          usage={usageSummary}
+          titleId="conversation-usage-modal-title"
+          onClose={() => setUsageModalOpen(false)}
+        />
+      </ChatOverlay>
+
+      {activeWorkflow && (
+        <WorkflowRunDialog
+          workflow={activeWorkflow}
+          onClose={() => setActiveWorkflowId(null)}
+          onNavigate={onNavigate}
+        />
+      )}
+
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
+
+      {infoOpen && (
+        <ConversationInfoDialog
+          conversation={conversation}
+          linkedConsoleSession={linkedConsoleSession}
+          issueLinks={sessionIssueLinks}
+          presets={sessionPresets}
+          workRepos={workRepos}
+          onClose={() => setInfoOpen(false)}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <DetailPaneShell
+      as="div"
+      variant="compact"
+      className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
+      headerClassName="conv-detail__shell-header"
+      subheaderClassName="conv-detail__parent"
+      bodyClassName="conv-detail__body"
+      footerClassName="conv-detail__footer"
+      header={detailHeader}
+      subheader={parentLink}
+      footer={shouldRenderDetailFooter ? detailFooter : undefined}
+      overlays={detailOverlays}
+      ariaBusy={loading}
+    >
       {error && (
         <div className="conv-load-error">
           <span>{error}</span>
@@ -2336,156 +2510,7 @@ function ConversationDetail({
           )}
         </div>
       )}
-
-      <ChatOverlay
-        open={usageModalOpen}
-        titleId="conversation-usage-modal-title"
-        onClose={() => setUsageModalOpen(false)}
-      >
-        <UsageModal
-          usage={usageSummary}
-          titleId="conversation-usage-modal-title"
-          onClose={() => setUsageModalOpen(false)}
-        />
-      </ChatOverlay>
-
-      <Shelf
-        conversationId={conversation.id}
-        title="Activity"
-        items={shelfItems}
-        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
-      />
-
-      {activeWorkflow && (
-        <WorkflowRunDialog
-          workflow={activeWorkflow}
-          onClose={() => setActiveWorkflowId(null)}
-          onNavigate={onNavigate}
-        />
-      )}
-
-      {isReadOnlyChild ? (
-        <div className="conv-compose conv-compose--readonly">
-          <span>Read-only subagent transcript</span>
-        </div>
-      ) : attachPresentation?.composer !== 'hidden' ? (
-      <div className="conv-compose">
-        {attachPresentation?.hint && (
-          <div className="conv-compose__hint">{attachPresentation.hint}</div>
-        )}
-        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
-          <textarea
-            className="conv-compose__input"
-            value={continueDraft}
-            onInput={(event) => setContinueDraft(event.currentTarget.value)}
-            onKeyDown={handleComposerKeyDown}
-            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
-            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
-            rows={3}
-          />
-          <button
-            type="submit"
-            className="conv-compose__send"
-            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
-            title="Send message"
-            aria-label="Send message"
-          >
-            {continueBusy ? '...' : '↑'}
-          </button>
-        </form>
-        {attachState?.kind === 'live-external' && (
-          <div className="conv-compose__actions">
-            {attachState.external_session_id && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                onClick={() => { void handleFocusExternalSession(); }}
-              >
-                Go to terminal
-              </button>
-            )}
-            {attachState.can_fork && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={continueBusy || !latestDagUuid}
-                onClick={() => { void handleForkHere(); }}
-              >
-                Fork here
-              </button>
-            )}
-          </div>
-        )}
-        <div className="conv-compose__footer">
-          <div className="conv-compose__runtime">
-            <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
-              {getSourceMark(conversation.source)}
-            </span>
-            <select
-              className="conv-compose__model"
-              value={composerModel}
-              disabled={continueBusy || modelOptions.length === 0}
-              title="Model"
-              aria-label="Model"
-              onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
-            >
-              <option value={currentModel === 'default' ? '' : currentModel}>
-                {currentModel === 'default' ? 'Default' : currentModel}
-              </option>
-              {modelOptions
-                .filter((model) => model !== currentModel)
-                .map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-            </select>
-          </div>
-          {canShowSessionControls && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setComposerControlsOpen((prev) => !prev)}
-            >
-              Controls
-            </button>
-          )}
-        </div>
-        {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
-          <div className="conv-compose__controls">
-            <SessionControls
-              sessionId={linkedConsoleSession.id}
-              runOptions={sessionRunOptions}
-              allowedTools={linkedConsoleSession.allowed_tools}
-            />
-          </div>
-        )}
-        {(continueError || continueDisabledReason) && (
-          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
-            {continueError ?? continueDisabledReason}
-          </div>
-        )}
-        {resumeErrorDetails && (
-          <details className="conv-compose__details">
-            <summary>Details</summary>
-            <pre>{resumeErrorDetails}</pre>
-          </details>
-        )}
-      </div>
-      ) : null}
-
-      {/* Toast notification */}
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
-
-      {infoOpen && (
-        <ConversationInfoDialog
-          conversation={conversation}
-          linkedConsoleSession={linkedConsoleSession}
-          issueLinks={sessionIssueLinks}
-          presets={sessionPresets}
-          workRepos={workRepos}
-          onClose={() => setInfoOpen(false)}
-        />
-      )}
-    </div>
+    </DetailPaneShell>
   );
 }
 
