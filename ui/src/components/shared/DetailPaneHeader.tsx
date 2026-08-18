@@ -1,11 +1,11 @@
 import type { ComponentChildren } from 'preact';
 import { CopyRefButton, DetailHeaderIdentity } from './DetailHeaderIdentity';
 
-export type DetailPaneHeaderVariant = 'standard' | 'compact';
+export type DetailPaneHeaderVariant = 'standard' | 'compact' | 'versioned';
 
 export type DetailPaneHeaderIdentity = {
   /** Human entity kind or owning context, for example `Issue` or `mandible`. */
-  entityLabel: string;
+  entityLabel?: string;
   /** Ambiguity-safe short reference rendered in the header. Never pass the full ID here. */
   displayRef: string;
   /** Full canonical reference copied by the identity control. */
@@ -22,19 +22,36 @@ export type DetailPaneHeaderSelector = {
   copyLabel?: string;
 };
 
-export type DetailPaneHeaderProps = {
-  variant: DetailPaneHeaderVariant;
+type DetailPaneHeaderBaseProps = {
   identity: DetailPaneHeaderIdentity;
   title: ComponentChildren;
   titleId?: string;
   titleTooltip?: string;
-  status?: ComponentChildren;
   actions?: ComponentChildren;
   actionsLabel?: string;
   selector?: DetailPaneHeaderSelector;
-  secondaryMetadata?: ComponentChildren;
   className?: string;
 };
+
+type StandardOrCompactDetailPaneHeaderProps = DetailPaneHeaderBaseProps & {
+  variant: 'standard' | 'compact';
+  status?: ComponentChildren;
+  state?: never;
+  secondaryMetadata?: ComponentChildren;
+};
+
+type VersionedDetailPaneHeaderProps = DetailPaneHeaderBaseProps & {
+  variant: 'versioned';
+  /** Subdued logical/version state, for example `Latest`. */
+  state?: ComponentChildren;
+  status?: never;
+  /** Versioned headers have exactly two rows. */
+  secondaryMetadata?: never;
+};
+
+export type DetailPaneHeaderProps =
+  | StandardOrCompactDetailPaneHeaderProps
+  | VersionedDetailPaneHeaderProps;
 
 function classNames(...values: Array<string | undefined>): string {
   return values.filter(Boolean).join(' ');
@@ -51,12 +68,14 @@ export function DetailPaneHeader({
   titleId,
   titleTooltip,
   status,
+  state,
   actions,
   actionsLabel = 'Detail actions',
   selector,
   secondaryMetadata,
   className,
 }: DetailPaneHeaderProps): JSX.Element {
+  const toplineState = variant === 'versioned' ? state : status;
   return (
     <div
       className={classNames(
@@ -75,25 +94,40 @@ export function DetailPaneHeader({
             contextLabel={identity.entityLabel}
             shortId={identity.displayRef}
             copyValue={identity.canonicalRef}
-            copyLabel={identity.copyLabel ?? `Copy ${identity.entityLabel} reference`}
+            copyLabel={
+              identity.copyLabel
+              ?? (identity.entityLabel
+                ? `Copy ${identity.entityLabel} reference`
+                : 'Copy full canonical reference')
+            }
           />
-          {status !== undefined && status !== null && (
-            <div className="detail-pane-header__status">{status}</div>
-          )}
-          {selector && (
-            <div
-              className="detail-pane-header__selector"
-              role="group"
-              aria-label={selector.label}
-            >
-              {selector.control}
-              <CopyRefButton
-                value={selector.selectedCanonicalRef}
-                label={
-                  selector.copyLabel
-                  ?? `Copy selected ${selector.label.toLowerCase()} reference`
-                }
-              />
+          {(toplineState !== undefined && toplineState !== null || selector) && (
+            <div className="detail-pane-header__topline-controls">
+              {toplineState !== undefined && toplineState !== null && (
+                <div
+                  className={variant === 'versioned'
+                    ? 'detail-pane-header__state'
+                    : 'detail-pane-header__status'}
+                >
+                  {toplineState}
+                </div>
+              )}
+              {selector && (
+                <div
+                  className="detail-pane-header__selector"
+                  role="group"
+                  aria-label={selector.label}
+                >
+                  {selector.control}
+                  <CopyRefButton
+                    value={selector.selectedCanonicalRef}
+                    label={
+                      selector.copyLabel
+                      ?? `Copy selected ${selector.label.toLowerCase()} reference`
+                    }
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>

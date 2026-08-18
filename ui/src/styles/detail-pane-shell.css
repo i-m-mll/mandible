@@ -100,6 +100,10 @@
   gap: 6px;
 }
 
+.detail-pane-header__topline-controls {
+  display: contents;
+}
+
 .detail-pane-header__selector {
   gap: 8px;
   margin-left: auto;
@@ -176,6 +180,39 @@
   grid-column: 2 / -1;
 }
 
+.detail-pane-header--versioned .detail-pane-header__main {
+  gap: 8px;
+}
+
+.detail-pane-header--versioned .detail-pane-header__topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.detail-pane-header--versioned .detail-pane-header__topline-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detail-pane-header--versioned .detail-pane-header__state {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.detail-pane-header--versioned .detail-pane-header__selector {
+  margin-left: 0;
+}
+
+.detail-pane-header--versioned .detail-pane-header__title-row {
+  justify-content: space-between;
+}
+
 .detail-pane-header :is(button, select, a):focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
@@ -202,6 +239,14 @@
   .detail-pane-header__selector select {
     flex: 1;
     max-width: 100%;
+  }
+
+  .detail-pane-header--versioned .detail-pane-header__topline-controls {
+    flex-wrap: wrap;
+  }
+
+  .detail-pane-header--versioned .detail-pane-header__selector {
+    width: auto;
   }
 }
 

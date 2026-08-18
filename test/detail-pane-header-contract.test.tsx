@@ -98,6 +98,67 @@ describe('canonical detail pane header', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(selectedCanonicalRef));
   });
 
+  it('renders exact two-row versioned geometry with optional entity label and typed copy authority', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    const logicalCanonicalRef = 'artifact:art_01KABCDEF0123456789';
+    const selectedCanonicalRef = 'artifact-version:av_01K9876543210FEDCBA';
+
+    render(
+      <DetailPaneHeader
+        variant="versioned"
+        identity={{
+          displayRef: '12ab34c',
+          canonicalRef: logicalCanonicalRef,
+        }}
+        title="SISU results"
+        state={<span>Latest</span>}
+        selector={{
+          label: 'Artifact version',
+          control: <select aria-label="Artifact version"><option>v3</option></select>,
+          selectedCanonicalRef,
+        }}
+        actions={<button type="button" aria-label="Artifact actions">...</button>}
+      />,
+    );
+
+    const header = document.querySelector('.detail-pane-header--versioned') as HTMLElement;
+    const main = header.querySelector(':scope > .detail-pane-header__main') as HTMLElement;
+    const rows = Array.from(main.children);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.classList.contains('detail-pane-header__topline')).toBe(true);
+    expect(rows[1]?.classList.contains('detail-pane-header__title-row')).toBe(true);
+    expect(rows[0]?.querySelector(':scope > .detail-pane-header__identity')).toBeTruthy();
+    expect(rows[0]?.querySelector(':scope > .detail-pane-header__topline-controls')).toBeTruthy();
+    expect(rows[1]?.querySelector(':scope > .detail-pane-header__title')).toBeTruthy();
+    expect(rows[1]?.querySelector(':scope > .detail-pane-header__actions')).toBeTruthy();
+    expect(within(header).queryByText('Artifact')).toBeNull();
+    expect(within(header).getByText('12ab34c')).toBeTruthy();
+    expect(within(header).getByText('Latest')).toBeTruthy();
+    expect(header.textContent).not.toContain(logicalCanonicalRef);
+    expect(header.textContent).not.toContain(selectedCanonicalRef);
+
+    fireEvent.click(within(header).getByRole('button', { name: 'Copy full canonical reference' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(logicalCanonicalRef));
+    fireEvent.click(within(header).getByRole('button', {
+      name: 'Copy selected artifact version reference',
+    }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(selectedCanonicalRef));
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+    expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s);
+    expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline-controls\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s);
+    expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__state\s*\{[^}]*color:\s*var\(--text-muted\);/s);
+    expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__title-row\s*\{[^}]*justify-content:\s*space-between;/s);
+  });
+
   it('gives nested compact composition one padding owner without changing the legacy seam', () => {
     const { container } = render(
       <DetailPaneShell

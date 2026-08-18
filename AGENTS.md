@@ -55,8 +55,8 @@ horizontal time coordinates.
 
 Build data views from the shared composition primitives first. Detail panes use
 `DetailPaneShell` for one anchored header, one scrolling body, and an optional
-anchored footer; compose the header with the typed `DetailPaneHeader` standard
-or compact variant. A bespoke shell or header requires a concrete written
+anchored footer; compose the header with the typed `DetailPaneHeader` standard,
+compact, or versioned variant. A bespoke shell or header requires a concrete written
 justification naming the missing shared-contract capability before it is added.
 Do not reproduce identity/copy controls, long canonical IDs, or action bars in
 the scrolling body.
