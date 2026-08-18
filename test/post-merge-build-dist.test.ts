@@ -27,7 +27,11 @@ function runGit(repo: string, args: string[]): void {
   expect(result.status, result.stderr).toBe(0);
 }
 
-function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult {
+function runHookAfterMerge(
+  changedPath: string,
+  failGitDiff = false,
+  replayAfterUnrelatedMerge = false,
+): HookResult {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
   tempRoots.push(tempDir);
 
@@ -54,6 +58,10 @@ function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult
   runGit(repo, ["config", "user.email", "mandible-test@example.invalid"]);
   runGit(repo, ["add", "."]);
   runGit(repo, ["commit", "-m", "baseline"]);
+  const mergeBaseSha = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repo,
+    encoding: "utf8",
+  }).stdout.trim();
   runGit(repo, ["checkout", "-b", "topic"]);
 
   const changedFile = path.join(repo, changedPath);
@@ -65,8 +73,21 @@ function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult
   }
   runGit(repo, ["add", changedPath]);
   runGit(repo, ["commit", "-m", `change ${changedPath}`]);
+  const mergeHeadSha = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repo,
+    encoding: "utf8",
+  }).stdout.trim();
   runGit(repo, ["checkout", "main"]);
   runGit(repo, ["merge", "--no-ff", "topic", "-m", "merge topic"]);
+  if (replayAfterUnrelatedMerge) {
+    runGit(repo, ["checkout", "-b", "later"]);
+    fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "docs", "later.md"), "later\n", "utf8");
+    runGit(repo, ["add", "docs/later.md"]);
+    runGit(repo, ["commit", "-m", "later unrelated change"]);
+    runGit(repo, ["checkout", "main"]);
+    runGit(repo, ["merge", "--no-ff", "later", "-m", "merge later"]);
+  }
 
   const hookEnv = { ...process.env };
   if (failGitDiff) {
@@ -99,6 +120,8 @@ exec "$REAL_GIT" "$@"
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
       MANDIBLE_TEST_DESKTOP_TRACE: desktopTracePath,
+      MANDIBLE_AUTH_MERGE_BASE_SHA: replayAfterUnrelatedMerge ? mergeBaseSha : "",
+      MANDIBLE_AUTH_MERGE_HEAD_SHA: replayAfterUnrelatedMerge ? mergeHeadSha : "",
       NODE_PATH: path.join(process.cwd(), "node_modules"),
     },
   });
@@ -160,6 +183,14 @@ describe("post-merge build hook", () => {
     expect(result.stderr).toContain("no Mandible source changes detected");
     expect(result.stderr).toContain("installed native desktop bundle");
     expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
+  });
+
+  it("replays the original native deployment after HEAD advances", () => {
+    const result = runHookAfterMerge("src-tauri/src/lib.rs", false, true);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("installed native desktop bundle");
     expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
   });
 
