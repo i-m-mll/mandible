@@ -188,7 +188,7 @@ describe.sequential("migration v125: feedback schema foundation", () => {
 
   it("creates the complete fresh schema and converges with the v124 upgrade path", () => {
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "140",
+      value: "141",
     });
 
     const requiredObjects = [...FEEDBACK_TABLES, ...FEEDBACK_INDEXES];
@@ -220,7 +220,7 @@ describe.sequential("migration v125: feedback schema foundation", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "140",
+      value: "141",
     });
     expect(rows(db, "permission_grants")).toEqual(grantsBefore);
     for (const table of BRIEFING_TABLES) {
@@ -284,7 +284,7 @@ describe.sequential("migration v125: feedback schema foundation", () => {
       ...PERMISSION_INDEXES,
     ])).toEqual(definitionsBefore);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "140",
+      value: "141",
     });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);

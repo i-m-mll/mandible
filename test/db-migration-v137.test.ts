@@ -42,7 +42,7 @@ describe("migration v137: annotatable ask documents", () => {
   it("builds the additive schema in the fresh baseline and enforces the closed annotation shape", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(140);
+    expect(BASELINE_SCHEMA_VERSION).toBe(141);
     expect(db.prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${TABLES.map(() => "?").join(",")}) ORDER BY name`,
     ).all(...TABLES)).toEqual(TABLES.map((name) => ({ name })).sort((a, b) => a.name.localeCompare(b.name)));
@@ -64,9 +64,9 @@ describe("migration v137: annotatable ask documents", () => {
       INSERT INTO artifact_version
         (id, artifact_id, version_no, blob_id, source_kind, content_hash, created_at)
         VALUES ('artifact-version:plan-v1','artifact:plan',1,'artifact-blob:${"a".repeat(64)}','managed','${"a".repeat(64)}',1);
-      INSERT INTO feedback_collection_documents VALUES ('round-1','artifact-version:plan-v1',NULL,1);
-      INSERT INTO feedback_collection_documents VALUES ('round-2','artifact-version:plan-v1','round-1',1);
-      INSERT INTO feedback_collection_documents VALUES ('round-3','artifact-version:plan-v1','round-1',1);
+      INSERT INTO feedback_collection_documents (collection_id, artifact_version_id, previous_round_id, created_at) VALUES ('round-1','artifact-version:plan-v1',NULL,1);
+      INSERT INTO feedback_collection_documents (collection_id, artifact_version_id, previous_round_id, created_at) VALUES ('round-2','artifact-version:plan-v1','round-1',1);
+      INSERT INTO feedback_collection_documents (collection_id, artifact_version_id, previous_round_id, created_at) VALUES ('round-3','artifact-version:plan-v1','round-1',1);
     `);
     expect(() => db.exec(
       "UPDATE feedback_collection_documents SET previous_round_id = 'round-1' WHERE collection_id = 'round-1'",
@@ -95,7 +95,7 @@ describe("migration v137: annotatable ask documents", () => {
     `);
     migrate(db);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "140" });
+      .toEqual({ value: "141" });
     db.exec(`
       INSERT INTO feedback_collection_events VALUES ('life-4','round-1','submitted','life-3','actor-1','{}',4);
       INSERT INTO feedback_submissions VALUES ('sub-3','round-1',3,'sub-1','life-4','actor-1',4);

@@ -1072,8 +1072,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         collection_id TEXT PRIMARY KEY REFERENCES feedback_collections(id) ON DELETE RESTRICT,
         artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
         previous_round_id TEXT REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        profile TEXT CHECK(profile IS NULL OR profile = 'mandible-briefing.v1'),
         created_at INTEGER NOT NULL,
+        profile TEXT CHECK(profile IS NULL OR profile = 'mandible-briefing.v1'),
         CHECK(previous_round_id IS NULL OR previous_round_id != collection_id)
       )`,
   `CREATE INDEX idx_feedback_collection_documents_version

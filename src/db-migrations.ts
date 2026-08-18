@@ -5058,7 +5058,10 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           verifyBriefingDirectiveV141Schema(db);
           statements = [];
         } else if (tableExists(db, table)) {
-          throw new Error("migration 141 precondition: directive bindings exist without document profile");
+          // A historical fixture may retain the additive binding table while
+          // rewinding its schema marker. Add only the missing profile column,
+          // then verify the complete converged shape below.
+          statements = migration.statements.slice(0, 1);
         }
       }
       for (const statement of statements) {
@@ -5072,6 +5075,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 139) {
         ensureAuthHookRequiredColumn(db);
+      }
+      if (migration.version === 141) {
+        verifyBriefingDirectiveV141Schema(db);
       }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
