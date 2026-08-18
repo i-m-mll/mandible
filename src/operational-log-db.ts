@@ -314,6 +314,8 @@ export function copyForwardLegacyDaemonLogs(
   );
   const applyBatch = store.db.transaction((
     rows: DaemonLogRow[],
+    cursorTs: number | null,
+    cursorId: string | null,
     complete: boolean,
     legacySnapshot: LegacyHighWater,
   ): number => {
@@ -322,11 +324,10 @@ export function copyForwardLegacyDaemonLogs(
       const result = insert.run(...LOG_COLUMNS.map((column) => row[column]));
       copied += result.changes;
     }
-    const last = rows.at(-1);
     persistState.run(
       sourcePath,
-      last?.ts ?? state?.last_ts ?? null,
-      last?.id ?? state?.last_id ?? null,
+      cursorTs,
+      cursorId,
       complete ? now : null,
       complete ? legacySnapshot.ts : null,
       complete ? legacySnapshot.id : null,
@@ -358,14 +359,14 @@ export function copyForwardLegacyDaemonLogs(
     const legacySnapshot = complete
       ? currentLegacyHighWater(store.db)
       : { ts: null, id: null, rows: 0 };
-    copied += applyBatch(rows, complete, legacySnapshot);
-    scanned += rows.length;
-    batches += 1;
     const last = rows.at(-1);
     if (last) {
       cursorTs = last.ts;
       cursorId = last.id;
     }
+    copied += applyBatch(rows, cursorTs, cursorId, complete, legacySnapshot);
+    scanned += rows.length;
+    batches += 1;
     if (complete) break;
   }
   return { sourcePath, copied, scanned, batches, complete, lastTs: cursorTs, lastId: cursorId };

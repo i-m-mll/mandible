@@ -107,6 +107,33 @@ describe("operational log database lifecycle", () => {
     });
   });
 
+  it("persists scan progress when a full legacy batch is already copied", () => {
+    for (let index = 0; index < 100; index += 1) {
+      const id = `existing-${String(index).padStart(3, "0")}`;
+      insert(canonicalDb, id, index, id);
+      insert(store.db, id, index, id);
+    }
+
+    const result = copyForwardLegacyDaemonLogs(store, {
+      batchSize: 100,
+      maxBatches: 2,
+      now: 1_000,
+    });
+    const repeated = copyForwardLegacyDaemonLogs(store, { now: 2_000 });
+
+    expect(result).toMatchObject({ scanned: 100, copied: 0, complete: true });
+    expect(repeated).toMatchObject({
+      scanned: 0,
+      copied: 0,
+      complete: true,
+      lastTs: 99,
+      lastId: "existing-099",
+    });
+    expect(store.db.prepare(
+      "SELECT last_ts, last_id FROM operational_log_copy_state",
+    ).get()).toEqual({ last_ts: 99, last_id: "existing-099" });
+  });
+
   it("does not count the full legacy log while a bounded copy remains incomplete", () => {
     for (let index = 0; index < 3; index += 1) {
       insert(canonicalDb, `bounded-${index}`, 100 + index, `bounded-${index}`);
