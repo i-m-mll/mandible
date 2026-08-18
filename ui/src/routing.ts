@@ -1,3 +1,5 @@
+import { compactLongIdSegments } from './resource-refs';
+
 export type Route = {
   tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'spaces' | 'overview' | 'briefing' | 'tasks';
   params: Record<string, string>;
@@ -9,14 +11,17 @@ export const ARTIFACT_SERIES_QUERY_PARAM = 'series';
 export const ARTIFACT_VERSION_QUERY_PARAM = 'version';
 
 // Issue f59b5bd — short-form IDs in generated URLs. Deterministically emitted
-// in-app links carry the ambiguity-safe 8-char short form instead of a full
-// UUID; consumers resolve prefixes with honest zero/one/many handling. Only
-// full UUIDs are shortened — short non-UUID identifiers pass through intact.
+// in-app links carry compact refs instead of full internal identities;
+// consumers resolve prefixes with honest zero/one/many handling. UUIDs keep
+// the established 8-char form, while typed long-hex refs reuse the common
+// 7-char resource-ref display contract.
 export const SHORT_ROUTE_ID_LENGTH = 8;
 const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const TYPED_LONG_HEX_REF_RE = /^[a-z][a-z0-9-]*:[0-9a-f]{12,64}$/i;
 
 export function shortRouteId(id: string): string {
-  return FULL_UUID_RE.test(id) ? id.slice(0, SHORT_ROUTE_ID_LENGTH) : id;
+  if (FULL_UUID_RE.test(id)) return id.slice(0, SHORT_ROUTE_ID_LENGTH);
+  return TYPED_LONG_HEX_REF_RE.test(id) ? compactLongIdSegments(id) : id;
 }
 
 export function briefingRoute(briefingId: string, roundId?: string | null): string {
