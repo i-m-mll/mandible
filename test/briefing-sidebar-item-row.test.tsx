@@ -80,8 +80,9 @@ describe('Briefing sidebar row actions', () => {
     expect((screen.getByRole('menuitem', { name: 'Move First briefing down' }) as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move First briefing down' }));
-    const pinned = document.querySelector('#briefing-pinned-list');
-    expect(within(pinned as HTMLElement).getAllByRole('button', { name: /Select briefing/ })
+    const pinnedGroup = screen.getByRole('region', { name: /^Pinned/ });
+    const pinnedList = within(pinnedGroup).getByRole('list');
+    expect(within(pinnedList).getAllByRole('button', { name: /Select briefing/ })
       .map((button) => button.getAttribute('aria-label'))).toEqual([
       'Select briefing Second briefing',
       'Select briefing First briefing',
