@@ -530,7 +530,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
   if (type !== 'auth:output') {
     invalidateApiGetCache('/api/dashboard/badges');
   }
-  if (type.startsWith('session:') || type.startsWith('console:session:')) {
+  if (type.startsWith('conversation:')) {
+    invalidateApiGetCache('/api/conversations');
+  } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
     invalidateApiGetCache('/api/conversations');
@@ -2194,6 +2196,47 @@ export async function getConversations(params?: {
   );
 }
 
+export type ConversationSidebarGroup = {
+  key: string;
+  kind: 'pinned' | 'project' | 'chats';
+  label: string;
+  total: number;
+  conversations: Conversation[];
+  next_cursor: string | null;
+};
+
+export type ConversationSidebarResponse = {
+  groups: ConversationSidebarGroup[];
+  limit: number;
+};
+
+export async function getConversationSidebar(params: {
+  source?: string;
+  starred?: boolean;
+  search?: string;
+  full_text?: boolean;
+  sort?: string;
+  min_blocks?: number;
+  exclude_subagents?: boolean;
+  limit: number;
+  group_key?: string;
+  cursor?: string;
+}): Promise<ConversationSidebarResponse> {
+  const query = new URLSearchParams();
+  if (params.source) query.set('source', params.source);
+  if (params.starred) query.set('starred', '1');
+  if (params.search) query.set('search', params.search);
+  if (params.full_text) query.set('full_text', 'true');
+  if (params.sort) query.set('sort', params.sort);
+  if (params.min_blocks) query.set('min_blocks', String(params.min_blocks));
+  if (params.exclude_subagents) query.set('exclude_subagents', 'true');
+  const limit = Math.min(50, Math.max(1, Math.trunc(Number.isFinite(params.limit) ? params.limit : 5)));
+  query.set('limit', String(limit));
+  if (params.group_key) query.set('group_key', params.group_key);
+  if (params.cursor) query.set('cursor', params.cursor);
+  return cachedApiGetJson<ConversationSidebarResponse>(`/api/conversations/sidebar?${query.toString()}`);
+}
+
 export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null }> {
   const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
@@ -2235,6 +2278,7 @@ export async function updateConversation(id: string, data: {
   notes_append?: string;
 }): Promise<Conversation> {
   const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
+  invalidateApiGetCache('/api/conversations');
   return (await parseMaybeJson(resp)) as Conversation;
 }
 

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { SidebarGroupNode } from '../components/shared/SidebarGroupNode';
+import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
 import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
@@ -17,6 +19,7 @@ import type {
   ConversationChild,
   ConversationParent,
   ConversationSource,
+  ConversationSidebarGroup,
   WorkflowRun,
   WorkflowWorker,
 } from '../api.js';
@@ -26,6 +29,7 @@ import {
   getConsoleSessionUsage,
   getConsoleSessionOptions,
   getConversation,
+  getConversationSidebar,
   getConversations,
   getSessionIssues,
   getSessionPresets,
@@ -205,7 +209,6 @@ const AGENT_LABELS: Record<string, string> = {
   shell: 'Shell',
 };
 
-const PAGE_SIZE = 50;
 const VIRTUAL_BUFFER = 10;
 const ESTIMATED_BLOCK_HEIGHT = 120;
 
@@ -471,15 +474,17 @@ type ChatEntry = {
   liveSession?: ConsoleSession | null;
 };
 type ChatProjectGroup = {
-  project: string;
-  latestTime: number;
+  key: string;
+  label: string;
+  total: number;
+  nextCursor: string | null;
   entries: ChatEntry[];
 };
 type ChatSectionId = 'pinned' | 'projects' | 'chats';
 type ChatSidebarSections = {
-  pinned: ChatEntry[];
+  pinned: ChatProjectGroup | null;
   projects: ChatProjectGroup[];
-  chats: ChatEntry[];
+  chats: ChatProjectGroup | null;
 };
 type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
@@ -502,13 +507,13 @@ function getEntryTitle(entry: ChatEntry): string {
 // ── Props ──
 
 export type ConversationsViewProps = {
-  conversations: Conversation[];
   consoleSessions: ConsoleSession[];
   workRepos: WorkRepo[];
   initialConversationId: string | null;
   initialSessionId: string | null;
   initialPresetId?: string | null;
   sidebarHidden?: boolean;
+  sidebarGroupLimit?: number;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
     label: string;
@@ -2696,13 +2701,13 @@ function LiveSessionDetail({
 // ── Main View ──
 
 export function ConversationsView({
-  conversations: initialConversations,
   consoleSessions,
   workRepos,
   initialConversationId,
   initialSessionId,
   initialPresetId,
   sidebarHidden = false,
+  sidebarGroupLimit: rawSidebarGroupLimit,
   onSelectSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
@@ -2717,12 +2722,27 @@ export function ConversationsView({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
-  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
-  const [total, setTotal] = useState(0);
+  const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
+  const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
+  const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
+  const [loadingMoreKey, setLoadingMoreKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const searchTimer = useRef<number | null>(null);
-  const conversationsRef = useRef(conversations);
-  conversationsRef.current = conversations;
+  const fetchGenerationRef = useRef(0);
+  const groupsRef = useRef(serverGroups);
+  groupsRef.current = serverGroups;
+  const targetsRef = useRef(visibleTargets);
+  targetsRef.current = visibleTargets;
+  const previousGroupLimitRef = useRef(sidebarGroupLimit);
+
+  useEffect(() => {
+    const previous = previousGroupLimitRef.current;
+    if (previous === sidebarGroupLimit) return;
+    previousGroupLimitRef.current = sidebarGroupLimit;
+    setVisibleTargets((current) => new Map(
+      Array.from(current, ([key, target]) => [key, target === previous ? sidebarGroupLimit : target]),
+    ));
+  }, [sidebarGroupLimit]);
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
@@ -2807,46 +2827,60 @@ export function ConversationsView({
     };
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
-  // Fetch conversations. Uses ref for offset to avoid stale closure.
-  const fetchConversations = useCallback(async (reset = true) => {
+  const sidebarRequestParams = useCallback((limit: number) => {
+    const params: Parameters<typeof getConversationSidebar>[0] = {
+      limit,
+      sort: sort === 'blocks' ? 'block_count' : 'started_at',
+      exclude_subagents: true,
+    };
+    if (sourceFilter !== 'all') params.source = sourceFilter;
+    if (starredOnly) params.starred = true;
+    if (hideEmpty) params.min_blocks = 1;
+    applyConversationSearchParams(params, search, searchMode);
+    return params;
+  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
+
+  // A refresh starts from one bounded page per logical group, then replays only
+  // the extra pages needed to restore that group's current visible target.
+  const fetchConversationGroups = useCallback(async () => {
+    const generation = ++fetchGenerationRef.current;
     setLoading(true);
     try {
-      const params: {
-        source?: string;
-        starred?: boolean;
-        search?: string;
-        full_text?: boolean;
-        offset?: number;
-        limit?: number;
-        sort?: string;
-        min_blocks?: number;
-        group?: boolean;
-        exclude_subagents?: boolean;
-      } = {
-        limit: PAGE_SIZE,
-        offset: reset ? 0 : conversationsRef.current.length,
-        sort: sort === 'blocks' ? 'block_count' : 'started_at',
-      };
-      if (sourceFilter !== 'all') params.source = sourceFilter;
-      if (starredOnly) params.starred = true;
-      if (hideEmpty) params.min_blocks = 1;
-      applyConversationSearchParams(params, search, searchMode);
-      params.group = true;
-      params.exclude_subagents = true;
-
-      const result = await getConversations(params);
-      if (reset) {
-        setConversations(result.conversations);
-      } else {
-        setConversations((prev) => [...prev, ...result.conversations]);
-      }
-      setTotal(result.total);
+      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit));
+      const reconciled = await Promise.all(result.groups.map(async (initialGroup) => {
+        const target = targetsRef.current.get(initialGroup.key) ?? sidebarGroupLimit;
+        let group = initialGroup;
+        while (group.conversations.length < target && group.next_cursor) {
+          const page = await getConversationSidebar({
+            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length)),
+            group_key: group.key,
+            cursor: group.next_cursor,
+          });
+          const next = page.groups[0];
+          if (!next) break;
+          const seen = new Set(group.conversations.map((conversation) => conversation.id));
+          group = {
+            ...next,
+            conversations: [...group.conversations, ...next.conversations.filter((conversation) => !seen.has(conversation.id))],
+          };
+        }
+        return group;
+      }));
+      if (generation !== fetchGenerationRef.current) return;
+      setServerGroups(reconciled);
+      setVisibleTargets((current) => {
+        const next = new Map(current);
+        for (const group of reconciled) {
+          if (!next.has(group.key)) next.set(group.key, sidebarGroupLimit);
+        }
+        return next;
+      });
     } catch {
       // ignore fetch errors
     } finally {
-      setLoading(false);
+      if (generation === fetchGenerationRef.current) setLoading(false);
     }
-  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [sidebarGroupLimit, sidebarRequestParams]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
@@ -2865,16 +2899,26 @@ export function ConversationsView({
       if (refetchTimer !== null) return;
       refetchTimer = window.setTimeout(() => {
         refetchTimer = null;
-        void fetchConversations(true);
+        void fetchConversationGroups();
       }, 1000);
     };
     const offUpdated = client.on('conversation:updated', (payload) => {
       const data = (
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
-      const result = mergeConversationSummaryIntoList(conversationsRef.current, data);
+      const groupIndex = data.id
+        ? groupsRef.current.findIndex((group) => group.conversations.some((conversation) => conversation.id === data.id))
+        : -1;
+      if (groupIndex < 0) {
+        scheduleListRefetch();
+        return;
+      }
+      const currentGroup = groupsRef.current[groupIndex];
+      const result = mergeConversationSummaryIntoList(currentGroup.conversations, data);
       if (result.applied) {
-        setConversations(result.conversations);
+        setServerGroups(groupsRef.current.map((group, index) => (
+          index === groupIndex ? { ...group, conversations: result.conversations } : group
+        )));
       } else if (result.refetch) {
         scheduleListRefetch();
       }
@@ -2884,7 +2928,7 @@ export function ConversationsView({
       scheduleListRefetch();
     });
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void fetchConversations(true);
+      if (reconnected) void fetchConversationGroups();
     });
     client.connect();
     return () => {
@@ -2896,42 +2940,40 @@ export function ConversationsView({
       offState();
       client.close();
     };
-  }, [fetchConversations]);
+  }, [fetchConversationGroups]);
 
   // Debounced fetch on filter changes
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
-      fetchConversations(true);
+      fetchConversationGroups();
     }, 300);
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [fetchConversations]);
+  }, [fetchConversationGroups]);
 
-  const loadMore = () => {
-    fetchConversations(false);
-  };
-
-  const remainingConversationCount = Math.max(0, total - conversations.length);
-  const hasMore = remainingConversationCount > 0;
   const selectedConversationSummary = selection?.type === 'conversation'
-    ? conversations.find((conv) => conv.id === selection.id) ?? null
+    ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
     : null;
 
   // Client-side title-only filter (when searchMode === 'title', server already
   // searched summary too, so we narrow here to title-only for the title mode).
   // When searchMode === 'full', server search is sufficient — show all results.
   const displayedConversations = useMemo(() => {
-    const base = conversations.filter((conv) =>
-      !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
-    );
+    const base = serverGroups.map((group) => ({
+      ...group,
+      conversations: group.conversations.filter((conv) =>
+        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
+      ),
+    }));
     if (!search.trim() || searchMode === 'full') return base;
     const needle = search.trim().toLowerCase();
-    return base.filter((conv) =>
-      getConversationTitle(conv).toLowerCase().includes(needle)
-    );
-  }, [conversations, hideEmpty, search, searchMode]);
+    return base.map((group) => ({
+      ...group,
+      conversations: group.conversations.filter((conv) => getConversationTitle(conv).toLowerCase().includes(needle)),
+    }));
+  }, [serverGroups, hideEmpty, search, searchMode]);
 
   const liveByProviderSession = useMemo(() => {
     const map = new Map<string, ConsoleSession>();
@@ -2944,15 +2986,24 @@ export function ConversationsView({
   }, [liveSessions]);
 
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    const entries: ChatEntry[] = displayedConversations.map((conversation) => ({
-      key: `conversation:${conversation.id}`,
-      project: getConversationProject(conversation, workRepos),
-      time: getConversationTime(conversation),
-      kind: 'conversation',
-      conversation,
-      liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+    const groups = displayedConversations.map((group): ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] } => ({
+      key: group.key,
+      label: group.label,
+      total: group.total,
+      nextCursor: group.next_cursor,
+      kind: group.kind,
+      entries: group.conversations.map((conversation) => ({
+        key: `conversation:${conversation.id}`,
+        project: group.kind === 'project' ? group.label : 'No Project',
+        time: getConversationTime(conversation),
+        kind: 'conversation',
+        conversation,
+        liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+      })),
     }));
-    const conversationProviderIds = new Set(displayedConversations.map((conversation) => conversation.session_id));
+    const conversationProviderIds = new Set(
+      displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.session_id)),
+    );
     for (const session of liveSessions) {
       if (isSubagentSession(session)) {
         continue;
@@ -2960,7 +3011,20 @@ export function ConversationsView({
       if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
         continue;
       }
-      entries.push({
+      const kind = session.pinned ? 'pinned' : 'chats';
+      let group = groups.find((candidate) => candidate.kind === kind);
+      if (!group) {
+        group = {
+          key: `local:${kind}`,
+          label: kind === 'pinned' ? 'Pinned' : 'Chats',
+          total: 0,
+          nextCursor: null,
+          kind,
+          entries: [],
+        };
+        groups.push(group);
+      }
+      group.entries.push({
         key: `session:${session.id}`,
         project: 'No Project',
         time: getSessionTime(session),
@@ -2970,39 +3034,27 @@ export function ConversationsView({
       });
     }
 
-    const sortEntries = (items: ChatEntry[]) => [...items].sort((a, b) => {
-      if (sort === 'blocks') {
-        const aBlocks = a.conversation?.block_count ?? 0;
-        const bBlocks = b.conversation?.block_count ?? 0;
-        if (aBlocks !== bBlocks) return bBlocks - aBlocks;
+    for (const group of groups) {
+      const localSessions = group.entries.filter((entry) => entry.kind === 'session');
+      if (localSessions.length > 0) {
+        group.entries = [
+          ...localSessions,
+          ...group.entries.filter((entry) => entry.kind === 'conversation'),
+        ];
+        group.total += localSessions.length;
       }
-      return b.time - a.time || getEntryTitle(a).localeCompare(getEntryTitle(b));
-    });
-
-    const pinned = sortEntries(entries.filter((entry) => Boolean(entry.conversation?.starred || entry.session?.pinned)));
-    const unpinned = entries.filter((entry) => !entry.conversation?.starred && !entry.session?.pinned);
-    const looseChats = sortEntries(unpinned.filter((entry) => entry.project === 'No Project'));
-    const groupMap = new Map<string, ChatEntry[]>();
-    for (const entry of unpinned) {
-      if (entry.project === 'No Project') continue;
-      const group = groupMap.get(entry.project) ?? [];
-      group.push(entry);
-      groupMap.set(entry.project, group);
     }
-    const projects = Array.from(groupMap.entries())
-      .map(([project, groupEntries]) => ({
-        project,
-        latestTime: Math.max(...groupEntries.map((entry) => entry.time)),
-        entries: sortEntries(groupEntries),
-      }))
-      .sort((a, b) => a.project.localeCompare(b.project));
-    return { pinned, projects, chats: looseChats };
-  }, [displayedConversations, liveByProviderSession, liveSessions, sort, workRepos]);
+    return {
+      pinned: groups.find((group) => group.kind === 'pinned') ?? null,
+      projects: groups.filter((group) => group.kind === 'project'),
+      chats: groups.find((group) => group.kind === 'chats') ?? null,
+    };
+  }, [displayedConversations, liveByProviderSession, liveSessions]);
 
   const firstChatEntry =
-    chatSections.pinned[0] ??
+    chatSections.pinned?.entries[0] ??
     chatSections.projects[0]?.entries[0] ??
-    chatSections.chats[0] ??
+    chatSections.chats?.entries[0] ??
     null;
   const activeFilterCount = [
     sourceFilter !== 'all',
@@ -3067,8 +3119,51 @@ export function ConversationsView({
   };
 
   const updateConversationInList = (updated: Conversation) => {
-    setConversations((prev) => prev.map((conv) => (conv.id === updated.id ? { ...conv, ...updated } : conv)));
+    // Pinning can change group membership and manual order, so reconcile from
+    // the grouped endpoint while keeping selection, folds, and quotas intact.
+    setServerGroups((current) => current.map((group) => ({
+      ...group,
+      conversations: group.conversations.map((conv) => (conv.id === updated.id ? { ...conv, ...updated } : conv)),
+    })));
+    void fetchConversationGroups();
   };
+
+  const showMore = useCallback((group: ChatProjectGroup) => {
+    const currentTarget = targetsRef.current.get(group.key) ?? sidebarGroupLimit;
+    const nextTarget = currentTarget + sidebarGroupLimit;
+    const nextTargets = new Map(targetsRef.current).set(group.key, nextTarget);
+    targetsRef.current = nextTargets;
+    setVisibleTargets(nextTargets);
+    if (group.entries.length >= nextTarget || !group.nextCursor || group.key.startsWith('local:')) return;
+
+    setLoadingMoreKey(group.key);
+    void getConversationSidebar({
+      ...sidebarRequestParams(sidebarGroupLimit),
+      group_key: group.key,
+      cursor: group.nextCursor,
+    })
+      .then((page) => {
+        const fetched = page.groups[0];
+        if (!fetched) return;
+        setServerGroups((current) => current.map((candidate) => {
+          if (candidate.key !== group.key) return candidate;
+          const seen = new Set(candidate.conversations.map((conversation) => conversation.id));
+          return {
+            ...fetched,
+            conversations: [
+              ...candidate.conversations,
+              ...fetched.conversations.filter((conversation) => !seen.has(conversation.id)),
+            ],
+          };
+        }));
+      })
+      .catch(() => {
+        const rolledBackTargets = new Map(targetsRef.current).set(group.key, currentTarget);
+        targetsRef.current = rolledBackTargets;
+        setVisibleTargets(rolledBackTargets);
+      })
+      .finally(() => setLoadingMoreKey(null));
+  }, [sidebarGroupLimit, sidebarRequestParams]);
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
@@ -3142,9 +3237,9 @@ export function ConversationsView({
   );
 
   const totalVisibleEntries =
-    chatSections.pinned.length +
+    (chatSections.pinned?.entries.length ?? 0) +
     chatSections.projects.reduce((sum, group) => sum + group.entries.length, 0) +
-    chatSections.chats.length;
+    (chatSections.chats?.entries.length ?? 0);
 
   return (
     <div className="chat-history-view">
@@ -3266,72 +3361,82 @@ export function ConversationsView({
         bodyClassName="chat-history-list"
       >
 
-            <div className="chat-sidebar-section">
-              <button
-                type="button"
-                className="chat-sidebar-section__heading"
-                onClick={() => toggleSection('pinned')}
-              >
-                <strong>Pinned</strong>
-                <em>{chatSections.pinned.length}</em>
-              </button>
-              {!collapsedSections.has('pinned') && chatSections.pinned.map((entry) => renderEntry(entry, true))}
-            </div>
+            {chatSections.pinned ? (() => {
+              const group = chatSections.pinned;
+              const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
+              return (
+                <SidebarGroupNode
+                  id="chat-pinned"
+                  label={group.label}
+                  count={group.total}
+                  expanded={!collapsedSections.has('pinned')}
+                  onToggle={() => toggleSection('pinned')}
+                  canShowMore={group.entries.length > target || group.nextCursor !== null}
+                  loadingMore={loadingMoreKey === group.key}
+                  onShowMore={() => { void showMore(group); }}
+                >
+                  {group.entries.slice(0, target).map((entry) => renderEntry(entry, true))}
+                </SidebarGroupNode>
+              );
+            })() : null}
 
-            <div className="chat-sidebar-section">
-              <button
-                type="button"
-                className="chat-sidebar-section__heading"
-                onClick={() => toggleSection('projects')}
+            {chatSections.projects.length > 0 ? (
+              <SidebarGroupNode
+                id="chat-projects"
+                label="Projects"
+                count={chatSections.projects.length}
+                expanded={!collapsedSections.has('projects')}
+                onToggle={() => toggleSection('projects')}
               >
-                <strong>Projects</strong>
-                <em>{chatSections.projects.length}</em>
-              </button>
-              {!collapsedSections.has('projects') && chatSections.projects.map((group) => {
-                const collapsed = collapsedProjects.has(group.project);
+              {chatSections.projects.map((group, index) => {
+                const collapsed = collapsedProjects.has(group.key);
+                const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
                 return (
-                  <div key={group.project} className="chat-project-group">
-                    <button
-                      type="button"
-                      className="chat-project-group__header"
-                      onClick={() => toggleProject(group.project)}
-                    >
-                      <span className="chat-project-group__folder"><FolderIcon open={!collapsed} /></span>
-                      <strong>{group.project}</strong>
-                      <em>{group.entries.length}</em>
-                    </button>
-                    {!collapsed && (
-                      <div className="chat-project-group__items">
-                        {group.entries.map((entry) => renderEntry(entry))}
-                      </div>
-                    )}
-                  </div>
+                  <SidebarGroupNode
+                    key={group.key}
+                    id={`chat-project-${index}`}
+                    className="chat-project-group"
+                    bodyClassName="chat-project-group__items"
+                    label={group.label}
+                    count={group.total}
+                    expanded={!collapsed}
+                    onToggle={() => toggleProject(group.key)}
+                    leadingIcon={<FolderIcon open={!collapsed} />}
+                    canShowMore={group.entries.length > target || group.nextCursor !== null}
+                    loadingMore={loadingMoreKey === group.key}
+                    onShowMore={() => { void showMore(group); }}
+                  >
+                    {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                  </SidebarGroupNode>
                 );
               })}
-            </div>
+              </SidebarGroupNode>
+            ) : null}
 
-            <div className="chat-sidebar-section">
-              <button
-                type="button"
-                className="chat-sidebar-section__heading"
-                onClick={() => toggleSection('chats')}
-              >
-                <strong>Chats</strong>
-                <em>{chatSections.chats.length}</em>
-              </button>
-              {!collapsedSections.has('chats') && chatSections.chats.map((entry) => renderEntry(entry))}
-            </div>
+            {chatSections.chats ? (() => {
+              const group = chatSections.chats;
+              const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
+              return (
+                <SidebarGroupNode
+                  id="chat-chats"
+                  label={group.label}
+                  count={group.total}
+                  expanded={!collapsedSections.has('chats')}
+                  onToggle={() => toggleSection('chats')}
+                  canShowMore={group.entries.length > target || group.nextCursor !== null}
+                  loadingMore={loadingMoreKey === group.key}
+                  onShowMore={() => { void showMore(group); }}
+                >
+                  {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                </SidebarGroupNode>
+              );
+            })() : null}
 
             {totalVisibleEntries === 0 && !loading && (
               <div className="chat-history-empty">No conversations found.</div>
             )}
             {loading && (
               <div className="chat-history-empty">Loading…</div>
-            )}
-            {hasMore && !loading && (
-              <button type="button" className="btn btn--ghost chat-history-load-more" onClick={loadMore}>
-                Load more ({remainingConversationCount} remaining)
-              </button>
             )}
       </ViewSidebar>
 
