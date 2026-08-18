@@ -210,18 +210,6 @@ export function getConversationHeaderProviderLabel(source: ConversationSource): 
   return DETAIL_HEADER_PROVIDER_LABELS[source];
 }
 
-const SOURCE_CLASSES: Record<ConversationSource, string> = {
-  claude_code: 'source-badge--claude',
-  codex: 'source-badge--codex',
-  gemini: 'source-badge--gemini',
-};
-
-const SOURCE_MARKS: Record<ConversationSource, string> = {
-  claude_code: 'CL',
-  codex: 'CX',
-  gemini: 'GM',
-};
-
 const AGENT_LABELS: Record<string, string> = {
   operator: 'Operator',
   claude: 'Claude',
@@ -275,10 +263,6 @@ function isLiveConsoleSession(session: ConsoleSession): boolean {
 
 function getAgentLabel(agentType: string): string {
   return AGENT_LABELS[agentType] ?? agentType;
-}
-
-function getSourceMark(source: ConversationSource): string {
-  return SOURCE_MARKS[source] ?? source.slice(0, 2).toUpperCase();
 }
 
 function sourceFromSession(session: ConsoleSession): ConversationSource | null {
