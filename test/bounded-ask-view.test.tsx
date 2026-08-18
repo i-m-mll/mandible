@@ -61,6 +61,7 @@ function item(
       options: options.map((option, position) => ({ ...option, description: null, position })),
     },
     effective_response: extra.effective_response ?? null,
+    ...(extra.directive ? { directive: extra.directive } : {}),
   };
 }
 
@@ -117,6 +118,25 @@ afterEach(() => {
 });
 
 describe('bounded ask renderer', () => {
+  it('fails closed for malformed profiled directive projections', () => {
+    const profiled = askPayload({
+      document: { artifact_version_id: 'artifact-version:current', previous_round_id: null, profile: 'mandible-briefing.v1' },
+      directive_binding: { status: 'valid' },
+      latest_frozen_membership: null,
+      items: [item('verdict', 'verdict', [], {
+        required: true,
+        directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: 0, end_offset: 32, body_start_offset: 20, body_end_offset: 28 },
+      })],
+    });
+    expect(normalizeAskProjection(profiled).valid).toBe(true);
+    expect(normalizeAskProjection({ ...profiled, directive_binding: { status: 'valid', reason: 1 } }).valid).toBe(false);
+    expect(normalizeAskProjection({ ...profiled, document: { ...profiled.document as object, profile: 'unknown.v1' } }).valid).toBe(false);
+    expect(normalizeAskProjection({ ...profiled, items: [item('verdict', 'free_text', [], {
+      directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: 0, end_offset: 32, body_start_offset: 20, body_end_offset: 28 },
+    })] }).valid).toBe(false);
+    expect(normalizeAskProjection(askPayload({ document: { artifact_version_id: 'artifact-version:legacy', previous_round_id: null, profile: null }, directive_binding: null })).valid).toBe(true);
+  });
+
   it('normalizes the exact document, annotation, and previous-round projection shapes', () => {
     const current = {
       annotation_event_id: 'annotation-current',
@@ -138,7 +158,7 @@ describe('bounded ask renderer', () => {
       },
     }));
     expect(projection.valid).toBe(true);
-    expect(projection.document).toEqual({ artifact_version_id: 'artifact-version:current', previous_round_id: 'ask-old' });
+    expect(projection.document).toEqual({ artifact_version_id: 'artifact-version:current', previous_round_id: 'ask-old', profile: null });
     expect(projection.annotations).toEqual([current]);
     expect(projection.previous_round?.annotations[0]).toMatchObject({
       annotation_event_id: 'annotation-old', actor_user_id: 'human-2', submission_ordinal: 3,
@@ -148,6 +168,49 @@ describe('bounded ask renderer', () => {
       annotations: [{ ...current, annotation_kind: 'comment', body: 'Note', replacement_text: 'forbidden' }],
     }));
     expect(malformed.valid).toBe(false);
+  });
+
+  it('keeps directive controls and Submit disabled when pinned content fails binding verification', async () => {
+    const source = ':::spec-item{key="verdict" required="true"}\nPrompt verdict\n:::\n';
+    const bodyStart = source.indexOf('Prompt verdict');
+    const bodyEnd = source.indexOf('\n:::', bodyStart);
+    const directiveEnd = bodyEnd + '\n:::'.length;
+    const posts: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return json({ authenticated: true, user: { id: 'human-1', kind: 'human' } });
+      if (url === '/api/asks/ask-1' && !init?.method) return json(askPayload({
+        document: { artifact_version_id: 'artifact-version:current', previous_round_id: null, profile: 'mandible-briefing.v1' },
+        directive_binding: { status: 'valid' },
+        latest_frozen_membership: null,
+        items: [item('verdict', 'verdict', [], {
+          prompt: 'Prompt verdict',
+          required: true,
+          directive: {
+            key: 'verdict', definition_digest: '0'.repeat(64), start_offset: 0,
+            end_offset: directiveEnd, body_start_offset: bodyStart, body_end_offset: bodyEnd,
+          },
+        })],
+      }));
+      if (url === '/api/artifacts/artifact-version%3Acurrent/content') return json({ content: {
+        artifact_id: 'artifact:briefing', status: 'available', kind: 'markdown', media_type: 'text/markdown',
+        size_bytes: new TextEncoder().encode(source).byteLength, source: null,
+        preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false },
+        download: { available: true, media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, filename: 'briefing.md' },
+      } });
+      if (init?.method === 'POST') { posts.push(url); return json({}); }
+      throw new Error(`unexpected ${init?.method ?? 'GET'} ${url}`);
+    }));
+
+    render(shell(<BoundedAskRenderer askId="ask-1" instance={null} />));
+    const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
+    const submit = screen.getByRole('button', { name: 'Submit' }) as HTMLButtonElement;
+    await waitFor(() => expect(screen.getByText(/does not match its binding/)).toBeTruthy());
+    expect(keep.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(keep);
+    fireEvent.click(submit);
+    expect(posts).toEqual([]);
   });
 
   it('loads the deep-linked ask, renders all frozen types and groups as inert composition, and mutates only on Submit', async () => {
@@ -566,12 +629,14 @@ describe('bounded ask renderer', () => {
     fireEvent.input(textbox, { target: { value: 'keep this draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Select collection alpha' }));
     expect(await screen.findByTestId('briefing-view')).toBeTruthy();
+    expect(screen.getByTestId('briefing-selected-recurring-source').textContent).toContain('Recurring source: alpha');
+    expect(screen.queryByTestId('briefing-producers')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'review-plan' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Select collection review-plan' }));
     expect(((await screen.findByRole('textbox')) as HTMLTextAreaElement).value).toBe('keep this draft');
   });
 
-  it('reconciles an unavailable persisted bounded selection to the retained recurring source', async () => {
+  it('keeps an unavailable persisted selection authoritative over a stale recurring source', async () => {
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
       ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
       source: 'alpha',
@@ -598,7 +663,8 @@ describe('bounded ask renderer', () => {
     }));
     render(shell(<BriefingView instance={null} />));
     expect(await screen.findByTestId('briefing-view')).toBeTruthy();
-    expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBe('true');
+    expect((await screen.findByRole('alert')).textContent).toContain('selected feedback collection is unavailable');
+    expect((await screen.findByRole('button', { name: 'Select collection alpha' })).getAttribute('aria-current')).toBeNull();
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
       selectedCollectionId: 'bounded_ask:unavailable',
       collectionKindFilter: 'recurring_feed',
