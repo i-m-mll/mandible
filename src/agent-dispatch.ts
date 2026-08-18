@@ -1,7 +1,7 @@
 // Human-initiated agent dispatch (umbrella 99b74d6 / issue ce83a84).
 //
-// A person reading the Briefing, or an issue, decides that a finding or an
-// issue deserves an agent, writes the instruction in their own words, and
+// A person reading an issue or incident decides that it deserves an agent,
+// writes the instruction in their own words, and
 // starts an interactive worker. This module owns the mechanism behind that
 // gesture. Four properties define it:
 //
@@ -9,9 +9,8 @@
 //     renders exactly the prompt `dispatchAgent` would write and touches no
 //     storage, no filesystem, and no process. Declining the confirmation is
 //     therefore not "roll back what we started" — it is "we never started".
-//  2. THE CHAIN IS AUDITABLE. A finding dispatch stores the immutable
-//     candidate comment FIRST, then appends one handling event that references
-//     that comment and revision, and only then spawns. The session handle (or
+//  2. THE CHAIN IS AUDITABLE. The dispatch appends a handling event before it
+//     spawns. The session handle (or
 //     the spawn failure) settles onto that same event, so the ledger reads
 //     comment -> handling event -> session handle with no inference.
 //  3. MODEL OUTPUT IS EVIDENCE, NOT INSTRUCTION. The candidate payload was
@@ -32,7 +31,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { addBriefingComment, getBriefingCandidateHistory } from "./briefing.js";
 import { getSetting } from "./client-auth/settings-kv.js";
 import { getDb, getDbPath, type Db } from "./db.js";
 import { LedgerStore } from "./ledger/store.js";
@@ -89,10 +87,9 @@ export class AgentDispatchError extends Error {
   }
 }
 
-export type AgentDispatchSubjectKind = "finding" | "issue" | "incident";
+export type AgentDispatchSubjectKind = "issue" | "incident";
 
 export type AgentDispatchSubjectInput =
-  | { kind: "finding"; candidate_id: string }
   | { kind: "issue"; issue_ref: string }
   | { kind: "incident"; incident_id: string };
 
@@ -101,9 +98,6 @@ export type AgentDispatchStatus = "dispatching" | "dispatched" | "failed";
 export interface AgentDispatchEvent {
   id: string;
   subject_kind: AgentDispatchSubjectKind;
-  candidate_id: string | null;
-  revision_id: string | null;
-  comment_id: string | null;
   issue_id: string | null;
   incident_id: string | null;
   incident_telemetry_sha256: string | null;
@@ -126,8 +120,6 @@ export interface AgentDispatchEvent {
 export interface AgentDispatchPlan {
   subject_kind: AgentDispatchSubjectKind;
   subject_label: string;
-  candidate_id: string | null;
-  revision_id: string | null;
   issue_id: string | null;
   incident_id: string | null;
   incident_telemetry_sha256: string | null;
@@ -257,8 +249,7 @@ export function renderDispatchPrompt(parts: DispatchPromptParts): string {
   const lines: string[] = [
     `# Task dispatched from Mandible — ${parts.subjectLabel}`,
     "",
-    `You were started by ${parts.ownerDisplay} from Mandible's `
-      + `${parts.subjectKind === "finding" ? "Briefing review queue" : `${parts.subjectKind} view`}.`,
+    `You were started by ${parts.ownerDisplay} from Mandible's ${parts.subjectKind} view.`,
     "This file is your briefing. Read it fully before acting.",
     "",
     "## Your task (written by the person who started you)",
@@ -300,68 +291,6 @@ export function renderDispatchPrompt(parts: DispatchPromptParts): string {
 
 // --- plan construction ------------------------------------------------------
 
-function findingPlan(
-  db: Db,
-  candidateId: string,
-  instruction: string,
-  actorUserId: string,
-): AgentDispatchPlan {
-  const history = getBriefingCandidateHistory(db, candidateId);
-  if (!history) throw new AgentDispatchError("candidate not found", 404);
-  const revision = history.revisions.find((row) => row.id === history.candidate.current_revision_id)
-    ?? history.revisions.at(-1)
-    ?? null;
-  if (!revision) throw new AgentDispatchError("candidate has no current revision", 409);
-  const cwd = resolveDispatchCwd(db, null);
-  const lastDecision = history.decisions.at(-1);
-  return withPromptHash({
-    subject_kind: "finding",
-    subject_label: `briefing finding ${history.candidate.source}`,
-    candidate_id: history.candidate.id,
-    revision_id: revision.id,
-    issue_id: null,
-    incident_id: null,
-    incident_telemetry_sha256: null,
-    instruction,
-    cwd,
-    label: dispatchLabel("finding", history.candidate.source),
-    capability_surface: CAPABILITY_SURFACE,
-    prompt: renderDispatchPrompt({
-      subjectKind: "finding",
-      subjectLabel: `briefing finding from ${history.candidate.source}`,
-      ownerDisplay: actorDisplay(db, actorUserId),
-      instruction,
-      context: [
-        ["Source", history.candidate.source],
-        ["Candidate id", history.candidate.id],
-        ["Revision id", revision.id],
-        ["Review state", history.candidate.state],
-        ["Last decision", lastDecision ? `${lastDecision.action}` : "none"],
-        ["Evidence", `${revision.evidence_kind} ${revision.evidence_hash}`],
-        ["Collected at", revision.captured_at ?? "unreported"],
-        ["Producing run", revision.run_id ?? "unreported"],
-        ["Digest", revision.digest_series_ref
-          ? `${revision.digest_series_ref}${revision.digest_version !== null ? `@${revision.digest_version}` : ""}`
-          : "unreported"],
-        ["Notes on this finding", String(history.comments.length)],
-        ["Working directory", cwd],
-      ],
-      evidence: {
-        title: revision.title,
-        why_notable: revision.why_notable,
-        source_ref: revision.source_ref,
-        refs: revision.refs,
-        prior_notes: history.comments.map((comment) => comment.body),
-      },
-      evidenceNote:
-        "The finding's title, rationale, and references were selected and worded by"
-        + " an LLM analyzer over a collector snapshot. Verify anything you act on"
-        + " against the referenced source.",
-      followUp: [],
-    }),
-  });
-}
-
 function issuePlan(db: Db, issueRef: string, instruction: string, actorUserId: string): AgentDispatchPlan {
   const store = new LedgerStore(db);
   const resolved = store.resolveIssueRef(issueRef);
@@ -379,8 +308,6 @@ function issuePlan(db: Db, issueRef: string, instruction: string, actorUserId: s
   return withPromptHash({
     subject_kind: "issue",
     subject_label: `issue ${detail.short_id}`,
-    candidate_id: null,
-    revision_id: null,
     issue_id: detail.id,
     incident_id: null,
     incident_telemetry_sha256: null,
@@ -454,8 +381,6 @@ function incidentPlan(
   return withPromptHash({
     subject_kind: "incident",
     subject_label: subjectLabel,
-    candidate_id: null,
-    revision_id: null,
     issue_id: null,
     incident_id: incident.id,
     incident_telemetry_sha256: incident.latest_telemetry_sha256,
@@ -500,16 +425,13 @@ export function previewAgentDispatch(
   input: { subject: AgentDispatchSubjectInput; instruction: unknown; actorUserId: string },
 ): AgentDispatchPlan {
   const instruction = requireInstruction(input.instruction);
-  if (input.subject?.kind === "finding") {
-    return findingPlan(db, input.subject.candidate_id, instruction, input.actorUserId);
-  }
   if (input.subject?.kind === "issue") {
     return issuePlan(db, input.subject.issue_ref, instruction, input.actorUserId);
   }
   if (input.subject?.kind === "incident") {
     return incidentPlan(db, input.subject.incident_id, instruction, input.actorUserId);
   }
-  throw new AgentDispatchError("subject must be a finding, an issue, or an incident");
+  throw new AgentDispatchError("subject must be an issue or incident");
 }
 
 // --- spawning ---------------------------------------------------------------
@@ -617,17 +539,9 @@ function readEvent(db: Db, id: string): AgentDispatchEvent {
 
 export function listAgentDispatchEvents(
   db: Db = getDb(),
-  filter: { candidateId?: string; issueId?: string; incidentId?: string; limit?: number } = {},
+  filter: { issueId?: string; incidentId?: string; limit?: number } = {},
 ): AgentDispatchEvent[] {
   const limit = Math.max(1, Math.min(filter.limit ?? 50, 200));
-  if (filter.candidateId) {
-    return db
-      .prepare(
-        `SELECT * FROM agent_dispatch_events
-          WHERE candidate_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
-      )
-      .all(filter.candidateId, limit) as AgentDispatchEvent[];
-  }
   if (filter.issueId) {
     return db
       .prepare(
@@ -668,8 +582,8 @@ export interface AgentDispatchOutcome {
 }
 
 /**
- * Execute a confirmed dispatch: comment (findings only) -> handling event ->
- * prompt file -> spawn -> settle the event with the handle or the failure.
+ * Execute a confirmed dispatch: handling event -> prompt file -> spawn ->
+ * settle the event with the handle or the failure.
  *
  * The event is inserted before the spawn so a crash between the two leaves a
  * visible `dispatching` row instead of a session nobody can trace. It settles
@@ -703,41 +617,23 @@ export function dispatchAgent(db: Db, input: AgentDispatchInput): AgentDispatchO
     }
   }
 
-  // Step 1 — the immutable owner instruction, stored before anything can fail
-  // downstream. A dispatch that never reaches a session still leaves the note.
-  let commentId: string | null = null;
-  if (plan.subject_kind === "finding" && plan.candidate_id) {
-    commentId = addBriefingComment(db, {
-      candidateId: plan.candidate_id,
-      body: plan.instruction,
-      actorUserId: input.actorUserId,
-      // The plan rendered THIS revision into the confirmed prompt; the note is
-      // pinned to it so a re-ingest between preview and confirm cannot move it.
-      ...(plan.revision_id ? { revisionId: plan.revision_id } : {}),
-      now,
-    }).id;
-  }
-
-  // Step 2 — the handling event, referencing that comment and revision.
+  // The handling event is stored before anything can fail downstream.
   const eventId = randomUUID();
   const promptDir = agentDispatchPromptDir();
   const promptPath = path.join(promptDir, `${eventId}.md`);
   db.transaction(() => {
     db.prepare(
       `INSERT INTO agent_dispatch_events (
-         id, subject_kind, candidate_id, revision_id, comment_id, issue_id,
+         id, subject_kind, issue_id,
          incident_id, incident_telemetry_sha256,
          actor_user_id, provider, instruction, cwd, prompt_path, prompt_sha256,
          status, session_handle, session_id, attach_command, error,
          created_at, settled_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'claude', ?, ?, ?, ?, 'dispatching',
+       ) VALUES (?, ?, ?, ?, ?, ?, 'claude', ?, ?, ?, ?, 'dispatching',
                  NULL, NULL, NULL, NULL, ?, NULL)`,
     ).run(
       eventId,
       plan.subject_kind,
-      plan.candidate_id,
-      plan.revision_id,
-      commentId,
       plan.issue_id,
       plan.incident_id,
       plan.incident_telemetry_sha256,

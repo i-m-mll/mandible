@@ -1,4 +1,3 @@
-import { countPendingBriefingCandidates } from "../briefing.js";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
 import { countOperationalIncidents } from "../operational-incidents.js";
@@ -10,11 +9,7 @@ export type DashboardBadgeCounts = {
   auth: number;
   inbox: number;
   work: number;
-  /**
-   * Briefing candidates awaiting review (umbrella 99b74d6). Derived from the
-   * decision-event stream, so an expiry sweep drops out of this count exactly
-   * like a human decision does.
-   */
+  /** Latest Briefing rounds with no frozen submission from any member. */
   briefing: number;
   /** Active, unresolved, unacknowledged operational incidents only. */
   incidents: number;
@@ -39,7 +34,11 @@ export function readDashboardBadgeCounts(
     auth,
     inbox: countGlobalInboxBadge(db),
     work: Number(dirtyWork.count),
-    briefing: countPendingBriefingCandidates(db),
+    briefing: Number((db.prepare(
+      `SELECT COUNT(*) AS count FROM briefings b
+        JOIN briefing_rounds r ON r.id = b.latest_round_id
+       WHERE NOT EXISTS (SELECT 1 FROM briefing_submissions s WHERE s.round_id = r.id)`,
+    ).get() as { count: number }).count),
     incidents: countOperationalIncidents(db).active_unacknowledged,
   };
 }
