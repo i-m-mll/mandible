@@ -95,7 +95,12 @@ function listenForDynamicHealth(healthPath: string): Promise<number> {
   });
 }
 
-async function createRefreshFixture(options: { buildFails?: boolean; restartFails?: boolean } = {}) {
+async function createRefreshFixture(options: {
+  buildFails?: boolean;
+  primaryRestartFails?: boolean;
+  registrationMissing?: boolean;
+  restartFails?: boolean;
+} = {}) {
   const repo = createRepo();
   git(["checkout", "-b", "integration/test-preview"], repo);
   fs.writeFileSync(path.join(repo, "README.md"), "new head\n", "utf8");
@@ -177,8 +182,14 @@ async function createRefreshFixture(options: { buildFails?: boolean; restartFail
   fs.writeFileSync(npmShim, `#!/bin/sh\n${options.buildFails ? "exit 23" : "exit 0"}\n`, { mode: 0o755 });
   fs.writeFileSync(launchctlShim, `#!/bin/sh
 printf '%s\\n' "$*" >> "$MANDIBLE_IAB_PREVIEW_TEST_LAUNCH_LOG"
-if [ "$1" = "submit" ]; then
-  ${options.restartFails ? "exit 24" : "cp \"$MANDIBLE_IAB_PREVIEW_TEST_REFRESH_HEALTH\" \"$MANDIBLE_IAB_PREVIEW_TEST_HEALTH\""}
+if [ "$1" = "print" ]; then
+  ${options.registrationMissing ? "printf '%s\\n' 'service not found' >&2; exit 26" : "printf '%s\\n' 'registered preview service'; exit 0"}
+fi
+if [ "$1" = "kickstart" ] && [ "$2" = "-kp" ]; then
+  ${options.primaryRestartFails || options.restartFails ? "printf '%s\\n' 'primary kickstart failed' >&2; exit 24" : "cp \"$MANDIBLE_IAB_PREVIEW_TEST_REFRESH_HEALTH\" \"$MANDIBLE_IAB_PREVIEW_TEST_HEALTH\"; printf '%s\\n' '4242'; exit 0"}
+fi
+if [ "$1" = "kickstart" ] && [ "$2" = "-p" ]; then
+  ${options.restartFails ? "printf '%s\\n' 'recovery kickstart failed' >&2; exit 25" : "cp \"$MANDIBLE_IAB_PREVIEW_TEST_REFRESH_HEALTH\" \"$MANDIBLE_IAB_PREVIEW_TEST_HEALTH\"; printf '%s\\n' '4243'; exit 0"}
 fi
 exit 0
 `, { mode: 0o755 });
@@ -403,8 +414,16 @@ describe("iab-preview launcher", () => {
     expect(payload.db).toBe(fixture.db);
     expect(payload.health.startup_commit.hash).toBe(fixture.currentHead);
     expect(payload.health).toMatchObject({ ready: true, warm: true });
-    expect(fs.readFileSync(fixture.launchLog, "utf8")).toContain(`remove ${fixture.metadata.launchLabel}`);
-    expect(fs.readFileSync(fixture.launchLog, "utf8")).toContain(`submit -l ${fixture.metadata.launchLabel}`);
+    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
+    expect(launchLog).toContain(`print gui/${process.getuid()}/${fixture.metadata.launchLabel}`);
+    expect(launchLog).toContain(`kickstart -kp gui/${process.getuid()}/${fixture.metadata.launchLabel}`);
+    expect(launchLog).not.toContain(`remove ${fixture.metadata.launchLabel}`);
+    expect(launchLog).not.toContain(`submit -l ${fixture.metadata.launchLabel}`);
+    expect(payload.restartLifecycle).toMatchObject({
+      mechanism: "launchctl-kickstart",
+      recovery: "not-needed",
+      replacementPid: 4242,
+    });
     expect(fs.readdirSync(fixture.previewRoot, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith(".db"))
       .map((entry) => entry.name)).toEqual([
@@ -443,11 +462,22 @@ describe("iab-preview launcher", () => {
   it("reports restart failure without rewriting metadata or creating a projection", async () => {
     const fixture = await createRefreshFixture({ restartFails: true });
     const before = fs.readFileSync(fixture.metadataPath, "utf8");
-    await expect(execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    })).rejects.toMatchObject({ code: 1 });
+    let failure: unknown;
+    try {
+      await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+        cwd: fixture.repo,
+        encoding: "utf8",
+        env: fixture.env,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining("primary kickstart failed"),
+    });
+    expect((failure as { stdout: string }).stdout).toContain("recovery kickstart failed");
+    expect((failure as { stdout: string }).stdout).toContain("Recovery command:");
 
     expect(fs.readFileSync(fixture.metadataPath, "utf8")).toBe(before);
     expect(fs.readdirSync(fixture.previewRoot, { withFileTypes: true })
@@ -455,6 +485,59 @@ describe("iab-preview launcher", () => {
       .map((entry) => entry.name)).toEqual([
       path.basename(fixture.db),
     ]);
+    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
+    expect(launchLog).toContain("kickstart -kp");
+    expect(launchLog).toContain("kickstart -p");
+    expect(launchLog).not.toContain("remove");
+  });
+
+  it("recovers a failed replacement kickstart without unregistering the preview", async () => {
+    const fixture = await createRefreshFixture({ primaryRestartFails: true });
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+
+    const payload = JSON.parse(result.stdout);
+    expect(payload.status).toBe("refreshed");
+    expect(payload.restartLifecycle).toMatchObject({
+      mechanism: "launchctl-kickstart",
+      recovery: "kickstart-registered-service",
+      replacementPid: 4243,
+      initialFailure: {
+        reason: "replacement kickstart failed",
+        evidence: expect.stringContaining("primary kickstart failed"),
+      },
+    });
+    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
+    expect(launchLog).toContain("kickstart -kp");
+    expect(launchLog).toContain("kickstart -p");
+    expect(launchLog).not.toContain("remove");
+  });
+
+  it("refuses to restart an unregistered label without removing or submitting anything", async () => {
+    const fixture = await createRefreshFixture({ registrationMissing: true });
+    let failure: unknown;
+    try {
+      await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+        cwd: fixture.repo,
+        encoding: "utf8",
+        env: fixture.env,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining("is not registered"),
+    });
+    expect((failure as { stdout: string }).stdout).toContain("service not found");
+    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
+    expect(launchLog).toContain("print gui/");
+    expect(launchLog).not.toContain("kickstart");
+    expect(launchLog).not.toContain("remove");
+    expect(launchLog).not.toContain("submit");
   });
 
   it("refuses branch custody drift before build or restart", async () => {

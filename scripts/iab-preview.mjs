@@ -586,7 +586,7 @@ async function refreshExistingPreview(existing, details) {
     stderrLog: validated.stderrLog,
   });
 
-  await startPreviewProcess({
+  const restartLifecycle = await restartPreviewProcess({
     launchLabel: validated.launchLabel,
     runScript: validated.runScript,
     worktree: details.worktree,
@@ -627,6 +627,7 @@ async function refreshExistingPreview(existing, details) {
     stderrLog: validated.stderrLog,
     runScript: validated.runScript,
     instanceEnv: validated.instanceEnv,
+    restartLifecycle,
     health,
     refreshedAt: new Date().toISOString(),
     previousStartupCommit: existing.health.startup_commit,
@@ -1010,8 +1011,7 @@ function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
 }
 
 async function startPreviewProcess(details) {
-  const launchctl = process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
-    (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
+  const launchctl = launchctlCommand();
   if (launchctl) {
     run(launchctl, ["remove", details.launchLabel], { allowFailure: true });
     run(launchctl, ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript]);
@@ -1027,6 +1027,94 @@ async function startPreviewProcess(details) {
     stdio: ["ignore", stdout, stderr],
   });
   child.unref();
+}
+
+async function restartPreviewProcess(details) {
+  const launchctl = launchctlCommand();
+  if (!launchctl) {
+    return startPreviewProcess(details);
+  }
+
+  // `launchctl remove` returns while a submitted job may still be SIGTERMed and
+  // registered. An immediate `submit` can therefore race deregistration after
+  // the old daemon is already down (and can also sever the session carrying
+  // this command). Kickstart keeps launchd registration intact throughout.
+  const serviceTarget = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/${details.launchLabel}`;
+  const before = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+  if (before.status !== 0) {
+    throw new Error(
+      `Refusing preview restart because launchd service ${serviceTarget} is not registered.\n` +
+      describeCommandResult(launchctl, ["print", serviceTarget], before),
+    );
+  }
+
+  const replacementArgs = ["kickstart", "-kp", serviceTarget];
+  const replacement = run(launchctl, replacementArgs, { allowFailure: true });
+  if (replacement.status === 0) {
+    const confirmed = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+    if (confirmed.status === 0) {
+      return {
+        mechanism: "launchctl-kickstart",
+        serviceTarget,
+        replacementPid: parseLaunchctlPid(replacement.stdout),
+        recovery: "not-needed",
+      };
+    }
+    return recoverLaunchdPreview(details, launchctl, serviceTarget, {
+      reason: "replacement command succeeded but service registration could not be confirmed",
+      evidence: describeCommandResult(launchctl, ["print", serviceTarget], confirmed),
+    });
+  }
+
+  return recoverLaunchdPreview(details, launchctl, serviceTarget, {
+    reason: "replacement kickstart failed",
+    evidence: describeCommandResult(launchctl, replacementArgs, replacement),
+  });
+}
+
+function recoverLaunchdPreview(details, launchctl, serviceTarget, failure) {
+  const registration = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+  let recoveryArgs;
+  if (registration.status === 0) {
+    recoveryArgs = ["kickstart", "-p", serviceTarget];
+  } else {
+    recoveryArgs = ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript];
+  }
+  const recovery = run(launchctl, recoveryArgs, { allowFailure: true });
+  const confirmed = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+  if (recovery.status === 0 && confirmed.status === 0) {
+    return {
+      mechanism: "launchctl-kickstart",
+      serviceTarget,
+      replacementPid: parseLaunchctlPid(recovery.stdout),
+      recovery: registration.status === 0 ? "kickstart-registered-service" : "resubmit-missing-service",
+      initialFailure: failure,
+    };
+  }
+
+  throw new Error([
+    `Preview restart failed and recovery could not confirm launchd service ${serviceTarget}.`,
+    failure.reason,
+    failure.evidence,
+    describeCommandResult(launchctl, recoveryArgs, recovery),
+    describeCommandResult(launchctl, ["print", serviceTarget], confirmed),
+    `Recovery command: ${[launchctl, ...recoveryArgs].join(" ")}`,
+  ].join("\n"));
+}
+
+function launchctlCommand() {
+  return process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
+    (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
+}
+
+function parseLaunchctlPid(stdout) {
+  const value = Number.parseInt(String(stdout ?? "").trim(), 10);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function describeCommandResult(command, args, result) {
+  const output = [result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join("\n") || "no output";
+  return `${command} ${args.join(" ")} exited ${result.status ?? "without status"}: ${output}`;
 }
 
 function writeRunScript(runScript, details) {
