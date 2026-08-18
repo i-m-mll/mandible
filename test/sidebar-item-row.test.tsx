@@ -6,6 +6,7 @@ import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
   SidebarItemPinAction,
+  SidebarItemProviderDot,
   SidebarItemRow,
 } from '../ui/src/components/shared/SidebarItemRow';
 
@@ -84,6 +85,32 @@ describe('SidebarItemRow', () => {
     )?.[1] ?? '';
     expect(coarsePointerRule).toContain('opacity: 1');
     expect(coarsePointerRule).toContain('pointer-events: auto');
+  });
+
+  it('renders provider identity as accessible fixed leading dots instead of row badges', () => {
+    render(
+      <SidebarItemRow
+        label="Provider row"
+        selectionLabel="Select provider row"
+        selectionDescription="Provider: Codex"
+        onSelect={() => undefined}
+        leading={(
+          <>
+            <SidebarItemProviderDot label="Claude" tone="claude" />
+            <SidebarItemProviderDot label="Codex" tone="codex" />
+            <SidebarItemProviderDot label="Gemini" tone="gemini" />
+          </>
+        )}
+      />,
+    );
+
+    const select = screen.getByRole('button', { name: 'Select provider row' });
+    expect(select.getAttribute('aria-description')).toBe('Provider: Codex');
+    for (const provider of ['Claude', 'Codex', 'Gemini']) {
+      const dot = screen.getByRole('img', { name: `Provider: ${provider}` });
+      expect(dot.classList.contains('sidebar-item-row__provider-dot')).toBe(true);
+    }
+    expect(select.querySelector('.sidebar-item-row__badges')).toBeNull();
   });
 
   it('reveals actions through focus-within and returns focus when Escape closes overflow', () => {

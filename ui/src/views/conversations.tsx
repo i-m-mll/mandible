@@ -7,8 +7,10 @@ import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
   SidebarItemPinAction,
+  SidebarItemProviderDot,
   SidebarItemRow,
   type SidebarItemOverflowAction,
+  type SidebarItemProviderTone,
 } from '../components/shared/SidebarItemRow';
 import {
   orderByPinnedIds,
@@ -272,15 +274,15 @@ function sourceFromSession(session: ConsoleSession): ConversationSource | null {
   const command = (session.command ?? '').toLowerCase();
   if (agent.includes('claude') || command.includes('claude')) return 'claude_code';
   if (agent.includes('codex') || command.includes('codex')) return 'codex';
-  if (agent.includes('gemini') || command.includes('gemini')) return 'gemini';
+  if (agent.includes('gemini') || command.includes('gemini') || agent.includes('agy') || command.includes('agy')) return 'gemini';
   return null;
 }
 
-function getSessionMark(session: ConsoleSession): string {
-  const source = sourceFromSession(session);
-  if (source) return getSourceMark(source);
-  return getAgentLabel(session.agent_type).slice(0, 2).toUpperCase();
-}
+const CHAT_PROVIDER_TONES: Record<ConversationSource, SidebarItemProviderTone> = {
+  claude_code: 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+};
 
 function getSessionProviderFamily(session: ConsoleSession): string {
   if (session.is_operator) return 'claude';
@@ -2516,26 +2518,6 @@ function ConversationDetail({
 
 // ── Sidebar Item ──
 
-function PinIcon({ size = 13 }: { size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 17v5" />
-      <path d="M5 17h14" />
-      <path d="M7 17l2-8-2-3V3h10v3l-2 3 2 8" />
-    </svg>
-  );
-}
-
 function FolderIcon({ size = 13, open = false }: { size?: number; open?: boolean }): JSX.Element {
   return (
     <svg
@@ -2567,7 +2549,6 @@ function ChatEntryItem({
   pinActionRef,
   onEditTags,
   onRenameSession,
-  showPinnedIcon = false,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2577,12 +2558,12 @@ function ChatEntryItem({
   pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
-  showPinnedIcon?: boolean;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
+  const providerLabel = source ? SOURCE_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
@@ -2618,20 +2599,19 @@ function ChatEntryItem({
     <SidebarItemRow
       label={title}
       selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
+      selectionDescription={providerLabel ? `Provider: ${providerLabel}` : undefined}
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
       onSelect={onClick}
-      leading={isSubAgent ? (
-        <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span>
+      leading={providerLabel || isSubAgent ? (
+        <>
+          {providerLabel && source ? <SidebarItemProviderDot label={providerLabel} tone={CHAT_PROVIDER_TONES[source]} /> : null}
+          {isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : null}
+        </>
       ) : undefined}
       badges={(
         <>
-          {showPinnedIcon ? (
-            <SidebarItemBadge className="chat-history-item__pin" title="Pinned" ariaLabel="Pinned">
-              <PinIcon />
-            </SidebarItemBadge>
-          ) : null}
           {conversation && conversation.tags.length > 0 ? (
             <SidebarItemBadge className="chat-history-item__tags" title={conversation.tags.join(' · ')}>
               {conversation.tags.join(' · ')}
@@ -2645,12 +2625,6 @@ function ChatEntryItem({
               {session.owner.display_name}
             </SidebarItemBadge>
           ) : null}
-          <span
-            className={`agent-mark ${source ? SOURCE_CLASSES[source] || '' : ''}`}
-            title={source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : undefined}
-          >
-            {source ? getSourceMark(source) : session ? getSessionMark(session) : '??'}
-          </span>
         </>
       )}
       actions={canShowActions ? (
@@ -3355,14 +3329,13 @@ export function ConversationsView({
     setDialogOpen(false);
   };
 
-  const renderEntry = (entry: ChatEntry, showPinnedIcon = false) => (
+  const renderEntry = (entry: ChatEntry) => (
     <ChatEntryItem
       key={entry.key}
       entry={entry}
       isSelected={entry.kind === 'conversation'
         ? selectedConversationId === entry.conversation?.id
         : selectedSessionId === entry.session?.id}
-      showPinnedIcon={showPinnedIcon}
       pinned={entry.conversation ? isConversationPinned(entry.conversation) : undefined}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
       pinActionRef={entry.conversation ? (element) => {
@@ -3524,7 +3497,7 @@ export function ConversationsView({
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
                 >
-                  {group.entries.slice(0, target).map((entry) => renderEntry(entry, true))}
+                  {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
                 </SidebarGroupNode>
               );
             })() : null}
@@ -3533,7 +3506,6 @@ export function ConversationsView({
               <SidebarGroupNode
                 id="chat-projects"
                 label="Projects"
-                count={chatSections.projects.length}
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
               >
@@ -3548,6 +3520,8 @@ export function ConversationsView({
                     bodyClassName="chat-project-group__items"
                     label={group.label}
                     count={group.total}
+                    countLabel={`${group.total} chat${group.total === 1 ? '' : 's'} in ${group.label}`}
+                    countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
                     leadingIcon={<FolderIcon open={!collapsed} />}
