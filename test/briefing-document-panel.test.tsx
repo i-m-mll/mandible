@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +7,7 @@ import type { BriefingRoundProjection } from '../ui/src/api';
 
 import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
 
+const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
 const bodyStart = source.indexOf('Plan');
@@ -79,6 +81,26 @@ afterEach(() => {
 });
 
 describe('Briefing document panel', () => {
+  it('binds directive hover to the content and control interaction region', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
+
+    const keep = await screen.findByRole('button', { name: 'Keep' });
+    const directive = keep.closest('.briefing-directive') as HTMLElement;
+    const interaction = directive.firstElementChild as HTMLElement;
+    const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
+    const interactionRule = briefingStylesheet.match(/\.briefing-directive__interaction \{([^}]*)\}/)?.[1] ?? '';
+
+    expect(interaction.classList.contains('briefing-directive__interaction')).toBe(true);
+    expect(interaction.querySelector('.briefing-directive__passage')).toBeTruthy();
+    expect(interaction.querySelector('.briefing-directive__actions')).toBeTruthy();
+    expect(directiveRule).toContain('padding: var(--space-3)');
+    expect(interactionRule).not.toContain('padding:');
+    expect(briefingStylesheet).toMatch(/\.briefing-directive:not\(\.briefing-directive--selected\):has\(> \.briefing-directive__interaction:hover\)/);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__interaction:hover \.briefing-directive__actions/);
+    expect(briefingStylesheet).not.toMatch(/\.briefing-directive:hover(?:\s|,|\{)/);
+  });
+
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
     const profiledSource = '# Review plan\n\nIntro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
     vi.stubGlobal('fetch', vi.fn(async () => json({ content: {

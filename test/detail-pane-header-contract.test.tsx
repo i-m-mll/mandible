@@ -89,12 +89,15 @@ describe('canonical detail pane header', () => {
     const header = document.querySelector('.detail-pane-header') as HTMLElement;
     expect(header.dataset.detailPaneHeaderVariant).toBe('compact');
     expect(within(header).getByRole('group', { name: 'Artifact version' })).toBeTruthy();
-    expect(within(header).getByRole('combobox', { name: 'Artifact version' })).toBeTruthy();
+    const selectorControl = header.querySelector('.detail-pane-header__selector-control') as HTMLElement;
+    const select = within(header).getByRole('combobox', { name: 'Artifact version' });
+    const copy = within(header).getByRole('button', { name: 'Copy selected artifact-version reference' });
+    expect(selectorControl.children).toHaveLength(1);
+    expect(selectorControl.firstElementChild).toBe(select);
+    expect(selectorControl.nextElementSibling).toBe(copy);
     expect(header.textContent).not.toContain(selectedCanonicalRef);
 
-    fireEvent.click(within(header).getByRole('button', {
-      name: 'Copy selected artifact-version reference',
-    }));
+    fireEvent.click(copy);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(selectedCanonicalRef));
   });
 
@@ -144,6 +147,11 @@ describe('canonical detail pane header', () => {
     expect(within(header).getByText('Latest')).toBeTruthy();
     expect(header.textContent).not.toContain(logicalCanonicalRef);
     expect(header.textContent).not.toContain(selectedCanonicalRef);
+    const selectorControl = header.querySelector('.detail-pane-header__selector-control') as HTMLElement;
+    expect(selectorControl.firstElementChild).toBe(within(header).getByRole('combobox', { name: 'Artifact version' }));
+    expect(selectorControl.nextElementSibling).toBe(within(header).getByRole('button', {
+      name: 'Copy selected artifact version reference',
+    }));
 
     fireEvent.click(within(header).getByRole('button', { name: 'Copy full canonical reference' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(logicalCanonicalRef));
@@ -156,6 +164,7 @@ describe('canonical detail pane header', () => {
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s);
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline-controls\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s);
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__state\s*\{[^}]*color:\s*var\(--text-muted\);/s);
+    expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__selector-control select\s*\{[^}]*height:\s*30px;[^}]*max-width:\s*180px;[^}]*border:\s*1px solid var\(--neutral-alpha-10\);[^}]*border-radius:\s*999px;[^}]*padding:\s*0 30px 0 12px;[^}]*background:\s*var\(--bg-card\);[^}]*color:\s*var\(--text-secondary\);[^}]*font:\s*12px\/1\.2 var\(--font-sans\);/s);
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__title-row\s*\{[^}]*justify-content:\s*space-between;/s);
   });
 

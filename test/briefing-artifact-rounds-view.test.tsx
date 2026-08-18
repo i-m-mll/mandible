@@ -182,7 +182,9 @@ describe('artifact-backed Briefing rounds', () => {
     expect(within(composition).getByRole('group', { name: 'Round occurrence' })).toBeTruthy();
     const roundSelect = within(composition).getByRole('combobox', { name: 'Round occurrence' });
     const roundCopy = within(composition).getByRole('button', { name: 'Copy full selected round ref' });
-    expect(roundCopy.previousElementSibling).toBe(roundSelect);
+    const selectorControl = roundSelect.closest('.detail-pane-header__selector-control');
+    expect(selectorControl?.firstElementChild).toBe(roundSelect);
+    expect(selectorControl?.nextElementSibling).toBe(roundCopy);
     expect(roundCopy.tagName).toBe('BUTTON');
     expect(roundCopy.getAttribute('tabindex')).not.toBe('-1');
     roundCopy.focus();
@@ -264,7 +266,9 @@ describe('artifact-backed Briefing rounds', () => {
     expect(roundOptions.every((option) => !option.textContent?.includes('Latest') && !option.textContent?.includes('UTC'))).toBe(true);
     const latestMarker = screen.getByText('Latest', { selector: '.detail-pane-header__state' });
     expect(latestMarker.nextElementSibling).toBe(screen.getByRole('group', { name: 'Round occurrence' }));
-    expect(latestMarker.nextElementSibling?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Round occurrence' }));
+    const roundSelectorControl = latestMarker.nextElementSibling?.querySelector('.detail-pane-header__selector-control');
+    expect(roundSelectorControl?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Round occurrence' }));
+    expect(roundSelectorControl?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Copy full selected round ref' }));
     expect(screen.getByRole('combobox', { name: 'Round occurrence' }).getAttribute('value') ?? (screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ROUND_TWO);
     const shell = screen.getByTestId('briefing-document-renderer').closest('.detail-pane-shell') as HTMLElement;
     expect(shell.querySelector(':scope > .detail-pane-shell__header')).toBeTruthy();
