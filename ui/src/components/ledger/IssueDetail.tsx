@@ -23,8 +23,9 @@ import type {
 } from '../../api';
 import { AgentDispatchDialog } from '../agent-dispatch/AgentDispatchDialog';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
+import { AttributionIdentity } from '../shared/DetailHeaderIdentity';
+import { DetailPaneHeader } from '../shared/DetailPaneHeader';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
-import { AttributionIdentity, DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneShell } from '../shared/DetailPaneShell';
 
 const LEDGER_TIME_OPTIONS = { zeroIsEmpty: true } as const;
@@ -215,70 +216,71 @@ export function LedgerIssueDetail({
       bodyClassName="ledger-issue-detail__body"
       headerRef={headerRef}
       header={(
-        <>
-        <div className="ledger-issue-detail__heading">
-          <DetailHeaderIdentity
-            className="ledger-issue-detail__eyebrow"
-            contextLabel={detail.project.repo_name ?? detail.project.display_name}
-            shortId={detail.display_id}
-            copyValue={`${projectRef}/${detail.display_id}`}
-          >
-            <StatusPill
-              status={detail.status}
-              resolution={detail.resolution}
-              linkedAuth={resolvingAuth}
-              onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
-            />
-          </DetailHeaderIdentity>
-          <div className="ledger-issue-detail__title-row">
-            <h2 dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(detail.title) }} />
-            {hasIssueActions && (
-              <IssueActionsMenu
-                menuRef={actionMenuRef}
-                open={actionsOpen}
-                busy={busy}
-                detail={detail}
-                liveSession={liveSession}
-                primaryWorkUnit={primaryWorkUnit}
-                onToggle={() => setActionsOpen((prev) => !prev)}
-                onClose={() => setActionsOpen(false)}
-                onStartAgent={isInitialDetail ? undefined : onStartAgent}
-                onLaunchAgent={isInitialDetail ? undefined : () => setLaunchAgentOpen(true)}
-                onSetStatus={onSetStatus}
-                onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
-                onAddToSpace={onAddToSpace}
-                onShowMetadata={hasIssueMetadata ? () => setMetadataOpen(true) : undefined}
-                onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
-                onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
+        <DetailPaneHeader
+          variant="standard"
+          identity={{
+            entityLabel: detail.project.repo_name ?? detail.project.display_name,
+            displayRef: detail.display_id,
+            canonicalRef: `${projectRef}/${detail.id}`,
+            copyLabel: `Copy ${projectRef}/${detail.display_id}`,
+          }}
+          title={<span dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(detail.title) }} />}
+          status={(
+            <>
+              <StatusPill
+                status={detail.status}
+                resolution={detail.resolution}
+                linkedAuth={resolvingAuth}
+                onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
               />
-            )}
-          </div>
-          <div className="ledger-issue-detail__meta">
-            <AttributionIdentity
-              className="ledger-issue-detail__byline-author"
-              display={detail.author.display}
-              attribution={detail.author.attribution}
-              source={detail.source}
+              {detail.sync.state !== 'clean' && (
+                <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
+              )}
+            </>
+          )}
+          actions={hasIssueActions ? (
+            <IssueActionsMenu
+              menuRef={actionMenuRef}
+              open={actionsOpen}
+              busy={busy}
+              detail={detail}
+              liveSession={liveSession}
+              primaryWorkUnit={primaryWorkUnit}
+              onToggle={() => setActionsOpen((prev) => !prev)}
+              onClose={() => setActionsOpen(false)}
+              onStartAgent={isInitialDetail ? undefined : onStartAgent}
+              onLaunchAgent={isInitialDetail ? undefined : () => setLaunchAgentOpen(true)}
+              onSetStatus={onSetStatus}
+              onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
+              onAddToSpace={onAddToSpace}
+              onShowMetadata={hasIssueMetadata ? () => setMetadataOpen(true) : undefined}
+              onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
+              onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
             />
-            <time>{formatRelativeTime(detail.created_at, LEDGER_TIME_OPTIONS)}</time>
-            {displayLabels.length > 0 && (
-              <>
-                <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
-                <span className="ledger-issue-detail__label-row">
-                  {displayLabels.map((label) => (
-                    <span key={label} className="ledger-label">{displayLabel(label)}</span>
-                  ))}
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-        {detail.sync.state !== 'clean' && (
-          <div className="ledger-issue-detail__header-actions">
-            <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
-          </div>
-        )}
-        </>
+          ) : undefined}
+          actionsLabel="Issue header actions"
+          secondaryMetadata={(
+            <div className="ledger-issue-detail__meta">
+              <AttributionIdentity
+                className="ledger-issue-detail__byline-author"
+                display={detail.author.display}
+                attribution={detail.author.attribution}
+                source={detail.source}
+              />
+              <time>{formatRelativeTime(detail.created_at, LEDGER_TIME_OPTIONS)}</time>
+              {displayLabels.length > 0 && (
+                <>
+                  <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
+                  <span className="ledger-issue-detail__label-row">
+                    {displayLabels.map((label) => (
+                      <span key={label} className="ledger-label">{displayLabel(label)}</span>
+                    ))}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+        />
       )}
       overlays={overlays}
       ariaBusy={hydrating}

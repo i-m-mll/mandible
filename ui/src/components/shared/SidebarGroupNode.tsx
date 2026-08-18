@@ -1,14 +1,11 @@
 import type { ComponentChildren } from 'preact';
 
-export type SidebarGroupNodeProps = {
+type SidebarGroupNodeCommonProps = {
   id: string;
   label: string;
-  count?: number;
-  countLabel?: string;
-  countVisibility?: 'always' | 'interaction';
+  headingDescription?: string;
   expanded: boolean;
   onToggle(): void;
-  leadingIcon?: ComponentChildren;
   children: ComponentChildren;
   bodyAs?: 'div' | 'ul';
   className?: string;
@@ -18,12 +15,31 @@ export type SidebarGroupNodeProps = {
   onShowMore?(): void;
 };
 
+export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
+  | {
+    presentation: 'category';
+    leadingIcon?: never;
+    count?: never;
+    countLabel?: never;
+    countVisibility?: never;
+  }
+  | {
+    presentation: 'folder';
+    leadingIcon: ComponentChildren;
+    count?: number;
+    countLabel?: string;
+    countVisibility?: 'always' | 'interaction';
+  }
+);
+
 export function SidebarGroupNode({
   id,
   label,
+  headingDescription,
   count,
   countLabel,
   countVisibility = 'always',
+  presentation,
   expanded,
   onToggle,
   leadingIcon,
@@ -61,7 +77,7 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
     >
       <button
@@ -70,6 +86,7 @@ export function SidebarGroupNode({
         className="sidebar-group-node__heading"
         aria-expanded={expanded}
         aria-controls={bodyId}
+        aria-description={headingDescription}
         onClick={onToggle}
       >
         {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}

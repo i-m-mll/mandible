@@ -62,6 +62,7 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { artifactLinkBadgeLabel } from '../lib/format';
@@ -934,20 +935,14 @@ export function ArtifactDetail({
   ];
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const seriesRefValue = series ? seriesRecordRef(series) : '';
-  const copyableSeriesRef = seriesRefValue ? shortArtifactSeriesRef(seriesRefValue) : '';
   const immutableArtifactRef = artifact.id;
-  const selectedArtifactRef = selectedVersion && copyableSeriesRef
-    ? `${copyableSeriesRef}@${selectedVersion.version_no}`
-    : selectedVersion?.id
-      ? selectedVersion.ref || shortArtifactVersionRef(selectedVersion.id)
-      : immutableArtifactRef;
-  const homeRepoLabel = artifactHomeRepoLabel(artifact, series);
+  const selectedArtifactRef = selectedVersion?.id || immutableArtifactRef;
   const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
-  const headerCopyValue = copyableSeriesRef || immutableArtifactRef;
-  const headerCopyLabel = copyableSeriesRef ? 'Copy artifact series ref' : 'Copy artifact ref';
+  const headerCopyValue = series ? canonicalArtifactSeriesRef(series.id) : immutableArtifactRef;
+  const headerCopyLabel = series ? 'Copy full artifact series ref' : 'Copy full artifact ref';
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
-    ['Series', seriesRefValue, true, copyableSeriesRef || seriesRefValue],
+    ['Series', seriesRefValue, true, series ? canonicalArtifactSeriesRef(series.id) : seriesRefValue],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
     ['URI', artifact.uri, true],
     ['Content hash', artifact.content_hash, true],
@@ -1342,41 +1337,40 @@ export function ArtifactDetail({
     <DetailPaneShell
       className="artifact-detail"
       headerClassName="artifact-detail__header"
-      headerPrimaryClassName="artifact-detail__header-primary"
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
       headerRef={headerRef}
       header={(
-        <>
-        <div className="artifact-detail__top-row">
-          <DetailHeaderIdentity
-            className="artifact-detail__eyebrow"
-            contextLabel={homeRepoLabel}
-            contextClassName="artifact-detail__repo"
-            shortId={headerShortId}
-            shortIdClassName="artifact-detail__short-ref"
-            copyValue={headerCopyValue}
-            copyLabel={headerCopyLabel}
-          />
-          <div className="artifact-detail__status">
-            <label className="artifact-detail__version-control">
-              <select
-                aria-label="Artifact version"
-                value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
-                onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
-              >
-                <option value="">Latest</option>
-                {versions.map((version) => (
-                  <option key={version.id} value={String(version.version_no)}>
-                    v{version.version_no}{version.label ? ` · ${version.label}` : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <CopyButton value={selectedArtifactRef} label="Copy selected artifact ref" />
-          </div>
-        </div>
-        <div className="artifact-detail__title-row">
-          <h2>{artifactTitle(artifact)}</h2>
+        <DetailPaneHeader
+          variant="versioned"
+          identity={{
+            displayRef: headerShortId,
+            canonicalRef: headerCopyValue,
+            copyLabel: headerCopyLabel,
+          }}
+          title={artifactTitle(artifact)}
+          state={selectedVersionNo === null ? 'Latest' : undefined}
+          selector={{
+            label: 'Artifact version',
+            control: (
+              <label className="artifact-detail__version-control">
+                <select
+                  aria-label="Artifact version"
+                  value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
+                  onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
+                >
+                  <option value="">Latest</option>
+                  {versions.map((version) => (
+                    <option key={version.id} value={String(version.version_no)}>
+                      v{version.version_no}{version.label ? ` · ${version.label}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ),
+            selectedCanonicalRef: selectedArtifactRef,
+            copyLabel: 'Copy selected artifact-version reference',
+          }}
+          actions={(
           <div className="artifact-detail__actions" ref={actionsRef}>
             <button
               type="button"
@@ -1474,18 +1468,21 @@ export function ArtifactDetail({
               onOpenChange={setSpacePickerOpen}
             />
           </div>
-        </div>
-        <div className="artifact-detail__subline">
-          {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
-        </div>
-        <div className="artifact-detail__dates">
-          <span>Created: {formatTime(createdUpdated.created)}</span>
-          <span>Updated: {formatTime(createdUpdated.updated)}</span>
-        </div>
-        </>
+          )}
+          actionsLabel="Artifact actions"
+        />
       )}
       overlays={overlays}
     >
+        <div className="artifact-detail__context">
+          <div className="artifact-detail__subline">
+            {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
+          </div>
+          <div className="artifact-detail__dates">
+            <span>Created: {formatTime(createdUpdated.created)}</span>
+            <span>Updated: {formatTime(createdUpdated.updated)}</span>
+          </div>
+        </div>
         {detailError && <div className="artifacts-error">{detailError}</div>}
         {openError && <div className="artifacts-error" role="alert">Could not open artifact: {openError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
@@ -2230,32 +2227,12 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
   return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
 }
 
-function artifactHomeRepoLabel(
-  artifact: ArtifactRecord,
-  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null,
-): string {
-  const seriesRepo = isRecord(series) ? stringValue(series.repo_id) : '';
-  return artifact.home_repo_id
-    || stringValue(artifact.repo_locator.repo_id)
-    || seriesRepo;
-}
-
 function artifactTitleCandidate(value: string): string {
   return value && displayResourceRef(value) === value ? value : '';
 }
 
 function shortSeriesId(ref: string): string {
   return ref.trim().replace(/^artifact-series:/i, '').replace(/^artifact:/i, '').slice(0, 7);
-}
-
-function shortArtifactSeriesRef(ref: string): string {
-  return canonicalArtifactSeriesRef(ref);
-}
-
-function shortArtifactVersionRef(ref: string): string {
-  const trimmed = ref.trim();
-  const bare = trimmed.replace(/^artifact-version:/i, '');
-  return `artifact-version:${bare}`;
 }
 
 function shortArtifactId(ref: string): string {
@@ -2284,21 +2261,6 @@ function artifactCreatedUpdated(
     created: series?.created_at || artifact.created_at,
     updated: series?.updated_at || artifact.created_at,
   };
-}
-
-function CopyButton({ value, label }: { value: string; label: string }): JSX.Element {
-  return (
-    <button
-      type="button"
-      className="artifact-detail__copy-button"
-      onClick={() => void copyText(value)}
-      onPointerUp={(event) => event.currentTarget.blur()}
-      aria-label={label}
-      title={label}
-    >
-      <CopyIcon />
-    </button>
-  );
 }
 
 async function copyText(value: string): Promise<void> {

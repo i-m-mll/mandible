@@ -7,6 +7,7 @@ export type SidebarItemRowProps = {
   selectionDescription?: string;
   selected?: boolean;
   className?: string;
+  provider?: SidebarItemProvider;
   leading?: ComponentChildren;
   badges?: ComponentChildren;
   actions?: ComponentChildren;
@@ -23,6 +24,7 @@ export function SidebarItemRow({
   selectionDescription,
   selected = false,
   className,
+  provider,
   leading,
   badges,
   actions,
@@ -39,13 +41,18 @@ export function SidebarItemRow({
         type="button"
         className="sidebar-list-item sidebar-item-row__select"
         aria-label={selectionLabel}
-        aria-description={selectionDescription}
+        aria-description={selectionDescription ?? (provider ? `Provider: ${provider.label}` : undefined)}
         aria-current={ariaCurrent}
         tabIndex={tabIndex}
         title={label}
         onClick={onSelect}
         onKeyDown={onKeyDown}
       >
+        {provider ? (
+          <span className="sidebar-item-row__provider-gutter">
+            <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
+          </span>
+        ) : null}
         {leading ? <span className="sidebar-item-row__leading">{leading}</span> : null}
         <span className="sidebar-item-row__label">{label}</span>
         {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
@@ -78,6 +85,11 @@ export function SidebarItemBadge({
 }
 
 export type SidebarItemProviderTone = 'claude' | 'codex' | 'gemini';
+
+export type SidebarItemProvider = {
+  label: string;
+  tone: SidebarItemProviderTone;
+};
 
 export function SidebarItemProviderDot({
   label,

@@ -7,7 +7,6 @@ import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
   SidebarItemPinAction,
-  SidebarItemProviderDot,
   SidebarItemRow,
   type SidebarItemOverflowAction,
   type SidebarItemProviderTone,
@@ -51,6 +50,7 @@ import {
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
@@ -73,6 +73,7 @@ import {
   type ConversationAppendPayload,
 } from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
+import { shortRouteId } from '../routing';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -199,17 +200,15 @@ const SOURCE_LABELS: Record<ConversationSource, string> = {
   gemini: 'Gemini',
 };
 
-const SOURCE_CLASSES: Record<ConversationSource, string> = {
-  claude_code: 'source-badge--claude',
-  codex: 'source-badge--codex',
-  gemini: 'source-badge--gemini',
+const DETAIL_HEADER_PROVIDER_LABELS: Record<ConversationSource, string> = {
+  claude_code: 'Claude',
+  codex: 'Codex',
+  gemini: 'agy',
 };
 
-const SOURCE_MARKS: Record<ConversationSource, string> = {
-  claude_code: 'CL',
-  codex: 'CX',
-  gemini: 'GM',
-};
+export function getConversationHeaderProviderLabel(source: ConversationSource): string {
+  return DETAIL_HEADER_PROVIDER_LABELS[source];
+}
 
 const AGENT_LABELS: Record<string, string> = {
   operator: 'Operator',
@@ -264,10 +263,6 @@ function isLiveConsoleSession(session: ConsoleSession): boolean {
 
 function getAgentLabel(agentType: string): string {
   return AGENT_LABELS[agentType] ?? agentType;
-}
-
-function getSourceMark(source: ConversationSource): string {
-  return SOURCE_MARKS[source] ?? source.slice(0, 2).toUpperCase();
 }
 
 function sourceFromSession(session: ConsoleSession): ConversationSource | null {
@@ -2113,58 +2108,41 @@ function ConversationDetail({
   ) : undefined;
 
   const detailHeader = (
-    <>
-      <div className="conv-detail__header-left">
-          <div className="conv-detail__title-row">
-            <h2 className="detail-pane-shell__title conv-detail__title">
-              {conversation.parent_conversation_id && (
-                <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
-              )}
-              <span>{getConversationTitle(conversation)}</span>
-            </h2>
-            {attachPresentation && attachState && (
-              <span
-                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-                title={attachPresentation.title}
-              >
-                {attachPresentation.label}
-              </span>
-            )}
-            <div className="conv-actions">
-              <button
-                type="button"
-                className="conv-actions__trigger"
-                onClick={() => setActionsOpen((prev) => !prev)}
-                title="Conversation actions"
-                aria-label="Conversation actions"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-              >
-                <HorizontalDotsIcon />
-              </button>
-              {actionsOpen && (
-                <div className="conv-actions__menu">
-                  <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
-                    {conversation.starred ? 'Unstar' : 'Star'}
-                  </button>
-                  <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
-                    Show in graph
-                  </button>
-                  <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                    {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                  </button>
-                  <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
-                    {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
-                  </button>
-                  <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                    Select messages
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-      </div>
-      <div className="detail-pane-shell__actions conv-detail__header-right">
+    <DetailPaneHeader
+      variant="compact"
+      identity={{
+        entityLabel: 'Conversation',
+        displayRef: shortRouteId(conversation.id),
+        canonicalRef: conversation.id,
+        copyLabel: 'Copy full conversation ID',
+      }}
+      title={(
+        <>
+          {conversation.parent_conversation_id && (
+            <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
+          )}
+          <span>{getConversationTitle(conversation)}</span>
+        </>
+      )}
+      titleTooltip={getConversationTitle(conversation)}
+      status={(
+        <>
+          <span className="conv-detail__provider">
+            {getConversationHeaderProviderLabel(conversation.source)}
+          </span>
+          {attachPresentation && attachState && (
+            <span
+              className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+              title={attachPresentation.title}
+            >
+              {attachPresentation.label}
+            </span>
+          )}
+        </>
+      )}
+      actionsLabel="Conversation detail actions"
+      actions={(
+        <>
           <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
           <button
             type="button"
@@ -2175,8 +2153,41 @@ function ConversationDetail({
           >
             <InfoCircleIcon />
           </button>
-      </div>
-    </>
+          <div className="conv-actions">
+            <button
+              type="button"
+              className="conv-actions__trigger"
+              onClick={() => setActionsOpen((prev) => !prev)}
+              title="Conversation actions"
+              aria-label="Conversation actions"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+            >
+              <HorizontalDotsIcon />
+            </button>
+            {actionsOpen && (
+              <div className="conv-actions__menu">
+                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+                  {conversation.starred ? 'Unstar' : 'Star'}
+                </button>
+                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                  Show in graph
+                </button>
+                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
+                </button>
+                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
+                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
+                </button>
+                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                  Select messages
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    />
   );
 
   const detailFooter = (
@@ -2242,9 +2253,6 @@ function ConversationDetail({
         )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
-            <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
-              {getSourceMark(conversation.source)}
-            </span>
             <select
               className="conv-compose__model"
               value={composerModel}
@@ -2563,6 +2571,7 @@ function ChatEntryItem({
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
+  const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
   const handleEditTags = () => {
     if (!onEditTags) return;
@@ -2595,18 +2604,13 @@ function ChatEntryItem({
     <SidebarItemRow
       label={title}
       selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
-      selectionDescription={providerLabel ? `Provider: ${providerLabel}` : undefined}
+      provider={providerLabel && source ? { label: providerLabel, tone: CHAT_PROVIDER_TONES[source] } : undefined}
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
       onSelect={onClick}
-      leading={providerLabel || isSubAgent ? (
-        <>
-          {providerLabel && source ? <SidebarItemProviderDot label={providerLabel} tone={CHAT_PROVIDER_TONES[source]} /> : null}
-          {isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : null}
-        </>
-      ) : undefined}
-      badges={(
+      leading={isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : undefined}
+      badges={hasBadges ? (
         <>
           {conversation && conversation.tags.length > 0 ? (
             <SidebarItemBadge className="chat-history-item__tags" title={conversation.tags.join(' · ')}>
@@ -2622,7 +2626,7 @@ function ChatEntryItem({
             </SidebarItemBadge>
           ) : null}
         </>
-      )}
+      ) : undefined}
       actions={canShowActions ? (
         <>
           {onTogglePin ? (
@@ -3492,8 +3496,9 @@ export function ConversationsView({
               return (
                 <SidebarGroupNode
                   id="chat-pinned"
+                  presentation="category"
                   label={group.label}
-                  count={group.total}
+                  headingDescription={`${group.total} pinned chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('pinned')}
                   onToggle={() => toggleSection('pinned')}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
@@ -3508,6 +3513,7 @@ export function ConversationsView({
             {chatSections.projects.length > 0 ? (
               <SidebarGroupNode
                 id="chat-projects"
+                presentation="category"
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
@@ -3519,7 +3525,7 @@ export function ConversationsView({
                   <SidebarGroupNode
                     key={group.key}
                     id={`chat-project-${index}`}
-                    className="chat-project-group"
+                    presentation="folder"
                     bodyClassName="chat-project-group__items"
                     label={group.label}
                     count={group.total}
@@ -3545,8 +3551,9 @@ export function ConversationsView({
               return (
                 <SidebarGroupNode
                   id="chat-chats"
+                  presentation="category"
                   label={group.label}
-                  count={group.total}
+                  headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
