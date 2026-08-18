@@ -59,8 +59,12 @@ async function main(options) {
     branch = currentBranch;
     worktree = repoRoot;
     mode = "current-integration";
-    const existing = await healthyExistingPreview(branch);
+    const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
+      const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+      if (existing.health?.startup_commit?.hash !== currentHead) {
+        return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
+      }
       return {
         ...withBrowserReadyUrl(existing),
         ok: true,
@@ -80,8 +84,24 @@ async function main(options) {
         `Current branch is ${currentBranch}; run from ${protectedBranch}, run from an integration branch, or pass --force-new.`,
       );
     }
-    const existing = !options.forceNew ? await healthyExistingPreview(branch) : null;
+    const selectedWorktree = worktreeForBranch(repoRoot, branch);
+    const existing = !options.forceNew
+      ? await healthyExistingPreview(branch, { worktree: selectedWorktree })
+      : null;
     if (existing && !options.dryRun) {
+      if (!selectedWorktree) {
+        throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
+      }
+      const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
+      if (existing.health?.startup_commit?.hash !== currentHead) {
+        return refreshExistingPreview(existing, {
+          branch,
+          worktree: selectedWorktree,
+          mode,
+          currentHead,
+          options,
+        });
+      }
       return {
         ...withBrowserReadyUrl(existing),
         ok: true,
@@ -150,7 +170,7 @@ async function main(options) {
   const stdoutLog = path.join(preview.root, "stdout.log");
   const stderrLog = path.join(preview.root, "stderr.log");
   const pidFile = path.join(preview.root, "mandible.pid");
-  const launchLabel = `bio.mll.mandible.preview.${port}.${slugify(branch)}`.slice(0, 240);
+  const launchLabel = previewLaunchLabel(port, branch);
   const runScript = path.join(preview.root, "run.sh");
   writeRunScript(runScript, {
     worktree,
@@ -528,7 +548,7 @@ function branchExists(repoRoot, branch) {
   }).status === 0;
 }
 
-async function healthyExistingPreview(branch) {
+async function healthyExistingPreview(branch, expected = {}) {
   const preview = previewPaths(branch);
   if (!fs.existsSync(preview.metadata)) return null;
 
@@ -539,11 +559,161 @@ async function healthyExistingPreview(branch) {
   if (!health) return null;
   if (!hasExpectedPreviewPolicy(health)) return null;
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
+  validatePreviewIdentity(metadata, preview, branch, expected.worktree);
 
   return {
     ...metadata,
     health,
     freshUrl: browserUrl(metadata.port),
+  };
+}
+
+async function refreshExistingPreview(existing, details) {
+  const preview = previewPaths(details.branch);
+  const validated = validateRefreshContract(existing, preview, details);
+
+  ensureDependencies(details.worktree);
+  run("npm", ["run", "build"], { cwd: details.worktree });
+
+  writeRunScript(validated.runScript, {
+    worktree: details.worktree,
+    port: validated.port,
+    dbCopy: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+    pidFile: validated.pidFile,
+    nodePath: process.execPath,
+    stdoutLog: validated.stdoutLog,
+    stderrLog: validated.stderrLog,
+  });
+
+  await startPreviewProcess({
+    launchLabel: validated.launchLabel,
+    runScript: validated.runScript,
+    worktree: details.worktree,
+    port: validated.port,
+    dbCopy: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+    pidFile: validated.pidFile,
+    stdoutLog: validated.stdoutLog,
+    stderrLog: validated.stderrLog,
+  });
+
+  const health = await waitForPreviewRevision(
+    validated.port,
+    {
+      head: details.currentHead,
+      dbCopy: validated.dbCopy,
+      sourceDb: validated.sourceDb,
+      previewRoot: preview.root,
+    },
+    HEALTH_TIMEOUT_MS,
+    validated.stderrLog,
+  );
+  const refreshed = {
+    ...existing,
+    ok: true,
+    status: "refreshed",
+    mode: details.mode,
+    message: `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
+    branch: details.branch,
+    worktree: details.worktree,
+    port: validated.port,
+    db: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+    previewRoot: preview.root,
+    launchLabel: validated.launchLabel,
+    pidFile: validated.pidFile,
+    stdoutLog: validated.stdoutLog,
+    stderrLog: validated.stderrLog,
+    runScript: validated.runScript,
+    instanceEnv: validated.instanceEnv,
+    health,
+    refreshedAt: new Date().toISOString(),
+    previousStartupCommit: existing.health.startup_commit,
+  };
+  delete refreshed.freshUrl;
+  delete refreshed.browserEnrollment;
+  fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
+  return withBrowserReadyUrl(refreshed);
+}
+
+function validatePreviewIdentity(metadata, preview, branch, expectedWorktree) {
+  if (metadata.branch !== branch) {
+    throw new Error(`Refusing preview reuse: metadata branch ${metadata.branch ?? "<missing>"} does not match ${branch}.`);
+  }
+  if (expectedWorktree && (!metadata.worktree || canonicalPath(metadata.worktree) !== canonicalPath(expectedWorktree))) {
+    throw new Error(
+      `Refusing preview reuse: metadata worktree ${metadata.worktree ?? "<missing>"} does not match ${expectedWorktree}.`,
+    );
+  }
+  if (metadata.previewRoot && canonicalPath(metadata.previewRoot) !== canonicalPath(preview.root)) {
+    throw new Error(`Refusing preview reuse: metadata preview root does not match ${preview.root}.`);
+  }
+}
+
+function validateRefreshContract(existing, preview, details) {
+  validatePreviewIdentity(existing, preview, details.branch, details.worktree);
+  if (!/^[0-9a-f]{40}$/.test(details.currentHead)) {
+    throw new Error(`Cannot refresh preview from invalid worktree HEAD: ${details.currentHead}`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(existing.health?.startup_commit?.hash ?? "")) {
+    throw new Error("Cannot refresh preview because health.startup_commit.hash is missing or is not a full commit hash.");
+  }
+
+  const port = existing.port;
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error("Cannot refresh preview because metadata.port is invalid.");
+  }
+  const expectedLabel = previewLaunchLabel(port, details.branch);
+  if (existing.launchLabel !== expectedLabel) {
+    throw new Error(`Refusing preview refresh: launch label ${existing.launchLabel ?? "<missing>"} does not match ${expectedLabel}.`);
+  }
+
+  const expectedPaths = {
+    dbCopy: path.join(preview.root, path.basename(existing.db ?? "")),
+    pidFile: path.join(preview.root, "mandible.pid"),
+    stdoutLog: path.join(preview.root, "stdout.log"),
+    stderrLog: path.join(preview.root, "stderr.log"),
+    runScript: path.join(preview.root, "run.sh"),
+  };
+  if (!existing.db || canonicalPath(existing.db) !== canonicalPath(expectedPaths.dbCopy)) {
+    throw new Error("Refusing preview refresh: metadata database is missing or outside the selected preview root.");
+  }
+  const currentDb = readSymlinkTarget(path.join(preview.root, "current.db"));
+  if (!fs.existsSync(existing.db) || !currentDb || canonicalPath(currentDb) !== canonicalPath(existing.db)) {
+    throw new Error("Refusing preview refresh: metadata database is missing or current.db does not select it.");
+  }
+  for (const [key, expectedPath] of Object.entries(expectedPaths)) {
+    if (key === "dbCopy") continue;
+    if (!existing[key] || canonicalPath(existing[key]) !== canonicalPath(expectedPath)) {
+      throw new Error(`Refusing preview refresh: metadata ${key} does not match ${expectedPath}.`);
+    }
+  }
+  if (!existing.sourceDb || !fs.existsSync(existing.sourceDb)) {
+    throw new Error("Refusing preview refresh: metadata sourceDb is missing or unreadable.");
+  }
+
+  const instanceEnv = previewInstanceEnv({
+    port,
+    dbCopy: existing.db,
+    sourceDb: existing.sourceDb,
+    pidFile: expectedPaths.pidFile,
+  });
+  for (const [key, value] of Object.entries(instanceEnv)) {
+    if (existing.instanceEnv?.[key] !== value) {
+      throw new Error(`Refusing preview refresh: persisted ${key} does not match the required preview contract.`);
+    }
+  }
+  if (!hasExpectedPreviewFileRpc(existing, existing.health, preview.root)) {
+    throw new Error("Refusing preview refresh: preview file-RPC custody is not isolated to the selected preview root.");
+  }
+
+  return {
+    port,
+    launchLabel: expectedLabel,
+    ...expectedPaths,
+    sourceDb: existing.sourceDb,
+    instanceEnv,
   };
 }
 
@@ -840,9 +1010,11 @@ function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
 }
 
 async function startPreviewProcess(details) {
-  if (process.platform === "darwin" && commandExists("launchctl")) {
-    run("launchctl", ["remove", details.launchLabel], { allowFailure: true });
-    run("launchctl", ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript]);
+  const launchctl = process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
+    (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
+  if (launchctl) {
+    run(launchctl, ["remove", details.launchLabel], { allowFailure: true });
+    run(launchctl, ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript]);
     return;
   }
 
@@ -914,6 +1086,39 @@ async function waitForHealth(port, timeoutMs, stderrLog) {
   throw new Error(`Preview did not become healthy on port ${port}.${tail ? `\nRecent stderr:\n${tail}` : ""}`);
 }
 
+async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
+  const start = Date.now();
+  let lastHealth = null;
+  while (Date.now() - start < timeoutMs) {
+    const health = await readHealth(port);
+    if (health) {
+      lastHealth = health;
+      if (!hasExpectedPreviewPolicy(health)) {
+        throw new Error(
+          `Preview on port ${port} became healthy without preview/reject instance policy: ` +
+          `${describePreviewPolicy(health)}`,
+        );
+      }
+      if (health.ready === true && health.warm === true &&
+          health.startup_commit?.hash === expected.head &&
+          hasExpectedRefreshHealth(health, expected)) {
+        return health;
+      }
+    }
+    await delay(500);
+  }
+
+  const tail = fs.existsSync(stderrLog)
+    ? fs.readFileSync(stderrLog, "utf8").split(/\r?\n/).slice(-80).join("\n")
+    : "";
+  const observed = lastHealth?.startup_commit?.hash ?? "unavailable";
+  throw new Error(
+    `Preview on port ${port} did not become ready and warm at ${expected.head} with the persisted isolation contract; ` +
+    `last startup commit was ${observed}.` +
+    `${tail ? `\nRecent stderr:\n${tail}` : ""}`,
+  );
+}
+
 function readHealth(port) {
   return new Promise((resolve) => {
     const req = http.get({
@@ -960,6 +1165,13 @@ function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {
     health?.file_rpc_dir,
   ].filter(Boolean).map(canonicalPath);
   return candidates.length > 0 && candidates.every((candidate) => candidate === expected);
+}
+
+function hasExpectedRefreshHealth(health, expected) {
+  return canonicalPath(health?.instance?.db_path ?? "") === canonicalPath(expected.dbCopy) &&
+    health?.instance?.db_path_source === "iab-preview-copy" &&
+    canonicalPath(health?.instance?.source_db_path ?? "") === canonicalPath(expected.sourceDb) &&
+    canonicalPath(health?.file_rpc_dir ?? "") === canonicalPath(path.join(expected.previewRoot, "agent-rpc"));
 }
 
 function describePreviewPolicy(health) {
@@ -1119,6 +1331,14 @@ function slugify(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
+}
+
+function previewLaunchLabel(port, branch) {
+  return `bio.mll.mandible.preview.${port}.${slugify(branch)}`.slice(0, 240);
+}
+
+function shortHash(value) {
+  return String(value).slice(0, 8);
 }
 
 function expandHome(value) {
