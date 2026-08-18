@@ -27,3 +27,43 @@
   overflow-y: auto;
   overscroll-behavior-y: contain;
 }
+
+.detail-pane-shell__footer {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.detail-pane-shell--compact .detail-pane-shell__header {
+  border-bottom: 1px solid var(--neutral-alpha-06);
+  box-shadow: none;
+}
+
+.detail-pane-shell--compact .detail-pane-shell__header-primary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 18px;
+}
+
+.detail-pane-shell--compact .detail-pane-shell__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-pane-shell--compact .detail-pane-shell__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
