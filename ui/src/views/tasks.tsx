@@ -47,6 +47,7 @@ import {
   type TaskRunSlot,
 } from '../api';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 
 /** Poll cadence while the route is visible. Generations arrive ~hourly. */
@@ -1028,9 +1029,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   return (
     <div className={`tasks-layout${sidebarHidden ? ' tasks-layout--sidebar-hidden' : ''}`}>
       <ViewSidebar
-        storageKey="sidebar-width:tasks"
-        defaultWidth={340}
-        minWidth={240}
+        {...VIEW_SIDEBAR_GEOMETRY.tasks}
         className="tasks-sidebar"
         ariaLabel="Tasks"
         hidden={sidebarHidden}

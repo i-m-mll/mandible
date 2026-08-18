@@ -330,6 +330,7 @@ function TimelineView({ active = true, ...props }: TimelineViewProps & { active?
     active,
     bottomPanel,
     registerBottomPanel,
+    setViewSidebarWidth: () => undefined,
   }), [active, bottomPanel, registerBottomPanel]);
   const toggleLabel = bottomPanel?.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel?.title ?? 'inspector'}`;
 
