@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 140;
+export const BASELINE_SCHEMA_VERSION = 141;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -1073,10 +1073,23 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
         previous_round_id TEXT REFERENCES feedback_collections(id) ON DELETE RESTRICT,
         created_at INTEGER NOT NULL,
+        profile TEXT CHECK(profile IS NULL OR profile = 'mandible-briefing.v1'),
         CHECK(previous_round_id IS NULL OR previous_round_id != collection_id)
       )`,
   `CREATE INDEX idx_feedback_collection_documents_version
         ON feedback_collection_documents(artifact_version_id)`,
+  `CREATE TABLE feedback_item_directives (
+        collection_id TEXT NOT NULL REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        item_revision_id TEXT PRIMARY KEY REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        directive_key TEXT NOT NULL CHECK(length(directive_key) BETWEEN 1 AND 128),
+        definition_digest TEXT NOT NULL CHECK(length(definition_digest) = 64),
+        start_offset INTEGER NOT NULL CHECK(start_offset >= 0),
+        end_offset INTEGER NOT NULL CHECK(end_offset > start_offset),
+        body_start_offset INTEGER NOT NULL CHECK(body_start_offset >= start_offset),
+        body_end_offset INTEGER NOT NULL CHECK(body_end_offset > body_start_offset AND body_end_offset <= end_offset),
+        created_at INTEGER NOT NULL,
+        UNIQUE(collection_id, directive_key)
+      )`,
   `CREATE TABLE feedback_annotation_events (
         id TEXT PRIMARY KEY,
         collection_id TEXT NOT NULL REFERENCES feedback_collections(id) ON DELETE RESTRICT,
