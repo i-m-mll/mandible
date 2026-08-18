@@ -93,7 +93,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('AskDocumentPanel', () => {
+describe('Briefing document panel', () => {
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
     const profiledSource = 'Intro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
     vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
@@ -103,7 +103,7 @@ describe('AskDocumentPanel', () => {
     } })));
     const source = profiledSource;
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
-    render(<AskDocumentPanel ask={ask({
+    render(<AskDocumentPanel briefingId="briefing-1" roundId="round-1" ask={ask({
       document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
       directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
       items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
@@ -129,7 +129,7 @@ describe('AskDocumentPanel', () => {
       return json({ annotation_event_ids: ['annotation-new'] });
     }));
 
-    render(<AskDocumentPanel ask={ask()} canMutate onRefresh={refresh} />);
+    render(<AskDocumentPanel briefingId="briefing-1" roundId="round-1" ask={ask()} canMutate onRefresh={refresh} />);
     expect((await screen.findByTestId('document-editor')).getAttribute('data-read-only')).toBe('true');
     expect(editorHarness.props.value).toBe('Plan source text');
 
@@ -144,7 +144,7 @@ describe('AskDocumentPanel', () => {
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toEqual({
-      url: '/api/asks/ask-1/annotations',
+      url: '/api/briefings/briefing-1/rounds/round-1/annotations',
       body: {
         annotations: [{
           operation: 'set',
@@ -168,7 +168,7 @@ describe('AskDocumentPanel', () => {
       posts.push(body);
       return json({ annotation_event_ids: body.annotations.map((_: unknown, index: number) => `event-${index}`) });
     }));
-    render(<AskDocumentPanel ask={ask({ annotations: [annotation()] as any })} canMutate onRefresh={async () => ask()} />);
+    render(<AskDocumentPanel briefingId="briefing-1" roundId="round-1" ask={ask({ annotations: [annotation()] as any })} canMutate onRefresh={async () => ask()} />);
 
     const row = await screen.findByRole('button', { name: /Plan.*Comment.*Clarify this/ });
     expect(row.tabIndex).toBe(0);
@@ -191,32 +191,4 @@ describe('AskDocumentPanel', () => {
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
   });
 
-  it('shows collapsed quote-first prior-round history linking to the old ask without decorating old quotes', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
-    const prior = annotation({
-      annotation_event_id: 'old-annotation',
-      quote: 'Old premise',
-      actor_user_id: 'human-2',
-      submission_ordinal: 3,
-    });
-    render(<AskDocumentPanel
-      ask={ask({
-        annotations: [annotation()] as any,
-        previous_round: {
-          ask_id: 'ask-old',
-          artifact_version_id: 'artifact-version:old',
-          annotations: [prior as any],
-        },
-      })}
-      canMutate
-      onRefresh={async () => ask()}
-    />);
-
-    const history = await screen.findByText('Round history');
-    await screen.findByTestId('document-editor');
-    expect((history.closest('details') as HTMLDetailsElement).open).toBe(false);
-    expect(screen.getByRole('link', { name: /Old premise.*Comment.*Clarify this.*human-2.*3/ }).getAttribute('href'))
-      .toBe('/#/briefing?ask=ask-old');
-    expect(editorHarness.props.decorations.map((entry: any) => entry.id)).toEqual(['annotation-1']);
-  });
 });

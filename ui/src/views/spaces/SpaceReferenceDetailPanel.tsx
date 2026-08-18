@@ -16,9 +16,7 @@ import {
   type LedgerIssueDetailProjection,
 } from '../../api';
 import { LedgerIssueDetail } from '../../components/ledger/IssueDetail';
-import { parseFindingRef, parseResourceRef, type ParsedResourceRef } from '../../resource-refs';
-import { SpaceFindingRef, useFindingResolution, type FindingResolver } from './SpaceFindingRef';
-import { presentFinding, type FindingRefSource } from './findingModel';
+import { parseResourceRef, type ParsedResourceRef } from '../../resource-refs';
 import { shortRouteId } from '../../routing';
 import { ArtifactDetail } from '../artifacts';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
@@ -28,14 +26,9 @@ import { useKeyedAsyncDetail } from '../../hooks/useKeyedAsyncDetail';
 export type SpaceReferenceDetailTarget =
   | { kind: 'issue'; ref: string }
   | { kind: 'artifact'; ref: string }
-  | { kind: 'finding'; ref: string }
   | { kind: 'unsupported'; ref: string; label?: string };
 
 export function detailTargetFromResourceRef(ref: string): SpaceReferenceDetailTarget {
-  // `finding:<candidate id>` is resolved through its own endpoint rather than
-  // the shared resource-ref resolver, so it is recognized before the grammar.
-  const finding = parseFindingRef(ref);
-  if (finding) return { kind: 'finding', ref: finding.candidateId };
   const parsed = parseResourceRef(ref);
   if (!parsed) return { kind: 'unsupported', ref };
   return detailTargetFromParsedRef(parsed);
@@ -58,7 +51,6 @@ export function SpaceReferenceDetailContent({
 }): JSX.Element {
   if (target.kind === 'issue') return <IssueReferenceDetail issueRef={target.ref} />;
   if (target.kind === 'artifact') return <ArtifactReferenceDetail artifactRef={target.ref} />;
-  if (target.kind === 'finding') return <FindingReferenceDetail item={{ ref_id: target.ref }} />;
   return (
     <div className="space-reference-detail__unsupported">
       No detail panel is available for {target.label ?? target.ref}.
@@ -233,69 +225,5 @@ export function ArtifactReferenceDetail({ artifactRef }: { artifactRef: string }
       knowledgeLoading={knowledgeLoading}
       knowledgeError={knowledgeError}
     />
-  );
-}
-
-/**
- * Read-only detail for a placed briefing finding (umbrella 99b74d6). Shows the
- * reference exactly as the renderers do — title, source, revision state, review
- * state — plus the resolved revision's provenance. It renders NO control that
- * could change review state: the Briefing view is the single write surface, and
- * this panel only links out to it.
- */
-export function FindingReferenceDetail({
-  item,
-  resolve,
-}: {
-  item: FindingRefSource;
-  /** Resolver override (tests / hosts with their own cache). */
-  resolve?: FindingResolver;
-}): JSX.Element {
-  const resolution = useFindingResolution(item, resolve);
-  const view = presentFinding(item, resolution);
-  const revision = resolution?.effective_revision ?? null;
-  const current = resolution?.current_revision ?? null;
-
-  return (
-    <div className="space-finding-detail" data-testid="space-finding-detail">
-      <SpaceFindingRef source={item} resolution={resolution} />
-      {revision?.why_notable ? (
-        <p className="space-finding-detail__why" data-testid="space-finding-why">
-          {revision.why_notable}
-        </p>
-      ) : null}
-      <dl className="space-finding-detail__facts">
-        <div>
-          <dt>Reference</dt>
-          <dd>{view.ref}</dd>
-        </div>
-        <div>
-          <dt>Revision mode</dt>
-          <dd data-testid="space-finding-detail-mode">
-            {view.revisionMode === 'pinned' ? `pinned (${view.revisionLabel})` : 'latest (tracking)'}
-          </dd>
-        </div>
-        <div>
-          <dt>Showing revision</dt>
-          <dd data-testid="space-finding-detail-revision">{revision?.id ?? 'unresolved'}</dd>
-        </div>
-        <div>
-          <dt>Current revision</dt>
-          <dd data-testid="space-finding-detail-current">{current?.id ?? 'unknown'}</dd>
-        </div>
-        {revision?.captured_at ? (
-          <div>
-            <dt>Captured</dt>
-            <dd>{revision.captured_at}</dd>
-          </div>
-        ) : null}
-        {revision?.evidence_kind ? (
-          <div>
-            <dt>Evidence</dt>
-            <dd>{revision.evidence_kind}</dd>
-          </div>
-        ) : null}
-      </dl>
-    </div>
   );
 }

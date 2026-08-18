@@ -63,7 +63,6 @@ import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import {
   ArtifactReferenceDetail,
-  FindingReferenceDetail,
   IssueReferenceDetail,
 } from './SpaceReferenceDetailPanel';
 import { SpaceTypeIndicator } from './SpaceTypeIndicator';
@@ -1155,12 +1154,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
                 existingItemRefTypes={
                   pickerMode === 'spaces'
                     ? ['space']
-                    : ['issue', 'comment', 'artifact', 'external_ref', 'finding']
+                    : ['issue', 'comment', 'artifact', 'external_ref']
                 }
                 includeIssues={pickerMode === 'items'}
                 includeArtifacts={pickerMode === 'items'}
                 includeSpaces={pickerMode === 'spaces'}
-                includeFindings={pickerMode === 'items'}
                 title={pickerMode === 'spaces' ? 'Link Space' : 'Add items'}
                 searchPlaceholder={
                   pickerMode === 'spaces'
@@ -1647,8 +1645,6 @@ function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
         <IssueReferenceDetail issueRef={item.ref_id} />
       ) : item.ref_type === 'artifact' ? (
         <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} />
-      ) : item.ref_type === 'finding' ? (
-        <FindingReferenceDetail item={item} />
       ) : (
         <OccurrenceSummary node={node} />
       )}

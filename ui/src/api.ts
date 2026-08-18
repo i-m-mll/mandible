@@ -2,6 +2,7 @@ import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
+import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
   ApiList,
   ArtifactAliasRecord as ContractArtifactAliasRecord,
@@ -471,33 +472,17 @@ export function invalidateApiGetCache(
 }
 
 const BRIEFING_FEEDBACK_EVENTS = new Set([
-  'briefing:ingested',
-  'briefing:decided',
-  'briefing:commented',
-  'briefing:expired',
-]);
-
-const ASK_FEEDBACK_EVENTS = new Set([
-  'ask:created',
-  'ask:submitted',
-  'ask:cancelled',
-  'ask:expired',
-]);
-
-const COLLECTION_FEEDBACK_EVENTS = new Set([
-  'feedback:collection-updated',
+  'briefing:created',
+  'briefing:round-published',
+  'briefing:answered',
+  'briefing:annotated',
+  'briefing:submitted',
 ]);
 
 /** Exact cache families affected by a feedback lifecycle event. */
 export function feedbackApiCacheFamiliesForEvent(type: string): readonly string[] {
-  if (COLLECTION_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/feedback/collections'];
-  }
   if (BRIEFING_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/briefing', '/api/feedback/collections', '/api/dashboard/badges'];
-  }
-  if (ASK_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/asks', '/api/feedback/collections', '/api/dashboard/badges'];
+    return ['/api/briefings', '/api/dashboard/badges'];
   }
   return [];
 }
@@ -3739,314 +3724,6 @@ export async function getSpaceExportDrift(
   return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
 }
 
-// --- finding (briefing review candidate) references -------------------------
-// Appended trailing section (briefing umbrella 99b74d6, lane d7e51a1). Every
-// call here is READ-ONLY: Spaces displays a finding's review state and never
-// mutates it. Saving a finding to a Space goes through the ordinary
-// `addSpaceItem` / occurrence writes above — a placement fact that creates no
-// decision event.
-
-import type {
-  FeedbackCollectionProjection as ContractFeedbackCollectionProjection,
-  SpaceFindingCandidateSummary as ContractSpaceFindingCandidateSummary,
-  SpaceFindingListResponse,
-  SpaceFindingRefMetadata as ContractSpaceFindingRefMetadata,
-  SpaceFindingResolution as ContractSpaceFindingResolution,
-  SpaceFindingResolveResponse,
-} from '../../src/contracts';
-import {
-  feedbackCollectionIdentity,
-  filterFeedbackCollections,
-  orderFeedbackCollections,
-  type FeedbackCollection,
-} from './views/feedback/collection-model';
-
-export { filterFeedbackCollections, orderFeedbackCollections };
-
-export type {
-  FindingReviewState,
-  SpaceFindingCandidateSummary,
-  SpaceFindingListResponse,
-  SpaceFindingRefMetadata,
-  SpaceFindingResolution,
-  SpaceFindingResolveResponse,
-  SpaceFindingRevisionMode,
-  SpaceFindingRevisionState,
-  SpaceFindingRevisionSummary,
-} from '../../src/contracts';
-
-export {
-  SPACE_FINDING_REVISION_MODES,
-  SPACE_FINDING_WARNING_LATEST_NOT_PINNED,
-  SPACE_FINDING_WARNING_PINNED_MISSING,
-  SPACE_FINDING_WARNING_PINNED_SUPERSEDED,
-  SPACE_FINDING_WARNING_STORE_UNAVAILABLE,
-} from '../../src/contracts';
-
-/** Pickable review candidates for the Space item picker. */
-export async function listSpaceFindings(
-  options: { limit?: number; query?: string } = {},
-): Promise<ContractSpaceFindingCandidateSummary[]> {
-  const params = new URLSearchParams();
-  if (options.limit !== undefined) params.set('limit', String(options.limit));
-  if (options.query) params.set('q', options.query);
-  const suffix = params.toString() ? `?${params.toString()}` : '';
-  const response = await apiGet(`/api/spaces/findings${suffix}`);
-  const payload = (await parseMaybeJson(response)) as SpaceFindingListResponse;
-  return payload.findings ?? [];
-}
-
-/**
- * Resolve a candidate under caller-supplied revision semantics (preview before a
- * placement exists). Pass the same metadata the placement will carry so the
- * preview and the placed reference agree.
- */
-export async function resolveSpaceFinding(
-  candidateId: string,
-  metadata: ContractSpaceFindingRefMetadata = { revision_mode: 'latest' },
-): Promise<ContractSpaceFindingResolution> {
-  const params = new URLSearchParams({ revision_mode: metadata.revision_mode });
-  if (metadata.revision_mode === 'pinned' && metadata.pinned_revision_id) {
-    params.set('pinned_revision_id', metadata.pinned_revision_id);
-  }
-  const response = await apiGet(
-    `/api/spaces/findings/${encodeURIComponent(candidateId)}/resolve?${params.toString()}`,
-  );
-  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
-  return payload.resolution;
-}
-
-/** Resolve one PLACED finding reference under the semantics stored on the item. */
-export async function resolveSpaceItemFinding(
-  spaceId: string,
-  itemId: string,
-): Promise<ContractSpaceFindingResolution> {
-  const response = await apiGet(
-    `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/finding`,
-  );
-  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
-  return payload.resolution;
-}
-
-// ===========================================================================
-// Briefing review queue — client section (umbrella 99b74d6, lane d304a9b).
-//
-// APPEND-ONLY SECTION. The server routes live in lane ce22a3a and are pinned by
-// "Briefing pilot — integration contract v1" §4:
-//
-//   GET  /api/briefing/queue                          (read-only)
-//   GET  /api/briefing/candidates/:id/history          (read-only)
-//   POST /api/briefing/candidates/:id/decision         (human-only mutation)
-//   POST /api/briefing/candidates/:id/comments         (human-only mutation)
-//
-// THE SERVER CONTRACT IS THE SOURCE OF TRUTH (issue 223d090). Every field read
-// off a briefing payload below goes through a `Partial<…>` projection of the
-// corresponding type in src/contracts.ts, so a name that does not exist in the
-// contract is a mistake at the point of the read rather than a silently empty
-// render. The types here stay UI-local only where they are deliberately weaker
-// than the contract: normalization widens required fields to nullable so a
-// partial payload degrades into an honest "unknown" instead of a fake value.
-//
-// TRUST BOUNDARY: `title`, `why_notable`, and `refs` originate from an LLM
-// analyzer. They are carried as plain strings and MUST be rendered as untrusted
-// text (never as HTML, never as an unfiltered href). See ui/src/views/briefing.tsx.
-// ===========================================================================
-
-import type {
-  BriefingCandidateHistoryResponse as ContractBriefingHistoryResponse,
-  BriefingCandidateState,
-  BriefingComment as ContractBriefingComment,
-  BriefingCommentResponse as ContractBriefingCommentResponse,
-  BriefingDecisionAction,
-  BriefingDecisionEvent as ContractBriefingDecisionEvent,
-  BriefingDecisionRequest as ContractBriefingDecisionRequest,
-  BriefingDecisionResponse as ContractBriefingDecisionResponse,
-  BriefingEvidenceKind,
-  BriefingOccurrenceStats as ContractBriefingOccurrenceStats,
-  BriefingQueueEntry as ContractBriefingQueueEntry,
-  BriefingQueueResponse as ContractBriefingQueueResponse,
-  BriefingReviewAction,
-  BriefingRevision as ContractBriefingRevision,
-  BriefingSourceHealth as ContractBriefingSourceHealth,
-} from '../../src/contracts';
-
-// The plain unions are the contract's own: re-exported, never re-declared, so
-// a value the server can send always has a name the view can match on.
-export type {
-  BriefingCandidateState,
-  BriefingDecisionAction,
-  BriefingEvidenceKind,
-  BriefingReviewAction,
-};
-
-/** Human-initiated subset the UI is allowed to POST (contract `BriefingReviewAction`). */
-export type BriefingJudgeAction = BriefingReviewAction;
-
-const BRIEFING_CANDIDATE_STATES: readonly BriefingCandidateState[] = [
-  'pending',
-  'kept',
-  'dismissed',
-  'expired_unreviewed',
-];
-
-const BRIEFING_DECISION_ACTIONS: readonly BriefingDecisionAction[] = [
-  'keep',
-  'dismiss',
-  'undo',
-  'expire',
-];
-
-/** Contract §2 `candidate_revisions` row, with `refs_json` already parsed. */
-export type BriefingRevision = {
-  id: string;
-  candidate_id: string;
-  /** LLM-authored. Untrusted text. */
-  title: string;
-  /** LLM-authored one-sentence rationale. Untrusted text. */
-  why_notable: string;
-  /** LLM-selected refs. Untrusted; linkify only allowlisted schemes. */
-  refs: string[];
-  /** The finding's verbatim ref (identity input for candidate_key). */
-  source_ref: string;
-  evidence_hash: string;
-  evidence_kind: BriefingEvidenceKind | null;
-  captured_at: string | null;
-  run_id: string | null;
-  digest_series_ref: string | null;
-  digest_version: number | null;
-  rank: number | null;
-  publisher_advisory: {
-    code: 'admission_gate_rejected';
-    reason: string;
-  } | null;
-  batch_key: string | null;
-  ingested_at: number | null;
-};
-
-/** Contract §2 `candidate_occurrences`, aggregated per candidate. */
-export type BriefingOccurrenceStats = {
-  count: number;
-  first_seen_at: number | null;
-  last_seen_at: number | null;
-};
-
-/** Contract §2 `decision_events` row. */
-export type BriefingDecisionEvent = {
-  id: string;
-  candidate_id: string;
-  revision_id: string;
-  action: BriefingDecisionAction;
-  /** NULL marks a system-generated event (`expire`). */
-  actor_user_id: string | null;
-  comment_id: string | null;
-  created_at: number | null;
-};
-
-/** Contract §2 `candidate_comments` row. Operator-authored, immutable. */
-export type BriefingComment = {
-  id: string;
-  candidate_id: string;
-  revision_id: string;
-  body: string;
-  actor_user_id: string | null;
-  created_at: number | null;
-};
-
-/**
- * One pending candidate plus its current revision and provenance. Mirrors the
- * contract's `BriefingQueueEntry`; `candidate_id` is that entry's `id`.
- */
-export type BriefingQueueItem = {
-  candidate_id: string;
-  source: string;
-  candidate_key: string;
-  created_at: number | null;
-  state: BriefingCandidateState;
-  revision: BriefingRevision;
-  revision_count: number | null;
-  occurrences: BriefingOccurrenceStats;
-  /**
-   * Producer of THIS entry's current revision (contract
-   * `BriefingQueueEntry.task_identity`). Distinct from
-   * {@link BriefingSourceHealth.last_task_identity}, which is the identity of
-   * the source's most recent batch; the two agree only when the newest batch
-   * is also the one that carried this revision.
-   */
-  task_identity: string | null;
-  group: { id: string; candidate_key: string; title: string } | null;
-};
-
-/**
- * Deterministic per-source health, projected from the contract's
- * `BriefingSourceHealth`. The server reports batch-ledger FACTS and never a
- * classification, so `status` is always derived here by
- * {@link deriveBriefingSourceStatus}. Nothing in this summary is model-derived.
- *
- * There is no `failed` state: nothing in the ledger distinguishes "the
- * collector ran and failed" from "the collector has not reported", so a
- * silent source reads as `stale` (it reported once, long ago) or `unknown`
- * (it has candidates but no batch on record) — never as a failure the server
- * never observed.
- */
-export type BriefingSourceStatus = 'current' | 'stale' | 'unknown';
-
-export type BriefingSourceHealth = {
-  source: string;
-  status: BriefingSourceStatus;
-  last_ingested_at: number | null;
-  /** Server-computed age at response time; preferred over the client clock. */
-  last_ingest_age_ms: number | null;
-  /** The publisher task identity that produced the last batch. */
-  last_task_identity: string | null;
-  last_run_id: string | null;
-  last_digest_version: number | null;
-  last_batch_item_count: number | null;
-  pending_count: number | null;
-};
-
-/** The queue envelope, matching the contract's `BriefingQueueResponse`. */
-export type BriefingQueue = {
-  candidates: BriefingQueueItem[];
-  sources: BriefingSourceHealth[];
-};
-
-/** Contract `BriefingCandidateHistoryResponse`: revisions + decisions + comments. */
-export type BriefingHistory = {
-  candidate_id: string;
-  state: BriefingCandidateState;
-  revisions: BriefingRevision[];
-  decisions: BriefingDecisionEvent[];
-  comments: BriefingComment[];
-};
-
-/** Contract `BriefingDecisionResponse`. */
-export type BriefingDecisionResult = {
-  candidate_id: string;
-  revision_id: string | null;
-  action: BriefingDecisionAction;
-  event_id: string | null;
-  state: BriefingCandidateState;
-};
-
-/** Staleness horizon applied to the server's last-ingest facts. */
-export const BRIEFING_SOURCE_STALE_AFTER_MS = 36 * 60 * 60 * 1000;
-
-/**
- * Deterministic classification from the batch-ledger facts the server actually
- * reports. `lastIngestAgeMs` is the server's own age at response time and wins
- * over the client clock when present; `now` covers the case where it is absent.
- * Pure, testable, and never dependent on model output.
- */
-export function deriveBriefingSourceStatus(
-  lastIngestedAt: number | null,
-  lastIngestAgeMs: number | null,
-  now: number,
-): BriefingSourceStatus {
-  if (lastIngestedAt === null && lastIngestAgeMs === null) return 'unknown';
-  const age = lastIngestAgeMs ?? now - (lastIngestedAt as number);
-  return age > BRIEFING_SOURCE_STALE_AFTER_MS ? 'stale' : 'current';
-}
-
 function briefingRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -4084,180 +3761,6 @@ function briefingStringArray(value: unknown): string[] {
     return value.filter((entry): entry is string => typeof entry === 'string');
   }
   return [];
-}
-
-function normalizeBriefingRevision(value: unknown, candidateId: string): BriefingRevision {
-  const row = briefingContractRecord<ContractBriefingRevision>(value);
-  const evidenceKind = briefingOptionalString(row.evidence_kind);
-  const advisory = briefingRecord(row.publisher_advisory);
-  const publisherAdvisory = advisory.code === 'admission_gate_rejected'
-    && typeof advisory.reason === 'string'
-    && advisory.reason !== ''
-    ? { code: 'admission_gate_rejected' as const, reason: advisory.reason }
-    : null;
-  return {
-    id: briefingString(row.id),
-    candidate_id: briefingString(row.candidate_id, candidateId),
-    title: briefingString(row.title),
-    why_notable: briefingString(row.why_notable),
-    refs: briefingStringArray(row.refs),
-    source_ref: briefingString(row.source_ref),
-    evidence_hash: briefingString(row.evidence_hash),
-    evidence_kind:
-      evidenceKind === 'snapshot-item' || evidenceKind === 'finding-only' ? evidenceKind : null,
-    captured_at: briefingOptionalString(row.captured_at),
-    run_id: briefingOptionalString(row.run_id),
-    digest_series_ref: briefingOptionalString(row.digest_series_ref),
-    digest_version: briefingOptionalNumber(row.digest_version),
-    rank: briefingOptionalNumber(row.rank),
-    publisher_advisory: publisherAdvisory,
-    batch_key: briefingOptionalString(row.batch_key),
-    ingested_at: briefingOptionalNumber(row.ingested_at),
-  };
-}
-
-function normalizeBriefingOccurrenceStats(value: unknown): BriefingOccurrenceStats {
-  const row = briefingContractRecord<ContractBriefingOccurrenceStats>(value);
-  return {
-    count: briefingOptionalNumber(row.count) ?? 0,
-    first_seen_at: briefingOptionalNumber(row.first_seen_at),
-    last_seen_at: briefingOptionalNumber(row.last_seen_at),
-  };
-}
-
-function normalizeBriefingCandidateState(value: unknown): BriefingCandidateState {
-  const state = briefingOptionalString(value);
-  return BRIEFING_CANDIDATE_STATES.includes(state as BriefingCandidateState)
-    ? (state as BriefingCandidateState)
-    : 'pending';
-}
-
-function normalizeBriefingQueueItem(value: unknown): BriefingQueueItem | null {
-  const row = briefingContractRecord<ContractBriefingQueueEntry>(value);
-  const candidateId = briefingString(row.id);
-  if (!candidateId) return null;
-  const group = briefingRecord(row.group);
-  const normalizedGroup = briefingString(group.id) && briefingString(group.candidate_key)
-    ? {
-      id: briefingString(group.id),
-      candidate_key: briefingString(group.candidate_key),
-      title: briefingString(group.title),
-    }
-    : null;
-  return {
-    candidate_id: candidateId,
-    source: briefingString(row.source, 'unknown'),
-    candidate_key: briefingString(row.candidate_key),
-    created_at: briefingOptionalNumber(row.created_at),
-    state: normalizeBriefingCandidateState(row.state),
-    revision: normalizeBriefingRevision(row.revision, candidateId),
-    revision_count: briefingOptionalNumber(row.revision_count),
-    occurrences: normalizeBriefingOccurrenceStats(row.occurrences),
-    task_identity: briefingOptionalString(row.task_identity),
-    group: normalizedGroup,
-  };
-}
-
-function normalizeBriefingSourceHealth(value: unknown, now: number): BriefingSourceHealth {
-  const row = briefingContractRecord<ContractBriefingSourceHealth>(value);
-  const lastIngestedAt = briefingOptionalNumber(row.last_ingested_at);
-  const lastIngestAgeMs = briefingOptionalNumber(row.last_ingest_age_ms);
-  return {
-    source: briefingString(row.source, 'unknown'),
-    status: deriveBriefingSourceStatus(lastIngestedAt, lastIngestAgeMs, now),
-    last_ingested_at: lastIngestedAt,
-    last_ingest_age_ms: lastIngestAgeMs,
-    last_task_identity: briefingOptionalString(row.last_task_identity),
-    last_run_id: briefingOptionalString(row.last_run_id),
-    last_digest_version: briefingOptionalNumber(row.last_digest_version),
-    last_batch_item_count: briefingOptionalNumber(row.last_batch_item_count),
-    pending_count: briefingOptionalNumber(row.pending_count),
-  };
-}
-
-/**
- * Normalize a raw `/api/briefing/queue` payload (contract
- * `BriefingQueueResponse`). Exported for tests; `now` is injected so the
- * staleness classification stays deterministic.
- */
-export function normalizeBriefingQueue(payload: unknown, now: number = Date.now()): BriefingQueue {
-  const root = briefingContractRecord<ContractBriefingQueueResponse>(payload);
-  const rawCandidates = Array.isArray(root.candidates) ? root.candidates : [];
-  const rawSources = Array.isArray(root.sources) ? root.sources : [];
-  return {
-    candidates: rawCandidates
-      .map((entry) => normalizeBriefingQueueItem(entry))
-      .filter((entry): entry is BriefingQueueItem => entry !== null),
-    sources: rawSources.map((entry) => normalizeBriefingSourceHealth(entry, now)),
-  };
-}
-
-const FEEDBACK_COLLECTIONS_PATH = '/api/feedback/collections';
-
-function normalizeFeedbackCollection(value: unknown): FeedbackCollection | null {
-  const row = briefingContractRecord<ContractFeedbackCollectionProjection>(value);
-  const collectionId = briefingString(row.id);
-  const kind = briefingString(row.kind);
-  const interactionMode = briefingString(row.interaction_mode);
-  const state = briefingString(row.state);
-  if (!collectionId
-      || !kind
-      || (interactionMode !== 'immediate_per_item' && interactionMode !== 'explicit_submit')
-      || (state !== 'open' && state !== 'expired')) return null;
-  return {
-    id: feedbackCollectionIdentity(collectionId),
-    collectionId,
-    kind,
-    interactionMode,
-    state,
-    source: briefingOptionalString(row.source),
-    label: briefingString(row.label, `Collection ${collectionId.slice(0, 8)}`),
-    itemCount: briefingOptionalNumber(row.item_count) ?? 0,
-    expiresAt: briefingOptionalNumber(row.expires_at),
-    createdAt: briefingOptionalNumber(row.created_at) ?? 0,
-    updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
-    expiryReversible: row.expiry_reversible === 1,
-  };
-}
-
-export function normalizeFeedbackCollections(payload: unknown): FeedbackCollection[] {
-  const root = briefingRecord(payload);
-  const rows = Array.isArray(root.collections) ? root.collections : [];
-  return rows
-    .map((entry) => normalizeFeedbackCollection(entry))
-    .filter((entry): entry is FeedbackCollection => entry !== null);
-}
-
-export function getCachedFeedbackCollections(now: number = Date.now()): FeedbackCollection[] | null {
-  const cached = getJsonCache.get(cacheKeyForGet(FEEDBACK_COLLECTIONS_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeFeedbackCollections(cached.value);
-}
-
-export async function getFeedbackCollections(signal?: AbortSignal): Promise<FeedbackCollection[]> {
-  const response = await apiGet(FEEDBACK_COLLECTIONS_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(FEEDBACK_COLLECTIONS_PATH), {
-    value: payload,
-    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
-    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
-  });
-  return normalizeFeedbackCollections(payload);
-}
-
-export async function patchFeedbackCollectionExpiry(
-  collectionId: string,
-  expiresAt: number | null,
-): Promise<FeedbackCollection> {
-  const response = await apiPatch(
-    `/api/feedback/collections/${encodeURIComponent(collectionId)}`,
-    { expires_at: expiresAt },
-  );
-  const collection = normalizeFeedbackCollection(await parseMaybeJson(response));
-  if (!collection) throw new Error('Feedback collection response was invalid.');
-  invalidateApiGetCache(FEEDBACK_COLLECTIONS_PATH);
-  return collection;
 }
 
 // --- bounded ask form -------------------------------------------------------
@@ -4329,6 +3832,21 @@ export type AskProjection = {
   };
   items: AskItem[];
   valid: boolean;
+};
+
+export type BriefingRoundSummary = {
+  id: string;
+  artifact_version_id: string;
+  created_at: number;
+  origin: null | { source: string | null; run_id: string | null; task_identity: string | null };
+};
+
+export type BriefingProjection = AskProjection & {
+  briefing_id: string;
+  title: string;
+  latest_round_id: string;
+  selected_round_id: string;
+  rounds: BriefingRoundSummary[];
 };
 
 export type ClientAuthWhoami = {
@@ -4700,32 +4218,98 @@ export async function getClientAuthWhoami(signal?: AbortSignal): Promise<ClientA
   };
 }
 
-export async function getAsk(askId: string, signal?: AbortSignal): Promise<AskProjection> {
-  const response = await apiGet(`/api/asks/${encodeURIComponent(askId)}`, signal ? { signal } : {});
-  return normalizeAskProjection(await parseMaybeJson(response));
+export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
+  const root = briefingRecord(payload);
+  const rows = Array.isArray(root.briefings) ? root.briefings : [];
+  return rows.map((entry) => {
+    const row = briefingRecord(entry);
+    const id = briefingString(row.id);
+    return {
+      id: feedbackCollectionIdentity(id),
+      collectionId: id,
+      label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
+      itemCount: briefingOptionalNumber(row.round_count) ?? 0,
+      latestRoundId: briefingString(row.latest_round_id),
+      createdAt: briefingOptionalNumber(row.created_at) ?? 0,
+      updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
+    };
+  }).filter((entry) => Boolean(entry.collectionId && entry.latestRoundId));
 }
 
-export async function postAskAnswers(
-  askId: string,
+const BRIEFINGS_PATH = '/api/briefings';
+
+export function getCachedBriefings(now: number = Date.now()): FeedbackCollection[] | null {
+  const cached = getJsonCache.get(cacheKeyForGet(BRIEFINGS_PATH));
+  if (!cached || now >= cached.staleUntil) return null;
+  return normalizeBriefings(cached.value);
+}
+
+export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollection[]> {
+  const response = await apiGet(BRIEFINGS_PATH, signal ? { signal } : {});
+  const payload = await parseMaybeJson(response);
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(BRIEFINGS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
+  return normalizeBriefings(payload);
+}
+
+export function normalizeBriefingProjection(payload: unknown): BriefingProjection {
+  const root = briefingRecord(payload);
+  const selected = briefingRecord(root.selected_round);
+  const projection = normalizeAskProjection(selected.projection ?? selected);
+  const rounds = (Array.isArray(root.rounds) ? root.rounds : []).map((entry): BriefingRoundSummary => {
+    const row = briefingRecord(entry);
+    const origin = briefingRecord(row.origin);
+    return {
+      id: briefingString(row.id),
+      artifact_version_id: briefingString(row.artifact_version_id),
+      created_at: briefingOptionalNumber(row.created_at) ?? 0,
+      origin: row.origin == null ? null : {
+        source: briefingOptionalString(origin.source),
+        run_id: briefingOptionalString(origin.run_id),
+        task_identity: briefingOptionalString(origin.task_identity),
+      },
+    };
+  }).filter((round) => Boolean(round.id && round.artifact_version_id));
+  return {
+    ...projection,
+    briefing_id: briefingString(root.id),
+    title: briefingString(root.title),
+    latest_round_id: briefingString(root.latest_round_id),
+    selected_round_id: briefingString(selected.id, projection.ask_id),
+    rounds,
+  };
+}
+
+export async function getBriefing(briefingId: string, roundId?: string | null, signal?: AbortSignal): Promise<BriefingProjection> {
+  const query = roundId ? `?round=${encodeURIComponent(roundId)}` : '';
+  const response = await apiGet(`/api/briefings/${encodeURIComponent(briefingId)}${query}`, signal ? { signal } : {});
+  return normalizeBriefingProjection(await parseMaybeJson(response));
+}
+
+export async function postBriefingAnswers(
+  briefingId: string,
+  roundId: string,
   answers: readonly AskAnswerOperation[],
 ): Promise<{ answer_event_ids: string[] }> {
-  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/answers`, { answers });
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/answers`, { answers });
   const root = briefingRecord(await parseMaybeJson(response));
   return { answer_event_ids: briefingStringArray(root.answer_event_ids) };
 }
 
-export async function postAskAnnotations(
-  askId: string,
+export async function postBriefingAnnotations(
+  briefingId: string,
+  roundId: string,
   annotations: readonly AskAnnotationOperation[],
 ): Promise<{ annotation_event_ids: string[] }> {
-  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/annotations`, { annotations });
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/annotations`, { annotations });
   const root = briefingRecord(await parseMaybeJson(response));
-  invalidateApiGetCache(`/api/asks/${encodeURIComponent(askId)}`);
+  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   return { annotation_event_ids: briefingStringArray(root.annotation_event_ids) };
 }
 
-export async function postAskSubmission(
-  askId: string,
+export async function postBriefingSubmission(
+  briefingId: string,
+  roundId: string,
   input: {
     expected_lifecycle_event_id: string;
     supersedes_submission_id?: string;
@@ -4733,184 +4317,10 @@ export async function postAskSubmission(
     annotations?: ReadonlyArray<{ annotation_event_id: string }>;
   },
 ): Promise<unknown> {
-  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/submit`, input);
-  invalidateApiGetCache(`/api/asks/${encodeURIComponent(askId)}`);
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/submit`, input);
+  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   invalidateApiGetCache('/api/dashboard/badges');
   return parseMaybeJson(response);
-}
-
-/** Normalize a raw `/api/briefing/candidates/:id/history` payload. */
-export function normalizeBriefingHistory(payload: unknown, candidateId: string): BriefingHistory {
-  const root = briefingContractRecord<ContractBriefingHistoryResponse>(payload);
-  const candidate = briefingContractRecord<ContractBriefingHistoryResponse['candidate']>(
-    root.candidate,
-  );
-  const revisions = (Array.isArray(root.revisions) ? root.revisions : []).map((entry) =>
-    normalizeBriefingRevision(entry, candidateId),
-  );
-  const decisions = (Array.isArray(root.decisions) ? root.decisions : []).map((entry) =>
-    normalizeBriefingDecisionEvent(entry, candidateId),
-  );
-  const comments = (Array.isArray(root.comments) ? root.comments : []).map((entry) => {
-    const row = briefingContractRecord<ContractBriefingComment>(entry);
-    return {
-      id: briefingString(row.id),
-      candidate_id: briefingString(row.candidate_id, candidateId),
-      revision_id: briefingString(row.revision_id),
-      body: briefingString(row.body),
-      actor_user_id: briefingOptionalString(row.actor_user_id),
-      created_at: briefingOptionalNumber(row.created_at),
-    } satisfies BriefingComment;
-  });
-  return {
-    candidate_id: briefingString(candidate.id, candidateId),
-    state: normalizeBriefingCandidateState(candidate.state),
-    revisions,
-    decisions,
-    comments,
-  };
-}
-
-function normalizeBriefingDecisionEvent(
-  value: unknown,
-  candidateId: string,
-): BriefingDecisionEvent {
-  const row = briefingContractRecord<ContractBriefingDecisionEvent>(value);
-  const action = briefingOptionalString(row.action);
-  return {
-    id: briefingString(row.id),
-    candidate_id: briefingString(row.candidate_id, candidateId),
-    revision_id: briefingString(row.revision_id),
-    action: BRIEFING_DECISION_ACTIONS.includes(action as BriefingDecisionAction)
-      ? (action as BriefingDecisionAction)
-      : 'expire',
-    actor_user_id: briefingOptionalString(row.actor_user_id),
-    comment_id: briefingOptionalString(row.comment_id),
-    created_at: briefingOptionalNumber(row.created_at),
-  };
-}
-
-/** Contract §4 — pending queue + deterministic per-source health. Read-only. */
-const BRIEFING_QUEUE_PATH = '/api/briefing/queue';
-
-/** Synchronously project a still-usable shared GET-cache entry for warm rendering. */
-export function getCachedBriefingQueue(now: number = Date.now()): BriefingQueue | null {
-  const cached = getJsonCache.get(cacheKeyForGet(BRIEFING_QUEUE_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeBriefingQueue(cached.value, now);
-}
-
-export async function getBriefingQueue(signal?: AbortSignal): Promise<BriefingQueue> {
-  const response = await apiGet(BRIEFING_QUEUE_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(BRIEFING_QUEUE_PATH), {
-    value: payload,
-    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
-    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
-  });
-  return normalizeBriefingQueue(payload, now);
-}
-
-/** Contract §4 — revisions + decisions + comments for one candidate. Read-only. */
-export async function getBriefingHistory(
-  candidateId: string,
-  signal?: AbortSignal,
-): Promise<BriefingHistory> {
-  const response = await apiGet(
-    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/history`,
-    signal ? { signal } : {},
-  );
-  return normalizeBriefingHistory(await parseMaybeJson(response), candidateId);
-}
-
-/**
- * The exact thing a judgment is about: a candidate AND the revision of it the
- * reviewer was shown. Both are required on purpose. A candidate-only decision
- * is resolved server-side against whatever revision is current at write time,
- * which silently misaddresses every decision made about a row the page rendered
- * before a re-ingest — most visibly, Undo on an older judged row clearing the
- * decision on a newer revision the operator never touched. Making the revision
- * part of the argument means no call site can express that decision at all.
- *
- * `expected_event_id` narrows an undo from "this revision" to "this judgment":
- * the decision event the caller was handed when it judged. The revision alone
- * does not stop an Undo from erasing a NEWER decision on the same revision made
- * elsewhere; naming the event makes that case a 409 instead.
- */
-export type BriefingDecisionTarget = {
-  candidate_id: string;
-  revision_id: string;
-  expected_event_id?: string;
-};
-
-/**
- * Contract §4 — record a human keep/dismiss/undo against one revision. The
- * server rejects publisher and agent credential classes and refuses in
- * read-only mode; the UI additionally gates every call site on
- * `operational_mutations === 'allow'`. Attribution comes from the authenticated
- * user, never from an agent_session param.
- */
-export async function postBriefingDecision(
-  target: BriefingDecisionTarget,
-  action: BriefingJudgeAction,
-): Promise<BriefingDecisionResult> {
-  const candidateId = target.candidate_id;
-  const request: ContractBriefingDecisionRequest = {
-    action,
-    revision_id: target.revision_id,
-    ...(target.expected_event_id ? { expected_event_id: target.expected_event_id } : {}),
-  };
-  const response = await apiPost(
-    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/decision`,
-    request,
-  );
-  const payload = briefingContractRecord<ContractBriefingDecisionResponse>(
-    await parseMaybeJson(response),
-  );
-  const resolvedAction = briefingOptionalString(payload.action);
-  // The pending count changed: drop the cached badge read so the nav badge
-  // reconciles from the server instead of a stale SWR entry.
-  invalidateApiGetCache('/api/dashboard/badges');
-  return {
-    candidate_id: briefingString(payload.candidate_id, candidateId),
-    revision_id: briefingOptionalString(payload.revision_id),
-    action: BRIEFING_DECISION_ACTIONS.includes(resolvedAction as BriefingDecisionAction)
-      ? (resolvedAction as BriefingDecisionAction)
-      : action,
-    event_id: briefingOptionalString(payload.event_id),
-    state: normalizeBriefingCandidateState(payload.state),
-  };
-}
-
-/**
- * Contract §4 — append an immutable operator comment to a candidate. A non-2xx
- * response throws in `apiPost`, so reaching the return means the comment landed.
- */
-export async function postBriefingComment(
-  candidateId: string,
-  body: string,
-  // The revision the note is about — the one this client displayed. Omitting
-  // it means "whatever revision is current server-side", which can silently
-  // drift under a concurrent re-ingest; callers that showed a revision pass it.
-  revisionId?: string,
-): Promise<BriefingComment> {
-  const response = await apiPost(
-    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/comments`,
-    { body, ...(revisionId ? { revision_id: revisionId } : {}) },
-  );
-  const payload = briefingContractRecord<ContractBriefingCommentResponse>(
-    await parseMaybeJson(response),
-  );
-  const row = briefingContractRecord<ContractBriefingComment>(payload.comment);
-  return {
-    id: briefingString(row.id),
-    candidate_id: briefingString(row.candidate_id, candidateId),
-    revision_id: briefingString(row.revision_id),
-    body: briefingString(row.body),
-    actor_user_id: briefingOptionalString(row.actor_user_id),
-    created_at: briefingOptionalNumber(row.created_at),
-  };
 }
 
 // ===========================================================================
@@ -4931,10 +4341,9 @@ export async function postBriefingComment(
 // an explicitly untrusted block. The dialog MUST render it as plain text.
 // ===========================================================================
 
-export type AgentDispatchSubjectKind = 'finding' | 'issue' | 'incident';
+export type AgentDispatchSubjectKind = 'issue' | 'incident';
 
 export type AgentDispatchSubject =
-  | { kind: 'finding'; candidate_id: string }
   | { kind: 'issue'; issue_ref: string }
   // Issue 5308097 spec §9. An incident subject is identified by the episode id
   // alone; the telemetry it carries is executor-asserted and re-read server-side
@@ -4968,7 +4377,6 @@ export type AgentDispatchPlan = {
 export type AgentDispatchEvent = {
   id: string;
   subject_kind: AgentDispatchSubjectKind;
-  candidate_id: string | null;
   comment_id: string | null;
   issue_id: string | null;
   incident_id: string | null;
@@ -4986,7 +4394,7 @@ export type AgentDispatchResult = {
   event: AgentDispatchEvent;
   /**
    * Incident subjects only: the incident projection the server moved as part of
-   * the confirmed dispatch (spec §7). `null` for finding/issue subjects and for
+   * the confirmed dispatch (spec §7). `null` for issue subjects and for
    * servers that do not report it.
    */
   incident: { id: string; remediation: ContractOperationalIncidentRemediation } | null;
@@ -5005,7 +4413,7 @@ export type AgentDispatchConfirmation = {
 function normalizeAgentDispatchSubjectKind(value: unknown): AgentDispatchSubjectKind {
   if (value === 'issue') return 'issue';
   if (value === 'incident') return 'incident';
-  return 'finding';
+  return 'issue';
 }
 
 function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
@@ -5014,7 +4422,6 @@ function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
   return {
     id: briefingString(row.id),
     subject_kind: normalizeAgentDispatchSubjectKind(row.subject_kind),
-    candidate_id: briefingOptionalString(row.candidate_id),
     comment_id: briefingOptionalString(row.comment_id),
     issue_id: briefingOptionalString(row.issue_id),
     incident_id: briefingOptionalString(row.incident_id),
@@ -5055,7 +4462,7 @@ export async function previewAgentDispatch(
  * way and the UI must show which happened.
  *
  * `confirmation` carries the digests a preview returned. They are sent verbatim
- * and only when present, so finding/issue callers keep the original two-argument
+ * and only when present, so issue callers keep the original two-argument
  * contract while an incident confirm pins the exact plan it displayed.
  */
 export async function dispatchAgent(
@@ -5086,13 +4493,12 @@ export async function dispatchAgent(
   };
 }
 
-/** Read the recorded dispatch chain for one finding or issue. */
+/** Read the recorded dispatch chain for one issue. */
 export async function getAgentDispatchEvents(
-  filter: { candidateId?: string; issueId?: string },
+  filter: { issueId?: string },
   signal?: AbortSignal,
 ): Promise<AgentDispatchEvent[]> {
   const query = new URLSearchParams();
-  if (filter.candidateId) query.set('candidate_id', filter.candidateId);
   if (filter.issueId) query.set('issue_id', filter.issueId);
   const response = await apiGet(
     `/api/agent-dispatch/events?${query.toString()}`,
