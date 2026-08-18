@@ -16,6 +16,9 @@ const digest = createHash('sha256').update(source.slice(source.indexOf(':::'), d
 const ROUND_ONE = '11111111-1111-4111-8111-111111111111';
 const ROUND_TWO = '22222222-2222-4222-8222-222222222222';
 const ARTIFACT_VERSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const FULL_BRIEFING_ID = `briefing:${'65db040'.padEnd(64, 'a')}`;
+const FULL_ROUND_ID = `briefing-round:${'c76f940'.padEnd(64, 'b')}`;
+const FULL_ARTIFACT_VERSION_REF = `artifact-version:${'264e485'.padEnd(32, 'c')}`;
 
 function selectedRound(roundId: string, artifactVersion: string, submitted = false) {
   return {
@@ -110,6 +113,85 @@ describe('artifact-backed Briefing rounds', () => {
     expect(labels.get('adhoc-2')).toBe('Latest · 2026-08-18 08:30 UTC · #4');
   });
 
+  it('keeps full Briefing identities as copy and mutation authority while displaying and routing compact refs', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    window.history.replaceState(null, '', '/#/briefing');
+    const payload = detail() as any;
+    payload.briefing = {
+      ...payload.briefing,
+      id: FULL_BRIEFING_ID,
+      title: 'arxiv-scan',
+      latest_round_id: FULL_ROUND_ID,
+      round_count: 1,
+    };
+    payload.rounds = [{
+      id: FULL_ROUND_ID,
+      ordinal: 1,
+      artifact_version_id: FULL_ARTIFACT_VERSION_REF,
+      created_at: 2,
+      origin: { source: 'arxiv-scan', run_id: 'run-1', task_identity: 'ad-hoc' },
+    }];
+    payload.selected_round = {
+      ...selectedRound(FULL_ROUND_ID, FULL_ARTIFACT_VERSION_REF),
+      ordinal: 1,
+      previous_round_id: null,
+    };
+    const calls: Array<{ url: string; method: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push({ url, method });
+      if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [payload.briefing] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (method === 'GET' && url === `/api/briefings/${encodeURIComponent(FULL_BRIEFING_ID)}`) return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, source: null, preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url.endsWith('/answers')) return new Response(JSON.stringify({ answer_event_ids: ['answer-new'] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url.endsWith('/submit')) return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${method} ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Select briefing arxiv-scan' }));
+    expect(window.location.hash).toBe('#/briefing?briefing=briefing%3A65db040');
+
+    const headerRef = await screen.findByText('briefing:65db040');
+    expect(headerRef.closest('.briefing-detail__eyebrow')?.textContent).toContain('Briefing briefing:65db040');
+    expect(screen.queryByText(FULL_BRIEFING_ID)).toBeNull();
+    await screen.findByRole('button', { name: 'Briefing actions' });
+    const header = headerRef.closest('.detail-pane-shell__header') as HTMLElement;
+    expect(within(header.querySelector('.briefing-detail__eyebrow') as HTMLElement).getByText('briefing:65db040')).toBeTruthy();
+    expect(within(header.querySelector('.briefing-detail__title-row') as HTMLElement).getByRole('heading', { name: 'arxiv-scan' })).toBeTruthy();
+    expect(within(header.querySelector('.briefing-detail__title-row') as HTMLElement).getByRole('button', { name: 'Briefing actions' })).toBeTruthy();
+    expect(within(header.querySelector('.briefing-detail__meta') as HTMLElement).getByRole('combobox', { name: 'Round occurrence' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full Briefing ID' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_BRIEFING_ID));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href'))
+      .toBe('#/artifacts?ref=artifact-version%3A264e485');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
+    const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
+    expect(within(metadata).getByText('briefing-round:c76f940')).toBeTruthy();
+    expect(within(metadata).queryByText(FULL_ROUND_ID)).toBeNull();
+    expect(within(metadata).getByText('artifact-version:264e485')).toBeTruthy();
+    expect(within(metadata).queryByText(FULL_ARTIFACT_VERSION_REF)).toBeNull();
+    fireEvent.click(within(metadata).getByRole('button', { name: 'Copy full round ID' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_ROUND_ID));
+    fireEvent.click(within(metadata).getByRole('button', { name: 'Copy exact artifact-version ref' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_ARTIFACT_VERSION_REF));
+    fireEvent.click(within(metadata).getByRole('button', { name: 'Close Briefing metadata' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    const submit = screen.getByRole('button', { name: 'Submit' });
+    await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
+    fireEvent.click(submit);
+    await waitFor(() => expect(calls.filter((call) => call.method === 'POST').map((call) => call.url)).toEqual([
+      `/api/briefings/${encodeURIComponent(FULL_BRIEFING_ID)}/rounds/${encodeURIComponent(FULL_ROUND_ID)}/answers`,
+      `/api/briefings/${encodeURIComponent(FULL_BRIEFING_ID)}/rounds/${encodeURIComponent(FULL_ROUND_ID)}/submit`,
+    ]));
+  });
+
   it('reports authentication failure instead of a false empty Briefing list', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/briefings') {
@@ -160,7 +242,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(shell.querySelector(':scope > .detail-pane-shell__footer')).toBeTruthy();
     expect(within(shell.querySelector('.detail-pane-shell__body') as HTMLElement).queryByText(/Immutable round|Briefing round|Pinned document|Review source|Source and existing annotations/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href')).toBe(`#/artifacts?ref=artifact-version%3A${ARTIFACT_VERSION}`);
+    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href')).toBe('#/artifacts?ref=artifact-version%3Aaaaaaaaa-aaaa-4aaa-8aaa-aaaaaaa');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
     const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
     expect(within(metadata).getByText('Round occurrence')).toBeTruthy();

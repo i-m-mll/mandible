@@ -379,44 +379,43 @@ export function BriefingDocumentRenderer({
       headerRef={headerRef}
       ariaBusy={load.loading}
       header={(
-        <>
-          <div className="briefing-detail__identity">
-            <DetailHeaderIdentity
-              contextLabel="Briefing"
-              shortId={shortRouteId(briefingId)}
-              copyValue={briefingId}
-              copyLabel="Copy full Briefing ID"
-            />
-            <div className="briefing-detail__title-row">
-              <h2 title={title}>{title}</h2>
-              {round ? (
-                <div className="briefing-detail__actions">
-                  <button
-                    type="button"
-                    className="briefing-detail__actions-trigger"
-                    aria-label="Briefing actions"
-                    aria-haspopup="menu"
-                    aria-expanded={actionsOpen}
-                    onClick={() => setActionsOpen((open) => !open)}
-                  >
-                    <HorizontalDotsIcon />
-                  </button>
-                  {actionsOpen ? (
-                    <div className="briefing-detail__actions-menu" role="menu">
-                      <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
-                      {artifactVersionRef ? (
-                        <a role="menuitem" href={artifactDetailHref(artifactVersionRef)} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+        <div className="briefing-detail__heading">
+          <DetailHeaderIdentity
+            className="briefing-detail__eyebrow"
+            contextLabel="Briefing"
+            shortId={shortRouteId(briefingId)}
+            copyValue={briefingId}
+            copyLabel="Copy full Briefing ID"
+          />
+          <div className="briefing-detail__title-row">
+            <h2 title={title}>{title}</h2>
+            {round ? (
+              <div className="briefing-detail__actions">
+                <button
+                  type="button"
+                  className="briefing-detail__actions-trigger"
+                  aria-label="Briefing actions"
+                  aria-haspopup="menu"
+                  aria-expanded={actionsOpen}
+                  onClick={() => setActionsOpen((open) => !open)}
+                >
+                  <HorizontalDotsIcon />
+                </button>
+                {actionsOpen ? (
+                  <div className="briefing-detail__actions-menu" role="menu">
+                    <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
+                    {artifactVersionRef ? (
+                      <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           {round ? (
-            <div className="briefing-detail__controls">
-              <label>
-                <span className="sr-only">Round occurrence</span>
+            <div className="briefing-detail__meta">
+              <label className="briefing-detail__controls">
+                <span>Round occurrence</span>
                 <select
                   aria-label="Round occurrence"
                   value={round.selected_round_id}
@@ -427,7 +426,7 @@ export function BriefingDocumentRenderer({
               </label>
             </div>
           ) : null}
-        </>
+        </div>
       )}
       footer={round?.valid ? (
         <>

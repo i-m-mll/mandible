@@ -475,9 +475,12 @@ describe('App routing', () => {
   });
 
   // Issue f59b5bd — deterministically emitted links shorten full UUIDs to the
-  // 8-char short form; anything else passes through untouched.
-  it('shortens only full UUIDs in shortRouteId', () => {
+  // 8-char short form and typed long-hex refs through the shared 7-char ref
+  // formatter; ordinary identifiers pass through untouched.
+  it('shortens ambiguity-aware UUID and typed-ref routes', () => {
     expect(shortRouteId('e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe('e4c52737');
+    expect(shortRouteId(`briefing:${'a'.repeat(64)}`)).toBe('briefing:aaaaaaa');
+    expect(shortRouteId(`briefing-round:${'b'.repeat(64)}`)).toBe('briefing-round:bbbbbbb');
     expect(shortRouteId('e4c52737')).toBe('e4c52737');
     expect(shortRouteId('req-active-1')).toBe('req-active-1');
     expect(shortRouteId('codex-e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe(

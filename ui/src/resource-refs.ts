@@ -186,7 +186,7 @@ export function compactArtifactBlobRef(ref: string, length = 12): string {
   );
 }
 
-function compactLongIdSegments(value: string, length = 7): string {
+export function compactLongIdSegments(value: string, length = 7): string {
   return value.replace(/[0-9a-f]{12,64}/gi, (segment) =>
     segment.slice(0, Math.max(7, Math.min(length, segment.length))).toLowerCase(),
   );

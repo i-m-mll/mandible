@@ -25,7 +25,7 @@ export function DetailHeaderIdentity({
 }: DetailHeaderIdentityProps): JSX.Element {
   return (
     <div className={className}>
-      {contextLabel && <span className={contextClassName}>{contextLabel}</span>}
+      {contextLabel && <><span className={contextClassName}>{contextLabel}</span>{' '}</>}
       <code className={shortIdClassName}>{shortId}</code>
       <CopyRefButton value={copyValue} label={copyLabel ?? `Copy ${copyValue}`} />
       {children}
