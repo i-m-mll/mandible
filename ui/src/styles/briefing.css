@@ -242,17 +242,6 @@
   z-index: 8;
 }
 
-.briefing-detail .detail-pane-header__selector select {
-  max-width: 18rem;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: var(--surface-inset);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--text-sm);
-}
-
 .briefing-detail__actions-trigger {
   display: grid;
   width: 30px;

@@ -16,6 +16,7 @@ export type DetailPaneHeaderIdentity = {
 export type DetailPaneHeaderSelector = {
   /** Accessible name for the selection and selected-reference copy controls. */
   label: string;
+  /** Bare selection control; the header owns its shared wrapper and preset. */
   control: ComponentChildren;
   /** Full canonical reference for the currently selected item. */
   selectedCanonicalRef: string;
@@ -118,7 +119,9 @@ export function DetailPaneHeader({
                   role="group"
                   aria-label={selector.label}
                 >
-                  {selector.control}
+                  <div className="detail-pane-header__selector-control">
+                    {selector.control}
+                  </div>
                   <CopyRefButton
                     value={selector.selectedCanonicalRef}
                     label={
