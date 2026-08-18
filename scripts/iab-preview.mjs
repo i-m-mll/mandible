@@ -62,11 +62,11 @@ async function main(options) {
     const existing = await healthyExistingPreview(branch);
     if (existing) {
       return {
+        ...withBrowserReadyUrl(existing),
         ok: true,
         status: "already-running",
         mode,
         message: "Already on an integration branch with a healthy preview.",
-        ...withBrowserReadyUrl(existing),
       };
     }
   } else {
@@ -83,11 +83,11 @@ async function main(options) {
     const existing = !options.forceNew ? await healthyExistingPreview(branch) : null;
     if (existing && !options.dryRun) {
       return {
+        ...withBrowserReadyUrl(existing),
         ok: true,
         status: "already-running",
         mode,
         message: "Preview metadata points to a healthy instance.",
-        ...withBrowserReadyUrl(existing),
       };
     }
     worktree = options.dryRun
