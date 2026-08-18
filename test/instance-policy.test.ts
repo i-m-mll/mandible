@@ -99,6 +99,35 @@ describe("instance mutation policy", () => {
     expect(response.body).toEqual({ check: { status: "clean" } });
   });
 
+  it("allows only the ephemeral dashboard handshake on preview instances", async () => {
+    const router = previewRouter();
+    router.post("/api/client-auth/handshake", (_req, res) => {
+      res.status(200).json({ token: "ephemeral-dashboard-session" });
+    }, { fileRpc: "deny" });
+    router.post("/api/client-auth/agent-session", (_req, res) => {
+      res.status(200).json({ token: "agent-session" });
+    }, { fileRpc: "deny" });
+
+    const handshake = await router.invoke({
+      method: "POST",
+      url: "/api/client-auth/handshake",
+      body: {},
+    });
+    const agentSession = await router.invoke({
+      method: "POST",
+      url: "/api/client-auth/agent-session",
+      body: {},
+    });
+
+    expect(handshake.status).toBe(200);
+    expect(handshake.body).toEqual({ token: "ephemeral-dashboard-session" });
+    expect(agentSession.status).toBe(403);
+    expect(agentSession.body).toMatchObject({
+      error: "instance_mutation_forbidden",
+      category: "api",
+    });
+  });
+
   it("leaves Timeline projection queries available on preview instances", async () => {
     const router = previewRouter();
     router.post("/api/timeline/project", (_req, res) => {
