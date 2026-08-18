@@ -10,6 +10,7 @@ import { migrate, type Db } from "../src/db.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { createUser } from "../src/users/store.js";
+import { RICH_BRIEFING_DEMO, seedRichBriefingDemo } from "../src/feedback/rich-briefing-demo.js";
 
 class SlugGate implements ClientAuthGate {
   constructor(private readonly db: () => Db) {}
@@ -129,5 +130,33 @@ describe("plural Briefing routes", () => {
     expect(quiet).toMatchObject({ status: 200, body: { quiet: true, round_id: null, artifact_version_id: null } });
     expect(db.prepare("SELECT source_health_json FROM briefing_runs WHERE id = ?")
       .get((quiet.body as { receipt_id: string }).receipt_id)).toMatchObject({ source_health_json: expect.stringContaining("healthy") });
+  });
+
+  it("projects the seeded submitted old round and unanswered latest round through canonical routes", async () => {
+    const seeded = seedRichBriefingDemo(db, { databasePath: ":memory:" });
+    const credential = RICH_BRIEFING_DEMO.reviewerSlug;
+    const list = await router.invoke({ method: "GET", url: "/api/briefings", credential });
+    expect(list.body).toMatchObject({ briefings: [{
+      id: seeded.briefing.id, title: RICH_BRIEFING_DEMO.title, latest_round_id: seeded.rounds[1].id, round_count: 2,
+    }] });
+    const first = await router.invoke({
+      method: "GET", url: `/api/briefings/${seeded.briefing.id}?round=${seeded.rounds[0].id}`, credential,
+    });
+    const second = await router.invoke({
+      method: "GET", url: `/api/briefings/${seeded.briefing.id}?round=${seeded.rounds[1].id}`, credential,
+    });
+    expect(first).toMatchObject({ status: 200, body: { selected_round: {
+      document: { artifact_version_id: seeded.rounds[0].artifact_version_id },
+      latest_submission: { ordinal: 1 },
+    } } });
+    const firstRound = (first.body as any).selected_round;
+    expect(firstRound.answers.map((answer: any) => [answer.directive_key, answer.value.verdict])).toEqual([
+      ["scope.approval", "keep"], ["rollback.plan", "dismiss"], ["operator.runbook", "keep"],
+    ]);
+    expect(firstRound.annotations.map((entry: any) => entry.annotation_kind)).toEqual(["comment", "suggest_replacement"]);
+    expect(second).toMatchObject({ status: 200, body: { selected_round: {
+      document: { artifact_version_id: seeded.rounds[1].artifact_version_id },
+      answers: [], annotations: [], latest_submission: null, latest_frozen_membership: null,
+    } } });
   });
 });
