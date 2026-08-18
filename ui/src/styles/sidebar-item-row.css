@@ -45,6 +45,27 @@
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  gap: 6px;
+}
+
+.sidebar-item-row__provider-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.sidebar-item-row__provider-dot--claude {
+  background: #b56f4c;
+}
+
+.sidebar-item-row__provider-dot--codex {
+  background: #6670c5;
+}
+
+.sidebar-item-row__provider-dot--gemini {
+  background: #2f7d62;
 }
 
 .sidebar-item-row__label {
