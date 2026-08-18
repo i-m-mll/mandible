@@ -1,10 +1,14 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
+
+import { openDb } from "../src/db.js";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
 const execFileAsync = promisify(execFile);
@@ -13,14 +17,14 @@ let tempRoots: string[] = [];
 let previewServer: http.Server | null = null;
 
 function git(args: string[], cwd: string): void {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
 }
 
 function gitOutput(args: string[], cwd: string): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
@@ -38,6 +42,67 @@ function createRepo(): string {
   git(["add", "README.md"], repo);
   git(["commit", "-m", "base"], repo);
   return repo;
+}
+
+function slugify(value: string): string {
+  return value.replace(/^refs\/heads\//, "").replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 120);
+}
+
+function fileHash(filePath: string): string {
+  return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function inventory(root: string): string[] {
+  return fs.readdirSync(root, { withFileTypes: true })
+    .map((entry) => `${entry.isDirectory() ? "d" : entry.isSymbolicLink() ? "l" : "f"}:${entry.name}`)
+    .sort();
+}
+
+function createSeedFixture() {
+  const worktree = fs.realpathSync.native(process.cwd());
+  const branch = gitOutput(["branch", "--show-current"], worktree);
+  const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-seed-cache-"));
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-seed-source-"));
+  tempRoots.push(previewBase, sourceRoot);
+  const previewRoot = path.join(previewBase, slugify(branch));
+  fs.mkdirSync(previewRoot, { recursive: true });
+  const db = path.join(previewRoot, "mandible-20260818-120000.db");
+  openDb(db).close();
+  const sourceDb = path.join(sourceRoot, "source.db");
+  fs.writeFileSync(sourceDb, "immutable source fixture\n", "utf8");
+  fs.symlinkSync(db, path.join(previewRoot, "current.db"));
+  const instanceEnv = {
+    MANDIBLE_DB: db,
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
+  };
+  const health = {
+    instance: {
+      role: "preview",
+      operational_mutations: "reject",
+      db_path_source: "iab-preview-copy",
+      db_path: db,
+      source_db_path: sourceDb,
+    },
+  };
+  const metadata = { branch, worktree, previewRoot, db, sourceDb, instanceEnv, health };
+  const metadataPath = path.join(previewRoot, "metadata.json");
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata), "utf8");
+  return {
+    worktree, branch, previewBase, previewRoot, db, sourceRoot, sourceDb, metadata, metadataPath,
+    env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+  };
+}
+
+function runSeed(fixture: ReturnType<typeof createSeedFixture>, extraArgs: string[] = []) {
+  return spawnSync(process.execPath, [SCRIPT, "seed-briefing-demo", "--json", ...extraArgs], {
+    cwd: fixture.worktree,
+    encoding: "utf8",
+    env: fixture.env,
+  });
 }
 
 afterEach(() => {
@@ -220,6 +285,138 @@ exit 0
 }
 
 describe("iab-preview launcher", () => {
+  it("seeds only the metadata-owned preview copy and repeats as an exact no-op without port access", () => {
+    const fixture = createSeedFixture();
+    const sourceHash = fileHash(fixture.sourceDb);
+    const sourceInventory = inventory(fixture.sourceRoot);
+
+    const first = runSeed(fixture);
+    expect(first.status, first.stderr).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+    expect(firstPayload).toMatchObject({
+      ok: true,
+      status: "seeded",
+      result: "seeded",
+      db: fs.realpathSync.native(fixture.db),
+      sourceDb: fs.realpathSync.native(fixture.sourceDb),
+      artifactRoot: path.join(fs.realpathSync.native(fixture.previewRoot), "rich-briefing-demo-artifacts"),
+      briefing: { title: "Release candidate readiness review" },
+    });
+    expect(firstPayload.rounds).toHaveLength(2);
+    const dbAfterFirst = fs.readFileSync(fixture.db);
+    const countsAfterFirst = new Database(fixture.db, { readonly: true });
+    const firstCounts = {
+      briefings: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
+      rounds: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
+      answers: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefing_response_events").get(),
+      annotations: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefing_annotation_events").get(),
+      submissions: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get(),
+      versions: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM artifact_version").get(),
+    };
+    countsAfterFirst.close();
+
+    const second = runSeed(fixture);
+    expect(second.status, `${second.stderr}\n${second.stdout}`).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.status).toBe("already-present");
+    expect(secondPayload.briefing.id).toBe(firstPayload.briefing.id);
+    expect(secondPayload.rounds).toEqual(firstPayload.rounds);
+    expect(fs.readFileSync(fixture.db)).toEqual(dbAfterFirst);
+    const dbAfterSecond = new Database(fixture.db, { readonly: true });
+    expect({
+      briefings: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
+      rounds: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
+      answers: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefing_response_events").get(),
+      annotations: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefing_annotation_events").get(),
+      submissions: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get(),
+      versions: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM artifact_version").get(),
+    }).toEqual(firstCounts);
+    dbAfterSecond.close();
+    expect(firstCounts).toEqual({
+      briefings: { n: 1 }, rounds: { n: 2 }, answers: { n: 3 }, annotations: { n: 2 },
+      submissions: { n: 1 }, versions: { n: 2 },
+    });
+    expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
+    expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
+
+    const conflicting = new Database(fixture.db);
+    conflicting.prepare("UPDATE briefings SET title = 'conflicting fixture'").run();
+    conflicting.close();
+    const beforeConflictCheck = fs.readFileSync(fixture.db);
+    const conflictResult = runSeed(fixture);
+    expect(conflictResult.status).toBe(1);
+    expect(conflictResult.stdout).toContain("partial or conflicting");
+    expect(fs.readFileSync(fixture.db)).toEqual(beforeConflictCheck);
+  }, 30_000);
+
+  it.each([
+    ["branch drift", (fixture: ReturnType<typeof createSeedFixture>) => ({ ...fixture.metadata, branch: "integration/unrelated" })],
+    ["worktree drift", (fixture: ReturnType<typeof createSeedFixture>) => ({ ...fixture.metadata, worktree: path.dirname(fixture.worktree) })],
+    ["previewRoot drift", (fixture: ReturnType<typeof createSeedFixture>) => ({ ...fixture.metadata, previewRoot: fixture.sourceRoot })],
+    ["preview policy drift", (fixture: ReturnType<typeof createSeedFixture>) => ({
+      ...fixture.metadata,
+      instanceEnv: { ...fixture.metadata.instanceEnv, MANDIBLE_OPERATIONAL_MUTATIONS: "allow" },
+    })],
+    ["metadata policy drift", (fixture: ReturnType<typeof createSeedFixture>) => ({
+      ...fixture.metadata,
+      health: { instance: { ...fixture.metadata.health.instance, role: "main" } },
+    })],
+    ["database env drift", (fixture: ReturnType<typeof createSeedFixture>) => ({
+      ...fixture.metadata,
+      instanceEnv: { ...fixture.metadata.instanceEnv, MANDIBLE_DB: fixture.sourceDb },
+    })],
+    ["source env drift", (fixture: ReturnType<typeof createSeedFixture>) => ({
+      ...fixture.metadata,
+      instanceEnv: { ...fixture.metadata.instanceEnv, MANDIBLE_INSTANCE_SOURCE_DB: fixture.db },
+    })],
+  ])("refuses %s before demo seed side effects", (_name, mutate) => {
+    const fixture = createSeedFixture();
+    fs.writeFileSync(fixture.metadataPath, JSON.stringify(mutate(fixture)), "utf8");
+    const before = fs.readFileSync(fixture.db);
+    const result = runSeed(fixture);
+    expect(result.status).toBe(1);
+    expect(fs.readFileSync(fixture.db)).toEqual(before);
+    expect(fs.existsSync(path.join(fixture.previewRoot, "rich-briefing-demo-artifacts"))).toBe(false);
+  }, 30_000);
+
+  it("refuses missing metadata, current.db drift, targets outside custody, source aliases, and arbitrary --db", () => {
+    const cases: Array<(fixture: ReturnType<typeof createSeedFixture>) => string[]> = [
+      (fixture) => { fs.rmSync(fixture.metadataPath); return []; },
+      (fixture) => {
+        fs.unlinkSync(path.join(fixture.previewRoot, "current.db"));
+        const other = path.join(fixture.previewRoot, "other.db");
+        fs.writeFileSync(other, "other", "utf8");
+        fs.symlinkSync(other, path.join(fixture.previewRoot, "current.db"));
+        return [];
+      },
+      (fixture) => {
+        const metadata = { ...fixture.metadata, db: fixture.sourceDb,
+          instanceEnv: { ...fixture.metadata.instanceEnv, MANDIBLE_DB: fixture.sourceDb } };
+        fs.writeFileSync(fixture.metadataPath, JSON.stringify(metadata), "utf8");
+        fs.unlinkSync(path.join(fixture.previewRoot, "current.db"));
+        fs.symlinkSync(fixture.sourceDb, path.join(fixture.previewRoot, "current.db"));
+        return [];
+      },
+      (fixture) => {
+        const alias = path.join(fixture.sourceRoot, "target-alias.db");
+        fs.symlinkSync(fixture.db, alias);
+        const metadata = { ...fixture.metadata, sourceDb: alias,
+          instanceEnv: { ...fixture.metadata.instanceEnv, MANDIBLE_INSTANCE_SOURCE_DB: alias } };
+        fs.writeFileSync(fixture.metadataPath, JSON.stringify(metadata), "utf8");
+        return [];
+      },
+      () => ["--db", "/tmp/not-allowed.db"],
+    ];
+    for (const arrange of cases) {
+      const fixture = createSeedFixture();
+      const before = fs.readFileSync(fixture.db);
+      const result = runSeed(fixture, arrange(fixture));
+      expect(result.status).toBe(1);
+      expect(fs.readFileSync(fixture.db)).toEqual(before);
+      expect(fs.existsSync(path.join(fixture.previewRoot, "rich-briefing-demo-artifacts"))).toBe(false);
+    }
+  }, 30_000);
+
   it("reports explicit preview instance environment in dry-run output", () => {
     const repo = createRepo();
     const sourceDb = path.join(repo, "source.db");

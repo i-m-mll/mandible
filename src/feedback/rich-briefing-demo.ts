@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 
-import { setSetting } from "../client-auth/settings-kv.js";
+import { getSetting, setSetting } from "../client-auth/settings-kv.js";
 import type { Db } from "../db.js";
 import { createUser, getUserBySlug } from "../users/store.js";
 import type { User, UserKind } from "../users/types.js";
 import {
   applyBriefingAnnotations,
   applyBriefingAnswers,
+  briefingRunRequestDigest,
   parseBriefingRunRequest,
   publishBriefingRun,
   readBriefing,
@@ -166,6 +167,7 @@ function runRequest(markdown: string, reviewerId: string, ordinal: 1 | 2) {
 
 export type RichBriefingDemoManifest = {
   schema: "mandible-rich-briefing-demo@1";
+  result: "seeded" | "already-present";
   database_path: string;
   artifact_root: string | null;
   users: { publisher_user_id: string; reviewer_user_id: string };
@@ -182,7 +184,192 @@ export type RichBriefingDemoManifest = {
   };
 };
 
+function manifestFor(
+  options: { databasePath: string; artifactRoot?: string },
+  publisher: User,
+  reviewer: User,
+  briefingId: string,
+  rounds: RichBriefingDemoManifest["rounds"],
+  result: RichBriefingDemoManifest["result"],
+): RichBriefingDemoManifest {
+  return {
+    schema: "mandible-rich-briefing-demo@1",
+    result,
+    database_path: options.databasePath,
+    artifact_root: options.artifactRoot ?? null,
+    users: { publisher_user_id: publisher.id, reviewer_user_id: reviewer.id },
+    briefing: { id: briefingId, key: RICH_BRIEFING_DEMO.briefingKey, title: RICH_BRIEFING_DEMO.title },
+    rounds,
+    semantic_state: {
+      round_one_answers: { "scope.approval": "keep", "rollback.plan": "dismiss", "operator.runbook": "keep" },
+      round_one_annotation_kinds: ["comment", "suggest_replacement"],
+      round_one_frozen_answer_count: 3,
+      round_one_frozen_annotation_count: 2,
+      round_two_answers: 0,
+      round_two_annotations: 0,
+      round_two_submission: null,
+    },
+  };
+}
+
+function exactExistingDemo(
+  db: Db,
+  options: { databasePath: string; artifactRoot?: string },
+): RichBriefingDemoManifest | null {
+  const markerCount = (
+    db.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM users WHERE slug IN (?, ?)) +
+         (SELECT COUNT(*) FROM briefings WHERE briefing_key = ?) +
+         (SELECT COUNT(*) FROM briefing_runs WHERE task_identity = ?) AS n`,
+    ).get(
+      RICH_BRIEFING_DEMO.publisherSlug,
+      RICH_BRIEFING_DEMO.reviewerSlug,
+      RICH_BRIEFING_DEMO.briefingKey,
+      RICH_BRIEFING_DEMO.taskIdentity,
+    ) as { n: number }
+  ).n;
+  if (markerCount === 0) return null;
+
+  const conflict = (detail: string): never => {
+    throw new Error(`Rich Briefing demo state is partial or conflicting: ${detail}.`);
+  };
+  const publisher = getUserBySlug(db, RICH_BRIEFING_DEMO.publisherSlug);
+  const reviewer = getUserBySlug(db, RICH_BRIEFING_DEMO.reviewerSlug);
+  if (!publisher) return conflict("publisher registry state");
+  if (publisher.kind !== "agent" || publisher.status !== "active") conflict("publisher registry state");
+  if (!reviewer) return conflict("reviewer registry state");
+  if (reviewer.kind !== "human" || reviewer.status !== "active") conflict("reviewer registry state");
+  if (options.artifactRoot && getSetting(db, "artifact_root") !== options.artifactRoot) {
+    conflict("artifact custody does not match the requested root");
+  }
+
+  const briefing = db.prepare(
+    "SELECT id, title, latest_round_id, round_count FROM briefings WHERE briefing_key = ?",
+  ).get(RICH_BRIEFING_DEMO.briefingKey) as {
+    id: string; title: string; latest_round_id: string | null; round_count: number;
+  } | undefined;
+  if (!briefing) return conflict("logical Briefing identity or round count");
+  if (briefing.title !== RICH_BRIEFING_DEMO.title || briefing.round_count !== 2) {
+    conflict("logical Briefing identity or round count");
+  }
+
+  const expectedRequests = [
+    runRequest(RICH_BRIEFING_ROUND_ONE_MARKDOWN, reviewer.id, 1),
+    runRequest(RICH_BRIEFING_ROUND_TWO_MARKDOWN, reviewer.id, 2),
+  ];
+  const runs = db.prepare(
+    `SELECT run_key, request_digest, briefing_id, round_id, artifact_version_id
+       FROM briefing_runs WHERE publisher_user_id = ? AND task_identity = ? ORDER BY run_key`,
+  ).all(publisher.id, RICH_BRIEFING_DEMO.taskIdentity) as Array<{
+    run_key: string; request_digest: string; briefing_id: string;
+    round_id: string | null; artifact_version_id: string | null;
+  }>;
+  if (runs.length !== 2) conflict("run count");
+  for (const request of expectedRequests) {
+    const stored = runs.find((run) => run.run_key === request.run_key);
+    if (!stored || stored.request_digest !== briefingRunRequestDigest(request) ||
+        stored.briefing_id !== briefing.id || !stored.round_id || !stored.artifact_version_id) {
+      conflict(`run '${request.run_key}'`);
+    }
+  }
+
+  const rounds = runs.map((run, index) => ({
+    id: run.round_id!, ordinal: index + 1, artifact_version_id: run.artifact_version_id!, submitted: index === 0,
+  }));
+  if (rounds[0].artifact_version_id === rounds[1].artifact_version_id) conflict("artifact versions are not distinct");
+  const storedRounds = db.prepare(
+    `SELECT id, ordinal, artifact_version_id, previous_round_id FROM briefing_rounds
+      WHERE briefing_id = ? ORDER BY ordinal`,
+  ).all(briefing.id) as Array<{
+    id: string; ordinal: number; artifact_version_id: string; previous_round_id: string | null;
+  }>;
+  if (storedRounds.length !== 2 || briefing.latest_round_id !== rounds[1].id ||
+      storedRounds[0]?.id !== rounds[0].id || storedRounds[0]?.ordinal !== 1 ||
+      storedRounds[0]?.artifact_version_id !== rounds[0].artifact_version_id || storedRounds[0]?.previous_round_id !== null ||
+      storedRounds[1]?.id !== rounds[1].id || storedRounds[1]?.ordinal !== 2 ||
+      storedRounds[1]?.artifact_version_id !== rounds[1].artifact_version_id ||
+      storedRounds[1]?.previous_round_id !== rounds[0].id) {
+    conflict("round lineage");
+  }
+  const oldRound = readBriefing(db, briefing.id, {
+    roundId: rounds[0].id, actorUserId: reviewer.id, operator: false,
+  })?.selected_round;
+  const newRound = readBriefing(db, briefing.id, {
+    roundId: rounds[1].id, actorUserId: reviewer.id, operator: false,
+  })?.selected_round;
+  if (!oldRound) return conflict("round identity or immutable document bytes");
+  if (!newRound) return conflict("round identity or immutable document bytes");
+  if (oldRound.ordinal !== 1 || newRound.ordinal !== 2) conflict("round ordinals");
+  const expectedRoundOneHash = createHash("sha256").update(expectedRequests[0].document!.markdown).digest("hex");
+  const expectedRoundTwoHash = createHash("sha256").update(expectedRequests[1].document!.markdown).digest("hex");
+  if (oldRound.document.content_hash !== expectedRoundOneHash) {
+    conflict(`round 1 immutable document bytes (${oldRound.document.content_hash} != ${expectedRoundOneHash})`);
+  }
+  if (newRound.document.content_hash !== expectedRoundTwoHash) {
+    conflict(`round 2 immutable document bytes (${newRound.document.content_hash} != ${expectedRoundTwoHash})`);
+  }
+  const answers = oldRound.answers.map((answer) => ({
+    key: answer.directive_key,
+    verdict: (answer.value as { verdict?: string }).verdict,
+    created_at: answer.created_at,
+  }));
+  if (JSON.stringify(answers) !== JSON.stringify([
+    { key: "scope.approval", verdict: "keep", created_at: RICH_BRIEFING_DEMO.answersTimestamp },
+    { key: "rollback.plan", verdict: "dismiss", created_at: RICH_BRIEFING_DEMO.answersTimestamp },
+    { key: "operator.runbook", verdict: "keep", created_at: RICH_BRIEFING_DEMO.answersTimestamp },
+  ])) conflict("round 1 answers");
+  const annotations = oldRound.annotations as Array<{
+    annotation_event_id: string; annotation_kind: string; quote: string; body: string | null;
+    replacement_text: string | null; created_at: number;
+  }>;
+  const submission = oldRound.latest_submission as {
+    id: string; ordinal: number; actor_user_id: string; created_at: number;
+  } | null;
+  if (annotations.length !== 2 ||
+      annotations[0]?.annotation_kind !== "comment" || annotations[0]?.quote !== "Staging rehearsal completed" ||
+      annotations[0]?.body !== "Confirm the rehearsal log is attached to the final release record." ||
+      annotations[0]?.replacement_text !== null || annotations[0]?.created_at !== RICH_BRIEFING_DEMO.annotationsTimestamp ||
+      annotations[1]?.annotation_kind !== "suggest_replacement" || annotations[1]?.quote !== "15 minute recovery objective" ||
+      annotations[1]?.body !== "Use the tighter objective demonstrated by the final rehearsal." ||
+      annotations[1]?.replacement_text !== "10 minute recovery objective" ||
+      annotations[1]?.created_at !== RICH_BRIEFING_DEMO.annotationsTimestamp ||
+      !submission || submission.ordinal !== 1 || submission.actor_user_id !== reviewer.id ||
+      submission.created_at !== RICH_BRIEFING_DEMO.submissionTimestamp ||
+      JSON.stringify([...(oldRound.latest_frozen_membership?.answer_event_ids ?? [])].sort()) !==
+        JSON.stringify(oldRound.answers.map((answer) => answer.response_event_id).sort()) ||
+      JSON.stringify([...(oldRound.latest_frozen_membership?.annotation_event_ids ?? [])].sort()) !==
+        JSON.stringify(annotations.map((annotation) => annotation.annotation_event_id).sort())) {
+    conflict("round 1 annotations or frozen submission");
+  }
+  if (newRound.answers.length !== 0 || newRound.annotations.length !== 0 || newRound.latest_submission) {
+    conflict("round 2 actor state");
+  }
+  const exactCounts = db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM briefing_response_events WHERE round_id = ? AND actor_user_id = ?) AS answers,
+       (SELECT COUNT(*) FROM briefing_annotation_events WHERE round_id = ? AND actor_user_id = ?) AS annotations,
+       (SELECT COUNT(*) FROM briefing_submissions WHERE round_id = ? AND actor_user_id = ?) AS submissions`,
+  ).get(rounds[0].id, reviewer.id, rounds[0].id, reviewer.id, rounds[0].id, reviewer.id) as {
+    answers: number; annotations: number; submissions: number;
+  };
+  if (exactCounts.answers !== 3 || exactCounts.annotations !== 2 || exactCounts.submissions !== 1) {
+    conflict("event or submission counts");
+  }
+
+  return manifestFor(options, publisher, reviewer, briefing.id, rounds, "already-present");
+}
+
 export function seedRichBriefingDemo(
+  db: Db,
+  options: { databasePath: string; artifactRoot?: string },
+): RichBriefingDemoManifest {
+  const existing = exactExistingDemo(db, options);
+  if (existing) return existing;
+  return db.transaction(() => seedNewRichBriefingDemo(db, options))();
+}
+
+function seedNewRichBriefingDemo(
   db: Db,
   options: { databasePath: string; artifactRoot?: string },
 ): RichBriefingDemoManifest {
@@ -263,24 +450,8 @@ export function seedRichBriefingDemo(
     throw new Error("Round 2 carried actor state forward.");
   }
 
-  return {
-    schema: "mandible-rich-briefing-demo@1",
-    database_path: options.databasePath,
-    artifact_root: options.artifactRoot ?? null,
-    users: { publisher_user_id: publisher.id, reviewer_user_id: reviewer.id },
-    briefing: { id: first.briefing_id, key: RICH_BRIEFING_DEMO.briefingKey, title: RICH_BRIEFING_DEMO.title },
-    rounds: [
+  return manifestFor(options, publisher, reviewer, first.briefing_id, [
       { id: first.round_id, ordinal: 1, artifact_version_id: first.artifact_version_id, submitted: true },
       { id: second.round_id, ordinal: 2, artifact_version_id: second.artifact_version_id, submitted: false },
-    ],
-    semantic_state: {
-      round_one_answers: { "scope.approval": "keep", "rollback.plan": "dismiss", "operator.runbook": "keep" },
-      round_one_annotation_kinds: ["comment", "suggest_replacement"],
-      round_one_frozen_answer_count: 3,
-      round_one_frozen_annotation_count: 2,
-      round_two_answers: 0,
-      round_two_annotations: 0,
-      round_two_submission: null,
-    },
-  };
+    ], "seeded");
 }

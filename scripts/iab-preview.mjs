@@ -6,10 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 // Issue 24f0316 — the ledger database lives under the durable root now.
 // Previews stay in the disposable cache root: they are regenerable copies.
-const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
+const require = createRequire(import.meta.url);
+const { liveDbPath } = require("../cli/mandible-paths.cjs");
 
 const DEFAULT_PORT_START = 19421;
 const DEFAULT_PORT_END = 19499;
@@ -19,8 +21,10 @@ const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
 
-const command = process.argv[2] === "cleanup" ? "cleanup" : "preview";
-const args = parseArgs(command === "cleanup" ? process.argv.slice(3) : process.argv.slice(2), command);
+const command = process.argv[2] === "cleanup"
+  ? "cleanup"
+  : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo" : "preview";
+const args = parseArgs(command === "preview" ? process.argv.slice(2) : process.argv.slice(3), command);
 
 if (args.help) {
   printUsage(command);
@@ -28,7 +32,9 @@ if (args.help) {
 }
 
 try {
-  const result = command === "cleanup" ? await cleanupPreviewCache(args) : await main(args);
+  const result = command === "cleanup"
+    ? await cleanupPreviewCache(args)
+    : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
   printResult(result, args.json);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -232,6 +238,144 @@ async function main(options) {
   return withBrowserReadyUrl(metadata);
 }
 
+async function seedBriefingDemo(options) {
+  const custody = validateBriefingDemoCustody();
+  buildServer(custody.worktree);
+
+  const priorEnv = {};
+  const seedEnv = {
+    MANDIBLE_DB: custody.db,
+    MANDIBLE_ARTIFACT_DIR: custody.artifactRoot,
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_INSTANCE_SOURCE_DB: custody.sourceDb,
+  };
+  for (const [key, value] of Object.entries(seedEnv)) {
+    priorEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
+
+  let db = null;
+  try {
+    const cacheBust = `?iab-preview-seed=${Date.now()}`;
+    const [{ openDb }, { seedRichBriefingDemo }] = await Promise.all([
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "db.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "feedback", "rich-briefing-demo.js")).href}${cacheBust}`),
+    ]);
+    db = openDb(custody.db);
+    const manifest = seedRichBriefingDemo(db, {
+      databasePath: custody.db,
+      artifactRoot: custody.artifactRoot,
+    });
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    db.close();
+    db = null;
+    return {
+      ...manifest,
+      ok: true,
+      status: manifest.result,
+      branch: custody.branch,
+      worktree: custody.worktree,
+      previewRoot: custody.previewRoot,
+      db: custody.db,
+      sourceDb: custody.sourceDb,
+      artifactRoot: custody.artifactRoot,
+    };
+  } finally {
+    db?.close();
+    for (const [key, value] of Object.entries(priorEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function validateBriefingDemoCustody() {
+  const cwd = process.cwd();
+  const worktree = git(["rev-parse", "--show-toplevel"], { cwd }).stdout.trim();
+  const branch = git(["branch", "--show-current"], { cwd: worktree }).stdout.trim();
+  const protectedBranch = resolveProtectedBranch(worktree);
+  if (!branch.startsWith("integration/") || branch === protectedBranch) {
+    throw new Error(`Refusing demo seed: current branch must be a non-protected integration branch, got ${branch || "<detached>"}.`);
+  }
+
+  const preview = previewPaths(branch);
+  if (!fs.existsSync(preview.metadata)) {
+    throw new Error(`Refusing demo seed: launcher metadata is missing: ${preview.metadata}`);
+  }
+  const metadata = readJsonFile(preview.metadata);
+  if (!metadata) throw new Error(`Refusing demo seed: launcher metadata is unreadable: ${preview.metadata}`);
+  if (metadata.branch !== branch) throw new Error("Refusing demo seed: metadata branch does not match the current integration branch.");
+  if (!metadata.worktree || canonicalPath(metadata.worktree) !== canonicalPath(worktree)) {
+    throw new Error("Refusing demo seed: metadata worktree does not match the current worktree.");
+  }
+  if (!metadata.previewRoot || canonicalPath(metadata.previewRoot) !== canonicalPath(preview.root)) {
+    throw new Error("Refusing demo seed: metadata previewRoot does not match the computed launcher preview root.");
+  }
+
+  if (!metadata.db || !path.isAbsolute(metadata.db) || !fs.existsSync(metadata.db)) {
+    throw new Error("Refusing demo seed: metadata database is missing.");
+  }
+  const db = canonicalPath(metadata.db);
+  const previewRoot = canonicalPath(preview.root);
+  if (!isPathWithin(previewRoot, db) || !fs.statSync(db).isFile()) {
+    throw new Error("Refusing demo seed: metadata database is outside the computed preview root or is not a file.");
+  }
+  const currentPath = path.join(previewRoot, "current.db");
+  const currentTarget = readSymlinkTarget(currentPath);
+  if (!currentTarget || canonicalPath(currentTarget) !== db || path.resolve(currentTarget) !== path.resolve(metadata.db)) {
+    throw new Error("Refusing demo seed: current.db does not exactly select the metadata database.");
+  }
+
+  const expectedPolicy = {
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+  };
+  for (const [key, value] of Object.entries(expectedPolicy)) {
+    if (metadata.instanceEnv?.[key] !== value) {
+      throw new Error(`Refusing demo seed: persisted ${key} does not match the preview policy.`);
+    }
+  }
+  const persistedInstance = metadata.health?.instance;
+  if (persistedInstance?.role !== "preview" || persistedInstance?.operational_mutations !== "reject" ||
+      persistedInstance?.db_path_source !== "iab-preview-copy") {
+    throw new Error("Refusing demo seed: metadata instance policy does not match the persisted preview contract.");
+  }
+  if (metadata.instanceEnv?.MANDIBLE_DB !== metadata.db) {
+    throw new Error("Refusing demo seed: persisted MANDIBLE_DB does not match metadata.db.");
+  }
+  if (!metadata.sourceDb || !path.isAbsolute(metadata.sourceDb) || !fs.existsSync(metadata.sourceDb)) {
+    throw new Error("Refusing demo seed: metadata sourceDb is missing.");
+  }
+  if (metadata.instanceEnv?.MANDIBLE_INSTANCE_SOURCE_DB !== metadata.sourceDb) {
+    throw new Error("Refusing demo seed: persisted MANDIBLE_INSTANCE_SOURCE_DB does not match metadata.sourceDb.");
+  }
+  const sourceDb = canonicalPath(metadata.sourceDb);
+  if (!fs.statSync(sourceDb).isFile() || isPathWithin(previewRoot, sourceDb) ||
+      path.resolve(metadata.sourceDb) === path.resolve(metadata.db) || sourceDb === db) {
+    throw new Error("Refusing demo seed: sourceDb aliases the target or is not isolated outside the preview root.");
+  }
+  if (canonicalPath(persistedInstance.db_path ?? "") !== db ||
+      canonicalPath(persistedInstance.source_db_path ?? "") !== sourceDb) {
+    throw new Error("Refusing demo seed: metadata instance database custody does not match db and sourceDb.");
+  }
+
+  const artifactRoot = canonicalFuturePath(path.join(previewRoot, "rich-briefing-demo-artifacts"));
+  if (!isPathWithin(previewRoot, artifactRoot) || artifactRoot === previewRoot ||
+      artifactRoot === canonicalFuturePath(`${metadata.sourceDb}.artifacts`)) {
+    throw new Error("Refusing demo seed: demo artifact custody is not isolated inside the preview root.");
+  }
+  return { branch, worktree: canonicalPath(worktree), previewRoot, db, sourceDb, artifactRoot };
+}
+
+function buildServer(worktree) {
+  const typescriptEntry = require.resolve("typescript");
+  const compiler = path.join(path.dirname(typescriptEntry), "tsc.js");
+  run(process.execPath, [compiler, "-p", path.join(worktree, "tsconfig.json")], { cwd: worktree });
+}
+
 async function cleanupPreviewCache(options) {
   const root = previewBaseDir(options.previewBaseDir);
   const report = {
@@ -311,6 +455,9 @@ function parseArgs(argv, commandName) {
   if (commandName === "cleanup") {
     return parseCleanupArgs(argv);
   }
+  if (commandName === "seed-briefing-demo") {
+    return parseSeedBriefingDemoArgs(argv);
+  }
 
   const options = {
     branch: null,
@@ -362,6 +509,16 @@ function parseArgs(argv, commandName) {
   return options;
 }
 
+function parseSeedBriefingDemoArgs(argv) {
+  const options = { help: false, json: false };
+  for (const arg of argv) {
+    if (arg === "--help" || arg === "-h") options.help = true;
+    else if (arg === "--json") options.json = true;
+    else throw new Error(`Unknown argument for seed-briefing-demo: ${arg}`);
+  }
+  return options;
+}
+
 function parseCleanupArgs(argv) {
   const options = {
     apply: false,
@@ -406,6 +563,14 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage(commandName = "preview") {
+  if (commandName === "seed-briefing-demo") {
+    console.log(`Usage: node scripts/iab-preview.mjs seed-briefing-demo [--json]
+
+Seed the deterministic rich Briefing fixture into the current integration
+branch's launcher-owned preview copy after validating metadata custody.
+`);
+    return;
+  }
   if (commandName === "cleanup") {
     console.log(`Usage: node scripts/iab-preview.mjs cleanup [options]
 
@@ -459,6 +624,15 @@ function printResult(result, json) {
     for (const entry of result.entries ?? []) {
       console.log(`${entry.action}: ${entry.path} (${formatBytes(entry.bytes ?? 0)}) - ${entry.reason}`);
     }
+    return;
+  }
+
+  if (result.schema === "mandible-rich-briefing-demo@1") {
+    console.log(`Mandible rich Briefing demo ${result.status}`);
+    console.log(`Database: ${result.db}`);
+    console.log(`Source database: ${result.sourceDb}`);
+    console.log(`Artifact custody: ${result.artifactRoot}`);
+    console.log(`Briefing: ${result.briefing.id}`);
     return;
   }
 
@@ -969,6 +1143,18 @@ function canonicalPath(candidatePath) {
   } catch {
     return path.resolve(candidatePath);
   }
+}
+
+function canonicalFuturePath(candidatePath) {
+  let probe = path.resolve(candidatePath);
+  const suffix = [];
+  while (!fs.existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    suffix.unshift(path.basename(probe));
+    probe = parent;
+  }
+  return path.join(canonicalPath(probe), ...suffix);
 }
 
 function ensureDependencies(worktree) {
