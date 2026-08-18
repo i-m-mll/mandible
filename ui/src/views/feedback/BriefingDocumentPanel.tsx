@@ -15,6 +15,7 @@ import {
 
 export type BriefingDocumentPanelProps = {
   briefingId: string;
+  briefingTitle: string;
   roundId: string;
   round: BriefingRoundProjection;
   canMutate: boolean;
@@ -26,6 +27,7 @@ export type BriefingDocumentPanelProps = {
 
 type AnnotationEditor = {
   annotation: BriefingAnnotation | null;
+  directiveItemId?: string;
   start: number;
   end: number;
   quote: string;
@@ -51,13 +53,26 @@ function renderBriefingProse(value: string): string {
   return document.body.innerHTML;
 }
 
+function semanticHeading(value: string): string {
+  const document = new DOMParser().parseFromString(renderMarkdown(value), 'text/html');
+  return (document.body.textContent ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+}
+
+export function suppressRepeatedLeadingHeading(value: string, title: string): string {
+  const atx = /^(?:[ \t]*\r?\n)*[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n|$)/.exec(value);
+  if (atx && semanticHeading(atx[1]) === semanticHeading(title)) return value.slice(atx[0].length);
+  const setext = /^(?:[ \t]*\r?\n)*([^\r\n]+)\r?\n[ \t]{0,3}(?:=+|-+)[ \t]*(?:\r?\n|$)/.exec(value);
+  if (setext && semanticHeading(setext[1]) === semanticHeading(title)) return value.slice(setext[0].length);
+  return value;
+}
+
 async function sha256(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
+export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
@@ -108,7 +123,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, o
       const directive = item.directive!;
       if (directive.start_offset < cursor || directive.end_offset > source.length
           || directive.body_start_offset < directive.start_offset || directive.body_end_offset > directive.end_offset
-          || directive.body_start_offset >= directive.body_end_offset) return 'The pinned directive ranges are inconsistent; this document is read-only.';
+          || directive.body_start_offset >= directive.body_end_offset) return 'The pinned directive ranges are inconsistent.';
       cursor = directive.end_offset;
     }
     return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
@@ -159,7 +174,21 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, o
     const directive = item?.directive;
     if (!item || !directive || source === null) return;
     const quote = source.slice(directive.body_start_offset, directive.body_end_offset);
-    openEditor({ annotation: null, start: directive.body_start_offset, end: directive.body_end_offset, quote, top: 96, left: 24 });
+    openEditor({ annotation: null, directiveItemId: itemId, start: directive.body_start_offset, end: directive.body_end_offset, quote, top: 96, left: 24 });
+  };
+
+  const inlineAnnotations = (start: number, end: number) => {
+    const matches = annotations.filter((annotation) => annotation.start_offset < end && annotation.end_offset > start);
+    return matches.length > 0 ? (
+      <div className="briefing-document__inline-annotations" aria-label="Annotations for this passage">
+        {matches.map((annotation) => (
+          <button type="button" key={annotation.annotation_event_id} onClick={() => openExisting(annotation)}>
+            <strong>“{excerpt(annotation.quote)}”</strong>
+            <span>{annotationKindLabel(annotation.annotation_kind)}{annotation.body ? ` · ${excerpt(annotation.body, 80)}` : ''}</span>
+          </button>
+        ))}
+      </div>
+    ) : null;
   };
 
   const renderProfileDocument = () => {
@@ -168,26 +197,40 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, o
     let cursor = 0;
     for (const item of directiveItems) {
       const directive = item.directive!;
-      const prose = source.slice(cursor, directive.start_offset);
-      if (prose.trim()) parts.push(<div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />);
+      const authoritativeProse = source.slice(cursor, directive.start_offset);
+      const prose = cursor === 0 ? suppressRepeatedLeadingHeading(authoritativeProse, briefingTitle) : authoritativeProse;
+      if (prose.trim() || annotations.some((annotation) => annotation.start_offset < directive.start_offset && annotation.end_offset > cursor)) parts.push(
+        <div key={`prose-${parts.length}`} className="briefing-document__passage">
+          <div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />
+          {inlineAnnotations(cursor, directive.start_offset)}
+        </div>,
+      );
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
       const current = draft[item.id] ?? (item.effective_response?.value && 'verdict' in item.effective_response.value ? item.effective_response.value : null);
       parts.push(
         <section className={`briefing-directive${current || selectedDirectiveId === item.id ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
           onClick={() => setSelectedDirectiveId(item.id)}
           onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
-          <div className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+          <div className="briefing-directive__passage">
+            <div className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+            {inlineAnnotations(directive.start_offset, directive.end_offset)}
+          </div>
           <div className="briefing-directive__actions" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
-            <button type="button" aria-pressed={current?.verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'keep')}>Keep</button>
-            <button type="button" aria-pressed={current?.verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'dismiss')}>Dismiss</button>
-            <button type="button" disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}>Comment</button>
+            <button type="button" aria-label="Keep" title="Keep" aria-pressed={current?.verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'keep')}><CheckIcon /></button>
+            <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={current?.verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'dismiss')}><DismissIcon /></button>
+            <button type="button" aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></button>
           </div>
         </section>,
       );
       cursor = directive.end_offset;
     }
     const tail = source.slice(cursor);
-    if (tail.trim()) parts.push(<div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />);
+    if (tail.trim() || annotations.some((annotation) => annotation.start_offset < source.length && annotation.end_offset > cursor)) parts.push(
+      <div key={`prose-${parts.length}`} className="briefing-document__passage">
+        <div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />
+        {inlineAnnotations(cursor, source.length)}
+      </div>,
+    );
     return <div className="briefing-document__rendered" aria-label="Pinned briefing document">{parts}</div>;
   };
 
@@ -251,17 +294,9 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, o
   };
 
   return (
-    <section className="briefing-document" aria-labelledby="briefing-document-title">
-      <header className="briefing-document__header">
-        <div>
-          <span className="briefing-eyebrow">Pinned document</span>
-          <h3 id="briefing-document-title">Review source</h3>
-        </div>
-        <code>{document.artifact_version_id}</code>
-      </header>
-
+    <section className="briefing-document__content" aria-label="Briefing document">
       {contentError ? <p className="briefing-error" role="alert">{contentError}</p> : null}
-      {profile && round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The directive binding is unavailable; this document is read-only.'}</p> : null}
+      {profile && round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
       {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
       {source === null && !contentError ? <p className="briefing-empty" role="status">Loading document…</p> : null}
       {profile ? renderProfileDocument() : null}
@@ -348,38 +383,21 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, o
         </div>
       ) : null}
 
-      {profile && source !== null ? (
-        <details className="briefing-document__source-disclosure">
-          <summary>Source and existing annotations</summary>
-          <div className="briefing-document__source"><MarkdownSourceEditor blockId={`briefing-document:${briefingId}:${roundId}`} value={source} ariaLabel="Pinned briefing document source" readOnly decorations={decorations} onDecorationClick={(id) => { const annotation = annotations.find((entry) => entry.annotation_event_id === id); if (annotation) openExisting(annotation); }} onChange={() => undefined} onBlur={() => undefined} onCaretChange={() => undefined} onSelectionChange={() => undefined} onItemCommand={() => undefined} onOpenReference={() => undefined} onBoundaryArrow={() => false} /></div>
-        </details>
-      ) : null}
-      {annotations.length > 0 ? (
-        <section className="briefing-document__annotations" aria-labelledby="briefing-annotations-title">
-          <h4 id="briefing-annotations-title">Annotations</h4>
-          <ul>
-            {annotations.map((annotation) => (
-              <li key={annotation.annotation_event_id}>
-                <button type="button" className="briefing-document__annotation-row" onClick={() => openExisting(annotation)}>
-                  <strong>“{excerpt(annotation.quote)}”</strong>
-                  <span>{annotationKindLabel(annotation.annotation_kind)}</span>
-                  {annotation.replacement_text !== null ? <span>Replace with “{excerpt(annotation.replacement_text)}”</span> : null}
-                  {annotation.body ? <span>{annotation.body}</span> : null}
-                </button>
-                {canMutate ? (
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => void remove(annotation)} disabled={busy}>
-                    Delete
-                  </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
       <div className="briefing-document__status" role="status" aria-live="polite">{status}</div>
     </section>
   );
+}
+
+function CheckIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7" /></svg>;
+}
+
+function DismissIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" /></svg>;
+}
+
+function CommentIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" /></svg>;
 }
 
 export default BriefingDocumentPanel;

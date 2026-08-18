@@ -21,7 +21,7 @@ export function shortRouteId(id: string): string {
 
 export function briefingRoute(briefingId: string, roundId?: string | null): string {
   const params = new URLSearchParams({ briefing: shortRouteId(briefingId) });
-  if (roundId) params.set('round', roundId);
+  if (roundId) params.set('round', shortRouteId(roundId));
   return `/#/briefing?${params.toString()}`;
 }
 

@@ -395,10 +395,19 @@ export function readBriefing(
       task_identity: origin_task_identity,
     },
   }));
-  const selected = options.roundId
-    ? rounds.find((round) => round.id === options.roundId)
-    : rounds[0];
-  if (options.roundId && !selected) throw new BriefingStoreError("round not found", 404, "not_found");
+  let selected: (typeof rounds)[number] | undefined = rounds[0];
+  const roundRef = options.roundId;
+  if (roundRef) {
+    selected = rounds.find((round) => round.id === roundRef);
+    if (!selected) {
+      const matches = rounds.filter((round) => round.id.startsWith(roundRef));
+      if (matches.length > 1) {
+        throw new BriefingStoreError("round reference is ambiguous within this Briefing", 409, "ambiguous_round");
+      }
+      selected = matches[0];
+    }
+  }
+  if (roundRef && !selected) throw new BriefingStoreError("round not found", 404, "not_found");
   if (!selected) return { briefing, rounds, selected_round: null };
   const document = pinnedRoundDocument(db, selected.artifact_version_id);
   let bindingStatus: "valid" | "invalid" = "valid";
