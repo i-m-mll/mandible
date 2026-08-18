@@ -77,6 +77,21 @@ afterEach(() => {
 });
 
 describe("annotatable ask store", () => {
+  it("keeps a profiled document's parser identity in frozen submission export", () => {
+    const version = record(":::spec-item{key=\"ship\"}\nShip it\n:::\n", 100);
+    const created = createAsk(db, packet(version.version.id, {
+      document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" },
+    }), { requesterUserId: agentId, now: 1_000 });
+    const opened = readAsk(db, created.ask_id, { answerActorUserId: human1, now: 1_001 })!.ask;
+    submitAsk(db, created.ask_id, human1, {
+      expected_lifecycle_event_id: opened.lifecycle_event_id, answers: [], annotations: [],
+    }, 1_002);
+    const resolved = resolveSubmissionRef(db, `submission:${created.ask_id}#1`, { userId: human1, isOperator: false });
+    expect(resolved.ok).toBe(true);
+    const packetOut = exportSubmissionMarkdown(db, resolved as Extract<typeof resolved, { ok: true }>);
+    expect(packetOut).toContain("document_profile: mandible-briefing.v1");
+  });
+
   it("pins submission-export Markdown escaping and blockquote line bytes", () => {
     expect(markdownBlockquote("first\r\nsecond\rthird\nfourth"))
       .toBe("> first\n> second\n> third\n> fourth");
@@ -193,7 +208,7 @@ describe("annotatable ask store", () => {
       },
     }), { requesterUserId: agentId, now: 1_700 });
     expect(readAsk(db, successor.ask_id, { viewerUserId: human1, answerActorUserId: human1, now: 1_701 })!.ask.document)
-      .toEqual({ artifact_version_id: version.version.id, previous_round_id: first.ask_id });
+      .toEqual({ artifact_version_id: version.version.id, previous_round_id: first.ask_id, profile: null });
     expect(readAsk(db, successor.ask_id, { viewerUserId: human1, answerActorUserId: human1, now: 1_701 })!
       .ask.previous_round?.annotations[0]).toMatchObject({ quote: "Plan", submission_ordinal: 1 });
     const newcomer = createUser(db, { slug: "newcomer", kind: "human", display_name: "Newcomer" }).id;
