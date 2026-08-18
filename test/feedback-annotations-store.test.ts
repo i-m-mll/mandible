@@ -127,11 +127,72 @@ describe("annotatable ask store", () => {
   it("projects corrupt directive bindings as invalid and gates mutations after audience authorization", () => {
     const version = record(":::spec-item{key=\"a\"}\nA\n:::\n", 100);
     const created = createAsk(db, packet(version.version.id, { request_key: "binding-gate", document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" } }), { requesterUserId: agentId, now: 1_000 });
+    const opened = readAsk(db, created.ask_id, { answerActorUserId: human1, now: 1_001 })!.ask;
     db.prepare("UPDATE feedback_item_directives SET definition_digest = ? WHERE collection_id = ?").run("0".repeat(64), created.ask_id);
     expect(readAsk(db, created.ask_id, { answerActorUserId: human1 })!.ask.directive_binding?.status).toBe("invalid");
-    expect(() => applyAskAnswers(db, created.ask_id, human1, [], 1_001)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
-    expect(() => applyAskAnnotations(db, created.ask_id, human1, [], 1_001)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
-    expect(() => applyAskAnswers(db, created.ask_id, "outsider", [], 1_001)).toThrowError(expect.objectContaining({ code: "not_found" }));
+    expect(() => applyAskAnswers(db, created.ask_id, human1, [], 1_002)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
+    expect(() => applyAskAnnotations(db, created.ask_id, human1, [], 1_002)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
+    expect(() => submitAsk(db, created.ask_id, human1, {
+      expected_lifecycle_event_id: opened.lifecycle_event_id, answers: [], annotations: [],
+    }, 1_002)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
+    expect(() => applyAskAnswers(db, created.ask_id, "outsider", [], 1_002)).toThrowError(expect.objectContaining({ code: "not_found" }));
+  });
+
+  it("replays a profiled request without reading or reparsing unavailable pinned bytes", () => {
+    const version = record(":::spec-item{key=\"a\"}\nA\n:::\n", 100);
+    const request = packet(version.version.id, {
+      request_key: "unavailable-replay",
+      document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" },
+    });
+    const created = createAsk(db, request, { requesterUserId: agentId, now: 1_000 });
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    const replayed = createAsk(db, request, { requesterUserId: agentId, now: 1_100 });
+    expect(replayed).toMatchObject({ ask_id: created.ask_id, request_digest: created.request_digest, replay: true });
+  });
+
+  it("projects actor-scoped frozen membership and rejects an unchanged correction", () => {
+    const version = record(":::spec-item{key=\"a\" required=\"true\"}\nA\n:::\n", 100);
+    const created = createAsk(db, packet(version.version.id, {
+      request_key: "membership",
+      document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" },
+    }), { requesterUserId: agentId, now: 1_000 });
+    const opened = readAsk(db, created.ask_id, { answerActorUserId: human1, now: 1_001 })!.ask;
+    const item = opened.items[0];
+    const firstAnswer = applyAskAnswers(db, created.ask_id, human1, [{
+      item_id: item.id,
+      item_revision_id: item.revision.id,
+      operation: "set",
+      value: { verdict: "keep" },
+      expected_response_event_id: null,
+    }], 1_002).answer_event_ids[0];
+    const first = submitAsk(db, created.ask_id, human1, {
+      expected_lifecycle_event_id: opened.lifecycle_event_id,
+      answers: [{ item_id: item.id, item_revision_id: item.revision.id, response_event_id: firstAnswer }],
+      annotations: [],
+    }, 1_003);
+    expect(readAsk(db, created.ask_id, { answerActorUserId: human1, now: 1_004 })!.ask.latest_frozen_membership)
+      .toEqual({ answer_event_ids: [firstAnswer], annotation_event_ids: [] });
+    expect(readAsk(db, created.ask_id, { answerActorUserId: human2, now: 1_004 })!.ask.latest_frozen_membership)
+      .toBeNull();
+    expect(() => submitAsk(db, created.ask_id, human1, {
+      expected_lifecycle_event_id: first.lifecycle_event_id,
+      supersedes_submission_id: first.submission_id,
+      answers: [{ item_id: item.id, item_revision_id: item.revision.id, response_event_id: firstAnswer }],
+      annotations: [],
+    }, 1_005)).toThrowError(expect.objectContaining({ code: "no_op_correction" }));
+    const secondAnswer = applyAskAnswers(db, created.ask_id, human1, [{
+      item_id: item.id,
+      item_revision_id: item.revision.id,
+      operation: "set",
+      value: { verdict: "dismiss" },
+      expected_response_event_id: firstAnswer,
+    }], 1_006).answer_event_ids[0];
+    expect(submitAsk(db, created.ask_id, human1, {
+      expected_lifecycle_event_id: first.lifecycle_event_id,
+      supersedes_submission_id: first.submission_id,
+      answers: [{ item_id: item.id, item_revision_id: item.revision.id, response_event_id: secondAnswer }],
+      annotations: [],
+    }, 1_007).ordinal).toBe(2);
   });
 
   it("pins submission-export Markdown escaping and blockquote line bytes", () => {

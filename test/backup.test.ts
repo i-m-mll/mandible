@@ -366,4 +366,70 @@ describe("backup routes", () => {
       restored.close();
     }
   });
+
+  it("round-trips briefing directive bindings and preserves directive-key uniqueness", async () => {
+    const { db } = await setupBackupRoutes();
+    const { buildMetadataBackupSql } = await import("../src/ledger/backup.js");
+    db.prepare(
+      `INSERT INTO feedback_collections
+         (id, kind, interaction_mode, source, created_at, tombstoned_at)
+       VALUES ('briefing-backup', 'bounded_ask', 'explicit_submit', NULL, 1, NULL)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO feedback_items
+         (id, collection_id, item_kind, identity_mode, client_item_key, current_revision_id, created_at)
+       VALUES ('briefing-item', 'briefing-backup', 'item', 'opaque', 'ship', NULL, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO feedback_item_revisions
+         (id, item_id, ordinal, title, prompt, response_type, required, content_json, position, created_at)
+       VALUES ('briefing-revision', 'briefing-item', 1, 'ship', 'Ship it', 'verdict', 1, '{}', 0, 1)`,
+    ).run();
+    db.prepare("UPDATE feedback_items SET current_revision_id = 'briefing-revision' WHERE id = 'briefing-item'").run();
+    db.prepare(
+      `INSERT INTO feedback_item_directives
+         (collection_id, item_revision_id, directive_key, definition_digest,
+          start_offset, end_offset, body_start_offset, body_end_offset, created_at)
+       VALUES ('briefing-backup', 'briefing-revision', 'ship', ?, 0, 36, 26, 33, 1)`,
+    ).run("a".repeat(64));
+
+    const restored = new Database(":memory:");
+    try {
+      restored.exec(buildMetadataBackupSql(db));
+      expect(restored.prepare(
+        `SELECT collection_id, item_revision_id, directive_key, definition_digest,
+                start_offset, end_offset, body_start_offset, body_end_offset
+           FROM feedback_item_directives`,
+      ).get()).toEqual({
+        collection_id: "briefing-backup",
+        item_revision_id: "briefing-revision",
+        directive_key: "ship",
+        definition_digest: "a".repeat(64),
+        start_offset: 0,
+        end_offset: 36,
+        body_start_offset: 26,
+        body_end_offset: 33,
+      });
+      restored.prepare(
+        `INSERT INTO feedback_items
+           (id, collection_id, item_kind, identity_mode, client_item_key, current_revision_id, created_at)
+         VALUES ('briefing-item-2', 'briefing-backup', 'item', 'opaque', 'ship-2', NULL, 2)`,
+      ).run();
+      restored.prepare(
+        `INSERT INTO feedback_item_revisions
+           (id, item_id, ordinal, title, prompt, response_type, required, content_json, position, created_at)
+         VALUES ('briefing-revision-2', 'briefing-item-2', 1, 'ship-2', 'Ship it too', 'verdict', 0, '{}', 1, 2)`,
+      ).run();
+      restored.prepare("UPDATE feedback_items SET current_revision_id = 'briefing-revision-2' WHERE id = 'briefing-item-2'").run();
+      expect(() => restored.prepare(
+        `INSERT INTO feedback_item_directives
+           (collection_id, item_revision_id, directive_key, definition_digest,
+            start_offset, end_offset, body_start_offset, body_end_offset, created_at)
+         VALUES ('briefing-backup', 'briefing-revision-2', 'ship', ?, 40, 76, 66, 73, 2)`,
+      ).run("b".repeat(64))).toThrow(/UNIQUE constraint failed: feedback_item_directives\.collection_id, feedback_item_directives\.directive_key/);
+      expect(restored.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      restored.close();
+    }
+  });
 });
