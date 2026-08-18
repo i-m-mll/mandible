@@ -65,6 +65,38 @@ describe('artifact-backed Briefing rounds', () => {
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['unsupported', 'mandible-briefing.v2'],
+  ])('fails closed for a %s selected-document profile', (_label, profile) => {
+    const payload = detail() as any;
+    if (profile === undefined) delete payload.selected_round.document.profile;
+    else payload.selected_round.document.profile = profile;
+    const projection = normalizeBriefingProjection(payload);
+    expect(projection.valid).toBe(false);
+    expect(projection.document).toBeNull();
+  });
+
+  it('never renders a raw-source fallback for an invalid profile', async () => {
+    const payload = detail() as any;
+    payload.selected_round.document.profile = 'mandible-briefing.v2';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={null} /></AppShellProvider>);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('invalid or unsupported');
+    expect(screen.queryByLabelText('Briefing document')).toBeNull();
+    expect(screen.queryByLabelText('Pinned briefing document source')).toBeNull();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/artifacts/'))).toBe(false);
+  });
+
   it('formats cadence-backed occurrence labels and adds ordinals only to collisions', () => {
     const labels = briefingRoundLabels([
       { id: 'daily', ordinal: 1, artifact_version_id: ARTIFACT_VERSION, created_at: Date.UTC(2026, 7, 18, 8), origin: { source: 'scan', run_id: '1', task_identity: 'agent-schedule/daily-digest' } },

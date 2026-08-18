@@ -199,20 +199,6 @@ export function BriefingDocumentRenderer({
   }, [briefingId, draft, draftScope, load.round, userId]);
 
   const round = load.round;
-  const profile = round?.document?.profile === 'mandible-briefing.v1';
-  const itemById = useMemo(
-    () => new Map((round?.items ?? []).map((item) => [item.id, item])),
-    [round],
-  );
-  const childrenByParent = useMemo(() => {
-    const children = new Map<string | null, BriefingDirectiveItem[]>();
-    for (const item of round?.items ?? []) {
-      const parent = item.parent_item_id && itemById.has(item.parent_item_id) ? item.parent_item_id : null;
-      children.set(parent, [...(children.get(parent) ?? []), item]);
-    }
-    return children;
-  }, [round, itemById]);
-
   const setValue = (itemId: string, value: BriefingResponseValue | null) => {
     setDraft((current) => ({ ...current, [itemId]: value }));
     setValidationErrors((current) => {
@@ -231,7 +217,7 @@ export function BriefingDocumentRenderer({
     && userKind === 'human'
     && round.items.every((item) => item.responseVisible)
     && (round.state === 'open' || round.state === 'submitted')
-    && (!profile || round.directive_binding?.status === 'valid')
+    && round.directive_binding?.status === 'valid'
     && (!instance || instance.operational_mutations === 'allow'),
   );
   const requiredIncomplete = Boolean(round?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
@@ -246,9 +232,9 @@ export function BriefingDocumentRenderer({
     && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
   const submitReason = !canMutate
     ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
-    : profile && round?.directive_binding?.status !== 'valid'
+    : round?.directive_binding?.status !== 'valid'
       ? (round.directive_binding.reason || 'The directive binding is unavailable.')
-      : profile && contentGate === null ? 'Loading pinned document…'
+      : contentGate === null ? 'Loading pinned document…'
       : contentGate ? contentGate
       : busy ? 'Submitting changes…'
         : requiredIncomplete ? 'Complete the required directives before submitting.'
@@ -256,7 +242,7 @@ export function BriefingDocumentRenderer({
             : null;
 
   const submit = async () => {
-    if (!round || !canMutate || busy || (profile && contentGate !== '')) return;
+    if (!round || !canMutate || busy || contentGate !== '') return;
     const mutation = ++mutationSequence.current;
     const submittedRoundId = round.selected_round_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
@@ -287,14 +273,7 @@ export function BriefingDocumentRenderer({
       const operations: BriefingAnswerOperation[] = [];
       const changedItems: BriefingDirectiveItem[] = [];
       for (const item of answerItems) {
-        let desired = draft[item.id] ?? null;
-        if (item.revision.response_type === 'free_text' && desired && 'text' in desired && !desired.text.trim()) {
-          desired = null;
-        }
-        if (item.revision.response_type === 'multi_choice'
-            && desired && 'option_keys' in desired && desired.option_keys.length === 0) {
-          desired = null;
-        }
+        const desired = draft[item.id] ?? null;
         const current = item.effective_response?.value ?? null;
         if (responseValuesEqual(desired, current)) continue;
         changedItems.push(item);
@@ -358,95 +337,6 @@ export function BriefingDocumentRenderer({
     }
   };
 
-  const renderItem = (item: BriefingDirectiveItem): JSX.Element => {
-    const childItems = childrenByParent.get(item.id) ?? [];
-    if (item.item_kind === 'group') {
-      return (
-        <section className="briefing-document__group" aria-labelledby={`${inputId(item)}-title`} key={item.id}>
-          <h3 id={`${inputId(item)}-title`}>{item.revision.title || item.revision.prompt}</h3>
-          {item.revision.title && item.revision.prompt ? <p>{item.revision.prompt}</p> : null}
-          {item.revision.description ? <p>{item.revision.description}</p> : null}
-          {childItems.map(renderItem)}
-        </section>
-      );
-    }
-    const value = draft[item.id] ?? null;
-    const error = validationErrors[item.id];
-    const describedBy = [item.revision.description ? `${inputId(item)}-description` : '', error ? `${inputId(item)}-error` : '']
-      .filter(Boolean).join(' ') || undefined;
-    const common = {
-      disabled: !canMutate || busy,
-      'aria-invalid': error ? true : undefined,
-      'aria-describedby': describedBy,
-    };
-    let control: JSX.Element;
-    if (item.revision.response_type === 'free_text') {
-      control = (
-        <textarea
-          id={inputId(item)}
-          value={value && 'text' in value ? value.text : ''}
-          onInput={(event) => setValue(item.id, { text: event.currentTarget.value })}
-          {...common}
-        />
-      );
-    } else {
-      const options = item.revision.response_type === 'verdict'
-        ? [{ option_key: 'keep', label: 'Keep', description: null, position: 0 }, { option_key: 'dismiss', label: 'Dismiss', description: null, position: 1 }]
-        : item.revision.options;
-      const multi = item.revision.response_type === 'multi_choice';
-      control = (
-        <fieldset id={inputId(item)} {...common}>
-          <legend className="sr-only">{item.revision.title || item.revision.prompt}</legend>
-          {options.map((option) => {
-            const checked = multi
-              ? Boolean(value && 'option_keys' in value && value.option_keys.includes(option.option_key))
-              : item.revision.response_type === 'verdict'
-                ? Boolean(value && 'verdict' in value && value.verdict === option.option_key)
-                : Boolean(value && 'option_key' in value && value.option_key === option.option_key);
-            return (
-              <label className="briefing-document__choice" key={option.option_key}>
-                <input
-                  type={multi ? 'checkbox' : 'radio'}
-                  name={`round-answer-${item.id}`}
-                  value={option.option_key}
-                  checked={checked}
-                  onChange={() => {
-                    if (multi) {
-                      const selected = new Set(value && 'option_keys' in value ? value.option_keys : []);
-                      if (selected.has(option.option_key)) selected.delete(option.option_key);
-                      else selected.add(option.option_key);
-                      setValue(item.id, {
-                        option_keys: options.map((candidate) => candidate.option_key).filter((key) => selected.has(key)),
-                      });
-                    } else if (item.revision.response_type === 'verdict') {
-                      setValue(item.id, { verdict: option.option_key as 'keep' | 'dismiss' });
-                    } else setValue(item.id, { option_key: option.option_key });
-                  }}
-                  {...common}
-                />
-                <span>{option.label}</span>
-                {option.description ? <small>{option.description}</small> : null}
-              </label>
-            );
-          })}
-        </fieldset>
-      );
-    }
-    return (
-      <div className={`briefing-document__item${error ? ' briefing-document__item--invalid' : ''}`} key={item.id}>
-        <label htmlFor={item.revision.response_type === 'free_text' ? inputId(item) : undefined}>
-          <strong>{item.revision.title || item.revision.prompt}</strong>
-          {item.revision.required ? <span className="briefing-document__required"> Required</span> : null}
-        </label>
-        {item.revision.title && item.revision.prompt ? <p>{item.revision.prompt}</p> : null}
-        {item.revision.description ? <p id={`${inputId(item)}-description`}>{item.revision.description}</p> : null}
-        {control}
-        {error ? <p id={`${inputId(item)}-error`} className="briefing-document__field-error">{error}</p> : null}
-        {childItems.map(renderItem)}
-      </div>
-    );
-  };
-
   const title = round?.title || briefingTitle || 'Briefing';
   const roundLabels = briefingRoundLabels(round?.rounds ?? [], round?.latest_round_id ?? '');
   const selectedSummary = round?.rounds.find((candidate) => candidate.id === round.selected_round_id) ?? null;
@@ -470,12 +360,11 @@ export function BriefingDocumentRenderer({
                 </div>
               ) : null}
               {round.document ? (
-                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={round} canMutate={canMutate && !busy && (!profile || contentGate === '')} onRefresh={reconcile}
+                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={round} canMutate={canMutate && !busy && contentGate === ''} onRefresh={reconcile}
                   draft={Object.fromEntries(Object.entries(draft).filter(([, value]) => !value || 'verdict' in value)) as Record<string, { verdict: 'keep' | 'dismiss' } | null>}
                   onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })}
                   onContentGateChange={setContentGate} />
               ) : null}
-              {!profile ? (childrenByParent.get(null) ?? []).map(renderItem) : null}
               <div className="sr-only" role="status" aria-live="polite">{status}</div>
             </div>
           );

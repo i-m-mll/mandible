@@ -3814,7 +3814,7 @@ export type BriefingRoundProjection = {
   binding_digest: string;
   created_at: number;
   latest_submission_for_actor: null | { id: string; ordinal: number };
-  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v1' | null };
+  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v1' };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: BriefingAnnotation[];
@@ -4073,15 +4073,14 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
   const profile = rawDocument.profile;
-  const document = root.document === null ? null : {
+  const document = root.document !== null && profile === 'mandible-briefing.v1' ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
-    profile: profile === 'mandible-briefing.v1' ? profile : null,
-  };
-  if (root.document !== null
-      && (!document.artifact_version_id
-        || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string'))) valid = false;
-  if (root.document !== null && profile !== null && profile !== undefined && profile !== 'mandible-briefing.v1') valid = false;
+    profile,
+  } : null;
+  if (!document
+      || !document.artifact_version_id
+      || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string')) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
   const bindingStatus = bindingRow.status;
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
@@ -4098,7 +4097,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids) }
     : undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership') && latestFrozenMembership === undefined) valid = false;
-  if (document?.profile === 'mandible-briefing.v1') {
+  if (document) {
     if (!directiveBinding) valid = false;
     const keys = new Set<string>();
     let previousEnd = -1;
@@ -4115,8 +4114,6 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       if (directive) keys.add(directive.key);
     }
     if (items.length === 0) valid = false;
-  } else if (items.some((item) => item.directive)) {
-    valid = false;
   }
   let annotations: BriefingAnnotation[] | undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {
