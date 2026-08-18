@@ -172,11 +172,13 @@ Inherited from the daemon when set: `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`,
 
 Controlled by Mandible:
 
-- `PATH` — `$HOME/.local/bin:$HOME/bin` followed by a fixed system path. An
-  inherited PATH would let whatever launched the daemon decide which `git`,
-  `node`, or `npm` a protected-merge finalizer executes. Override with the
-  `auth_hooks.path` setting.
-- `TERM=dumb` and `CI=1` — a finalizer is non-interactive by construction.
+- `PATH` — `$HOME/.local/bin:$HOME/.cargo/bin:$HOME/bin` followed by a fixed
+  system path. This includes the standard per-user Rustup/Cargo tool location
+  without inheriting arbitrary daemon launcher paths. An inherited PATH would
+  let whatever launched the daemon decide which `git`, `node`, or `npm` a
+  protected-merge finalizer executes. Override with the `auth_hooks.path`
+  setting.
+- `TERM=dumb` and `CI=true` — a finalizer is non-interactive by construction.
 
 Injected facts:
 

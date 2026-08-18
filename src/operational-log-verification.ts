@@ -4,10 +4,8 @@ import type { Db } from "./db.js";
 
 const LEGACY_LOG_SCHEMA = "legacy_ledger";
 
-type LegacyHighWaterState = {
-  legacy_high_water_ts: number | null;
-  legacy_high_water_id: string | null;
-  legacy_high_water_rows: number | null;
+type LegacyGenerationState = {
+  legacy_generation_rowid: number | null;
 };
 
 function canonicalExistingPath(value: string): string {
@@ -24,17 +22,13 @@ function attachedLegacySourcePath(db: Db): string | null {
   return row?.file ? canonicalExistingPath(row.file) : null;
 }
 
-function copyStateMatchesLegacy(db: Db, state: LegacyHighWaterState): boolean {
-  if (state.legacy_high_water_rows === null) return false;
+function copyStateMatchesLegacy(db: Db, state: LegacyGenerationState): boolean {
+  if (state.legacy_generation_rowid === null) return false;
   const row = db.prepare(
-    `SELECT ts, id FROM ${LEGACY_LOG_SCHEMA}.daemon_log ORDER BY ts DESC, id DESC LIMIT 1`,
-  ).get() as { ts: number; id: string } | undefined;
-  const count = db.prepare(
-    `SELECT COUNT(*) AS count FROM ${LEGACY_LOG_SCHEMA}.daemon_log`,
-  ).get() as { count: number };
-  return (row?.ts ?? null) === state.legacy_high_water_ts
-    && (row?.id ?? null) === state.legacy_high_water_id
-    && count.count === state.legacy_high_water_rows;
+    `SELECT COALESCE(MAX(rowid), 0) AS generation_rowid
+     FROM ${LEGACY_LOG_SCHEMA}.daemon_log`,
+  ).get() as { generation_rowid: number };
+  return Number(row.generation_rowid) === state.legacy_generation_rowid;
 }
 
 /**
@@ -47,9 +41,9 @@ export function hasCurrentOperationalLogVerification(db: Db): boolean {
     const sourcePath = attachedLegacySourcePath(db);
     if (!sourcePath) return false;
     const state = db.prepare(
-      `SELECT completed_at, verified_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+      `SELECT completed_at, verified_at, legacy_generation_rowid
        FROM operational_log_copy_state WHERE source_path = ?`,
-    ).get(sourcePath) as ({ completed_at: number | null; verified_at: number | null } & LegacyHighWaterState) | undefined;
+    ).get(sourcePath) as ({ completed_at: number | null; verified_at: number | null } & LegacyGenerationState) | undefined;
     return Boolean(state?.completed_at && state.verified_at && copyStateMatchesLegacy(db, state));
   } catch {
     return false;
