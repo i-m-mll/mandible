@@ -19,6 +19,7 @@ function shell(active: boolean): AppShellContextValue {
     active,
     bottomPanel: null,
     registerBottomPanel: () => () => undefined,
+    setViewSidebarWidth: () => undefined,
   };
 }
 

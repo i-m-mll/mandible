@@ -270,6 +270,7 @@ function shell(overrides: Partial<AppShellContextValue> = {}): AppShellContextVa
   return {
     bottomPanel: null,
     registerBottomPanel: () => () => undefined,
+    setViewSidebarWidth: () => undefined,
     active: true,
     ...overrides,
   };

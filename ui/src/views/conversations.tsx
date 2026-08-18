@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { SidebarGroupNode } from '../components/shared/SidebarGroupNode';
 import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
@@ -3373,9 +3374,7 @@ export function ConversationsView({
   return (
     <div className="chat-history-view">
       <ViewSidebar
-        storageKey="sidebar-width:conversations"
-        defaultWidth={320}
-        minWidth={190}
+        {...VIEW_SIDEBAR_GEOMETRY.console}
         className="chat-history-sidebar"
         ariaLabel="Conversations"
         hidden={sidebarHidden}

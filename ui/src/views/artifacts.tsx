@@ -59,6 +59,7 @@ import {
 import { renderDocumentText } from './spaces/DocumentRenderer';
 import { MarkdownSourceEditor } from './spaces/MarkdownSourceEditor';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -698,9 +699,7 @@ export function ArtifactsView({
   return (
     <div className="artifacts-view">
       <ViewSidebar
-        storageKey="sidebar-width:artifacts"
-        defaultWidth={320}
-        minWidth={240}
+        {...VIEW_SIDEBAR_GEOMETRY.artifacts}
         className="artifacts-sidebar"
         ariaLabel="Artifacts"
         hidden={sidebarHidden}
