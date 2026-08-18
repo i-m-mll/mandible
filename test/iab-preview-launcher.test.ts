@@ -213,6 +213,7 @@ describe("iab-preview launcher", () => {
       file_rpc_dir: fileRpcDir,
     });
     const metadata = {
+      status: "started",
       branch: "integration/test-preview",
       worktree: repo,
       port,
