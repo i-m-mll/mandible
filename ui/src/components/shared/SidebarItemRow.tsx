@@ -4,6 +4,7 @@ import { useRef, useState } from 'preact/hooks';
 export type SidebarItemRowProps = {
   label: string;
   selectionLabel: string;
+  selectionDescription?: string;
   selected?: boolean;
   className?: string;
   leading?: ComponentChildren;
@@ -19,6 +20,7 @@ export type SidebarItemRowProps = {
 export function SidebarItemRow({
   label,
   selectionLabel,
+  selectionDescription,
   selected = false,
   className,
   leading,
@@ -37,6 +39,7 @@ export function SidebarItemRow({
         type="button"
         className="sidebar-list-item sidebar-item-row__select"
         aria-label={selectionLabel}
+        aria-description={selectionDescription}
         aria-current={ariaCurrent}
         tabIndex={tabIndex}
         title={label}

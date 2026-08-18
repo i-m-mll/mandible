@@ -230,7 +230,7 @@ describe('browser-local collection view state', () => {
   it('persists pins and filters across remount and keeps them through reconciliation', async () => {
     const rows = [recurring('alpha'), recurring('beta')];
     const view = render(<ViewStateHarness collections={rows} />);
-    fireEvent.input(screen.getByLabelText('Search collections'), { target: { value: 'alp' } });
+    fireEvent.input(screen.getByLabelText('Search briefings'), { target: { value: 'alp' } });
     fireEvent.click(screen.getByRole('button', { name: 'Collection filters' }));
     fireEvent.click(screen.getByRole('button', { name: 'Recurring feed' }));
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
@@ -255,7 +255,7 @@ describe('browser-local collection view state', () => {
 
     view.unmount();
     render(<ViewStateHarness collections={rows} />);
-    expect((screen.getByLabelText('Search collections') as HTMLInputElement).value).toBe('alp');
+    expect((screen.getByLabelText('Search briefings') as HTMLInputElement).value).toBe('alp');
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
   });
 
@@ -269,6 +269,8 @@ describe('browser-local collection view state', () => {
     const frame = screen.getByRole('complementary', { name: 'Feedback collections' });
     expect(frame.classList.contains('view-sidebar')).toBe(true);
     expect(frame.classList.contains('feedback-collections-sidebar')).toBe(true);
+    expect((screen.getByRole('searchbox', { name: 'Search briefings' }) as HTMLInputElement).placeholder).toBe('Search briefings');
+    expect((frame as HTMLElement).style.width).toBe('360px');
     expect(screen.getByTestId('feedback-collections-sidebar')).toBeTruthy();
     expect(frame.querySelector('.view-sidebar__resize-handle')).toBeTruthy();
 
@@ -282,6 +284,11 @@ describe('browser-local collection view state', () => {
       pinnedCollectionIds: ['feedback_collection:alpha'],
     });
     await waitFor(() => expect(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY)).toContain('feedback_collection:alpha'));
+
+    view.unmount();
+    window.localStorage.setItem('sidebar-width:briefing', '444');
+    render(<ViewStateHarness collections={[recurring('alpha')]} />);
+    expect((screen.getByRole('complementary', { name: 'Feedback collections' }) as HTMLElement).style.width).toBe('444px');
   });
 });
 
@@ -310,7 +317,7 @@ describe('collection shell accessibility and reconciliation', () => {
     fireEvent.click(pin);
     expect(within(sidebar).getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
 
-    fireEvent.input(screen.getByLabelText('Search collections'), { target: { value: 'no-match' } });
+    fireEvent.input(screen.getByLabelText('Search briefings'), { target: { value: 'no-match' } });
     expect(within(sidebar).getByRole('status').textContent).toContain('No collections match');
     expect(screen.queryByRole('textbox', { name: /answer|response/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /submit answer|send response/i })).toBeNull();
@@ -323,6 +330,8 @@ describe('collection shell accessibility and reconciliation', () => {
     expect(alphaRow?.querySelector('.sidebar-item-row')).toBeTruthy();
     expect(alphaRow?.querySelector('.sidebar-item-row__label')?.textContent).toBe('alpha');
     expect(within(alphaRow as HTMLElement).getByLabelText('1 item').textContent).toBe('1');
+    expect(alphaRow?.querySelector('.feedback-collection-row__count')).toBeTruthy();
+    expect(alphaRow?.querySelector('.feedback-collection-row__state')).toBeNull();
     expect(alphaRow?.querySelector('.feedback-collection-row__facts')).toBeNull();
     expect(alphaRow?.textContent).not.toContain('Recurring feed');
     expect(alphaRow?.textContent).not.toContain('Source:');
@@ -335,13 +344,13 @@ describe('collection shell accessibility and reconciliation', () => {
     expect(askRow.querySelector('.sidebar-item-row__actions')?.classList.contains('sidebar-item-row__actions--visible')).toBe(false);
   });
 
-  it('shows the two-state indicator and exposes reversible expiry without changing row identity', async () => {
+  it('keeps state in the model, filters, and accessible selection without a leading indicator', async () => {
     const setExpiry = vi.fn(async () => undefined);
     const openAsk = { ...ask, state: 'open' as const, expiresAt: 50 };
     const view = render(<ViewStateHarness collections={[recurring('alpha'), openAsk]} onSetExpiry={setExpiry} />);
-    expect(screen.getAllByLabelText('State: open').every(
-      (indicator) => indicator.classList.contains('feedback-collection-row__state--open'),
-    )).toBe(true);
+    expect(screen.getByRole('button', { name: 'Select collection alpha' }).getAttribute('aria-description')).toBe('Briefing state: open');
+    expect(screen.getByRole('button', { name: 'Select collection Ask one' }).getAttribute('aria-description')).toBe('Briefing state: open');
+    expect(view.container.querySelector('.feedback-collection-row__state')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Expire alpha' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'More actions for Ask one' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Expire Ask one' }));
@@ -350,7 +359,8 @@ describe('collection shell accessibility and reconciliation', () => {
     })));
 
     view.rerender(<ViewStateHarness collections={[recurring('alpha'), ask]} onSetExpiry={setExpiry} />);
-    expect(screen.getByLabelText('State: expired').classList.contains('feedback-collection-row__state--expired')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Select collection Ask one' }).getAttribute('aria-description')).toBe('Briefing state: expired');
+    expect(view.container.querySelector('.feedback-collection-row__state')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'More actions for Ask one' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Un-expire Ask one' }));
     await waitFor(() => expect(setExpiry).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -360,7 +370,7 @@ describe('collection shell accessibility and reconciliation', () => {
 
   it('uses the shared search, filter popover, dismissal, count, and list navigation idioms', () => {
     const view = render(<ViewStateHarness collections={[recurring('beta'), recurring('alpha'), ask]} />);
-    const search = screen.getByRole('searchbox', { name: 'Search collections' });
+    const search = screen.getByRole('searchbox', { name: 'Search briefings' });
     fireEvent.input(search, { target: { value: 'alp' } });
     expect(screen.getByRole('button', { name: 'Select collection alpha' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Select collection beta' })).toBeNull();
@@ -455,7 +465,7 @@ describe('collection shell accessibility and reconciliation', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/briefing/queue')).toHaveLength(2);
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/feedback/collections')).toHaveLength(3);
-    expect((screen.getByLabelText('Search collections') as HTMLInputElement).value).toBe('alp');
+    expect((screen.getByLabelText('Search briefings') as HTMLInputElement).value).toBe('alp');
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('briefing-detail-cand-1')).toBeTruthy();
     expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}')).toMatchObject({

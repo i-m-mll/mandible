@@ -101,7 +101,7 @@ export function CollectionsSidebar({
     <ViewSidebar
       hidden={hidden}
       storageKey="sidebar-width:briefing"
-      defaultWidth={290}
+      defaultWidth={360}
       minWidth={230}
       ariaLabel="Feedback collections"
       className="feedback-collections-sidebar"
@@ -112,8 +112,8 @@ export function CollectionsSidebar({
             ...current,
             collectionSourceFilter: value,
           }))}
-          placeholder="Search collections"
-          searchAriaLabel="Search collections"
+          placeholder="Search briefings"
+          searchAriaLabel="Search briefings"
           clearAriaLabel="Clear collection search"
           captureFindShortcut
           onBlurWithin={(event) => {
@@ -220,19 +220,14 @@ export function CollectionsSidebar({
                     selectRef={navigation.ref}
                     label={collection.label}
                     selectionLabel={`Select collection ${collection.label}`}
+                    selectionDescription={`Briefing state: ${collection.state}`}
                     selected={selectedCollectionId === collection.id}
                     ariaCurrent={navigation['aria-current']}
                     onKeyDown={navigation.onKeyDown}
                     onSelect={() => onSelect(collection)}
-                    leading={(
-                      <span
-                        className={`feedback-collection-row__state feedback-collection-row__state--${collection.state}`}
-                        aria-label={`State: ${collection.state}`}
-                        title={collection.state}
-                      />
-                    )}
                     badges={(
                       <SidebarItemBadge
+                        className="feedback-collection-row__count"
                         ariaLabel={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
                         title={`${collection.itemCount} item${collection.itemCount === 1 ? '' : 's'}`}
                       >
