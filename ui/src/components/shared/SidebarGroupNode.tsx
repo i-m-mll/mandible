@@ -3,9 +3,7 @@ import type { ComponentChildren } from 'preact';
 type SidebarGroupNodeCommonProps = {
   id: string;
   label: string;
-  count?: number;
-  countLabel?: string;
-  countVisibility?: 'always' | 'interaction';
+  headingDescription?: string;
   expanded: boolean;
   onToggle(): void;
   children: ComponentChildren;
@@ -18,13 +16,26 @@ type SidebarGroupNodeCommonProps = {
 };
 
 export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
-  | { presentation: 'category'; leadingIcon?: never }
-  | { presentation: 'folder'; leadingIcon: ComponentChildren }
+  | {
+    presentation: 'category';
+    leadingIcon?: never;
+    count?: never;
+    countLabel?: never;
+    countVisibility?: never;
+  }
+  | {
+    presentation: 'folder';
+    leadingIcon: ComponentChildren;
+    count?: number;
+    countLabel?: string;
+    countVisibility?: 'always' | 'interaction';
+  }
 );
 
 export function SidebarGroupNode({
   id,
   label,
+  headingDescription,
   count,
   countLabel,
   countVisibility = 'always',
@@ -75,6 +86,7 @@ export function SidebarGroupNode({
         className="sidebar-group-node__heading"
         aria-expanded={expanded}
         aria-controls={bodyId}
+        aria-description={headingDescription}
         onClick={onToggle}
       >
         {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}

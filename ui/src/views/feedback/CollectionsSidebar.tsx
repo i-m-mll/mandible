@@ -225,8 +225,7 @@ export function CollectionsSidebar({
           presentation="category"
           className="feedback-collections-sidebar__pinned"
           label="Pinned"
-          count={visiblePinned.length}
-          countLabel={`${visiblePinned.length} pinned briefing${visiblePinned.length === 1 ? '' : 's'}`}
+          headingDescription={`${visiblePinned.length} pinned briefing${visiblePinned.length === 1 ? '' : 's'}`}
           expanded={!viewState.pinnedSectionCollapsed}
           onToggle={() => setViewState((current) => ({
             ...current,

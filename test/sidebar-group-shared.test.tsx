@@ -9,6 +9,7 @@ import type { FeedbackCollection } from '../ui/src/views/feedback/collection-mod
 import * as api from '../ui/src/api.js';
 
 const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
+const tokenStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -37,6 +38,8 @@ describe('shared sidebar group presentation', () => {
     expect(heading.textContent).toContain('Pinned');
     expect(heading.classList.contains('sidebar-group-node__heading')).toBe(true);
     expect(heading.classList.contains('feedback-collections-sidebar__section-heading')).toBe(false);
+    expect(heading.querySelector('.sidebar-group-node__count')).toBeNull();
+    expect(heading.getAttribute('aria-description')).toBe('1 pinned briefing');
   });
 
   it('supports count-free aggregate headings and stable interaction-only leaf counts', () => {
@@ -95,11 +98,14 @@ describe('shared sidebar group presentation', () => {
     const categoryHeading = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--category > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(categoryHeading).toContain('color: var(--text-muted)');
+    expect(categoryHeading).toContain('color: var(--text-subdued)');
     const folderHeading = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--folder > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
+    expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
+    const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
     expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
   });
 

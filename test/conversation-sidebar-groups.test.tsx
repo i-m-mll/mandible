@@ -86,6 +86,8 @@ describe('conversation sidebar groups', () => {
     renderView();
 
     const pinnedHeading = await screen.findByRole('button', { name: /^Pinned/ });
+    expect(pinnedHeading.querySelector('.sidebar-group-node__count')).toBeNull();
+    expect(pinnedHeading.getAttribute('aria-description')).toBe('2 pinned chats');
     const pinnedSection = pinnedHeading.closest('section') as HTMLElement;
     const showMore = within(pinnedSection).getByRole('button', { name: 'Show more' });
     expect(showMore.tagName).toBe('BUTTON');

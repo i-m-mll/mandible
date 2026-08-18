@@ -3486,7 +3486,7 @@ export function ConversationsView({
                   id="chat-pinned"
                   presentation="category"
                   label={group.label}
-                  count={group.total}
+                  headingDescription={`${group.total} pinned chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('pinned')}
                   onToggle={() => toggleSection('pinned')}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
@@ -3541,7 +3541,7 @@ export function ConversationsView({
                   id="chat-chats"
                   presentation="category"
                   label={group.label}
-                  count={group.total}
+                  headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
