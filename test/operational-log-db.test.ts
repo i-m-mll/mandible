@@ -134,6 +134,58 @@ describe("operational log database lifecycle", () => {
     ).get()).toEqual({ last_ts: 99, last_id: "existing-099" });
   });
 
+  it("coalesces equivalent source-path state without replaying or dropping distinct sources", () => {
+    for (let index = 0; index < 3; index += 1) {
+      insert(canonicalDb, `alias-${index}`, index, `alias-${index}`);
+    }
+    expect(copyForwardLegacyDaemonLogs(store, { now: 1_000 })).toMatchObject({
+      scanned: 3,
+      copied: 3,
+      complete: true,
+    });
+    expect(verifyLegacyDaemonLogCopy(store, { record: true, now: 2_000 }).verified).toBe(true);
+
+    const canonicalSource = fs.realpathSync.native(canonicalPath);
+    const aliasSource = path.join(tempDir, "canonical-alias.db");
+    const distinctSource = path.join(tempDir, "distinct-source.db");
+    fs.symlinkSync(canonicalPath, aliasSource);
+    store.db.prepare(
+      "UPDATE operational_log_copy_state SET source_path = ? WHERE source_path = ?",
+    ).run(aliasSource, canonicalSource);
+    store.db.prepare(
+      `INSERT INTO operational_log_copy_state
+         (source_path, copied_rows, updated_at)
+       VALUES (?, 0, 3_000), (?, 7, 3_000)`,
+    ).run(canonicalSource, distinctSource);
+
+    expect(copyForwardLegacyDaemonLogs(store, { now: 4_000 })).toMatchObject({
+      scanned: 0,
+      copied: 0,
+      complete: true,
+      lastTs: 2,
+      lastId: "alias-2",
+    });
+    expect(store.db.prepare(
+      `SELECT source_path, completed_at, verified_at, legacy_high_water_rows, copied_rows
+       FROM operational_log_copy_state ORDER BY source_path`,
+    ).all()).toEqual([
+      {
+        source_path: canonicalSource,
+        completed_at: 1_000,
+        verified_at: 2_000,
+        legacy_high_water_rows: 3,
+        copied_rows: 3,
+      },
+      {
+        source_path: distinctSource,
+        completed_at: null,
+        verified_at: null,
+        legacy_high_water_rows: null,
+        copied_rows: 7,
+      },
+    ].sort((left, right) => left.source_path.localeCompare(right.source_path)));
+  });
+
   it("does not count the full legacy log while a bounded copy remains incomplete", () => {
     for (let index = 0; index < 3; index += 1) {
       insert(canonicalDb, `bounded-${index}`, 100 + index, `bounded-${index}`);
