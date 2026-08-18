@@ -10,6 +10,10 @@ import {
   SidebarItemRow,
   type SidebarItemOverflowAction,
 } from '../components/shared/SidebarItemRow';
+import {
+  orderByPinnedIds,
+  reconcileOrderedPinIds,
+} from '../components/shared/orderedPins';
 import type { ConsoleSession } from '../state';
 import type {
   BlockType,
@@ -17,6 +21,7 @@ import type {
   ConversationAttachState,
   ConversationBlock,
   ConversationChild,
+  InstanceInfo,
   ConversationParent,
   ConversationSource,
   ConversationSidebarGroup,
@@ -69,6 +74,7 @@ import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import type { WorkRepo } from './work';
+import { useChatViewState } from './conversation-view-state';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
@@ -514,6 +520,7 @@ export type ConversationsViewProps = {
   initialPresetId?: string | null;
   sidebarHidden?: boolean;
   sidebarGroupLimit?: number;
+  instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
     label: string;
@@ -2531,6 +2538,8 @@ function ChatEntryItem({
   isSelected,
   onClick,
   onTogglePin,
+  pinned,
+  pinActionRef,
   onEditTags,
   onRenameSession,
   showPinnedIcon = false,
@@ -2539,6 +2548,8 @@ function ChatEntryItem({
   isSelected: boolean;
   onClick: () => void;
   onTogglePin?: () => void;
+  pinned?: boolean;
+  pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
   showPinnedIcon?: boolean;
@@ -2549,7 +2560,7 @@ function ChatEntryItem({
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
-  const isPinned = Boolean(conversation?.starred || session?.pinned);
+  const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
 
   const handleEditTags = () => {
     if (!onEditTags) return;
@@ -2623,6 +2634,7 @@ function ChatEntryItem({
             <SidebarItemPinAction
               label={title}
               pressed={isPinned}
+              actionRef={pinActionRef}
               onPress={handleTogglePin}
             />
           ) : null}
@@ -2708,6 +2720,7 @@ export function ConversationsView({
   initialPresetId,
   sidebarHidden = false,
   sidebarGroupLimit: rawSidebarGroupLimit,
+  instance = null,
   onSelectSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
@@ -2722,6 +2735,7 @@ export function ConversationsView({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const [chatViewState, setChatViewState] = useChatViewState();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
@@ -2734,6 +2748,8 @@ export function ConversationsView({
   const targetsRef = useRef(visibleTargets);
   targetsRef.current = visibleTargets;
   const previousGroupLimitRef = useRef(sidebarGroupLimit);
+  const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingPinFocusKey = useRef<string | null>(null);
 
   useEffect(() => {
     const previous = previousGroupLimitRef.current;
@@ -2744,8 +2760,24 @@ export function ConversationsView({
     ));
   }, [sidebarGroupLimit]);
 
+  useLayoutEffect(() => {
+    const key = pendingPinFocusKey.current;
+    if (!key) return;
+    const action = pinActionRefs.current.get(key);
+    if (!action) return;
+    action.focus({ preventScroll: true });
+    pendingPinFocusKey.current = null;
+  });
+
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
+  const previewMutationsRejected = instance?.operational_mutations === 'reject';
+  const isConversationPinned = useCallback((conversation: Conversation): boolean => {
+    if (!previewMutationsRejected) return conversation.starred;
+    return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)
+      ? chatViewState.previewPinOverrides[conversation.id]
+      : conversation.starred;
+  }, [chatViewState.previewPinOverrides, previewMutationsRejected]);
 
   const liveSessions = useMemo(() => {
     return consoleSessions
@@ -2986,21 +3018,63 @@ export function ConversationsView({
   }, [liveSessions]);
 
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    const groups = displayedConversations.map((group): ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] } => ({
+    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
+    const groups = displayedConversations.map((group): WorkingGroup => ({
       key: group.key,
       label: group.label,
       total: group.total,
       nextCursor: group.next_cursor,
       kind: group.kind,
-      entries: group.conversations.map((conversation) => ({
-        key: `conversation:${conversation.id}`,
-        project: group.kind === 'project' ? group.label : 'No Project',
-        time: getConversationTime(conversation),
-        kind: 'conversation',
-        conversation,
-        liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
-      })),
+      entries: [],
     }));
+    const groupByKey = new Map(groups.map((group) => [group.key, group]));
+    const ensureGroup = (
+      key: string,
+      kind: ConversationSidebarGroup['kind'],
+      label: string,
+    ): WorkingGroup => {
+      const existing = groupByKey.get(key);
+      if (existing) return existing;
+      const created: WorkingGroup = { key, kind, label, total: 0, nextCursor: null, entries: [] };
+      groups.push(created);
+      groupByKey.set(key, created);
+      return created;
+    };
+    const ensureKindGroup = (
+      kind: 'pinned' | 'chats',
+      label: 'Pinned' | 'Chats',
+    ): WorkingGroup => groups.find((group) => group.kind === kind)
+      ?? ensureGroup(kind, kind, label);
+    const unpinnedTarget = (conversation: Conversation, sourceGroup: WorkingGroup): WorkingGroup => {
+      if (sourceGroup.kind !== 'pinned') return sourceGroup;
+      const project = getConversationProject(conversation, workRepos);
+      if (project === 'No Project') return ensureKindGroup('chats', 'Chats');
+      return groups.find((group) => group.kind === 'project' && group.label === project)
+        ?? ensureGroup(`local-project:${encodeURIComponent(project)}`, 'project', project);
+    };
+    const moveTotal = (source: WorkingGroup, target: WorkingGroup): void => {
+      if (source.key === target.key) return;
+      source.total = Math.max(0, source.total - 1);
+      target.total += 1;
+    };
+
+    for (const sourceGroup of displayedConversations) {
+      const source = groupByKey.get(sourceGroup.key)!;
+      for (const conversation of sourceGroup.conversations) {
+        const target = isConversationPinned(conversation)
+          ? ensureKindGroup('pinned', 'Pinned')
+          : unpinnedTarget(conversation, source);
+        moveTotal(source, target);
+        target.entries.push({
+          key: `conversation:${conversation.id}`,
+          project: target.kind === 'project' ? target.label : 'No Project',
+          time: getConversationTime(conversation),
+          kind: 'conversation',
+          conversation,
+          liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+        });
+      }
+    }
     const conversationProviderIds = new Set(
       displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.session_id)),
     );
@@ -3012,18 +3086,10 @@ export function ConversationsView({
         continue;
       }
       const kind = session.pinned ? 'pinned' : 'chats';
-      let group = groups.find((candidate) => candidate.kind === kind);
-      if (!group) {
-        group = {
-          key: kind,
-          label: kind === 'pinned' ? 'Pinned' : 'Chats',
-          total: 0,
-          nextCursor: null,
-          kind,
-          entries: [],
-        };
-        groups.push(group);
-      }
+      const group = kind === 'pinned'
+        ? ensureKindGroup('pinned', 'Pinned')
+        : ensureKindGroup('chats', 'Chats');
+      group.total += 1;
       group.entries.push({
         key: `session:${session.id}`,
         project: 'No Project',
@@ -3034,28 +3100,49 @@ export function ConversationsView({
       });
     }
 
-    const sortEntries = (items: ChatEntry[]) => [...items].sort((a, b) => {
+    const compareEntries = (a: ChatEntry, b: ChatEntry) => {
       if (sort === 'blocks') {
         const aBlocks = a.conversation?.block_count ?? 0;
         const bBlocks = b.conversation?.block_count ?? 0;
         if (aBlocks !== bBlocks) return bBlocks - aBlocks;
       }
       return b.time - a.time || getEntryTitle(a).localeCompare(getEntryTitle(b));
-    });
+    };
+    const sortEntries = (items: ChatEntry[]) => [...items].sort(compareEntries);
 
     for (const group of groups) {
-      const localSessions = group.entries.filter((entry) => entry.kind === 'session');
-      if (localSessions.length > 0) {
-        group.total += localSessions.length;
-      }
-      group.entries = sortEntries(group.entries);
+      group.entries = group.kind === 'pinned'
+        ? orderByPinnedIds(
+          group.entries,
+          chatViewState.pinnedConversationIds,
+          (entry) => entry.conversation?.id ?? `session:${entry.session?.id ?? entry.key}`,
+          compareEntries,
+        )
+        : sortEntries(group.entries);
     }
+    const visibleGroups = groups.filter((group) => group.total > 0 || group.entries.length > 0);
     return {
-      pinned: groups.find((group) => group.kind === 'pinned') ?? null,
-      projects: groups.filter((group) => group.kind === 'project'),
-      chats: groups.find((group) => group.kind === 'chats') ?? null,
+      pinned: visibleGroups.find((group) => group.kind === 'pinned') ?? null,
+      projects: visibleGroups
+        .filter((group) => group.kind === 'project')
+        .sort((left, right) => left.label.localeCompare(right.label)),
+      chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [displayedConversations, liveByProviderSession, liveSessions, sort]);
+  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, sort, workRepos]);
+
+  useEffect(() => {
+    const effectivePinnedIds = displayedConversations
+      .flatMap((group) => group.conversations)
+      .filter(isConversationPinned)
+      .map((conversation) => conversation.id);
+    setChatViewState((current) => {
+      const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, effectivePinnedIds);
+      return reconciled.length === current.pinnedConversationIds.length
+        && reconciled.every((id, index) => id === current.pinnedConversationIds[index])
+        ? current
+        : { ...current, pinnedConversationIds: reconciled };
+    });
+  }, [displayedConversations, isConversationPinned, setChatViewState]);
 
   const firstChatEntry =
     chatSections.pinned?.entries[0] ??
@@ -3177,10 +3264,32 @@ export function ConversationsView({
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
-    const starred = !entry.conversation.starred;
+    const conversationId = entry.conversation.id;
+    const starred = !isConversationPinned(entry.conversation);
+    if (previewMutationsRejected) {
+      pendingPinFocusKey.current = entry.key;
+      setChatViewState((current) => ({
+        ...current,
+        pinnedConversationIds: starred
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
+          : current.pinnedConversationIds.filter((id) => id !== conversationId),
+        previewPinOverrides: {
+          ...current.previewPinOverrides,
+          [conversationId]: starred,
+        },
+      }));
+      return;
+    }
     try {
-      const updated = await updateConversation(entry.conversation.id, { starred });
+      const updated = await updateConversation(conversationId, { starred });
+      pendingPinFocusKey.current = entry.key;
       updateConversationInList(updated);
+      setChatViewState((current) => ({
+        ...current,
+        pinnedConversationIds: starred
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
+          : current.pinnedConversationIds.filter((id) => id !== conversationId),
+      }));
     } catch {
       // keep the current list state if persistence fails
     }
@@ -3229,7 +3338,12 @@ export function ConversationsView({
         ? selectedConversationId === entry.conversation?.id
         : selectedSessionId === entry.session?.id}
       showPinnedIcon={showPinnedIcon}
+      pinned={entry.conversation ? isConversationPinned(entry.conversation) : undefined}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
+      pinActionRef={entry.conversation ? (element) => {
+        if (element) pinActionRefs.current.set(entry.key, element);
+        else pinActionRefs.current.delete(entry.key);
+      } : undefined}
       onEditTags={entry.conversation ? (tags) => { void handleEditEntryTags(entry, tags); } : undefined}
       onRenameSession={!entry.conversation && entry.session
         ? (label) => { void handleRenameSession(entry, label); }

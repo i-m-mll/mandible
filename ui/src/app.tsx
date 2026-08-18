@@ -2221,6 +2221,7 @@ function App(): JSX.Element {
               initialPresetId={tabRoute.params.preset ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
+              instance={instanceInfo}
               onSelectSession={handleConsoleSelectSession}
               onNewSession={handleConsoleNewSession}
             />
