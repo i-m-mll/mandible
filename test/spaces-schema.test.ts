@@ -428,7 +428,7 @@ describe("spaces core schema — metadata backup classification (issue b395083)"
       expect(sql).toContain(`-- Table: ${table}`);
     }
     expect(sql).toContain(
-      "CHECK(ref_type IN ('issue','comment','artifact','external_ref','space','finding'))",
+      "CHECK(ref_type IN ('issue','comment','artifact','external_ref','space'))",
     );
   });
 });

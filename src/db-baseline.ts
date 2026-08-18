@@ -1,4 +1,5 @@
 import type { Db } from "./db.js";
+import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL, LEGACY_FEEDBACK_DROP_SQL } from "./feedback/schema.js";
 
 /**
  * Schema snapshot generated from a full v1-v131 migration replay.
@@ -9,7 +10,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 141;
+export const BASELINE_SCHEMA_VERSION = 142;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -643,15 +644,10 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         ON operational_incident_observation_events(incident_id, event_seq)`,
   `CREATE INDEX idx_operational_incident_observations_received
         ON operational_incident_observation_events(received_at DESC, id)`,
-  // The v136 CHECK expansion rebuilds v122's dispatch table and preserves all
-  // existing finding/issue rows while adding incident subject columns.
   `CREATE TABLE "agent_dispatch_events" (
         id                        TEXT PRIMARY KEY,
         subject_kind              TEXT NOT NULL
-          CHECK(subject_kind IN ('finding','issue','incident')),
-        candidate_id              TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        revision_id               TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        comment_id                TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
+          CHECK(subject_kind IN ('issue','incident')),
         issue_id                  TEXT,
         incident_id               TEXT
           REFERENCES operational_incidents(id) ON DELETE RESTRICT,
@@ -674,18 +670,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         settled_at                INTEGER,
         CHECK(
           (
-            subject_kind = 'finding'
-            AND candidate_id IS NOT NULL
-            AND revision_id IS NOT NULL
-            AND issue_id IS NULL
-            AND incident_id IS NULL
-          )
-          OR
-          (
             subject_kind = 'issue'
             AND issue_id IS NOT NULL
-            AND candidate_id IS NULL
-            AND revision_id IS NULL
             AND incident_id IS NULL
           )
           OR
@@ -693,18 +679,12 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
             subject_kind = 'incident'
             AND incident_id IS NOT NULL
             AND incident_telemetry_sha256 IS NOT NULL
-            AND candidate_id IS NULL
-            AND revision_id IS NULL
             AND issue_id IS NULL
           )
         )
       )`,
-  `CREATE INDEX idx_agent_dispatch_events_candidate
-         ON agent_dispatch_events(candidate_id, created_at DESC)`,
   `CREATE INDEX idx_agent_dispatch_events_issue
          ON agent_dispatch_events(issue_id, created_at DESC)`,
-  `CREATE INDEX idx_agent_dispatch_events_comment
-         ON agent_dispatch_events(comment_id)`,
   `CREATE INDEX idx_agent_dispatch_events_incident
         ON agent_dispatch_events(incident_id, created_at DESC)`,
   `CREATE TABLE operational_incident_workflow_events (
@@ -1139,6 +1119,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
       )`,
   `CREATE INDEX idx_feedback_comments_item
         ON feedback_comments(item_id, created_at)`,
+  ...LEGACY_FEEDBACK_DROP_SQL,
+  ...BRIEFING_SCHEMA_SQL,
   ...CONVERSATION_SOURCE_SCHEMA_SQL,
 ];
 
@@ -1162,7 +1144,6 @@ const COMPLETED_POST_MIGRATIONS: readonly string[] = [
   "post_migration.v87_backfill_project_keys.complete",
   "post_migration.v89_backfill_orphan_artifact_series.complete",
   "post_migration.v90_space_items_link_space_refs.complete",
-  "post_migration.v121_space_items_finding_refs.complete",
   "post_migration.v91_backfill_artifact_identity.complete",
   "post_migration.v104_artifact_canonical_targets.complete",
   "post_migration.v105_space_export_canonical_artifacts.complete",
@@ -1347,6 +1328,17 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of HEAD_SCHEMA_STATEMENTS) {
       db.exec(statement);
     }
+    // v142 removes the retired finding reference kind. The generated baseline
+    // still contains its historical DDL above so old migration snapshots stay
+    // readable; converge the empty fresh table to the canonical head shape.
+    db.exec("DROP TABLE space_items");
+    db.exec(CANONICAL_SPACE_ITEMS_SQL);
+    db.exec("CREATE INDEX idx_space_items_lookup ON space_items(space_id, ref_type, ref_id)");
+    db.exec("CREATE INDEX idx_space_items_by_ref ON space_items(ref_type, ref_id, space_id)");
+    db.exec("DROP TABLE agent_dispatch_events");
+    db.exec(CANONICAL_AGENT_DISPATCH_SQL);
+    db.exec("CREATE INDEX idx_agent_dispatch_events_issue ON agent_dispatch_events(issue_id, created_at DESC)");
+    db.exec("CREATE INDEX idx_agent_dispatch_events_incident ON agent_dispatch_events(incident_id, created_at DESC)");
 
     const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)");
     setMeta.run("schema_version", String(schemaVersion));

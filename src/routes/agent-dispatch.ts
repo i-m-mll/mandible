@@ -91,9 +91,6 @@ function parseSubject(value: unknown): AgentDispatchSubjectInput {
   const row = value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-  if (row.kind === "finding" && typeof row.candidate_id === "string" && row.candidate_id.trim()) {
-    return { kind: "finding", candidate_id: row.candidate_id.trim() };
-  }
   if (row.kind === "issue" && typeof row.issue_ref === "string" && row.issue_ref.trim()) {
     return { kind: "issue", issue_ref: row.issue_ref.trim() };
   }
@@ -101,8 +98,7 @@ function parseSubject(value: unknown): AgentDispatchSubjectInput {
     return { kind: "incident", incident_id: row.incident_id.trim() };
   }
   throw new AgentDispatchError(
-    "subject must be {kind:'finding',candidate_id}, {kind:'issue',issue_ref}, "
-      + "or {kind:'incident',incident_id}",
+    "subject must be {kind:'issue',issue_ref} or {kind:'incident',incident_id}",
   );
 }
 
@@ -169,9 +165,6 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
   // Read surface so a reloaded page can still show the audit chain.
   server.get("/api/agent-dispatch/events", (req, res) => {
     try {
-      const candidateId = typeof req.query?.candidate_id === "string" && req.query.candidate_id.trim()
-        ? req.query.candidate_id.trim()
-        : undefined;
       const issueId = typeof req.query?.issue_id === "string" && req.query.issue_id.trim()
         ? req.query.issue_id.trim()
         : undefined;
@@ -181,7 +174,7 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
       const limitRaw = typeof req.query?.limit === "string" ? Number(req.query.limit) : Number.NaN;
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.trunc(limitRaw) : undefined;
       sendJson(res, 200, {
-        events: listAgentDispatchEvents(db, { candidateId, issueId, incidentId, limit }),
+        events: listAgentDispatchEvents(db, { issueId, incidentId, limit }),
       });
     } catch (error) {
       handleError(res, error);

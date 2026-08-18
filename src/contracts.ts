@@ -678,11 +678,11 @@ export type ArtifactDraftPublishResult = {
 export type SpaceRenderer = 'canvas' | 'document' | 'board' | 'collection';
 /** Occurrence-level renderer. `document` is intentionally excluded — document structure lives in {@link SpaceBlock}, not occurrences. */
 export type SpaceOccurrenceRenderer = 'canvas' | 'board' | 'collection';
-export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref' | 'space' | 'finding';
+export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref' | 'space';
 
 export const SPACE_RENDERERS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
 export const SPACE_OCCURRENCE_RENDERERS: readonly SpaceOccurrenceRenderer[] = ['canvas', 'board', 'collection'];
-export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref', 'space', 'finding'];
+export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref', 'space'];
 
 export type Space = {
   id: string;
@@ -966,463 +966,59 @@ export type ResolverResult = {
 
 export type ResolveRefResponse = { resolution: ResolverResult };
 
-// --- briefing review queue (umbrella 99b74d6 / issue ce22a3a) ----------------
-//
-// The briefing store holds reviewable findings produced by scheduled collector
-// tasks. Identity is publisher-derived and deterministic:
-//   candidate_key = sha256(source + "\0" + ref)
-//   evidence_hash = sha256(canonical JSON of the evidence the ref points at)
-// A (candidate_key, evidence_hash) pair is a REVISION. Seeing the same pair
-// again is only a new occurrence; a new evidence_hash for a known candidate is
-// a new revision that re-pends the candidate exactly once.
-//
-// Review state is DERIVED from the append-only decision-event stream, never
-// stored as a mutable column. See `BriefingCandidateState`.
+// --- Briefings: logical identity -> immutable artifact-backed rounds ---------
 
-export const BRIEFING_INGEST_SCHEMA_V1 = 'briefing-ingest@1';
-export const BRIEFING_INGEST_SCHEMA_V2 = 'briefing-ingest@2';
-/** Backwards-compatible name for existing v1 publishers. */
-export const BRIEFING_INGEST_SCHEMA = BRIEFING_INGEST_SCHEMA_V1;
-export type BriefingIngestSchema =
-  | typeof BRIEFING_INGEST_SCHEMA_V1
-  | typeof BRIEFING_INGEST_SCHEMA_V2;
-
-export type BriefingEvidenceKind = 'snapshot-item' | 'finding-only';
-
-export type BriefingDecisionAction = 'keep' | 'dismiss' | 'undo' | 'expire';
-
-/** Actions a human reviewer may submit. `expire` is system-generated only. */
-export type BriefingReviewAction = 'keep' | 'dismiss' | 'undo';
-
-/**
- * Presentation state of a candidate, derived from the last decision event on
- * its current revision: no events or a trailing `undo` means pending.
- * `expired_unreviewed` is an `expire` event, which the sweep records with a
- * NULL actor because no human reviewed it.
- */
-export type BriefingCandidateState =
-  | 'pending'
-  | 'kept'
-  | 'dismissed'
-  | 'expired_unreviewed';
-
-/** One finding in an ingest batch. All identity fields are publisher-derived. */
-export type BriefingPublisherAdvisoryCode = 'admission_gate_rejected';
-
-export type BriefingPublisherAdvisory = {
-  code: BriefingPublisherAdvisoryCode;
-  reason: string;
-};
-
-export type BriefingIngestItem = {
-  candidate_key: string;
-  source: string;
-  ref: string;
-  title: string;
-  why_notable?: string | null;
-  refs?: string[];
-  evidence_hash: string;
-  evidence_kind: BriefingEvidenceKind;
-  captured_at?: string | null;
-  rank?: number | null;
-  /** v2 only; absent means a leaf item. */
-  item_kind?: 'item' | 'group';
-  /** v2 only; exact candidate_key of a group in the same source collection. */
-  parent?: string | null;
-  /** v2 only; publisher-authored metadata, never a human response event. */
-  publisher_advisory?: BriefingPublisherAdvisory | null;
-};
-
-export type BriefingIngestRequest = {
-  schema: BriefingIngestSchema;
-  task_identity: string;
-  run_id: string;
-  digest: { series_ref: string; version: number };
-  batch_key: string;
-  items: BriefingIngestItem[];
-};
-
-/**
- * Ingest outcome. Replaying a `batch_key` writes nothing and returns exactly
- * this same result, so the shape carries no batch-local or replay-local fields.
- */
-export type BriefingIngestResult = {
-  accepted: number;
-  created: number;
-  revised: number;
-  unchanged: number;
-};
-
-export type BriefingRevision = {
-  id: string;
-  candidate_id: string;
-  title: string;
-  why_notable: string | null;
-  refs: string[];
-  source_ref: string | null;
-  evidence_hash: string;
-  evidence_kind: BriefingEvidenceKind;
-  captured_at: string | null;
-  run_id: string | null;
-  digest_series_ref: string | null;
-  digest_version: number | null;
-  rank: number | null;
-  publisher_advisory: BriefingPublisherAdvisory | null;
-  batch_key: string;
-  ingested_at: number;
-};
-
-export type BriefingGroup = {
-  id: string;
-  candidate_key: string;
-  title: string;
-};
-
-export type BriefingOccurrenceStats = {
-  count: number;
-  first_seen_at: number | null;
-  last_seen_at: number | null;
-};
-
-export type BriefingDecisionEvent = {
-  id: string;
-  candidate_id: string;
-  revision_id: string;
-  action: BriefingDecisionAction;
-  actor_user_id: string | null;
-  comment_id: string | null;
-  created_at: number;
-};
-
-export type BriefingComment = {
-  id: string;
-  candidate_id: string;
-  revision_id: string;
-  body: string;
-  actor_user_id: string | null;
-  created_at: number;
-};
-
-export type BriefingQueueEntry = {
-  id: string;
-  source: string;
-  candidate_key: string;
-  created_at: number;
-  state: BriefingCandidateState;
-  revision: BriefingRevision;
-  revision_count: number;
-  occurrences: BriefingOccurrenceStats;
-  /**
-   * Task identity of the batch that first carried `revision` (its `batch_key`),
-   * resolved from the batch ledger. This is the PRODUCER of this finding as it
-   * currently stands, and it is per-entry on purpose: `BriefingSourceHealth`
-   * reports the identity of a source's MOST RECENT batch, which is a different
-   * fact and may name a different task. NULL only when the batch row is gone.
-   */
-  task_identity: string | null;
-  /** v2 parent group; null for v1 and ungrouped v2 items. */
-  group: BriefingGroup | null;
-};
-
-/** Per-source ingest health, pulled from the batch ledger. */
-export type BriefingSourceHealth = {
-  source: string;
-  pending_count: number;
-  candidate_count: number;
-  last_task_identity: string | null;
-  last_run_id: string | null;
-  last_digest_version: number | null;
-  last_ingested_at: number | null;
-  last_ingest_age_ms: number | null;
-  last_batch_item_count: number | null;
-};
-
-export type BriefingQueueResponse = {
-  candidates: BriefingQueueEntry[];
-  sources: BriefingSourceHealth[];
-};
-
-export type BriefingCandidateHistoryResponse = {
-  candidate: {
-    id: string;
-    source: string;
-    candidate_key: string;
-    current_revision_id: string | null;
-    created_at: number;
-    state: BriefingCandidateState;
-  };
-  revisions: BriefingRevision[];
-  decisions: BriefingDecisionEvent[];
-  comments: BriefingComment[];
-};
-
-/**
- * A human decision POST body.
- *
- * `revision_id` names the revision the judgment is ABOUT — the exact revision
- * the reviewer was shown. A decision is a fact about a revision, never about a
- * candidate: between the render and the click a collector may have re-ingested
- * the finding, and resolving the event against whatever is current at write
- * time would attach the reviewer's judgment to text they never read. Omitting
- * it means "whatever is current", which is only honest for a caller that has no
- * revision in hand.
- *
- * `expected_event_id` is a compare-and-set token and is meaningful only for
- * `action: "undo"`. It names the decision event the caller believes it is
- * undoing — the one it was handed when it made that judgment. When present the
- * undo applies only if that event is still the revision's effective latest
- * decision; a keep, dismiss, or undo appended in between (another tab, another
- * operator) makes the request a 409 rather than letting a stale Undo erase a
- * newer judgment. Omitting it is honest only for a caller with no event in
- * hand, and preserves the pre-existing behavior.
- */
-export type BriefingDecisionRequest = {
-  action: BriefingReviewAction;
-  revision_id?: string;
-  expected_event_id?: string;
-};
-
-/**
- * `revision_id` is the revision the event was appended to (the requested one
- * when the request named it). `state` is the CANDIDATE's presentation state,
- * which is always derived from its current revision — so undoing a superseded
- * revision reports the candidate as still pending on the newer one.
- */
-export type BriefingDecisionResponse = {
-  candidate_id: string;
-  revision_id: string;
-  action: BriefingReviewAction;
-  event_id: string;
-  state: BriefingCandidateState;
-};
-
-export type BriefingCommentResponse = { comment: BriefingComment };
-
-/** SSE event names emitted by the briefing routes. */
-export const BRIEFING_EVENTS = Object.freeze({
-  ingested: 'briefing:ingested',
-  decided: 'briefing:decided',
-  commented: 'briefing:commented',
-  expired: 'briefing:expired',
-} as const);
-
-export type BriefingEvent = (typeof BRIEFING_EVENTS)[keyof typeof BRIEFING_EVENTS];
-
-export const BRIEFING_EVENT_VALUES: readonly BriefingEvent[] = Object.freeze(
-  Object.values(BRIEFING_EVENTS),
-) as readonly BriefingEvent[];
-
-export function isBriefingEvent(value: unknown): value is BriefingEvent {
-  return typeof value === 'string'
-    && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
-}
-
-// --- feedback collections (umbrella 669ef48 / issue 5d54f61) ----------------
-
-export type FeedbackCollectionListState = "all" | "open" | "expired";
-export type FeedbackCollectionState = Exclude<FeedbackCollectionListState, "all">;
-
-/** Collection-general sidebar projection. No collection kind owns this shape. */
-export interface FeedbackCollectionProjection {
-  id: string;
-  kind: string;
-  interaction_mode: "immediate_per_item" | "explicit_submit";
-  source: string | null;
-  label: string;
-  state: FeedbackCollectionState;
-  expires_at: number | null;
-  created_at: number;
-  updated_at: number;
-  item_count: number;
-  expiry_reversible: 0 | 1;
-}
-
-// --- bounded asks (umbrella 669ef48 / issue 2a7aa03) -------------------------
-
-export type FeedbackResponseType =
-  | "verdict"
-  | "free_text"
-  | "single_choice"
-  | "multi_choice";
-
+export type FeedbackResponseType = "verdict" | "free_text" | "single_choice" | "multi_choice";
 export type FeedbackVerdictValue = { verdict: "keep" | "dismiss" };
 export type FeedbackFreeTextValue = { text: string };
 export type FeedbackSingleChoiceValue = { option_key: string };
 export type FeedbackMultiChoiceValue = { option_keys: string[] };
-export type FeedbackResponseValue =
-  | FeedbackVerdictValue
-  | FeedbackFreeTextValue
-  | FeedbackSingleChoiceValue
-  | FeedbackMultiChoiceValue;
+export type FeedbackResponseValue = FeedbackVerdictValue | FeedbackFreeTextValue | FeedbackSingleChoiceValue | FeedbackMultiChoiceValue;
 
-export const MANDIBLE_ASK_RESULT_SCHEMA = "mandible-ask-result@2" as const;
-
-export interface MandibleAskResult {
-  schema: typeof MANDIBLE_ASK_RESULT_SCHEMA;
-  ask_id: string;
-  state: "open" | "submitted" | "expired" | "cancelled";
-  request_digest: string;
-  expires_at: number | null;
-  submissions: Array<{
-    id: string;
-    ordinal: number;
-    supersedes_submission_id: string | null;
-    lifecycle_event_id: string;
-    actor_user_id: string;
-    created_at: number;
-    answers: Array<{
-      item_id: string;
-      client_item_key: string | null;
-      item_revision_id: string;
-      response_event_id: string;
-      response_type: FeedbackResponseType;
-      value: FeedbackResponseValue;
-      actor_user_id: string;
-    }>;
-    annotations: Array<{
-      annotation_event_id: string;
-      annotation_kind: "comment" | "suggest_replacement";
-      start_offset: number;
-      end_offset: number;
-      quote: string;
-      body: string | null;
-      replacement_text: string | null;
-      actor_user_id: string;
-      created_at: number;
-      position: number;
-    }>;
-  }>;
-  wait_timed_out?: true;
-}
-
-export const ASK_EVENTS = Object.freeze({
-  created: "ask:created",
-  submitted: "ask:submitted",
-  cancelled: "ask:cancelled",
-  expired: "ask:expired",
-} as const);
-
-export type AskEvent = (typeof ASK_EVENTS)[keyof typeof ASK_EVENTS];
-export const ASK_EVENT_VALUES: readonly AskEvent[] = Object.freeze(Object.values(ASK_EVENTS));
-
-export function isAskEvent(value: unknown): value is AskEvent {
-  return typeof value === "string"
-    && (ASK_EVENT_VALUES as readonly string[]).includes(value);
-}
-
-// ---------------------------------------------------------------------------
-// Space finding references (briefing umbrella 99b74d6, lane d7e51a1).
-//
-// A `finding` SpaceItem points at ONE briefing review candidate:
-// `ref_id` is the candidate id, and the item `metadata` carries the reference's
-// explicit revision semantics — `revision_mode: 'latest' | 'pinned'`, where
-// `pinned` REQUIRES `pinned_revision_id`. A pinned reference keeps showing the
-// revision it was pinned to when a newer revision arrives; a latest-tracking
-// reference follows the candidate's current revision and says so (the
-// `finding_latest_not_pinned` warning mirrors the artifact-series
-// `series_latest_not_pinned` idiom).
-//
-// Spaces are a READ-ONLY surface for findings: review state is displayed but
-// never mutated from a Space, and adding a finding to a Space is a placement
-// fact only — it implies no decision event.
-// ---------------------------------------------------------------------------
-
-export type SpaceFindingRevisionMode = 'latest' | 'pinned';
-
-export const SPACE_FINDING_REVISION_MODES: readonly SpaceFindingRevisionMode[] = ['latest', 'pinned'];
-
-/** The `metadata` shape stored on a `finding` SpaceItem. */
-export type SpaceFindingRefMetadata = {
-  revision_mode: SpaceFindingRevisionMode;
-  /** Required when (and only when) `revision_mode` is `'pinned'`. */
-  pinned_revision_id?: string;
-};
-
-/**
- * Derived review state of a candidate's CURRENT revision (contract §2: pending
- * iff the current revision has no effective decision event). `unknown` is
- * reported when the decision store is unavailable, never guessed as pending.
- */
-export type FindingReviewState = 'pending' | 'kept' | 'dismissed' | 'expired_unreviewed' | 'unknown';
-
-export type FindingEvidenceKind = 'snapshot-item' | 'finding-only';
-
-/** One `candidate_revisions` row, projected for display. */
-export type SpaceFindingRevisionSummary = {
-  id: string;
-  candidate_id: string;
-  title: string | null;
-  why_notable: string | null;
-  source_ref: string | null;
-  evidence_hash: string | null;
-  evidence_kind: FindingEvidenceKind | null;
-  captured_at: string | null;
-  run_id: string | null;
-  digest_series_ref: string | null;
-  digest_version: number | null;
-  rank: number | null;
-  batch_key: string | null;
-  ingested_at: number | null;
-  refs: string[];
-};
-
-/** A pickable review candidate (Space item picker rows). */
-export type SpaceFindingCandidateSummary = {
-  candidate_id: string;
+export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
+export type BriefingRunSourceHealth = {
   source: string;
-  candidate_key: string;
-  title: string | null;
-  current_revision_id: string | null;
-  review_state: FindingReviewState;
-  created_at: number | null;
+  status: "healthy" | "degraded" | "unavailable";
+  detail: string | null;
+  observed_at: number;
 };
-
-/**
- * Revision state of one placed reference:
- * - `latest` — tracking mode, showing the candidate's current revision.
- * - `pinned_current` — pinned, and the pin is still the current revision.
- * - `pinned_superseded` — pinned, and a newer revision exists (the reference
- *   deliberately does NOT move).
- * - `pinned_missing` — pinned to a revision that is not in the store.
- * - `unresolved` — the candidate itself could not be resolved.
- */
-export type SpaceFindingRevisionState =
-  | 'latest'
-  | 'pinned_current'
-  | 'pinned_superseded'
-  | 'pinned_missing'
-  | 'unresolved';
-
-export type SpaceFindingResolution = {
-  /** Canonical `finding:<candidate id>` ref. */
-  ref: string;
-  candidate_id: string;
-  resolved: boolean;
-  source: string | null;
-  candidate_key: string | null;
-  revision_mode: SpaceFindingRevisionMode;
-  pinned_revision_id: string | null;
-  /** The revision this reference displays under its own revision mode. */
-  effective_revision: SpaceFindingRevisionSummary | null;
-  /** The candidate's current (newest) revision, whatever this reference shows. */
-  current_revision: SpaceFindingRevisionSummary | null;
-  revision_state: SpaceFindingRevisionState;
-  review_state: FindingReviewState;
-  warnings: string[];
-  error?: string;
+export type BriefingRunRequest = {
+  schema: typeof BRIEFING_RUN_SCHEMA;
+  briefing_key: string;
+  title: string;
+  task_identity: string;
+  run_id: string;
+  run_key: string;
+  responder_user_ids: string[];
+  evidence: { series_ref: string; version: number; digest: string };
+  source_health: BriefingRunSourceHealth;
+  document: { markdown: string } | null;
+  quiet_reason: string | null;
+  occurrences: Array<{ directive_key: string; evidence_digest: string; occurred_at: number; metadata: Record<string, unknown> }>;
 };
-
-/** Latest-tracking reference: mirrors artifact `series_latest_not_pinned`. */
-export const SPACE_FINDING_WARNING_LATEST_NOT_PINNED = 'finding_latest_not_pinned';
-/** Pinned reference whose candidate has moved on to a newer revision. */
-export const SPACE_FINDING_WARNING_PINNED_SUPERSEDED = 'finding_pinned_revision_superseded';
-/** Pinned reference whose pinned revision is absent from the store. */
-export const SPACE_FINDING_WARNING_PINNED_MISSING = 'finding_pinned_revision_missing';
-/** The briefing candidate store is not present in this database. */
-export const SPACE_FINDING_WARNING_STORE_UNAVAILABLE = 'finding_store_unavailable';
-
-export type SpaceFindingResolveResponse = { resolution: SpaceFindingResolution };
-export type SpaceFindingListResponse = { findings: SpaceFindingCandidateSummary[] };
+export type BriefingRunReceipt = {
+  receipt_id: string;
+  briefing_id: string;
+  run_id: string;
+  round_id: string | null;
+  artifact_version_id: string | null;
+  quiet: boolean;
+};
+export type BriefingListEntry = {
+  id: string;
+  briefing_key: string;
+  title: string;
+  latest_round_id: string | null;
+  round_count: number;
+  created_at: number;
+  updated_at: number;
+};
+export const BRIEFING_EVENTS = Object.freeze({ changed: "briefings.changed", submitted: "briefings.submitted" } as const);
+export type BriefingEvent = (typeof BRIEFING_EVENTS)[keyof typeof BRIEFING_EVENTS];
+export const BRIEFING_EVENT_VALUES: readonly BriefingEvent[] = Object.freeze(Object.values(BRIEFING_EVENTS));
+export function isBriefingEvent(value: unknown): value is BriefingEvent {
+  return typeof value === "string" && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
+}
 
 // --- executor task inventory (issue 0bc2279) --------------------------------
 //

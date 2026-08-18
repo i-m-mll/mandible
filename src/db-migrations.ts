@@ -11,13 +11,20 @@ import {
 } from "./db-baseline.js";
 import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
-import { encodeRecurringRevisionContent } from "./feedback/store.js";
+import { migrateLegacyFeedbackToBriefings } from "./feedback/migrate-legacy.js";
+import { BRIEFING_SCHEMA_SQL, BRIEFING_SCHEMA_TABLES } from "./feedback/schema.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 import { backfillProjectKeys } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 const dbLog = getDaemonLogger();
+
+// Historical v126 encoder kept local so the retired product store is not a
+// runtime dependency of the migration chain.
+function encodeRecurringRevisionContent(value: Record<string, unknown>): string {
+  return JSON.stringify({ schema: "mandible-recurring-revision@1", ...value });
+}
 
 export interface Migration {
   version: number;
@@ -4723,6 +4730,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
       )`,
     ],
   },
+  {
+    version: 142,
+    name: "artifact_backed_briefing_rounds",
+    statements: [...BRIEFING_SCHEMA_SQL],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
@@ -4854,7 +4866,8 @@ function verifyOperationalIncidentV136Schema(db: Db): void {
   const dispatchSql = (db.prepare(
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_dispatch_events'",
   ).get() as { sql: string } | undefined)?.sql ?? "";
-  if (!dispatchSql.includes("'finding','issue','incident'")) {
+  if (!dispatchSql.includes("'finding','issue','incident'")
+      && !dispatchSql.includes("'issue','incident'")) {
     throw new Error("migration 136 verification: incident dispatch subject CHECK is missing");
   }
   for (const index of [
@@ -5004,6 +5017,12 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           ? []
           : migration.statements.slice(7, 15);
       }
+      if (migration.name === "agent_dispatch_events" && tableExists(db, "agent_dispatch_events")
+          && !hasColumn(db, "agent_dispatch_events", "candidate_id")) {
+        // A rewound v142 fixture already has the canonical issue/incident-only
+        // dispatch table. Never replay the retired finding indexes onto it.
+        statements = [];
+      }
       if (migration.name === "conversation_tags") {
         if (!tableExists(db, "conversations")) {
           // Narrow legacy-schema fixtures can intentionally omit the
@@ -5079,6 +5098,14 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 141) {
         verifyBriefingDirectiveV141Schema(db);
       }
+      if (migration.version === 142) {
+        migrateLegacyFeedbackToBriefings(db);
+        for (const table of BRIEFING_SCHEMA_TABLES) {
+          if (!tableExists(db, table)) {
+            throw new Error(`migration 142 verification: ${table} is missing`);
+          }
+        }
+      }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
@@ -5112,7 +5139,8 @@ export function migrate(db: Db): void {
   // earlier SQL/hooks now; later migrations remain pending until v105 commits.
   const beforeV105 = pending.filter((migration) => migration.version < 105);
   const afterV105 = pending.filter((migration) => migration.version > 105 && migration.version < 126);
-  const afterV126 = pending.filter((migration) => migration.version > 126);
+  const afterV126 = pending.filter((migration) => migration.version > 126 && migration.version < 142);
+  const v142 = pending.filter((migration) => migration.version === 142);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -5371,10 +5399,25 @@ export function migrate(db: Db): void {
   // itself have completed successfully.
   applySchemaMigrations(db, afterV105);
 
-  if (pending.some((migration) => migration.version === 126)) {
+  if (pending.some((migration) => migration.version === 126) && !tableExists(db, "briefings")) {
     migrateFeedbackRecurringCutover(db);
   }
   applySchemaMigrations(db, afterV126);
+  if (v142.length > 0) {
+    // The cutover retires FK-linked legacy tables. SQLite cannot change
+    // foreign_keys inside the generic migration transaction, so establish the
+    // guarded rebuild boundary before entering it and verify on restoration.
+    db.pragma("foreign_keys = OFF");
+    try {
+      applySchemaMigrations(db, v142);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    const violations = db.pragma("foreign_key_check") as unknown[];
+    if (violations.length > 0) {
+      throw new Error(`migration 142 verification: ${violations.length} foreign key violation(s)`);
+    }
+  }
 
   // v133 was exercised by development daemons before release, under its
   // pre-integration number. Converge those head-version databases too: remove
@@ -5437,8 +5480,8 @@ export function migrate(db: Db): void {
   // the v90 gated-rebuild pattern; it runs after applySchemaMigrations(afterV105)
   // so the v121 DDL version is already recorded, and it is a no-op once the live
   // CHECK lists 'finding'.
-  if (shouldRunPostMigration(db, "v121_space_items_finding_refs", pending, 121, () =>
-    needsSpaceItemsFindingRefType(db)
+  if (!tableExists(db, "briefings") && shouldRunPostMigration(
+    db, "v121_space_items_finding_refs", pending, 121, () => needsSpaceItemsFindingRefType(db),
   )) {
     runPostMigration(db, "v121_space_items_finding_refs", () => {
       rebuildSpaceItemsWithFindingRefType(db);

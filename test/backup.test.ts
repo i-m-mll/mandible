@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
+import { createUser } from "../src/users/store.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -367,66 +368,42 @@ describe("backup routes", () => {
     }
   });
 
-  it("round-trips briefing directive bindings and preserves directive-key uniqueness", async () => {
+  it("round-trips artifact-backed Briefing rounds, run provenance, and frozen submissions", async () => {
     const { db } = await setupBackupRoutes();
     const { buildMetadataBackupSql } = await import("../src/ledger/backup.js");
-    db.prepare(
-      `INSERT INTO feedback_collections
-         (id, kind, interaction_mode, source, created_at, tombstoned_at)
-       VALUES ('briefing-backup', 'bounded_ask', 'explicit_submit', NULL, 1, NULL)`,
-    ).run();
-    db.prepare(
-      `INSERT INTO feedback_items
-         (id, collection_id, item_kind, identity_mode, client_item_key, current_revision_id, created_at)
-       VALUES ('briefing-item', 'briefing-backup', 'item', 'opaque', 'ship', NULL, 1)`,
-    ).run();
-    db.prepare(
-      `INSERT INTO feedback_item_revisions
-         (id, item_id, ordinal, title, prompt, response_type, required, content_json, position, created_at)
-       VALUES ('briefing-revision', 'briefing-item', 1, 'ship', 'Ship it', 'verdict', 1, '{}', 0, 1)`,
-    ).run();
-    db.prepare("UPDATE feedback_items SET current_revision_id = 'briefing-revision' WHERE id = 'briefing-item'").run();
-    db.prepare(
-      `INSERT INTO feedback_item_directives
-         (collection_id, item_revision_id, directive_key, definition_digest,
-          start_offset, end_offset, body_start_offset, body_end_offset, created_at)
-       VALUES ('briefing-backup', 'briefing-revision', 'ship', ?, 0, 36, 26, 33, 1)`,
-    ).run("a".repeat(64));
+    const human = createUser(db, { slug: "backup-human", kind: "human", display_name: "Backup Human" });
+    db.exec(`
+      INSERT INTO artifact_blob (id,content_hash,created_at) VALUES ('artifact-blob:briefing','${"a".repeat(64)}',1);
+      INSERT INTO artifact (id,identity_key,latest_version_id,version_count,created_at,updated_at)
+        VALUES ('artifact:briefing','briefing','artifact-version:briefing',1,1,1);
+      INSERT INTO artifact_version (id,artifact_id,version_no,blob_id,source_kind,content_hash,created_at)
+        VALUES ('artifact-version:briefing','artifact:briefing',1,'artifact-blob:briefing','managed','${"a".repeat(64)}',1);
+      INSERT INTO briefings VALUES ('briefing-backup','backup','Backup','round-backup',1,1,2);
+      INSERT INTO briefing_members VALUES ('briefing-backup','${human.id}',1);
+      INSERT INTO briefing_rounds VALUES ('round-backup','briefing-backup',1,'artifact-version:briefing',NULL,'mandible-briefing.v1','${"b".repeat(64)}',1);
+      INSERT INTO briefing_directive_definitions
+        VALUES ('definition-backup','artifact-version:briefing','ship','${"c".repeat(64)}','verdict',1,'Ship it','[]',0,36,26,33,1);
+      INSERT INTO briefing_directive_instances VALUES ('instance-backup','round-backup','definition-backup','ship',0,1);
+      INSERT INTO briefing_runs VALUES ('run-receipt','briefing-backup','round-backup','artifact-version:briefing','${human.id}',
+        'task','run-1','key-1','${"d".repeat(64)}','series',1,'${"e".repeat(64)}','{"source":"test"}',0,NULL,1);
+      INSERT INTO briefing_response_events VALUES ('response-backup','round-backup','instance-backup','set','{"verdict":"keep"}',NULL,'${human.id}',2);
+      INSERT INTO briefing_submissions VALUES ('submission-backup','round-backup',1,NULL,'${human.id}',2);
+      INSERT INTO briefing_submission_answers VALUES ('submission-backup','instance-backup','response-backup',0);
+    `);
 
     const restored = new Database(":memory:");
     try {
       restored.exec(buildMetadataBackupSql(db));
-      expect(restored.prepare(
-        `SELECT collection_id, item_revision_id, directive_key, definition_digest,
-                start_offset, end_offset, body_start_offset, body_end_offset
-           FROM feedback_item_directives`,
-      ).get()).toEqual({
-        collection_id: "briefing-backup",
-        item_revision_id: "briefing-revision",
-        directive_key: "ship",
-        definition_digest: "a".repeat(64),
-        start_offset: 0,
-        end_offset: 36,
-        body_start_offset: 26,
-        body_end_offset: 33,
-      });
-      restored.prepare(
-        `INSERT INTO feedback_items
-           (id, collection_id, item_kind, identity_mode, client_item_key, current_revision_id, created_at)
-         VALUES ('briefing-item-2', 'briefing-backup', 'item', 'opaque', 'ship-2', NULL, 2)`,
-      ).run();
-      restored.prepare(
-        `INSERT INTO feedback_item_revisions
-           (id, item_id, ordinal, title, prompt, response_type, required, content_json, position, created_at)
-         VALUES ('briefing-revision-2', 'briefing-item-2', 1, 'ship-2', 'Ship it too', 'verdict', 0, '{}', 1, 2)`,
-      ).run();
-      restored.prepare("UPDATE feedback_items SET current_revision_id = 'briefing-revision-2' WHERE id = 'briefing-item-2'").run();
+      expect(restored.prepare("SELECT briefing_id, round_id, artifact_version_id, quiet FROM briefing_runs").get())
+        .toEqual({ briefing_id: "briefing-backup", round_id: "round-backup",
+          artifact_version_id: "artifact-version:briefing", quiet: 0 });
+      expect(restored.prepare("SELECT response_event_id FROM briefing_submission_answers").get())
+        .toEqual({ response_event_id: "response-backup" });
       expect(() => restored.prepare(
-        `INSERT INTO feedback_item_directives
-           (collection_id, item_revision_id, directive_key, definition_digest,
-            start_offset, end_offset, body_start_offset, body_end_offset, created_at)
-         VALUES ('briefing-backup', 'briefing-revision-2', 'ship', ?, 40, 76, 66, 73, 2)`,
-      ).run("b".repeat(64))).toThrow(/UNIQUE constraint failed: feedback_item_directives\.collection_id, feedback_item_directives\.directive_key/);
+        `INSERT INTO briefing_directive_instances
+          (id,round_id,definition_id,directive_key,position,created_at)
+         VALUES ('instance-duplicate','round-backup','definition-backup','ship',1,2)`,
+      ).run()).toThrow(/UNIQUE constraint failed: briefing_directive_instances\.round_id, briefing_directive_instances\.directive_key/);
       expect(restored.pragma("foreign_key_check")).toEqual([]);
     } finally {
       restored.close();
