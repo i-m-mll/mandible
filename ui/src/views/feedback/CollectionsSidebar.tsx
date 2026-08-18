@@ -222,6 +222,7 @@ export function CollectionsSidebar({
       <div data-testid="feedback-collections-sidebar">
         <SidebarGroupNode
           id="briefing-pinned"
+          presentation="category"
           className="feedback-collections-sidebar__pinned"
           label="Pinned"
           count={visiblePinned.length}

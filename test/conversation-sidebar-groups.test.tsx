@@ -124,6 +124,7 @@ describe('conversation sidebar groups', () => {
     renderView([agySession]);
     const row = await screen.findByRole('button', { name: 'Open session Agy review' });
     expect(row.getAttribute('aria-description')).toBe('Provider: Gemini');
+    expect(row.querySelector('.sidebar-item-row__badges')).toBeNull();
     expect(within(row).getByRole('img', { name: 'Provider: Gemini' })
       .classList.contains('sidebar-item-row__provider-dot--gemini')).toBe(true);
   });

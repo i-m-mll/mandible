@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact';
 
-export type SidebarGroupNodeProps = {
+type SidebarGroupNodeCommonProps = {
   id: string;
   label: string;
   count?: number;
@@ -8,7 +8,6 @@ export type SidebarGroupNodeProps = {
   countVisibility?: 'always' | 'interaction';
   expanded: boolean;
   onToggle(): void;
-  leadingIcon?: ComponentChildren;
   children: ComponentChildren;
   bodyAs?: 'div' | 'ul';
   className?: string;
@@ -18,12 +17,18 @@ export type SidebarGroupNodeProps = {
   onShowMore?(): void;
 };
 
+export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
+  | { presentation: 'category'; leadingIcon?: never }
+  | { presentation: 'folder'; leadingIcon: ComponentChildren }
+);
+
 export function SidebarGroupNode({
   id,
   label,
   count,
   countLabel,
   countVisibility = 'always',
+  presentation,
   expanded,
   onToggle,
   leadingIcon,
@@ -61,7 +66,7 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
     >
       <button

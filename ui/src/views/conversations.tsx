@@ -7,7 +7,6 @@ import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
   SidebarItemPinAction,
-  SidebarItemProviderDot,
   SidebarItemRow,
   type SidebarItemOverflowAction,
   type SidebarItemProviderTone,
@@ -2567,6 +2566,7 @@ function ChatEntryItem({
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
+  const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
   const handleEditTags = () => {
     if (!onEditTags) return;
@@ -2599,18 +2599,13 @@ function ChatEntryItem({
     <SidebarItemRow
       label={title}
       selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
-      selectionDescription={providerLabel ? `Provider: ${providerLabel}` : undefined}
+      provider={providerLabel && source ? { label: providerLabel, tone: CHAT_PROVIDER_TONES[source] } : undefined}
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
       onSelect={onClick}
-      leading={providerLabel || isSubAgent ? (
-        <>
-          {providerLabel && source ? <SidebarItemProviderDot label={providerLabel} tone={CHAT_PROVIDER_TONES[source]} /> : null}
-          {isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : null}
-        </>
-      ) : undefined}
-      badges={(
+      leading={isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : undefined}
+      badges={hasBadges ? (
         <>
           {conversation && conversation.tags.length > 0 ? (
             <SidebarItemBadge className="chat-history-item__tags" title={conversation.tags.join(' · ')}>
@@ -2626,7 +2621,7 @@ function ChatEntryItem({
             </SidebarItemBadge>
           ) : null}
         </>
-      )}
+      ) : undefined}
       actions={canShowActions ? (
         <>
           {onTogglePin ? (
@@ -3489,6 +3484,7 @@ export function ConversationsView({
               return (
                 <SidebarGroupNode
                   id="chat-pinned"
+                  presentation="category"
                   label={group.label}
                   count={group.total}
                   expanded={!collapsedSections.has('pinned')}
@@ -3505,6 +3501,7 @@ export function ConversationsView({
             {chatSections.projects.length > 0 ? (
               <SidebarGroupNode
                 id="chat-projects"
+                presentation="category"
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
@@ -3516,7 +3513,7 @@ export function ConversationsView({
                   <SidebarGroupNode
                     key={group.key}
                     id={`chat-project-${index}`}
-                    className="chat-project-group"
+                    presentation="folder"
                     bodyClassName="chat-project-group__items"
                     label={group.label}
                     count={group.total}
@@ -3542,6 +3539,7 @@ export function ConversationsView({
               return (
                 <SidebarGroupNode
                   id="chat-chats"
+                  presentation="category"
                   label={group.label}
                   count={group.total}
                   expanded={!collapsedSections.has('chats')}
