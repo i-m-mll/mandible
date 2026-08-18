@@ -1,35 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
-  getAsk,
+  getBriefing,
   getClientAuthWhoami,
   isApiErrorStatus,
-  postAskAnswers,
-  postAskSubmission,
-  type AskAnswerOperation,
-  type AskItem,
-  type AskProjection,
-  type AskResponseValue,
-  type AskSubmissionAnswer,
+  postBriefingAnswers,
+  postBriefingSubmission,
+  type BriefingAnswerOperation,
+  type BriefingDirectiveItem,
+  type BriefingProjection,
+  type BriefingResponseValue,
+  type BriefingSubmissionAnswer,
   type InstanceInfo,
 } from '../../api';
 import { useAppShell } from '../../app-shell';
 import {
   effectiveDraft,
-  loadAskDraft,
+  loadBriefingDraft,
   responseValuesEqual,
-  saveAskDraft,
-  type AskDraft,
-} from './ask-view-state';
-import { AskDocumentPanel } from './AskDocumentPanel';
+  saveBriefingDraft,
+  type BriefingDraft,
+} from './briefing-round-view-state';
+import { BriefingDocumentPanel } from './BriefingDocumentPanel';
 
-export type BoundedAskRendererProps = {
-  askId: string;
+export type BriefingDocumentRendererProps = {
+  briefingId: string;
+  roundId?: string | null;
   instance: InstanceInfo | null;
-  onAskChange?(ask: AskProjection | null): void;
+  onBriefingChange?(briefing: BriefingProjection | null): void;
 };
 
-type LoadState = { ask: AskProjection | null; loading: boolean; error: string | null };
+type LoadState = { round: BriefingProjection | null; loading: boolean; error: string | null };
 
 function storageOrNull(): Storage | null {
   try {
@@ -39,27 +40,28 @@ function storageOrNull(): Storage | null {
   }
 }
 
-function meaningful(value: AskResponseValue | null): boolean {
+function meaningful(value: BriefingResponseValue | null): boolean {
   if (!value) return false;
   if ('text' in value) return value.text.trim().length > 0;
   if ('option_keys' in value) return value.option_keys.length > 0;
   return true;
 }
 
-function inputId(item: AskItem): string {
-  return `bounded-ask-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
+function inputId(item: BriefingDirectiveItem): string {
+  return `briefing-directive-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
 }
 
-export function BoundedAskRenderer({
-  askId,
+export function BriefingDocumentRenderer({
+  briefingId,
+  roundId = null,
   instance,
-  onAskChange,
-}: BoundedAskRendererProps): JSX.Element {
+  onBriefingChange,
+}: BriefingDocumentRendererProps): JSX.Element {
   const { active } = useAppShell();
-  const [load, setLoad] = useState<LoadState>({ ask: null, loading: true, error: null });
+  const [load, setLoad] = useState<LoadState>({ round: null, loading: true, error: null });
   const [userId, setUserId] = useState<string | null>(null);
   const [userKind, setUserKind] = useState<string | null>(null);
-  const [draft, setDraft] = useState<AskDraft>({});
+  const [draft, setDraft] = useState<BriefingDraft>({});
   const [draftScope, setDraftScope] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<string | null>(null);
@@ -68,42 +70,43 @@ export function BoundedAskRenderer({
   const [reload, setReload] = useState(0);
   const loadSequence = useRef(0);
   const mutationSequence = useRef(0);
-  const currentAskId = useRef(askId);
-  currentAskId.current = askId;
+  const currentSelection = useRef(`${briefingId}:${roundId ?? 'latest'}`);
+  currentSelection.current = `${briefingId}:${roundId ?? 'latest'}`;
 
   const reconcile = useCallback(async () => {
     const sequence = ++loadSequence.current;
-    setLoad((current) => ({ ...current, loading: current.ask === null, error: null }));
+    setLoad((current) => ({ ...current, loading: current.round === null, error: null }));
     try {
-      const [identity, ask] = await Promise.all([getClientAuthWhoami(), getAsk(askId)]);
-      if (sequence !== loadSequence.current || currentAskId.current !== askId) return null;
-      if (ask.ask_id !== askId) throw new Error('The ask service returned a mismatched ask identity.');
+      const [identity, round] = await Promise.all([getClientAuthWhoami(), getBriefing(briefingId, roundId)]);
+      if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
+      if (round.briefing_id !== briefingId || (roundId && round.selected_round_id !== roundId)) throw new Error('The Briefing service returned a mismatched immutable round.');
       const nextUserId = identity.authenticated ? identity.user?.id ?? null : null;
       setUserId(nextUserId);
       setUserKind(identity.user?.kind ?? null);
-      setLoad({ ask, loading: false, error: null });
-      onAskChange?.(ask);
-      const nextDraftScope = `${nextUserId ?? 'memory'}:${askId}`;
+      setLoad({ round, loading: false, error: null });
+      onBriefingChange?.(round);
+      const roundScope = `${briefingId}:${round.selected_round_id}`;
+      const nextDraftScope = `${nextUserId ?? 'memory'}:${roundScope}`;
       setDraft((current) => {
         if (draftScope === nextDraftScope) return current;
-        const stored = loadAskDraft(storageOrNull(), nextUserId, askId, ask.items);
-        return Object.keys(stored).length > 0 ? stored : effectiveDraft(ask.items);
+        const stored = loadBriefingDraft(storageOrNull(), nextUserId, roundScope, round.items);
+        return Object.keys(stored).length > 0 ? stored : effectiveDraft(round.items);
       });
       setDraftScope(nextDraftScope);
-      return ask;
+      return round;
     } catch (error) {
-      if (sequence !== loadSequence.current || currentAskId.current !== askId) return null;
+      if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
       const message = error instanceof Error ? error.message : String(error);
       setLoad((current) => ({ ...current, loading: false, error: message }));
-      onAskChange?.(null);
+      onBriefingChange?.(null);
       return null;
     }
-  }, [askId, draftScope, onAskChange]);
+  }, [briefingId, draftScope, onBriefingChange, roundId]);
 
   useEffect(() => {
     loadSequence.current += 1;
     mutationSequence.current += 1;
-    setLoad({ ask: null, loading: true, error: null });
+    setLoad({ round: null, loading: true, error: null });
     setUserId(null);
     setUserKind(null);
     setBusy(false);
@@ -111,30 +114,30 @@ export function BoundedAskRenderer({
     setDraftScope(null);
     setValidationErrors({});
     setStatus(null);
-    onAskChange?.(null);
+    onBriefingChange?.(null);
     void reconcile();
-  }, [askId]); // Deliberately reload/hydrate only when the deep-linked identity changes.
+  }, [briefingId, roundId]);
 
   useEffect(() => {
     if (!active) return undefined;
     let timer: number | null = null;
-    const onFeedback = (event: Event) => {
-      const detail = (event as CustomEvent<{ type?: string; data?: { ask_id?: string } }>).detail;
+    const onBriefing = (event: Event) => {
+      const detail = (event as CustomEvent<{ type?: string; data?: { briefing_id?: string } }>).detail;
       const type = detail?.type;
-      if (type !== 'reconnected' && !type?.startsWith('ask:')) return;
-      if (detail?.data?.ask_id && detail.data.ask_id !== askId) return;
+      if (type !== 'reconnected' && !type?.startsWith('briefing:')) return;
+      if (detail?.data?.briefing_id && detail.data.briefing_id !== briefingId) return;
       if (timer !== null) return;
       timer = window.setTimeout(() => {
         timer = null;
         setReload((value) => value + 1);
       }, 100);
     };
-    window.addEventListener('feedback:sse', onFeedback);
+    window.addEventListener('briefing:sse', onBriefing);
     return () => {
-      window.removeEventListener('feedback:sse', onFeedback);
+      window.removeEventListener('briefing:sse', onBriefing);
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [active, askId]);
+  }, [active, briefingId]);
 
   useEffect(() => {
     if (reload === 0 || !active) return;
@@ -142,26 +145,26 @@ export function BoundedAskRenderer({
   }, [active, reload]);
 
   useEffect(() => {
-    if (draftScope !== `${userId ?? 'memory'}:${askId}`) return;
-    saveAskDraft(storageOrNull(), userId, askId, draft);
-  }, [askId, draft, draftScope, userId]);
+    if (!load.round || draftScope !== `${userId ?? 'memory'}:${briefingId}:${load.round.selected_round_id}`) return;
+    saveBriefingDraft(storageOrNull(), userId, `${briefingId}:${load.round.selected_round_id}`, draft);
+  }, [briefingId, draft, draftScope, load.round, userId]);
 
-  const ask = load.ask;
-  const profile = ask?.document?.profile === 'mandible-briefing.v1';
+  const round = load.round;
+  const profile = round?.document?.profile === 'mandible-briefing.v1';
   const itemById = useMemo(
-    () => new Map((ask?.items ?? []).map((item) => [item.id, item])),
-    [ask],
+    () => new Map((round?.items ?? []).map((item) => [item.id, item])),
+    [round],
   );
   const childrenByParent = useMemo(() => {
-    const children = new Map<string | null, AskItem[]>();
-    for (const item of ask?.items ?? []) {
+    const children = new Map<string | null, BriefingDirectiveItem[]>();
+    for (const item of round?.items ?? []) {
       const parent = item.parent_item_id && itemById.has(item.parent_item_id) ? item.parent_item_id : null;
       children.set(parent, [...(children.get(parent) ?? []), item]);
     }
     return children;
-  }, [ask, itemById]);
+  }, [round, itemById]);
 
-  const setValue = (itemId: string, value: AskResponseValue | null) => {
+  const setValue = (itemId: string, value: BriefingResponseValue | null) => {
     setDraft((current) => ({ ...current, [itemId]: value }));
     setValidationErrors((current) => {
       if (!current[itemId]) return current;
@@ -173,30 +176,29 @@ export function BoundedAskRenderer({
   };
 
   const canMutate = Boolean(
-    ask?.valid
-    && ask.ask_id === askId
+    round?.valid
+    && round.briefing_id === briefingId
     && userId
     && userKind === 'human'
-    && ask.responder_user_ids.includes(userId)
-    && ask.items.every((item) => item.responseVisible)
-    && (ask.state === 'open' || ask.state === 'submitted')
-    && (!profile || ask.directive_binding?.status === 'valid')
+    && round.items.every((item) => item.responseVisible)
+    && (round.state === 'open' || round.state === 'submitted')
+    && (!profile || round.directive_binding?.status === 'valid')
     && (!instance || instance.operational_mutations === 'allow'),
   );
-  const requiredIncomplete = Boolean(ask?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
-  const draftDiffers = Boolean(ask?.items.some((item) => item.item_kind === 'item'
+  const requiredIncomplete = Boolean(round?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
+  const draftDiffers = Boolean(round?.items.some((item) => item.item_kind === 'item'
     && !responseValuesEqual(draft[item.id] ?? null, item.effective_response?.value ?? null)));
-  const currentAnswerIds = (ask?.items ?? []).flatMap((item) => item.effective_response ? [item.effective_response.response_event_id] : []);
-  const currentAnnotationIds = (ask?.annotations ?? []).map((annotation) => annotation.annotation_event_id);
-  const frozenMatches = Boolean(ask?.latest_frozen_membership
-    && currentAnswerIds.length === ask.latest_frozen_membership.answer_event_ids.length
-    && currentAnnotationIds.length === ask.latest_frozen_membership.annotation_event_ids.length
-    && currentAnswerIds.every((id) => ask.latest_frozen_membership!.answer_event_ids.includes(id))
-    && currentAnnotationIds.every((id) => ask.latest_frozen_membership!.annotation_event_ids.includes(id)));
+  const currentAnswerIds = (round?.items ?? []).flatMap((item) => item.effective_response ? [item.effective_response.response_event_id] : []);
+  const currentAnnotationIds = (round?.annotations ?? []).map((annotation) => annotation.annotation_event_id);
+  const frozenMatches = Boolean(round?.latest_frozen_membership
+    && currentAnswerIds.length === round.latest_frozen_membership.answer_event_ids.length
+    && currentAnnotationIds.length === round.latest_frozen_membership.annotation_event_ids.length
+    && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
+    && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
   const submitReason = !canMutate
-    ? (ask?.directive_binding?.reason || 'This ask is read-only for the current identity or instance.')
-    : profile && ask?.directive_binding?.status !== 'valid'
-      ? (ask.directive_binding.reason || 'The directive binding is unavailable.')
+    ? (round?.directive_binding?.reason || 'This round is read-only for the current identity or instance.')
+    : profile && round?.directive_binding?.status !== 'valid'
+      ? (round.directive_binding.reason || 'The directive binding is unavailable.')
       : profile && contentGate === null ? 'Loading pinned document…'
       : contentGate ? contentGate
       : busy ? 'Submitting changes…'
@@ -205,20 +207,20 @@ export function BoundedAskRenderer({
             : null;
 
   const submit = async () => {
-    if (!ask || !canMutate || busy || (profile && contentGate !== '')) return;
+    if (!round || !canMutate || busy || (profile && contentGate !== '')) return;
     const mutation = ++mutationSequence.current;
-    const submittedAskId = ask.ask_id;
+    const submittedRoundId = round.selected_round_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
-      && currentAskId.current === submittedAskId;
+      && currentSelection.current === `${briefingId}:${roundId ?? 'latest'}`;
     const invalid: Record<string, string> = {};
-    for (const item of ask.items) {
+    for (const item of round.items) {
       if (item.item_kind !== 'item' || !item.revision.required) continue;
       if (!meaningful(draft[item.id] ?? null)) invalid[item.id] = 'This answer is required.';
     }
     if (Object.keys(invalid).length > 0) {
       setValidationErrors(invalid);
       setStatus('Complete the required answers before submitting.');
-      const first = ask.items.find((item) => invalid[item.id]);
+      const first = round.items.find((item) => invalid[item.id]);
       if (first) window.setTimeout(() => {
         const control = document.getElementById(inputId(first));
         const focusTarget = control instanceof HTMLFieldSetElement
@@ -232,9 +234,9 @@ export function BoundedAskRenderer({
     setBusy(true);
     setStatus(null);
     try {
-      const answerItems = ask.items.filter((item) => item.item_kind === 'item');
-      const operations: AskAnswerOperation[] = [];
-      const changedItems: AskItem[] = [];
+      const answerItems = round.items.filter((item) => item.item_kind === 'item');
+      const operations: BriefingAnswerOperation[] = [];
+      const changedItems: BriefingDirectiveItem[] = [];
       for (const item of answerItems) {
         let desired = draft[item.id] ?? null;
         if (item.revision.response_type === 'free_text' && desired && 'text' in desired && !desired.text.trim()) {
@@ -248,8 +250,7 @@ export function BoundedAskRenderer({
         if (responseValuesEqual(desired, current)) continue;
         changedItems.push(item);
         operations.push({
-          item_id: item.id,
-          item_revision_id: item.revision.id,
+          directive_key: item.client_item_key ?? item.id,
           operation: desired === null ? 'retract' : 'set',
           expected_response_event_id: item.effective_response?.response_event_id ?? null,
           ...(desired === null ? {} : { value: desired }),
@@ -257,7 +258,7 @@ export function BoundedAskRenderer({
       }
 
       const answerResult = operations.length > 0
-        ? await postAskAnswers(ask.ask_id, operations)
+        ? await postBriefingAnswers(briefingId, submittedRoundId, operations)
         : { answer_event_ids: [] };
       if (answerResult.answer_event_ids.length !== operations.length) {
         throw new Error('The answer service returned an ambiguous answer-event result.');
@@ -266,38 +267,35 @@ export function BoundedAskRenderer({
         item.id,
         operations[index].operation === 'set' ? answerResult.answer_event_ids[index] : null,
       ]));
-      const submissionAnswers: AskSubmissionAnswer[] = [];
+      const submissionAnswers: BriefingSubmissionAnswer[] = [];
       for (const item of answerItems) {
         if (changedEventIds.has(item.id)) {
           const eventId = changedEventIds.get(item.id);
           if (eventId) submissionAnswers.push({
-            item_id: item.id,
-            item_revision_id: item.revision.id,
+            directive_key: item.client_item_key ?? item.id,
             response_event_id: eventId,
           });
         } else if (item.effective_response) {
           submissionAnswers.push({
-            item_id: item.id,
-            item_revision_id: item.revision.id,
+            directive_key: item.client_item_key ?? item.id,
             response_event_id: item.effective_response.response_event_id,
           });
         }
       }
-      await postAskSubmission(ask.ask_id, {
-        expected_lifecycle_event_id: ask.lifecycle_event_id,
-        ...(ask.latest_submission_for_actor
-          ? { supersedes_submission_id: ask.latest_submission_for_actor.id }
+      await postBriefingSubmission(briefingId, submittedRoundId, {
+        ...(round.latest_submission_for_actor
+          ? { supersedes_submission_id: round.latest_submission_for_actor.id }
           : {}),
         answers: submissionAnswers,
-        annotations: (ask.annotations ?? []).map((annotation) => ({
+        annotations: (round.annotations ?? []).map((annotation) => ({
           annotation_event_id: annotation.annotation_event_id,
         })),
       });
-      saveAskDraft(storageOrNull(), userId, ask.ask_id, {});
+      saveBriefingDraft(storageOrNull(), userId, `${briefingId}:${submittedRoundId}`, {});
       if (!mutationIsCurrent()) return;
       const refreshed = await reconcile();
       if (refreshed) setDraft(effectiveDraft(refreshed.items));
-      setStatus(ask.state === 'submitted' ? 'Correction submitted.' : 'Answers submitted.');
+      setStatus(round.state === 'submitted' ? 'Correction submitted.' : 'Answers submitted.');
       setValidationErrors({});
     } catch (error) {
       if (!mutationIsCurrent()) return;
@@ -305,17 +303,17 @@ export function BoundedAskRenderer({
       // The answer batch may have landed even when submit failed. Refetch both
       // ordinary failures and 409s, preserving the unsaved local draft.
       await reconcile();
-      if (isApiErrorStatus(error, 409)) setStatus(`The ask changed. ${error.message}`);
+      if (isApiErrorStatus(error, 409)) setStatus(`The round changed. ${error.message}`);
     } finally {
       if (mutationIsCurrent()) setBusy(false);
     }
   };
 
-  const renderItem = (item: AskItem): JSX.Element => {
+  const renderItem = (item: BriefingDirectiveItem): JSX.Element => {
     const childItems = childrenByParent.get(item.id) ?? [];
     if (item.item_kind === 'group') {
       return (
-        <section className="bounded-ask__group" aria-labelledby={`${inputId(item)}-title`} key={item.id}>
+        <section className="briefing-document__group" aria-labelledby={`${inputId(item)}-title`} key={item.id}>
           <h3 id={`${inputId(item)}-title`}>{item.revision.title || item.revision.prompt}</h3>
           {item.revision.title && item.revision.prompt ? <p>{item.revision.prompt}</p> : null}
           {item.revision.description ? <p>{item.revision.description}</p> : null}
@@ -357,10 +355,10 @@ export function BoundedAskRenderer({
                 ? Boolean(value && 'verdict' in value && value.verdict === option.option_key)
                 : Boolean(value && 'option_key' in value && value.option_key === option.option_key);
             return (
-              <label className="bounded-ask__choice" key={option.option_key}>
+              <label className="briefing-document__choice" key={option.option_key}>
                 <input
                   type={multi ? 'checkbox' : 'radio'}
-                  name={`ask-answer-${item.id}`}
+                  name={`round-answer-${item.id}`}
                   value={option.option_key}
                   checked={checked}
                   onChange={() => {
@@ -386,51 +384,49 @@ export function BoundedAskRenderer({
       );
     }
     return (
-      <div className={`bounded-ask__item${error ? ' bounded-ask__item--invalid' : ''}`} key={item.id}>
+      <div className={`briefing-document__item${error ? ' briefing-document__item--invalid' : ''}`} key={item.id}>
         <label htmlFor={item.revision.response_type === 'free_text' ? inputId(item) : undefined}>
           <strong>{item.revision.title || item.revision.prompt}</strong>
-          {item.revision.required ? <span className="bounded-ask__required"> Required</span> : null}
+          {item.revision.required ? <span className="briefing-document__required"> Required</span> : null}
         </label>
         {item.revision.title && item.revision.prompt ? <p>{item.revision.prompt}</p> : null}
         {item.revision.description ? <p id={`${inputId(item)}-description`}>{item.revision.description}</p> : null}
         {control}
-        {error ? <p id={`${inputId(item)}-error`} className="bounded-ask__field-error">{error}</p> : null}
+        {error ? <p id={`${inputId(item)}-error`} className="briefing-document__field-error">{error}</p> : null}
         {childItems.map(renderItem)}
       </div>
     );
   };
 
-  if (load.loading && !ask) return <div className="briefing-empty" role="status">Loading ask…</div>;
-  if (load.error && !ask) return <div className="briefing-error" role="alert">{load.error}</div>;
-  if (!ask) return <div className="briefing-empty" role="status">Ask unavailable.</div>;
-  if (!ask.valid) {
-    return <div className="briefing-error" role="alert">This ask has an invalid or unsupported projection and is read-only.</div>;
+  if (load.loading && !round) return <div className="briefing-empty" role="status">Loading Briefing round…</div>;
+  if (load.error && !round) return <div className="briefing-error" role="alert">{load.error}</div>;
+  if (!round) return <div className="briefing-empty" role="status">Briefing round unavailable.</div>;
+  if (!round.valid) {
+    return <div className="briefing-error" role="alert">This Briefing round has an invalid or unsupported projection and is read-only.</div>;
   }
 
   const roots = childrenByParent.get(null) ?? [];
   return (
-    <article className="bounded-ask" data-testid="bounded-ask-renderer">
-      <header className="bounded-ask__header">
+    <article className="briefing-document" data-testid="briefing-document-renderer">
+      <header className="briefing-document__header">
         <div>
-          <span className="briefing-eyebrow">Bounded ask</span>
-          <h2>{ask.request_key || 'Agent question'}</h2>
+          <span className="briefing-eyebrow">Briefing round</span>
+          <h2>{round.briefing_key || round.selected_round_id}</h2>
         </div>
-        <span className={`briefing-chip briefing-chip--${ask.state}`}>{ask.state}</span>
+        <span className={`briefing-chip briefing-chip--${round.state}`}>{round.state}</span>
       </header>
       {!canMutate ? (
-        <p className="bounded-ask__read-only" role="status">
-          {ask.state === 'expired' || ask.state === 'cancelled' || ask.state === 'closed'
-            ? `This ask is ${ask.state} and is read-only.`
-            : 'This ask is read-only for the current identity or instance.'}
+        <p className="briefing-document__read-only" role="status">
+          This round is read-only for the current identity or instance.
         </p>
       ) : null}
       {Object.keys(validationErrors).length > 0 ? (
-        <div className="bounded-ask__validation" role="alert">
+        <div className="briefing-document__validation" role="alert">
           Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
         </div>
       ) : null}
-      {ask.document ? (
-        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy && (!profile || contentGate === '')} onRefresh={reconcile}
+      {round.document ? (
+        <BriefingDocumentPanel briefingId={briefingId} roundId={round.selected_round_id} round={round} canMutate={canMutate && !busy && (!profile || contentGate === '')} onRefresh={reconcile}
           draft={Object.fromEntries(Object.entries(draft).filter(([, value]) => !value || 'verdict' in value)) as Record<string, { verdict: 'keep' | 'dismiss' } | null>}
           onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })}
           onContentGateChange={setContentGate} />
@@ -438,14 +434,14 @@ export function BoundedAskRenderer({
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} noValidate>
         {!profile ? roots.map(renderItem) : null}
         {(!profile && canMutate) ? <button type="submit" className="briefing-primary" disabled={busy}>{busy ? 'Submitting…' : 'Submit'}</button> : null}
-        {profile ? <div className="bounded-ask__submit-bar" role="region" aria-label="Round submission">
-          <button type="submit" className="briefing-primary" disabled={Boolean(submitReason)}>{busy ? 'Submitting…' : ask.latest_submission_for_actor ? 'Submit correction' : 'Submit'}</button>
-          {submitReason ? <span className="bounded-ask__submit-reason">{submitReason}</span> : null}
+        {profile ? <div className="briefing-document__submit-bar" role="region" aria-label="Round submission">
+          <button type="submit" className="briefing-primary" disabled={Boolean(submitReason)}>{busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}</button>
+          {submitReason ? <span className="briefing-document__submit-reason">{submitReason}</span> : null}
         </div> : null}
       </form>
-      <div className="bounded-ask__status" role="status" aria-live="polite">{status}</div>
+      <div className="briefing-document__status" role="status" aria-live="polite">{status}</div>
     </article>
   );
 }
 
-export default BoundedAskRenderer;
+export default BriefingDocumentRenderer;

@@ -214,7 +214,7 @@ describe("migration foreign key checks are scoped to the tables they touch", () 
 
       const sql = tableSql(db, "space_items");
       expect(sql).toContain("'space'");
-      expect(sql).toContain("'finding'");
+      expect(sql).not.toContain("'finding'");
       expectOrphanUntouched(db);
     } finally {
       db.close();

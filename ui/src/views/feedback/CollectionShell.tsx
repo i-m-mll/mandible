@@ -10,6 +10,7 @@ export type CollectionShellProps = {
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
+  onSelect?(collection: FeedbackCollection): void;
   children: ComponentChildren;
 };
 
@@ -18,6 +19,7 @@ export function CollectionShell({
   sidebarHidden = false,
   viewState,
   setViewState,
+  onSelect,
   children,
 }: CollectionShellProps): JSX.Element {
   const selectedCollectionId = viewState.selectedCollectionId;
@@ -25,8 +27,8 @@ export function CollectionShell({
     setViewState((current) => ({
       ...current,
       selectedCollectionId: collection.id,
-      source: collection.source ?? current.source,
     }));
+    onSelect?.(collection);
   };
 
   return (
@@ -39,7 +41,7 @@ export function CollectionShell({
         setViewState={setViewState}
         onSelect={selectCollection}
       />
-      <section className="feedback-collection-shell__content" aria-label="Selected feedback collection">
+      <section className="feedback-collection-shell__content" aria-label="Selected Briefing">
         <div className="feedback-collection-shell__content-inner">
           {children}
         </div>

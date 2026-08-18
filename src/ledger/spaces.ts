@@ -33,8 +33,7 @@ export type SpaceItemRefType =
   | "comment"
   | "artifact"
   | "external_ref"
-  | "space"
-  | "finding";
+  | "space";
 
 export const SPACE_RENDERERS: readonly SpaceRenderer[] = [
   "canvas",
@@ -53,10 +52,6 @@ export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = [
   "artifact",
   "external_ref",
   "space",
-  // Briefing review candidates (umbrella 99b74d6). NOTE: the `space_items`
-  // ref_type CHECK constraint must accept 'finding' before these rows persist;
-  // that migration is owned by the briefing schema lane.
-  "finding",
 ];
 
 export interface SpaceRecord {

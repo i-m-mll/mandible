@@ -1,4 +1,5 @@
 import type { Db } from "./db.js";
+import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 
 /**
  * Schema snapshot generated from a full v1-v131 migration replay.
@@ -9,7 +10,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 141;
+export const BASELINE_SCHEMA_VERSION = 142;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -643,15 +644,10 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         ON operational_incident_observation_events(incident_id, event_seq)`,
   `CREATE INDEX idx_operational_incident_observations_received
         ON operational_incident_observation_events(received_at DESC, id)`,
-  // The v136 CHECK expansion rebuilds v122's dispatch table and preserves all
-  // existing finding/issue rows while adding incident subject columns.
   `CREATE TABLE "agent_dispatch_events" (
         id                        TEXT PRIMARY KEY,
         subject_kind              TEXT NOT NULL
-          CHECK(subject_kind IN ('finding','issue','incident')),
-        candidate_id              TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        revision_id               TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        comment_id                TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
+          CHECK(subject_kind IN ('issue','incident')),
         issue_id                  TEXT,
         incident_id               TEXT
           REFERENCES operational_incidents(id) ON DELETE RESTRICT,
@@ -674,18 +670,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         settled_at                INTEGER,
         CHECK(
           (
-            subject_kind = 'finding'
-            AND candidate_id IS NOT NULL
-            AND revision_id IS NOT NULL
-            AND issue_id IS NULL
-            AND incident_id IS NULL
-          )
-          OR
-          (
             subject_kind = 'issue'
             AND issue_id IS NOT NULL
-            AND candidate_id IS NULL
-            AND revision_id IS NULL
             AND incident_id IS NULL
           )
           OR
@@ -693,18 +679,12 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
             subject_kind = 'incident'
             AND incident_id IS NOT NULL
             AND incident_telemetry_sha256 IS NOT NULL
-            AND candidate_id IS NULL
-            AND revision_id IS NULL
             AND issue_id IS NULL
           )
         )
       )`,
-  `CREATE INDEX idx_agent_dispatch_events_candidate
-         ON agent_dispatch_events(candidate_id, created_at DESC)`,
   `CREATE INDEX idx_agent_dispatch_events_issue
          ON agent_dispatch_events(issue_id, created_at DESC)`,
-  `CREATE INDEX idx_agent_dispatch_events_comment
-         ON agent_dispatch_events(comment_id)`,
   `CREATE INDEX idx_agent_dispatch_events_incident
         ON agent_dispatch_events(incident_id, created_at DESC)`,
   `CREATE TABLE operational_incident_workflow_events (
@@ -784,361 +764,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   TASK_COMMAND_V2_INDEX_SQL[0],
   TASK_COMMAND_EVENTS_V2_SQL,
   ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
-  `CREATE TABLE feedback_collections (
-        id                TEXT PRIMARY KEY,
-        kind              TEXT NOT NULL
-                          CHECK(kind IN ('recurring_feed','bounded_ask')),
-        interaction_mode  TEXT NOT NULL
-                          CHECK(interaction_mode IN ('immediate_per_item','explicit_submit')),
-        source            TEXT,
-        created_at        INTEGER NOT NULL,
-        tombstoned_at     INTEGER,
-        expires_at        INTEGER,
-        CHECK (
-          (kind = 'recurring_feed'
-            AND interaction_mode = 'immediate_per_item'
-            AND source IS NOT NULL
-            AND trim(source) != '')
-          OR
-          (kind = 'bounded_ask'
-            AND interaction_mode = 'explicit_submit'
-            AND source IS NULL)
-        )
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_collections_recurring_source
-        ON feedback_collections(kind, source)
-        WHERE kind = 'recurring_feed'`,
-  `CREATE INDEX idx_feedback_collections_kind_created
-        ON feedback_collections(kind, created_at DESC)`,
-  `CREATE INDEX idx_feedback_collections_expiry
-        ON feedback_collections(expires_at)`,
-  `CREATE TABLE feedback_recurring_profiles (
-        collection_id       TEXT PRIMARY KEY
-                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        source_namespace    TEXT NOT NULL CHECK(trim(source_namespace) != ''),
-        item_expiry_ms      INTEGER NOT NULL CHECK(item_expiry_ms > 0),
-        created_at          INTEGER NOT NULL,
-        updated_at          INTEGER NOT NULL
-      )`,
-  `CREATE TABLE feedback_ask_sessions (
-        collection_id             TEXT PRIMARY KEY
-                                  REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        requester_user_id         TEXT NOT NULL
-                                  REFERENCES users(id) ON DELETE RESTRICT,
-        requester_session_id      TEXT NOT NULL
-                                  REFERENCES sessions(id) ON DELETE RESTRICT,
-        request_key               TEXT NOT NULL CHECK(trim(request_key) != ''),
-        request_digest            TEXT NOT NULL CHECK(trim(request_digest) != ''),
-        responder_user_ids_json   TEXT NOT NULL
-                                  CHECK(json_valid(responder_user_ids_json)
-                                    AND json_type(responder_user_ids_json) = 'array'),
-        expires_at                INTEGER,
-        retention_expires_at      INTEGER,
-        created_at                INTEGER NOT NULL,
-        UNIQUE(requester_user_id, requester_session_id, request_key),
-        CHECK(expires_at IS NULL OR expires_at > created_at),
-        CHECK(expires_at IS NULL
-          OR retention_expires_at IS NULL
-          OR retention_expires_at >= expires_at)
-      )`,
-  `CREATE INDEX idx_feedback_ask_sessions_requester
-        ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC)`,
-  `CREATE INDEX idx_feedback_ask_sessions_expiry
-        ON feedback_ask_sessions(expires_at)`,
-  `CREATE TABLE feedback_ingest_requests (
-        id                 TEXT PRIMARY KEY,
-        publisher_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        task_identity      TEXT NOT NULL CHECK(trim(task_identity) != ''),
-        batch_key          TEXT NOT NULL CHECK(trim(batch_key) != ''),
-        request_digest     TEXT NOT NULL
-                           CHECK(length(request_digest) = 64
-                             AND request_digest NOT GLOB '*[^0-9a-f]*'),
-        schema_id          TEXT NOT NULL
-                           CHECK(schema_id IN ('briefing-ingest@1','briefing-ingest@2')),
-        result_json        TEXT NOT NULL DEFAULT '{}'
-                           CHECK(json_valid(result_json)
-                             AND json_type(result_json) = 'object'),
-        received_at        INTEGER NOT NULL,
-        UNIQUE(publisher_user_id, task_identity, batch_key)
-      )`,
-  `CREATE INDEX idx_feedback_ingest_requests_received
-        ON feedback_ingest_requests(received_at DESC)`,
-  `CREATE TABLE feedback_publications (
-        id                  TEXT PRIMARY KEY,
-        collection_id       TEXT NOT NULL
-                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        publication_key     TEXT NOT NULL CHECK(trim(publication_key) != ''),
-        publisher_user_id   TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        task_identity       TEXT NOT NULL CHECK(trim(task_identity) != ''),
-        run_id              TEXT,
-        digest_series_ref   TEXT,
-        digest_version      INTEGER,
-        item_count          INTEGER NOT NULL DEFAULT 0 CHECK(item_count >= 0),
-        received_at         INTEGER NOT NULL,
-        ingest_request_id   TEXT
-                            REFERENCES feedback_ingest_requests(id) ON DELETE RESTRICT,
-        UNIQUE(collection_id, publication_key)
-      )`,
-  `CREATE INDEX idx_feedback_publications_collection
-        ON feedback_publications(collection_id, received_at DESC)`,
-  `CREATE INDEX idx_feedback_publications_task_digest
-        ON feedback_publications(task_identity, digest_version)`,
-  `CREATE INDEX idx_feedback_publications_ingest_request
-        ON feedback_publications(ingest_request_id)
-        WHERE ingest_request_id IS NOT NULL`,
-  `CREATE TABLE feedback_items (
-        id                   TEXT PRIMARY KEY,
-        collection_id        TEXT NOT NULL
-                             REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        parent_item_id       TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        item_kind            TEXT NOT NULL CHECK(item_kind IN ('item','group')),
-        identity_mode        TEXT NOT NULL
-                             CHECK(identity_mode IN ('publisher_dedup','opaque')),
-        external_key         TEXT,
-        client_item_key      TEXT,
-        current_revision_id  TEXT
-                             REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        created_at           INTEGER NOT NULL,
-        tombstoned_at        INTEGER,
-        CHECK(parent_item_id IS NULL OR parent_item_id != id),
-        CHECK(
-          (identity_mode = 'publisher_dedup'
-            AND external_key IS NOT NULL
-            AND trim(external_key) != '')
-          OR
-          (identity_mode = 'opaque' AND external_key IS NULL)
-        )
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_items_publisher_identity
-        ON feedback_items(collection_id, external_key)
-        WHERE identity_mode = 'publisher_dedup'`,
-  `CREATE UNIQUE INDEX uq_feedback_items_client_key
-        ON feedback_items(collection_id, client_item_key)
-        WHERE client_item_key IS NOT NULL`,
-  `CREATE INDEX idx_feedback_items_collection
-        ON feedback_items(collection_id, created_at, id)`,
-  `CREATE INDEX idx_feedback_items_parent
-        ON feedback_items(parent_item_id)
-        WHERE parent_item_id IS NOT NULL`,
-  `CREATE TABLE feedback_item_revisions (
-        id                TEXT PRIMARY KEY,
-        item_id           TEXT NOT NULL
-                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        ordinal           INTEGER NOT NULL CHECK(ordinal > 0),
-        title             TEXT NOT NULL,
-        prompt            TEXT NOT NULL,
-        description       TEXT,
-        response_type     TEXT
-                          CHECK(response_type IS NULL OR response_type IN (
-                            'verdict','free_text','single_choice','multi_choice'
-                          )),
-        required          INTEGER NOT NULL DEFAULT 0 CHECK(required IN (0,1)),
-        content_json      TEXT NOT NULL DEFAULT '{}'
-                          CHECK(json_valid(content_json)
-                            AND json_type(content_json) = 'object'),
-        evidence_digest   TEXT,
-        publication_id    TEXT
-                          REFERENCES feedback_publications(id) ON DELETE RESTRICT,
-        position          INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
-        created_at        INTEGER NOT NULL,
-        UNIQUE(item_id, ordinal)
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_item_revisions_evidence
-        ON feedback_item_revisions(item_id, evidence_digest)
-        WHERE evidence_digest IS NOT NULL`,
-  `CREATE INDEX idx_feedback_item_revisions_item
-        ON feedback_item_revisions(item_id, ordinal DESC)`,
-  `CREATE INDEX idx_feedback_item_revisions_publication
-        ON feedback_item_revisions(publication_id)
-        WHERE publication_id IS NOT NULL`,
-  `CREATE TABLE feedback_item_options (
-        revision_id   TEXT NOT NULL
-                      REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        option_key    TEXT NOT NULL CHECK(trim(option_key) != ''),
-        label         TEXT NOT NULL,
-        description   TEXT,
-        position      INTEGER NOT NULL CHECK(position >= 0),
-        PRIMARY KEY(revision_id, option_key),
-        UNIQUE(revision_id, position)
-      )`,
-  `CREATE TABLE feedback_publication_items (
-        id                TEXT PRIMARY KEY,
-        publication_id    TEXT NOT NULL
-                          REFERENCES feedback_publications(id) ON DELETE RESTRICT,
-        item_revision_id  TEXT NOT NULL
-                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        position          INTEGER CHECK(position IS NULL OR position >= 0),
-        seen_at           INTEGER NOT NULL,
-        UNIQUE(publication_id, item_revision_id)
-      )`,
-  `CREATE INDEX idx_feedback_publication_items_revision
-        ON feedback_publication_items(item_revision_id, seen_at DESC)`,
-  `CREATE TABLE feedback_collection_events (
-        id                 TEXT PRIMARY KEY,
-        collection_id      TEXT NOT NULL
-                           REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        operation          TEXT NOT NULL
-                           CHECK(operation IN (
-                             'opened','submitted','expired','cancelled','closed'
-                           )),
-        previous_event_id  TEXT
-                           REFERENCES feedback_collection_events(id) ON DELETE RESTRICT,
-        actor_user_id      TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        metadata_json      TEXT NOT NULL DEFAULT '{}'
-                           CHECK(json_valid(metadata_json)
-                             AND json_type(metadata_json) = 'object'),
-        created_at         INTEGER NOT NULL
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_collection_event_successor
-        ON feedback_collection_events(collection_id, previous_event_id)
-        WHERE previous_event_id IS NOT NULL`,
-  `CREATE INDEX idx_feedback_collection_events_head
-        ON feedback_collection_events(collection_id, created_at DESC)`,
-  `CREATE TABLE feedback_item_events (
-        id                TEXT PRIMARY KEY,
-        item_id           TEXT NOT NULL
-                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        item_revision_id  TEXT NOT NULL
-                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        operation         TEXT NOT NULL CHECK(operation IN ('expired')),
-        actor_user_id     TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        created_at        INTEGER NOT NULL
-      )`,
-  `CREATE INDEX idx_feedback_item_events_revision
-        ON feedback_item_events(item_revision_id, created_at DESC)`,
-  `CREATE TABLE feedback_response_events (
-        id                 TEXT PRIMARY KEY,
-        collection_id      TEXT NOT NULL
-                           REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        item_id            TEXT NOT NULL
-                           REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        item_revision_id   TEXT NOT NULL
-                           REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        operation          TEXT NOT NULL CHECK(operation IN ('set','retract')),
-        value_json         TEXT,
-        retracts_event_id  TEXT
-                           REFERENCES feedback_response_events(id) ON DELETE RESTRICT,
-        actor_user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at         INTEGER NOT NULL,
-        CHECK(
-          (operation = 'set'
-            AND value_json IS NOT NULL
-            AND json_valid(value_json)
-            AND json_type(value_json) = 'object'
-            AND retracts_event_id IS NULL)
-          OR
-          (operation = 'retract'
-            AND value_json IS NULL
-            AND retracts_event_id IS NOT NULL)
-        )
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_response_retraction
-        ON feedback_response_events(retracts_event_id)
-        WHERE operation = 'retract'`,
-  `CREATE INDEX idx_feedback_response_events_revision
-        ON feedback_response_events(item_revision_id, created_at DESC)`,
-  `CREATE INDEX idx_feedback_response_events_collection_actor
-        ON feedback_response_events(collection_id, actor_user_id, created_at DESC)`,
-  `CREATE TABLE feedback_submissions (
-        id                         TEXT PRIMARY KEY,
-        collection_id              TEXT NOT NULL
-                                   REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        ordinal                    INTEGER NOT NULL CHECK(ordinal > 0),
-        supersedes_submission_id   TEXT
-                                   REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
-        lifecycle_event_id         TEXT NOT NULL UNIQUE
-                                   REFERENCES feedback_collection_events(id) ON DELETE RESTRICT,
-        actor_user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at                 INTEGER NOT NULL,
-        UNIQUE(collection_id, ordinal)
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_submission_superseded_once_actor
-        ON feedback_submissions(supersedes_submission_id, actor_user_id)
-        WHERE supersedes_submission_id IS NOT NULL`,
-  `CREATE TABLE feedback_submission_answers (
-        submission_id      TEXT NOT NULL
-                           REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
-        item_id            TEXT NOT NULL
-                           REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        item_revision_id   TEXT NOT NULL
-                           REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        response_event_id  TEXT NOT NULL
-                           REFERENCES feedback_response_events(id) ON DELETE RESTRICT,
-        position           INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
-        PRIMARY KEY(submission_id, item_id),
-        UNIQUE(submission_id, response_event_id)
-      )`,
-  `CREATE TABLE feedback_collection_documents (
-        collection_id TEXT PRIMARY KEY REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
-        previous_round_id TEXT REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        created_at INTEGER NOT NULL,
-        profile TEXT CHECK(profile IS NULL OR profile = 'mandible-briefing.v1'),
-        CHECK(previous_round_id IS NULL OR previous_round_id != collection_id)
-      )`,
-  `CREATE INDEX idx_feedback_collection_documents_version
-        ON feedback_collection_documents(artifact_version_id)`,
-  `CREATE TABLE feedback_item_directives (
-        collection_id TEXT NOT NULL REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        item_revision_id TEXT PRIMARY KEY REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        directive_key TEXT NOT NULL CHECK(length(directive_key) BETWEEN 1 AND 128),
-        definition_digest TEXT NOT NULL CHECK(length(definition_digest) = 64),
-        start_offset INTEGER NOT NULL CHECK(start_offset >= 0),
-        end_offset INTEGER NOT NULL CHECK(end_offset > start_offset),
-        body_start_offset INTEGER NOT NULL CHECK(body_start_offset >= start_offset),
-        body_end_offset INTEGER NOT NULL CHECK(body_end_offset > body_start_offset AND body_end_offset <= end_offset),
-        created_at INTEGER NOT NULL,
-        UNIQUE(collection_id, directive_key)
-      )`,
-  `CREATE TABLE feedback_annotation_events (
-        id TEXT PRIMARY KEY,
-        collection_id TEXT NOT NULL REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        operation TEXT NOT NULL CHECK(operation IN ('set','retract')),
-        annotation_kind TEXT CHECK(annotation_kind IS NULL OR annotation_kind IN ('comment','suggest_replacement')),
-        start_offset INTEGER,
-        end_offset INTEGER,
-        quote TEXT,
-        body TEXT,
-        replacement_text TEXT,
-        retracts_event_id TEXT REFERENCES feedback_annotation_events(id) ON DELETE RESTRICT,
-        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at INTEGER NOT NULL,
-        CHECK((operation = 'set' AND annotation_kind IS NOT NULL
-          AND start_offset IS NOT NULL AND start_offset >= 0
-          AND end_offset IS NOT NULL AND end_offset > start_offset
-          AND quote IS NOT NULL AND quote != '' AND retracts_event_id IS NULL)
-          OR (operation = 'retract' AND annotation_kind IS NULL
-          AND start_offset IS NULL AND end_offset IS NULL AND quote IS NULL
-          AND body IS NULL AND replacement_text IS NULL AND retracts_event_id IS NOT NULL)),
-        CHECK(operation != 'set'
-          OR (annotation_kind = 'comment' AND body IS NOT NULL AND trim(body) != '' AND replacement_text IS NULL)
-          OR (annotation_kind = 'suggest_replacement' AND replacement_text IS NOT NULL
-            AND (body IS NULL OR trim(body) != '')))
-      )`,
-  `CREATE UNIQUE INDEX uq_feedback_annotation_retraction
-        ON feedback_annotation_events(retracts_event_id) WHERE operation = 'retract'`,
-  `CREATE INDEX idx_feedback_annotation_events_collection_actor
-        ON feedback_annotation_events(collection_id, actor_user_id, created_at DESC)`,
-  `CREATE TABLE feedback_submission_annotations (
-        submission_id TEXT NOT NULL REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
-        annotation_event_id TEXT NOT NULL REFERENCES feedback_annotation_events(id) ON DELETE RESTRICT,
-        position INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
-        PRIMARY KEY(submission_id, annotation_event_id)
-      )`,
-  `CREATE TABLE feedback_comments (
-        id                TEXT PRIMARY KEY,
-        collection_id     TEXT NOT NULL
-                          REFERENCES feedback_collections(id) ON DELETE RESTRICT,
-        item_id           TEXT NOT NULL
-                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
-        item_revision_id  TEXT NOT NULL
-                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
-        body              TEXT NOT NULL CHECK(trim(body) != ''),
-        actor_user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at        INTEGER NOT NULL
-      )`,
-  `CREATE INDEX idx_feedback_comments_item
-        ON feedback_comments(item_id, created_at)`,
+  ...BRIEFING_SCHEMA_SQL,
   ...CONVERSATION_SOURCE_SCHEMA_SQL,
 ];
 
@@ -1162,7 +788,6 @@ const COMPLETED_POST_MIGRATIONS: readonly string[] = [
   "post_migration.v87_backfill_project_keys.complete",
   "post_migration.v89_backfill_orphan_artifact_series.complete",
   "post_migration.v90_space_items_link_space_refs.complete",
-  "post_migration.v121_space_items_finding_refs.complete",
   "post_migration.v91_backfill_artifact_identity.complete",
   "post_migration.v104_artifact_canonical_targets.complete",
   "post_migration.v105_space_export_canonical_artifacts.complete",
@@ -1347,6 +972,17 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of HEAD_SCHEMA_STATEMENTS) {
       db.exec(statement);
     }
+    // v142 removes the retired finding reference kind. The generated baseline
+    // still contains its historical DDL above so old migration snapshots stay
+    // readable; converge the empty fresh table to the canonical head shape.
+    db.exec("DROP TABLE space_items");
+    db.exec(CANONICAL_SPACE_ITEMS_SQL);
+    db.exec("CREATE INDEX idx_space_items_lookup ON space_items(space_id, ref_type, ref_id)");
+    db.exec("CREATE INDEX idx_space_items_by_ref ON space_items(ref_type, ref_id, space_id)");
+    db.exec("DROP TABLE agent_dispatch_events");
+    db.exec(CANONICAL_AGENT_DISPATCH_SQL);
+    db.exec("CREATE INDEX idx_agent_dispatch_events_issue ON agent_dispatch_events(issue_id, created_at DESC)");
+    db.exec("CREATE INDEX idx_agent_dispatch_events_incident ON agent_dispatch_events(incident_id, created_at DESC)");
 
     const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)");
     setMeta.run("schema_version", String(schemaVersion));

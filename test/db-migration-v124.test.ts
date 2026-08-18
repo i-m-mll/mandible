@@ -49,7 +49,7 @@ describe("migration v124: task inventory generations", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "141",
+      value: "142",
     });
 
     const columns = db.prepare("PRAGMA table_info(task_inventory_generations)").all() as Array<{
@@ -145,7 +145,7 @@ describe("migration v124: task inventory generations", () => {
     db.exec("UPDATE meta SET value = '123' WHERE key = 'schema_version'");
     expect(() => migrate(db)).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "141",
+      value: "142",
     });
   });
 

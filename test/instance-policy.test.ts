@@ -349,7 +349,7 @@ describe("route mutation category table has one source", () => {
     },
     { method: "POST", pattern: "/api/work-units/claim", url: "/api/work-units/claim", category: "work_units" },
     { method: "POST", pattern: "/api/work/push", url: "/api/work/push", category: "work" },
-    { method: "POST", pattern: "/api/asks", url: "/api/asks", category: "asks" },
+    { method: "POST", pattern: "/api/briefings/runs", url: "/api/briefings/runs", category: "briefing" },
     {
       method: "POST",
       pattern: "/api/knowledge-backrefs",
@@ -461,7 +461,7 @@ const REPRESENTATIVE_UNSAFE_ROUTES = [
   { method: "POST", url: "/api/runtime/update", name: "runtime-update", category: "runtime" },
   { method: "POST", url: "/api/runtime/reset", name: "runtime-reset", category: "runtime" },
   { method: "POST", url: "/api/artifacts/ingest", name: "artifacts-ingest", category: "artifacts" },
-  { method: "POST", url: "/api/asks", name: "asks", category: "asks" },
+  { method: "POST", url: "/api/briefings/runs", name: "briefing-runs", category: "briefing" },
   { method: "POST", url: "/api/artifacts/link", name: "artifacts-link", category: "artifacts" },
   { method: "POST", url: "/api/providers/register", name: "providers", category: "providers" },
   { method: "POST", url: "/api/provider-manifests/ingest", name: "provider-manifests", category: "providers" },

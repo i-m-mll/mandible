@@ -947,13 +947,13 @@ function App(): JSX.Element {
       dispatch({ type: 'sse', payload });
       scheduleBadgeRefresh();
     };
-    // Feedback lifecycle events carry only a topic across this bridge. The
-    // active renderer refetches its normalized snapshot; question bodies and
+    // Briefing lifecycle events carry only a topic across this bridge. The
+    // active renderer refetches its normalized snapshot; directive bodies and
     // answer values are never consumed from SSE payloads.
-    const feedbackHandler = (payload: SSEPayload) => {
+    const briefingHandler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
-      window.dispatchEvent(new CustomEvent('feedback:sse', {
+      window.dispatchEvent(new CustomEvent('briefing:sse', {
         detail: { type: payload.type },
       }));
       scheduleBadgeRefresh();
@@ -1156,15 +1156,11 @@ function App(): JSX.Element {
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
-      client.on('briefing:ingested', feedbackHandler),
-      client.on('briefing:decided', feedbackHandler),
-      client.on('briefing:commented', feedbackHandler),
-      client.on('briefing:expired', feedbackHandler),
-      client.on('ask:created', feedbackHandler),
-      client.on('ask:submitted', feedbackHandler),
-      client.on('ask:cancelled', feedbackHandler),
-      client.on('ask:expired', feedbackHandler),
-      client.on('feedback:collection-updated', feedbackHandler),
+      client.on('briefing:created', briefingHandler),
+      client.on('briefing:round-published', briefingHandler),
+      client.on('briefing:answered', briefingHandler),
+      client.on('briefing:annotated', briefingHandler),
+      client.on('briefing:submitted', briefingHandler),
       client.on('operational-incident:ingested', operationalIncidentHandler),
       client.on('operational-incident:acknowledged', operationalIncidentHandler),
       client.on('operational-incident:remediation-changed', operationalIncidentHandler),
@@ -1230,7 +1226,7 @@ function App(): JSX.Element {
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
-      window.dispatchEvent(new CustomEvent('feedback:sse', {
+      window.dispatchEvent(new CustomEvent('briefing:sse', {
         detail: { type: 'reconnected' },
       }));
       // The same gap may have hidden an incident raise, acknowledgement or
@@ -1839,7 +1835,7 @@ function App(): JSX.Element {
       badgeClass: 'tab-badge--briefing',
       // Issue 5308097 §8 — a SECOND, independent badge for active and
       // unacknowledged operational incidents. It is deliberately not folded
-      // into the briefing count: an unattended executor failure and a finding
+      // into the briefing count: an unattended executor failure and a Briefing
       // awaiting review are different obligations, and adding them together
       // would let either one hide the other.
       secondaryBadge: badges.incidents,
@@ -2279,10 +2275,8 @@ function App(): JSX.Element {
           return (
             <LazyBriefingView
               instance={instanceInfo}
-              initialFilter={tabRoute.params.filter}
-              initialCandidateId={tabRoute.params.candidate ?? null}
-              initialAskId={tabRoute.params.ask ?? null}
-              initialCollectionId={tabRoute.params.collection ?? null}
+              initialBriefingId={tabRoute.params.briefing ?? null}
+              initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );

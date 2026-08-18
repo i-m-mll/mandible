@@ -151,34 +151,23 @@ export const METADATA_BACKUP_TABLES = [
   "user_groups",
   "user_group_members",
   "permission_grants",
-  // Shared feedback kernel (migration 125 foundation, v126 recurring cutover,
-  // v127 publisher-scoped replay identity).
-  // All rows are durable human-feedback or idempotency/lifecycle facts. Keep
-  // parents before children; restore runs with foreign keys disabled to handle
-  // the intentional items.current_revision_id <-> revisions cycle, then callers
-  // verify the restored graph before using it.
-  "feedback_collections",
-  "feedback_recurring_profiles",
-  "feedback_ask_sessions",
-  "feedback_collection_documents",
-  "feedback_annotation_events",
-  "feedback_ingest_requests",
-  "feedback_publications",
-  "feedback_items",
-  "feedback_item_revisions",
-  "feedback_item_directives",
-  "feedback_item_options",
-  "feedback_publication_items",
-  "feedback_collection_events",
-  "feedback_item_events",
-  "feedback_response_events",
-  "feedback_submissions",
-  "feedback_submission_annotations",
-  "feedback_submission_answers",
-  "feedback_comments",
-  // Agent-dispatch handling events are the audit chain (comment -> handling
-  // event -> session handle) behind human-triggered dispatches; durable
-  // metadata. References feedback items/revisions/comments and users above.
+  // One Briefing model (migration 142). Logical identity precedes immutable
+  // rounds, definitions precede round-specific instances, then run provenance,
+  // append-only drafts, frozen actor submissions, and sealed migration audit.
+  "briefings",
+  "briefing_members",
+  "briefing_rounds",
+  "briefing_directive_definitions",
+  "briefing_directive_instances",
+  "briefing_runs",
+  "briefing_run_occurrences",
+  "briefing_response_events",
+  "briefing_annotation_events",
+  "briefing_submissions",
+  "briefing_submission_answers",
+  "briefing_submission_annotations",
+  "briefing_legacy_audit",
+  // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",
   // Executor task inventory receipts (issue 0bc2279, migration 124). Each row
   // is an immutable observation an executor made at a moment that has passed;

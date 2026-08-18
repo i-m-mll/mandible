@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { AskProjection } from '../ui/src/api';
+import type { BriefingRoundProjection } from '../ui/src/api';
 
 const editorHarness = vi.hoisted(() => ({ props: null as any }));
 
@@ -24,7 +24,7 @@ vi.mock('../ui/src/views/spaces/MarkdownSourceEditor', () => ({
   },
 }));
 
-import { AskDocumentPanel } from '../ui/src/views/feedback/AskDocumentPanel';
+import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -47,24 +47,18 @@ function annotation(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function ask(overrides: Partial<AskProjection> = {}): AskProjection {
+function round(overrides: Partial<BriefingRoundProjection> = {}): BriefingRoundProjection {
   return {
-    ask_id: 'ask-1',
+    round_id: 'round-1',
     state: 'open',
-    request_key: 'review-plan',
-    request_digest: 'digest',
-    requester_user_id: 'agent-1',
-    requester_session_id: 'session-1',
-    responder_user_ids: ['human-1'],
-    expires_at: 100,
-    retention_expires_at: null,
+    briefing_key: 'review-plan',
+    binding_digest: 'digest',
     created_at: 1,
-    lifecycle_event_id: 'life-1',
     latest_submission: null,
     latest_submission_for_actor: null,
-    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null },
+    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: null },
+    directive_binding: null,
     annotations: [],
-    previous_round: null,
     items: [],
     valid: true,
     ...overrides,
@@ -93,7 +87,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('AskDocumentPanel', () => {
+describe('Briefing document panel', () => {
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
     const profiledSource = 'Intro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
     vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
@@ -103,7 +97,7 @@ describe('AskDocumentPanel', () => {
     } })));
     const source = profiledSource;
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
-    render(<AskDocumentPanel ask={ask({
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round({
       document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
       directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
       items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: 'a'.repeat(64), start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
@@ -121,7 +115,7 @@ describe('AskDocumentPanel', () => {
 
   it('renders the full pinned source read-only and saves one selected-range suggestion before refetching', async () => {
     const posts: any[] = [];
-    const refresh = vi.fn(async () => ask());
+    const refresh = vi.fn(async () => round());
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (!init?.method) return json(content());
@@ -129,7 +123,7 @@ describe('AskDocumentPanel', () => {
       return json({ annotation_event_ids: ['annotation-new'] });
     }));
 
-    render(<AskDocumentPanel ask={ask()} canMutate onRefresh={refresh} />);
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
     expect((await screen.findByTestId('document-editor')).getAttribute('data-read-only')).toBe('true');
     expect(editorHarness.props.value).toBe('Plan source text');
 
@@ -144,11 +138,11 @@ describe('AskDocumentPanel', () => {
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toEqual({
-      url: '/api/asks/ask-1/annotations',
+      url: '/api/briefings/briefing-1/rounds/round-1/annotations',
       body: {
         annotations: [{
           operation: 'set',
-          annotation_kind: 'suggest_replacement',
+          kind: 'suggest_replacement',
           start_offset: 0,
           end_offset: 4,
           quote: 'Plan',
@@ -168,7 +162,7 @@ describe('AskDocumentPanel', () => {
       posts.push(body);
       return json({ annotation_event_ids: body.annotations.map((_: unknown, index: number) => `event-${index}`) });
     }));
-    render(<AskDocumentPanel ask={ask({ annotations: [annotation()] as any })} canMutate onRefresh={async () => ask()} />);
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
 
     const row = await screen.findByRole('button', { name: /Plan.*Comment.*Clarify this/ });
     expect(row.tabIndex).toBe(0);
@@ -179,8 +173,8 @@ describe('AskDocumentPanel', () => {
     expect(posts[0].annotations).toEqual([
       { operation: 'retract', annotation_event_id: 'annotation-1' },
       {
-        operation: 'set', annotation_kind: 'comment', start_offset: 0, end_offset: 4,
-        quote: 'Plan', body: 'Revised note.',
+        operation: 'set', kind: 'comment', start_offset: 0, end_offset: 4,
+        quote: 'Plan', body: 'Revised note.', replacement_text: null,
       },
     ]);
     await screen.findByText('Annotation updated.');
@@ -191,32 +185,4 @@ describe('AskDocumentPanel', () => {
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
   });
 
-  it('shows collapsed quote-first prior-round history linking to the old ask without decorating old quotes', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
-    const prior = annotation({
-      annotation_event_id: 'old-annotation',
-      quote: 'Old premise',
-      actor_user_id: 'human-2',
-      submission_ordinal: 3,
-    });
-    render(<AskDocumentPanel
-      ask={ask({
-        annotations: [annotation()] as any,
-        previous_round: {
-          ask_id: 'ask-old',
-          artifact_version_id: 'artifact-version:old',
-          annotations: [prior as any],
-        },
-      })}
-      canMutate
-      onRefresh={async () => ask()}
-    />);
-
-    const history = await screen.findByText('Round history');
-    await screen.findByTestId('document-editor');
-    expect((history.closest('details') as HTMLDetailsElement).open).toBe(false);
-    expect(screen.getByRole('link', { name: /Old premise.*Comment.*Clarify this.*human-2.*3/ }).getAttribute('href'))
-      .toBe('/#/briefing?ask=ask-old');
-    expect(editorHarness.props.decorations.map((entry: any) => entry.id)).toEqual(['annotation-1']);
-  });
 });

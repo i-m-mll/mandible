@@ -164,7 +164,7 @@ describe("issue detail living artifact links", () => {
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts[0]).toMatchObject({
-      id: version.artifact.id,
+      id: `artifact:${version.artifact.content_hash.slice(0, 12)}`,
       pin_state: "living",
       series_id: version.series.id,
       resolved_version_no: 1,
@@ -200,7 +200,7 @@ describe("issue detail living artifact links", () => {
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts[0]).toMatchObject({
-      id: v1.artifact.id,
+      id: `artifact:${v1.artifact.content_hash.slice(0, 12)}`,
       pin_state: "living",
       series_id: "artifact-series:missing",
       resolved_version_no: null,
