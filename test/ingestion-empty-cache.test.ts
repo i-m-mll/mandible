@@ -179,6 +179,46 @@ describe("empty conversation ingest state", () => {
     expect(events).not.toContain("ingestion_duplicate_path_ownership_reconciled");
   });
 
+  it("does not warn for an already detached distinct-identity path projection", async () => {
+    await writeAtTick(meaningfulSession(), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    insertLegacyPathDuplicate("legacy-distinct-identity", "older-native-session");
+    db.prepare(`
+      UPDATE conversation_sources
+         SET availability = 'missing',
+             unavailable_reason = 'source path reused by a distinct conversation identity'
+       WHERE conversation_id = 'legacy-distinct-identity'
+    `).run();
+    const events: string[] = [];
+
+    await writeAtTick(sessionMeta(), 2);
+    await triggerReconcileForTest({
+      watchConfigs: watchConfigs(),
+      log: (_level, event) => events.push(event),
+    });
+
+    expect(db.prepare(
+      "SELECT session_id, source_path FROM conversations ORDER BY session_id",
+    ).all()).toEqual([
+      { session_id: "empty-cache", source_path: sessionPath },
+      { session_id: "older-native-session", source_path: sessionPath },
+    ]);
+    expect(db.prepare(`
+      SELECT availability, unavailable_reason FROM conversation_sources
+       WHERE conversation_id = 'legacy-distinct-identity'
+    `).get()).toEqual({
+      availability: "missing",
+      unavailable_reason: "source path reused by a distinct conversation identity",
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM conversation_source_aliases alias
+        JOIN conversation_sources source ON source.id = alias.source_id
+       WHERE source.conversation_id = 'legacy-distinct-identity'
+    `).get()).toEqual({ count: 0 });
+    expect(events).not.toContain("ingestion_duplicate_conversation_rows");
+  });
+
   it("does not re-parse an unchanged empty source during reconcile", async () => {
     await writeAtTick(sessionMeta(), 1);
     const events: string[] = [];

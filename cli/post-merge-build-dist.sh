@@ -22,21 +22,35 @@ desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop
 build_needed=false
 desktop_build_needed=false
 instruction_install_needed=false
-if git rev-parse --verify --quiet HEAD^1 >/dev/null \
+merge_base_sha="${MANDIBLE_AUTH_MERGE_BASE_SHA:-}"
+merge_head_sha="${MANDIBLE_AUTH_MERGE_HEAD_SHA:-}"
+if [[ -n "$merge_base_sha" || -n "$merge_head_sha" ]]; then
+  if [[ -z "$merge_base_sha" || -z "$merge_head_sha" ]]; then
+    err "[post-merge-build] original merge range requires both base and head revisions"
+    exit 2
+  fi
+  git rev-parse --verify --quiet "${merge_base_sha}^{commit}" >/dev/null
+  git rev-parse --verify --quiet "${merge_head_sha}^{commit}" >/dev/null
+elif git rev-parse --verify --quiet HEAD^1 >/dev/null \
   && git rev-parse --verify --quiet HEAD^2 >/dev/null; then
-  build_changes="$(git diff --name-only HEAD^1 HEAD -- \
+  merge_base_sha="HEAD^1"
+  merge_head_sha="HEAD"
+fi
+
+if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
+  build_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
     package.json package-lock.json tsconfig.json \
     src channel-server ui/src ui/index.html ui/esbuild.config.js)"
   if [[ -n "$build_changes" ]]; then
     build_needed=true
   fi
-  desktop_changes="$(git diff --name-only HEAD^1 HEAD -- \
+  desktop_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
     package.json package-lock.json \
     src-tauri scripts/make-dist.sh cli/install-desktop-app.sh)"
   if [[ -n "$desktop_changes" ]]; then
     desktop_build_needed=true
   fi
-  instruction_install_changes="$(git diff --name-only HEAD^1 HEAD -- \
+  instruction_install_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
     package.json package-lock.json tsconfig.json \
     src channel-server ui/src ui/index.html ui/esbuild.config.js \
     cli/instructions.sh cli/instructions-contract.json)"

@@ -101,7 +101,10 @@ describe("auth hook execution environment (issue 27241e6)", () => {
     const db = plainDb();
     try {
       const env = buildAuthHookEnv(
-        fakeRequest(),
+        fakeRequest({
+          merge_preflight_base_sha: "b".repeat(40),
+          merge_head_sha: "c".repeat(40),
+        }),
         {
           hook_id: "hook-1",
           hook_label: "Probe hook",
@@ -153,6 +156,8 @@ describe("auth hook execution environment (issue 27241e6)", () => {
       expect(env.MANDIBLE_HOOK_EXECUTION_ID).toBe("exec-1");
       expect(env.MANDIBLE_AUTH_REQUEST_ID).toBe("req-convergence-1");
       expect(env.MANDIBLE_AUTH_REPO).toBe("probe-repo");
+      expect(env.MANDIBLE_AUTH_MERGE_BASE_SHA).toBe("b".repeat(40));
+      expect(env.MANDIBLE_AUTH_MERGE_HEAD_SHA).toBe("c".repeat(40));
       expect(env.CI).toBe("true");
 
       // Nothing outside the documented set leaks in.
@@ -166,6 +171,8 @@ describe("auth hook execution environment (issue 27241e6)", () => {
         "MANDIBLE_AUTH_REPO",
         "MANDIBLE_AUTH_BRANCH",
         "MANDIBLE_AUTH_BASE_BRANCH",
+        "MANDIBLE_AUTH_MERGE_BASE_SHA",
+        "MANDIBLE_AUTH_MERGE_HEAD_SHA",
         "MANDIBLE_HOOK_ID",
         "MANDIBLE_HOOK_LABEL",
         "MANDIBLE_HOOK_ATTEMPT",
