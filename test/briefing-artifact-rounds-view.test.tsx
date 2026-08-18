@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShellProvider } from '../ui/src/app-shell';
 import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings } from '../ui/src/api';
 import { BriefingView } from '../ui/src/views/briefing';
-import { briefingRoundLabels, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
+import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
 
 const source = 'Intro\n:::spec-item{key="decision" required="true"}\nReview this round\n:::\n';
@@ -100,17 +100,29 @@ describe('artifact-backed Briefing rounds', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/artifacts/'))).toBe(false);
   });
 
-  it('formats cadence-backed occurrence labels and adds ordinals only to collisions', () => {
-    const labels = briefingRoundLabels([
+  it('formats every occurrence in browser-local date/time and sorts newest first with deterministic invalid fallbacks', () => {
+    const localFormatter = new Intl.DateTimeFormat(undefined, {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    });
+    const rounds = [
       { id: 'daily', ordinal: 1, artifact_version_id: ARTIFACT_VERSION, created_at: Date.UTC(2026, 7, 18, 8), origin: { source: 'scan', run_id: '1', task_identity: 'agent-schedule/daily-digest' } },
       { id: 'weekly', ordinal: 2, artifact_version_id: ARTIFACT_VERSION, created_at: Date.UTC(2026, 7, 18, 8), origin: { source: 'scan', run_id: '2', task_identity: 'agent-schedule/weekly-digest' } },
       { id: 'adhoc-1', ordinal: 3, artifact_version_id: ARTIFACT_VERSION, created_at: Date.UTC(2026, 7, 18, 8, 30), origin: { source: 'manual', run_id: '3', task_identity: 'ad-hoc' } },
       { id: 'adhoc-2', ordinal: 4, artifact_version_id: ARTIFACT_VERSION, created_at: Date.UTC(2026, 7, 18, 8, 30), origin: { source: 'manual', run_id: '4', task_identity: 'ad-hoc' } },
-    ], 'adhoc-2');
-    expect(labels.get('daily')).toBe('2026-08-18');
-    expect(labels.get('weekly')).toBe('2026-W34');
-    expect(labels.get('adhoc-1')).toBe('2026-08-18 08:30 UTC · #3');
-    expect(labels.get('adhoc-2')).toBe('Latest · 2026-08-18 08:30 UTC · #4');
+      { id: 'invalid-low', ordinal: 5, artifact_version_id: ARTIFACT_VERSION, created_at: Number.NaN, origin: { source: 'manual', run_id: '5', task_identity: 'ad-hoc' } },
+      { id: 'invalid-high', ordinal: 6, artifact_version_id: ARTIFACT_VERSION, created_at: Number.NaN, origin: { source: 'manual', run_id: '6', task_identity: 'ad-hoc' } },
+    ];
+    const options = briefingRoundOptions(rounds);
+    const labels = new Map(options.map(({ round, label }) => [round.id, label]));
+    const eightThirty = localFormatter.format(Date.UTC(2026, 7, 18, 8, 30));
+    const eight = localFormatter.format(Date.UTC(2026, 7, 18, 8));
+    expect(options.map(({ round }) => round.id)).toEqual(['adhoc-2', 'adhoc-1', 'weekly', 'daily', 'invalid-high', 'invalid-low']);
+    expect(labels.get('adhoc-2')).toBe(`${eightThirty} · #4`);
+    expect(labels.get('adhoc-1')).toBe(`${eightThirty} · #3`);
+    expect(labels.get('weekly')).toBe(`${eight} · #2`);
+    expect(labels.get('daily')).toBe(`${eight} · #1`);
+    expect(labels.get('invalid-high')).toBe('Unknown occurrence · #6');
+    expect([...labels.values()].every((label) => !label.includes('Latest') && !label.includes('UTC'))).toBe(true);
   });
 
   it('keeps full Briefing identities as copy and mutation authority while displaying and routing compact refs', async () => {
@@ -164,6 +176,14 @@ describe('artifact-backed Briefing rounds', () => {
     expect(within(header.querySelector('.briefing-detail__title-row') as HTMLElement).getByRole('heading', { name: 'arxiv-scan' })).toBeTruthy();
     expect(within(header.querySelector('.briefing-detail__title-row') as HTMLElement).getByRole('button', { name: 'Briefing actions' })).toBeTruthy();
     expect(within(header.querySelector('.briefing-detail__meta') as HTMLElement).getByRole('combobox', { name: 'Round occurrence' })).toBeTruthy();
+    const roundCopy = within(header.querySelector('.briefing-detail__meta') as HTMLElement).getByRole('button', { name: 'Copy full selected round ref' });
+    expect(roundCopy.previousElementSibling).toBe(within(header.querySelector('.briefing-detail__meta') as HTMLElement).getByRole('combobox', { name: 'Round occurrence' }));
+    expect(roundCopy.tagName).toBe('BUTTON');
+    expect(roundCopy.getAttribute('tabindex')).not.toBe('-1');
+    roundCopy.focus();
+    expect(document.activeElement).toBe(roundCopy);
+    fireEvent.click(roundCopy);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_ROUND_ID));
     fireEvent.click(screen.getByRole('button', { name: 'Copy full Briefing ID' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_BRIEFING_ID));
 
@@ -234,7 +254,11 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.getByRole('searchbox', { name: 'Search briefings' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Pin Recurring review' }));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').pinnedCollectionIds).toEqual(['briefing:briefing-1']));
-    expect(await screen.findByRole('option', { name: 'Latest · 1970-01-01 00:00 UTC · #2' })).toBeTruthy();
+    const roundOptions = await screen.findAllByRole('option');
+    expect(roundOptions.map((option) => option.getAttribute('value'))).toEqual([ROUND_TWO, ROUND_ONE]);
+    expect(roundOptions.every((option) => !option.textContent?.includes('Latest') && !option.textContent?.includes('UTC'))).toBe(true);
+    const latestMarker = screen.getByText('Latest', { selector: '.briefing-detail__latest' });
+    expect(latestMarker.nextElementSibling).toBe(screen.getByRole('combobox', { name: 'Round occurrence' }));
     expect(screen.getByRole('combobox', { name: 'Round occurrence' }).getAttribute('value') ?? (screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ROUND_TWO);
     const shell = screen.getByTestId('briefing-document-renderer').closest('.detail-pane-shell') as HTMLElement;
     expect(shell.querySelector(':scope > .detail-pane-shell__header')).toBeTruthy();
@@ -267,6 +291,7 @@ describe('artifact-backed Briefing rounds', () => {
     roundSelect.value = ROUND_ONE;
     fireEvent.input(roundSelect);
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE }));
+    await waitFor(() => expect(screen.queryByText('Latest', { selector: '.briefing-detail__latest' })).toBeNull());
     window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'briefing:round-published' } }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect((screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement).value).toBe(ROUND_ONE);

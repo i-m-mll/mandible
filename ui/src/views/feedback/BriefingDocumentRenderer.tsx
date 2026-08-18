@@ -59,40 +59,42 @@ function inputId(item: BriefingDirectiveItem): string {
   return `briefing-directive-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
 }
 
-function isoWeekLabel(timestamp: number): string {
-  const date = new Date(timestamp);
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7);
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+const occurrenceDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+function roundTimestamp(round: BriefingRoundSummary): number | null {
+  const timestamp = new Date(round.created_at).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function roundCadence(round: BriefingRoundSummary): 'daily' | 'weekly' | 'timestamp' {
-  const evidence = `${round.origin?.task_identity ?? ''} ${round.origin?.source ?? ''}`.toLowerCase();
-  if (/(^|[^a-z])weekly([^a-z]|$)/.test(evidence)) return 'weekly';
-  if (/(^|[^a-z])daily([^a-z]|$)/.test(evidence)) return 'daily';
-  return 'timestamp';
-}
-
-export function briefingRoundLabels(rounds: readonly BriefingRoundSummary[], latestRoundId: string): Map<string, string> {
-  const bases = rounds.map((round) => {
-    const instant = new Date(round.created_at);
-    const iso = Number.isFinite(instant.getTime()) ? instant.toISOString() : 'Unknown time';
-    const cadence = roundCadence(round);
-    const label = cadence === 'weekly'
-      ? isoWeekLabel(round.created_at)
-      : cadence === 'daily'
-        ? iso.slice(0, 10)
-        : iso === 'Unknown time' ? iso : `${iso.slice(0, 16).replace('T', ' ')} UTC`;
-    return { round, label };
+export function briefingRoundOptions(rounds: readonly BriefingRoundSummary[]): Array<{ round: BriefingRoundSummary; label: string }> {
+  const sorted = [...rounds].sort((left, right) => {
+    const leftTimestamp = roundTimestamp(left);
+    const rightTimestamp = roundTimestamp(right);
+    if (leftTimestamp !== null && rightTimestamp !== null && leftTimestamp !== rightTimestamp) return rightTimestamp - leftTimestamp;
+    if (leftTimestamp === null && rightTimestamp !== null) return 1;
+    if (leftTimestamp !== null && rightTimestamp === null) return -1;
+    const leftOrdinal = Number.isFinite(left.ordinal) ? left.ordinal : Number.NEGATIVE_INFINITY;
+    const rightOrdinal = Number.isFinite(right.ordinal) ? right.ordinal : Number.NEGATIVE_INFINITY;
+    if (leftOrdinal !== rightOrdinal) return rightOrdinal - leftOrdinal;
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  });
+  const bases = sorted.map((round) => {
+    const timestamp = roundTimestamp(round);
+    return { round, label: timestamp === null ? 'Unknown occurrence' : occurrenceDateTimeFormatter.format(timestamp) };
   });
   const counts = new Map<string, number>();
   for (const entry of bases) counts.set(entry.label, (counts.get(entry.label) ?? 0) + 1);
-  return new Map(bases.map(({ round, label }) => [
-    round.id,
-    `${round.id === latestRoundId ? 'Latest · ' : ''}${label}${(counts.get(label) ?? 0) > 1 ? ` · #${round.ordinal}` : ''}`,
-  ]));
+  return bases.map(({ round, label }) => ({
+    round,
+    label: `${label}${(counts.get(label) ?? 0) > 1 ? ` · #${round.ordinal}` : ''}`,
+  }));
 }
 
 export function BriefingDocumentRenderer({
@@ -338,8 +340,11 @@ export function BriefingDocumentRenderer({
   };
 
   const title = round?.title || briefingTitle || 'Briefing';
-  const roundLabels = briefingRoundLabels(round?.rounds ?? [], round?.latest_round_id ?? '');
+  const roundOptions = briefingRoundOptions(round?.rounds ?? []);
+  const roundLabels = new Map(roundOptions.map(({ round: summary, label }) => [summary.id, label]));
   const selectedSummary = round?.rounds.find((candidate) => candidate.id === round.selected_round_id) ?? null;
+  const newestRoundId = roundOptions[0]?.round.id ?? null;
+  const selectedIsNewest = Boolean(round && newestRoundId && round.selected_round_id === newestRoundId);
   const artifactVersionId = selectedSummary?.artifact_version_id ?? round?.document?.artifact_version_id ?? null;
   const artifactVersionRef = artifactVersionId
     ? artifactVersionId.startsWith('artifact-version:') ? artifactVersionId : `artifact-version:${artifactVersionId}`
@@ -414,16 +419,18 @@ export function BriefingDocumentRenderer({
           </div>
           {round ? (
             <div className="briefing-detail__meta">
-              <label className="briefing-detail__controls">
+              <div className="briefing-detail__controls">
                 <span>Round occurrence</span>
+                {selectedIsNewest ? <span className="briefing-detail__latest">Latest</span> : null}
                 <select
                   aria-label="Round occurrence"
                   value={round.selected_round_id}
                   onInput={(event) => onRoundChange?.(event.currentTarget.value === round.latest_round_id ? null : event.currentTarget.value)}
                 >
-                  {round.rounds.map((summary) => <option key={summary.id} value={summary.id}>{roundLabels.get(summary.id)}</option>)}
+                  {roundOptions.map(({ round: summary, label }) => <option key={summary.id} value={summary.id}>{label}</option>)}
                 </select>
-              </label>
+                <BriefingRoundCopyButton value={round.selected_round_id} />
+              </div>
             </div>
           ) : null}
         </div>
@@ -470,6 +477,33 @@ export function BriefingDocumentRenderer({
 
 function HorizontalDotsIcon(): JSX.Element {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>;
+}
+
+function BriefingRoundCopyButton({ value }: { value: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const label = copied ? 'Copied selected round ref' : 'Copy full selected round ref';
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <button type="button" className="briefing-detail__round-copy" aria-label={label} title={label} onClick={() => void copy()}>
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  );
+}
+
+function CopyIcon(): JSX.Element {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>;
+}
+
+function CheckIcon(): JSX.Element {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>;
 }
 
 export default BriefingDocumentRenderer;
