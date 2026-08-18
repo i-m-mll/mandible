@@ -14,7 +14,7 @@ footer. The header owns identity, title, status, selection, metadata, and action
       identity={{
         entityLabel: 'Issue',
         displayRef: issue.display_id,
-        canonicalRef: `${issue.project.project_key}/${issue.display_id}`,
+        canonicalRef: `${issue.project.project_key}/${issue.id}`,
       }}
       title={issue.title}
       status={<StatusPill status={issue.status} />}
@@ -100,9 +100,8 @@ visible option label.
 - Verify long-title truncation, narrow widths, and coarse-pointer targets in every variant.
 - Justify a bespoke composition by naming the missing contract capability first.
 
-The Stage 1 structural test temporarily allowlists the existing Issue/Auth,
-Artifact/Briefing, and Chat consumers. To avoid cross-worker conflicts, the
-parent integrator removes those paths after all Stage 2 migrations compose
-`DetailPaneHeader`.
+The structural test rejects any `DetailPaneShell` consumer that does not also
+compose `DetailPaneHeader`. A bespoke composition therefore requires an explicit
+contract change and focused review rather than a silent local exception.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>

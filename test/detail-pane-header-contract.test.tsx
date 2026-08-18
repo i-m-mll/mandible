@@ -168,8 +168,8 @@ describe('canonical detail pane header', () => {
             variant="compact"
             identity={{
               entityLabel: 'Conversation',
-              displayRef: 'conv:12ab34c',
-              canonicalRef: 'conversation:conv_01KABCDEF0123456789',
+              displayRef: '01a01639',
+              canonicalRef: '01a01639-6146-77c1-8616-6878ae755367',
             }}
             title="Canonical compact header"
           />
@@ -198,15 +198,7 @@ describe('canonical detail pane header', () => {
 });
 
 describe('detail pane composition migration boundary', () => {
-  const stage2Allowlist: Record<string, string> = {
-    'ui/src/components/ledger/IssueDetail.tsx': 'ffc0f5c',
-    'ui/src/views/auth.tsx': 'ffc0f5c',
-    'ui/src/views/artifacts.tsx': 'e3b9289',
-    'ui/src/views/feedback/BriefingDocumentRenderer.tsx': 'e3b9289',
-    'ui/src/views/conversations.tsx': '79661b6',
-  };
-
-  it('allows bespoke shell headers only on explicit Stage 2 migration paths', () => {
+  it('rejects DetailPaneShell consumers that bypass the canonical header', () => {
     const sourcePaths = readdirSync(resolve(process.cwd(), 'ui/src'), {
       recursive: true,
       withFileTypes: true,
@@ -219,9 +211,7 @@ describe('detail pane composition migration boundary', () => {
       return source.includes('<DetailPaneShell') && !source.includes('<DetailPaneHeader');
     });
 
-    for (const path of bespokeConsumers) {
-      expect(stage2Allowlist[path], `${path} needs an explicit Stage 2 owner`).toMatch(/^[0-9a-f]{7}$/);
-    }
+    expect(bespokeConsumers).toEqual([]);
   });
 
   it('keeps the canonical component free of nested headers and raw canonical identity text', () => {
