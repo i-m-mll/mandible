@@ -3,8 +3,9 @@ import type { ComponentChildren } from 'preact';
 export type SidebarGroupNodeProps = {
   id: string;
   label: string;
-  count: number;
+  count?: number;
   countLabel?: string;
+  countVisibility?: 'always' | 'interaction';
   expanded: boolean;
   onToggle(): void;
   leadingIcon?: ComponentChildren;
@@ -22,6 +23,7 @@ export function SidebarGroupNode({
   label,
   count,
   countLabel,
+  countVisibility = 'always',
   expanded,
   onToggle,
   leadingIcon,
@@ -59,7 +61,7 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
     >
       <button
@@ -72,7 +74,7 @@ export function SidebarGroupNode({
       >
         {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
         <strong>{label}</strong>
-        <em aria-label={countLabel}>{count}</em>
+        {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
       </button>
       {expanded ? body : null}
     </section>

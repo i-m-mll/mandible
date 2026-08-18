@@ -77,6 +77,26 @@ export function SidebarItemBadge({
   );
 }
 
+export type SidebarItemProviderTone = 'claude' | 'codex' | 'gemini';
+
+export function SidebarItemProviderDot({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: SidebarItemProviderTone;
+}): JSX.Element {
+  const accessibleLabel = `Provider: ${label}`;
+  return (
+    <span
+      className={`sidebar-item-row__provider-dot sidebar-item-row__provider-dot--${tone}`}
+      role="img"
+      aria-label={accessibleLabel}
+      title={accessibleLabel}
+    />
+  );
+}
+
 function PinIcon(): JSX.Element {
   return (
     <svg

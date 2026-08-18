@@ -1,10 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar.js';
+import { SidebarGroupNode } from '../ui/src/components/shared/SidebarGroupNode.js';
 import { SettingsView } from '../ui/src/views/settings.js';
 import type { FeedbackCollection } from '../ui/src/views/feedback/collection-model.js';
 import * as api from '../ui/src/api.js';
+
+const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -33,6 +37,49 @@ describe('shared sidebar group presentation', () => {
     expect(heading.textContent).toContain('Pinned');
     expect(heading.classList.contains('sidebar-group-node__heading')).toBe(true);
     expect(heading.classList.contains('feedback-collections-sidebar__section-heading')).toBe(false);
+  });
+
+  it('supports count-free aggregate headings and stable interaction-only leaf counts', () => {
+    render(
+      <>
+        <SidebarGroupNode id="projects" label="Projects" expanded onToggle={() => undefined}>
+          <SidebarGroupNode
+            id="project-mandible"
+            label="Mandible"
+            count={12}
+            countLabel="12 chats in Mandible"
+            countVisibility="interaction"
+            expanded
+            onToggle={() => undefined}
+          >
+            <span>Leaf</span>
+          </SidebarGroupNode>
+        </SidebarGroupNode>
+      </>,
+    );
+
+    const projects = screen.getByRole('button', { name: 'Projects' });
+    expect(projects.querySelector('em')).toBeNull();
+    expect(projects.closest('section')?.classList.contains('sidebar-group-node--without-count')).toBe(true);
+    const project = screen.getByRole('button', { name: /Mandible/ });
+    expect(project.closest('section')?.classList.contains('sidebar-group-node--interaction-count')).toBe(true);
+    expect(screen.getByLabelText('12 chats in Mandible').textContent).toBe('12');
+
+    const countRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--interaction-count \.sidebar-group-node__count \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(countRule).toContain('visibility: hidden');
+    expect(countRule).toContain('opacity: 0');
+    const revealRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--interaction-count \.sidebar-group-node__heading:hover \.sidebar-group-node__count,\s*\.sidebar-group-node--interaction-count \.sidebar-group-node__heading:focus-visible \.sidebar-group-node__count \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(revealRule).toContain('visibility: visible');
+    expect(revealRule).not.toMatch(/display|width|grid-template-columns/);
+    const countTypography = [...sidebarGroupStylesheet.matchAll(/\.sidebar-group-node__count \{([^}]*)\}/g)]
+      .map((match) => match[1])
+      .find((rule) => rule.includes('font-weight')) ?? '';
+    expect(countTypography).toContain('font-weight: 400');
+    expect(countTypography).toContain('color: var(--text-muted)');
   });
 
   it('shows and persists the default bounded Chat group size through generic settings', async () => {

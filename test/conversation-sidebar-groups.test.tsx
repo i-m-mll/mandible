@@ -102,6 +102,30 @@ describe('conversation sidebar groups', () => {
     expect(screen.getByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
     expect(within(screen.getByRole('button', { name: /^Mandible/ }).closest('section') as HTMLElement)
       .getByRole('button', { name: 'Show more' })).toBeTruthy();
+    const projectsHeading = screen.getByRole('button', { name: 'Projects' });
+    expect(projectsHeading.querySelector('em')).toBeNull();
+    const projectHeading = screen.getByRole('button', { name: /^Mandible/ });
+    expect(projectHeading.closest('section')?.classList.contains('sidebar-group-node--interaction-count')).toBe(true);
+    expect(within(projectHeading).getByLabelText('2 chats in Mandible').textContent).toBe('2');
+  });
+
+  it('maps agy live sessions to the accessible Gemini provider dot', async () => {
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
+    const agySession: ConsoleSession = {
+      id: 'agy-session', label: 'Agy review', agent_type: 'agy', interaction_mode: 'direct',
+      pinned: false, status: 'running', is_operator: false, provider_session_id: 'agy-provider',
+      command: 'agy', args: [], unread_count: 0, created_at: 1, started_at: 1, stopped_at: null,
+      backend_type: 'acp', transport_lane: 'acp',
+    };
+
+    renderView([agySession]);
+    const row = await screen.findByRole('button', { name: 'Open session Agy review' });
+    expect(row.getAttribute('aria-description')).toBe('Provider: Gemini');
+    expect(within(row).getByRole('img', { name: 'Provider: Gemini' })
+      .classList.contains('sidebar-item-row__provider-dot--gemini')).toBe(true);
   });
 
   it('replays each current per-key target during filter reconciliation without losing selection', async () => {
