@@ -136,8 +136,8 @@ describe('compact detail pane shell', () => {
     const footer = shell?.querySelector(':scope > .detail-pane-shell__footer.conv-detail__footer');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
-    expect(canonicalHeader?.textContent).toContain('conv:01a01639');
-    expect(canonicalHeader?.textContent).not.toContain(`conversation:${conversation.id}`);
+    expect(canonicalHeader?.textContent).toContain('01a01639');
+    expect(canonicalHeader?.textContent).not.toContain(conversation.id);
     expect(canonicalHeader?.textContent).toContain('Resumable');
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
@@ -145,8 +145,8 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeTruthy();
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Copy full conversation reference' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`conversation:${conversation.id}`));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full conversation ID' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(conversation.id));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Message filters' }));
     expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();

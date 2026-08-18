@@ -2121,9 +2121,9 @@ function ConversationDetail({
       variant="compact"
       identity={{
         entityLabel: 'Conversation',
-        displayRef: `conv:${shortRouteId(conversation.id)}`,
-        canonicalRef: `conversation:${conversation.id}`,
-        copyLabel: 'Copy full conversation reference',
+        displayRef: shortRouteId(conversation.id),
+        canonicalRef: conversation.id,
+        copyLabel: 'Copy full conversation ID',
       }}
       title={(
         <>
