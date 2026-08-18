@@ -2073,9 +2073,6 @@ function App(): JSX.Element {
           ) : null}
         </div>
       </header>
-      <div className="app-shell__session-status">
-        <DesktopLoginStatus />
-      </div>
       <AppShellProvider value={appShellContext}>
         <div
           className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
@@ -2127,6 +2124,10 @@ function App(): JSX.Element {
                     </button>
                   </div>
                 ) : null}
+                <DesktopLoginStatus
+                  placement="rail"
+                  showRailLabel={railDisplayMode === 'both'}
+                />
                 <button
                   type="button"
                   className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}

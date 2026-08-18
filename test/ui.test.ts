@@ -819,6 +819,22 @@ describe('app shell', () => {
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
   });
 
+  it('keeps desktop login in left chrome without a detail-pane overlay', () => {
+    const appSource = readFileSync(
+      `${process.cwd()}/ui/src/app.tsx`,
+      'utf8',
+    );
+    const footerStart = appSource.indexOf('<nav className="app-rail__footer"');
+    const footerEnd = appSource.indexOf('</nav>', footerStart);
+    const login = appSource.indexOf('<DesktopLoginStatus', footerStart);
+
+    expect(footerStart).toBeGreaterThan(-1);
+    expect(login).toBeGreaterThan(footerStart);
+    expect(login).toBeLessThan(footerEnd);
+    expect(appSource).not.toContain('app-shell__session-status');
+    expect(readResolvedStylesheet()).not.toContain('.app-shell__session-status');
+  });
+
   it('renders a deep-linked issue detail while the global issue list is pending', async () => {
     stubEventSource();
     if (typeof window.localStorage.removeItem === 'function') {
