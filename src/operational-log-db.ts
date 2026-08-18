@@ -627,14 +627,26 @@ type OperationalLogCopyState = {
 };
 
 function currentLegacyHighWater(db: Db): LegacyHighWater {
-  const row = db.prepare(
-    `SELECT ts, id FROM ${LEGACY_LOG_SCHEMA}.daemon_log ORDER BY ts DESC, id DESC LIMIT 1`,
-  ).get() as { ts: number; id: string } | undefined;
+  const row = currentLegacyMaxTuple(db);
   return {
-    ts: row?.ts ?? null,
-    id: row?.id ?? null,
+    ts: row.ts,
+    id: row.id,
     rows: countRows(db, `${LEGACY_LOG_SCHEMA}.daemon_log`),
   };
+}
+
+function currentLegacyMaxTuple(db: Db): { ts: number | null; id: string | null } {
+  const timestamp = db.prepare(
+    `SELECT MAX(ts) AS ts
+     FROM ${LEGACY_LOG_SCHEMA}.daemon_log INDEXED BY idx_daemon_log_ts`,
+  ).get() as { ts: number | null };
+  if (timestamp.ts === null) return { ts: null, id: null };
+  const row = db.prepare(
+    `SELECT MAX(id) AS id
+     FROM ${LEGACY_LOG_SCHEMA}.daemon_log INDEXED BY idx_daemon_log_ts
+     WHERE ts = ?`,
+  ).get(timestamp.ts) as { id: string };
+  return { ts: timestamp.ts, id: row.id };
 }
 
 function currentLegacyGeneration(db: Db): number {
@@ -646,12 +658,10 @@ function currentLegacyGeneration(db: Db): number {
 }
 
 function currentLegacyCompletionSnapshot(db: Db): LegacyCompletionSnapshot {
-  const row = db.prepare(
-    `SELECT ts, id FROM ${LEGACY_LOG_SCHEMA}.daemon_log ORDER BY ts DESC, id DESC LIMIT 1`,
-  ).get() as { ts: number; id: string } | undefined;
+  const row = currentLegacyMaxTuple(db);
   return {
-    ts: row?.ts ?? null,
-    id: row?.id ?? null,
+    ts: row.ts,
+    id: row.id,
     generationRowid: currentLegacyGeneration(db),
   };
 }
