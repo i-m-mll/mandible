@@ -2,7 +2,7 @@
   margin-bottom: 10px;
 }
 
-.sidebar-group-node__heading {
+.sidebar-group-node > .sidebar-group-node__heading {
   width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -17,17 +17,29 @@
   text-align: left;
 }
 
-.sidebar-group-node--with-icon .sidebar-group-node__heading {
+.sidebar-group-node--category > .sidebar-group-node__heading {
+  color: var(--text-subdued);
+}
+
+.sidebar-group-node--folder {
+  margin-bottom: 2px;
+}
+
+.sidebar-group-node--folder > .sidebar-group-node__heading {
+  color: var(--text-primary);
+}
+
+.sidebar-group-node--with-icon > .sidebar-group-node__heading {
   grid-template-columns: 16px minmax(0, 1fr) auto;
   padding-block: 6px;
   font-size: 13px;
 }
 
-.sidebar-group-node--without-count .sidebar-group-node__heading {
+.sidebar-group-node--without-count > .sidebar-group-node__heading {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.sidebar-group-node--with-icon.sidebar-group-node--without-count .sidebar-group-node__heading {
+.sidebar-group-node--with-icon.sidebar-group-node--without-count > .sidebar-group-node__heading {
   grid-template-columns: 16px minmax(0, 1fr);
 }
 
@@ -47,24 +59,30 @@
   opacity: 0.72;
 }
 
-.sidebar-group-node--interaction-count .sidebar-group-node__count {
+.sidebar-group-node--interaction-count > .sidebar-group-node__heading > .sidebar-group-node__count {
   visibility: hidden;
   opacity: 0;
 }
 
-.sidebar-group-node--interaction-count .sidebar-group-node__heading:hover .sidebar-group-node__count,
-.sidebar-group-node--interaction-count .sidebar-group-node__heading:focus-visible .sidebar-group-node__count {
+.sidebar-group-node--interaction-count > .sidebar-group-node__heading:hover > .sidebar-group-node__count,
+.sidebar-group-node--interaction-count > .sidebar-group-node__heading:focus-visible > .sidebar-group-node__count {
   visibility: visible;
   opacity: 0.72;
 }
 
-.sidebar-group-node__heading:hover,
-.sidebar-group-node__heading:focus-visible {
+.sidebar-group-node--category > .sidebar-group-node__heading:hover,
+.sidebar-group-node--category > .sidebar-group-node__heading:focus-visible {
   background: var(--neutral-alpha-04);
-  color: var(--text-muted);
+  color: var(--text-subdued);
 }
 
-.sidebar-group-node__heading:focus-visible {
+.sidebar-group-node--folder > .sidebar-group-node__heading:hover,
+.sidebar-group-node--folder > .sidebar-group-node__heading:focus-visible {
+  background: var(--neutral-alpha-04);
+  color: var(--text-primary);
+}
+
+.sidebar-group-node > .sidebar-group-node__heading:focus-visible {
   border-radius: 4px;
   outline: 2px solid var(--border-focus);
   outline-offset: -2px;
