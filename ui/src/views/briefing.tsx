@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import { getBriefings, getCachedBriefings, isApiErrorStatus, type BriefingProjection, type InstanceInfo } from '../api';
 import { useAppShell } from '../app-shell';
+import { briefingRoute } from '../routing';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { CollectionShell } from './feedback/CollectionShell';
-import { feedbackCollectionIdentity, type FeedbackCollection } from './feedback/collection-model';
+import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
 import { OperationalIncidentsRegion } from './operational-incidents';
 
@@ -17,9 +18,7 @@ export type BriefingViewProps = {
 };
 
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
-  const params = new URLSearchParams({ briefing: briefingId });
-  if (roundId) params.set('round', roundId);
-  window.history.replaceState(null, '', `/#/briefing?${params.toString()}`);
+  window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
 }
 
 export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs }: BriefingViewProps): JSX.Element {
@@ -33,7 +32,9 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
 
   useEffect(() => {
     if (!initialBriefingId) return;
-    const id = feedbackCollectionIdentity(initialBriefingId);
+    const briefing = resolveFeedbackCollection(briefings, initialBriefingId);
+    if (!briefing) return;
+    const id = briefing.id;
     setViewState((current) => ({
       ...current,
       selectedCollectionId: id,
@@ -41,7 +42,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
         ? { ...current.selectedRoundIds, [id]: initialRoundId }
         : current.selectedRoundIds,
     }));
-  }, [initialBriefingId, initialRoundId, setViewState]);
+  }, [briefings, initialBriefingId, initialRoundId, setViewState]);
 
   const load = useCallback(async (signal: AbortSignal) => {
     const request = ++sequence.current;

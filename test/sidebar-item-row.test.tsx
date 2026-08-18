@@ -74,6 +74,8 @@ describe('SidebarItemRow', () => {
     expect(baseRule).toContain('opacity: 0');
     expect(revealRule).toContain('opacity: 1');
     expect(revealRule).not.toMatch(/width|padding|overflow/);
+    const actionRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__action \{([^}]*)\}/)?.[1] ?? '';
+    expect(actionRule).toContain('border-radius: 999px');
   });
 
   it('keeps actions visible and operable for touch and coarse pointers', () => {
