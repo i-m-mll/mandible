@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { getBriefings, getCachedBriefings, type BriefingProjection, type InstanceInfo } from '../api';
+import { getBriefings, getCachedBriefings, isApiErrorStatus, type BriefingProjection, type InstanceInfo } from '../api';
 import { useAppShell } from '../app-shell';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { CollectionShell } from './feedback/CollectionShell';
@@ -52,7 +52,11 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
         setError(null);
       }
     } catch (cause) {
-      if (!signal.aborted && request === sequence.current) setError(cause instanceof Error ? cause.message : String(cause));
+      if (!signal.aborted && request === sequence.current) {
+        setError(isApiErrorStatus(cause, 401) || isApiErrorStatus(cause, 403)
+          ? 'Authentication is required to load Briefings.'
+          : cause instanceof Error ? cause.message : String(cause));
+      }
     }
   }, []);
 
@@ -101,7 +105,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
   };
 
   return (
-    <CollectionShell collections={briefings} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
+    <CollectionShell collections={briefings} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
       {error ? <p className="briefing-error" role="alert">{error}</p> : null}
       {!selected ? <p className="briefing-empty">Select a Briefing to review its latest immutable round.</p> : (

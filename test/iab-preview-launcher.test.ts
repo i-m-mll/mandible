@@ -2,10 +2,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
+const execFileAsync = promisify(execFile);
 
 let tempRoots: string[] = [];
 let previewServer: http.Server | null = null;
@@ -95,6 +97,7 @@ describe("iab-preview launcher", () => {
       MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
       MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
+      MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
     });
     expect(payload.wouldCopyDb).toBe(false);
     expect(payload.wouldProjectDb).toBe(true);
@@ -192,5 +195,49 @@ describe("iab-preview launcher", () => {
     expect(payload.status).toBe("dry-run");
     expect(payload.mode).toBe("current-integration");
     expect(payload.instanceEnv.MANDIBLE_FILE_RPC_DIR).toBe(path.join(previewRoot, "agent-rpc"));
+  });
+
+  it("returns a one-time enrollment fragment without persisting the credential", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    const fileRpcDir = path.join(previewRoot, "agent-rpc");
+    const authDir = path.join(previewRoot, "config", "client-auth");
+    fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(authDir, "bootstrap-token"), "preview bootstrap proof", { mode: 0o600 });
+    const port = await listenForHealth({
+      ready: true,
+      instance: { role: "preview", operational_mutations: "reject" },
+      file_rpc_dir: fileRpcDir,
+    });
+    const metadata = {
+      branch: "integration/test-preview",
+      worktree: repo,
+      port,
+      db: path.join(previewRoot, "current.db"),
+      previewRoot,
+      instanceEnv: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_FILE_RPC_DIR: fileRpcDir,
+        MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
+      },
+    };
+    fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify(metadata), "utf8");
+
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+    });
+
+    const payload = JSON.parse(result.stdout);
+    expect(payload.status).toBe("already-running");
+    expect(payload.browserEnrollment).toBe("one-time-fragment");
+    expect(new URL(payload.freshUrl).hash).toContain("mandible_auth=preview+bootstrap+proof");
+    expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
+      .not.toContain("preview bootstrap proof");
   });
 });
