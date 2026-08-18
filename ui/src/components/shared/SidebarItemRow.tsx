@@ -101,16 +101,19 @@ export function SidebarItemPinAction({
   label,
   pressed,
   disabled = false,
+  actionRef,
   onPress,
 }: {
   label: string;
   pressed: boolean;
   disabled?: boolean;
+  actionRef?: (element: HTMLButtonElement | null) => void;
   onPress(): void;
 }): JSX.Element {
   const actionLabel = `${pressed ? 'Unpin' : 'Pin'} ${label}`;
   return (
     <button
+      ref={actionRef}
       type="button"
       className={`sidebar-item-row__action sidebar-item-row__pin${pressed ? ' sidebar-item-row__pin--active' : ''}`}
       aria-label={actionLabel}
