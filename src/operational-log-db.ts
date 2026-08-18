@@ -76,6 +76,7 @@ const OPERATIONAL_LOG_SCHEMA = `
     legacy_high_water_ts INTEGER,
     legacy_high_water_id TEXT,
     legacy_high_water_rows INTEGER,
+    legacy_generation_rowid INTEGER,
     copied_rows  INTEGER NOT NULL DEFAULT 0,
     updated_at   INTEGER NOT NULL
   );
@@ -240,20 +241,37 @@ export function copyForwardLegacyDaemonLogs(
   const sourcePath = canonicalExistingPath(store.canonicalDbPath);
   coalesceEquivalentCopyState(store.db, sourcePath);
   let state = store.db.prepare(
-    `SELECT last_ts, last_id, completed_at, copied_rows,
-            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+    `SELECT last_ts, last_id, completed_at, verified_at,
+            verified_legacy_rows, verified_primary_rows, copied_rows,
+            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows,
+            legacy_generation_rowid
      FROM operational_log_copy_state WHERE source_path = ?`,
   ).get(sourcePath) as {
     last_ts: number | null;
     last_id: string | null;
     completed_at: number | null;
+    verified_at: number | null;
+    verified_legacy_rows: number | null;
+    verified_primary_rows: number | null;
     copied_rows: number;
     legacy_high_water_ts: number | null;
     legacy_high_water_id: string | null;
     legacy_high_water_rows: number | null;
+    legacy_generation_rowid: number | null;
   } | undefined;
   if (state?.completed_at) {
-    if (copyStateMatchesLegacy(store.db, state)) {
+    if (state.legacy_generation_rowid === null) {
+      state = {
+        ...state,
+        legacy_generation_rowid: bootstrapCompletedLegacyGeneration(
+          store.db,
+          sourcePath,
+          state,
+          now,
+        ),
+      };
+    }
+    if (copyStateMatchesLegacyGeneration(store.db, state)) {
       return {
         sourcePath,
         copied: 0,
@@ -269,11 +287,13 @@ export function copyForwardLegacyDaemonLogs(
        SET last_ts = NULL, last_id = NULL, completed_at = NULL, verified_at = NULL,
            verified_legacy_rows = NULL, verified_primary_rows = NULL,
            legacy_high_water_ts = NULL, legacy_high_water_id = NULL,
-           legacy_high_water_rows = NULL, updated_at = ?
+           legacy_high_water_rows = NULL, legacy_generation_rowid = NULL,
+           updated_at = ?
        WHERE source_path = ?`,
     ).run(now, sourcePath);
     state = { ...state, last_ts: null, last_id: null, completed_at: null,
-      legacy_high_water_ts: null, legacy_high_water_id: null, legacy_high_water_rows: null };
+      legacy_high_water_ts: null, legacy_high_water_id: null, legacy_high_water_rows: null,
+      legacy_generation_rowid: null };
   }
 
   const selectInitialRows = store.db.prepare(
@@ -298,8 +318,9 @@ export function copyForwardLegacyDaemonLogs(
     `INSERT INTO operational_log_copy_state
        (source_path, last_ts, last_id, completed_at, verified_at,
         verified_legacy_rows, verified_primary_rows, legacy_high_water_ts,
-        legacy_high_water_id, legacy_high_water_rows, copied_rows, updated_at)
-     VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
+        legacy_high_water_id, legacy_high_water_rows, legacy_generation_rowid,
+        copied_rows, updated_at)
+     VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?, ?)
      ON CONFLICT(source_path) DO UPDATE SET
        last_ts = excluded.last_ts,
        last_id = excluded.last_id,
@@ -310,6 +331,7 @@ export function copyForwardLegacyDaemonLogs(
        legacy_high_water_ts = excluded.legacy_high_water_ts,
        legacy_high_water_id = excluded.legacy_high_water_id,
        legacy_high_water_rows = excluded.legacy_high_water_rows,
+       legacy_generation_rowid = excluded.legacy_generation_rowid,
        copied_rows = operational_log_copy_state.copied_rows + excluded.copied_rows,
        updated_at = excluded.updated_at`,
   );
@@ -318,7 +340,7 @@ export function copyForwardLegacyDaemonLogs(
     cursorTs: number | null,
     cursorId: string | null,
     complete: boolean,
-    legacySnapshot: LegacyHighWater,
+    legacySnapshot: LegacyCompletionSnapshot,
   ): number => {
     let copied = 0;
     for (const row of rows) {
@@ -332,7 +354,7 @@ export function copyForwardLegacyDaemonLogs(
       complete ? now : null,
       complete ? legacySnapshot.ts : null,
       complete ? legacySnapshot.id : null,
-      complete ? legacySnapshot.rows : null,
+      complete ? legacySnapshot.generationRowid : null,
       copied,
       now,
     );
@@ -354,12 +376,12 @@ export function copyForwardLegacyDaemonLogs(
       ? selectInitialRows.all(batchSize)
       : selectRowsAfterCursor.all(cursorTs, cursorId ?? "", batchSize)) as DaemonLogRow[];
     complete = rows.length < batchSize;
-    // Counting the entire legacy log is only needed to seal a completed copy.
-    // Doing it before every 1,000-row catch-up batch synchronously rescanned
-    // millions of rows on the daemon thread and starved health requests.
+    // Completion uses only indexed high-water and append-generation lookups.
+    // Full coverage counts belong to explicit operator verification, never
+    // the daemon's scheduled copy-forward path.
     const legacySnapshot = complete
-      ? currentLegacyHighWater(store.db)
-      : { ts: null, id: null, rows: 0 };
+      ? currentLegacyCompletionSnapshot(store.db)
+      : { ts: null, id: null, generationRowid: null };
     const last = rows.at(-1);
     if (last) {
       cursorTs = last.ts;
@@ -394,6 +416,7 @@ export function verifyLegacyDaemonLogCopy(
   }
   const sourcePath = canonicalExistingPath(store.canonicalDbPath);
   if (options.record !== false) invalidateStaleCopyState(store.db, sourcePath, finiteInteger(options.now, Date.now()));
+  const generationBefore = currentLegacyGeneration(store.db);
   const legacyRows = countRows(store.db, `${LEGACY_LOG_SCHEMA}.daemon_log`);
   const primaryRows = countRows(store.db, "main.daemon_log");
   const coveredRows = numberResult(store.db.prepare(
@@ -414,18 +437,32 @@ export function verifyLegacyDaemonLogCopy(
     `${visible.cte} SELECT COUNT(*) AS count FROM ${visible.table}`,
   ).get());
   const missingRows = legacyRows - coveredRows;
+  const legacySnapshot = currentLegacyCompletionSnapshot(store.db);
+  const generationStable = generationBefore === legacySnapshot.generationRowid;
   const copyComplete = hasCurrentCompletedCopy(store.db, sourcePath);
   const queryParity = visibleRows === primaryRows && missingRows === 0 && mismatchedRows === 0;
-  const verified = copyComplete && queryParity;
+  const verified = copyComplete && queryParity && generationStable;
   let verifiedAt: number | null = null;
   if (verified && options.record !== false) {
     assertWritableStore(store.db);
     verifiedAt = finiteInteger(options.now, Date.now());
     store.db.prepare(
       `UPDATE operational_log_copy_state
-       SET verified_at = ?, verified_legacy_rows = ?, verified_primary_rows = ?, updated_at = ?
+       SET verified_at = ?, verified_legacy_rows = ?, verified_primary_rows = ?,
+           legacy_high_water_ts = ?, legacy_high_water_id = ?,
+           legacy_high_water_rows = ?, legacy_generation_rowid = ?, updated_at = ?
        WHERE source_path = ? AND completed_at IS NOT NULL`,
-    ).run(verifiedAt, legacyRows, primaryRows, verifiedAt, sourcePath);
+    ).run(
+      verifiedAt,
+      legacyRows,
+      primaryRows,
+      legacySnapshot.ts,
+      legacySnapshot.id,
+      legacyRows,
+      legacySnapshot.generationRowid,
+      verifiedAt,
+      sourcePath,
+    );
   }
   return {
     sourcePath,
@@ -445,7 +482,8 @@ export function planLegacyDaemonLogReclaim(store: OperationalLogStore): ReclaimP
   const verification = verifyLegacyDaemonLogCopy(store, { record: false });
   const state = store.db.prepare(
     `SELECT completed_at, verified_at, verified_legacy_rows, verified_primary_rows,
-            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows,
+            legacy_generation_rowid
      FROM operational_log_copy_state WHERE source_path = ?`,
   ).get(canonicalExistingPath(store.canonicalDbPath)) as {
     completed_at: number | null;
@@ -455,6 +493,7 @@ export function planLegacyDaemonLogReclaim(store: OperationalLogStore): ReclaimP
     legacy_high_water_ts: number | null;
     legacy_high_water_id: string | null;
     legacy_high_water_rows: number | null;
+    legacy_generation_rowid: number | null;
   } | undefined;
   // Retention is allowed to remove expired primary rows after verification.
   // Reclaim eligibility therefore rests on the recorded verifier snapshot,
@@ -559,9 +598,17 @@ function ensureCopyStateColumns(db: Db): void {
   if (!columns.has("legacy_high_water_rows")) {
     db.exec("ALTER TABLE operational_log_copy_state ADD COLUMN legacy_high_water_rows INTEGER");
   }
+  if (!columns.has("legacy_generation_rowid")) {
+    db.exec("ALTER TABLE operational_log_copy_state ADD COLUMN legacy_generation_rowid INTEGER");
+  }
 }
 
 type LegacyHighWater = { ts: number | null; id: string | null; rows: number };
+type LegacyCompletionSnapshot = {
+  ts: number | null;
+  id: string | null;
+  generationRowid: number | null;
+};
 
 type OperationalLogCopyState = {
   source_path: string;
@@ -574,6 +621,7 @@ type OperationalLogCopyState = {
   legacy_high_water_ts: number | null;
   legacy_high_water_id: string | null;
   legacy_high_water_rows: number | null;
+  legacy_generation_rowid: number | null;
   copied_rows: number;
   updated_at: number;
 };
@@ -589,14 +637,84 @@ function currentLegacyHighWater(db: Db): LegacyHighWater {
   };
 }
 
+function currentLegacyGeneration(db: Db): number {
+  const row = db.prepare(
+    `SELECT COALESCE(MAX(rowid), 0) AS generation_rowid
+     FROM ${LEGACY_LOG_SCHEMA}.daemon_log`,
+  ).get() as { generation_rowid: number };
+  return Number(row.generation_rowid);
+}
+
+function currentLegacyCompletionSnapshot(db: Db): LegacyCompletionSnapshot {
+  const row = db.prepare(
+    `SELECT ts, id FROM ${LEGACY_LOG_SCHEMA}.daemon_log ORDER BY ts DESC, id DESC LIMIT 1`,
+  ).get() as { ts: number; id: string } | undefined;
+  return {
+    ts: row?.ts ?? null,
+    id: row?.id ?? null,
+    generationRowid: currentLegacyGeneration(db),
+  };
+}
+
+function bootstrapCompletedLegacyGeneration(
+  db: Db,
+  sourcePath: string,
+  state: Pick<OperationalLogCopyState,
+  "last_ts" | "last_id" | "completed_at" | "verified_at"
+  | "verified_legacy_rows" | "verified_primary_rows" | "legacy_high_water_ts"
+  | "legacy_high_water_id" | "legacy_high_water_rows" | "copied_rows">,
+  now: number,
+): number | null {
+  if (state.completed_at === null
+    || state.legacy_high_water_rows === null
+    || state.legacy_high_water_rows < 0
+    || state.copied_rows < 0
+    || (state.verified_at !== null
+      && (state.verified_legacy_rows === null || state.verified_primary_rows === null))) return null;
+
+  const emptyCompletion = state.legacy_high_water_rows === 0
+    && state.last_ts === null
+    && state.last_id === null
+    && state.legacy_high_water_ts === null
+    && state.legacy_high_water_id === null;
+  const nonemptyCompletion = state.legacy_high_water_rows > 0
+    && state.last_ts !== null
+    && state.last_id !== null
+    && state.last_ts === state.legacy_high_water_ts
+    && state.last_id === state.legacy_high_water_id;
+  if (!emptyCompletion && !nonemptyCompletion) return null;
+
+  const current = currentLegacyCompletionSnapshot(db);
+  if (current.ts !== state.legacy_high_water_ts
+    || current.id !== state.legacy_high_water_id
+    || current.generationRowid === null) return null;
+  db.prepare(
+    `UPDATE operational_log_copy_state
+     SET legacy_generation_rowid = ?, updated_at = ?
+     WHERE source_path = ? AND completed_at IS NOT NULL
+       AND legacy_generation_rowid IS NULL`,
+  ).run(current.generationRowid, now, sourcePath);
+  return current.generationRowid;
+}
+
+function copyStateMatchesLegacyGeneration(
+  db: Db,
+  state: { legacy_generation_rowid: number | null },
+): boolean {
+  return state.legacy_generation_rowid !== null
+    && currentLegacyGeneration(db) === state.legacy_generation_rowid;
+}
+
 function copyStateMatchesLegacy(db: Db, state: {
   legacy_high_water_ts: number | null;
   legacy_high_water_id: string | null;
   legacy_high_water_rows: number | null;
+  legacy_generation_rowid: number | null;
 }): boolean {
-  if (state.legacy_high_water_rows === null) return false;
+  if (state.legacy_high_water_rows === null || state.legacy_generation_rowid === null) return false;
   const current = currentLegacyHighWater(db);
-  return copyStateMatchesHighWater(state, current);
+  return copyStateMatchesHighWater(state, current)
+    && currentLegacyGeneration(db) === state.legacy_generation_rowid;
 }
 
 function copyStateMatchesHighWater(
@@ -614,7 +732,8 @@ function coalesceEquivalentCopyState(db: Db, sourcePath: string): void {
   const rows = db.prepare(
     `SELECT source_path, last_ts, last_id, completed_at, verified_at,
             verified_legacy_rows, verified_primary_rows, legacy_high_water_ts,
-            legacy_high_water_id, legacy_high_water_rows, copied_rows, updated_at
+            legacy_high_water_id, legacy_high_water_rows, legacy_generation_rowid,
+            copied_rows, updated_at
      FROM operational_log_copy_state`,
   ).all() as OperationalLogCopyState[];
   const equivalent = rows.filter((row) => canonicalExistingPath(row.source_path) === sourcePath);
@@ -622,10 +741,11 @@ function coalesceEquivalentCopyState(db: Db, sourcePath: string): void {
     || (equivalent.length === 1 && equivalent[0]?.source_path === sourcePath)) return;
 
   const completed = equivalent.filter((row) => row.completed_at !== null);
-  const currentHighWater = completed.length > 0 ? currentLegacyHighWater(db) : null;
-  const currentCompleted = currentHighWater
-    ? completed.filter((row) => copyStateMatchesHighWater(row, currentHighWater))
-    : [];
+  const currentGeneration = completed.length > 0 ? currentLegacyGeneration(db) : null;
+  const currentCompleted = currentGeneration === null ? [] : completed.filter(
+    (row) => row.legacy_generation_rowid !== null
+      && row.legacy_generation_rowid === currentGeneration,
+  );
   const candidates = currentCompleted.length > 0 ? currentCompleted
     : completed.length > 0 ? completed
       : equivalent;
@@ -650,8 +770,9 @@ function coalesceEquivalentCopyState(db: Db, sourcePath: string): void {
       `INSERT INTO operational_log_copy_state
          (source_path, last_ts, last_id, completed_at, verified_at,
           verified_legacy_rows, verified_primary_rows, legacy_high_water_ts,
-          legacy_high_water_id, legacy_high_water_rows, copied_rows, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          legacy_high_water_id, legacy_high_water_rows, legacy_generation_rowid,
+          copied_rows, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_path) DO UPDATE SET
          last_ts = excluded.last_ts,
          last_id = excluded.last_id,
@@ -662,6 +783,7 @@ function coalesceEquivalentCopyState(db: Db, sourcePath: string): void {
          legacy_high_water_ts = excluded.legacy_high_water_ts,
          legacy_high_water_id = excluded.legacy_high_water_id,
          legacy_high_water_rows = excluded.legacy_high_water_rows,
+         legacy_generation_rowid = excluded.legacy_generation_rowid,
          copied_rows = excluded.copied_rows,
          updated_at = excluded.updated_at`,
     ).run(
@@ -675,6 +797,7 @@ function coalesceEquivalentCopyState(db: Db, sourcePath: string): void {
       winner.legacy_high_water_ts,
       winner.legacy_high_water_id,
       winner.legacy_high_water_rows,
+      winner.legacy_generation_rowid,
       copiedRows,
       updatedAt,
     );
@@ -696,33 +819,57 @@ function attachedLegacySourcePath(db: Db): string | null {
 function hasCurrentCompletedCopy(db: Db, sourcePath: string): boolean {
   try {
     const state = db.prepare(
-      `SELECT completed_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+      `SELECT completed_at, legacy_generation_rowid
        FROM operational_log_copy_state WHERE source_path = ?`,
-    ).get(sourcePath) as ({ completed_at: number | null } & LegacyHighWaterState) | undefined;
-    return Boolean(state?.completed_at && copyStateMatchesLegacy(db, state));
+    ).get(sourcePath) as {
+      completed_at: number | null;
+      legacy_generation_rowid: number | null;
+    } | undefined;
+    return Boolean(state?.completed_at && copyStateMatchesLegacyGeneration(db, state));
   } catch {
     return false;
   }
 }
 
-type LegacyHighWaterState = {
-  legacy_high_water_ts: number | null;
-  legacy_high_water_id: string | null;
-  legacy_high_water_rows: number | null;
-};
-
 function invalidateStaleCopyState(db: Db, sourcePath: string, now: number): void {
-  const state = db.prepare(
-    `SELECT completed_at, legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows
+  let state = db.prepare(
+    `SELECT last_ts, last_id, completed_at, verified_at,
+            verified_legacy_rows, verified_primary_rows, copied_rows,
+            legacy_high_water_ts, legacy_high_water_id, legacy_high_water_rows,
+            legacy_generation_rowid
      FROM operational_log_copy_state WHERE source_path = ?`,
-  ).get(sourcePath) as ({ completed_at: number | null } & LegacyHighWaterState) | undefined;
-  if (!state?.completed_at || copyStateMatchesLegacy(db, state)) return;
+  ).get(sourcePath) as {
+    last_ts: number | null;
+    last_id: string | null;
+    completed_at: number | null;
+    verified_at: number | null;
+    verified_legacy_rows: number | null;
+    verified_primary_rows: number | null;
+    copied_rows: number;
+    legacy_high_water_ts: number | null;
+    legacy_high_water_id: string | null;
+    legacy_high_water_rows: number | null;
+    legacy_generation_rowid: number | null;
+  } | undefined;
+  if (state?.completed_at && state.legacy_generation_rowid === null) {
+    state = {
+      ...state,
+      legacy_generation_rowid: bootstrapCompletedLegacyGeneration(
+        db,
+        sourcePath,
+        state,
+        now,
+      ),
+    };
+  }
+  if (!state?.completed_at || copyStateMatchesLegacyGeneration(db, state)) return;
   db.prepare(
     `UPDATE operational_log_copy_state
      SET last_ts = NULL, last_id = NULL, completed_at = NULL, verified_at = NULL,
          verified_legacy_rows = NULL, verified_primary_rows = NULL,
          legacy_high_water_ts = NULL, legacy_high_water_id = NULL,
-         legacy_high_water_rows = NULL, updated_at = ?
+         legacy_high_water_rows = NULL, legacy_generation_rowid = NULL,
+         updated_at = ?
      WHERE source_path = ?`,
   ).run(now, sourcePath);
 }
