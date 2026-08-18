@@ -220,6 +220,35 @@ describe("operational log database lifecycle", () => {
     expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes("COUNT(*)"))).toBe(false);
   });
 
+  it("resolves the legacy max tuple through timestamp-indexed split lookups", () => {
+    insert(canonicalDb, "tuple-older", 99, "tuple-older");
+    insert(canonicalDb, "tuple-a", 100, "tuple-a");
+    insert(canonicalDb, "tuple-z", 100, "tuple-z");
+    const prepareSpy = vi.spyOn(store.db, "prepare");
+
+    expect(copyForwardLegacyDaemonLogs(store, { now: 1_000 })).toMatchObject({
+      complete: true,
+      lastTs: 100,
+      lastId: "tuple-z",
+    });
+
+    const preparedSql = prepareSpy.mock.calls.map(([sql]) => String(sql));
+    const maxTimestampSql = preparedSql.find((sql) => sql.includes("SELECT MAX(ts) AS ts"));
+    const maxIdSql = preparedSql.find((sql) => sql.includes("SELECT MAX(id) AS id"));
+    expect(maxTimestampSql).toBeDefined();
+    expect(maxIdSql).toBeDefined();
+    expect(preparedSql.some((sql) => sql.includes("ORDER BY ts DESC, id DESC"))).toBe(false);
+
+    const timestampPlan = store.db.prepare(
+      `EXPLAIN QUERY PLAN ${maxTimestampSql ?? "SELECT 1"}`,
+    ).all() as Array<{ detail: string }>;
+    const idPlan = store.db.prepare(
+      `EXPLAIN QUERY PLAN ${maxIdSql ?? "SELECT 1"}`,
+    ).all(100) as Array<{ detail: string }>;
+    expect(timestampPlan.map((row) => row.detail).join(" ")).toContain("idx_daemon_log_ts");
+    expect(idPlan.map((row) => row.detail).join(" ")).toContain("idx_daemon_log_ts");
+  });
+
   it("does not count the full legacy log while a bounded copy remains incomplete", () => {
     for (let index = 0; index < 3; index += 1) {
       insert(canonicalDb, `bounded-${index}`, 100 + index, `bounded-${index}`);
