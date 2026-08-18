@@ -65,6 +65,7 @@ function runInstaller(
     installed?: boolean;
     ci?: string;
     buildCommand?: string;
+    defaultRelaunch?: boolean;
   } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-desktop-install-"));
@@ -78,6 +79,33 @@ function runInstaller(
   makeBundle(built, "new", options.signed ?? true);
   if (options.installed !== false) makeBundle(installed, "old");
   const tools = makeTooling(root);
+  const terminated = path.join(root, "terminated");
+  const relaunchPgrep = path.join(root, "bin", "relaunch-pgrep");
+  const relaunchPs = path.join(root, "bin", "relaunch-ps");
+  const relaunchKill = path.join(root, "bin", "relaunch-kill");
+  const relaunchOpen = path.join(root, "bin", "relaunch-open");
+  const relaunchSleep = path.join(root, "bin", "relaunch-sleep");
+  fs.writeFileSync(relaunchPgrep, '#!/bin/bash\nprintf "101\\n"\n', { mode: 0o755 });
+  fs.writeFileSync(
+    relaunchPs,
+    '#!/bin/bash\n[[ -f "$MANDIBLE_TEST_TERMINATED" ]] || printf "%s\\n" "$MANDIBLE_DESKTOP_INSTALL_PATH/Contents/MacOS/mandible-app"\n',
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    relaunchKill,
+    '#!/bin/bash\nprintf "kill %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_RELAUNCH_TRACE"\ntouch "$MANDIBLE_TEST_TERMINATED"\n',
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    relaunchOpen,
+    '#!/bin/bash\nprintf "open %s %s\\n" "$1" "$2" >> "$MANDIBLE_TEST_RELAUNCH_TRACE"\n',
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    relaunchSleep,
+    '#!/bin/bash\nprintf "sleep %s\\n" "$1" >> "$MANDIBLE_TEST_RELAUNCH_TRACE"\n',
+    { mode: 0o755 },
+  );
 
   const result = spawnSync("bash", ["cli/install-desktop-app.sh"], {
     cwd: process.cwd(),
@@ -98,8 +126,17 @@ function runInstaller(
       MANDIBLE_DESKTOP_DITTO: tools.ditto,
       MANDIBLE_DESKTOP_PLISTBUDDY: tools.plist,
       MANDIBLE_DESKTOP_ASSUME_RUNNING: options.running ? "1" : "0",
-      MANDIBLE_DESKTOP_RELAUNCH_COMMAND: 'printf "relaunch\\n" > "$MANDIBLE_TEST_RELAUNCH_TRACE"',
+      MANDIBLE_DESKTOP_RELAUNCH_COMMAND: options.defaultRelaunch
+        ? ""
+        : 'printf "relaunch\\n" > "$MANDIBLE_TEST_RELAUNCH_TRACE"',
+      MANDIBLE_DESKTOP_PGREP: relaunchPgrep,
+      MANDIBLE_DESKTOP_PS: relaunchPs,
+      MANDIBLE_DESKTOP_KILL: relaunchKill,
+      MANDIBLE_DESKTOP_OPEN: relaunchOpen,
+      MANDIBLE_DESKTOP_SLEEP: relaunchSleep,
+      MANDIBLE_DESKTOP_RELAUNCH_DELAY_SECONDS: "0",
       MANDIBLE_TEST_RELAUNCH_TRACE: relaunchTrace,
+      MANDIBLE_TEST_TERMINATED: terminated,
       MANDIBLE_TEST_CODESIGN_COUNT: codesignCount,
       MANDIBLE_TEST_CODESIGN_FAIL_AT: options.failCodesignAt?.toString() ?? "",
     },
@@ -192,7 +229,19 @@ fi
     expect(fs.readFileSync(path.join(backups, backup!, "Contents", "marker"), "utf8")).toBe("old");
     expect(fs.readFileSync(relaunchTrace, "utf8")).toBe("relaunch\n");
     expect(result.stderr).toContain("previous bundle preserved");
-    expect(result.stderr).toContain("scheduled restart");
+    expect(result.stderr).toContain("restarted the running desktop shell");
+  });
+
+  it("completes the default relaunch before reporting installer success", () => {
+    const { result, installed, relaunchTrace } = runInstaller({
+      running: true,
+      defaultRelaunch: true,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(relaunchTrace, "utf8")).toContain("kill -TERM 101");
+    expect(fs.readFileSync(relaunchTrace, "utf8")).toContain(`open -n ${installed}`);
+    expect(result.stderr).toContain("restarted the running desktop shell");
   });
 
   it("normalizes the legacy auth-hook CI value for the Tauri build", () => {
