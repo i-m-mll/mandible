@@ -70,85 +70,8 @@
   padding: 8px 6px 14px;
 }
 
-.chat-sidebar-section {
-  margin-bottom: 10px;
-}
-
-.chat-sidebar-section__heading {
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 7px 6px;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 700;
-  text-align: left;
-  text-transform: uppercase;
-  letter-spacing: 0;
-}
-
-.chat-sidebar-section__heading strong,
-.chat-sidebar-section__heading em {
-  min-width: 0;
-  color: var(--text-muted);
-  font-style: normal;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-sidebar-section__heading:hover,
-.chat-project-group__header:hover {
-  color: var(--text-primary);
-}
-
 .chat-project-group {
   margin-bottom: 2px;
-}
-
-.chat-project-group__header {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 7px;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  text-align: left;
-  text-transform: none;
-}
-
-.chat-project-group__header strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-muted);
-}
-
-.chat-project-group__folder {
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-}
-
-.chat-project-group__header em {
-  font-style: normal;
-  color: var(--text-muted);
 }
 
 .chat-project-group__items {
@@ -156,6 +79,10 @@
 }
 
 .chat-project-group__items .chat-history-item .sidebar-item-row__select {
+  padding-left: 29px;
+}
+
+.chat-project-group__items .sidebar-group-node__show-more {
   padding-left: 29px;
 }
 
@@ -250,12 +177,6 @@
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
-}
-
-.chat-history-load-more {
-  width: 100%;
-  margin-top: 8px;
-  font-size: 12px;
 }
 
 .chat-history-detail {

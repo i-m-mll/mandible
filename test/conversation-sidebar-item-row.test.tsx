@@ -59,7 +59,10 @@ const conversation: Conversation = {
 
 describe('conversation sidebar labeled-item rows', () => {
   it('keeps section nodes separate while giving leaf rows direct Pin and secondary overflow actions', async () => {
-    vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [conversation], total: 1 });
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      groups: [{ key: 'chats', kind: 'chats', label: 'Chats', total: 1, conversations: [conversation], next_cursor: null }],
+      limit: 5,
+    });
     vi.spyOn(api, 'getConversation').mockResolvedValue({
       ...conversation,
       blocks: [],
@@ -77,7 +80,6 @@ describe('conversation sidebar labeled-item rows', () => {
 
     render(
       <ConversationsView
-        conversations={[conversation]}
         consoleSessions={[]}
         workRepos={[]}
         initialConversationId={null}
