@@ -63,7 +63,7 @@ constraining the title to one truncated line.
   variant="versioned"
   identity={{
     displayRef: artifact.short_hash,
-    canonicalRef: `artifact:${artifact.id}`,
+    canonicalRef: `artifact-series:${artifact.series_id}`,
   }}
   title={artifact.title}
   state={version.is_latest ? <span>Latest</span> : undefined}
