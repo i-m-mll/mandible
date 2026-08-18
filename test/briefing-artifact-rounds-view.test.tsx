@@ -60,6 +60,28 @@ describe('artifact-backed Briefing rounds', () => {
     expect(normalizeBriefingProjection(detail('round-1'))).toMatchObject({ briefing_id: 'briefing-1', selected_round_id: 'round-1', latest_round_id: 'round-2', document: { artifact_version_id: 'artifact-version:v1' } });
   });
 
+  it('reports authentication failure instead of a false empty Briefing list', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/briefings') {
+        return new Response(JSON.stringify({ error: 'authentication_required' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ incidents: [], counts: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+
+    const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
+    expect((await within(sidebar).findByRole('alert')).textContent)
+      .toContain('Authentication is required to load Briefings.');
+    expect(within(sidebar).queryByText('No Briefings have been reported yet.')).toBeNull();
+  });
+
   it('defaults to latest, preserves explicit history across reconciliation, isolates drafts, and uses Submit/correction gates', async () => {
     const calls: Array<{ url: string; method: string; body: any }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

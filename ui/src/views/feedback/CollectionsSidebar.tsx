@@ -19,6 +19,7 @@ import type { BriefingCollectionViewState } from './collection-view-state';
 
 export type CollectionsSidebarProps = {
   collections: readonly FeedbackCollection[];
+  loadError?: string | null;
   hidden?: boolean;
   selectedCollectionId: string | null;
   viewState: BriefingCollectionViewState;
@@ -28,6 +29,7 @@ export type CollectionsSidebarProps = {
 
 export function CollectionsSidebar({
   collections,
+  loadError = null,
   hidden = false,
   selectedCollectionId,
   viewState,
@@ -234,7 +236,13 @@ export function CollectionsSidebar({
             </ul>
           ) : null}
         </section>
-        {ordered.length === 0 ? (
+        {loadError ? (
+          <div className="feedback-collections-sidebar__list">
+            <p className="feedback-collections-sidebar__empty" role="alert">
+              {loadError}
+            </p>
+          </div>
+        ) : ordered.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="status">
               {collections.length === 0

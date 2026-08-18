@@ -7,6 +7,7 @@ import type { BriefingCollectionViewState } from './collection-view-state';
 
 export type CollectionShellProps = {
   collections: readonly FeedbackCollection[];
+  loadError?: string | null;
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
@@ -16,6 +17,7 @@ export type CollectionShellProps = {
 
 export function CollectionShell({
   collections,
+  loadError = null,
   sidebarHidden = false,
   viewState,
   setViewState,
@@ -35,6 +37,7 @@ export function CollectionShell({
     <div className="feedback-collection-shell" data-testid="feedback-collection-shell">
       <CollectionsSidebar
         collections={collections}
+        loadError={loadError}
         hidden={sidebarHidden}
         selectedCollectionId={selectedCollectionId}
         viewState={viewState}

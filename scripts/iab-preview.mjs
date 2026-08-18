@@ -66,7 +66,7 @@ async function main(options) {
         status: "already-running",
         mode,
         message: "Already on an integration branch with a healthy preview.",
-        ...existing,
+        ...withBrowserReadyUrl(existing),
       };
     }
   } else {
@@ -87,7 +87,7 @@ async function main(options) {
         status: "already-running",
         mode,
         message: "Preview metadata points to a healthy instance.",
-        ...existing,
+        ...withBrowserReadyUrl(existing),
       };
     }
     worktree = options.dryRun
@@ -121,6 +121,7 @@ async function main(options) {
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
         MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
         MANDIBLE_FILE_RPC_DIR: path.join(preview.root, "agent-rpc"),
+        MANDIBLE_CONFIG_DIR: path.join(preview.root, "config"),
       },
     };
   }
@@ -208,7 +209,7 @@ async function main(options) {
     keepDbPaths: [dbCopy],
   });
   fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
-  return metadata;
+  return withBrowserReadyUrl(metadata);
 }
 
 async function cleanupPreviewCache(options) {
@@ -542,8 +543,44 @@ async function healthyExistingPreview(branch) {
   return {
     ...metadata,
     health,
-    freshUrl: `http://127.0.0.1:${metadata.port}/?fresh=${Date.now()}#/timeline`,
+    freshUrl: browserUrl(metadata.port),
   };
+}
+
+function withBrowserReadyUrl(preview) {
+  const tokenPath = path.join(
+    preview.previewRoot ?? path.dirname(preview.db),
+    "config",
+    "client-auth",
+    "bootstrap-token",
+  );
+  const token = readProtectedToken(tokenPath);
+  return {
+    ...preview,
+    freshUrl: browserUrl(preview.port, token),
+    browserEnrollment: token ? "one-time-fragment" : "existing-session",
+  };
+}
+
+function browserUrl(port, token = null) {
+  const hashQuery = token
+    ? `?${new URLSearchParams({ mandible_auth: token }).toString()}`
+    : "";
+  return `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline${hashQuery}`;
+}
+
+function readProtectedToken(tokenPath) {
+  try {
+    const stat = fs.statSync(tokenPath);
+    if (!stat.isFile()) return null;
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error(`Preview bootstrap token has unsafe permissions: ${tokenPath}`);
+    }
+    return fs.readFileSync(tokenPath, "utf8").trim() || null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 async function analyzePreviewDirForCleanup(dirPath, apply) {
@@ -834,6 +871,7 @@ ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value)
 
 function previewInstanceEnv(details) {
   const fileRpcDir = path.join(path.dirname(details.dbCopy), "agent-rpc");
+  const configDir = path.join(path.dirname(details.dbCopy), "config");
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.dbCopy,
@@ -843,6 +881,7 @@ function previewInstanceEnv(details) {
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
     MANDIBLE_FILE_RPC_DIR: fileRpcDir,
+    MANDIBLE_CONFIG_DIR: configDir,
   };
 }
 
