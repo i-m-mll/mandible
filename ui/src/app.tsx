@@ -1839,7 +1839,7 @@ function App(): JSX.Element {
       badgeClass: 'tab-badge--briefing',
       // Issue 5308097 §8 — a SECOND, independent badge for active and
       // unacknowledged operational incidents. It is deliberately not folded
-      // into the briefing count: an unattended executor failure and a finding
+      // into the briefing count: an unattended executor failure and a Briefing
       // awaiting review are different obligations, and adding them together
       // would let either one hide the other.
       secondaryBadge: badges.incidents,
@@ -2279,10 +2279,8 @@ function App(): JSX.Element {
           return (
             <LazyBriefingView
               instance={instanceInfo}
-              initialFilter={tabRoute.params.filter}
-              initialCandidateId={tabRoute.params.candidate ?? null}
-              initialAskId={tabRoute.params.ask ?? null}
-              initialCollectionId={tabRoute.params.collection ?? null}
+              initialBriefingId={tabRoute.params.briefing ?? null}
+              initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );

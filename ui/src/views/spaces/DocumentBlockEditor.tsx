@@ -1101,7 +1101,6 @@ export function DocumentBlockEditor({
             spaceId={spaceId}
             projectId={projectId}
             existingItems={spaceItems}
-            includeFindings
             isItemInView={() => false}
             afterAdd={embedSpaceItem}
             onAdded={() => {

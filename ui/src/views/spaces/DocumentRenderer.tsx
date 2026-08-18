@@ -52,7 +52,6 @@ import {
   type BlockType,
 } from '../../../../src/spaces/serialize';
 import type { SpaceBlock } from '../../api';
-import { SpaceFindingRef } from './SpaceFindingRef';
 import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
@@ -344,17 +343,7 @@ function EmbedBlock({
     >
       <figcaption className="spaces-doc-embed__caption">
         <span className="spaces-doc-embed__kind">{kind}</span>
-        {snapshot.refType === 'finding' && snapshot.refId ? (
-          // Read-only finding embed: title, source, revision state, review
-          // state. The document renderer never mutates review state.
-          <SpaceFindingRef
-            source={{
-              ref_id: snapshot.refId,
-              title: snapshot.title,
-              metadata: snapshot.metadata,
-            }}
-          />
-        ) : ref ? (
+        {ref ? (
           <DirectiveRef
             docRef={{
               raw: ref,

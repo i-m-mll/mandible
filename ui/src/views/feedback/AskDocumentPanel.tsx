@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 
 import {
   getArtifactContent,
-  postAskAnnotations,
+  postBriefingAnnotations,
   type AskAnnotation,
   type AskAnnotationOperation,
   type AskProjection,
@@ -14,6 +14,8 @@ import {
 } from '../spaces/MarkdownSourceEditor';
 
 export type AskDocumentPanelProps = {
+  briefingId: string;
+  roundId: string;
   ask: AskProjection;
   canMutate: boolean;
   onRefresh(): Promise<AskProjection | null>;
@@ -55,7 +57,7 @@ async function sha256(value: string): Promise<string> {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: AskDocumentPanelProps): JSX.Element | null {
+export function AskDocumentPanel({ briefingId, roundId, ask, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: AskDocumentPanelProps): JSX.Element | null {
   const document = ask.document;
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
@@ -194,7 +196,7 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
     setBusy(true);
     setStatus(null);
     try {
-      const result = await postAskAnnotations(ask.ask_id, operations);
+      const result = await postBriefingAnnotations(briefingId, roundId, operations);
       if (result.annotation_event_ids.length !== operations.length) {
         throw new Error('The annotation service returned an ambiguous event result.');
       }
@@ -266,7 +268,7 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
       {source !== null && !profile ? (
         <div className="ask-document__source">
           <MarkdownSourceEditor
-            blockId={`ask-document:${ask.ask_id}`}
+            blockId={`briefing-document:${briefingId}:${roundId}`}
             value={source}
             ariaLabel="Pinned briefing document source"
             readOnly
@@ -349,7 +351,7 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
       {profile && source !== null ? (
         <details className="ask-document__source-disclosure">
           <summary>Source and existing annotations</summary>
-          <div className="ask-document__source"><MarkdownSourceEditor blockId={`ask-document:${ask.ask_id}`} value={source} ariaLabel="Pinned briefing document source" readOnly decorations={decorations} onDecorationClick={(id) => { const annotation = annotations.find((entry) => entry.annotation_event_id === id); if (annotation) openExisting(annotation); }} onChange={() => undefined} onBlur={() => undefined} onCaretChange={() => undefined} onSelectionChange={() => undefined} onItemCommand={() => undefined} onOpenReference={() => undefined} onBoundaryArrow={() => false} /></div>
+          <div className="ask-document__source"><MarkdownSourceEditor blockId={`briefing-document:${briefingId}:${roundId}`} value={source} ariaLabel="Pinned briefing document source" readOnly decorations={decorations} onDecorationClick={(id) => { const annotation = annotations.find((entry) => entry.annotation_event_id === id); if (annotation) openExisting(annotation); }} onChange={() => undefined} onBlur={() => undefined} onCaretChange={() => undefined} onSelectionChange={() => undefined} onItemCommand={() => undefined} onOpenReference={() => undefined} onBoundaryArrow={() => false} /></div>
         </details>
       ) : null}
       {annotations.length > 0 ? (
@@ -373,27 +375,6 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
             ))}
           </ul>
         </section>
-      ) : null}
-
-      {ask.previous_round ? (
-        <details className="ask-document__history">
-          <summary>Round history</summary>
-          {ask.previous_round.annotations.length > 0 ? (
-            <ul>
-              {ask.previous_round.annotations.map((annotation) => (
-                <li key={`${annotation.annotation_event_id}:${annotation.submission_ordinal}`}>
-                  <a href={`/#/briefing?ask=${encodeURIComponent(ask.previous_round!.ask_id)}`}>
-                    <strong>“{excerpt(annotation.quote)}”</strong>
-                    <span>{annotationKindLabel(annotation.annotation_kind)}</span>
-                    {annotation.replacement_text !== null ? <span>Replace with “{excerpt(annotation.replacement_text)}”</span> : null}
-                    {annotation.body ? <span>{annotation.body}</span> : null}
-                    <small>Responder {annotation.actor_user_id} · submission {annotation.submission_ordinal}</small>
-                  </a>
-                </li>
-              ))}
-            </ul>
-          ) : <p className="briefing-empty">No frozen annotations in the previous round.</p>}
-        </details>
       ) : null}
 
       <div className="ask-document__status" role="status" aria-live="polite">{status}</div>

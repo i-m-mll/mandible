@@ -7,13 +7,11 @@ import {
   addSpaceItem,
   getArtifacts,
   getGraph,
-  listSpaceFindings,
   listSpacesGrouped,
   type ArtifactRecord,
   type AddSpaceItemRequest,
   type GraphNode,
   type Space,
-  type SpaceFindingCandidateSummary,
   type SpaceGroup,
   type SpaceItem,
   type SpaceItemRefType,
@@ -68,7 +66,6 @@ export type SpaceItemPickerProps = {
   loadIssues?: () => Promise<PickerCandidate[]>;
   loadArtifacts?: () => Promise<PickerCandidate[]>;
   loadSpaces?: () => Promise<PickerCandidate[]>;
-  loadFindings?: () => Promise<PickerCandidate[]>;
   /** addSpaceItem client (tests); defaults to the real C2 client. */
   addItem?: SpaceItemPickerAddItem;
   /** Current Space membership rows; existing members are also picker candidates. */
@@ -81,8 +78,6 @@ export type SpaceItemPickerProps = {
   includeArtifacts?: boolean;
   /** Include existing Space targets. */
   includeSpaces?: boolean;
-  /** Include briefing review-candidate (finding) search results. */
-  includeFindings?: boolean;
   title?: string;
   searchPlaceholder?: string;
   emptyLabel?: string;
@@ -105,7 +100,6 @@ type LoadState =
   | { status: 'error'; message: string };
 
 const ARTIFACT_FETCH_LIMIT = 200;
-const FINDING_FETCH_LIMIT = 200;
 
 function candidateKey(refType: PickerRefType, refId: string): string {
   return `${refType}:${refId}`;
@@ -222,29 +216,6 @@ export function itemsToCandidates(
     }));
 }
 
-/**
- * Project briefing review candidates into picker candidates. Selecting one adds
- * an ordinary `finding` SpaceItem whose metadata carries the reference's
- * revision semantics; the picker always places a LATEST-TRACKING reference
- * (`revision_mode: 'latest'`), and pinning is an explicit later act on the
- * placement. Saving is a placement fact — it records no review decision.
- */
-export function findingsToCandidates(records: SpaceFindingCandidateSummary[]): PickerCandidate[] {
-  return records.map((record) => ({
-    key: candidateKey('finding', record.candidate_id),
-    ref_type: 'finding' as const,
-    ref_id: record.candidate_id,
-    title: record.title || `finding:${record.candidate_id}`,
-    projectLabel: record.source,
-    metadata: { revision_mode: 'latest' },
-  }));
-}
-
-/** Default finding loader: the Spaces read over the briefing candidate store. */
-async function defaultLoadFindings(): Promise<PickerCandidate[]> {
-  return findingsToCandidates(await listSpaceFindings({ limit: FINDING_FETCH_LIMIT }));
-}
-
 /** Default issue loader: cross-project ledger-backed graph read. */
 async function defaultLoadIssues(): Promise<PickerCandidate[]> {
   const graph = await getGraph({ status: 'all' });
@@ -284,14 +255,12 @@ export function SpaceItemPicker({
   loadIssues = defaultLoadIssues,
   loadArtifacts = defaultLoadArtifacts,
   loadSpaces,
-  loadFindings = defaultLoadFindings,
   addItem = addSpaceItem as SpaceItemPickerAddItem,
   existingItems = [],
   existingItemRefTypes,
   includeIssues = true,
   includeArtifacts = true,
   includeSpaces = false,
-  includeFindings = false,
   title = 'Add items',
   searchPlaceholder = 'Search issues and artifacts by title...',
   emptyLabel = 'No items available.',
@@ -313,7 +282,6 @@ export function SpaceItemPicker({
     if (includeIssues) loaders.push(loadIssues());
     if (includeArtifacts) loaders.push(loadArtifacts());
     if (includeSpaces) loaders.push(loadSpaces ? loadSpaces() : defaultLoadSpaces(_projectId));
-    if (includeFindings) loaders.push(loadFindings());
     Promise.allSettled(loaders)
       .then((results) => {
         if (!active) return;
@@ -336,11 +304,9 @@ export function SpaceItemPicker({
     loadIssues,
     loadArtifacts,
     loadSpaces,
-    loadFindings,
     includeIssues,
     includeArtifacts,
     includeSpaces,
-    includeFindings,
     _projectId,
   ]);
 

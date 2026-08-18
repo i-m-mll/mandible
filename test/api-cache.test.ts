@@ -3,66 +3,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addSpaceItem,
   feedbackApiCacheFamiliesForEvent,
-  getBriefingQueue,
-  getCachedBriefingQueue,
+  getBriefings,
+  getCachedBriefings,
   getSpace,
   getSpaceFactPacket,
   getSessions,
   invalidateApiGetCache,
 } from '../ui/src/api';
 
-describe('feedback SSE cache invalidation matrix', () => {
+describe('Briefing SSE cache invalidation matrix', () => {
   it.each([
-    'briefing:ingested',
-    'briefing:decided',
-    'briefing:commented',
-    'briefing:expired',
-  ])('%s invalidates Briefing, collection, and badge caches', (topic) => {
+    'briefing:created',
+    'briefing:round-published',
+    'briefing:answered',
+    'briefing:annotated',
+    'briefing:submitted',
+  ])('%s invalidates logical Briefing and badge caches', (topic) => {
     expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
-      '/api/briefing',
-      '/api/feedback/collections',
+      '/api/briefings',
       '/api/dashboard/badges',
     ]);
   });
 
-  it.each([
-    'ask:created',
-    'ask:submitted',
-    'ask:cancelled',
-    'ask:expired',
-  ])('%s invalidates ask, collection, and badge caches', (topic) => {
-    expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
-      '/api/asks',
-      '/api/feedback/collections',
-      '/api/dashboard/badges',
-    ]);
-  });
-
-  it('invalidates only the collection listing for a collection expiry change', () => {
-    expect(feedbackApiCacheFamiliesForEvent('feedback:collection-updated'))
-      .toEqual(['/api/feedback/collections']);
-  });
-
-  it('does not classify unrelated or merely prefix-matching topics as feedback', () => {
-    for (const topic of ['ledger:issue:updated', 'auth:new', 'briefing:unknown', 'ask:answered']) {
+  it('does not classify removed compatibility or merely prefix-matching topics', () => {
+    for (const topic of ['ledger:issue:updated', 'auth:new', 'briefing:unknown', 'ask:answered', 'feedback:collection-updated']) {
       expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([]);
     }
   });
 
   it('keeps event bursts bounded to the union of their declared families', () => {
     const burst = [
-      'briefing:ingested',
-      'briefing:decided',
-      'ask:created',
-      'ask:submitted',
-      'briefing:expired',
+      'briefing:created',
+      'briefing:round-published',
+      'briefing:answered',
+      'briefing:submitted',
     ];
     const families = new Set(burst.flatMap((topic) => feedbackApiCacheFamiliesForEvent(topic)));
     expect([...families].sort()).toEqual([
-      '/api/asks',
-      '/api/briefing',
+      '/api/briefings',
       '/api/dashboard/badges',
-      '/api/feedback/collections',
     ]);
   });
 });
@@ -121,34 +100,25 @@ describe('dashboard API GET cache', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('exposes a warm Briefing queue synchronously and clears it through the shared cache', async () => {
+  it('exposes a warm logical Briefing list synchronously and clears it through the shared cache', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({
-      candidates: [],
-      sources: [{
-        source: 'alpha',
-        pending_count: 0,
-        candidate_count: 0,
-        last_task_identity: 'task/alpha',
-        last_run_id: 'run-1',
-        last_digest_version: 1,
-        last_ingested_at: 1_000,
-        last_ingest_age_ms: 0,
-        last_batch_item_count: 0,
-      }],
+      briefings: [{ id: 'briefing-1', title: 'Daily briefing', latest_round_id: 'round-1', round_count: 1, created_at: 1, updated_at: 2 }],
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    expect(getCachedBriefingQueue()).toBeNull();
-    await getBriefingQueue();
-    expect(getCachedBriefingQueue()?.sources[0]).toMatchObject({
-      source: 'alpha',
-      pending_count: 0,
-      last_batch_item_count: 0,
+    expect(getCachedBriefings()).toBeNull();
+    await getBriefings();
+    expect(getCachedBriefings()?.[0]).toMatchObject({
+      id: 'briefing:briefing-1',
+      collectionId: 'briefing-1',
+      label: 'Daily briefing',
+      latestRoundId: 'round-1',
+      itemCount: 1,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    invalidateApiGetCache('/api/briefing');
-    expect(getCachedBriefingQueue()).toBeNull();
+    invalidateApiGetCache('/api/briefings');
+    expect(getCachedBriefings()).toBeNull();
   });
 
   it('invalidates a cached Space fact packet after a Space mutation', async () => {
