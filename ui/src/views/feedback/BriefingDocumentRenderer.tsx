@@ -128,7 +128,7 @@ export function BriefingDocumentRenderer({
     try {
       const [identity, round] = await Promise.all([getClientAuthWhoami(), getBriefing(briefingId, roundId)]);
       if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
-      if (round.briefing_id !== briefingId || (roundId && round.selected_round_id !== roundId)) throw new Error('The Briefing service returned a mismatched immutable round.');
+      if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) throw new Error('The Briefing service returned a mismatched immutable round.');
       const nextUserId = identity.authenticated ? identity.user?.id ?? null : null;
       setUserId(nextUserId);
       setUserKind(identity.user?.kind ?? null);

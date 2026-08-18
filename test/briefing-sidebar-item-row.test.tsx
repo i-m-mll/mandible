@@ -17,6 +17,7 @@ import {
 const firstId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
 const secondId = '06e4aec0-cf58-4a7f-86df-415e08a4eb8e';
 const thirdId = '5d186de4-075e-4228-a070-e6c5be9dcbf8';
+const roundId = '9fe126c4-74c5-4aa5-af9e-48e4f3a637c6';
 
 const collections: FeedbackCollection[] = [
   { id: feedbackCollectionIdentity(firstId), collectionId: firstId, label: 'First briefing', itemCount: 1, latestRoundId: 'round-1', createdAt: 1, updatedAt: 3 },
@@ -68,6 +69,7 @@ describe('Briefing sidebar row actions', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link to Third briefing' }));
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}${briefingRoute(thirdId)}`);
     expect(briefingRoute(thirdId)).toBe('/#/briefing?briefing=5d186de4');
+    expect(briefingRoute(thirdId, roundId)).toBe('/#/briefing?briefing=5d186de4&round=9fe126c4');
   });
 
   it('puts ordered pinned controls in overflow with honest endpoint states', () => {
