@@ -12,7 +12,6 @@ import {
   getAuthHistory,
   getAuthQueue,
   getConsoleSessions,
-  getConversations,
   getDashboardBadges,
   getInboxGlobal,
   getIssueRepos,
@@ -105,6 +104,7 @@ import {
   subscribeAgentPageBinding,
 } from './agent-page-binding';
 import { LoadingSkeleton } from './components/LoadingSkeleton';
+import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
@@ -863,8 +863,6 @@ function App(): JSX.Element {
         case 'console':
         case 'chat-history':
           await Promise.all([
-            getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
-              .then((result) => dispatch({ type: 'setConversations', conversations: result.conversations })),
             getConsoleSessions<ConsoleSession>().then((sessions) => dispatch({
               type: 'setConsoleSessions',
               sessions: sessions.map((session) => ({ pinned: false, unread_count: 0, ...session })),
@@ -1457,7 +1455,6 @@ function App(): JSX.Element {
     state.workRepos,
     state.workBranches,
     state.issueRepos,
-    state.conversations,
     state.inboxData,
     state.consoleSessions,
     state.settings,
@@ -2217,13 +2214,13 @@ function App(): JSX.Element {
           const tabRoute = routeForTab('console', route, tabRouteSnapshots);
           return (
             <LazyConversationsView
-              conversations={state.conversations}
               consoleSessions={state.consoleSessions}
               workRepos={state.workRepos}
               initialConversationId={tabRoute.params.conversation ?? null}
               initialSessionId={tabRoute.params.session ?? null}
               initialPresetId={tabRoute.params.preset ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
+              sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
               instance={instanceInfo}
               onSelectSession={handleConsoleSelectSession}
               onNewSession={handleConsoleNewSession}

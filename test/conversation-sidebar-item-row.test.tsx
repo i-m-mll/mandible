@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation, InstanceInfo } from '../ui/src/api.js';
+import type { Conversation, ConversationSidebarGroup, InstanceInfo } from '../ui/src/api.js';
 import { CHAT_VIEW_STATE_KEY } from '../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
 
@@ -89,9 +89,23 @@ const rejectModePreview: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
 };
 
+function sidebarResponse(rows: Conversation[]) {
+  const groups: ConversationSidebarGroup[] = [];
+  const pinned = rows.filter((row) => row.starred);
+  const chats = rows.filter((row) => !row.starred);
+  if (pinned.length > 0) {
+    groups.push({ key: 'pinned', kind: 'pinned', label: 'Pinned', total: pinned.length, conversations: pinned, next_cursor: null });
+  }
+  if (chats.length > 0) {
+    groups.push({ key: 'chats', kind: 'chats', label: 'Chats', total: chats.length, conversations: chats, next_cursor: null });
+  }
+  return { groups, limit: 5 };
+}
+
 describe('conversation sidebar labeled-item rows', () => {
   it('keeps section nodes separate while giving leaf rows direct Pin and secondary overflow actions', async () => {
-    vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [conversation], total: 1 });
+    let serverRow = conversation;
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse([serverRow]));
     vi.spyOn(api, 'getConversation').mockResolvedValue({
       ...conversation,
       blocks: [],
@@ -101,15 +115,14 @@ describe('conversation sidebar labeled-item rows', () => {
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
-    const updateConversation = vi.spyOn(api, 'updateConversation').mockImplementation(async (_id, patch) => ({
-      ...conversation,
-      ...patch,
-    }));
+    const updateConversation = vi.spyOn(api, 'updateConversation').mockImplementation(async (_id, patch) => {
+      serverRow = { ...serverRow, ...patch };
+      return serverRow;
+    });
     vi.spyOn(window, 'prompt').mockReturnValue('design, shipped');
 
     render(
       <ConversationsView
-        conversations={[conversation]}
         consoleSessions={[]}
         workRepos={[]}
         initialConversationId={null}
@@ -131,6 +144,7 @@ describe('conversation sidebar labeled-item rows', () => {
 
     fireEvent.click(screen.getByRole('button', { name: `Pin ${conversation.title}` }));
     await waitFor(() => expect(updateConversation).toHaveBeenCalledWith('conv-row', { starred: true }));
+    await screen.findByRole('button', { name: `Unpin ${conversation.title}` });
 
     fireEvent.click(screen.getByRole('button', { name: `Chat actions for ${conversation.title}` }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit tags' }));
@@ -141,10 +155,7 @@ describe('conversation sidebar labeled-item rows', () => {
 
   it('reconciles Pin and Unpin into visible sections while preserving order, selection, focus, and reload state', async () => {
     let serverRows = [conversation, existingPinnedConversation];
-    vi.spyOn(api, 'getConversations').mockImplementation(async () => ({
-      conversations: serverRows,
-      total: serverRows.length,
-    }));
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse(serverRows));
     vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
       ...(serverRows.find((row) => row.id === id) ?? conversation),
       blocks: [],
@@ -164,7 +175,6 @@ describe('conversation sidebar labeled-item rows', () => {
 
     const renderView = () => render(
       <ConversationsView
-        conversations={serverRows}
         consoleSessions={[]}
         workRepos={[]}
         initialConversationId={conversation.id}
@@ -186,7 +196,7 @@ describe('conversation sidebar labeled-item rows', () => {
     const unpin = await screen.findByRole('button', { name: `Unpin ${conversation.title}` });
     await waitFor(() => expect(document.activeElement).toBe(unpin));
     expect(screen.getByRole('button', { name: `Open conversation ${conversation.title}` }).getAttribute('aria-current')).toBe('true');
-    const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('.chat-sidebar-section')!;
+    const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
     expect(within(pinnedSection).getAllByRole('button', { name: /^Open conversation/ }).map((row) => row.getAttribute('aria-label'))).toEqual([
       `Open conversation ${existingPinnedConversation.title}`,
       `Open conversation ${conversation.title}`,
@@ -198,7 +208,7 @@ describe('conversation sidebar labeled-item rows', () => {
 
     cleanup();
     renderView();
-    const reloadedPinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('.chat-sidebar-section')!;
+    const reloadedPinnedSection = (await screen.findByRole('button', { name: /^Pinned/ })).closest('section')!;
     expect(within(reloadedPinnedSection).getAllByRole('button', { name: /^Open conversation/ }).map((row) => row.getAttribute('aria-label'))).toEqual([
       `Open conversation ${existingPinnedConversation.title}`,
       `Open conversation ${conversation.title}`,
@@ -211,7 +221,7 @@ describe('conversation sidebar labeled-item rows', () => {
     const restoredPin = await screen.findByRole('button', { name: `Pin ${conversation.title}` });
     await waitFor(() => expect(document.activeElement).toBe(restoredPin));
     expect(screen.getByRole('button', { name: `Open conversation ${conversation.title}` }).getAttribute('aria-current')).toBe('true');
-    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('.chat-sidebar-section')!;
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section')!;
     expect(within(chatsSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').pinnedConversationIds).toEqual([
       existingPinnedConversation.id,
@@ -220,7 +230,7 @@ describe('conversation sidebar labeled-item rows', () => {
 
   it('uses persisted browser pin membership without PATCH in explicit reject-mode previews', async () => {
     const serverRows = [conversation, existingPinnedConversation];
-    vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: serverRows, total: serverRows.length });
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse(serverRows));
     vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
       ...(serverRows.find((row) => row.id === id) ?? conversation),
       blocks: [],
@@ -237,7 +247,6 @@ describe('conversation sidebar labeled-item rows', () => {
 
     const renderPreview = () => render(
       <ConversationsView
-        conversations={serverRows}
         consoleSessions={[]}
         workRepos={[]}
         initialConversationId={null}
@@ -258,7 +267,7 @@ describe('conversation sidebar labeled-item rows', () => {
     const unpin = await screen.findByRole('button', { name: `Unpin ${conversation.title}` });
     await waitFor(() => expect(document.activeElement).toBe(unpin));
     expect(updateConversation).not.toHaveBeenCalled();
-    const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('.chat-sidebar-section')!;
+    const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
     expect(within(pinnedSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
       pinnedConversationIds: [existingPinnedConversation.id, conversation.id],
@@ -267,7 +276,7 @@ describe('conversation sidebar labeled-item rows', () => {
 
     cleanup();
     renderPreview();
-    const reloadedPinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('.chat-sidebar-section')!;
+    const reloadedPinnedSection = (await screen.findByRole('button', { name: /^Pinned/ })).closest('section')!;
     expect(within(reloadedPinnedSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: `Open conversation ${conversation.title}` }));
     const reloadedUnpin = screen.getByRole('button', { name: `Unpin ${conversation.title}` });
@@ -277,7 +286,7 @@ describe('conversation sidebar labeled-item rows', () => {
     const restoredPin = await screen.findByRole('button', { name: `Pin ${conversation.title}` });
     await waitFor(() => expect(document.activeElement).toBe(restoredPin));
     expect(updateConversation).not.toHaveBeenCalled();
-    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('.chat-sidebar-section')!;
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section')!;
     expect(within(chatsSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}')).toMatchObject({
       pinnedConversationIds: [existingPinnedConversation.id],

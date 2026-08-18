@@ -38,6 +38,12 @@ import {
 import type { InstanceInfo } from '../api';
 import { AuthHooksPanel } from './auth';
 import { APP_THEME_MODES, normalizeAppThemeMode } from '../theme';
+import {
+  SIDEBAR_GROUP_LIMIT_DEFAULT,
+  SIDEBAR_GROUP_LIMIT_MAX,
+  SIDEBAR_GROUP_LIMIT_MIN,
+  normalizeSidebarGroupLimit,
+} from '../components/shared/sidebar-group-settings';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -197,6 +203,8 @@ function NumberInput(props: {
   min?: number;
   max?: number;
   suffix?: string;
+  defaultValue?: number;
+  normalize?: (value: string) => number;
 }) {
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -205,9 +213,9 @@ function NumberInput(props: {
   const initialized = useRef(false);
 
   useEffect(() => {
-    const incoming = props.settings[props.settingKey];
+    const incoming = props.settings[props.settingKey] ?? (props.defaultValue != null ? String(props.defaultValue) : undefined);
     if (typeof incoming === 'string' && !initialized.current) {
-      setValue(incoming);
+      setValue(props.normalize ? String(props.normalize(incoming)) : incoming);
       initialized.current = true;
     }
   }, [props.settings[props.settingKey]]);
@@ -226,14 +234,16 @@ function NumberInput(props: {
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await props.onSave(props.settingKey, value);
+      const savedValue = props.normalize ? String(props.normalize(value)) : value;
+      setValue(savedValue);
+      await props.onSave(props.settingKey, savedValue);
       showFeedback({ type: 'success', message: 'Saved' });
     } catch (err) {
       showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
     } finally {
       setSaving(false);
     }
-  }, [value, props.onSave, props.settingKey, showFeedback]);
+  }, [value, props.onSave, props.settingKey, props.normalize, showFeedback]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSave();
@@ -249,6 +259,7 @@ function NumberInput(props: {
         <input
           type="number"
           className="settings-view__number-input"
+          aria-label={props.label}
           value={value}
           onInput={(e) => setValue((e.target as HTMLInputElement).value)}
           onKeyDown={handleKeyDown}
@@ -1712,6 +1723,28 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <InstructionsDeliverySection settings={settings} onSave={onSave} />
 
       <ProjectPermissionsSection />
+
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Conversations</h3>
+          <p className="settings-view__section-desc">
+            Disclosure defaults for the Chat sidebar.
+          </p>
+        </div>
+        <div className="settings-view__section-body">
+          <NumberInput
+            label="Chats per group"
+            desc="Initial rows and rows added each time Show more is used."
+            settingKey="conversations.sidebar_group_limit"
+            settings={settings}
+            onSave={onSave}
+            min={SIDEBAR_GROUP_LIMIT_MIN}
+            max={SIDEBAR_GROUP_LIMIT_MAX}
+            defaultValue={SIDEBAR_GROUP_LIMIT_DEFAULT}
+            normalize={normalizeSidebarGroupLimit}
+          />
+        </div>
+      </div>
 
       {/* ── Section: Conversation Branching ── */}
       <div className="settings-view__section">

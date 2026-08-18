@@ -3,6 +3,7 @@ import { useMemo, useState } from 'preact/hooks';
 
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import {
   SidebarItemBadge,
   SidebarItemPinAction,
@@ -213,29 +214,22 @@ export function CollectionsSidebar({
       bodyClassName="feedback-collections-sidebar__body"
     >
       <div data-testid="feedback-collections-sidebar">
-        <section className="feedback-collections-sidebar__pinned" aria-labelledby="briefing-pinned-heading">
-          <button
-            id="briefing-pinned-heading"
-            type="button"
-            className="feedback-collections-sidebar__section-heading"
-            aria-expanded={!viewState.pinnedSectionCollapsed}
-            aria-controls="briefing-pinned-list"
-            onClick={() => setViewState((current) => ({
-              ...current,
-              pinnedSectionCollapsed: !current.pinnedSectionCollapsed,
-            }))}
-          >
-            <strong>Pinned</strong>
-            <em aria-label={`${visiblePinned.length} pinned briefing${visiblePinned.length === 1 ? '' : 's'}`}>
-              {visiblePinned.length}
-            </em>
-          </button>
-          {!viewState.pinnedSectionCollapsed ? (
-            <ul id="briefing-pinned-list" className="feedback-collections-sidebar__list">
-              {visiblePinned.map((collection, index) => renderCollection(collection, index))}
-            </ul>
-          ) : null}
-        </section>
+        <SidebarGroupNode
+          id="briefing-pinned"
+          className="feedback-collections-sidebar__pinned"
+          label="Pinned"
+          count={visiblePinned.length}
+          countLabel={`${visiblePinned.length} pinned briefing${visiblePinned.length === 1 ? '' : 's'}`}
+          expanded={!viewState.pinnedSectionCollapsed}
+          onToggle={() => setViewState((current) => ({
+            ...current,
+            pinnedSectionCollapsed: !current.pinnedSectionCollapsed,
+          }))}
+          bodyAs="ul"
+          bodyClassName="feedback-collections-sidebar__list"
+        >
+          {visiblePinned.map((collection, index) => renderCollection(collection, index))}
+        </SidebarGroupNode>
         {loadError ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="alert">
