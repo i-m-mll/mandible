@@ -631,7 +631,7 @@ describe('BriefingView producer selector', () => {
 
     const producers = await screen.findByTestId('briefing-producers');
     expect(within(producers).getByTestId('briefing-producer-all').textContent)
-      .toContain('All producers');
+      .toContain('All recurring sources');
     expect(within(producers).getByTestId('briefing-producer-all').textContent).toContain('3');
     expect(within(producers).getByTestId('briefing-producer-github-releases').textContent)
       .toContain('2');
@@ -650,6 +650,18 @@ describe('BriefingView producer selector', () => {
     expect(calls.filter((call) => call.url.startsWith('/api/briefing/queue')).length)
       .toBe(queueCallsBefore);
     expect(calls.some((call) => call.url.includes('source='))).toBe(false);
+  });
+
+  it('names the all-recurring aggregate when a single source collapses the producer tabs', async () => {
+    stubFetch({ queue: {
+      candidates: [makeItem({ id: 'gh-1' })],
+      sources: [makeSource({ pending_count: 1, candidate_count: 1 })],
+    } });
+    renderBriefing();
+
+    expect((await screen.findByTestId('briefing-all-recurring-sources')).textContent)
+      .toContain('All recurring sources');
+    expect(screen.queryByTestId('briefing-producers')).toBeNull();
   });
 
   it('composes with the pending/judged filter in both directions', async () => {
