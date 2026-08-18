@@ -16,6 +16,7 @@ export type BriefingCollectionViewState = {
   collectionSourceFilter: string;
   collectionStateFilter: 'all' | FeedbackCollectionState;
   pinnedCollectionIds: string[];
+  pinnedSectionCollapsed: boolean;
   selectedCollectionId: string | null;
 };
 
@@ -28,6 +29,7 @@ export const DEFAULT_BRIEFING_COLLECTION_VIEW_STATE: BriefingCollectionViewState
   collectionSourceFilter: '',
   collectionStateFilter: 'all',
   pinnedCollectionIds: [],
+  pinnedSectionCollapsed: false,
   selectedCollectionId: null,
 };
 
@@ -70,6 +72,10 @@ export function normalizeBriefingCollectionViewState(
         ? state as 'all' | FeedbackCollectionState
         : defaults.collectionStateFilter,
     pinnedCollectionIds,
+    pinnedSectionCollapsed:
+      typeof row.pinnedSectionCollapsed === 'boolean'
+        ? row.pinnedSectionCollapsed
+        : defaults.pinnedSectionCollapsed,
     selectedCollectionId: optionalString(row.selectedCollectionId),
   };
 }
