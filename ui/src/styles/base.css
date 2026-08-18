@@ -25,32 +25,62 @@ a {
 }
 
 .app-shell {
+  --app-header-height: 48px;
+  --app-rail-width: 208px;
+  --app-view-sidebar-width: 0px;
   height: 100vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+.app-shell--rail-icons {
+  --app-rail-width: 56px;
+}
+
+.tauri-window .app-shell {
+  --app-header-height: max(48px, env(titlebar-area-height, 48px));
 }
 
 .app-header {
-  flex: 0 0 48px;
-  min-height: 48px;
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: var(--app-rail-width);
+  height: var(--app-header-height);
+  min-height: var(--app-header-height);
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 18px;
   padding: 0 14px;
   background: var(--surface-header);
+  border-right: 1px solid var(--border-muted);
   border-bottom: 1px solid var(--border-muted);
   z-index: 60;
 }
 
-.tauri-window .app-header {
-  flex-basis: max(48px, env(titlebar-area-height, 48px));
-  min-height: max(48px, env(titlebar-area-height, 48px));
+.app-shell--view-sidebar-open .app-header {
+  width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
 }
 
 .app-header__identity {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-header--sidebar-hidden {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.app-header--sidebar-hidden .app-header__identity {
+  width: auto;
+}
+
+.app-header__text {
   min-width: 0;
   display: inline-flex;
   align-items: baseline;
@@ -102,32 +132,15 @@ a {
   font-weight: 600;
 }
 
-.app-header__actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.app-shell__session-status {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 999;
 }
 
-.app-header__icon-button {
-  width: 32px;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  padding: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.app-header__icon-button:hover,
-.app-header__icon-button:focus-visible,
-.app-header__icon-button--active {
-  color: var(--text-primary);
-  background: var(--overlay-hover);
-  outline: none;
+.app-shell__session-status:empty {
+  display: none;
 }
 
 .app-layout {
@@ -135,17 +148,15 @@ a {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
+  grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   position: relative;
   overflow: hidden;
-  --app-rail-shadow-x: 208px;
+  --app-rail-shadow-x: var(--app-rail-width);
 }
 
 .app-layout--rail-icons {
-  grid-template-columns: 56px minmax(0, 1fr);
   overflow: visible;
-  --app-rail-shadow-x: 56px;
 }
 
 .app-layout--bottom-panel-open {
@@ -208,16 +219,11 @@ a {
 
 @media (max-width: 800px) {
   .app-header {
-    gap: 10px;
     padding: 0 10px;
   }
 
-  .app-header__identity {
+  .app-header__text {
     gap: 10px;
-  }
-
-  .app-header__brand-text {
-    display: none;
   }
 
   .app-layout--bottom-panel-open {
@@ -238,15 +244,11 @@ a {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 18px 12px;
+  padding: calc(var(--app-header-height) + 18px) 12px 18px;
   background: var(--surface-rail);
   border-right: 1px solid var(--border-muted);
   box-shadow: var(--shadow-rail);
   overflow: hidden;
-}
-
-.tauri-window .app-rail {
-  padding-top: max(18px, env(titlebar-area-height, 28px));
 }
 
 .app-rail__nav {
@@ -763,6 +765,10 @@ a {
   height: 100%;
 }
 
+.app-layout--view-sidebar-open .view-sidebar {
+  padding-top: var(--app-header-height);
+}
+
 /* Headerless variant (issues/graph/timeline): the frame is the single scroll
    owner. The per-view content class provides overflow-y:auto (e.g.
    `.issues-tree { overflow-y:auto }`). */
@@ -806,6 +812,10 @@ a {
   width: 0;
   cursor: col-resize;
   z-index: 3;
+}
+
+.app-layout--view-sidebar-open .view-sidebar__resize-handle.sidebar-drag-handle {
+  top: var(--app-header-height);
 }
 
 .app-layout--view-sidebar-open .auth-sidebar,

@@ -188,6 +188,26 @@ function setViewportWidth(width: number): void {
   fireEvent(window, new Event('resize'));
 }
 
+function installMemoryLocalStorage(initial: Record<string, string> = {}): () => void {
+  const previous = Object.getOwnPropertyDescriptor(window, 'localStorage');
+  const store = new Map(Object.entries(initial));
+  const storage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+    removeItem: (key: string) => store.delete(key),
+    clear: () => store.clear(),
+    key: (index: number) => [...store.keys()][index] ?? null,
+    get length() { return store.size; },
+  };
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: storage,
+  });
+  return () => {
+    if (previous) Object.defineProperty(window, 'localStorage', previous);
+  };
+}
+
 function stubFetch(): void {
   const mockFetch = vi.fn((input: RequestInfo) => {
     const url = String(input);
@@ -635,6 +655,8 @@ describe('app shell', () => {
     const shell = useMemo<AppShellContextValue>(() => ({
       bottomPanel,
       registerBottomPanel,
+      setViewSidebarWidth: () => undefined,
+      active: true,
     }), [bottomPanel, registerBottomPanel]);
 
     return h(AppShellProvider, { value: shell }, [
@@ -675,7 +697,7 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
-  it('aligns shared header identity and route title on one baseline', () => {
+  it('centers the shared header text group independently while preserving its baseline', () => {
     stubAppShellFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/briefing');
@@ -683,12 +705,84 @@ describe('app shell', () => {
     const { container } = render(h(App, {}));
     const css = readResolvedStylesheet();
     const identity = container.querySelector('.app-header__identity');
+    const text = identity?.querySelector(':scope > .app-header__text');
 
-    expect(identity?.querySelector(':scope > .app-header__brand')).toBeTruthy();
-    expect(identity?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
-    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*baseline;/s);
+    expect(text?.querySelector(':scope > .app-header__brand')).toBeTruthy();
+    expect(text?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
+    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;/s);
+    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*baseline;/s);
     expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
     expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
+  });
+
+  it('couples the Briefing and Issues header edge to the active persisted sidebar width', async () => {
+    const restoreLocalStorage = installMemoryLocalStorage({
+      'sidebar-width:briefing': '412',
+      'sidebar-width:issues': '444',
+    });
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/briefing');
+
+    const first = render(h(App, {}));
+    const shell = first.container.querySelector<HTMLElement>('.app-shell');
+    const header = first.container.querySelector('.app-header');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('412px');
+    const briefingSidebar = await screen.findByLabelText('Briefings');
+    const briefingResize = screen.getByLabelText('Resize Briefings sidebar');
+
+    expect(shell?.classList.contains('app-shell--view-sidebar-open')).toBe(true);
+    expect((briefingSidebar as HTMLElement).style.width).toBe('412px');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('412px');
+    expect(header?.classList.contains('app-header--sidebar-hidden')).toBe(false);
+
+    fireEvent.keyDown(briefingResize, { key: 'ArrowRight' });
+    await waitFor(() => {
+      expect((briefingSidebar as HTMLElement).style.width).toBe('420px');
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('420px');
+    });
+
+    fireEvent.click(screen.getByLabelText('Issues'));
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('444px');
+    await waitFor(() => expect(
+      first.container.querySelector('.view-sidebar[aria-label="Issues"]'),
+    ).toBeTruthy());
+    const issuesSidebar = first.container.querySelector<HTMLElement>('.view-sidebar[aria-label="Issues"]');
+    expect((issuesSidebar as HTMLElement).style.width).toBe('444px');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('444px');
+
+    fireEvent.click(screen.getByLabelText('Briefing'));
+    await waitFor(() => {
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('420px');
+    });
+
+    setViewportWidth(700);
+    await waitFor(() => {
+      expect((briefingSidebar as HTMLElement).style.width).toBe('');
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-width'))
+        .toBe('calc(100% - var(--app-rail-width))');
+    });
+    setViewportWidth(1024);
+    await waitFor(() => {
+      expect((briefingSidebar as HTMLElement).style.width).toBe('420px');
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('420px');
+    });
+
+    first.unmount();
+    window.history.replaceState(null, '', '#/briefing');
+    const refreshed = render(h(App, {}));
+    await screen.findByLabelText('Briefings');
+    expect(
+      refreshed.container.querySelector<HTMLElement>('.app-shell')
+        ?.style.getPropertyValue('--app-view-sidebar-width'),
+    ).toBe('420px');
+
+    const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-width\)\);/s);
+    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
+
+    restoreLocalStorage();
   });
 
   it('keeps the app rail visible while sidebar=hidden hides the view sidebar', async () => {
@@ -708,8 +802,13 @@ describe('app shell', () => {
     const themeToggle = screen.getByLabelText(/^App theme:/);
     const footer = container.querySelector('.app-rail__footer');
     const sidebarControls = container.querySelector('.app-rail__sidebar-controls');
+    const header = container.querySelector('.app-header');
 
     expect(footer).toBeTruthy();
+    expect(header?.classList.contains('app-header--sidebar-hidden')).toBe(true);
+    expect(header?.querySelector('.app-header__mark')).toBeTruthy();
+    expect(header?.querySelector('.app-header__brand-text')).toBeNull();
+    expect(header?.querySelector('.app-header__route')).toBeNull();
     expect(sidebarControls?.parentElement).toBe(footer);
     expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
     expect(Boolean(reveal.compareDocumentPosition(themeToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
@@ -829,6 +928,7 @@ describe('app shell', () => {
     render(h(App, {}));
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
+    expect(screen.getByLabelText('Collapse Graph detail').closest('.app-rail__footer')).toBeTruthy();
     expect(screen.getByLabelText('Graph detail')).toBeTruthy();
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
@@ -873,6 +973,8 @@ describe('app shell', () => {
       const shell = useMemo<AppShellContextValue>(() => ({
         bottomPanel: null,
         registerBottomPanel,
+        setViewSidebarWidth: () => undefined,
+        active: true,
       }), [registerBottomPanel]);
 
       return h(AppShellProvider, { value: shell }, h(GraphView, {
