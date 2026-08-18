@@ -11,6 +11,7 @@ import * as api from '../ui/src/api.js';
 const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
 const sidebarItemStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
+const tokenStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -19,7 +20,7 @@ afterEach(() => {
 });
 
 describe('shared sidebar group presentation', () => {
-  it('renders Briefing Pinned through the normal-case shared heading', () => {
+  it('keeps Briefing as the flat-list exception while reusing shared rows', () => {
     const briefing: FeedbackCollection = {
       id: 'briefing:one', collectionId: 'one', label: 'One', itemCount: 2,
       latestRoundId: 'round-1', createdAt: 1, updatedAt: 2,
@@ -29,18 +30,21 @@ describe('shared sidebar group presentation', () => {
       selectedCollectionId={briefing.id}
       viewState={{
         collectionSourceFilter: '', pinnedCollectionIds: [briefing.id],
-        pinnedSectionCollapsed: false, selectedCollectionId: briefing.id, selectedRoundIds: {},
+        pinnedSectionCollapsed: true, selectedCollectionId: briefing.id, selectedRoundIds: {},
       }}
       setViewState={() => undefined}
       onSelect={() => undefined}
     />);
 
-    const heading = screen.getByRole('button', { name: /^Pinned/ });
-    expect(heading.textContent).toContain('Pinned');
-    expect(heading.classList.contains('sidebar-group-node__heading')).toBe(true);
-    expect(heading.classList.contains('feedback-collections-sidebar__section-heading')).toBe(false);
-    expect(heading.querySelector('.sidebar-group-node__count')).toBeNull();
-    expect(heading.getAttribute('aria-description')).toBe('1 pinned briefing');
+    const sidebar = screen.getByTestId('feedback-collections-sidebar');
+    expect(screen.queryByRole('button', { name: /^Pinned/ })).toBeNull();
+    expect(screen.queryByRole('region', { name: /^Pinned/ })).toBeNull();
+    expect(sidebar.querySelectorAll('ul.feedback-collections-sidebar__list')).toHaveLength(1);
+    const row = screen.getByRole('button', { name: 'Select briefing One' })
+      .closest('.feedback-collection-row');
+    expect(row?.classList.contains('feedback-collection-row--pinned')).toBe(true);
+    expect(row?.querySelector('.sidebar-item-row')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Unpin One' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('supports count-free aggregate headings and stable interaction-only leaf counts', () => {
@@ -99,7 +103,10 @@ describe('shared sidebar group presentation', () => {
     const categoryHeading = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--category > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(categoryHeading).toContain('color: var(--text-muted)');
+    expect(categoryHeading).toContain('color: var(--text-subdued)');
+    expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
+    const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
     const headingTypography = sidebarGroupStylesheet.match(
       /\.sidebar-group-node > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';

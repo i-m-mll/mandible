@@ -18,7 +18,7 @@
 }
 
 .sidebar-group-node--category > .sidebar-group-node__heading {
-  color: var(--text-muted);
+  color: var(--text-subdued);
 }
 
 .sidebar-group-node--folder {
@@ -76,7 +76,7 @@
 .sidebar-group-node--category > .sidebar-group-node__heading:hover,
 .sidebar-group-node--category > .sidebar-group-node__heading:focus-visible {
   background: var(--neutral-alpha-04);
-  color: var(--text-muted);
+  color: var(--text-subdued);
 }
 
 .sidebar-group-node--folder > .sidebar-group-node__heading:hover,
