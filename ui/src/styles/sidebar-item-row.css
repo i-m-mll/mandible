@@ -96,9 +96,9 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
-  width: 0;
-  padding-right: 0;
-  overflow: hidden;
+  width: auto;
+  padding-right: 4px;
+  overflow: visible;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.1s ease;
@@ -106,9 +106,6 @@
 
 .sidebar-item-row:hover .sidebar-item-row__actions,
 .sidebar-item-row:focus-within .sidebar-item-row__actions {
-  width: auto;
-  padding-right: 4px;
-  overflow: visible;
   opacity: 1;
   pointer-events: auto;
 }
@@ -188,9 +185,6 @@
 
 @media (hover: none), (pointer: coarse) {
   .sidebar-item-row__actions {
-    width: auto;
-    padding-right: 4px;
-    overflow: visible;
     opacity: 1;
     pointer-events: auto;
   }

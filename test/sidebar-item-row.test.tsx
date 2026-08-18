@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +8,8 @@ import {
   SidebarItemPinAction,
   SidebarItemRow,
 } from '../ui/src/components/shared/SidebarItemRow';
+
+const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 
 afterEach(() => cleanup());
 
@@ -19,6 +22,7 @@ describe('SidebarItemRow', () => {
       <SidebarItemRow
         label="A title long enough to truncate"
         selectionLabel="Select the item"
+        selectionDescription="Item state: active"
         selected
         ariaCurrent="true"
         onSelect={onSelect}
@@ -39,8 +43,12 @@ describe('SidebarItemRow', () => {
     const row = select.closest('.sidebar-item-row');
     expect(row?.classList.contains('sidebar-item-row--selected')).toBe(true);
     expect(select.getAttribute('aria-current')).toBe('true');
+    expect(select.getAttribute('aria-description')).toBe('Item state: active');
     expect(row?.querySelector('.sidebar-item-row__label')?.textContent).toBe('A title long enough to truncate');
     expect(screen.getByLabelText('12 items').textContent).toBe('12');
+    const selectChildren = Array.from(select.children);
+    expect(selectChildren.at(-1)?.classList.contains('sidebar-item-row__badges')).toBe(true);
+    expect(select.nextElementSibling?.classList.contains('sidebar-item-row__actions')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Pin the item' }));
     expect(onPin).toHaveBeenCalledOnce();
@@ -53,6 +61,27 @@ describe('SidebarItemRow', () => {
 
     fireEvent.click(select);
     expect(onSelect).toHaveBeenCalledOnce();
+  });
+
+  it('reserves the action footprint before hover and only changes visibility on reveal', () => {
+    const baseRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__actions \{([^}]*)\}/)?.[1] ?? '';
+    const revealRule = sidebarItemRowStylesheet.match(
+      /\.sidebar-item-row:hover \.sidebar-item-row__actions,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__actions \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(baseRule).toContain('width: auto');
+    expect(baseRule).toContain('padding-right: 4px');
+    expect(baseRule).toContain('overflow: visible');
+    expect(baseRule).toContain('opacity: 0');
+    expect(revealRule).toContain('opacity: 1');
+    expect(revealRule).not.toMatch(/width|padding|overflow/);
+  });
+
+  it('keeps actions visible and operable for touch and coarse pointers', () => {
+    const coarsePointerRule = sidebarItemRowStylesheet.match(
+      /@media \(hover: none\), \(pointer: coarse\) \{\s*\.sidebar-item-row__actions \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(coarsePointerRule).toContain('opacity: 1');
+    expect(coarsePointerRule).toContain('pointer-events: auto');
   });
 
   it('reveals actions through focus-within and returns focus when Escape closes overflow', () => {

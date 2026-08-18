@@ -58,22 +58,6 @@
   min-width: 0;
 }
 
-.feedback-collection-row__state {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 999px;
-  background: var(--text-muted);
-}
-
-.feedback-collection-row__state--open {
-  background: var(--status-warning-fg);
-}
-
-.feedback-collection-row__state--expired {
-  background: var(--text-muted);
-}
-
 .briefing {
   display: flex;
   flex-direction: column;
