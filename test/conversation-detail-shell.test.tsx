@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../ui/src/api.js';
 import type { Conversation } from '../ui/src/api.js';
 import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js';
-import { ConversationsView } from '../ui/src/views/conversations.js';
+import {
+  ConversationsView,
+  getConversationHeaderProviderLabel,
+} from '../ui/src/views/conversations.js';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -41,7 +44,7 @@ const conversation: Conversation = {
   project_path: null,
   cwd: null,
   branch: null,
-  model: null,
+  model: 'gpt-5.6-codex',
   cli_version: null,
   is_sidechain: false,
   agent_id: null,
@@ -61,6 +64,12 @@ const conversation: Conversation = {
 };
 
 describe('compact detail pane shell', () => {
+  it('uses the compact-header provider presentation contract', () => {
+    expect(getConversationHeaderProviderLabel('claude_code')).toBe('Claude');
+    expect(getConversationHeaderProviderLabel('codex')).toBe('Codex');
+    expect(getConversationHeaderProviderLabel('gemini')).toBe('agy');
+  });
+
   it('keeps the compact header and optional footer outside the scrolling body', () => {
     const { container } = render(
       <DetailPaneShell
@@ -138,13 +147,19 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
     expect(canonicalHeader?.textContent).toContain('01a01639');
     expect(canonicalHeader?.textContent).not.toContain(conversation.id);
-    expect(canonicalHeader?.textContent).toContain('Resumable');
+    const status = canonicalHeader?.querySelector('.detail-pane-header__status');
+    expect(status?.querySelector('.conv-detail__provider')?.textContent).toBe('Codex');
+    expect(status?.textContent).toContain('Resumable');
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeTruthy();
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose')).toBeTruthy();
+    expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
+    const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
+    await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
+    expect(modelSelect.title).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Copy full conversation ID' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(conversation.id));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));

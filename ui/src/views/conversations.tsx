@@ -198,6 +198,16 @@ const SOURCE_LABELS: Record<ConversationSource, string> = {
   gemini: 'Gemini',
 };
 
+const DETAIL_HEADER_PROVIDER_LABELS: Record<ConversationSource, string> = {
+  claude_code: 'Claude',
+  codex: 'Codex',
+  gemini: 'agy',
+};
+
+export function getConversationHeaderProviderLabel(source: ConversationSource): string {
+  return DETAIL_HEADER_PROVIDER_LABELS[source];
+}
+
 const SOURCE_CLASSES: Record<ConversationSource, string> = {
   claude_code: 'source-badge--claude',
   codex: 'source-badge--codex',
@@ -2134,14 +2144,21 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
-      status={attachPresentation && attachState ? (
-        <span
-          className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-          title={attachPresentation.title}
-        >
-          {attachPresentation.label}
-        </span>
-      ) : undefined}
+      status={(
+        <>
+          <span className="conv-detail__provider">
+            {getConversationHeaderProviderLabel(conversation.source)}
+          </span>
+          {attachPresentation && attachState && (
+            <span
+              className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+              title={attachPresentation.title}
+            >
+              {attachPresentation.label}
+            </span>
+          )}
+        </>
+      )}
       actionsLabel="Conversation detail actions"
       actions={(
         <>
@@ -2255,9 +2272,6 @@ function ConversationDetail({
         )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
-            <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
-              {getSourceMark(conversation.source)}
-            </span>
             <select
               className="conv-compose__model"
               value={composerModel}
