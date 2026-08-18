@@ -16,6 +16,7 @@ import {
 } from '../../api';
 import { useAppShell } from '../../app-shell';
 import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdentity';
+import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { artifactDetailHref, displayResourceRef } from '../../resource-refs';
@@ -378,62 +379,59 @@ export function BriefingDocumentRenderer({
       as="section"
       className="briefing-detail"
       headerClassName="briefing-detail__header"
-      headerPrimaryClassName="briefing-detail__header-primary"
       bodyClassName="briefing-detail__body"
       footerClassName="briefing-detail__footer"
       headerRef={headerRef}
       ariaBusy={load.loading}
       header={(
-        <div className="briefing-detail__heading">
-          <DetailHeaderIdentity
-            className="briefing-detail__eyebrow"
-            contextLabel="Briefing"
-            shortId={shortRouteId(briefingId)}
-            copyValue={briefingId}
-            copyLabel="Copy full Briefing ID"
-          />
-          <div className="briefing-detail__title-row">
-            <h2 title={title}>{title}</h2>
-            {round ? (
-              <div className="briefing-detail__actions">
-                <button
-                  type="button"
-                  className="briefing-detail__actions-trigger"
-                  aria-label="Briefing actions"
-                  aria-haspopup="menu"
-                  aria-expanded={actionsOpen}
-                  onClick={() => setActionsOpen((open) => !open)}
-                >
-                  <HorizontalDotsIcon />
-                </button>
-                {actionsOpen ? (
-                  <div className="briefing-detail__actions-menu" role="menu">
-                    <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
-                    {artifactVersionRef ? (
-                      <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-          {round ? (
-            <div className="briefing-detail__meta">
-              <div className="briefing-detail__controls">
-                <span>Round occurrence</span>
-                {selectedIsNewest ? <span className="briefing-detail__latest">Latest</span> : null}
-                <select
-                  aria-label="Round occurrence"
-                  value={round.selected_round_id}
-                  onInput={(event) => onRoundChange?.(event.currentTarget.value === round.latest_round_id ? null : event.currentTarget.value)}
-                >
-                  {roundOptions.map(({ round: summary, label }) => <option key={summary.id} value={summary.id}>{label}</option>)}
-                </select>
-                <BriefingRoundCopyButton value={round.selected_round_id} />
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <DetailPaneHeader
+          variant="versioned"
+          identity={{
+            displayRef: shortRouteId(briefingId).replace(/^briefing:/i, ''),
+            canonicalRef: briefingId,
+            copyLabel: 'Copy full Briefing ID',
+          }}
+          title={title}
+          titleTooltip={title}
+          state={round && selectedIsNewest ? 'Latest' : undefined}
+          selector={round ? {
+            label: 'Round occurrence',
+            control: (
+              <select
+                aria-label="Round occurrence"
+                value={round.selected_round_id}
+                onInput={(event) => onRoundChange?.(event.currentTarget.value === round.latest_round_id ? null : event.currentTarget.value)}
+              >
+                {roundOptions.map(({ round: summary, label }) => <option key={summary.id} value={summary.id}>{label}</option>)}
+              </select>
+            ),
+            selectedCanonicalRef: round.selected_round_id,
+            copyLabel: 'Copy full selected round ref',
+          } : undefined}
+          actions={round ? (
+            <>
+              <button
+                type="button"
+                className="briefing-detail__actions-trigger"
+                aria-label="Briefing actions"
+                aria-haspopup="menu"
+                aria-expanded={actionsOpen}
+                onClick={() => setActionsOpen((open) => !open)}
+              >
+                <HorizontalDotsIcon />
+              </button>
+              {actionsOpen ? (
+                <div className="briefing-detail__actions-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
+                  {artifactVersionRef ? (
+                    <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          ) : undefined}
+          actionsLabel="Briefing actions"
+        />
       )}
       footer={round?.valid ? (
         <>
@@ -477,33 +475,6 @@ export function BriefingDocumentRenderer({
 
 function HorizontalDotsIcon(): JSX.Element {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>;
-}
-
-function BriefingRoundCopyButton({ value }: { value: string }): JSX.Element {
-  const [copied, setCopied] = useState(false);
-  const label = copied ? 'Copied selected round ref' : 'Copy full selected round ref';
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <button type="button" className="briefing-detail__round-copy" aria-label={label} title={label} onClick={() => void copy()}>
-      {copied ? <CheckIcon /> : <CopyIcon />}
-    </button>
-  );
-}
-
-function CopyIcon(): JSX.Element {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>;
-}
-
-function CheckIcon(): JSX.Element {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>;
 }
 
 export default BriefingDocumentRenderer;
