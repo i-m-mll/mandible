@@ -116,6 +116,7 @@ export function AskDocumentPanel({ ask, canMutate, onRefresh, draft = {}, onDire
     if (!profile) { onContentGateChange?.(''); return undefined; }
     if (source === null) return undefined;
     if (documentIntegrityError) { onContentGateChange?.(documentIntegrityError); return undefined; }
+    onContentGateChange?.('Verifying pinned document…');
     void Promise.all(directiveItems.map(async (item) => {
       const directive = item.directive!;
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);

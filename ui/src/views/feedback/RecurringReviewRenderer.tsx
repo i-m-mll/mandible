@@ -1427,6 +1427,8 @@ export function RecurringReviewRenderer({
           ))}
         </div>
       ) : null}
+      {aggregateMode && !(producers.length > 1 || selectedSource !== null) ? <p className="briefing-note" data-testid="briefing-all-recurring-sources">All recurring sources</p> : null}
+      {!aggregateMode && selectedCollectionSource ? <p className="briefing-note" data-testid="briefing-selected-recurring-source">Recurring source: {selectedCollectionSource}</p> : null}
 
       <div className="briefing-toolbar">
         <div className="briefing-toolbar__filters" role="group" aria-label="Briefing filter">

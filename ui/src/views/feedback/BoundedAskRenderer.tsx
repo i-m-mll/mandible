@@ -205,7 +205,7 @@ export function BoundedAskRenderer({
             : null;
 
   const submit = async () => {
-    if (!ask || !canMutate || busy) return;
+    if (!ask || !canMutate || busy || (profile && contentGate !== '')) return;
     const mutation = ++mutationSequence.current;
     const submittedAskId = ask.ask_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
@@ -430,7 +430,7 @@ export function BoundedAskRenderer({
         </div>
       ) : null}
       {ask.document ? (
-        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy} onRefresh={reconcile}
+        <AskDocumentPanel ask={ask} canMutate={canMutate && !busy && (!profile || contentGate === '')} onRefresh={reconcile}
           draft={Object.fromEntries(Object.entries(draft).filter(([, value]) => !value || 'verdict' in value)) as Record<string, { verdict: 'keep' | 'dismiss' } | null>}
           onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })}
           onContentGateChange={setContentGate} />

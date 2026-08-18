@@ -163,7 +163,7 @@ export function BriefingView({
           part of the feedback collection model at all. */}
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
       <div hidden={selectedAsk || selectedCollectionUnavailable}>
-        <AppShellProvider value={{ ...appShell, active: appShell.active && !selectedAsk }}>
+        <AppShellProvider value={{ ...appShell, active: appShell.active && !selectedAsk && !selectedCollectionUnavailable }}>
           <RecurringReviewRenderer
             instance={instance}
             viewState={viewState}
