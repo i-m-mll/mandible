@@ -1455,7 +1455,6 @@ function App(): JSX.Element {
     state.workRepos,
     state.workBranches,
     state.issueRepos,
-    state.conversations,
     state.inboxData,
     state.consoleSessions,
     state.settings,

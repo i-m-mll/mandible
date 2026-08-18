@@ -162,7 +162,7 @@ describe('conversation sidebar groups', () => {
     expect(screen.getByRole('button', { name: 'Open conversation Pinned two' })).toBeTruthy();
   });
 
-  it('deduplicates provider-backed live sessions and consumes local overflow before another request', async () => {
+  it('deduplicates provider-backed live sessions, preserves sort, and consumes local overflow before another request', async () => {
     vi.stubGlobal('ResizeObserver', class { observe(): void {} disconnect(): void {} });
     const serverConversation = { ...projectOne, session_id: 'provider-backed' };
     const sessions: ConsoleSession[] = [
@@ -179,14 +179,17 @@ describe('conversation sidebar groups', () => {
         backend_type: 'sdk', transport_lane: 'sdk',
       },
     ];
-    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+    const getSidebar = vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
       limit: 1,
       groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [serverConversation], next_cursor: null })],
     });
     renderView(sessions);
 
-    await screen.findByRole('button', { name: 'Open session Local live chat' });
+    await screen.findByRole('button', { name: 'Open conversation Project one' });
+    expect(screen.queryByRole('button', { name: 'Open session Local live chat' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Open session Already indexed' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Show more' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await screen.findByRole('button', { name: 'Open session Local live chat' });
+    expect(getSidebar).toHaveBeenCalledTimes(1);
   });
 });

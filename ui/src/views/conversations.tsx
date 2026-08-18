@@ -2725,7 +2725,7 @@ export function ConversationsView({
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
-  const [loadingMoreKey, setLoadingMoreKey] = useState<string | null>(null);
+  const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
@@ -3015,7 +3015,7 @@ export function ConversationsView({
       let group = groups.find((candidate) => candidate.kind === kind);
       if (!group) {
         group = {
-          key: `local:${kind}`,
+          key: kind,
           label: kind === 'pinned' ? 'Pinned' : 'Chats',
           total: 0,
           nextCursor: null,
@@ -3034,22 +3034,28 @@ export function ConversationsView({
       });
     }
 
+    const sortEntries = (items: ChatEntry[]) => [...items].sort((a, b) => {
+      if (sort === 'blocks') {
+        const aBlocks = a.conversation?.block_count ?? 0;
+        const bBlocks = b.conversation?.block_count ?? 0;
+        if (aBlocks !== bBlocks) return bBlocks - aBlocks;
+      }
+      return b.time - a.time || getEntryTitle(a).localeCompare(getEntryTitle(b));
+    });
+
     for (const group of groups) {
       const localSessions = group.entries.filter((entry) => entry.kind === 'session');
       if (localSessions.length > 0) {
-        group.entries = [
-          ...localSessions,
-          ...group.entries.filter((entry) => entry.kind === 'conversation'),
-        ];
         group.total += localSessions.length;
       }
+      group.entries = sortEntries(group.entries);
     }
     return {
       pinned: groups.find((group) => group.kind === 'pinned') ?? null,
       projects: groups.filter((group) => group.kind === 'project'),
       chats: groups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [displayedConversations, liveByProviderSession, liveSessions]);
+  }, [displayedConversations, liveByProviderSession, liveSessions, sort]);
 
   const firstChatEntry =
     chatSections.pinned?.entries[0] ??
@@ -3134,9 +3140,9 @@ export function ConversationsView({
     const nextTargets = new Map(targetsRef.current).set(group.key, nextTarget);
     targetsRef.current = nextTargets;
     setVisibleTargets(nextTargets);
-    if (group.entries.length >= nextTarget || !group.nextCursor || group.key.startsWith('local:')) return;
+    if (group.entries.length >= nextTarget || !group.nextCursor) return;
 
-    setLoadingMoreKey(group.key);
+    setLoadingMoreKeys((current) => new Set(current).add(group.key));
     void getConversationSidebar({
       ...sidebarRequestParams(sidebarGroupLimit),
       group_key: group.key,
@@ -3162,7 +3168,11 @@ export function ConversationsView({
         targetsRef.current = rolledBackTargets;
         setVisibleTargets(rolledBackTargets);
       })
-      .finally(() => setLoadingMoreKey(null));
+      .finally(() => setLoadingMoreKeys((current) => {
+        const next = new Set(current);
+        next.delete(group.key);
+        return next;
+      }));
   }, [sidebarGroupLimit, sidebarRequestParams]);
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
@@ -3372,7 +3382,7 @@ export function ConversationsView({
                   expanded={!collapsedSections.has('pinned')}
                   onToggle={() => toggleSection('pinned')}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
-                  loadingMore={loadingMoreKey === group.key}
+                  loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
                 >
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry, true))}
@@ -3403,7 +3413,7 @@ export function ConversationsView({
                     onToggle={() => toggleProject(group.key)}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
-                    loadingMore={loadingMoreKey === group.key}
+                    loadingMore={loadingMoreKeys.has(group.key)}
                     onShowMore={() => { void showMore(group); }}
                   >
                     {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
@@ -3424,7 +3434,7 @@ export function ConversationsView({
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
-                  loadingMore={loadingMoreKey === group.key}
+                  loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
                 >
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
