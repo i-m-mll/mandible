@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 const conversation: Conversation = {
-  id: 'conv-detail-shell',
+  id: '01a01639-6146-77c1-8616-6878ae755367',
   source: 'codex',
   source_path: '/tmp/conversation.jsonl',
   title: 'A compact shared-shell conversation title that must truncate',
@@ -97,6 +97,15 @@ describe('compact detail pane shell', () => {
   });
 
   it('composes Chat detail through the compact shell with stable header actions and footer', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
     vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [conversation], total: 1 });
     vi.spyOn(api, 'getConversation').mockResolvedValue({
       ...conversation,
@@ -125,10 +134,19 @@ describe('compact detail pane shell', () => {
     const header = shell?.querySelector(':scope > .detail-pane-shell__header');
     const body = shell?.querySelector(':scope > .detail-pane-shell__body.conv-detail__body');
     const footer = shell?.querySelector(':scope > .detail-pane-shell__footer.conv-detail__footer');
-    expect(header?.querySelector('.conv-actions__trigger')).toBeTruthy();
-    expect(header?.querySelector('.conv-info-button')).toBeTruthy();
+    const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
+    expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
+    expect(canonicalHeader?.textContent).toContain('01a01639');
+    expect(canonicalHeader?.textContent).not.toContain(conversation.id);
+    expect(canonicalHeader?.textContent).toContain('Resumable');
+    expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
+    expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
+    expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
+    expect(canonicalHeader?.querySelector('.conv-info-button')).toBeTruthy();
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full conversation ID' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(conversation.id));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Message filters' }));
     expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();

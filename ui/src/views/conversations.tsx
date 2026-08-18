@@ -49,6 +49,7 @@ import {
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
@@ -71,6 +72,7 @@ import {
   type ConversationAppendPayload,
 } from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
+import { shortRouteId } from '../routing';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -2115,58 +2117,34 @@ function ConversationDetail({
   ) : undefined;
 
   const detailHeader = (
-    <>
-      <div className="conv-detail__header-left">
-          <div className="conv-detail__title-row">
-            <h2 className="detail-pane-shell__title conv-detail__title">
-              {conversation.parent_conversation_id && (
-                <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
-              )}
-              <span>{getConversationTitle(conversation)}</span>
-            </h2>
-            {attachPresentation && attachState && (
-              <span
-                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-                title={attachPresentation.title}
-              >
-                {attachPresentation.label}
-              </span>
-            )}
-            <div className="conv-actions">
-              <button
-                type="button"
-                className="conv-actions__trigger"
-                onClick={() => setActionsOpen((prev) => !prev)}
-                title="Conversation actions"
-                aria-label="Conversation actions"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-              >
-                <HorizontalDotsIcon />
-              </button>
-              {actionsOpen && (
-                <div className="conv-actions__menu">
-                  <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
-                    {conversation.starred ? 'Unstar' : 'Star'}
-                  </button>
-                  <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
-                    Show in graph
-                  </button>
-                  <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                    {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                  </button>
-                  <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
-                    {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
-                  </button>
-                  <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                    Select messages
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-      </div>
-      <div className="detail-pane-shell__actions conv-detail__header-right">
+    <DetailPaneHeader
+      variant="compact"
+      identity={{
+        entityLabel: 'Conversation',
+        displayRef: shortRouteId(conversation.id),
+        canonicalRef: conversation.id,
+        copyLabel: 'Copy full conversation ID',
+      }}
+      title={(
+        <>
+          {conversation.parent_conversation_id && (
+            <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
+          )}
+          <span>{getConversationTitle(conversation)}</span>
+        </>
+      )}
+      titleTooltip={getConversationTitle(conversation)}
+      status={attachPresentation && attachState ? (
+        <span
+          className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+          title={attachPresentation.title}
+        >
+          {attachPresentation.label}
+        </span>
+      ) : undefined}
+      actionsLabel="Conversation detail actions"
+      actions={(
+        <>
           <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
           <button
             type="button"
@@ -2177,8 +2155,41 @@ function ConversationDetail({
           >
             <InfoCircleIcon />
           </button>
-      </div>
-    </>
+          <div className="conv-actions">
+            <button
+              type="button"
+              className="conv-actions__trigger"
+              onClick={() => setActionsOpen((prev) => !prev)}
+              title="Conversation actions"
+              aria-label="Conversation actions"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+            >
+              <HorizontalDotsIcon />
+            </button>
+            {actionsOpen && (
+              <div className="conv-actions__menu">
+                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+                  {conversation.starred ? 'Unstar' : 'Star'}
+                </button>
+                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                  Show in graph
+                </button>
+                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
+                </button>
+                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
+                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
+                </button>
+                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                  Select messages
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    />
   );
 
   const detailFooter = (
