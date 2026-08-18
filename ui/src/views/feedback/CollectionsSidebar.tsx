@@ -3,7 +3,6 @@ import { useMemo, useState } from 'preact/hooks';
 
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
-import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
@@ -57,23 +56,19 @@ export function CollectionsSidebar({
     () => ordered.filter((collection) => pinned.has(collection.id)),
     [ordered, pinned],
   );
-  const ordinary = useMemo(
-    () => ordered.filter((collection) => !pinned.has(collection.id)),
-    [ordered, pinned],
+  const visiblePinnedIndexes = new Map(
+    visiblePinned.map((collection, index) => [collection.id, index]),
   );
-  const navigable = viewState.pinnedSectionCollapsed
-    ? ordinary
-    : [...visiblePinned, ...ordinary];
-  const navigableIds = new Set(navigable.map((collection) => collection.id));
+  const navigableIds = new Set(ordered.map((collection) => collection.id));
   const listNavigation = useSidebarListNavigation({
-    items: navigable,
+    items: ordered,
     getKey: (collection) => collection.id,
     selectedKey: selectedCollectionId && navigableIds.has(selectedCollectionId)
       ? selectedCollectionId
       : null,
     onSelect,
   });
-  const navigationIndex = new Map(navigable.map((collection, index) => [collection.id, index]));
+  const navigationIndex = new Map(ordered.map((collection, index) => [collection.id, index]));
 
   const togglePin = (collectionId: string) => {
     setViewState((current) => {
@@ -140,7 +135,7 @@ export function CollectionsSidebar({
     return (
       <li
         key={collection.id}
-        className={`feedback-collection-row${draggedPinnedId === collection.id ? ' feedback-collection-row--dragging' : ''}`}
+        className={`feedback-collection-row${isPinned ? ' feedback-collection-row--pinned' : ''}${draggedPinnedId === collection.id ? ' feedback-collection-row--dragging' : ''}`}
         draggable={isPinned}
         onDragStart={isPinned ? (event) => {
           setDraggedPinnedId(collection.id);
@@ -220,22 +215,6 @@ export function CollectionsSidebar({
       bodyClassName="feedback-collections-sidebar__body"
     >
       <div data-testid="feedback-collections-sidebar">
-        <SidebarGroupNode
-          id="briefing-pinned"
-          presentation="category"
-          className="feedback-collections-sidebar__pinned"
-          label="Pinned"
-          headingDescription={`${visiblePinned.length} pinned briefing${visiblePinned.length === 1 ? '' : 's'}`}
-          expanded={!viewState.pinnedSectionCollapsed}
-          onToggle={() => setViewState((current) => ({
-            ...current,
-            pinnedSectionCollapsed: !current.pinnedSectionCollapsed,
-          }))}
-          bodyAs="ul"
-          bodyClassName="feedback-collections-sidebar__list"
-        >
-          {visiblePinned.map((collection, index) => renderCollection(collection, index))}
-        </SidebarGroupNode>
         {loadError ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="alert">
@@ -252,7 +231,10 @@ export function CollectionsSidebar({
           </div>
         ) : (
           <ul className="feedback-collections-sidebar__list">
-            {ordinary.map((collection) => renderCollection(collection, null))}
+            {ordered.map((collection) => {
+              const pinnedIndex = visiblePinnedIndexes.get(collection.id);
+              return renderCollection(collection, pinnedIndex ?? null);
+            })}
           </ul>
         )}
       </div>
