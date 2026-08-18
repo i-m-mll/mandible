@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  applyAskAnswers,
   applyAskAnnotations,
   createAsk,
   observeAsk,
@@ -121,6 +122,16 @@ describe("annotatable ask store", () => {
     const one = createAsk(db, packet(good.version.id, { request_key: "one", document: { artifact_version: good.version.id, profile: "mandible-briefing.v1" } }), { requesterUserId: agentId, now: 1_000 });
     const two = createAsk(db, packet(good.version.id, { request_key: "two", document: { artifact_version: good.version.id, profile: "mandible-briefing.v1" } }), { requesterUserId: agentId, now: 1_001 });
     expect(one.ask_id).not.toBe(two.ask_id);
+  });
+
+  it("projects corrupt directive bindings as invalid and gates mutations after audience authorization", () => {
+    const version = record(":::spec-item{key=\"a\"}\nA\n:::\n", 100);
+    const created = createAsk(db, packet(version.version.id, { request_key: "binding-gate", document: { artifact_version: version.version.id, profile: "mandible-briefing.v1" } }), { requesterUserId: agentId, now: 1_000 });
+    db.prepare("UPDATE feedback_item_directives SET definition_digest = ? WHERE collection_id = ?").run("0".repeat(64), created.ask_id);
+    expect(readAsk(db, created.ask_id, { answerActorUserId: human1 })!.ask.directive_binding?.status).toBe("invalid");
+    expect(() => applyAskAnswers(db, created.ask_id, human1, [], 1_001)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
+    expect(() => applyAskAnnotations(db, created.ask_id, human1, [], 1_001)).toThrowError(expect.objectContaining({ code: "directive_binding_invalid" }));
+    expect(() => applyAskAnswers(db, created.ask_id, "outsider", [], 1_001)).toThrowError(expect.objectContaining({ code: "not_found" }));
   });
 
   it("pins submission-export Markdown escaping and blockquote line bytes", () => {

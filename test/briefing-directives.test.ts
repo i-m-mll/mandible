@@ -14,11 +14,19 @@ describe("mandible-briefing.v1 directives", () => {
   });
 
   it("rejects nested, malformed, and empty directives", () => {
+    expect(() => parseBriefingDirectives("ordinary prose"))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives(":::unknown{key=\"a\"}\nx\n:::"))
+      .toThrow(BriefingDirectiveError);
     expect(() => parseBriefingDirectives(":::spec-item{key=\"a\"}\n:::spec-item{key=\"b\"}\nx\n:::\n:::"))
       .toThrow(BriefingDirectiveError);
     expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" extra=\"x\"}\nx\n:::"))
       .toThrow(BriefingDirectiveError);
     expect(() => parseBriefingDirectives(":::spec-item{key=\"a\"}\n \n:::"))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" required=\"yes\"}\nx\n:::"))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\"}\nx\n::::"))
       .toThrow(BriefingDirectiveError);
   });
 });
