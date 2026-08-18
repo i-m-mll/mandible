@@ -305,6 +305,11 @@
   font-size: 12px;
 }
 
+.briefing-detail__latest {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .briefing-detail__controls select {
   max-width: 18rem;
   padding: var(--space-1) var(--space-2);
@@ -314,6 +319,42 @@
   color: var(--text-primary);
   font: inherit;
   font-size: var(--text-sm);
+}
+
+.briefing-detail__round-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.briefing-detail__round-copy:hover {
+  background: var(--neutral-alpha-08);
+  color: var(--text-primary);
+}
+
+.briefing-detail__round-copy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  color: var(--text-primary);
+}
+
+.briefing-detail__round-copy svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .briefing-detail__actions {
@@ -580,7 +621,8 @@
   }
 
   .briefing-detail__controls select {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     max-width: none;
   }
 
