@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BriefingRoundProjection } from '../ui/src/api';
 
 import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
+import { RICH_BRIEFING_DEMO, RICH_BRIEFING_ROUND_ONE_MARKDOWN } from '../src/feedback/rich-briefing-demo';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" required="true"}\nPlan\n:::\n';
@@ -198,6 +200,45 @@ describe('Briefing document panel', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
+  });
+
+  it('renders the rich demo GFM safely with both frozen annotation kinds', async () => {
+    const directives = parseBriefingDirectives(RICH_BRIEFING_ROUND_ONE_MARKDOWN);
+    const commentQuote = 'Staging rehearsal completed';
+    const suggestionQuote = '15 minute recovery objective';
+    vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
+      ...content().content,
+      size_bytes: new TextEncoder().encode(RICH_BRIEFING_ROUND_ONE_MARKDOWN).byteLength,
+      preview: { encoding: 'utf-8', text: RICH_BRIEFING_ROUND_ONE_MARKDOWN, raw_text: RICH_BRIEFING_ROUND_ONE_MARKDOWN, truncated: false },
+    } })));
+    const projection = round({
+      briefing_key: RICH_BRIEFING_DEMO.briefingKey,
+      annotations: [
+        { annotation_event_id: 'comment', annotation_kind: 'comment', start_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(commentQuote), end_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(commentQuote) + commentQuote.length, quote: commentQuote, body: 'Confirm the rehearsal log.', replacement_text: null, created_at: 1 },
+        { annotation_event_id: 'suggestion', annotation_kind: 'suggest_replacement', start_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(suggestionQuote), end_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(suggestionQuote) + suggestionQuote.length, quote: suggestionQuote, body: 'Use the tighter objective.', replacement_text: '10 minute recovery objective', created_at: 2 },
+      ],
+      items: directives.map((directive, index) => ({
+        id: `item-${directive.key}`, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
+        revision: { id: `revision-${directive.key}`, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: 'verdict' as const, required: directive.required, position: index, options: [] },
+        effective_response: null, responseVisible: true, directive,
+      })),
+    });
+    const { container } = render(<BriefingDocumentPanel briefingId="briefing-demo" briefingTitle={RICH_BRIEFING_DEMO.title} roundId="round-1" round={projection} canMutate={false} onRefresh={async () => null} />);
+
+    await screen.findByLabelText('Pinned briefing document');
+    expect(screen.queryByRole('heading', { name: RICH_BRIEFING_DEMO.title })).toBeNull();
+    expect(screen.getByText(/candidate is feature-complete/)).toBeTruthy();
+    expect(container.querySelector('blockquote')).toBeTruthy();
+    expect(container.querySelectorAll('li')).toHaveLength(3);
+    expect(container.querySelector('table')).toBeTruthy();
+    expect(container.querySelector('code')?.textContent).toContain('release.freeze=true');
+    expect(container.querySelector('pre code')?.textContent).toContain('rollback.window=15m');
+    expect(screen.getByRole('link', { name: 'release evidence packet' }).getAttribute('href')).toBe('https://example.com/releases/rc-readiness');
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('script')).toBeNull();
+    expect(screen.getByRole('button', { name: /Staging rehearsal completed.*Comment.*Confirm the rehearsal log/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /15 minute recovery objective.*Suggested replacement.*Use the tighter objective/ })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Keep' })).toHaveLength(4);
   });
 
 });

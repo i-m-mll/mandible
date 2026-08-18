@@ -17,6 +17,7 @@ import {
   submitBriefingRound,
 } from "../src/feedback/briefings.js";
 import { createUser } from "../src/users/store.js";
+import { seedRichBriefingDemo } from "../src/feedback/rich-briefing-demo.js";
 
 let db: Db;
 let root: string;
@@ -151,5 +152,34 @@ describe("artifact-backed Briefing rounds", () => {
     fs.writeFileSync(blob.storage_uri.replace(/^file:\/\//, ""), "tampered");
     expect(() => readBriefing(db, first.briefing_id, { actorUserId: humanId, operator: false }))
       .toThrowError(/unavailable|integrity/);
+  });
+
+  it("seeds two immutable rich-demo rounds without carrying actor state forward", () => {
+    const manifest = seedRichBriefingDemo(db, { databasePath: ":memory:" });
+    expect(manifest.rounds).toHaveLength(2);
+    expect(manifest.rounds[0].artifact_version_id).not.toBe(manifest.rounds[1].artifact_version_id);
+
+    const oldRound = readBriefing(db, manifest.briefing.id, {
+      roundId: manifest.rounds[0].id, actorUserId: manifest.users.reviewer_user_id, operator: false,
+    })!.selected_round!;
+    const latestRound = readBriefing(db, manifest.briefing.id, {
+      roundId: manifest.rounds[1].id, actorUserId: manifest.users.reviewer_user_id, operator: false,
+    })!.selected_round!;
+    expect(oldRound.items.map((item) => [item.directive_key, item.required])).toEqual([
+      ["scope.approval", 1], ["rollback.plan", 1], ["observability", 0], ["operator.runbook", 0],
+    ]);
+    expect(oldRound.answers.map((answer) => [answer.directive_key, answer.value.verdict])).toEqual([
+      ["scope.approval", "keep"], ["rollback.plan", "dismiss"], ["operator.runbook", "keep"],
+    ]);
+    expect(oldRound.annotations.map((entry) => entry.annotation_kind)).toEqual(["comment", "suggest_replacement"]);
+    expect(oldRound.latest_frozen_membership).toMatchObject({ answer_event_ids: expect.any(Array), annotation_event_ids: expect.any(Array) });
+    expect(oldRound.latest_frozen_membership!.answer_event_ids).toHaveLength(3);
+    expect(oldRound.latest_frozen_membership!.annotation_event_ids).toHaveLength(2);
+    expect(latestRound.items.map((item) => item.directive_key)).toEqual(oldRound.items.map((item) => item.directive_key));
+    expect(latestRound.items.map((item) => item.id)).not.toEqual(oldRound.items.map((item) => item.id));
+    expect(latestRound.answers).toEqual([]);
+    expect(latestRound.annotations).toEqual([]);
+    expect(latestRound.latest_submission).toBeNull();
+    expect(latestRound.latest_frozen_membership).toBeNull();
   });
 });
