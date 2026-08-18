@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import {
   getCachedFeedbackCollections,
   getFeedbackCollections,
-  patchFeedbackCollectionExpiry,
   type InstanceInfo,
 } from '../api';
 import { AppShellProvider, useAppShell } from '../app-shell';
@@ -138,23 +137,12 @@ export function BriefingView({
   const selectedAsk = selectedAskId !== null;
   const selectedCollectionUnavailable = viewState.selectedCollectionId !== null && selectedCollection === null && !routedAskId;
 
-  const setCollectionExpiry = useCallback(async (collection: FeedbackCollection) => {
-    const updated = await patchFeedbackCollectionExpiry(
-      collection.collectionId,
-      collection.state === 'expired' ? null : Date.now(),
-    );
-    setCollections((current) => current.map((entry) => (
-      entry.collectionId === updated.collectionId ? updated : entry
-    )));
-  }, []);
-
   return (
     <CollectionShell
       collections={collections}
       sidebarHidden={sidebarHidden}
       viewState={viewState}
       setViewState={setViewState}
-      onSetExpiry={setCollectionExpiry}
     >
       {/* Issue 5308097 spec §8: operational incidents come FIRST, before the
           recurring findings and bounded asks. An unattended executor failure

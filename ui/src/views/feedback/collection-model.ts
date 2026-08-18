@@ -56,9 +56,47 @@ export function orderFeedbackCollections(
   collections: readonly FeedbackCollection[],
   pinnedCollectionIds: readonly string[],
 ): FeedbackCollection[] {
-  const pinned = new Set(pinnedCollectionIds);
+  const pinnedOrder = new Map<string, number>();
+  for (const id of pinnedCollectionIds) {
+    if (!pinnedOrder.has(id)) pinnedOrder.set(id, pinnedOrder.size);
+  }
   return [...collections].sort((left, right) => {
-    const pinOrder = Number(pinned.has(right.id)) - Number(pinned.has(left.id));
-    return pinOrder !== 0 ? pinOrder : compareCollections(left, right);
+    const leftPin = pinnedOrder.get(left.id);
+    const rightPin = pinnedOrder.get(right.id);
+    if (leftPin !== undefined && rightPin !== undefined) return leftPin - rightPin;
+    if (leftPin !== undefined) return -1;
+    if (rightPin !== undefined) return 1;
+    return compareCollections(left, right);
   });
+}
+
+/**
+ * Reorder only the visible pins while leaving filtered-out and unavailable ids
+ * in their existing storage slots. This keeps refreshes and filters from
+ * erasing or gratuitously moving browser-owned intent.
+ */
+export function moveVisiblePinnedCollection(
+  pinnedCollectionIds: readonly string[],
+  visiblePinnedIds: readonly string[],
+  collectionId: string,
+  targetIndex: number,
+): string[] {
+  const visible = new Set(visiblePinnedIds);
+  const slots = pinnedCollectionIds
+    .map((id, index) => visible.has(id) ? index : -1)
+    .filter((index) => index >= 0);
+  const orderedVisible = slots.map((index) => pinnedCollectionIds[index]);
+  const currentIndex = orderedVisible.indexOf(collectionId);
+  if (currentIndex < 0 || targetIndex < 0 || targetIndex >= orderedVisible.length) {
+    return [...pinnedCollectionIds];
+  }
+  const nextVisible = [...orderedVisible];
+  const [moved] = nextVisible.splice(currentIndex, 1);
+  nextVisible.splice(targetIndex, 0, moved);
+  if (nextVisible.every((id, index) => id === orderedVisible[index])) {
+    return [...pinnedCollectionIds];
+  }
+  const next = [...pinnedCollectionIds];
+  slots.forEach((slot, index) => { next[slot] = nextVisible[index]; });
+  return next;
 }

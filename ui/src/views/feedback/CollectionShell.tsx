@@ -10,7 +10,6 @@ export type CollectionShellProps = {
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
-  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
   children: ComponentChildren;
 };
 
@@ -19,7 +18,6 @@ export function CollectionShell({
   sidebarHidden = false,
   viewState,
   setViewState,
-  onSetExpiry,
   children,
 }: CollectionShellProps): JSX.Element {
   const selectedCollectionId = viewState.selectedCollectionId;
@@ -40,7 +38,6 @@ export function CollectionShell({
         viewState={viewState}
         setViewState={setViewState}
         onSelect={selectCollection}
-        onSetExpiry={onSetExpiry}
       />
       <section className="feedback-collection-shell__content" aria-label="Selected feedback collection">
         <div className="feedback-collection-shell__content-inner">
