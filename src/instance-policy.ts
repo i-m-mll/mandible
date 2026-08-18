@@ -23,6 +23,11 @@ export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
 // available on instances that reject operational mutations.
 export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/check",
+  // The browser handshake rotates bounded, ephemeral client-auth state only;
+  // it does not mutate the ledger or authorize a different identity. Preview
+  // dashboards need it to exchange their one-time bootstrap proof before any
+  // identity-scoped reads can succeed.
+  "POST /api/client-auth/handshake",
   "POST /api/timeline/project",
 ]);
 
