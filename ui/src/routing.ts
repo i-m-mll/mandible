@@ -19,6 +19,12 @@ export function shortRouteId(id: string): string {
   return FULL_UUID_RE.test(id) ? id.slice(0, SHORT_ROUTE_ID_LENGTH) : id;
 }
 
+export function briefingRoute(briefingId: string, roundId?: string | null): string {
+  const params = new URLSearchParams({ briefing: shortRouteId(briefingId) });
+  if (roundId) params.set('round', roundId);
+  return `/#/briefing?${params.toString()}`;
+}
+
 export function parseArtifactVersionParam(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value);
