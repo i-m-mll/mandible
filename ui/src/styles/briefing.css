@@ -117,71 +117,6 @@
 
 /* --- artifact-backed Briefing documents ---------------------------------- */
 
-.briefing-document__group h3,
-.briefing-document__item p {
-  margin: 0;
-}
-
-.briefing-document__group {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.briefing-document__group {
-  padding: var(--space-4);
-  border: 1px solid var(--border-faint);
-  border-radius: var(--radius-md);
-  background: var(--surface-panel);
-}
-
-.briefing-document__item {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--border-faint);
-  border-radius: var(--radius-md);
-  background: var(--surface-card);
-}
-
-.briefing-document__item--invalid {
-  border-color: var(--status-danger-border);
-}
-
-.briefing-document__item textarea {
-  width: 100%;
-  min-height: 7rem;
-  resize: vertical;
-  padding: var(--space-2);
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.briefing-document__item fieldset {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.briefing-document__choice {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--space-1) var(--space-2);
-  align-items: start;
-}
-
-.briefing-document__choice small {
-  grid-column: 2;
-  color: var(--text-muted);
-}
-
-.briefing-document__required,
-.briefing-document__field-error,
 .briefing-document__validation {
   color: var(--status-danger-fg);
 }
@@ -196,30 +131,9 @@
   border-radius: var(--radius-sm);
 }
 
-.briefing-document__source {
-  min-height: 12rem;
-  padding: var(--space-4);
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: var(--surface-card);
-}
-
 .briefing-document__prose > :first-child { margin-top: 0; }
 .briefing-document__prose > :last-child { margin-bottom: 0; }
 
-.briefing-annotation {
-  background: var(--status-info-bg-soft);
-  text-decoration-line: underline;
-  text-decoration-style: dotted;
-  text-decoration-color: var(--status-info-fg);
-}
-
-.briefing-annotation--suggestion {
-  background: var(--status-purple-bg);
-  text-decoration-color: var(--status-purple-fg);
-}
-
-.briefing-document__selection-toolbar,
 .briefing-document__popover {
   z-index: 45;
   border: 1px solid var(--border-default);
@@ -228,11 +142,6 @@
   box-shadow: var(--shadow-soft);
 }
 
-.briefing-document__selection-toolbar {
-  padding: var(--space-1);
-}
-
-.briefing-document__selection-toolbar button,
 .briefing-document__tabs button {
   padding: var(--space-1) var(--space-2);
   border: 1px solid transparent;

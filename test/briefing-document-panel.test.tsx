@@ -1,31 +1,17 @@
-// jsdom cannot exercise CodeMirror selection geometry. This suite substitutes
-// the editor boundary and tests the panel contract; decoration normalization
-// and click resolution are covered by markdown-source-editor-annotations.test.tsx.
 import { createHash } from 'node:crypto';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BriefingRoundProjection } from '../ui/src/api';
 
-const editorHarness = vi.hoisted(() => ({ props: null as any }));
-
-vi.mock('../ui/src/views/spaces/MarkdownSourceEditor', () => ({
-  MarkdownSourceEditor: (props: any) => {
-    editorHarness.props = props;
-    return (
-      <div data-testid="document-editor" data-read-only={String(props.readOnly)}>
-        <button type="button" onClick={() => props.onSelectionChange({ start: 0, end: 4, top: 10, left: 10 })}>
-          Select source
-        </button>
-        <button type="button" onClick={() => props.onDecorationClick(props.decorations[0]?.id)}>
-          Open decoration
-        </button>
-      </div>
-    );
-  },
-}));
-
 import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+
+const source = 'Intro\n:::spec-item{key="plan" required="true"}\nPlan\n:::\n';
+const directiveStart = source.indexOf(':::');
+const bodyStart = source.indexOf('Plan');
+const bodyEnd = source.indexOf('\n:::', bodyStart);
+const directiveEnd = bodyEnd + '\n:::'.length;
+const definitionDigest = createHash('sha256').update(source.slice(directiveStart, directiveEnd)).digest('hex');
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -38,8 +24,8 @@ function annotation(overrides: Record<string, unknown> = {}) {
   return {
     annotation_event_id: 'annotation-1',
     annotation_kind: 'comment',
-    start_offset: 0,
-    end_offset: 4,
+    start_offset: bodyStart,
+    end_offset: bodyEnd,
     quote: 'Plan',
     body: 'Clarify this.',
     replacement_text: null,
@@ -56,10 +42,16 @@ function round(overrides: Partial<BriefingRoundProjection> = {}): BriefingRoundP
     binding_digest: 'digest',
     created_at: 1,
     latest_submission_for_actor: null,
-    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: null },
-    directive_binding: null,
+    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
+    directive_binding: { status: 'valid' },
+    latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
     annotations: [],
-    items: [],
+    items: [{
+      id: 'plan', client_item_key: 'plan', parent_item_id: null, item_kind: 'item',
+      revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Plan', description: null, response_type: 'verdict', required: true, position: 1, options: [] },
+      effective_response: null, responseVisible: true,
+      directive: { key: 'plan', definition_digest: definitionDigest, start_offset: directiveStart, end_offset: directiveEnd, body_start_offset: bodyStart, body_end_offset: bodyEnd },
+    }],
     valid: true,
     ...overrides,
   };
@@ -72,17 +64,16 @@ function content() {
       status: 'available',
       kind: 'markdown',
       media_type: 'text/markdown',
-      size_bytes: 16,
+      size_bytes: new TextEncoder().encode(source).byteLength,
       source: null,
-      preview: { encoding: 'utf-8', text: 'Plan source text', truncated: false },
-      download: { available: true, media_type: 'text/markdown', size_bytes: 16, filename: 'plan.md' },
+      preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false },
+      download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'plan.md' },
     },
   };
 }
 
 afterEach(() => {
   cleanup();
-  editorHarness.props = null;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -121,7 +112,7 @@ describe('Briefing document panel', () => {
     expect(screen.getByRole('dialog', { name: 'Add annotation' })).toBeTruthy();
   });
 
-  it('renders the full pinned source read-only and saves one selected-range suggestion before refetching', async () => {
+  it('creates an annotation from a profiled directive before refetching', async () => {
     const posts: any[] = [];
     const refresh = vi.fn(async () => round());
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -132,11 +123,7 @@ describe('Briefing document panel', () => {
     }));
 
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
-    expect((await screen.findByTestId('document-editor')).getAttribute('data-read-only')).toBe('true');
-    expect(editorHarness.props.value).toBe('Plan source text');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Select source' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Annotate' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Comment' }));
     expect(screen.getByRole('tab', { name: 'Comment' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.click(screen.getByRole('tab', { name: 'Suggest replacement' }));
     expect((screen.getByLabelText('Replacement') as HTMLTextAreaElement).value).toBe('Plan');
@@ -151,8 +138,8 @@ describe('Briefing document panel', () => {
         annotations: [{
           operation: 'set',
           kind: 'suggest_replacement',
-          start_offset: 0,
-          end_offset: 4,
+          start_offset: bodyStart,
+          end_offset: bodyEnd,
           quote: 'Plan',
           replacement_text: 'Revised plan',
           body: 'Explain the premise.',
@@ -172,21 +159,20 @@ describe('Briefing document panel', () => {
     }));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
 
-    await screen.findByTestId('document-editor');
-    fireEvent.click(screen.getByRole('button', { name: 'Open decoration' }));
-    fireEvent.input(screen.getByLabelText('Comment'), { target: { value: 'Revised note.' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Revised note.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0].annotations).toEqual([
       { operation: 'retract', annotation_event_id: 'annotation-1' },
       {
-        operation: 'set', kind: 'comment', start_offset: 0, end_offset: 4,
+        operation: 'set', kind: 'comment', start_offset: bodyStart, end_offset: bodyEnd,
         quote: 'Plan', body: 'Revised note.', replacement_text: null,
       },
     ]);
     await screen.findByText('Annotation updated.');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open decoration' }));
+    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);

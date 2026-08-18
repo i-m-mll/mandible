@@ -8,10 +8,6 @@ import {
   type BriefingRoundProjection,
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
-import {
-  MarkdownSourceEditor,
-  type MarkdownSourceSelection,
-} from '../spaces/MarkdownSourceEditor';
 
 export type BriefingDocumentPanelProps = {
   briefingId: string;
@@ -76,7 +72,6 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const document = round.document;
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
-  const [selection, setSelection] = useState<MarkdownSourceSelection | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
   const [kind, setKind] = useState<BriefingAnnotation['annotation_kind']>('comment');
   const [body, setBody] = useState('');
@@ -112,12 +107,11 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   }, [document?.artifact_version_id, onContentGateChange]);
 
   const annotations = round.annotations ?? [];
-  const profile = document?.profile === 'mandible-briefing.v1';
   const directiveItems = useMemo(() => round.items
     .filter((item) => item.directive)
     .sort((left, right) => left.directive!.start_offset - right.directive!.start_offset), [round.items]);
   const documentIntegrityError = useMemo(() => {
-    if (!profile || source === null) return null;
+    if (source === null) return null;
     let cursor = 0;
     for (const item of directiveItems) {
       const directive = item.directive!;
@@ -127,10 +121,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       cursor = directive.end_offset;
     }
     return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
-  }, [directiveItems, profile, source]);
+  }, [directiveItems, source]);
   useEffect(() => {
     let cancelled = false;
-    if (!profile) { onContentGateChange?.(''); return undefined; }
     if (source === null) return undefined;
     if (documentIntegrityError) { onContentGateChange?.(documentIntegrityError); return undefined; }
     onContentGateChange?.('Verifying pinned document…');
@@ -142,13 +135,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     })).then(() => { if (!cancelled) onContentGateChange?.(''); })
       .catch((error) => { if (!cancelled) onContentGateChange?.(error instanceof Error ? error.message : String(error)); });
     return () => { cancelled = true; };
-  }, [directiveItems, documentIntegrityError, onContentGateChange, profile, source]);
-  const decorations = useMemo(() => annotations.map((annotation) => ({
-    id: annotation.annotation_event_id,
-    start: annotation.start_offset,
-    end: annotation.end_offset,
-    className: `briefing-annotation${annotation.annotation_kind === 'suggest_replacement' ? ' briefing-annotation--suggestion' : ''}`,
-  })), [annotations]);
+  }, [directiveItems, documentIntegrityError, onContentGateChange, source]);
 
   if (!document) return null;
 
@@ -245,7 +232,6 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       }
       await onRefresh();
       setEditor(null);
-      setSelection(null);
       setStatus(success);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -296,56 +282,10 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   return (
     <section className="briefing-document__content" aria-label="Briefing document">
       {contentError ? <p className="briefing-error" role="alert">{contentError}</p> : null}
-      {profile && round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
+      {round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
       {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
       {source === null && !contentError ? <p className="briefing-empty" role="status">Loading document…</p> : null}
-      {profile ? renderProfileDocument() : null}
-      {source !== null && !profile ? (
-        <div className="briefing-document__source">
-          <MarkdownSourceEditor
-            blockId={`briefing-document:${briefingId}:${roundId}`}
-            value={source}
-            ariaLabel="Pinned briefing document source"
-            readOnly
-            decorations={decorations}
-            onDecorationClick={(id) => {
-              const annotation = annotations.find((entry) => entry.annotation_event_id === id);
-              if (annotation) openExisting(annotation);
-            }}
-            onChange={() => undefined}
-            onBlur={() => undefined}
-            onCaretChange={() => undefined}
-            onSelectionChange={(nextSelection) => setSelection(canMutate ? nextSelection : null)}
-            onItemCommand={() => undefined}
-            onOpenReference={() => undefined}
-            onBoundaryArrow={() => false}
-          />
-        </div>
-      ) : null}
-
-      {!profile && selection && source !== null && canMutate ? (
-        <div
-          className="briefing-document__selection-toolbar"
-          role="toolbar"
-          aria-label="Document annotation"
-          style={{ position: 'fixed', top: `${selection.top}px`, left: `${selection.left}px` }}
-        >
-          <button
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => openEditor({
-              annotation: null,
-              start: selection.start,
-              end: selection.end,
-              quote: source.slice(selection.start, selection.end),
-              top: selection.top,
-              left: selection.left,
-            })}
-          >
-            Annotate
-          </button>
-        </div>
-      ) : null}
+      {renderProfileDocument()}
 
       {editor ? (
         <div
@@ -356,7 +296,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           style={{ position: 'fixed', top: `${Math.max(8, editor.top + 40)}px`, left: `${Math.max(8, editor.left)}px` }}
         >
           <div className="briefing-document__popover-header">
-            <strong>{editor.annotation ? 'Edit annotation' : 'Annotate selection'}</strong>
+            <strong>{editor.annotation ? 'Edit annotation' : 'Add annotation'}</strong>
             <button type="button" aria-label="Close annotation editor" onClick={() => setEditor(null)}>×</button>
           </div>
           <blockquote>{editor.quote}</blockquote>
