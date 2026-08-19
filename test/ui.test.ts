@@ -177,6 +177,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
   delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
+  document.head.querySelector('[data-test-compact-header-styles]')?.remove();
 });
 
 function changeSelect(select: HTMLElement, value: string): void {
@@ -2577,6 +2578,12 @@ describe('WorkOverviewView', () => {
   });
 
   it('uses a sidebar/detail layout with advanced work filters', async () => {
+    const style = document.createElement('style');
+    style.dataset.testCompactHeaderStyles = '';
+    style.textContent = readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8')
+      .replaceAll('var(--app-header-height)', '48px');
+    document.head.append(style);
+
     const onRescan = vi.fn();
     render(
       h(WorkOverviewView, {
@@ -2630,7 +2637,18 @@ describe('WorkOverviewView', () => {
     expect(within(projectHeader).getByRole('heading', { name: 'Alpha Repo' })).toBeTruthy();
     expect(within(projectHeader).getByRole('group', { name: 'Repository settings' })).toBeTruthy();
     expect(within(projectHeader).getByRole('button', { name: 'Repo settings' })).toBeTruthy();
-    expect(projectHeader.querySelector('.detail-pane-header__compact-metadata .work-repo-push-btn')).toBeTruthy();
+    const projectMain = projectHeader.querySelector(':scope > .detail-pane-header__main') as HTMLElement;
+    const projectTitleRow = projectMain.firstElementChild as HTMLElement;
+    const projectMenu = projectHeader.querySelector('.detail-pane-header__menu') as HTMLElement;
+    const projectMetadata = projectHeader.querySelector('.detail-pane-header__compact-metadata') as HTMLElement;
+    expect(projectTitleRow.querySelector('.detail-pane-header__title')?.nextElementSibling).toBe(projectMenu);
+    expect(projectTitleRow.nextElementSibling).toBe(projectMetadata);
+    expect(projectMetadata.querySelector('.work-repo-push-btn')).toBeTruthy();
+    expect(getComputedStyle(projectHeader).height).toBe('48px');
+    expect(getComputedStyle(projectMain).height).toBe('100%');
+    expect(getComputedStyle(projectMain).flexDirection).toBe('row');
+    expect(getComputedStyle(projectMain).alignItems).toBe('center');
+    expect(getComputedStyle(projectMetadata).marginLeft).toBe('auto');
     expect(projectDetail.querySelector(':scope > .detail-pane-shell__body.work-detail__body')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('Advanced filters'));
