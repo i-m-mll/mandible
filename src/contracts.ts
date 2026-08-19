@@ -100,6 +100,10 @@ export type SseEvent<TData = unknown> = {
 
 export const USER_SETTING_KEYS = Object.freeze({
   appRailOrder: "app_rail_order",
+  uiFontFace: "ui_font_face",
+  uiFontSize: "ui_font_size",
+  detailFontFace: "detail_font_face",
+  detailFontSize: "detail_font_size",
 } as const);
 export type UserSettingKey = (typeof USER_SETTING_KEYS)[keyof typeof USER_SETTING_KEYS];
 

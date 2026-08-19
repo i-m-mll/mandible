@@ -19,6 +19,12 @@ body {
   overscroll-behavior: none;
 }
 
+.app-shell {
+  --font-sans: var(--font-ui);
+  font-family: var(--font-ui);
+  font-size: var(--font-ui-size);
+}
+
 [data-app-surface='main'] {
   background: var(--surface-main);
 }
