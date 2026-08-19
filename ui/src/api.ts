@@ -2199,12 +2199,19 @@ export async function getConversations(params?: {
   );
 }
 
+export type ConversationSidebarConversation = Conversation & {
+  canonical_project_id: string | null;
+  canonical_project_key: string | null;
+};
+
 export type ConversationSidebarGroup = {
   key: string;
-  kind: 'pinned' | 'chats';
+  kind: 'pinned' | 'project' | 'chats';
   label: string;
+  project_id?: string;
+  project_key?: string;
   total: number;
-  conversations: Conversation[];
+  conversations: ConversationSidebarConversation[];
   next_cursor: string | null;
 };
 
@@ -2221,6 +2228,7 @@ export async function getConversationSidebar(params: {
   sort?: string;
   min_blocks?: number;
   exclude_subagents?: boolean;
+  project_ids?: string[];
   limit: number;
   group_key?: string;
   cursor?: string;
@@ -2233,6 +2241,8 @@ export async function getConversationSidebar(params: {
   if (params.sort) query.set('sort', params.sort);
   if (params.min_blocks) query.set('min_blocks', String(params.min_blocks));
   if (params.exclude_subagents) query.set('exclude_subagents', 'true');
+  const projectIds = [...new Set((params.project_ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 500);
+  if (projectIds.length > 0) query.set('project_ids', projectIds.join(','));
   const limit = Math.min(50, Math.max(1, Math.trunc(Number.isFinite(params.limit) ? params.limit : 5)));
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);

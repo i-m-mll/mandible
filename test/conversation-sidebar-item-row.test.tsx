@@ -3,7 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation, ConversationSidebarGroup, InstanceInfo } from '../ui/src/api.js';
+import type {
+  ConversationSidebarConversation,
+  ConversationSidebarGroup,
+  InstanceInfo,
+} from '../ui/src/api.js';
 import { CHAT_VIEW_STATE_KEY } from '../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
 
@@ -45,7 +49,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const conversation: Conversation = {
+const conversation: ConversationSidebarConversation = {
   id: 'conv-row',
   source: 'codex',
   source_path: '/tmp/conversation.jsonl',
@@ -67,6 +71,8 @@ const conversation: Conversation = {
   notes: null,
   parent_conversation_id: null,
   children_count: 0,
+  canonical_project_id: null,
+  canonical_project_key: null,
   attach_state: {
     kind: 'historical',
     reason: 'no-session',
@@ -77,7 +83,7 @@ const conversation: Conversation = {
   },
 };
 
-const existingPinnedConversation: Conversation = {
+const existingPinnedConversation: ConversationSidebarConversation = {
   ...conversation,
   id: 'conv-existing-pin',
   title: 'Existing pinned conversation',
@@ -94,7 +100,7 @@ const rejectModePreview: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
 };
 
-function sidebarResponse(rows: Conversation[]) {
+function sidebarResponse(rows: ConversationSidebarConversation[]) {
   const groups: ConversationSidebarGroup[] = [];
   const pinned = rows.filter((row) => row.starred);
   const chats = rows.filter((row) => !row.starred);
