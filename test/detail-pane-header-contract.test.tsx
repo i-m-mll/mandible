@@ -101,6 +101,23 @@ describe('canonical detail pane header', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(selectedCanonicalRef));
   });
 
+  it('allows an identity-free compact title row without rendering retired copy chrome', () => {
+    render(
+      <DetailPaneHeader
+        variant="compact"
+        title="Identity-free compact title"
+        actions={<button type="button">More</button>}
+      />,
+    );
+
+    const header = document.querySelector('.detail-pane-header--compact') as HTMLElement;
+    expect(header.querySelector('.detail-pane-header__topline')).toBeNull();
+    expect(header.querySelector('.detail-pane-header__identity')).toBeNull();
+    expect(header.querySelector('.ledger-copy-ref-button')).toBeNull();
+    expect(within(header).getByRole('heading', { name: 'Identity-free compact title' })).toBeTruthy();
+    expect(within(header).getByRole('button', { name: 'More' })).toBeTruthy();
+  });
+
   it('renders exact two-row versioned geometry with optional entity label and typed copy authority', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {

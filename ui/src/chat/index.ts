@@ -1,4 +1,4 @@
-export { ChatSurface } from './ChatSurface';
+export { ChatSurface, openMarkdownDocument } from './ChatSurface';
 export type { ChatSurfaceProps } from './ChatSurface';
 export { Shelf } from './Shelf';
 export type { ShelfItem, ShelfItemStatus, ShelfProps } from './Shelf';
