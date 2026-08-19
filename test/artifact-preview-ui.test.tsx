@@ -417,7 +417,6 @@ describe('ArtifactDetail artifact preview rendering', () => {
     const composition = header?.querySelector('.detail-pane-header[data-detail-pane-header-variant="versioned"]');
     const main = composition?.querySelector('.detail-pane-header__main');
     const pane = container.querySelector('.artifact-detail__pane');
-    const body = container.querySelector('.artifact-detail__body');
     const detail = container.querySelector('.artifact-detail');
 
     expect(detail?.classList.contains('detail-pane-shell')).toBe(true);
@@ -438,6 +437,9 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(selectorControl.nextElementSibling).toBe(selectorCopy);
     expect(composition?.querySelector('.artifact-detail__version-control')).toBeNull();
     expect(within(composition as HTMLElement).getByRole('heading', { name: 'train.py' })).toBeTruthy();
+    expect(composition?.querySelector('.artifact-detail__header-context')?.textContent).toContain('link · script');
+    expect(composition?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Created:');
+    expect(composition?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Updated:');
     expect(within(composition as HTMLElement).getByRole('button', { name: 'Artifact actions' })).toBeTruthy();
     fireEvent.click(within(composition as HTMLElement).getByRole('button', { name: 'Copy full artifact series ref' }));
     fireEvent.click(selectorCopy);
@@ -447,8 +449,8 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(detail?.contains(pane as Node)).toBe(true);
     expect(header?.nextElementSibling).toBe(pane);
     expect(pane?.contains(header as Node)).toBe(false);
-    expect(pane?.contains(body as Node)).toBe(true);
-    expect(pane?.querySelector('.artifact-detail__context')?.textContent).toContain('link · script');
+    expect(pane?.querySelector('.artifact-detail__body')).toBeNull();
+    expect(pane?.querySelector('.artifact-preview-frame')).toBeNull();
   });
 
   it('shows compact raw JSON after toggling without changing the code preview surface', () => {
@@ -473,6 +475,8 @@ describe('ArtifactDetail artifact preview rendering', () => {
 
     const preview = container.querySelector('.artifact-preview');
     expect(preview?.classList.contains('artifact-preview--code')).toBe(true);
+    expect(preview?.parentElement?.classList.contains('artifact-detail__pane')).toBe(true);
+    expect(screen.queryByRole('region', { name: 'Preview' })).toBeNull();
     expect(preview?.textContent).toContain('"beta": true');
 
     fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));

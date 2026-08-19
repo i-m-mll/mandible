@@ -139,6 +139,7 @@ describe('canonical detail pane header', () => {
           canonicalRef: logicalCanonicalRef,
         }}
         title="SISU results"
+        supportingMetadata={<span>managed · report · Updated today</span>}
         state={<span>Latest</span>}
         selector={{
           label: 'Artifact version',
@@ -157,7 +158,8 @@ describe('canonical detail pane header', () => {
     expect(rows[1]?.classList.contains('detail-pane-header__title-row')).toBe(true);
     expect(rows[0]?.querySelector(':scope > .detail-pane-header__identity')).toBeTruthy();
     expect(rows[0]?.querySelector(':scope > .detail-pane-header__topline-controls')).toBeTruthy();
-    expect(rows[1]?.querySelector(':scope > .detail-pane-header__title')).toBeTruthy();
+    expect(rows[1]?.querySelector(':scope > .detail-pane-header__title-block > .detail-pane-header__title')).toBeTruthy();
+    expect(rows[1]?.querySelector('.detail-pane-header__supporting-metadata')?.textContent).toContain('Updated today');
     expect(rows[1]?.querySelector(':scope > .detail-pane-header__actions')).toBeTruthy();
     expect(within(header).queryByText('Artifact')).toBeNull();
     expect(within(header).getByText('12ab34c')).toBeTruthy();
