@@ -72,6 +72,7 @@ export interface InstanceInfo {
   role: InstanceRole;
   operational_mutations: OperationalMutationPolicy;
   operational_mutations_overridden: boolean;
+  briefing_response_mutations: OperationalMutationPolicy;
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;

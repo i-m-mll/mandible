@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   allowsOperationalMutations,
+  isActorScopedBriefingResponseMutation,
   operationalMutationCategoryForPath,
   resolveInstanceInfo,
 } from "../src/instance-policy.js";
@@ -178,6 +179,77 @@ describe("instance mutation policy", () => {
     }
   });
 
+  it("admits only actor-scoped Briefing responses for a reject-mode isolated copy", async () => {
+    const instance = resolveInstanceInfo({
+      env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+      dbPath: "/tmp/mandible-preview.db",
+      sourceDbPath: "/tmp/mandible-main.db",
+    });
+    expect(instance.briefing_response_mutations).toBe("allow");
+    const router = new Router({ instance });
+    registerUnsafeRoutes(router);
+    for (const action of ["answers", "annotations", "submit"]) {
+      router.post(`/api/briefings/:briefingId/rounds/:roundId/${action}`, (_req, res) => {
+        res.json({ ok: true, action });
+      }, { fileRpc: "deny" });
+      const response = await router.invoke({
+        method: "POST",
+        url: `/api/briefings/briefing-1/rounds/round-1/${action}`,
+        body: {},
+      });
+      expect(response).toEqual({ status: 200, body: { ok: true, action } });
+    }
+    router.post("/api/briefings/:briefingId/rounds/:roundId/publish", (_req, res) => {
+      res.json({ ok: true });
+    }, { fileRpc: "deny" });
+
+    for (const route of REPRESENTATIVE_UNSAFE_ROUTES) {
+      const response = await router.invoke({ method: route.method, url: route.url, body: {} });
+      expect(response.status, route.url).toBe(403);
+    }
+    const briefingOther = await router.invoke({
+      method: "POST",
+      url: "/api/briefings/briefing-1/rounds/round-1/publish",
+      body: {},
+    });
+    expect(briefingOther).toMatchObject({
+      status: 403,
+      body: { error: "instance_mutation_forbidden", category: "briefing" },
+    });
+    expect(isActorScopedBriefingResponseMutation(
+      "PUT", "/api/briefings/briefing-1/rounds/round-1/answers",
+    )).toBe(false);
+    expect(isActorScopedBriefingResponseMutation(
+      "POST", "/api/briefings/briefing-1/rounds/round-1/answers/extra",
+    )).toBe(false);
+  });
+
+  it("fails closed for same-path and unknown copied-database provenance", async () => {
+    const cases = [
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: "/tmp/mandible.db",
+        sourceDbPath: "/tmp/./mandible.db",
+      }),
+      resolveInstanceInfo({ env: { MANDIBLE_INSTANCE_ROLE: "preview" }, dbPath: "/tmp/preview.db" }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_INSTANCE_SOURCE_DB: "/tmp/source.db" },
+      }),
+    ];
+    for (const instance of cases) {
+      expect(instance.briefing_response_mutations).toBe("reject");
+      const router = new Router({ instance });
+      router.post("/api/briefings/:briefingId/rounds/:roundId/answers", (_req, res) => {
+        res.json({ ok: true });
+      }, { fileRpc: "deny" });
+      expect(await router.invoke({
+        method: "POST",
+        url: "/api/briefings/briefing-1/rounds/round-1/answers",
+        body: {},
+      })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
+    }
+  });
+
   it("treats session registration as a control-plane mutation on preview instances", async () => {
     const router = previewRouter();
     router.post("/api/sessions/register", (_req, res) => {
@@ -244,6 +316,7 @@ describe("instance mutation policy", () => {
       instance: {
         role: "preview",
         operational_mutations: "reject",
+        briefing_response_mutations: "allow",
         db_path: "/tmp/mandible-preview.db",
         db_path_source: "iab-preview-copy",
         source_db_path: "/tmp/mandible-main.db",
@@ -285,6 +358,7 @@ describe("instance mutation policy", () => {
         instance: {
           role: "preview",
           operational_mutations: "reject",
+          briefing_response_mutations: "reject",
           db_path: "/tmp/mandible-preview.db",
           db_path_source: "iab-preview-copy",
         },
@@ -381,6 +455,12 @@ describe("route mutation category table has one source", () => {
     { method: "POST", pattern: "/api/briefings/runs", url: "/api/briefings/runs", category: "briefing" },
     {
       method: "POST",
+      pattern: "/api/briefings/:briefingId/rounds/:roundId/answers",
+      url: "/api/briefings/briefing-1/rounds/round-1/answers",
+      category: "briefing",
+    },
+    {
+      method: "POST",
       pattern: "/api/knowledge-backrefs",
       url: "/api/knowledge-backrefs",
       category: "artifacts",
@@ -413,6 +493,14 @@ describe("route mutation category table has one source", () => {
         operationalMutationCategoryForPath(testCase.method, testCase.pattern),
         `shared table ${testCase.pattern}`,
       ).toBe(testCase.category);
+      expect(
+        isActorScopedBriefingResponseMutation(testCase.method, testCase.pattern),
+        `response capability pattern ${testCase.pattern}`,
+      ).toBe(testCase.pattern.endsWith("/answers"));
+      expect(
+        isActorScopedBriefingResponseMutation(testCase.method, testCase.url),
+        `response capability request ${testCase.url}`,
+      ).toBe(testCase.url.endsWith("/answers"));
 
       const response = await router.invoke({ method: testCase.method, url: testCase.url, body: {} });
       if (testCase.category === null) {
