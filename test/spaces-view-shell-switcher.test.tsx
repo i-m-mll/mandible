@@ -132,11 +132,11 @@ describe('SpacesViewShell home polish', () => {
       />,
     );
 
-    const notice = screen.getByTestId('preview-disabled-notice');
+    const notice = screen.getByText('Saving disabled in copied preview instance.').closest('.detail-pane-notice')!;
     const main = notice.parentElement;
     const header = document.querySelector('.spaces-shell__header');
     const body = screen.getByTestId('spaces-shell-body');
-    expect(notice.classList.contains('preview-disabled-notice')).toBe(true);
+    expect(notice.getAttribute('data-severity')).toBe('warning');
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
     expect(main?.classList.contains('spaces-shell__main')).toBe(true);
     expect(main?.firstElementChild).toBe(notice);

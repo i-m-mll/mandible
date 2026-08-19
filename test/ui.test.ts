@@ -2037,7 +2037,7 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = await screen.findByTestId('preview-disabled-notice');
+    const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
     expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });

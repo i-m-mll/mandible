@@ -1,0 +1,75 @@
+.detail-pane-notice {
+  --detail-pane-notice-fg: var(--status-info-fg);
+  --detail-pane-notice-bg: var(--status-info-bg);
+  --detail-pane-notice-border: var(--status-info-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.75rem;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.4rem;
+  padding: 0.6rem 0.75rem;
+  border: 0;
+  border-top: 0 solid transparent;
+  border-bottom-width: 1px;
+  border-bottom-style: solid;
+  border-bottom-color: var(--detail-pane-notice-border);
+  background: var(--detail-pane-notice-bg);
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.detail-pane-notice--success {
+  --detail-pane-notice-fg: var(--status-success-fg);
+  --detail-pane-notice-bg: var(--status-success-bg);
+  --detail-pane-notice-border: var(--status-success-border);
+}
+
+.detail-pane-notice--warning {
+  --detail-pane-notice-fg: var(--status-warning-fg);
+  --detail-pane-notice-bg: var(--status-warning-bg);
+  --detail-pane-notice-border: var(--status-warning-border);
+}
+
+.detail-pane-notice--error {
+  --detail-pane-notice-fg: var(--status-danger-fg);
+  --detail-pane-notice-bg: var(--status-danger-bg-soft);
+  --detail-pane-notice-border: var(--status-danger-border-soft);
+}
+
+.detail-pane-notice--compact {
+  min-height: 0;
+  padding: 8px 18px;
+  font-size: 12px;
+}
+
+.detail-pane-notice__content {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 24rem;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.6rem;
+  min-width: 0;
+}
+
+.detail-pane-notice__title {
+  flex: none;
+  color: var(--detail-pane-notice-fg);
+  font-weight: 650;
+}
+
+.detail-pane-notice__body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-pane-notice__actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 0.5rem;
+  margin-left: auto;
+}

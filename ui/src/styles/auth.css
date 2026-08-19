@@ -247,10 +247,6 @@
   flex-direction: column;
 }
 
-.auth-detail--with-preview-notice .auth-detail__header {
-  margin-top: 0;
-}
-
 .auth-detail__secondary-metadata {
   min-width: 0;
   display: flex;
@@ -2246,8 +2242,6 @@
 .auth-detail {
   position: relative;
   z-index: 3;
-  --preview-disabled-notice-edge-inset-top: 0px;
-  --preview-disabled-notice-edge-inset-x: 0px;
   display: flex;
   flex-direction: column;
   flex: 1;

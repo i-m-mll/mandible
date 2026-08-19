@@ -249,6 +249,37 @@ describe('compact detail pane shell', () => {
     expect(defaultShell?.querySelector('.detail-pane-shell__footer')).toBeNull();
   });
 
+  it('anchors source_unavailable Retry outside the body and keeps it disabled while retrying', async () => {
+    const sourceUnavailable = 'Conversation source unavailable (source_unavailable).';
+    const retry = deferred<ConversationPositionWindow>();
+    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    vi.mocked(api.getConversationWindow)
+      .mockRejectedValueOnce(new Error(sourceUnavailable))
+      .mockImplementationOnce(() => retry.promise);
+
+    renderConversationDetail(scopedConversation);
+
+    const alert = await screen.findByRole('alert');
+    const shell = alert.closest('.detail-pane-shell');
+    const boundary = alert.closest('.detail-pane-shell__notice');
+    const body = shell?.querySelector(':scope > .detail-pane-shell__body');
+    const retryButton = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+    expect(alert.textContent).toContain(sourceUnavailable);
+    expect(alert.classList.contains('detail-pane-notice--compact')).toBe(true);
+    expect(boundary?.getAttribute('data-detail-pane-slot')).toBe('notice');
+    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBe(boundary);
+    expect(body?.contains(alert)).toBe(false);
+    expect(retryButton.disabled).toBe(false);
+
+    fireEvent.click(retryButton);
+    await waitFor(() => expect(retryButton.disabled).toBe(true));
+    expect(screen.getByRole('alert').textContent).toContain(sourceUnavailable);
+
+    retry.resolve(positionPayload(scopedConversation, [transcriptBlock]));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(api.getConversationWindow).toHaveBeenCalledTimes(2);
+  });
+
   it('composes Chat detail through the compact shell with stable header actions and footer', async () => {
     const style = document.createElement('style');
     style.dataset.testCompactHeaderStyles = '';
