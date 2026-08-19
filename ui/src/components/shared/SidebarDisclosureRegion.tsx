@@ -59,6 +59,7 @@ export function SidebarDisclosureRegion({
   const frameRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const previousExpandedRef = useRef(expanded);
+  const freshOpenRef = useRef(false);
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
 
@@ -75,6 +76,7 @@ export function SidebarDisclosureRegion({
 
   useLayoutEffect(() => {
     if (expanded && !mounted) {
+      freshOpenRef.current = true;
       setMounted(true);
       return;
     }
@@ -92,6 +94,7 @@ export function SidebarDisclosureRegion({
       region.style.height = expanded ? 'auto' : '0px';
       region.style.opacity = expanded ? '1' : '0';
       previousExpandedRef.current = expanded;
+      freshOpenRef.current = false;
       if (!expanded) setMounted(false);
       return;
     }
@@ -99,7 +102,9 @@ export function SidebarDisclosureRegion({
     if (previousExpandedRef.current === expanded) return;
     previousExpandedRef.current = expanded;
 
-    const renderedHeight = region.getBoundingClientRect().height;
+    const freshOpen = expanded && freshOpenRef.current;
+    freshOpenRef.current = false;
+    const renderedHeight = freshOpen ? 0 : region.getBoundingClientRect().height;
     region.style.height = `${renderedHeight || (expanded ? 0 : content.scrollHeight)}px`;
     region.style.opacity = expanded ? '0' : '1';
     void region.offsetHeight;

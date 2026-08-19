@@ -128,9 +128,14 @@ describe('SidebarDisclosureRegion through typed SidebarGroupNode consumers', () 
     const view = render(renderNode(false));
     expect(document.getElementById('chat-project-mandible-body')).toBeNull();
 
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, top: 0, right: 0, bottom: 96, left: 0,
+      width: 0, height: 96, toJSON: () => ({}),
+    });
     view.rerender(renderNode(true));
     const region = document.getElementById('chat-project-mandible-body') as HTMLDivElement;
     const content = region.firstElementChild as HTMLDivElement;
+    expect(region.style.height).toBe('0px');
     setScrollHeight(content, 96);
     flushFrames();
     expect(region.style.height).toBe('96px');
