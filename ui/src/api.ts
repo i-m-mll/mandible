@@ -1849,7 +1849,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue> },
+  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -1889,6 +1889,9 @@ export async function createConsoleSession(
     runOptions?: Record<string, SessionRunOptionValue>;
   };
   const body: SessionBody = { label, command: '', args: [] };
+  if (options?.cwd) {
+    body.cwd = options.cwd;
+  }
   if (options?.channel_enabled) {
     body.channel_enabled = true;
   }

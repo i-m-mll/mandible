@@ -8,6 +8,7 @@ export type SidebarItemRowProps = {
   selected?: boolean;
   className?: string;
   provider?: SidebarItemProvider;
+  selectionTone?: SidebarItemProviderTone;
   leading?: ComponentChildren;
   badges?: ComponentChildren;
   actions?: ComponentChildren;
@@ -25,6 +26,7 @@ export function SidebarItemRow({
   selected = false,
   className,
   provider,
+  selectionTone,
   leading,
   badges,
   actions,
@@ -35,7 +37,7 @@ export function SidebarItemRow({
   onKeyDown,
 }: SidebarItemRowProps): JSX.Element {
   return (
-    <div className={`sidebar-item-row${selected ? ' sidebar-item-row--selected' : ''}${className ? ` ${className}` : ''}`}>
+    <div className={`sidebar-item-row${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${className ? ` ${className}` : ''}`}>
       <button
         ref={selectRef}
         type="button"
@@ -48,15 +50,15 @@ export function SidebarItemRow({
         onClick={onSelect}
         onKeyDown={onKeyDown}
       >
-        {provider ? (
-          <span className="sidebar-item-row__provider-gutter">
-            <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
-          </span>
-        ) : null}
         {leading ? <span className="sidebar-item-row__leading">{leading}</span> : null}
         <span className="sidebar-item-row__label">{label}</span>
         {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
       </button>
+      {provider ? (
+        <span className="sidebar-item-row__provider">
+          <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
+        </span>
+      ) : null}
       {actions ? <span className="sidebar-item-row__actions">{actions}</span> : null}
     </div>
   );

@@ -11,6 +11,16 @@ import {
 
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 
+function contrastRatio(foreground: string, background: string): number {
+  const luminance = (hex: string) => {
+    const channels = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255)
+      .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  };
+  const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
 afterEach(() => cleanup());
 
 describe('SidebarItemRow', () => {
@@ -86,13 +96,14 @@ describe('SidebarItemRow', () => {
     expect(coarsePointerRule).toContain('pointer-events: auto');
   });
 
-  it('keeps an accessible provider outside the canonical title column and reveals its dot only through interaction or selection', () => {
+  it('keeps an accessible provider in the fixed right footprint and reveals its dot only through interaction or selection', () => {
     render(
       <SidebarItemRow
         label="Provider row"
         selectionLabel="Select provider row"
         provider={{ label: 'Codex', tone: 'codex' }}
         onSelect={() => undefined}
+        actions={<SidebarItemPinAction label="provider row" pressed={false} onPress={() => undefined} />}
       />,
     );
 
@@ -100,18 +111,18 @@ describe('SidebarItemRow', () => {
     expect(select.getAttribute('aria-description')).toBe('Provider: Codex');
     const dot = screen.getByRole('img', { name: 'Provider: Codex' });
     expect(dot.classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
-    expect(dot.parentElement?.classList.contains('sidebar-item-row__provider-gutter')).toBe(true);
+    expect(dot.parentElement?.classList.contains('sidebar-item-row__provider')).toBe(true);
+    expect(dot.parentElement).toBe(select.nextElementSibling);
+    expect(dot.parentElement?.nextElementSibling?.classList.contains('sidebar-item-row__actions')).toBe(true);
     expect(select.querySelector('.sidebar-item-row__badges')).toBeNull();
 
     const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
-    expect(selectRule).toContain('position: relative');
     expect(selectRule).toContain('padding: 5px 7px 5px var(--sidebar-title-column-inset, 7px)');
-    const gutterRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-gutter \{([^}]*)\}/)?.[1] ?? '';
-    expect(gutterRule).toContain('position: absolute');
-    expect(gutterRule).toContain('left: calc(var(--sidebar-title-column-inset, 7px) - 14px)');
-    expect(gutterRule).toContain('width: 14px');
-    expect(gutterRule).toContain('justify-content: center');
-    expect(gutterRule).not.toMatch(/flex:|margin-right/);
+    const providerRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider \{([^}]*)\}/)?.[1] ?? '';
+    expect(providerRule).toContain('width: 14px');
+    expect(providerRule).toContain('flex: 0 0 14px');
+    expect(providerRule).toContain('justify-content: center');
+    expect(providerRule).not.toMatch(/position: absolute|left:/);
     const dotRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1] ?? '';
     expect(dotRule).toContain('width: 7px');
     expect(dotRule).toContain('opacity: 0');
@@ -119,6 +130,28 @@ describe('SidebarItemRow', () => {
       /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(revealRule).toContain('opacity: 1');
+  });
+
+  it('uses neutral shared selection and reserves provider tones for explicit consumers', () => {
+    render(<SidebarItemRow label="Neutral" selectionLabel="Select neutral" selected onSelect={() => undefined} />);
+    const neutral = screen.getByRole('button', { name: 'Select neutral' }).closest('.sidebar-item-row')!;
+    expect(neutral.classList.contains('sidebar-item-row--selection-codex')).toBe(false);
+    const selectedRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--selected \{([^}]*)\}/)?.[1] ?? '';
+    expect(selectedRule).toContain('background: var(--neutral-alpha-05)');
+    expect(selectedRule).toContain('color: var(--text-primary)');
+    expect(selectedRule).not.toMatch(/accent-bg|accent-fg/);
+  });
+
+  it('keeps every resolved light and dark provider selection pair above WCAG AA', () => {
+    const pairs = [
+      ['#f8e5dc', '#492f26'], ['#eaebff', '#30345b'], ['#def7eb', '#1d4334'],
+      ['#5e2f1d', '#f3e2da'], ['#30366f', '#e4e6f7'], ['#174b36', '#dceee5'],
+    ];
+    for (const [foreground, background] of pairs) {
+      expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
+      expect(sidebarItemRowStylesheet).toContain(foreground);
+      expect(sidebarItemRowStylesheet).toContain(background);
+    }
   });
 
   it('reveals actions through focus-within and returns focus when Escape closes overflow', () => {
