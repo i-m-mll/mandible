@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -108,6 +109,13 @@ async function insertSourceBackedConversation(
     filePath: sourcePath,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
+  const bytes = fs.readFileSync(sourcePath);
+  const tail = bytes.subarray(Math.max(0, bytes.length - 4096));
+  db.prepare(`
+    INSERT INTO conversation_ingest_state (
+      file_path, byte_offset, line_count, tail_hash, partial_line, updated_at
+    ) VALUES (?, ?, ?, ?, '', ?)
+  `).run(sourcePath, bytes.length, rows.length, createHash("sha256").update(tail).digest("hex"), Date.now());
   return parsed;
 }
 

@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
-import path from "node:path";
 import { decompressContent } from "../compression.js";
 import {
   maskActiveCredentialsInText,
@@ -10,6 +8,7 @@ import type { Db } from "../db.js";
 import { getAllParsers } from "../parsers/index.js";
 import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
 import { ConversationSourceStore } from "./source-store.js";
+import { observeStableSourceAlias, SourceObservationError } from "./source-observer.js";
 import type {
   ConversationBlockLocator,
   SourceBackedConversationBlock,
@@ -71,11 +70,6 @@ interface LegacyRow {
 type SnapshotResult =
   | { ok: true; bytes: Buffer; version: VersionRow; provider: ConversationSource }
   | { ok: false; kind: SourceReadFailureKind; reason: string };
-
-function insideRoot(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-}
 
 function locator(row: StructuralRow): ConversationBlockLocator {
   return {
@@ -374,33 +368,20 @@ export class ConversationSourceReader {
     for (const alias of this.store.listAliases(source.sourceId)) {
       if (alias.availability !== "available") continue;
       try {
-        const rootReal = await fs.promises.realpath(alias.rootPath);
-        const declared = path.resolve(alias.rootPath, alias.relativePath);
-        if (declared !== path.resolve(alias.path) || !insideRoot(path.resolve(alias.rootPath), declared)) continue;
-        const fileReal = await fs.promises.realpath(declared);
-        if (!insideRoot(rootReal, fileReal)) continue;
-        const handle = await fs.promises.open(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-        try {
-          const before = await handle.stat();
-          if (!before.isFile() || before.size !== version.byte_length || before.size > this.maxSourceBytes) continue;
-          const bytes = Buffer.alloc(before.size);
-          let read = 0;
-          while (read < bytes.length) {
-            const result = await handle.read(bytes, read, bytes.length - read, read);
-            if (result.bytesRead === 0) break;
-            read += result.bytesRead;
-          }
-          const after = await handle.stat();
-          if (
-            read !== bytes.length || before.dev !== after.dev || before.ino !== after.ino
-            || before.size !== after.size || before.mtimeMs !== after.mtimeMs
-          ) continue;
-          if (createHash("sha256").update(bytes).digest("hex") !== version.content_sha256) continue;
-          return { ok: true, bytes, version, provider: source.provider };
-        } finally {
-          await handle.close();
+        const observed = await observeStableSourceAlias(alias, {
+          captureBytes: true,
+          maxBytes: this.maxSourceBytes,
+        });
+        if (
+          observed.byteLength !== version.byte_length
+          || observed.contentSha256 !== version.content_sha256
+          || !observed.bytes
+        ) continue;
+        return { ok: true, bytes: observed.bytes, version, provider: source.provider };
+      } catch (error) {
+        if (error instanceof SourceObservationError && error.kind === "unsupported") {
+          return { ok: false, kind: "unsupported", reason: error.message };
         }
-      } catch {
         // Try another durable alias (for example Codex active/archive relocation).
       }
     }

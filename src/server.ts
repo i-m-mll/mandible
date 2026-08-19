@@ -126,7 +126,9 @@ function clientAuthSourceForTransport(
 
 export interface ResponseLike {
   status(code: number): ResponseLike;
+  header?(name: string, value: string): ResponseLike;
   json(payload: unknown): void;
+  empty?(): void;
   html?(payload: string): void;
   text?(payload: string, contentType?: string): void;
 }
@@ -219,6 +221,7 @@ function compileRoute(pattern: string): { regex: RegExp; paramNames: string[] } 
 class HttpResponse implements ResponseLike {
   private _statusCode = 200;
   private _sent = false;
+  private readonly headers: Record<string, string> = {};
 
   constructor(private res: http.ServerResponse) {}
 
@@ -227,15 +230,28 @@ class HttpResponse implements ResponseLike {
     return this;
   }
 
+  header(name: string, value: string): ResponseLike {
+    this.headers[name] = value;
+    return this;
+  }
+
   json(payload: unknown): void {
     if (this._sent) return;
     this._sent = true;
     const body = JSON.stringify(payload);
     this.res.writeHead(this._statusCode, {
+      ...this.headers,
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(body)
     });
     this.res.end(body);
+  }
+
+  empty(): void {
+    if (this._sent) return;
+    this._sent = true;
+    this.res.writeHead(this._statusCode, { ...this.headers, "Content-Length": "0" });
+    this.res.end();
   }
 
   html(payload: string): void {
@@ -271,10 +287,20 @@ class CapturedResponse implements ResponseLike {
     return this;
   }
 
+  header(_name: string, _value: string): ResponseLike {
+    return this;
+  }
+
   json(payload: unknown): void {
     if (this.sent) return;
     this.sent = true;
     this.body = payload;
+  }
+
+  empty(): void {
+    if (this.sent) return;
+    this.sent = true;
+    this.body = null;
   }
 
   html(payload: string): void {

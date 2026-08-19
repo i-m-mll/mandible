@@ -1009,6 +1009,23 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
   return { ok: true, status: "ingested", transcript_path: transcriptPath, session_ref: sessionRef };
 }
 
+/** Authoritative exact-path ingestion for bounded read freshness barriers. */
+export async function triggerExactPathIngest(transcriptPath: string): Promise<TargetedIngestResult> {
+  const normalized = normalizeTargetPath(transcriptPath);
+  if (!normalized || isWorkflowIngestArtifactPath(normalized) || !getParserForFile(normalized)) {
+    return { ok: true, status: "unsupported", transcript_path: normalized, session_ref: null };
+  }
+  const pendingTimer = debounceTimers.get(normalized);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    debounceTimers.delete(normalized);
+  }
+  if (ingestionActor) await ingestionActor.ingest([normalized]);
+  else await ingestFile(normalized);
+  clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
+  return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
+}
+
 export function suppressAcpIngestForSession(source: string, sessionId: string): void {
   if (!source.trim() || !sessionId.trim()) {
     return;
