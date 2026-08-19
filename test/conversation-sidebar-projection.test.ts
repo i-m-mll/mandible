@@ -52,7 +52,7 @@ function groupsOf(response: { body: unknown }) {
   return (response.body as {
     groups: Array<{
       key: string;
-      kind: "pinned" | "project" | "chats";
+      kind: "pinned" | "chats";
       label: string;
       total: number;
       conversations: Array<{ id: string }>;
@@ -68,10 +68,6 @@ beforeEach(() => {
   db = openDb(path.join(tempDir, "mandible.db"));
   migrate(db);
   setDb(db);
-  db.prepare(`INSERT INTO work_repos
-    (id, root, name, default_branch, dir_exists, excluded, created_at, updated_at)
-    VALUES ('repo-a', '/Users/me/Main/repo-a', 'Repo A', 'main', 1, 0, datetime('now'), datetime('now'))`)
-    .run();
 });
 
 afterEach(() => {
@@ -82,8 +78,10 @@ afterEach(() => {
 });
 
 describe("conversation sidebar projection", () => {
-  it("caps every logical group independently and advances only the requested opaque group", async () => {
-    insertConversation({ id: "pinned", starred: true, cwd: "/Users/me/Main/repo-a" });
+  it("puts every non-pinned row in Chats and pages Pinned and Chats independently", async () => {
+    insertConversation({ id: "pinned-01", starred: true, cwd: "/Users/me/Main/repo-a" });
+    insertConversation({ id: "pinned-02", starred: true, projectPath: "-Users-me-Main-repo-a" });
+    insertConversation({ id: "pinned-03", starred: true });
     insertConversation({ id: "repo-03", cwd: "/Users/me/Main/repo-a/packages/three" });
     insertConversation({ id: "repo-01", projectPath: "-Users-me-Main-repo-a" });
     insertConversation({ id: "repo-02", projectPath: "/Users/me/Main/repo-a/two" });
@@ -93,6 +91,7 @@ describe("conversation sidebar projection", () => {
       id: "chat-archive",
       cwd: "/Users/me/Documents/Codex/2026-08-18/archive.jsonl",
     });
+    db.exec("DROP TABLE work_repos");
 
     const router = new Router();
     registerConversationRoutes(router);
@@ -102,43 +101,58 @@ describe("conversation sidebar projection", () => {
     expect((initial.body as { limit: number }).limit).toBe(2);
     const groups = groupsOf(initial);
     expect(groups.map((group) => [group.kind, group.label, group.total])).toEqual([
-      ["pinned", "Pinned", 1],
-      ["project", "Fallback", 1],
-      ["project", "Repo A", 3],
-      ["chats", "Chats", 2],
+      ["pinned", "Pinned", 3],
+      ["chats", "Chats", 6],
     ]);
+    expect(groups.some((group) => (group.kind as string) === "project")).toBe(false);
     expect(groups.every((group) => group.conversations.length <= 2)).toBe(true);
-    expect(groups.find((group) => group.label === "Repo A")?.conversations.map((row) => row.id))
-      .toEqual(["repo-01", "repo-02"]);
-    expect(groups.find((group) => group.label === "Repo A")?.conversations).not.toContainEqual(
-      expect.objectContaining({ id: "pinned" }),
-    );
+    const chatsGroup = groups.find((group) => group.kind === "chats")!;
+    const pinnedGroup = groups.find((group) => group.kind === "pinned")!;
+    expect(chatsGroup.conversations.map((row) => row.id)).toEqual(["chat-archive", "chat-null"]);
+    expect(chatsGroup.conversations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "chat-archive", cwd: "/Users/me/Documents/Codex/2026-08-18/archive.jsonl" }),
+    ]));
+    expect(chatsGroup.next_cursor).toEqual(expect.any(String));
+    expect(pinnedGroup.next_cursor).toEqual(expect.any(String));
 
-    const repoGroup = groups.find((group) => group.label === "Repo A")!;
-    expect(repoGroup.key).toMatch(/^project:[A-Za-z0-9_-]+$/);
-    expect(repoGroup.next_cursor).toEqual(expect.any(String));
-    const follow = await router.invoke({
+    const chatsFollow = await router.invoke({
       method: "GET",
-      url: `/api/conversations/sidebar?limit=2&group_key=${encodeURIComponent(repoGroup.key)}&cursor=${encodeURIComponent(repoGroup.next_cursor!)}`,
+      url: `/api/conversations/sidebar?limit=2&group_key=chats&cursor=${encodeURIComponent(chatsGroup.next_cursor!)}`,
     });
-    expect(groupsOf(follow)).toEqual([
+    expect(groupsOf(chatsFollow)).toEqual([
       expect.objectContaining({
-        key: repoGroup.key,
-        total: 3,
-        conversations: [expect.objectContaining({ id: "repo-03" })],
-        next_cursor: null,
+        key: "chats",
+        total: 6,
+        conversations: [
+          expect.objectContaining({ id: "fallback", project_path: "/opt/Fallback" }),
+          expect.objectContaining({ id: "repo-01", project_path: "-Users-me-Main-repo-a" }),
+        ],
       }),
     ]);
-    const seen = [...repoGroup.conversations, ...groupsOf(follow)[0].conversations].map((row) => row.id);
-    expect(seen).toEqual(["repo-01", "repo-02", "repo-03"]);
-    expect(new Set(seen).size).toBe(3);
 
-    const siblingStillInitial = await router.invoke({
+    const pinnedStillInitial = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=2&group_key=pinned",
+    });
+    expect(groupsOf(pinnedStillInitial)[0].conversations.map((row) => row.id))
+      .toEqual(pinnedGroup.conversations.map((row) => row.id));
+
+    const pinnedFollow = await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?limit=2&group_key=pinned&cursor=${encodeURIComponent(pinnedGroup.next_cursor!)}`,
+    });
+    expect(groupsOf(pinnedFollow)[0]).toMatchObject({
+      key: "pinned",
+      total: 3,
+      conversations: [expect.objectContaining({ id: "pinned-03" })],
+      next_cursor: null,
+    });
+    const chatsStillInitial = await router.invoke({
       method: "GET",
       url: "/api/conversations/sidebar?limit=2&group_key=chats",
     });
-    expect(groupsOf(siblingStillInitial)[0].conversations.map((row) => row.id))
-      .toEqual(groups.find((group) => group.kind === "chats")!.conversations.map((row) => row.id));
+    expect(groupsOf(chatsStillInitial)[0].conversations.map((row) => row.id))
+      .toEqual(chatsGroup.conversations.map((row) => row.id));
   });
 
   it("continues the selected total order across date and block-count ties", async () => {
@@ -168,7 +182,7 @@ describe("conversation sidebar projection", () => {
     const initialDate = groupsOf(await router.invoke({
       method: "GET",
       url: "/api/conversations/sidebar?limit=1",
-    })).find((group) => group.label === "Repo A")!;
+    }))[0];
     const nextDate = groupsOf(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?limit=1&group_key=${encodeURIComponent(initialDate.key)}&cursor=${encodeURIComponent(initialDate.next_cursor!)}`,
@@ -179,7 +193,7 @@ describe("conversation sidebar projection", () => {
     const initialBlocks = groupsOf(await router.invoke({
       method: "GET",
       url: "/api/conversations/sidebar?limit=2&sort=block_count",
-    })).find((group) => group.label === "Repo A")!;
+    }))[0];
     const nextBlocks = groupsOf(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?limit=2&sort=block_count&group_key=${encodeURIComponent(initialBlocks.key)}&cursor=${encodeURIComponent(initialBlocks.next_cursor!)}`,
@@ -240,9 +254,9 @@ describe("conversation sidebar projection", () => {
 
     const byDate = await router.invoke({
       method: "GET",
-      url: "/api/conversations/sidebar?group_key="
+      url: "/api/conversations/sidebar?exclude_subagents=true&group_key="
         + encodeURIComponent(groupsOf(await router.invoke({ method: "GET", url: "/api/conversations/sidebar" }))
-          .find((group) => group.label === "Repo A")!.key),
+          .find((group) => group.kind === "chats")!.key),
     });
     expect(groupsOf(byDate)[0].conversations.slice(0, 2).map((row) => row.id))
       .toEqual(["alpha-low", "alpha-high"]);
@@ -251,8 +265,8 @@ describe("conversation sidebar projection", () => {
       method: "GET",
       url: "/api/conversations/sidebar?sort=block_count&exclude_subagents=true",
     });
-    const blockProject = groupsOf(byBlocks).find((group) => group.label === "Repo A")!;
-    expect(blockProject.conversations.slice(0, 3).map((row) => row.id))
+    const blockChats = groupsOf(byBlocks).find((group) => group.kind === "chats")!;
+    expect(blockChats.conversations.slice(0, 3).map((row) => row.id))
       .toEqual(["alpha-high", "body-only", "alpha-low"]);
     expect(groupsOf(byBlocks).find((group) => group.kind === "pinned")?.conversations.map((row) => row.id))
       .toEqual(["alpha-star"]);
@@ -265,8 +279,8 @@ describe("conversation sidebar projection", () => {
     });
     expect(groupsOf(filtered)).toEqual([
       expect.objectContaining({
-        kind: "project",
-        label: "Repo A",
+        kind: "chats",
+        label: "Chats",
         total: 1,
         conversations: [expect.objectContaining({ id: "alpha-high" })],
       }),
@@ -278,7 +292,7 @@ describe("conversation sidebar projection", () => {
     });
     expect(groupsOf(fullText)).toEqual([
       expect.objectContaining({
-        label: "Repo A",
+        label: "Chats",
         total: 1,
         conversations: [expect.objectContaining({ id: "body-only" })],
       }),
