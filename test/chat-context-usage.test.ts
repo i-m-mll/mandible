@@ -52,4 +52,39 @@ describe("chat context usage", () => {
       approximate: false,
     });
   });
+
+  it("derives exact context from a persisted hidden token_count block", () => {
+    const summary = deriveChatUsageSummary({
+      blocks: [{
+        id: "token-count-1",
+        conversation_id: "conversation-1",
+        type: "event",
+        role: "system",
+        content: "token_count",
+        position: 1,
+        timestamp: "2026-01-01T00:00:00Z",
+        parent_id: null,
+        metadata_json: JSON.stringify({
+          source_event_type: "token_count",
+          visibility: "default_hidden",
+          context_usage: {
+            source: "mirror_exact",
+            used_tokens: 2_000,
+            total_tokens: 2_000,
+            window_tokens: 10_000,
+            percent: 20,
+            approximate: false,
+          },
+        }),
+      }],
+    });
+
+    expect(summary?.context).toMatchObject({
+      source: "mirror_exact",
+      percent: 20,
+      totalTokens: 2_000,
+      windowTokens: 10_000,
+      approximate: false,
+    });
+  });
 });

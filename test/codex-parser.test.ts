@@ -210,6 +210,15 @@ describe("CodexParser", () => {
     const result = await parser.parse(sessionPath);
     const tokenCount = result?.blocks.find((block) => block.metadata.source_event_type === "token_count");
 
+    expect(tokenCount).toMatchObject({
+      type: "event",
+      role: "system",
+      content: "token_count",
+      metadata: {
+        source_event_type: "token_count",
+        visibility: "default_hidden",
+      },
+    });
     expect(tokenCount?.metadata.context_usage).toMatchObject({
       source: "mirror_exact",
       used_tokens: 2000,

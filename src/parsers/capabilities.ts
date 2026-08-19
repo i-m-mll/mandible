@@ -24,7 +24,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "~/.codex/sessions/**/*.jsonl",
       "~/.codex/archived_sessions/**/*.jsonl",
     ],
-    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result", "system"],
+    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result", "system", "event"],
     roles: ["user", "assistant", "tool", "system"],
     tool_metadata: {
       tool_name: true,
@@ -37,7 +37,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool uses come from function_call/custom_tool_call response items.",
       "Tool names are stored in metadata.tool_name.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
-      "Hidden token_count event blocks may carry exact metadata.context_usage from total_token_usage and model_context_window.",
+      "Hidden token_count event blocks are persisted bookkeeping and may carry exact metadata.context_usage from total_token_usage and model_context_window.",
+      "Unknown system/event kinds remain transcript-visible even if marked default_hidden, so provider drift fails visibly.",
       "Archived rollouts under archived_sessions are watched and parsed; `codex archive`/`codex unarchive` is tracked as a source move, not a deletion.",
     ],
   },
@@ -60,6 +61,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Task subagent transcripts under subagents/agent-*.jsonl are marked as sidechain conversations.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
       "Assistant usage blocks may carry approximate metadata.context_usage from input plus prompt-cache tokens.",
+      "Known user_meta and system records are hidden provider bookkeeping; unknown system/event kinds remain transcript-visible.",
     ],
   },
   {
@@ -81,6 +83,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Tool-use support depends on Gemini logs containing toolCalls.",
       "Some Gemini logs only contain user and assistant messages.",
+      "Gemini currently normalizes no system/event records; plans and thoughts remain typed assistant blocks.",
       "Incremental ingestion is supported for JSONL session streams; whole JSON session files use full parse.",
     ],
   },
