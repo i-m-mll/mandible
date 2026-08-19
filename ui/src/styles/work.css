@@ -10,9 +10,9 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  height: calc(100% + 76px);
+  height: 100%;
   min-height: 0;
-  margin: -28px -32px -48px;
+  margin: 0;
   overflow: hidden;
 }
 
@@ -52,7 +52,7 @@
 
 .work-shell {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  grid-template-columns: var(--app-view-sidebar-width) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   height: 100%;
@@ -63,8 +63,6 @@
 }
 
 .work-sidebar {
-  display: flex;
-  flex-direction: column;
   min-width: 0;
   min-height: 0;
   border-right: 1px solid var(--neutral-alpha-06);
@@ -141,7 +139,6 @@
 
 .work-repo-list {
   display: flex;
-  flex: 1;
   flex-direction: column;
   gap: 4px;
   min-height: 0;
@@ -149,72 +146,13 @@
   padding: 8px;
 }
 
-.work-repo-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  width: 100%;
-  min-height: 68px;
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-primary);
-  text-align: left;
-  cursor: pointer;
-  font-family: var(--font-sans);
-}
-
-.work-repo-item:hover {
-  background: var(--neutral-alpha-04);
-}
-
-.work-repo-item--active {
-  background: rgba(77, 163, 255, 0.12);
-  border-color: rgba(77, 163, 255, 0.32);
-}
-
-.work-repo-item--excluded {
+.work-project-row--excluded {
   opacity: 0.72;
-}
-
-.work-repo-item__main,
-.work-repo-item__meta {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.work-repo-item__main {
-  gap: 4px;
-}
-
-.work-repo-item__name {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-weight: 600;
-}
-
-.work-repo-item__path {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.work-repo-item__meta {
-  align-items: flex-end;
-  gap: 5px;
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .work-sidebar__footer {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
   border-top: 1px solid var(--neutral-alpha-06);
@@ -223,11 +161,6 @@
 .work-sidebar__footer .btn {
   justify-content: center;
   min-height: 32px;
-}
-
-.work-sidebar__footer .work-push-actions {
-  display: grid;
-  grid-template-columns: 1fr;
 }
 
 .work-detail {
