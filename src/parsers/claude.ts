@@ -235,6 +235,9 @@ export class ClaudeParser implements ConversationParser {
     // important for continued sessions whose first user record is a synthetic
     // context-transfer preamble rather than a useful title.
     const providerTitle = customProviderTitle || generatedProviderTitle;
+    const providerTitleSource = customProviderTitle
+      ? "custom-title" as const
+      : generatedProviderTitle ? "ai-title" as const : undefined;
     if (providerTitle) {
       title = providerTitle;
     }
@@ -481,6 +484,7 @@ export class ClaudeParser implements ConversationParser {
       },
       blocks,
       ...(providerTitle ? { providerTitle: title } : {}),
+      ...(providerTitleSource ? { providerTitleSource } : {}),
     };
   }
 }

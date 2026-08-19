@@ -179,4 +179,45 @@ describe("Claude provider title ingestion", () => {
       }),
     });
   });
+
+  it("preserves an earlier explicit custom-title when ai-title arrives in a later append", async () => {
+    const sessionPath = await writeClaudeSession();
+    const initialMtime = new Date(1_800_000_000_000);
+    await fsp.utimes(sessionPath, initialMtime, initialMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    await fsp.appendFile(sessionPath, row({
+      type: "custom-title",
+      customTitle: "Explicit operator title",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    }), "utf8");
+    const renamedMtime = new Date(1_800_000_005_000);
+    await fsp.utimes(sessionPath, renamedMtime, renamedMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    const renamed = db.prepare(
+      "SELECT id, title, block_count FROM conversations WHERE source_path = ?",
+    ).get(sessionPath) as { id: string; title: string; block_count: number };
+    expect(renamed).toMatchObject({ title: "Explicit operator title", block_count: 2 });
+
+    await fsp.appendFile(sessionPath, row({
+      type: "ai-title",
+      aiTitle: "Later generated title",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    }), "utf8");
+    const generatedMtime = new Date(1_800_000_010_000);
+    await fsp.utimes(sessionPath, generatedMtime, generatedMtime);
+
+    const events: Array<{ event: string; data: unknown }> = [];
+    configureIngestionWorker(() => {}, (event, data) => events.push({ event, data }));
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+
+    expect(db.prepare(
+      "SELECT id, title, block_count FROM conversations WHERE source_path = ?",
+    ).get(sessionPath)).toEqual(renamed);
+    expect(events).not.toContainEqual({
+      event: "conversation:updated",
+      data: expect.objectContaining({ title: "Later generated title" }),
+    });
+  });
 });
