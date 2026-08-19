@@ -127,7 +127,6 @@ import {
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
-import './components/shared/PreviewDisabledNotice.css';
 import './components/spaces/AddToSpace.css';
 import './views/filters/issue-predicate-filter.css';
 import './views/spaces/DocumentBlockEditor.css';

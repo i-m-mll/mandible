@@ -27,6 +27,8 @@ export type DetailPaneShellProps = {
   /** One anchored header composition. Prefer DetailPaneHeader for data views. */
   header: ComponentChildren;
   subheader?: ComponentChildren;
+  /** One anchored notice boundary between the header region and scrolling body. */
+  notice?: ComponentChildren;
   /** Selection-driven anchored content. Omit or pass null to hide the slot. */
   footer?: DetailPaneShellFooter | null;
   overlays?: ComponentChildren;
@@ -51,6 +53,7 @@ export function DetailPaneShell({
   bodyRef,
   header,
   subheader,
+  notice,
   footer,
   overlays,
   children,
@@ -80,6 +83,11 @@ export function DetailPaneShell({
           </div>
         )}
       </header>
+      {notice !== undefined && notice !== null && (
+        <div className="detail-pane-shell__notice" data-detail-pane-slot="notice">
+          {notice}
+        </div>
+      )}
       <div
         className={classNames('detail-pane-shell__body', bodyClassName)}
         data-detail-pane-slot="body"

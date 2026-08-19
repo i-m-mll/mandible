@@ -55,6 +55,7 @@ import {
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
@@ -1003,6 +1004,7 @@ function ConversationDetail({
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  const retryingLoadRef = useRef(false);
   const skipNextWindowLoadRef = useRef(false);
   const latestRevisionRef = useRef(initialConversation?.block_count ?? 0);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
@@ -1073,10 +1075,12 @@ function ConversationDetail({
     const generation = ++requestGenerationRef.current;
     const requestKey = conversationRequestKey;
     const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
+    const preserveErrorWhileRetrying = retryingLoadRef.current;
+    retryingLoadRef.current = false;
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
     setLoading(true);
-    setError(null);
+    if (!preserveErrorWhileRetrying) setError(null);
     getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
       .then((payload) => {
         if (generation !== requestGenerationRef.current) return;
@@ -1090,6 +1094,7 @@ function ConversationDetail({
           blockId: payload.target.block_id,
           smooth: false,
         });
+        setError(null);
         setLoading(false);
       })
       .catch((err) => {
@@ -1761,24 +1766,48 @@ function ConversationDetail({
     window.location.hash = `#/graph?${params.toString()}`;
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
-  if (loading && !conversation) {
+  const retryLoad = useCallback(() => {
+    retryingLoadRef.current = true;
+    setLoading(true);
+    setLoadNonce((prev) => prev + 1);
+  }, []);
+
+  const loadErrorNotice = error ? (
+    <DetailPaneNotice
+      severity="error"
+      density="compact"
+      actions={(
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          disabled={loading}
+          onClick={retryLoad}
+        >
+          Retry
+        </button>
+      )}
+    >
+      {error}
+    </DetailPaneNotice>
+  ) : undefined;
+
+  if (loading && !conversation && !error) {
     return <LoadingSkeleton variant="detail" label="Loading conversation" />;
   }
 
   if (error && !conversation) {
     return (
-      <div className="conv-detail">
-        <div className="empty-state">
-          <div>{error || 'Conversation not found.'}</div>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setLoadNonce((prev) => prev + 1)}
-          >
-            Retry
-          </button>
-        </div>
-      </div>
+      <DetailPaneShell
+        as="div"
+        variant="compact"
+        className="conv-detail"
+        bodyClassName="conv-detail__body"
+        header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
+        notice={loadErrorNotice}
+        ariaBusy={loading}
+      >
+        <div className="empty-state">Conversation content unavailable.</div>
+      </DetailPaneShell>
     );
   }
 
@@ -2063,20 +2092,8 @@ function ConversationDetail({
       footer={shouldRenderDetailFooter ? { content: detailFooter } : undefined}
       overlays={detailOverlays}
       ariaBusy={loading}
+      notice={loadErrorNotice}
     >
-      {error && (
-        <div className="conv-load-error">
-          <span>{error}</span>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setLoadNonce((prev) => prev + 1)}
-          >
-            Retry
-          </button>
-        </div>
-      )}
-
       {showMessageFilters && (
         <div className="conv-filter-bar">
           <div className="conv-filter-bar__types">
