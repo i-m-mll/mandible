@@ -21,7 +21,7 @@
 .settings-view__close:hover,
 .settings-view__close:focus-visible {
   background: var(--neutral-alpha-08);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .settings-view__section {

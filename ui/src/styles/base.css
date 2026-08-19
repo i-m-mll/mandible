@@ -19,6 +19,12 @@ body {
   overscroll-behavior: none;
 }
 
+.app-shell {
+  --font-sans: var(--font-ui);
+  font-family: var(--font-ui);
+  font-size: var(--font-ui-size);
+}
+
 [data-app-surface='main'] {
   background: var(--surface-main);
 }
@@ -79,6 +85,36 @@ a {
   width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
 }
 
+/*
+ * The Codex host edge is an absolutely positioned visual layer: it does not
+ * participate in header or rail layout, so every existing child coordinate
+ * stays unchanged. The matching pieces cover the full chrome height while the
+ * header remains the top stacking surface.
+ */
+.app-shell--codex-iab .app-header::before,
+.app-shell--codex-iab .app-rail::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--codex-iab-edge-width);
+  background: var(--surface-chrome);
+  box-shadow: var(--shadow-codex-iab-edge);
+  pointer-events: none;
+}
+
+.app-shell--codex-iab .app-rail,
+.app-shell--codex-iab .app-header__identity,
+.app-shell--codex-iab .app-rail__nav,
+.app-shell--codex-iab .app-rail__footer {
+  position: relative;
+}
+
+.app-shell--codex-iab .app-header__identity,
+.app-shell--codex-iab .app-rail__nav,
+.app-shell--codex-iab .app-rail__footer {
+  z-index: 1;
+}
+
 .app-header__identity {
   min-width: 0;
   width: 100%;
@@ -100,9 +136,9 @@ a {
 .app-header__text {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: baseline;
-  padding: 0 14px;
+  padding-left: 14px;
 }
 
 .app-header__brand {
@@ -111,7 +147,7 @@ a {
   align-items: baseline;
   justify-self: start;
   gap: 10px;
-  color: var(--text-primary);
+  color: #747474;
 }
 
 .app-header__mark {
@@ -123,7 +159,7 @@ a {
   justify-content: center;
   align-self: center;
   margin-left: 14px;
-  color: inherit;
+  color: var(--text-muted);
 }
 
 .app-header--sidebar-hidden .app-header__mark {
@@ -134,7 +170,9 @@ a {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  background-color: currentColor;
+  -webkit-mask: var(--app-header-logo-image) center / contain no-repeat;
+  mask: var(--app-header-logo-image) center / contain no-repeat;
 }
 
 .app-header__brand-text {
@@ -144,9 +182,13 @@ a {
   letter-spacing: 0;
 }
 
+:root[data-theme='light'] .app-header__brand {
+  color: #A8A9A9;
+}
+
 .app-header__route {
   grid-column: 2;
-  justify-self: center;
+  justify-self: stretch;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -477,6 +519,11 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: color 0.16s ease;
+}
+
+.app-rail__item:is(:hover, :focus-visible) .app-rail__icon {
+  color: var(--chrome-icon-hover-direct);
 }
 
 .app-rail__label {
@@ -579,8 +626,8 @@ a {
   font-size: 16px;
 }
 
-.daemon-toast__dismiss:hover {
-  color: var(--text-primary);
+.daemon-toast__dismiss:is(:hover, :focus-visible) {
+  color: var(--chrome-icon-hover-direct);
 }
 
 .daemon-toast__link {
@@ -953,11 +1000,6 @@ a {
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .app-toast {
   background: var(--bg-secondary);
-}
-
-/* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .app-header__logo {
-  filter: brightness(0) saturate(100%);
 }
 
 :root[data-theme='light'] .app-rail__tooltip {

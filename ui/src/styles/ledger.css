@@ -262,9 +262,9 @@
   margin-left: -6px;
 }
 
-.ledger-copy-ref-button:hover,
-.ledger-icon-button:hover {
-  color: var(--text-primary);
+.ledger-copy-ref-button:is(:hover, :focus-visible),
+.ledger-icon-button:is(:hover, :focus-visible) {
+  color: var(--chrome-icon-hover-direct);
   background: var(--neutral-alpha-06);
 }
 
@@ -299,10 +299,14 @@
   line-height: 1;
 }
 
-.ledger-issue-actions-menu__trigger:hover,
 .ledger-issue-actions-menu__trigger--active {
   background: var(--neutral-alpha-08);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-indirect);
+}
+
+.ledger-issue-actions-menu__trigger:is(:hover, :focus-visible) {
+  background: var(--neutral-alpha-08);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .ledger-issue-actions-menu__trigger svg {

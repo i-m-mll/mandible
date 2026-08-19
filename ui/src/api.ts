@@ -1767,6 +1767,51 @@ export async function updateUserAppRailOrderSetting(
   return parseUserAppRailOrderSetting(await parseMaybeJson(response));
 }
 
+export type UserTypographySettingKey =
+  | 'ui_font_face'
+  | 'ui_font_size'
+  | 'detail_font_face'
+  | 'detail_font_size';
+
+export type UserTypographySetting = {
+  version: 1;
+  key: UserTypographySettingKey;
+  value: string | null;
+  revision: number;
+};
+
+function parseUserTypographySetting(
+  key: UserTypographySettingKey,
+  payload: unknown,
+): UserTypographySetting {
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== key
+    || (record.value !== null && typeof record.value !== 'string')
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) throw new Error(`Invalid authenticated ${key} response`);
+  return record as UserTypographySetting;
+}
+
+export async function getUserTypographySetting(
+  key: UserTypographySettingKey,
+): Promise<UserTypographySetting> {
+  const response = await apiGet(`/api/user-settings/${key}`);
+  return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
+export async function updateUserTypographySetting(
+  key: UserTypographySettingKey,
+  value: string,
+): Promise<UserTypographySetting> {
+  const response = await apiPut(`/api/user-settings/${key}`, { value });
+  return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
 /**
  * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
  * (terminal driving) is local-only and off by default, and the gate is

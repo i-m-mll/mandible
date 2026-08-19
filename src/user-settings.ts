@@ -9,7 +9,21 @@ export type UserSettingSnapshot = {
 };
 
 export function parseUserSettingKey(value: string): UserSettingKey | null {
-  return value === USER_SETTING_KEYS.appRailOrder ? value : null;
+  return (Object.values(USER_SETTING_KEYS) as string[]).includes(value)
+    ? value as UserSettingKey
+    : null;
+}
+
+export function normalizeUserSettingValue(key: UserSettingKey, value: string): string | null {
+  if (key === USER_SETTING_KEYS.appRailOrder) return value;
+  if (key === USER_SETTING_KEYS.uiFontFace || key === USER_SETTING_KEYS.detailFontFace) {
+    return value === "system-ui" || value === "space-grotesk" ? value : null;
+  }
+  if (key === USER_SETTING_KEYS.uiFontSize || key === USER_SETTING_KEYS.detailFontSize) {
+    const size = Number(value);
+    return Number.isInteger(size) && size >= 10 && size <= 20 ? String(size) : null;
+  }
+  return null;
 }
 
 export function readUserSetting(

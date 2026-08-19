@@ -36,7 +36,7 @@ describe("migration v110: session and work-unit ownership", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "145",
+value: "146",
     });
     for (const [table, id] of [
       ["sessions", "legacy-session"],
