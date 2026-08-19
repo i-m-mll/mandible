@@ -187,7 +187,7 @@ describe('canonical detail pane header', () => {
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__title-row\s*\{[^}]*justify-content:\s*space-between;/s);
   });
 
-  it('gives nested compact composition one padding owner without changing the legacy seam', () => {
+  it('gives nested compact composition one padding owner at exact app-header height without changing the legacy seam', () => {
     const { container } = render(
       <DetailPaneShell
         variant="compact"
@@ -211,8 +211,8 @@ describe('canonical detail pane header', () => {
 
     const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
     expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header-primary\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*48px;[^}]*padding:\s*8px 18px;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact\s+\.detail-pane-shell__header-primary:has\(> \.detail-pane-header--compact\)\s*\{[^}]*display:\s*block;[^}]*min-height:\s*0;[^}]*padding:\s*0;/s);
-    expect(css).toMatch(/\.detail-pane-header--compact\s*\{[^}]*padding:\s*8px 18px;/s);
+    expect(css).toMatch(/\.detail-pane-shell--compact\s+\.detail-pane-shell__header-primary:has\(> \.detail-pane-header--compact\)\s*\{[^}]*display:\s*block;[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*padding:\s*0;/s);
+    expect(css).toMatch(/\.detail-pane-header--compact\s*\{[^}]*height:\s*var\(--app-header-height\);[^}]*min-height:\s*var\(--app-header-height\);[^}]*padding:\s*0 18px;/s);
   });
 
   it('enforces truncation, responsive behavior, focus, and coarse-pointer targets in shared CSS', () => {
