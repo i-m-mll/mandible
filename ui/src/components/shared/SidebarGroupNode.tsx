@@ -15,9 +15,14 @@ type SidebarGroupNodeCommonProps = {
   canShowMore?: boolean;
   loadingMore?: boolean;
   onShowMore?(): void;
+  testIds?: {
+    root?: string;
+    heading?: string;
+    action?: string;
+  };
   action?: {
     label: string;
-    icon: 'new-chat' | 'add-project';
+    icon: ComponentChildren;
     onPress(): void;
   };
 };
@@ -57,6 +62,7 @@ export function SidebarGroupNode({
   canShowMore = false,
   loadingMore = false,
   onShowMore,
+  testIds,
   action,
 }: SidebarGroupNodeProps): JSX.Element {
   const headingId = `${id}-heading`;
@@ -87,6 +93,7 @@ export function SidebarGroupNode({
     <section
       className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
+      data-testid={testIds?.root}
     >
       <div className="sidebar-group-node__header contextual-action-owner">
         <button
@@ -96,6 +103,7 @@ export function SidebarGroupNode({
           aria-expanded={expanded}
           aria-controls={bodyId}
           aria-description={headingDescription}
+          data-testid={testIds?.heading}
           onClick={onToggle}
         >
           {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
@@ -108,9 +116,10 @@ export function SidebarGroupNode({
               className="sidebar-group-node__action"
               aria-label={action.label}
               title={action.label}
+              data-testid={testIds?.action}
               onClick={action.onPress}
             >
-              {action.icon === 'new-chat' ? <SidebarNewChatIcon /> : <SidebarAddProjectIcon />}
+              {action.icon}
             </ContextualAction>
           </span>
         ) : null}
@@ -149,7 +158,7 @@ export function SidebarNewChatIcon({ size = 14 }: { size?: number }): JSX.Elemen
   );
 }
 
-function SidebarAddProjectIcon(): JSX.Element {
+export function SidebarAddProjectIcon(): JSX.Element {
   return (
     <svg
       width="14"

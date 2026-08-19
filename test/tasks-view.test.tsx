@@ -10,7 +10,7 @@
 //   - the never-registered empty state says so in those words and offers no
 //     way to create anything.
 //   - a stale executor report is visibly stale in the list.
-import { cleanup, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -325,6 +325,64 @@ describe('TasksView', () => {
     expect(screen.queryByRole('button', { name: /request disable|new|create|edit|\+/i })).toBeNull();
   });
 
+  it('uses shared search and filters without resetting search, selection, or filters on reconciliation', async () => {
+    const created = createManagedReminder(
+      db,
+      parseManagedReminderCreateRequest({
+        schema: 'mandible-reminder@1',
+        idempotency_key: 'tasks-sidebar-filter-reminder',
+        project: 'tasks-view-reminder-project',
+        message: 'Review reminder filters',
+        predicate: {
+          kind: 'auth_merge_count_gte',
+          project: 'tasks-view-reminder-project',
+          base_branch: 'develop',
+          canonical_message: true,
+          threshold: 3,
+        },
+      }),
+      { userId: publisherId, evidenceMethod: 'api_token' },
+      { projectId },
+    );
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    inventory.tasks.push({
+      source_kind: 'mandible',
+      key: `mandible-reminder:${created.reminder.id}`,
+      reminder: created.reminder,
+    });
+    stubInventory(inventory);
+    render(<TasksView initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
+
+    const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
+    const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
+    await within(sidebar).findByRole('button', { name: 'Select Daily digest' });
+    fireEvent.input(search, { target: { value: 'daily-digest' } });
+    expect(within(sidebar).getByRole('button', { name: 'Select Daily digest' })).toBeTruthy();
+    expect(within(sidebar).queryByRole('button', { name: 'Select Review reminder filters' })).toBeNull();
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Select Daily digest' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Task filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reminders' }));
+    expect(screen.getByRole('button', { name: 'Reminders' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(sidebar).getByText(/No tasks match your search and filters/i)).toBeTruthy();
+
+    const inventoryReadsBeforeSse = vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input) === '/api/tasks').length;
+    window.dispatchEvent(new CustomEvent('managed-reminder:sse'));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input) === '/api/tasks').length).toBeGreaterThan(inventoryReadsBeforeSse));
+    expect((search as HTMLInputElement).value).toBe('daily-digest');
+    expect(screen.getByRole('button', { name: 'Reminders' }).getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.input(search, { target: { value: '' } });
+    expect(within(sidebar).getByRole('button', { name: 'Select Review reminder filters' })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('group', { name: 'Task source' }))
+      .getByRole('button', { name: 'all' }));
+    expect(within(sidebar).getByRole('button', { name: 'Select Daily digest' }).getAttribute('aria-current'))
+      .toBe('true');
+  });
+
   it('says plainly that no executor has registered an inventory', async () => {
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
     render(<TasksView />);
@@ -347,7 +405,7 @@ describe('TasksView', () => {
         .toHaveLength(2);
     });
     expect(screen.queryByText(/No executor has registered an inventory/i)).toBeNull();
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('searchbox', { name: 'Search tasks' })).toBeTruthy();
     expect(document.querySelector('form')).toBeNull();
     expect(screen.queryByRole('button', { name: /new|create|run|enable|edit|delete|\+/i })).toBeNull();
   });
@@ -665,6 +723,7 @@ describe('TasksView', () => {
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
     const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
     const row = within(sidebar).getByText('Daily digest').closest('.tasks-row') as HTMLElement;
+    expect(row.classList.contains('sidebar-item-row')).toBe(true);
     expect(within(row).getByText('agent-schedule')).toBeTruthy();
     expect(row.querySelector('.tasks-freshness--stale')).toBeTruthy();
   });
@@ -840,6 +899,10 @@ describe('TasksView task-command v2', () => {
       }),
     });
     render(<TasksView />);
+    const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
+    fireEvent.input(search, { target: { value: 'daily' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Task filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'current' }));
     (await screen.findByRole('button', { name: 'Enable task' })).click();
     const before = stub.inventoryReads();
     await waitFor(() => expect(intervalSpy.mock.calls
@@ -849,6 +912,10 @@ describe('TasksView task-command v2', () => {
     }));
     await waitFor(() => expect(stub.inventoryReads()).toBeGreaterThan(before));
     expect(screen.getByText('Rejected: stale_target.')).toBeTruthy();
+    expect((search as HTMLInputElement).value).toBe('daily');
+    expect(screen.getByRole('button', { name: 'current' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Select Daily digest' }).getAttribute('aria-current'))
+      .toBe('true');
   });
 
   it('sse_reconciles_with_polling_fallback', async () => {

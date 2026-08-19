@@ -428,6 +428,7 @@ const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'spaces',
   'tasks',
   'timeline',
+  'work',
 ]);
 
 function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {

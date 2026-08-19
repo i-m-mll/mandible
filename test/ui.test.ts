@@ -2359,9 +2359,19 @@ describe('WorkOverviewView', () => {
     );
 
     expect(screen.queryByText('Rescan')).toBeNull();
-    expect(screen.getByLabelText('Repositories')).toBeTruthy();
+    expect(screen.getByLabelText('Projects')).toBeTruthy();
     expect(screen.getByLabelText('Repository details')).toBeTruthy();
-    expect(screen.getByPlaceholderText('Search repos...')).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: 'Search projects' })).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search projects...')).toBeTruthy();
+    expect(screen.getByRole('separator', { name: 'Resize Projects sidebar' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Select project Alpha Repo' }).closest('.sidebar-item-row')).toBeTruthy();
+    const footer = document.querySelector('.work-sidebar__footer');
+    expect(footer?.children).toHaveLength(2);
+    expect(screen.getByRole('button', { name: '+ Add project' }).parentElement).toBe(footer);
+    expect(screen.getByRole('button', { name: '\u2191\u2191 Push All' }).parentElement).toBe(footer);
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }));
+    expect(screen.getByRole('textbox', { name: 'Project path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
     expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
     expect(screen.getAllByText('feature/work').length).toBeGreaterThan(0);
     expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
@@ -2375,13 +2385,35 @@ describe('WorkOverviewView', () => {
     changeSelect(screen.getByDisplayValue('Last activity'), 'name');
     fireEvent.click(screen.getByTitle('Reverse sort direction'));
     await waitFor(() => {
-      const repoNames = Array.from(document.querySelectorAll('.work-repo-item__name'))
+      const repoNames = Array.from(document.querySelectorAll('.work-repo-list .sidebar-item-row__label'))
         .map((node) => node.textContent ?? '');
       expect(repoNames[0]).toContain('Alpha Repo');
     });
 
     fireEvent.click(screen.getByText('Zeta Repo'));
     expect(screen.getAllByText('legacy').length).toBeGreaterThan(0);
+  });
+
+  it('uses project language for empty and add-error guidance', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: 'Path is not a Git project.' }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    )));
+    render(h(WorkOverviewView, {
+      repos: [],
+      branchesByRepo: {},
+      onRescan: () => undefined,
+    }));
+
+    expect(screen.getByText('No projects found. Register a session or add a project.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }));
+    fireEvent.input(screen.getByRole('textbox', { name: 'Project path' }), {
+      target: { value: '/missing/project' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Could not add project: Path is not a Git project.',
+    );
   });
 
   it('loads commit browser and renders URL compare state through DiffView', async () => {

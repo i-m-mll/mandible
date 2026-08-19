@@ -16,6 +16,8 @@ import {
   type WorkRepoAudit,
 } from '../api';
 import { DiffView } from '../components/DiffView';
+import { ViewSidebar } from '../components/ViewSidebar';
+import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { ContextualAction } from '../components/shared/ContextualAction';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
@@ -1324,13 +1326,19 @@ export function WorkOverviewView({
         </div>
       )}
       <div className="work-shell">
-        <aside className="work-sidebar" data-app-surface="chrome" aria-label="Repositories">
-          <SidebarSearchFilterHeader
+        <ViewSidebar
+          storageKey="sidebar-width:work"
+          defaultWidth={340}
+          minWidth={280}
+          ariaLabel="Projects"
+          className="work-sidebar"
+          bodyClassName="work-repo-list"
+          header={<SidebarSearchFilterHeader
             value={repoFilterInput}
             onValueChange={setRepoFilterInput}
-            placeholder="Search repos..."
-            searchAriaLabel="Search repositories"
-            clearAriaLabel="Clear repository search"
+            placeholder="Search projects..."
+            searchAriaLabel="Search projects"
+            clearAriaLabel="Clear project search"
             filterTrigger={{
               ariaLabel: 'Advanced filters',
               title: 'Advanced filters',
@@ -1386,104 +1394,119 @@ export function WorkOverviewView({
                 </>
               ),
             } : undefined}
-          />
-          <div className="work-repo-list" role="list">
+          />}
+          footer={(
+            <>
+              {addingRepo ? (
+                <div className="repo-add-form">
+                  <input
+                    type="text"
+                    className="repo-add-form__input"
+                    placeholder="Absolute path to Git project..."
+                    aria-label="Project path"
+                    value={addPath}
+                    onInput={(e) => setAddPath(e.currentTarget.value)}
+                  />
+                  <div className="repo-add-form__actions">
+                    <button type="button" className="btn btn--sm" onClick={() => void handleAddRepo()}>
+                      Add project
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--ghost"
+                      onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {addError ? (
+                    <span className="repo-add-form__error" role="alert">Could not add project: {addError}</span>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="work-sidebar__footer">
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
+                >
+                  + Add project
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+                  disabled={pushState.active || pushState.authPending}
+                  onClick={() => pushRepos('all_ahead').catch(() => {})}
+                  title="Push all ahead branches + git-bug refs + notes for all projects"
+                >
+                  {pushState.authPending
+                    ? 'Authenticating...'
+                    : pushState.active
+                      ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+                      : '\u2191\u2191 Push All'}
+                </button>
+              </div>
+            </>
+          )}
+        >
+          <div role="list">
             {repoRows.length === 0 ? (
               <div className="empty-state">
                 {hasActiveFilters
-                  ? 'No repositories match these filters.'
-                  : 'No repositories found. Register a session or add a repo.'}
+                  ? 'No projects match these filters.'
+                  : 'No projects found. Register a session or add a project.'}
               </div>
             ) : (
               repoRows.map(({ repo, repoId, repoTitle, branches, activity, totalBranches }) => {
                 const repoPath = getRepoPath(repo);
                 const isExcluded = Boolean(repo.excluded);
                 const selected = selectedRepo?.repoId === repoId;
+                const activityLabel = activity
+                  ? formatRelativeTime(new Date(activity).toISOString(), { empty: '\u2014' })
+                  : '\u2014';
+                const branchLabel = `${totalBranches} ${totalBranches === 1 ? 'branch' : 'branches'}`;
+                const selectionDescription = [repoPath, branchLabel, `Last activity ${activityLabel}`]
+                  .filter(Boolean)
+                  .join('. ');
                 return (
-                  <button
-                    key={repoId}
-                    type="button"
-                    className={`work-repo-item${selected ? ' work-repo-item--active' : ''}${isExcluded ? ' work-repo-item--excluded' : ''}`}
-                    onClick={() => {
-                      const branchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
-                      setSelectedRepoId(repoId);
-                      updateWorkHash({
-                        repo: repoId,
-                        branch: branchName && branchName !== '\u2014' ? branchName : null,
-                        commit: null,
-                        compare: null,
-                      });
-                    }}
-                  >
-                    <span className="work-repo-item__main">
-                      <span className="work-repo-item__name">
-                        {repoTitle}
-                        {isExcluded ? (
-                          <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
-                        ) : null}
-                      </span>
-                      {repoPath ? <span className="work-repo-item__path">{repoPath}</span> : null}
-                    </span>
-                    <span className="work-repo-item__meta">
-                      <span>{totalBranches} {totalBranches === 1 ? 'branch' : 'branches'}</span>
-                      <span>{activity
-                        ? formatRelativeTime(new Date(activity).toISOString(), { empty: '\u2014' })
-                        : '\u2014'}</span>
-                    </span>
-                  </button>
+                  <div key={repoId} role="listitem">
+                    <SidebarItemRow
+                      label={repoTitle}
+                      selectionLabel={`Select project ${repoTitle}`}
+                      selectionDescription={selectionDescription}
+                      selected={selected}
+                      ariaCurrent={selected ? 'true' : undefined}
+                      className={isExcluded ? 'work-project-row--excluded' : undefined}
+                      onSelect={() => {
+                        const branchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
+                        setSelectedRepoId(repoId);
+                        updateWorkHash({
+                          repo: repoId,
+                          branch: branchName && branchName !== '\u2014' ? branchName : null,
+                          commit: null,
+                          compare: null,
+                        });
+                      }}
+                      badges={(
+                        <>
+                          {isExcluded ? (
+                            <SidebarItemBadge title="Excluded from scans">excluded</SidebarItemBadge>
+                          ) : null}
+                          <SidebarItemBadge title={branchLabel} ariaLabel={branchLabel}>
+                            {totalBranches}
+                          </SidebarItemBadge>
+                          <SidebarItemBadge title={`Last activity ${activityLabel}`} ariaLabel={`Last activity ${activityLabel}`}>
+                            {activityLabel}
+                          </SidebarItemBadge>
+                        </>
+                      )}
+                    />
+                  </div>
                 );
               })
             )}
           </div>
-          {addingRepo ? (
-            <div className="repo-add-form">
-              <input
-                type="text"
-                className="repo-add-form__input"
-                placeholder="Absolute path to git repo..."
-                value={addPath}
-                onInput={(e) => setAddPath(e.currentTarget.value)}
-              />
-              <div className="repo-add-form__actions">
-                <button type="button" className="btn btn--sm" onClick={() => void handleAddRepo()}>
-                  Add
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--ghost"
-                  onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
-                >
-                  Cancel
-                </button>
-              </div>
-              {addError && <span className="repo-add-form__error">{addError}</span>}
-            </div>
-          ) : null}
-          <div className="work-sidebar__footer">
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
-            >
-              + Add repo
-            </button>
-            <div className="work-push-actions">
-              <button
-                type="button"
-                className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
-                disabled={pushState.active || pushState.authPending}
-                onClick={() => pushRepos('all_ahead').catch(() => {})}
-                title="Push all ahead branches + git-bug refs + notes for all repos"
-              >
-                {pushState.authPending
-                  ? 'Authenticating...'
-                  : pushState.active
-                    ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                    : '\u2191\u2191 Push All'}
-              </button>
-            </div>
-          </div>
-        </aside>
+        </ViewSidebar>
         <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
             <div className="empty-state">Select a repository to inspect branch and worktree status.</div>

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar.js';
-import { SidebarGroupNode } from '../ui/src/components/shared/SidebarGroupNode.js';
+import { SidebarGroupNode, SidebarNewChatIcon } from '../ui/src/components/shared/SidebarGroupNode.js';
 import { SettingsView } from '../ui/src/views/settings.js';
 import type { FeedbackCollection } from '../ui/src/views/feedback/collection-model.js';
 import * as api from '../ui/src/api.js';
@@ -144,14 +144,25 @@ describe('shared sidebar group presentation', () => {
   it('reveals a separate 24px group action only from its exact header line', () => {
     const onPress = vi.fn();
     render(
-      <SidebarGroupNode presentation="category" id="chats" label="Chats" expanded onToggle={() => undefined} action={{ label: 'New chat', icon: 'new-chat', onPress }}>
-        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: 'new-chat', onPress: () => undefined }}>
+      <SidebarGroupNode
+        presentation="category"
+        id="chats"
+        label="Chats"
+        expanded
+        onToggle={() => undefined}
+        action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress }}
+        testIds={{ root: 'chats-group', heading: 'chats-heading', action: 'chats-action' }}
+      >
+        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: <SidebarNewChatIcon />, onPress: () => undefined }}>
           <span data-testid="descendant">Leaf</span>
         </SidebarGroupNode>
       </SidebarGroupNode>,
     );
     const heading = screen.getByRole('button', { name: 'Chats' });
     const action = screen.getByRole('button', { name: 'New chat' });
+    expect(screen.getByTestId('chats-group').contains(heading)).toBe(true);
+    expect(screen.getByTestId('chats-heading')).toBe(heading);
+    expect(screen.getByTestId('chats-action')).toBe(action);
     expect(action).not.toBe(heading);
     expect(action.parentElement?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
     expect(action.parentElement?.parentElement?.classList.contains('sidebar-group-node__header')).toBe(true);

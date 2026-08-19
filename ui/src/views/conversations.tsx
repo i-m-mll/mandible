@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
+import { SidebarAddProjectIcon, SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
 import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
 import {
   SidebarItemBadge,
@@ -3297,7 +3297,7 @@ export function ConversationsView({
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
-                action={{ label: 'Add project', icon: 'add-project', onPress: openProjectChooser }}
+                action={{ label: 'Add project', icon: <SidebarAddProjectIcon />, onPress: openProjectChooser }}
               >
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
@@ -3333,7 +3333,7 @@ export function ConversationsView({
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
                     action={group.exactRoot
-                      ? { label: `New chat in ${group.label}`, icon: 'new-chat', onPress: () => openNewSession(group.exactRoot) }
+                      ? { label: `New chat in ${group.label}`, icon: <SidebarNewChatIcon />, onPress: () => openNewSession(group.exactRoot) }
                       : undefined}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
@@ -3358,7 +3358,7 @@ export function ConversationsView({
                   headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
-                  action={{ label: 'New chat', icon: 'new-chat', onPress: () => openNewSession() }}
+                  action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress: () => openNewSession() }}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}

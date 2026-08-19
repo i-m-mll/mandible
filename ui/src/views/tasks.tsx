@@ -47,6 +47,8 @@ import {
   type TaskRunSlot,
 } from '../api';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 
@@ -758,6 +760,26 @@ export type TasksViewProps = {
   initialTaskKey?: string | null;
 };
 
+type TaskSourceFilter = 'all' | TaskInventoryItem['source_kind'];
+type TaskFreshnessFilter = 'all' | TaskExecutorFreshness;
+
+function taskSearchText(item: TaskInventoryItem): string {
+  if (item.source_kind === 'executor') {
+    return [
+      item.task.display_name,
+      item.task.task_id,
+      item.executor,
+      item.task.management_mode,
+    ].join(' ').toLocaleLowerCase();
+  }
+  return [
+    item.reminder.revision.payload.message,
+    item.reminder.project_key,
+    item.reminder.lifecycle,
+    item.reminder.revision.payload.predicate.kind,
+  ].join(' ').toLocaleLowerCase();
+}
+
 export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JSX.Element {
   const [inventory, setInventory] = useState<TaskInventory | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -769,6 +791,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const [commandError, setCommandError] = useState<string | null>(null);
   const [activeIntent, setActiveIntent] = useState<CommandIntent | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(initialTaskKey ?? null);
+  const [search, setSearch] = useState('');
+  const [sourceFilter, setSourceFilter] = useState<TaskSourceFilter>('all');
+  const [freshnessFilter, setFreshnessFilter] = useState<TaskFreshnessFilter>('all');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const mounted = useRef(true);
   // Preserve one client idempotency key across ambiguous transport failures.
   // A retry of the same UI intent must replay rather than create a second
@@ -806,6 +832,14 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
 
   const tasks = inventory?.tasks ?? [];
   const executors = inventory?.executors ?? [];
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const filteredTasks = useMemo(() => tasks.filter((item) => {
+    if (sourceFilter !== 'all' && item.source_kind !== sourceFilter) return false;
+    if (freshnessFilter !== 'all'
+      && (item.source_kind !== 'executor' || item.freshness !== freshnessFilter)) return false;
+    return normalizedSearch === '' || taskSearchText(item).includes(normalizedSearch);
+  }), [freshnessFilter, normalizedSearch, sourceFilter, tasks]);
+  const activeFilterCount = Number(sourceFilter !== 'all') + Number(freshnessFilter !== 'all');
 
   const selected = useMemo(
     () => tasks.find((item) => item.key === selectedKey) ?? tasks[0] ?? null,
@@ -1034,12 +1068,83 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         ariaLabel="Tasks"
         hidden={sidebarHidden}
         header={
-          <div className="tasks-sidebar__header">
-            <span className="tasks-sidebar__title">Tasks</span>
-            <span className="tasks-sidebar__count">
-              {tasks.length > 0 ? `${tasks.length}` : ''}
-            </span>
-          </div>
+          <SidebarSearchFilterHeader
+            value={search}
+            onValueChange={setSearch}
+            placeholder="Search tasks..."
+            searchAriaLabel="Search tasks"
+            clearAriaLabel="Clear task search"
+            filterTrigger={{
+              ariaLabel: 'Task filters',
+              title: 'Task filters',
+              open: filterMenuOpen,
+              active: activeFilterCount > 0,
+              count: activeFilterCount,
+              onToggle: () => setFilterMenuOpen((open) => !open),
+            }}
+            panel={filterMenuOpen ? {
+              id: 'tasks-filter-panel',
+              ariaLabel: 'Task filter controls',
+              onDismiss: () => setFilterMenuOpen(false),
+              children: (
+                <>
+                  <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
+                    <span>Filters</span>
+                    <button
+                      type="button"
+                      className="sidebar-search-filter__clear-action"
+                      onClick={() => {
+                        setSourceFilter('all');
+                        setFreshnessFilter('all');
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="sidebar-search-filter__section">
+                    <span className="sidebar-search-filter__label">Source</span>
+                    <div
+                      className="sidebar-search-filter__options sidebar-search-filter__options--segmented"
+                      role="group"
+                      aria-label="Task source"
+                    >
+                      {(['all', 'executor', 'mandible'] as const).map((source) => (
+                        <button
+                          key={source}
+                          type="button"
+                          aria-pressed={sourceFilter === source}
+                          className={`sidebar-search-filter__option${sourceFilter === source ? ' sidebar-search-filter__option--active' : ''}`}
+                          onClick={() => setSourceFilter(source)}
+                        >
+                          {source === 'mandible' ? 'Reminders' : source}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="sidebar-search-filter__section">
+                    <span className="sidebar-search-filter__label">Executor freshness</span>
+                    <div
+                      className="sidebar-search-filter__options sidebar-search-filter__options--segmented"
+                      role="group"
+                      aria-label="Executor freshness"
+                    >
+                      {(['all', 'current', 'stale', 'unknown'] as const).map((freshness) => (
+                        <button
+                          key={freshness}
+                          type="button"
+                          aria-pressed={freshnessFilter === freshness}
+                          className={`sidebar-search-filter__option${freshnessFilter === freshness ? ' sidebar-search-filter__option--active' : ''}`}
+                          onClick={() => setFreshnessFilter(freshness)}
+                        >
+                          {freshness}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ),
+            } : undefined}
+          />
         }
         bodyClassName="tasks-sidebar__list"
       >
@@ -1051,39 +1156,46 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
           <div className="tasks-sidebar__empty">No executor has registered an inventory.</div>
         ) : registeredButEmpty ? (
           <div className="tasks-sidebar__empty">The executor reported no tasks.</div>
+        ) : filteredTasks.length === 0 ? (
+          <div className="tasks-sidebar__empty">No tasks match your search and filters.</div>
         ) : (
-          tasks.map((item) => (
-            <button
+          filteredTasks.map((item) => (
+            <SidebarItemRow
               key={item.key}
-              type="button"
-              className={`tasks-row${selected?.key === item.key ? ' tasks-row--selected' : ''}`}
-              onClick={() => setSelectedKey(item.key)}
-              title={freshnessTitle(item)}
-            >
-              <span className="tasks-row__name">
-                {item.source_kind === 'executor'
-                  ? item.task.display_name
-                  : item.reminder.revision.payload.message}
-              </span>
-              <span className="tasks-row__meta">
+              className="tasks-row"
+              label={item.source_kind === 'executor'
+                ? item.task.display_name
+                : item.reminder.revision.payload.message}
+              selectionLabel={`Select ${item.source_kind === 'executor'
+                ? item.task.display_name
+                : item.reminder.revision.payload.message}`}
+              selectionDescription={freshnessTitle(item)}
+              selected={selected?.key === item.key}
+              ariaCurrent={selected?.key === item.key ? 'true' : undefined}
+              onSelect={() => setSelectedKey(item.key)}
+              badges={(
+                <>
+                  <SidebarItemBadge title={item.source_kind === 'executor'
+                    ? item.executor
+                    : item.reminder.project_key}
+                  >
+                    {item.source_kind === 'executor' ? item.executor : item.reminder.project_key}
+                  </SidebarItemBadge>
                 {item.source_kind === 'executor' ? (
-                  <>
-                    <span className="tasks-row__executor">{item.executor}</span>
-                    <span
-                      className={`tasks-freshness tasks-freshness--${item.freshness}`}
-                      aria-label={`Executor report ${FRESHNESS_LABEL[item.freshness]}`}
-                    >
-                      {FRESHNESS_LABEL[item.freshness]}
-                    </span>
-                  </>
+                  <SidebarItemBadge
+                    className={`tasks-freshness tasks-freshness--${item.freshness}`}
+                    ariaLabel={`Executor report ${FRESHNESS_LABEL[item.freshness]}`}
+                  >
+                    {FRESHNESS_LABEL[item.freshness]}
+                  </SidebarItemBadge>
                 ) : (
-                  <>
-                    <span className="tasks-row__executor">{item.reminder.project_key}</span>
-                    <span className="tasks-freshness">{item.reminder.lifecycle}</span>
-                  </>
+                  <SidebarItemBadge className="tasks-freshness">
+                    {item.reminder.lifecycle}
+                  </SidebarItemBadge>
                 )}
-              </span>
-            </button>
+                </>
+              )}
+            />
           ))
         )}
       </ViewSidebar>
