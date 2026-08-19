@@ -1006,6 +1006,56 @@ describe('app shell', () => {
     expect(putCalls).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps repeated pointer frames over one captured target from undoing the drop', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const mounted = render(h(App, {}));
+    await railReorderButtonReady();
+    const primary = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(primary);
+    const chat = primary.find((link) => link.dataset.railItem === 'console')!;
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 18, button: 0, clientX: 12, clientY: 1 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 1 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 18, clientX: 12, clientY: 45 });
+
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
+
+    const secondary = railGroupLinks(mounted.container, 'secondary');
+    mockRailRects(secondary);
+    const projects = secondary.find((link) => link.dataset.railItem === 'work')!;
+    fireRailPointer(projects, 'pointerdown', { pointerId: 19, button: 0, clientX: 12, clientY: 1 });
+    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 45 });
+    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 45 });
+    fireRailPointer(projects, 'pointerup', { pointerId: 19, clientX: 12, clientY: 45 });
+
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'secondary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['graph', 'work']));
+
+    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/auth'));
+    expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']);
+
+    mounted.unmount();
+    window.history.replaceState(null, '', '#/spaces');
+    const remounted = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
+    expect(railGroupLinks(remounted.container, 'secondary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['graph', 'work']);
+    expect(settings.getStored()).toContain('"primary":["timeline","console"');
+  });
+
   it('keyboard reorder retains focus, announces, persists, and hydrates after remount', async () => {
     installMemoryLocalStorage();
     const settings = stubRailSettingsFetch();
