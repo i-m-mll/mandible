@@ -88,9 +88,10 @@ describe('Codex app subdivision surface contract', () => {
     expect(edge).toContain('top: 0');
     expect(edge).toContain('bottom: 0');
     expect(edge).toContain('left: var(--app-detail-edge-x)');
+    expect(edge).toContain('width: 1px');
     expect(edge).toContain('box-shadow: var(--shadow-app-subdivision)');
-    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px -3px rgba(0, 0, 0, 0.32)');
-    expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px -3px rgba(15, 23, 42, 0.14)');
+    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(0, 0, 0, 0.32)');
+    expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(15, 23, 42, 0.14)');
 
     for (const selector of ['.app-rail', '.app-bottom-panel', '.view-sidebar', '.detail-pane-shell__header', '.detail-pane-shell__body', '.detail-pane-shell__footer', '.briefing-detail__footer', '.composer-host']) {
       const shadow = ruleBody(stylesheet, selector).match(/box-shadow:\s*([^;]+)/)?.[1]?.trim();
