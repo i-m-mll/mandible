@@ -674,6 +674,18 @@ export function seedRichBriefingDemo(
   }).immediate();
 }
 
+export function prepareRichBriefingDemoPreviewCopy(
+  db: Db,
+  options: { databasePath: string; artifactRoot: string },
+): RichBriefingDemoManifest {
+  return db.transaction(() => {
+    if (getSetting(db, "artifact_root") !== options.artifactRoot) {
+      setSetting(db, "artifact_root", options.artifactRoot);
+    }
+    return seedRichBriefingDemo(db, options);
+  }).immediate();
+}
+
 function seedNewRichBriefingDemo(
   db: Db,
   options: { databasePath: string; artifactRoot?: string },
