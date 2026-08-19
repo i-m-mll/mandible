@@ -705,7 +705,7 @@ function BlockRenderer({
   const blockDagUuid = block.dag_uuid ?? undefined;
 
   return (
-    <div className={typeClass} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
+    <div className={`${typeClass} contextual-action-owner`} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
       {showHeader && (
         <div className="block-header">
           <div className="block-header__left">

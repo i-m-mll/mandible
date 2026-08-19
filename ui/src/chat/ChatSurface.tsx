@@ -340,7 +340,7 @@ export function ChatSurface({
     switch (node.kind) {
       case 'user_message':
         return (
-          <div key={node.key} className="message-block-wrapper">
+          <div key={node.key} className="message-block-wrapper contextual-action-owner">
             <UserBubble text={node.text} />
             <MessageActions onCopy={() => copyText(node.text)} />
           </div>
