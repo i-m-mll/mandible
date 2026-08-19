@@ -187,9 +187,16 @@ describe('SpacesSidebar foldable headers', () => {
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
 
-    fireEvent.click(screen.getByTestId('spaces-group-toggle-proj-a'));
+    const toggle = screen.getByTestId('spaces-group-toggle-proj-a');
+    expect(toggle.getAttribute('aria-controls')).toBe('spaces-group-proj-a-body');
+    fireEvent.click(toggle);
+    const closingRegion = document.getElementById('spaces-group-proj-a-body');
+    expect(closingRegion?.getAttribute('aria-hidden')).toBe('true');
+    const transitionEnd = new Event('transitionend', { bubbles: true });
+    Object.defineProperty(transitionEnd, 'propertyName', { value: 'height' });
+    fireEvent(closingRegion as HTMLElement, transitionEnd);
     expect(screen.queryByText('Roadmap')).toBeNull();
-    fireEvent.click(screen.getByTestId('spaces-group-toggle-proj-a'));
+    fireEvent.click(toggle);
     expect(screen.getByText('Roadmap')).toBeTruthy();
   });
 });
