@@ -27,6 +27,7 @@ import { AttributionIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../shared/DetailPaneHeader';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailPaneShell } from '../shared/DetailPaneShell';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
 const LEDGER_TIME_OPTIONS = { zeroIsEmpty: true } as const;
 
@@ -98,7 +99,6 @@ export function LedgerIssueDetail({
   // session-manager work-unit path.
   const [launchAgentOpen, setLaunchAgentOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
-  const actionMenuRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
@@ -143,24 +143,6 @@ export function LedgerIssueDetail({
         ? 'conflicted'
         : 'failed';
   const projectRef = issueProjectRef(detail);
-
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = actionMenuRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActionsOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-    };
-  }, [actionsOpen]);
 
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
@@ -240,7 +222,6 @@ export function LedgerIssueDetail({
           )}
           actions={hasIssueActions ? (
             <IssueActionsMenu
-              menuRef={actionMenuRef}
               open={actionsOpen}
               busy={busy}
               detail={detail}
@@ -495,7 +476,6 @@ function artifactFileLabel(uri: string): string {
 }
 
 function IssueActionsMenu({
-  menuRef,
   open,
   busy,
   detail,
@@ -512,7 +492,6 @@ function IssueActionsMenu({
   onShowAuthEvidence,
   onShowChildren,
 }: {
-  menuRef: { current: HTMLDivElement | null };
   open: boolean;
   busy: boolean;
   detail: LedgerIssueDetailProjection;
@@ -529,13 +508,22 @@ function IssueActionsMenu({
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuStyle = useAnchoredMenu({
+    open,
+    anchorRef: triggerRef,
+    menuRef,
+    onDismiss: onClose,
+  });
   const closeAfter = (callback: () => void) => {
     callback();
     onClose();
   };
   return (
-    <div className="ledger-issue-actions-menu" ref={menuRef}>
+    <div className="ledger-issue-actions-menu">
       <button
+        ref={triggerRef}
         type="button"
         className={`ledger-issue-actions-menu__trigger${open ? ' ledger-issue-actions-menu__trigger--active' : ''}`}
         aria-label="Issue actions"
@@ -547,7 +535,13 @@ function IssueActionsMenu({
         <HorizontalDotsIcon />
       </button>
       {open && (
-        <div className="ledger-issue-actions-menu__dropdown" role="menu">
+        <div
+          ref={menuRef}
+          className="ledger-issue-actions-menu__dropdown app-anchored-menu"
+          role="menu"
+          popover="manual"
+          style={menuStyle}
+        >
           {liveSession && (
             <a
               className="ledger-issue-actions-menu__item"

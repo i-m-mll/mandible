@@ -1812,8 +1812,7 @@
 .composer-host {
   flex-shrink: 0;
   border-top: 1px solid var(--border-muted);
-  background: var(--surface-panel);
-  box-shadow: var(--shadow-panel-top);
+  box-shadow: none;
 }
 
 .composer-attention-strip {

@@ -312,10 +312,7 @@
 }
 
 .ledger-issue-actions-menu__dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 30;
+  position: fixed;
   min-width: 170px;
   padding: 4px;
   border: 1px solid var(--neutral-alpha-10);

@@ -1,5 +1,6 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
 export type SidebarSearchFilterHeaderPanel = {
   id?: string;
@@ -40,12 +41,26 @@ export type SidebarSearchFilterHeaderProps = {
 export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const dismissRef = useRef(props.panel?.onDismiss);
   dismissRef.current = props.panel?.onDismiss;
   const rootClass = props.className
     ? `sidebar-search-filter ${props.className}`
     : 'sidebar-search-filter';
   const panelVariant = props.panel?.variant ?? 'popover';
+  const popoverOpen = props.panel !== undefined && panelVariant === 'popover';
+  const panelStyle = useAnchoredMenu({
+    open: popoverOpen,
+    anchorRef: rootRef,
+    menuRef: panelRef,
+    focusRef: filterTriggerRef,
+    onDismiss: () => dismissRef.current?.(),
+    placement: 'bottom-start',
+    gap: -2,
+    anchorInset: 12,
+    matchAnchorWidth: true,
+  });
 
   useEffect(() => {
     if (props.captureFindShortcut === false) return undefined;
@@ -71,24 +86,6 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
     window.addEventListener('keydown', focusViewSearch);
     return () => window.removeEventListener('keydown', focusViewSearch);
   }, [props.captureFindShortcut]);
-
-  useEffect(() => {
-    if (!props.panel?.onDismiss) return undefined;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      event.preventDefault();
-      dismissRef.current?.();
-    };
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.target && !rootRef.current?.contains(event.target as Node)) dismissRef.current?.();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('pointerdown', handlePointerDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('pointerdown', handlePointerDown);
-    };
-  }, [Boolean(props.panel?.onDismiss)]);
 
   return (
     <div ref={rootRef} className={rootClass} onFocusOut={props.onBlurWithin} data-testid={props.testId}>
@@ -121,6 +118,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
         </div>
         {props.filterTrigger !== undefined ? (
           <button
+            ref={filterTriggerRef}
             type="button"
             className={`sidebar-search-filter__trigger${
               props.filterTrigger.open || props.filterTrigger.active ? ' sidebar-search-filter__trigger--active' : ''
@@ -146,10 +144,13 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       ) : null}
       {props.panel !== undefined ? (
         <div
+          ref={panelRef}
           id={props.panel.id}
           role="dialog"
+          popover="manual"
           aria-label={props.panel.ariaLabel ?? props.filterTrigger?.ariaLabel}
-          className={`sidebar-search-filter__panel sidebar-search-filter__panel--${panelVariant}`}
+          className={`sidebar-search-filter__panel sidebar-search-filter__panel--${panelVariant}${panelVariant === 'popover' ? ' app-anchored-menu' : ''}`}
+          style={panelVariant === 'popover' ? panelStyle : undefined}
         >
           {props.panel.children}
         </div>

@@ -6,12 +6,18 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  background: inherit;
+  box-shadow: none;
 }
 
 .detail-pane-shell__header,
 .detail-pane-shell__header-primary,
+.detail-pane-shell__subheader,
+.detail-pane-shell__body,
+.detail-pane-shell__footer,
 .detail-pane-header {
-  background: var(--surface-app);
+  background: inherit;
+  box-shadow: none;
 }
 
 .detail-pane-shell__header {

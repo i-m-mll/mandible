@@ -1315,7 +1315,7 @@ export function WorkOverviewView({
         </div>
       )}
       <div className="work-shell">
-        <aside className="work-sidebar" aria-label="Repositories">
+        <aside className="work-sidebar" data-app-surface="chrome" aria-label="Repositories">
           <SidebarSearchFilterHeader
             value={repoFilterInput}
             onValueChange={setRepoFilterInput}
@@ -1475,7 +1475,7 @@ export function WorkOverviewView({
             </div>
           </div>
         </aside>
-        <section className="work-detail" aria-label="Repository details">
+        <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
             <div className="empty-state">Select a repository to inspect branch and worktree status.</div>
           ) : (() => {

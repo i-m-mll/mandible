@@ -88,7 +88,7 @@ export function getTerminalTheme(scope?: Element | null): {
   cursor: string
 } {
   return {
-    background: resolveCssToken('--terminal-bg', '#0b0f14', scope),
+    background: resolveCssToken('--terminal-bg', '#181818', scope),
     foreground: resolveCssToken('--terminal-fg', '#e6edf3', scope),
     cursor: resolveCssToken('--terminal-cursor', '#4da3ff', scope),
   };

@@ -52,6 +52,7 @@ export function DetailPaneShell({
         variant === 'compact' ? 'detail-pane-shell--compact' : undefined,
         className,
       )}
+      data-app-surface="main"
       aria-busy={ariaBusy === undefined ? undefined : ariaBusy ? 'true' : 'false'}
     >
       <header className={classNames('detail-pane-shell__header', headerClassName)} ref={headerRef}>
