@@ -112,6 +112,9 @@ describe('SpacesSidebar render + grouping', () => {
     expect(screen.getByTestId('space-row-type-a1').getAttribute('aria-label')).toBe('Document space type');
     expect(screen.getByTestId('space-row-type-b1').getAttribute('aria-label')).toBe('Board space type');
     expect(canvasTypeIcon.textContent).toBe('');
+    expect(screen.getByRole('button', { name: 'Global notes (Canvas)' }).closest('.sidebar-item-row')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Roadmap (Document)' }).closest('.sidebar-item-row')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Alpha/ }).closest('.sidebar-group-node--folder')).toBeTruthy();
 
     // Top-level group sits above the first project group in DOM order.
     const scroll = screen.getByTestId('spaces-tree-scroll');
@@ -187,7 +190,7 @@ describe('SpacesSidebar foldable headers', () => {
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
 
-    const toggle = screen.getByTestId('spaces-group-toggle-proj-a');
+    const toggle = screen.getByRole('button', { name: /^Alpha/ });
     expect(toggle.getAttribute('aria-controls')).toBe('spaces-group-proj-a-body');
     fireEvent.click(toggle);
     const closingRegion = document.getElementById('spaces-group-proj-a-body');
@@ -198,6 +201,25 @@ describe('SpacesSidebar foldable headers', () => {
     expect(screen.queryByText('Roadmap')).toBeNull();
     fireEvent.click(toggle);
     expect(screen.getByText('Roadmap')).toBeTruthy();
+  });
+
+  it('preserves collapse intent across refresh reconciliation and remount', async () => {
+    const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
+    const { rerender, unmount } = render(
+      <SpacesSidebar refreshToken={0} onSelectSpace={vi.fn()} loadGroups={loadGroups} />,
+    );
+    await screen.findByText('Roadmap');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Alpha/ }));
+    expect(screen.getByRole('button', { name: /^Alpha/ }).getAttribute('aria-expanded')).toBe('false');
+
+    rerender(<SpacesSidebar refreshToken={1} onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    await waitFor(() => expect(loadGroups).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: /^Alpha/ }).getAttribute('aria-expanded')).toBe('false');
+
+    unmount();
+    render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    expect(screen.getByRole('button', { name: /^Alpha/ }).getAttribute('aria-expanded')).toBe('false');
   });
 });
 
@@ -238,19 +260,17 @@ describe('SpacesSidebar create flow', () => {
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
 
-    const projectCreate = screen.getByTestId('create-in-proj-a');
+    const projectCreate = screen.getByRole('button', { name: 'Create space in Alpha' });
     expect(projectCreate.getAttribute('aria-label')).toBe('Create space in Alpha');
     expect(projectCreate.classList.contains('contextual-action')).toBe(true);
     expect(projectCreate.parentElement?.classList.contains('contextual-action-group')).toBe(true);
-    expect(projectCreate.closest('.spaces-tree__group-header')?.classList.contains('contextual-action-owner')).toBe(true);
+    expect(projectCreate.closest('.sidebar-group-node__header')?.classList.contains('contextual-action-owner')).toBe(true);
 
     const topLevelCreate = screen.getByTestId('create-top-level');
     expect(topLevelCreate.getAttribute('aria-label')).toBe('Create top-level space');
     expect(topLevelCreate.classList.contains('contextual-action')).toBe(false);
 
-    expect(spacesSidebarStylesheet).toMatch(/\.spaces-tree__create-slot\s*\{[^}]*flex:\s*0 0 22px;[^}]*width:\s*22px;[^}]*height:\s*22px;/s);
-    expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__group-header[^}]*spaces-tree__create[^}]*opacity/);
-    expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__create--project:(?:hover|focus-visible)[^{]*\{[^}]*background/);
+    expect(projectCreate.parentElement?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
     expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*\{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
     expect(spacesSidebarStylesheet).not.toMatch(
       /\.spaces-tree__header\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*0;/s,
@@ -266,7 +286,7 @@ describe('SpacesSidebar create flow', () => {
     );
     await screen.findByText('Roadmap');
 
-    fireEvent.click(screen.getByTestId('create-in-proj-a'));
+    fireEvent.click(screen.getByRole('button', { name: 'Create space in Alpha' }));
     fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'New one' } });
     expect(screen.queryByText('Blank space')).toBeNull();
     expect(screen.getByTestId('space-create-type-canvas').textContent).toContain('Canvas');
@@ -332,7 +352,7 @@ describe('SpacesSidebar create flow', () => {
     );
     await screen.findByText('Roadmap');
 
-    fireEvent.click(screen.getByTestId('create-in-proj-a'));
+    fireEvent.click(screen.getByRole('button', { name: 'Create space in Alpha' }));
     fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'Seeded' } });
     fireEvent.click(screen.getByTestId('space-create-type-collection'));
     fireEvent.click(screen.getByTestId('space-create-seed-toggle'));
@@ -439,10 +459,10 @@ describe('SpacesSidebar selection', () => {
     render(<SpacesSidebar selectedSpaceId="a1" onSelectSpace={onSelectSpace} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
 
-    const active = screen.getByTestId('space-row-a1');
+    const active = screen.getByRole('button', { name: 'Roadmap (Document)' });
     expect(active.getAttribute('aria-current')).toBe('true');
 
-    fireEvent.click(screen.getByTestId('space-row-b1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Beta board (Board)' }));
     expect(onSelectSpace).toHaveBeenCalledWith({
       projectId: 'proj-b',
       spaceId: 'b1',
@@ -450,16 +470,8 @@ describe('SpacesSidebar selection', () => {
     });
   });
 
-  it('keeps project child rows aligned with project title text without bolding selection', () => {
-    expect(spacesSidebarStylesheet).toMatch(
-      /\.spaces-tree__space\s*\{[^}]*padding:\s*0\.28rem 0\.75rem 0\.28rem 2rem;/s,
-    );
-    expect(spacesSidebarStylesheet).toMatch(
-      /\.spaces-tree__space\s*\{[^}]*font-weight:\s*400;/s,
-    );
-    expect(spacesSidebarStylesheet).toMatch(/\.spaces-tree__space--active\s*\{[^}]*background:\s*var\(--overlay-selected\)/s);
-    expect(spacesSidebarStylesheet).not.toMatch(
-      /\.spaces-tree__space--active\s*\{[^}]*font-weight:\s*600/s,
-    );
+  it('uses the shared row and group composition without bespoke row overrides', () => {
+    expect(spacesSidebarStylesheet).not.toMatch(/\.spaces-tree__space\s*\{[^}]*padding:/s);
+    expect(spacesSidebarStylesheet).not.toMatch(/\.spaces-tree__space--active/);
   });
 });
