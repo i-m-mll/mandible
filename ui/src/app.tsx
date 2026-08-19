@@ -2635,7 +2635,7 @@ function App(): JSX.Element {
         </main>
           {bottomPanelOpen && bottomPanel ? (
             <aside
-              className="app-bottom-panel"
+              className={`app-bottom-panel app-bottom-panel--${bottomPanel.layout}`}
               aria-label={bottomPanel.ariaLabel}
               style={{ height: `${bottomPanel.height}px` }}
             >

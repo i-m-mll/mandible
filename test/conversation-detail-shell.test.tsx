@@ -218,7 +218,7 @@ describe('compact detail pane shell', () => {
       <DetailPaneShell
         variant="compact"
         header={<span>Compact title</span>}
-        footer={<button type="button">Submit</button>}
+        footer={{ content: <button type="button">Submit</button> }}
       >
         <p>Scrollable content</p>
       </DetailPaneShell>,
@@ -283,9 +283,14 @@ describe('compact detail pane shell', () => {
     const status = canonicalHeader?.querySelector('.conv-detail__status');
     expect(status?.querySelector('.conv-detail__provider')?.textContent).toBe('Codex');
     expect(status?.textContent).toContain('Resumable');
-    expect(status?.nextElementSibling?.classList.contains('conv-actions')).toBe(true);
+    const titleRow = canonicalHeader?.querySelector('.detail-pane-header__title-row');
+    const compactMenu = canonicalHeader?.querySelector('.detail-pane-header__menu');
+    const metadata = canonicalHeader?.querySelector('.detail-pane-header__compact-metadata');
+    expect(titleRow?.querySelector('.detail-pane-header__title')?.nextElementSibling).toBe(compactMenu);
+    expect(titleRow?.nextElementSibling).toBe(metadata);
+    expect(metadata?.contains(status ?? null)).toBe(true);
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
-    expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
+    expect(compactMenu?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeNull();
     expect(body?.querySelector('.context-ring')).toBeNull();
@@ -417,7 +422,8 @@ describe('compact detail pane shell', () => {
     const header = document.querySelector('.detail-pane-header--compact') as HTMLElement;
     const status = header.querySelector('.conv-detail__status');
     expect(status?.textContent).toContain(badge);
-    expect(status?.nextElementSibling?.classList.contains('conv-actions')).toBe(true);
+    expect(status?.parentElement?.classList.contains('detail-pane-header__compact-metadata')).toBe(true);
+    expect(header.querySelector('.detail-pane-header__title')?.nextElementSibling?.classList.contains('detail-pane-header__menu')).toBe(true);
     expect(header.querySelector('.detail-pane-header__topline')).toBeNull();
     expect(header.querySelector('.detail-pane-header__identity')).toBeNull();
     expect(header.querySelector('.conv-info-button')).toBeNull();

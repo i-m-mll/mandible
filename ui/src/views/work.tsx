@@ -20,6 +20,8 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { ContextualAction } from '../components/shared/ContextualAction';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 
@@ -1524,67 +1526,74 @@ export function WorkOverviewView({
             const currentEditName = editName[repoId] ?? repo.name ?? repoTitle;
 
             return (
-              <div
+              <DetailPaneShell
                 key={repoId}
+                as="div"
+                variant="compact"
                 className={`work-detail-panel${isExcluded ? ' repo-card--excluded' : ''}`}
-              >
-                <div className="work-detail__header">
-                  <div className="repo-card__title">
-                    <h3>
-                      {repoTitle}
-                      {isExcluded && (
-                        <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
-                      )}
-                    </h3>
-                    {showPath ? <span className="text-muted">{repoPath}</span> : null}
-                  </div>
-                  <div className="repo-card__header-actions">
-                    {pushState.repoProgress.get(repoId) === 'pushing' && (
-                      <span className="work-push-spinner" aria-label="Pushing" />
-                    )}
-                    {pushState.repoProgress.get(repoId) === 'done' && (
-                      <span className="work-push-done" title="Push complete">{'\u2713'}</span>
-                    )}
-                    {pushState.repoProgress.get(repoId) === 'error' && (
-                      <span className="work-push-error" title="Push failed">{'\u2717'}</span>
-                    )}
-                    <button
-                      type="button"
-                      className="work-repo-push-btn"
-                      disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing'}
-                      onClick={() => void handlePushRepo(repoId, repoTitle)}
-                      title="Push this repo"
-                    >
-                      <span className="work-repo-push-btn__label">
-                        {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
-                      </span>
-                    </button>
-                    {isExcluded && (
+                bodyClassName="work-detail__body"
+                header={(
+                  <DetailPaneHeader
+                    variant="compact"
+                    title={repoTitle}
+                    titleTooltip={repoTitle}
+                    menuLabel="Repository settings"
+                    menu={(
                       <button
                         type="button"
-                        className="btn btn--xs"
-                        onClick={(e) => {
-                          void handleUpdateRepo(repoId, { excluded: false });
+                        className={`repo-card__gear${isSettingsOpen ? ' repo-card__gear--active' : ''}`}
+                        title="Repo settings"
+                        aria-label="Repo settings"
+                        onClick={() => {
+                          setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
                         }}
-                        title="Include this repo in scans"
                       >
-                        Include
+                        &#9881;
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className={`repo-card__gear${isSettingsOpen ? ' repo-card__gear--active' : ''}`}
-                      title="Repo settings"
-                      aria-label="Repo settings"
-                      onClick={(e) => {
-                        setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
-                      }}
-                    >
-                      &#9881;
-                    </button>
-                  </div>
-                </div>
-                {isSettingsOpen && (
+                    metadata={(
+                      <div className="repo-card__header-actions">
+                        {showPath ? <span className="text-muted">{repoPath}</span> : null}
+                        {isExcluded && (
+                          <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
+                        )}
+                        {pushState.repoProgress.get(repoId) === 'pushing' && (
+                          <span className="work-push-spinner" aria-label="Pushing" />
+                        )}
+                        {pushState.repoProgress.get(repoId) === 'done' && (
+                          <span className="work-push-done" title="Push complete">{'\u2713'}</span>
+                        )}
+                        {pushState.repoProgress.get(repoId) === 'error' && (
+                          <span className="work-push-error" title="Push failed">{'\u2717'}</span>
+                        )}
+                        <button
+                          type="button"
+                          className="work-repo-push-btn"
+                          disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing'}
+                          onClick={() => void handlePushRepo(repoId, repoTitle)}
+                          title="Push this repo"
+                        >
+                          <span className="work-repo-push-btn__label">
+                            {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
+                          </span>
+                        </button>
+                        {isExcluded && (
+                          <button
+                            type="button"
+                            className="btn btn--xs"
+                            onClick={() => {
+                              void handleUpdateRepo(repoId, { excluded: false });
+                            }}
+                            title="Include this repo in scans"
+                          >
+                            Include
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  />
+                )}
+                overlays={isSettingsOpen ? (
                   <div className="work-settings-overlay" role="dialog" aria-modal="true" aria-labelledby="work-repo-settings-title">
                     <div className="work-settings-modal">
                       <div className="work-settings-modal__header">
@@ -1672,8 +1681,8 @@ export function WorkOverviewView({
                       </div>
                     </div>
                   </div>
-                )}
-                <div className="work-detail__body">
+                ) : undefined}
+              >
                   <BranchAuditPanel
                     repoTitle={repoTitle}
                     audit={audits[repoId] ?? null}
@@ -1972,8 +1981,7 @@ export function WorkOverviewView({
                       </div>
                     );
                   })()}
-                </div>
-              </div>
+              </DetailPaneShell>
             );
           })()}
         </section>

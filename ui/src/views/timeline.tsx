@@ -1759,6 +1759,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         },
       });
     },
+    layout: 'full-content' as const,
     content: inspectorContent,
   }), [inspectorContent, updateState, viewState.panes]);
 

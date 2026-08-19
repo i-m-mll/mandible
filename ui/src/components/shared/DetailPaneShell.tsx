@@ -1,7 +1,17 @@
 import type { ComponentChildren, Ref } from 'preact';
 
-type DetailPaneShellAs = 'article' | 'section' | 'div';
+type DetailPaneShellAs = 'article' | 'section' | 'div' | 'aside';
 export type DetailPaneShellVariant = 'default' | 'compact';
+
+/**
+ * Content for the shell's one anchored footer slot. `content` may be a
+ * fragment or array when several canonical controls belong in the footer;
+ * the shell still renders exactly one outer footer boundary.
+ */
+export type DetailPaneShellFooter = {
+  content: ComponentChildren;
+  ariaLabel?: string;
+};
 
 export type DetailPaneShellProps = {
   as?: DetailPaneShellAs;
@@ -17,7 +27,8 @@ export type DetailPaneShellProps = {
   /** One anchored header composition. Prefer DetailPaneHeader for data views. */
   header: ComponentChildren;
   subheader?: ComponentChildren;
-  footer?: ComponentChildren;
+  /** Selection-driven anchored content. Omit or pass null to hide the slot. */
+  footer?: DetailPaneShellFooter | null;
   overlays?: ComponentChildren;
   children: ComponentChildren;
   ariaBusy?: boolean;
@@ -55,7 +66,11 @@ export function DetailPaneShell({
       data-app-surface="main"
       aria-busy={ariaBusy === undefined ? undefined : ariaBusy ? 'true' : 'false'}
     >
-      <header className={classNames('detail-pane-shell__header', headerClassName)} ref={headerRef}>
+      <header
+        className={classNames('detail-pane-shell__header', headerClassName)}
+        data-detail-pane-slot="header"
+        ref={headerRef}
+      >
         <div className={classNames('detail-pane-shell__header-primary', headerPrimaryClassName)}>
           {header}
         </div>
@@ -65,12 +80,20 @@ export function DetailPaneShell({
           </div>
         )}
       </header>
-      <div className={classNames('detail-pane-shell__body', bodyClassName)} ref={bodyRef}>
+      <div
+        className={classNames('detail-pane-shell__body', bodyClassName)}
+        data-detail-pane-slot="body"
+        ref={bodyRef}
+      >
         {children}
       </div>
       {footer !== undefined && footer !== null && (
-        <footer className={classNames('detail-pane-shell__footer', footerClassName)}>
-          {footer}
+        <footer
+          className={classNames('detail-pane-shell__footer', footerClassName)}
+          data-detail-pane-slot="footer"
+          aria-label={footer.ariaLabel}
+        >
+          {footer.content}
         </footer>
       )}
       {overlays}

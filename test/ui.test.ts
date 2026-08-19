@@ -830,6 +830,7 @@ describe('app shell', () => {
       height: 360,
       onOpenChange: () => undefined,
       onHeightChange: () => undefined,
+      layout: 'full-content',
       content: h('div', {}, 'Inspector content'),
     }), []);
 
@@ -1806,7 +1807,9 @@ describe('app shell', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
     expect(screen.getByLabelText('Collapse Graph detail').closest('.app-rail__footer')).toBeTruthy();
-    expect(screen.getByLabelText('Graph detail')).toBeTruthy();
+    const graphDetail = screen.getByLabelText('Graph detail');
+    expect(graphDetail.classList.contains('app-bottom-panel--anchored-detail')).toBe(true);
+    expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy();
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
       .toBeLessThan(5);
@@ -1863,6 +1866,8 @@ describe('app shell', () => {
     render(h(PendingGraphProbe, {}));
 
     await waitFor(() => expect(registrations.length).toBeGreaterThan(0));
+    expect(registrations[0]?.layout).toBe('anchored-detail');
+    expect(registrations[0]?.content).toBeNull();
 
     for (let pass = 0; pass < 5; pass += 1) {
       // eslint-disable-next-line no-await-in-loop
@@ -1920,8 +1925,16 @@ describe('app shell', () => {
     render(h(App, {}));
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
-    expect(within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'alpha' }))
+    const graphPanel = screen.getByLabelText('Graph detail');
+    expect(within(graphPanel).getByRole('heading', { name: 'alpha' }))
       .toBeTruthy();
+    const detailShell = graphPanel.querySelector('.detail-pane-shell');
+    expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
+      .toEqual(['header', 'body']);
+    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy full Repo reference' });
+    expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
+    expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
+    expect(within(graphPanel).queryByText('Actions')).toBeNull();
     expect(reactFlowMockState.mountCount).toBe(1);
 
     fireEvent.click(screen.getByLabelText('Select graph node rf_beta'));
@@ -2610,6 +2623,15 @@ describe('WorkOverviewView', () => {
     expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
     expect(screen.getAllByText('feature/work').length).toBeGreaterThan(0);
     expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
+    const projectDetail = document.querySelector('.work-detail-panel.detail-pane-shell--compact') as HTMLElement;
+    const projectHeader = projectDetail.querySelector('.detail-pane-header--compact') as HTMLElement;
+    expect(projectDetail).toBeTruthy();
+    expect(projectHeader.getAttribute('data-detail-pane-header-variant')).toBe('compact');
+    expect(within(projectHeader).getByRole('heading', { name: 'Alpha Repo' })).toBeTruthy();
+    expect(within(projectHeader).getByRole('group', { name: 'Repository settings' })).toBeTruthy();
+    expect(within(projectHeader).getByRole('button', { name: 'Repo settings' })).toBeTruthy();
+    expect(projectHeader.querySelector('.detail-pane-header__compact-metadata .work-repo-push-btn')).toBeTruthy();
+    expect(projectDetail.querySelector(':scope > .detail-pane-shell__body.work-detail__body')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('Advanced filters'));
     expect(screen.getByText('Show excluded')).toBeTruthy();
