@@ -823,15 +823,14 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .graph-detail-pane,
-:root[data-theme='light'] .graph-canvas-wrap,
 :root[data-theme='light'] .graph-token-select__menu,
 :root[data-theme='light'] .graph-flow-node {
   background: var(--surface-popover);
 }
 
+:root[data-theme='light'] .graph-detail-pane,
 :root[data-theme='light'] .graph-canvas-wrap {
-  background: #eef3f8;
+  background: var(--surface-main);
 }
 
 :root[data-theme='light'] .graph-token-select__menu,

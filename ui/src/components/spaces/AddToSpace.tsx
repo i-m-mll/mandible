@@ -13,6 +13,7 @@
 // user click, and Space membership is read back from the C2 API — never
 // promoted from local state.
 
+import type { RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
@@ -23,6 +24,7 @@ import {
   type SpaceGroup,
   type SpaceItemRefType,
 } from '../../api';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import './AddToSpace.css';
 
 /**
@@ -73,6 +75,8 @@ export type AddToSpaceProps = {
   includeCrossProject?: boolean;
   /** Notified after a successful add so the host can surface a toast/refresh if it wants. */
   onAdded?: (space: Space, results: AddToSpaceResult[]) => void;
+  /** Anchor supplied by a parent action menu when this picker hides its own trigger. */
+  anchorRef?: RefObject<HTMLElement>;
 };
 
 export type AddToSpaceResult = {
@@ -125,12 +129,15 @@ export function AddToSpace({
   className,
   includeCrossProject = true,
   onAdded,
+  anchorRef,
 }: AddToSpaceProps): JSX.Element {
   const [internalOpen, setInternalOpen] = useState(false);
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
   const [pendingSpaceId, setPendingSpaceId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   const hasTargets = targets.length > 0;
   const triggerDisabled = disabled || !projectId || !hasTargets;
@@ -140,6 +147,14 @@ export function AddToSpace({
     setInternalOpen(next);
     onOpenChange?.(next);
   };
+  const effectiveAnchorRef = anchorRef ?? triggerRef;
+  const popoverStyle = useAnchoredMenu({
+    open: pickerOpen,
+    anchorRef: effectiveAnchorRef,
+    menuRef: popoverRef,
+    focusRef: effectiveAnchorRef,
+    onDismiss: () => setPickerOpen(false),
+  });
 
   // Lazily load Spaces the first time the popover opens (and re-load if the
   // project changes between opens). Backend refreshes are reconciliation inputs;
@@ -168,25 +183,6 @@ export function AddToSpace({
       active = false;
     };
   }, [pickerOpen, projectId, includeCrossProject]);
-
-  // Close on outside pointer / Escape, matching the issue-actions menu behavior.
-  useEffect(() => {
-    if (!pickerOpen) return undefined;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = containerRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setPickerOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPickerOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-    };
-  }, [pickerOpen, triggerDisabled, onOpenChange]);
 
   const toggle = () => {
     if (triggerDisabled) return;
@@ -241,6 +237,7 @@ export function AddToSpace({
     <div className="add-to-space" ref={containerRef} data-testid="add-to-space">
       {!hideTrigger && (
         <button
+          ref={triggerRef}
           type="button"
           className={`add-to-space__trigger ${triggerClass}`}
           aria-haspopup="menu"
@@ -255,7 +252,14 @@ export function AddToSpace({
         </button>
       )}
       {pickerOpen && (
-        <div className="add-to-space__popover" role="menu" data-testid="add-to-space-popover">
+        <div
+          ref={popoverRef}
+          className="add-to-space__popover app-anchored-menu"
+          role="menu"
+          popover="manual"
+          style={popoverStyle}
+          data-testid="add-to-space-popover"
+        >
           {load.status === 'loading' && (
             <div className="add-to-space__status">Loading Spaces…</div>
           )}
