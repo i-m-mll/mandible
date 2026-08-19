@@ -356,9 +356,9 @@
   color: var(--text-muted);
 }
 
-.timeline-corner-toolbar .timeline-icon-button:hover {
+.timeline-corner-toolbar .timeline-icon-button:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-06);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .timeline-corner-toolbar .timeline-icon-button:focus-visible {

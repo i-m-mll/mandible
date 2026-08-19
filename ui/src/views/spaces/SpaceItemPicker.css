@@ -50,8 +50,8 @@
   padding: 0 0.25rem;
 }
 
-.space-item-picker__close:hover {
-  color: var(--text-primary);
+.space-item-picker__close:is(:hover, :focus-visible) {
+  color: var(--chrome-icon-hover-direct);
 }
 
 .space-item-picker__search {

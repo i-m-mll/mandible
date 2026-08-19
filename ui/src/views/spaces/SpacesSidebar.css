@@ -36,8 +36,8 @@
   cursor: pointer;
 }
 
-.spaces-tree__create--top-level:hover {
-  color: var(--text-primary);
+.spaces-tree__create--top-level:is(:hover, :focus-visible) {
+  color: var(--chrome-icon-hover-direct);
   background: var(--neutral-alpha-06);
 }
 

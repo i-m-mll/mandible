@@ -513,6 +513,11 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: color 0.16s ease;
+}
+
+.app-rail__item:is(:hover, :focus-visible) .app-rail__icon {
+  color: var(--chrome-icon-hover-direct);
 }
 
 .app-rail__label {
@@ -615,8 +620,8 @@ a {
   font-size: 16px;
 }
 
-.daemon-toast__dismiss:hover {
-  color: var(--text-primary);
+.daemon-toast__dismiss:is(:hover, :focus-visible) {
+  color: var(--chrome-icon-hover-direct);
 }
 
 .daemon-toast__link {

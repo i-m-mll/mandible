@@ -78,15 +78,19 @@
   border-radius: 7px;
 }
 
-.sidebar-search-filter__clear:hover {
+.sidebar-search-filter__clear:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-08);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
-.sidebar-search-filter__trigger:hover,
 .sidebar-search-filter__trigger--active {
   background: rgba(77, 163, 255, 0.14);
   color: var(--accent-blue);
+}
+
+.sidebar-search-filter__trigger:is(:hover, :focus-visible) {
+  background: rgba(77, 163, 255, 0.14);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .sidebar-search-filter__clear svg {
