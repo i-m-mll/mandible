@@ -146,7 +146,7 @@ export function BriefingDocumentRenderer({
 
   const reconcile = useCallback(async () => {
     const sequence = ++loadSequence.current;
-    setLoad((current) => ({ ...current, loading: current.round === null, error: null }));
+    setLoad((current) => ({ ...current, loading: true, error: null }));
     try {
       const [identity, round] = await Promise.all([getClientAuthWhoami(), getBriefing(briefingId, roundId)]);
       if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
@@ -170,7 +170,9 @@ export function BriefingDocumentRenderer({
     } catch (error) {
       if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
       const message = error instanceof Error ? error.message : String(error);
-      setLoad((current) => ({ ...current, loading: false, error: message }));
+      setUserId(null);
+      setUserKind(null);
+      setLoad({ round: null, loading: false, error: message });
       onBriefingChange?.(null);
       return null;
     }
@@ -199,6 +201,9 @@ export function BriefingDocumentRenderer({
       const type = detail?.type;
       if (type !== 'reconnected' && !type?.startsWith('briefing:')) return;
       if (detail?.data?.briefing_id && detail.data.briefing_id !== briefingId) return;
+      if (type === 'reconnected' || type === 'briefing:round-published') {
+        setLoad((current) => ({ ...current, loading: true, error: null }));
+      }
       if (timer !== null) return;
       timer = window.setTimeout(() => {
         timer = null;
@@ -238,8 +243,12 @@ export function BriefingDocumentRenderer({
   };
 
   const canMutate = Boolean(
-    round?.valid
+    !load.loading
+    && load.error === null
+    && round?.valid
     && round.briefing_id === briefingId
+    && round.selected_round_id === round.round_id
+    && (roundId ? round.selected_round_id.startsWith(roundId) : round.selected_round_id === round.latest_round_id)
     && userId
     && userKind === 'human'
     && round.items.every((item) => item.responseVisible)
