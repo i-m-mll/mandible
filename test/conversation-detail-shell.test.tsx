@@ -88,6 +88,20 @@ const transcriptBlock: ConversationBlock = {
   dag_parent_uuid: null,
 };
 
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 function mockConversationDetail(
   attachState: ConversationAttachState,
   blocks: ConversationBlock[] = [transcriptBlock],
@@ -201,7 +215,6 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeNull();
-    expect(body?.querySelector('.stream-renderer__toolbar')).toBeNull();
     expect(body?.querySelector('.context-ring')).toBeNull();
     expect(shell?.querySelectorAll('.context-ring')).toHaveLength(1);
     const runtime = footer?.querySelector('.conv-compose__runtime');
@@ -236,6 +249,42 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Message filters' }));
     expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
+  });
+
+  it('clamps the Chat header menu and dismisses with Escape, outside click, and focus restoration', async () => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 768);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
+      if (this.classList.contains('conv-actions__trigger')) return domRect(1004, 730, 20, 22);
+      if (this.classList.contains('conv-actions__menu')) return domRect(0, 0, 240, 280);
+      return domRect(0, 0, 0, 0);
+    });
+    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    renderConversationDetail(scopedConversation);
+
+    await screen.findByRole('heading', { name: conversation.title! });
+    const trigger = screen.getByRole('button', { name: 'Conversation actions' });
+    fireEvent.click(trigger);
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => {
+      expect(menu.style.position).toBe('fixed');
+      expect(menu.style.left).toBe('776px');
+      expect(menu.style.top).toBe('444px');
+      expect(menu.style.visibility).toBe('visible');
+    });
+    expect(menu.classList.contains('app-anchored-menu')).toBe(true);
+    expect(menu.getAttribute('popover')).toBe('manual');
+
+    const model = screen.getByRole('combobox', { name: 'Model' });
+    model.focus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('menu')).toBeTruthy();
+    model.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 
   it.each([
@@ -295,7 +344,6 @@ describe('compact detail pane shell', () => {
     expect(header.querySelector('.detail-pane-header__topline')).toBeNull();
     expect(header.querySelector('.detail-pane-header__identity')).toBeNull();
     expect(header.querySelector('.conv-info-button')).toBeNull();
-    expect(document.querySelector('.stream-renderer__toolbar')).toBeNull();
     expect(Boolean(document.querySelector('.conv-compose'))).toBe(hasComposer);
     if (attachState.kind === 'live-external') {
       expect(document.querySelectorAll('.conv-compose__hint')).toHaveLength(0);

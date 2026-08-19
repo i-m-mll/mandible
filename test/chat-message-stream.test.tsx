@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,6 +8,7 @@ import {
   serializeConversationToMarkdown,
 } from '../ui/src/chat';
 import { ChatSurface } from '../ui/src/chat/ChatSurface';
+import { MessageActions } from '../ui/src/components/shared/MessageActions';
 import type { StreamEvent, ToolResultContentBlock } from '../ui/src/components/stream-renderer/types';
 
 function installBrowserStubs(): void {
@@ -57,6 +58,20 @@ function assistantText(text: string, id: string): StreamEvent {
       usage: { input_tokens: 1, output_tokens: 2 },
     },
   };
+}
+
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 function result(): StreamEvent {
@@ -130,6 +145,46 @@ describe('ChatSurface stream behavior', () => {
 
     expect(groupMessagesForDisplay(buildStreamState(events).nodes).length).toBe(1040);
     expect(container.querySelectorAll('.turn-group').length).toBeLessThan(40);
+  });
+
+  it('anchors Chat-only message actions and restores focus on Escape', async () => {
+    vi.stubGlobal('innerWidth', 800);
+    vi.stubGlobal('innerHeight', 600);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
+      if (this.classList.contains('message-actions__overflow')) return domRect(784, 566, 20, 24);
+      if (this.classList.contains('message-actions__overflow-menu')) return domRect(0, 0, 180, 150);
+      return domRect(0, 0, 0, 0);
+    });
+    render(
+      <div>
+        <button type="button">Outside target</button>
+        <MessageActions onFork={vi.fn()} onResume={vi.fn()} onInfo={vi.fn()} dagUuid="dag-1" />
+      </div>,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    fireEvent.click(trigger);
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => {
+      expect(menu.style.position).toBe('fixed');
+      expect(menu.style.left).toBe('612px');
+      expect(menu.style.top).toBe('410px');
+      expect(menu.style.visibility).toBe('visible');
+    });
+    expect(menu.classList.contains('app-anchored-menu')).toBe(true);
+    expect(menu.getAttribute('popover')).toBe('manual');
+    expect(screen.getAllByRole('menuitem')).toHaveLength(3);
+
+    const outside = screen.getByRole('button', { name: 'Outside target' });
+    outside.focus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('menu')).toBeTruthy();
+    outside.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 
   it('disengages scroll-follow while scrolled up and re-arms at bottom', () => {
