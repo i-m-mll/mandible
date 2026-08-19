@@ -9,6 +9,7 @@ import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js'
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  document.head.querySelector('[data-test-compact-header-styles]')?.remove();
 });
 
 describe('canonical detail pane header', () => {
@@ -119,6 +120,12 @@ describe('canonical detail pane header', () => {
   });
 
   it('keeps a long compact title, its menu, and fixed metadata in semantic DOM order', () => {
+    const style = document.createElement('style');
+    style.dataset.testCompactHeaderStyles = '';
+    style.textContent = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8')
+      .replaceAll('var(--app-header-height)', '48px');
+    document.head.append(style);
+
     const longTitle = 'A very long compact detail title that must truncate before displacing fixed metadata';
     render(
       <DetailPaneHeader
@@ -141,6 +148,16 @@ describe('canonical detail pane header', () => {
     expect(title.nextElementSibling).toBe(menu);
     expect(titleRow.nextElementSibling?.classList.contains('detail-pane-header__compact-metadata')).toBe(true);
     expect(titleRow.nextElementSibling?.contains(metadata)).toBe(true);
+
+    const headerStyle = getComputedStyle(header);
+    const mainStyle = getComputedStyle(main);
+    const metadataStyle = getComputedStyle(titleRow.nextElementSibling!);
+    expect(headerStyle.height).toBe('48px');
+    expect(mainStyle.height).toBe('100%');
+    expect(mainStyle.flexDirection).toBe('row');
+    expect(mainStyle.alignItems).toBe('center');
+    expect(metadataStyle.marginLeft).toBe('auto');
+    expect(metadataStyle.flex).toBe('0 0 auto');
 
     const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
     expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__main\s*\{[^}]*display:\s*flex;/s);
