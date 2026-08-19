@@ -86,7 +86,7 @@ describe('SidebarItemRow', () => {
     const labelRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__label \{([^}]*)\}/)?.[1] ?? '';
     const trailingRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1] ?? '';
     const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing,\s*\.sidebar-item-row--selected \.sidebar-item-row__trailing,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing \{([^}]*)\}/,
+      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(rowRule).toContain('--sidebar-item-row-reveal-width: 0px');
     expect(rowRule).toContain('display: block');
@@ -136,7 +136,7 @@ describe('SidebarItemRow', () => {
     expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('0px');
   });
 
-  it('reveals the shared cluster and shifted mask boundary for selected, persistent-pin, and coarse-pointer rows', () => {
+  it('reveals the shared cluster and shifted mask boundary for interaction, persistent-pin, and coarse-pointer rows', () => {
     render(
       <SidebarItemRow
         label="Pinned"
@@ -148,10 +148,12 @@ describe('SidebarItemRow', () => {
     );
     expect(screen.getByRole('button', { name: 'Select pinned' }).closest('.sidebar-item-row')
       ?.classList.contains('sidebar-item-row--persistent-pin')).toBe(true);
-    const stateRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within,\s*\.sidebar-item-row--selected \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(stateRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{\s*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/,
+    );
+    expect(sidebarItemRowStylesheet).not.toMatch(
+      /\.sidebar-item-row--selected\s*\{[^}]*--sidebar-item-row-reveal-width/s,
+    );
     const persistentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--persistent-pin \{([^}]*)\}/)?.[1] ?? '';
     expect(persistentRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-persistent-width, 0px)');
     const coarsePointerRule = sidebarItemRowStylesheet.match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*)\n\}/)?.[1] ?? '';
@@ -229,7 +231,7 @@ describe('SidebarItemRow', () => {
     expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
   });
 
-  it('keeps an accessible provider in the fixed right footprint and reveals its dot only through interaction or selection', () => {
+  it('keeps an accessible provider in the fixed right footprint and reveals its dot only through interaction', () => {
     render(
       <SidebarItemRow
         label="Provider row"
@@ -262,9 +264,38 @@ describe('SidebarItemRow', () => {
     expect(dotRule).toContain('width: 7px');
     expect(dotRule).toContain('opacity: 0');
     const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__provider-dot \{([^}]*)\}/,
+      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__provider-dot \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(revealRule).toContain('opacity: 1');
+  });
+
+  it('keeps a selected untouched row full-width with its provider and hover-only actions hidden', () => {
+    render(
+      <SidebarItemRow
+        label="Selected at rest"
+        selectionLabel="Select at-rest row"
+        selected
+        provider={{ label: 'Codex', tone: 'codex' }}
+        onSelect={() => undefined}
+        actions={<SidebarItemPinAction label="at-rest row" pressed={false} onPress={() => undefined} />}
+      />,
+    );
+
+    const row = screen.getByRole('button', { name: 'Select at-rest row' }).closest('.sidebar-item-row')!;
+    expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
+    expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
+    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1]).toContain('opacity: 0');
+    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1]).toContain('opacity: 0');
+    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__actions \{([^}]*)\}/)?.[1]).toContain('pointer-events: none');
+    expect(sidebarItemRowStylesheet).not.toMatch(
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
+    );
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s,
+    );
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row:hover \.sidebar-item-row__actions,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__actions[^}]*\{[^}]*pointer-events: auto;/s,
+    );
   });
 
   it('uses neutral shared selection and reserves provider tones for explicit consumers', () => {
