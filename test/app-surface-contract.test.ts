@@ -95,8 +95,8 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#5B5B5B');
     expect(tokenValue(tokenBlock('light'), '--app-divider-emphasis')).toBe('#CFCFD0');
-    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(0, 0, 0, 0.32)');
-    expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(15, 23, 42, 0.14)');
+    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(0, 0, 0, 0.38)');
+    expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(15, 23, 42, 0.18)');
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
@@ -114,6 +114,16 @@ describe('Codex app subdivision surface contract', () => {
     expect(ruleBody(stylesheet, '.briefing-detail__footer')).not.toMatch(/background:/);
     expect(ruleBody(stylesheet, '.composer-host')).not.toMatch(/background:/);
     expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
+  });
+
+  it('spans the rail footer divider across the chrome gutter', () => {
+    const rail = ruleBody(base, '.app-rail');
+    const footer = ruleBody(base, '.app-rail__footer');
+    expect(rail).toContain('--app-rail-inline-padding: 12px');
+    expect(rail).toContain('padding: calc(var(--app-header-height) + 18px) var(--app-rail-inline-padding) 18px');
+    expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
+    expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
+    expect(footer).toContain('border-top: 1px solid var(--border-muted)');
   });
 
   it('preserves the single persisted settings owner and exact root theme application', () => {
