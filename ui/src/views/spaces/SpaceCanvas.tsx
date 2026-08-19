@@ -973,7 +973,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         const edge = await updateEdge(spaceId, edgeId, body);
         setEdges((prev) => prev.map((candidate) => (candidate.id === edgeId ? edge : candidate)));
         setEdgeStatus('saved');
-        setEdgeStatusMessage('Edge label saved');
+        setEdgeStatusMessage('');
       } catch (error) {
         setEdges(previous);
         reportEdgeError(error instanceof Error ? error.message : 'Failed to update edge label');
@@ -1265,16 +1265,18 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
               onConnect={onConnect}
             />
           )}
-          <span
-            className="space-canvas__autosave"
-            data-status={autosave}
-            data-testid="space-canvas-autosave"
-            role="status"
-            aria-live="polite"
-          >
-            <span className="space-canvas__autosave-dot" aria-hidden="true" />
-            {autosaveLabel(autosave)}
-          </span>
+          {autosave !== 'idle' && autosave !== 'saved' ? (
+            <span
+              className="space-canvas__autosave"
+              data-status={autosave}
+              data-testid="space-canvas-autosave"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="space-canvas__autosave-dot" aria-hidden="true" />
+              {autosaveLabel(autosave)}
+            </span>
+          ) : null}
         </div>
         <CanvasSelectionInspector
           selectedNodeIds={selection}
@@ -1570,9 +1572,11 @@ function CanvasEdgeInspector({
     <div className="space-canvas__inspector-section" data-testid="space-canvas-edge-inspector">
       <header className="space-canvas__inspector-header">
         <span>Edge</span>
-        <span className="space-canvas__inspector-status" data-status={status}>
-          {statusMessage || edgeStatusLabel(status)}
-        </span>
+        {status !== 'idle' && status !== 'saved' ? (
+          <span className="space-canvas__inspector-status" data-status={status}>
+            {statusMessage || edgeStatusLabel(status)}
+          </span>
+        ) : null}
       </header>
       <div className="space-canvas__edge-endpoints">
         <strong>{resolved.source.label}</strong>
@@ -1686,33 +1690,25 @@ function OccurrenceSummary({ node }: { node: CanvasNode }): JSX.Element {
   );
 }
 
-function autosaveLabel(status: AutosaveStatus): string {
+function autosaveLabel(status: Exclude<AutosaveStatus, 'idle' | 'saved'>): string {
   switch (status) {
     case 'saving':
       return 'Saving…';
-    case 'saved':
-      return 'Saved';
     case 'error':
       return 'Save failed - will retry';
     case 'disabled':
       return 'Saving disabled';
-    default:
-      return 'Saved';
   }
 }
 
-function edgeStatusLabel(status: AutosaveStatus): string {
+function edgeStatusLabel(status: Exclude<AutosaveStatus, 'idle' | 'saved'>): string {
   switch (status) {
     case 'saving':
       return 'Saving...';
-    case 'saved':
-      return 'Saved';
     case 'error':
       return 'Error';
     case 'disabled':
       return 'Disabled';
-    default:
-      return 'Ready';
   }
 }
 
