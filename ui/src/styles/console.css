@@ -174,7 +174,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: #0b0f14;
+  background: var(--surface-main);
 }
 
 .channel-events-pane--empty {

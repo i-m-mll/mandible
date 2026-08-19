@@ -1429,6 +1429,7 @@ export function ArtifactDetail({
               </div>
             )}
             <AddToSpace
+              anchorRef={actionsTriggerRef}
               projectId={spaceProjectId}
               targets={spaceTargets}
               label="Add to Space"

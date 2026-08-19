@@ -10,6 +10,8 @@ const stylesheet = readResolvedStylesheet();
 const appSource = readFileSync('ui/src/app.tsx', 'utf8');
 const viewSidebarSource = readFileSync('ui/src/components/ViewSidebar.tsx', 'utf8');
 const detailShellSource = readFileSync('ui/src/components/shared/DetailPaneShell.tsx', 'utf8');
+const consoleCss = readFileSync('ui/src/styles/console.css', 'utf8');
+const graphCss = readFileSync('ui/src/styles/graph.css', 'utf8');
 
 function tokenBlock(theme: 'dark' | 'light'): string {
   const selector = theme === 'dark' ? ':root' : "[data-theme='light']";
@@ -116,6 +118,15 @@ describe('Codex app subdivision surface contract', () => {
     expect(stylesheet).toMatch(/th,[\s\S]*?td\s*\{/);
   });
 
+  it('keeps Channel Events and the Graph right root on main in both themes', () => {
+    expect(ruleBody(consoleCss, '.channel-events-pane')).toContain('background: var(--surface-main)');
+    expect(graphCss).toMatch(/:root\[data-theme='light'\] \.graph-detail-pane,\s*:root\[data-theme='light'\] \.graph-canvas-wrap\s*\{\s*background:\s*var\(--surface-main\);\s*\}/);
+    expect(consoleCss).not.toContain('#0b0f14');
+    expect(graphCss).not.toContain('#eef3f8');
+    expect(tokenValue(tokenBlock('dark'), '--surface-main')).toBe('#181818');
+    expect(tokenValue(tokenBlock('light'), '--surface-main')).toBe('#FFFFFF');
+  });
+
   it('adopts the viewport/top-layer menu contract across shared and detail actions', () => {
     const menuHook = readFileSync('ui/src/hooks/useAnchoredMenu.ts', 'utf8');
     expect(menuHook).toContain('showPopover?.()');
@@ -130,8 +141,13 @@ describe('Codex app subdivision surface contract', () => {
       'ui/src/components/ledger/IssueDetail.tsx',
       'ui/src/views/auth.tsx',
       'ui/src/views/artifacts.tsx',
+      'ui/src/views/feedback/BriefingDocumentRenderer.tsx',
+      'ui/src/views/spaces/SpaceCanvas.tsx',
+      'ui/src/components/spaces/AddToSpace.tsx',
+      'ui/src/views/work.tsx',
     ]) {
       const source = readFileSync(path, 'utf8');
+      expect(source, path).toContain('useAnchoredMenu');
       expect(source, path).toContain('app-anchored-menu');
       expect(source, path).toContain('popover="manual"');
     }
