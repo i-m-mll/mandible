@@ -1115,7 +1115,7 @@ function AuthCard({
                     </div>
                   ) : commitHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
@@ -1139,7 +1139,7 @@ function AuthCard({
                 {showSpec && (
                   specHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: specHtml }}
                     />
                   ) : (
@@ -1191,7 +1191,7 @@ function AuthCard({
                     </div>
                   )
                 ) : (
-                  <div className="panel__body spec-panel">
+                  <div className="panel__body spec-panel rendered-markdown">
                     <p className="type-detail-summary">
                       <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
                       {' '}{getAuthTitle(request)}
@@ -1745,7 +1745,7 @@ function AuthRequestDetail({
                     </div>
                   ) : commitHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
@@ -1769,7 +1769,7 @@ function AuthRequestDetail({
                 {showSpec && (
                   specHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: specHtml }}
                     />
                   ) : (
