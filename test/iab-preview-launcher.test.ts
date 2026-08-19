@@ -229,10 +229,12 @@ function installRetiredV1Demo(
   }, userTimestamp);
   const briefingId = randomUUID();
   const roundIds = [randomUUID(), randomUUID()];
-  const sources = [RETIRED_V1_ROUND_ONE, RETIRED_V1_ROUND_TWO];
+  // The historical run-request parser trimmed the template's final newline
+  // before artifact storage. These are the exact bytes sealed in the live packet.
+  const sources = [RETIRED_V1_ROUND_ONE, RETIRED_V1_ROUND_TWO].map((source) => source.trim());
   expect(sources.map((source) => [Buffer.byteLength(source), fileHashFromText(source)])).toEqual([
-    [1168, "744bf3caa29cb8450210da1d2c2bca3c6f0f33dd18f6dcb3ec143e9ad863da09"],
-    [1283, "efbdb374bea7212d55000395aca9d2550737df4ec519250c3dd72f52d2d18480"],
+    [1167, "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8"],
+    [1282, "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801"],
   ]);
   const artifacts = sources.map((source, index) => recordArtifactVersion(db, {
     source_kind: "managed", content: source, series_key: `mandible:briefing:${briefingId}`,
@@ -413,6 +415,36 @@ function installRetiredV1Demo(
   retireBriefingV1ToCustody(db, RICH_BRIEFING_DEMO.roundTwoTimestamp + 1);
   expect(db.prepare("SELECT disposition FROM briefing_legacy_custody WHERE briefing_id = ?").get(briefingId))
     .toEqual({ disposition: "sealed_verified" });
+  const sealed = db.prepare(
+    "SELECT packet_json FROM briefing_legacy_custody WHERE briefing_id = ?",
+  ).get(briefingId) as { packet_json: string };
+  const packet = JSON.parse(sealed.packet_json);
+  expect(packet.row_counts).toEqual({
+    annotation_events: 2, artifact_versions: 2, briefing: 1, definitions: 8, instances: 8,
+    membership: 1, occurrences: 8, prior_audit: 0, response_events: 3, rounds: 2, runs: 2,
+    submission_annotations: 2, submission_answers: 3, submissions: 1,
+  });
+  expect(packet.components.artifact_versions.map((version: any) => ({
+    byte_length: version.byte_length, content_hash: version.content_hash, source_sha256: version.source_sha256,
+  }))).toEqual([
+    { byte_length: 1167, content_hash: "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8",
+      source_sha256: "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8" },
+    { byte_length: 1282, content_hash: "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801",
+      source_sha256: "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801" },
+  ]);
+  expect(packet.components.rounds.map((round: any) => round.binding_digest)).toEqual([
+    "a3880f5738aa35930026b5042b659adfc9a3e8cb9817c9444f2b4103f5f1e123",
+    "95c3ff03b0638303f6b5fd108f4204fe33e3a77268fa37132977c6f63ea3cd30",
+  ]);
+  expect(packet.components.definitions.slice(0, 4).map((definition: any) => ({
+    key: definition.directive_key, digest: definition.definition_digest,
+    start: definition.start_offset, end: definition.end_offset,
+  }))).toEqual([
+    { key: "scope.approval", digest: "c9933e0b108f86e23ccccd5c3c40bcbda2a283de8d66bfdd567c3b30cdd43012", start: 734, end: 842 },
+    { key: "rollback.plan", digest: "8b8f55ce4eb8bf147d714fb77d8c22bf89c114822bd3e3e52e47aa13b58dda74", start: 844, end: 955 },
+    { key: "observability", digest: "88b7f1c0c699f04b215c0944d16bbeeadc5ede03cec790c0c91b2341b4d66a8c", start: 957, end: 1075 },
+    { key: "operator.runbook", digest: "115863815aa53028b996cd613bb26ecb62f9b8154b28e33a707638aeb969c94d", start: 1077, end: 1167 },
+  ]);
   expect(db.prepare("SELECT latest_round_id, round_count FROM briefings WHERE id = ?").get(briefingId))
     .toEqual({ latest_round_id: null, round_count: 0 });
   db.prepare(
