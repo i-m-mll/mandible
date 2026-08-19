@@ -54,7 +54,6 @@ import {
   type SessionPreset,
   type SessionRunOptionsSnapshot,
 } from '../api.js';
-import { MessageActions } from '../components/shared/MessageActions';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -80,7 +79,7 @@ import {
   mergeConversationSummaryIntoList,
   type ConversationAppendPayload,
 } from '../chat/conversationAppend';
-import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
+import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -88,26 +87,12 @@ import { useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
-// Bug: bce7370 — Shared message-block components
-import {
-  TextBlock,
-  ThinkingBlock,
-  ToolUseBlock,
-} from '../components/message-blocks';
 
 // ── Toast notification ──
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
 type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
-
-function defaultCollapsedConversationBlocks(conversation: ConversationWithDetails): Set<string> {
-  return new Set(
-    conversation.blocks
-      .filter((block) => block.type === 'system')
-      .map((block) => block.id),
-  );
-}
 
 export function getConversationAttachPresentation(
   state: ConversationAttachState,
@@ -221,9 +206,6 @@ const AGENT_LABELS: Record<string, string> = {
   gemini: 'Gemini',
   shell: 'Shell',
 };
-
-const VIRTUAL_BUFFER = 10;
-const ESTIMATED_BLOCK_HEIGHT = 120;
 
 // ── Helpers ──
 
@@ -370,50 +352,6 @@ function parseMetadata(json: string): Record<string, unknown> {
   }
 }
 
-function isCollapsibleBlock(type: BlockType): boolean {
-  return (
-    type === 'thinking' ||
-    type === 'tool_use' ||
-    type === 'tool_result' ||
-    type === 'system' ||
-    type === 'event'
-  );
-}
-
-function getBlockHeaderLabel(
-  block: ConversationBlock,
-  metadata: Record<string, unknown>,
-): string | null {
-  switch (block.type) {
-    case 'user_message':
-      return null;
-    case 'assistant_message': {
-      const model = metadata.model as string | undefined;
-      return model ? `Assistant (${model})` : 'Assistant';
-    }
-    case 'thinking': {
-      const duration = metadata.duration_ms as number | undefined;
-      return duration ? `Thinking (${(duration / 1000).toFixed(1)}s)` : 'Thinking';
-    }
-    case 'tool_use': {
-      const toolName = metadata.tool_name as string | undefined;
-      return toolName ? `Tool: ${toolName}` : 'Tool Use';
-    }
-    case 'tool_result':
-      return 'Tool Result';
-    case 'system':
-      return 'System';
-    case 'event': {
-      const eventType = metadata.event_type as string | undefined;
-      const isError = metadata.is_error === true || metadata.level === 'error';
-      const prefix = isError ? 'Error' : 'Event';
-      return eventType ? `${prefix}: ${eventType}` : prefix;
-    }
-    default:
-      return block.type;
-  }
-}
-
 type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
@@ -538,313 +476,6 @@ export type ConversationsViewProps = {
     cwd?: string;
   }) => void;
 };
-
-// ── Copy-markdown button ──
-
-function CopyButton({ content }: { content: string }): JSX.Element {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async (e: MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      className="block-copy-btn"
-      onClick={handleCopy}
-      title="Copy raw markdown"
-      aria-label={copied ? 'Copied' : 'Copy raw markdown'}
-    >
-      {copied ? (
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M3 8.5 6.2 11.6 13 4.8"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <rect
-            x="5.5"
-            y="4.5"
-            width="7"
-            height="8"
-            rx="1.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.2"
-          />
-          <path
-            d="M3.5 9.5h-1V3.5A1.5 1.5 0 0 1 4 2h6v1.2H4.7a1.2 1.2 0 0 0-1.2 1.2Z"
-            fill="currentColor"
-          />
-        </svg>
-      )}
-    </button>
-  );
-}
-
-// ── Tool use card ──
-// Bug: bce7370 — ToolUseCard replaced by shared ToolUseBlock (compact mode) from message-blocks.
-
-function renderConversationBlockBody(
-  block: ConversationBlock,
-  collapsed: boolean,
-): JSX.Element | null {
-  if (collapsed) return null;
-  const metadata = parseMetadata(block.metadata_json);
-  const instructionMeta = block.type === 'user_message' ? getInstructionMessageMeta(block.content) : null;
-
-  // Bug: bce7370 — Use shared components for text and tool blocks
-  if (block.type === 'assistant_message' || block.type === 'user_message') {
-    return (
-      <div className="block-content">
-        {instructionMeta ? (
-          <InstructionMessageBlock content={block.content} meta={instructionMeta} />
-        ) : (
-          <TextBlock content={block.content} />
-        )}
-      </div>
-    );
-  }
-
-  if (block.type === 'thinking') {
-    return (
-      <div className="block-content">
-        <ThinkingBlock content={block.content} defaultCollapsed={false} />
-      </div>
-    );
-  }
-
-  if (block.type === 'tool_use') {
-    const toolName = (metadata.tool_name as string | undefined) ?? 'Tool';
-    const toolInput = (metadata.tool_input ?? block.content) as Record<string, unknown> | string;
-    return (
-      <div className="block-content block-content--mono">
-        <ToolUseBlock toolName={toolName} input={toolInput} compact />
-      </div>
-    );
-  }
-
-  const showExpandButton = isCollapsibleBlock(block.type) && block.content.length > 200;
-  return (
-    <div className={`block-content${block.type === 'tool_result' ? ' block-content--mono' : ''}`}>
-      {showExpandButton ? (
-        <ContentWithExpand content={block.content} />
-      ) : (
-        <pre className="block-pre">{block.content}</pre>
-      )}
-    </div>
-  );
-}
-
-// ── Block Renderer ──
-
-function BlockRenderer({
-  block,
-  isSelected,
-  selectMode,
-  onToggleSelect,
-  onShiftSelect,
-  onToggleCollapse,
-  collapsed,
-  onFork,
-  onResume,
-}: {
-  block: ConversationBlock;
-  isSelected: boolean;
-  selectMode: boolean;
-  onToggleSelect: () => void;
-  onShiftSelect: () => void;
-  onToggleCollapse: () => void;
-  collapsed: boolean;
-  onFork?: (dagUuid: string) => void;
-  onResume?: (dagUuid: string) => void;
-}): JSX.Element {
-  const metadata = parseMetadata(block.metadata_json);
-  const isCollapsible = isCollapsibleBlock(block.type);
-
-  // User message: no header label (the box style is sufficient to distinguish it)
-  // Bug: 372edcb — remove redundant "User" header from user message blocks
-  const showHeader = block.type !== 'user_message';
-
-  const isErrorEvent = block.type === 'event' && (metadata.is_error === true || metadata.level === 'error');
-  const typeClass = [
-    'block',
-    `block-${block.type.replace('_', '-')}`,
-    isSelected ? 'block-selected' : '',
-    collapsed ? 'block-collapsed' : '',
-    isErrorEvent ? 'block-event--error' : '',
-    selectMode ? 'block--selectable' : '',
-  ].filter(Boolean).join(' ');
-
-  const handleClick = (e: MouseEvent) => {
-    if (selectMode) {
-      if (e.shiftKey) {
-        onShiftSelect();
-      } else {
-        onToggleSelect();
-      }
-    }
-  };
-
-  const headerLabel = getBlockHeaderLabel(block, metadata);
-
-  const blockDagUuid = block.dag_uuid ?? undefined;
-
-  return (
-    <div className={typeClass} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
-      {showHeader && (
-        <div className="block-header">
-          <div className="block-header__left">
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={onToggleSelect}
-              onClick={(e) => e.stopPropagation()}
-              className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
-            />
-            {isCollapsible && (
-              <button
-                type="button"
-                className="block-collapse-toggle"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleCollapse();
-                }}
-              >
-                {collapsed ? '\u25B8' : '\u25BE'}
-              </button>
-            )}
-            {headerLabel && <span className="block-label">{headerLabel}</span>}
-          </div>
-          <div className="block-header__right">
-            <CopyButton content={block.content} />
-            <span
-              className="block-timestamp"
-              title={formatAbsoluteTime(block.timestamp, { invalid: '' })}
-            >
-              {formatRelativeTime(block.timestamp, {
-                style: 'recent',
-                empty: '\u2014',
-                invalid: '\u2014',
-                absoluteAfterDays: 30,
-              })}
-            </span>
-          </div>
-        </div>
-      )}
-      {/* User message: checkbox + copy + timestamp inline above content */}
-      {!showHeader && (
-        <div className="block-header block-header--user">
-          <div className="block-header__left">
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={onToggleSelect}
-              onClick={(e) => e.stopPropagation()}
-              className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
-            />
-          </div>
-          <div className="block-header__right">
-            <CopyButton content={block.content} />
-            <span
-              className="block-timestamp"
-              title={formatAbsoluteTime(block.timestamp, { invalid: '' })}
-            >
-              {formatRelativeTime(block.timestamp, {
-                style: 'recent',
-                empty: '\u2014',
-                invalid: '\u2014',
-                absoluteAfterDays: 30,
-              })}
-            </span>
-          </div>
-        </div>
-      )}
-      {renderConversationBlockBody(block, collapsed)}
-      <MessageActions
-        onCopy={() => { navigator.clipboard.writeText(block.content).catch(() => {}); }}
-        onResume={blockDagUuid && onResume ? () => onResume(blockDagUuid) : undefined}
-        onFork={blockDagUuid && onFork ? () => onFork(blockDagUuid) : undefined}
-        dagUuid={blockDagUuid}
-        showResume={!!blockDagUuid}
-        showFork={!!blockDagUuid}
-      />
-    </div>
-  );
-}
-
-function ContentWithExpand({ content }: { content: string }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const displayContent = expanded ? content : truncate(content, 500);
-
-  return (
-    <div>
-      <pre className="block-pre">{displayContent}</pre>
-      {content.length > 500 && (
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm block-expand-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            setExpanded((prev) => !prev);
-          }}
-        >
-          {expanded ? 'Show less' : `Show more (${content.length.toLocaleString()} chars)`}
-        </button>
-      )}
-    </div>
-  );
-}
-
-type InstructionMessageMeta = {
-  filename: 'AGENTS.md' | 'CLAUDE.md';
-  scope: 'Project' | 'Global';
-  path: string;
-};
-
-export function getInstructionMessageMeta(content: string): InstructionMessageMeta | null {
-  const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? '';
-  const match = firstLine.match(/^#?\s*(AGENTS\.md|CLAUDE\.md) instructions for (.+)$/i);
-  if (!match) return null;
-  const filename = match[1].toUpperCase().startsWith('AGENTS') ? 'AGENTS.md' : 'CLAUDE.md';
-  const path = match[2].trim();
-  const scope = /\/(\.claude|\.dotfiles)(\/|$)|^~\/\.claude\//.test(path) ? 'Global' : 'Project';
-  return { filename, scope, path };
-}
-
-function InstructionMessageBlock({
-  content,
-  meta,
-}: {
-  content: string;
-  meta: InstructionMessageMeta;
-}): JSX.Element {
-  return (
-    <details className="instruction-message-block">
-      <summary className="instruction-message-block__summary">
-        <span className="instruction-message-block__label">{meta.scope} {meta.filename}</span>
-        <span className="instruction-message-block__path">{meta.path}</span>
-      </summary>
-      <div className="instruction-message-block__body">
-        <TextBlock content={content} />
-      </div>
-    </details>
-  );
-}
 
 function HorizontalDotsIcon(): JSX.Element {
   return (
@@ -1367,7 +998,6 @@ function ConversationDetail({
   const [loadedConversationKey, setLoadedConversationKey] = useState(
     () => detailRequestKey('conversation', { conversationId, leaf: null }),
   );
-  const collapsedBlocksKeyRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadNonce, setLoadNonce] = useState(0);
@@ -1380,6 +1010,7 @@ function ConversationDetail({
     key: string;
     kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
     turnId: string | null;
+    blockId: string | null;
     smooth: boolean;
   } | null>(null);
 
@@ -1388,9 +1019,7 @@ function ConversationDetail({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
   const [visibleTypes, setVisibleTypes] = useState<Set<BlockType>>(new Set(ALL_BLOCK_TYPES));
-  const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(new Set());
   const [showExport, setShowExport] = useState(false);
-  const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
@@ -1423,8 +1052,6 @@ function ConversationDetail({
     setEffectiveAnchor(anchor);
   }, [incomingAnchorKey]);
 
-  // Virtual scroll state
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
@@ -1434,8 +1061,6 @@ function ConversationDetail({
     menuRef: actionsMenuRef,
     onDismiss: () => setActionsOpen(false),
   });
-  const [scrollTop, setScrollTop] = useState(0);
-  const [containerHeight, setContainerHeight] = useState(800);
 
   useLayoutEffect(() => {
     if (skipNextWindowLoadRef.current) {
@@ -1450,10 +1075,6 @@ function ConversationDetail({
     const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
-    if (cached && collapsedBlocksKeyRef.current !== requestKey) {
-      collapsedBlocksKeyRef.current = requestKey;
-      setCollapsedBlocks(defaultCollapsedConversationBlocks(cached));
-    }
     setLoading(true);
     setError(null);
     getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
@@ -1462,25 +1083,11 @@ function ConversationDetail({
         const conv = flattenConversationWindow(payload);
         latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
         setConversation(conv);
-        const targetBlock = payload.blocks.find((block) => block.id === payload.target.block_id);
-        const targetTurnMaterialized = payload.blocks.some((block) => block.id === payload.target.turn_id);
-        if (targetBlock && (
-          targetBlock.type === 'system'
-          || targetBlock.type === 'event'
-          || (targetBlock.type === 'tool_result' && !targetTurnMaterialized)
-        )) {
-          setRenderMode('raw');
-        }
-        // Bug: bce7370 — Fix 1: Don't add thinking blocks to the outer collapsed set.
-        // ThinkingBlock now manages its own collapse state internally.
-        if (collapsedBlocksKeyRef.current !== conversationId) {
-          collapsedBlocksKeyRef.current = conversationId;
-          setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
-        }
         setNavigationTarget({
           key: `${generation}:${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
           kind: payload.target.kind,
           turnId: payload.target.turn_id,
+          blockId: payload.target.block_id,
           smooth: false,
         });
         setLoading(false);
@@ -1701,6 +1308,7 @@ function ConversationDetail({
         key: `${generation}:${payload.revision}:latest`,
         kind: 'latest',
         turnId: payload.target.turn_id,
+        blockId: payload.target.block_id,
         smooth: true,
       });
     } catch (err) {
@@ -1753,19 +1361,6 @@ function ConversationDetail({
       setToast({ message: `Resume failed: ${formatted.message}`, type: 'error' });
     }
   }, [conversationId]);
-
-  // Observe container resize
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerHeight(entry.contentRect.height);
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
 
   const blocks = conversation?.blocks || [];
 
@@ -1845,38 +1440,6 @@ function ConversationDetail({
     [typeCounts],
   );
 
-  // Virtual scrolling
-  const handleScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (el) setScrollTop(el.scrollTop);
-  }, []);
-
-  const totalHeight = visibleBlocks.length * ESTIMATED_BLOCK_HEIGHT;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ESTIMATED_BLOCK_HEIGHT) - VIRTUAL_BUFFER);
-  const endIndex = Math.min(
-    visibleBlocks.length,
-    Math.ceil((scrollTop + containerHeight) / ESTIMATED_BLOCK_HEIGHT) + VIRTUAL_BUFFER,
-  );
-  const shouldVirtualize = visibleBlocks.length > 200;
-  const renderedBlocks = shouldVirtualize ? visibleBlocks.slice(startIndex, endIndex) : visibleBlocks;
-
-  useLayoutEffect(() => {
-    if (renderMode !== 'raw' || !navigationTarget) return;
-    if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' || navigationTarget.kind === 'turn') return;
-    const targetId = conversation?.position_window.target.block_id;
-    const container = scrollContainerRef.current;
-    if (!targetId || !container) return;
-    const target = Array.from(container.querySelectorAll<HTMLElement>('[data-block-id]'))
-      .find((element) => element.dataset.blockId === targetId);
-    if (!target) return;
-    const reducedMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    target.scrollIntoView({
-      block: 'center',
-      behavior: navigationTarget.smooth && !reducedMotion ? 'smooth' : 'auto',
-    });
-  }, [conversation?.position_window.target.block_id, navigationTarget, renderMode, renderedBlocks]);
-
   // Selection handlers
   const toggleSelect = (blockId: string) => {
     setSelected((prev) => {
@@ -1936,18 +1499,6 @@ function ConversationDetail({
         next.delete(type);
       } else {
         next.add(type);
-      }
-      return next;
-    });
-  };
-
-  const toggleCollapse = (blockId: string) => {
-    setCollapsedBlocks((prev) => {
-      const next = new Set(prev);
-      if (next.has(blockId)) {
-        next.delete(blockId);
-      } else {
-        next.add(blockId);
       }
       return next;
     });
@@ -2331,9 +1882,6 @@ function ConversationDetail({
                 <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
                   {showMessageFilters ? 'Hide message filters' : 'Message filters'}
                 </button>
-                <button type="button" role="menuitem" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
-                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
-                </button>
                 <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
                   Select messages
                 </button>
@@ -2608,75 +2156,31 @@ function ConversationDetail({
         />
       )}
 
-      {renderMode === 'transcript' ? (
-        <div className="conv-transcript">
-          <ChatSurface
-            events={chatEvents}
-            streaming={false}
-            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-            unmaterializedAfterCount={conversation.position_window.window.after_count}
-            onJumpToLatest={handleJumpToLatest}
-            jumpingToLatest={jumpingToLatest}
-            navigationTarget={navigationTarget}
-            selectedMessageId={conversation.position_window.target.turn_id}
-            onSelectMessageInfo={(turnId) => {
-              window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
-            }}
-            sessionInfo={{
-              sessionId: conversation.session_id,
-              backend: conversation.source,
-              model: conversation.model ?? undefined,
-            }}
-          />
-        </div>
-      ) : (
-        <div
-          className="conv-blocks"
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-        >
-          {shouldVirtualize ? (
-            <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
-              <div style={{ position: 'absolute', top: `${startIndex * ESTIMATED_BLOCK_HEIGHT}px`, left: 0, right: 0 }}>
-                {renderedBlocks.map((block) => (
-                  <BlockRenderer
-                    key={block.id}
-                    block={block}
-                    isSelected={selected.has(block.id)}
-                    selectMode={selectMode}
-                    onToggleSelect={() => toggleSelect(block.id)}
-                    onShiftSelect={() => handleShiftSelect(block.id)}
-                    onToggleCollapse={() => toggleCollapse(block.id)}
-                    collapsed={collapsedBlocks.has(block.id)}
-                    onFork={handleFork}
-                    onResume={handleResume}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            renderedBlocks.map((block) => (
-              <BlockRenderer
-                key={block.id}
-                block={block}
-                isSelected={selected.has(block.id)}
-                selectMode={selectMode}
-                onToggleSelect={() => toggleSelect(block.id)}
-                onShiftSelect={() => handleShiftSelect(block.id)}
-                onToggleCollapse={() => toggleCollapse(block.id)}
-                collapsed={collapsedBlocks.has(block.id)}
-                onFork={handleFork}
-                onResume={handleResume}
-              />
-            ))
-          )}
-          {visibleBlocks.length === 0 && (
-            <div className="empty-state">
-              {loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="conv-transcript">
+        <ChatSurface
+          events={chatEvents}
+          streaming={false}
+          emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+          unmaterializedAfterCount={conversation.position_window.window.after_count}
+          onJumpToLatest={handleJumpToLatest}
+          jumpingToLatest={jumpingToLatest}
+          navigationTarget={navigationTarget}
+          selectedMessageId={conversation.position_window.target.turn_id}
+          selectedBlockIds={selected}
+          selectMode={selectMode}
+          onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
+          onFork={handleFork}
+          onResume={handleResume}
+          onSelectMessageInfo={(turnId) => {
+            window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
+          }}
+          sessionInfo={{
+            sessionId: conversation.session_id,
+            backend: conversation.source,
+            model: conversation.model ?? undefined,
+          }}
+        />
+      </div>
     </DetailPaneShell>
   );
 }

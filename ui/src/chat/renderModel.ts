@@ -13,6 +13,7 @@ import type {
   ToolResultContent,
   SystemInitEvent,
   ToolResultContentBlock,
+  TranscriptSemanticEvent,
   UserEvent,
 } from '../components/stream-renderer/types';
 
@@ -81,6 +82,9 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
 
   function flushPendingTurn(): void {
     if (pendingAssistant) {
+      const toolUseIds = new Set(pendingAssistant.message.content
+        .filter((block) => block.type === 'tool_use')
+        .map((block) => block.type === 'tool_use' ? block.id : ''));
       const turn = buildTurn(pendingAssistant, pendingResults);
       nodes.push({
         kind: 'assistant_turn',
@@ -89,6 +93,16 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         turn,
       });
       pendingAssistant = null;
+      for (const [toolUseId, result] of pendingResults) {
+        if (!toolUseIds.has(toolUseId)) {
+          nodes.push({
+            kind: 'unmatched_tool_result',
+            key: result.source?.blockId ?? `unmatched-result-${nodes.length}`,
+            entity: 'system',
+            result,
+          });
+        }
+      }
       pendingResults.clear();
     }
   }
@@ -104,6 +118,15 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         key: violationEvent.localId ?? `violation-${nodes.length}`,
         entity: 'system',
         event: violationEvent,
+      });
+    } else if (event.type === 'transcript:semantic') {
+      flushPendingTurn();
+      const semanticEvent = event as TranscriptSemanticEvent;
+      nodes.push({
+        kind: 'semantic_event',
+        key: semanticEvent.uuid,
+        entity: 'system',
+        event: semanticEvent,
       });
     } else if (event.type === 'assistant') {
       const ae = event as AssistantEvent;
@@ -123,7 +146,17 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
       for (const block of userEvent.message.content) {
         if (block.type === 'tool_result') {
           const resultBlock = block as ToolResultContentBlock;
-          pendingResults.set(resultBlock.tool_use_id, boundToolResultBlock(resultBlock));
+          const boundedResult = boundToolResultBlock(resultBlock);
+          if (pendingAssistant) {
+            pendingResults.set(resultBlock.tool_use_id, boundedResult);
+          } else {
+            nodes.push({
+              kind: 'unmatched_tool_result',
+              key: resultBlock.source?.blockId ?? userEvent.uuid ?? `unmatched-result-${nodes.length}`,
+              entity: 'system',
+              result: boundedResult,
+            });
+          }
         } else if (block.type === 'text' && (block as { type: 'text'; text: string }).text) {
           textParts.push((block as { type: 'text'; text: string }).text);
           hasText = true;
@@ -141,6 +174,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             entity: 'user',
             text: joinedText,
             source: 'stream',
+            persisted: (userEvent.message.content.find((block) => block.type === 'text') as { source?: import('../components/stream-renderer/types').PersistedBlockSource } | undefined)?.source,
           };
         } else {
           flushPendingTurn();
@@ -150,6 +184,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             entity: 'user',
             text: joinedText,
             source: 'stream',
+            persisted: (userEvent.message.content.find((block) => block.type === 'text') as { source?: import('../components/stream-renderer/types').PersistedBlockSource } | undefined)?.source,
           });
         }
       }
@@ -273,6 +308,13 @@ export function renderNodeToMarkdown(node: RenderNode): string {
   if (node.kind === 'violation') {
     const preset = node.event.preset_id ? ` for ${node.event.preset_id}` : '';
     return `## System\n\nPreset violation${preset}${node.event.analyzing ? ' is being analyzed.' : '.'}`;
+  }
+  if (node.kind === 'semantic_event') {
+    return `## ${node.event.semantic_kind === 'system' ? 'System' : 'Event'}\n\n${node.event.content.trim()}`;
+  }
+  if (node.kind === 'unmatched_tool_result') {
+    const body = extractToolResultText(node.result.fullText ?? node.result.content).trim();
+    return `## ${node.result.is_error ? 'Tool error' : 'Unmatched tool result'}\n\n${body}`;
   }
 
   const parts = node.turn.assistantEvent.message.content

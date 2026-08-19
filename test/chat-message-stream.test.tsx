@@ -295,6 +295,34 @@ describe('ChatSurface stream behavior', () => {
     expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
   });
 
+  it('materializes and centers an exact persisted block anchor', async () => {
+    const blocks = Array.from({ length: 80 }, (_, index) => ({
+      id: `block-${index}`,
+      type: index % 2 === 0 ? 'user_message' as const : 'assistant_message' as const,
+      content: `message ${index}`,
+      timestamp: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00Z`,
+      metadata_json: '{}',
+    }));
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    render(
+      <ChatSurface
+        events={conversationBlocksToStreamEvents('history-anchor', blocks)}
+        streaming={false}
+        sessionInfo={{ sessionId: 'block-anchor' }}
+        navigationTarget={{ key: 'block-anchor-51', kind: 'block', turnId: null, blockId: 'block-51', smooth: false }}
+      />,
+    );
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' }));
+    expect(document.querySelector('[data-block-id="block-51"]')).toBeTruthy();
+    expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
+  });
+
   it('keeps Jump keyboard activation native and delegates true-end loading', () => {
     const jump = vi.fn();
     render(
@@ -374,5 +402,37 @@ describe('ChatSurface stream behavior', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /open full/i }));
     expect(screen.getByText(/TAIL-MARKER/)).toBeTruthy();
+  });
+
+  it('renders persisted events and unmatched results through canonical selectable nodes', () => {
+    const onToggle = vi.fn();
+    const events = conversationBlocksToStreamEvents('codex-history', [
+      { id: 's1', type: 'system', content: 'System notice', timestamp: '2026-01-02T03:04:05Z', metadata_json: '{}' },
+      { id: 'e1', type: 'event', content: 'Stream failed', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ event_type: 'provider_error', is_error: true }) },
+      { id: 'tu1', type: 'tool_use', content: '{}', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ tool_id: 'paired', tool_name: 'Read', tool_input: { path: 'a.ts' } }) },
+      { id: 'tr-paired', type: 'tool_result', content: 'paired output', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ tool_id: 'paired' }) },
+      { id: 'tr1', type: 'tool_result', content: 'No matching request', timestamp: '2026-01-02T03:04:07Z', metadata_json: JSON.stringify({ tool_id: 'missing', is_error: true }) },
+    ]);
+
+    render(
+      <ChatSurface
+        events={events}
+        streaming={false}
+        sessionInfo={{ sessionId: 'persisted-semantics' }}
+        selectMode
+        selectedBlockIds={new Set(['e1', 'tr-paired'])}
+        onToggleBlockSelect={onToggle}
+      />,
+    );
+
+    expect(screen.getByText('System notice')).toBeTruthy();
+    expect(screen.getByText('Stream failed')).toBeTruthy();
+    expect(screen.getByText('Unmatched tool error')).toBeTruthy();
+    expect(screen.getByText('provider_error')).toBeTruthy();
+    expect(document.querySelector('[data-block-id="tr-paired"]')).toBeTruthy();
+    expect(screen.getAllByText(/2026/).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Deselect message' })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Deselect message' })[1]);
+    expect(onToggle).toHaveBeenCalledWith('tr-paired', false);
   });
 });

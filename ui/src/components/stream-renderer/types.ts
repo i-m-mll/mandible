@@ -2,19 +2,28 @@
 
 // ---- Raw event types (as emitted by Claude Code --output-format stream-json) ----
 
+export type PersistedBlockSource = {
+  blockId: string;
+  timestamp?: string;
+  dagUuid?: string;
+};
+
 export type TextContentBlock = {
   type: 'text';
   text: string;
+  source?: PersistedBlockSource;
 };
 
 export type ThinkingContentBlock = {
   type: 'thinking';
   thinking: string;
+  source?: PersistedBlockSource;
 };
 
 export type PlanContentBlock = {
   type: 'plan';
   text: string;
+  source?: PersistedBlockSource;
 };
 
 export type ToolUseContentBlock = {
@@ -22,6 +31,7 @@ export type ToolUseContentBlock = {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  source?: PersistedBlockSource;
 };
 
 export type ContentBlock = TextContentBlock | ThinkingContentBlock | PlanContentBlock | ToolUseContentBlock;
@@ -39,6 +49,18 @@ export type ToolResultContentBlock = {
   truncated?: boolean;
   fullText?: string;
   omittedCharacters?: number;
+  source?: PersistedBlockSource;
+};
+
+export type TranscriptSemanticEvent = {
+  type: 'transcript:semantic';
+  uuid: string;
+  session_id: string;
+  semantic_kind: 'system' | 'event';
+  content: string;
+  label?: string;
+  is_error?: boolean;
+  source: PersistedBlockSource;
 };
 
 export type SystemInitEvent = {
@@ -136,6 +158,7 @@ export type StreamEvent =
   | ResultEvent
   | SyntheticPromptEvent
   | PresetViolationEvent
+  | TranscriptSemanticEvent
   | { type: string; [key: string]: unknown };
 
 // ---- Render model (derived from raw events) ----
@@ -167,6 +190,21 @@ export type RenderNodeUserMessage = {
   entity: 'user';
   text: string;
   source: 'stream' | 'synthetic';
+  persisted?: PersistedBlockSource;
+};
+
+export type RenderNodeSemanticEvent = {
+  kind: 'semantic_event';
+  key: string;
+  entity: 'system';
+  event: TranscriptSemanticEvent;
+};
+
+export type RenderNodeUnmatchedToolResult = {
+  kind: 'unmatched_tool_result';
+  key: string;
+  entity: 'system';
+  result: ToolResultContentBlock;
 };
 
 export type RenderNodeViolation = {
@@ -176,7 +214,7 @@ export type RenderNodeViolation = {
   event: PresetViolationEvent;
 };
 
-export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation;
+export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult;
 
 export type DisplayGroupMeta = {
   totalTokens?: number;
@@ -204,6 +242,11 @@ export interface MessageGroupProps {
   isThinking?: boolean;
   getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
   onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean) => void;
+  selectedBlockIds?: ReadonlySet<string>;
+  selectMode?: boolean;
+  onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
+  onFork?: (dagUuid: string) => void;
+  onResume?: (dagUuid: string) => void;
 }
 
 // TOMBSTONE (Bug: fbca9d5): StatusBarProps deleted — StatusBar removed in P1.

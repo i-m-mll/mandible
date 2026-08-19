@@ -14,12 +14,14 @@ import { MessageActions } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
+import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import { openMarkdownDocument } from './markdownActions';
 import {
   deriveLiveLabel,
   deriveTokenCount,
   extractTurns,
+  extractToolResultText,
   formatElapsed,
   groupMessagesForDisplay,
   serializeDisplayGroupToMarkdown,
@@ -37,8 +39,14 @@ export type ChatSurfaceProps = StreamRendererProps & {
     key: string;
     kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
     turnId: string | null;
+    blockId?: string | null;
     smooth: boolean;
   } | null;
+  selectedBlockIds?: ReadonlySet<string>;
+  selectMode?: boolean;
+  onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
+  onFork?: (dagUuid: string) => void;
+  onResume?: (dagUuid: string) => void;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -193,6 +201,11 @@ export function ChatSurface({
   onJumpToLatest,
   jumpingToLatest = false,
   navigationTarget = null,
+  selectedBlockIds,
+  selectMode = false,
+  onToggleBlockSelect,
+  onFork,
+  onResume,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -270,10 +283,24 @@ export function ChatSurface({
     const el = scrollRef.current;
     if (!el || !navigationTarget) return;
     let destination = layout.totalHeight;
-    if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest' && navigationTarget.turnId) {
-      const itemIndex = items.findIndex((item) => (
+    if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
+      let itemIndex = navigationTarget.turnId ? items.findIndex((item) => (
         item.kind === 'group' && item.group.nodes.some((node) => node.key === navigationTarget.turnId)
-      ));
+      )) : -1;
+      if (itemIndex < 0 && navigationTarget.blockId) {
+        itemIndex = items.findIndex((item) => (
+          item.kind === 'group' && item.group.nodes.some((node) => {
+            if (node.key === navigationTarget.blockId) return true;
+            if (node.kind === 'user_message') return node.persisted?.blockId === navigationTarget.blockId;
+            if (node.kind === 'semantic_event') return node.event.source.blockId === navigationTarget.blockId;
+            if (node.kind === 'unmatched_tool_result') return node.result.source?.blockId === navigationTarget.blockId;
+            if (node.kind === 'assistant_turn') {
+              return node.turn.assistantEvent.message.content.some((block) => block.source?.blockId === navigationTarget.blockId);
+            }
+            return false;
+          })
+        ));
+      }
       if (itemIndex >= 0) destination = layout.offsets[itemIndex] ?? 0;
     }
     const reducedMotion = typeof window.matchMedia === 'function'
@@ -281,6 +308,13 @@ export function ChatSurface({
     const behavior: ScrollBehavior = navigationTarget.smooth && !reducedMotion ? 'smooth' : 'auto';
     if (typeof el.scrollTo === 'function') el.scrollTo({ top: destination, behavior });
     else el.scrollTop = destination;
+    if (navigationTarget.blockId) {
+      const exactBlock = Array.from(el.querySelectorAll<HTMLElement>('[data-block-id]'))
+        .find((candidate) => candidate.dataset.blockId === navigationTarget.blockId);
+      if (exactBlock && typeof exactBlock.scrollIntoView === 'function') {
+        exactBlock.scrollIntoView({ block: 'center', behavior });
+      }
+    }
     setScrollTop(destination);
     setIsFollowing(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest');
     setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' ? 0 : Math.max(0, layout.totalHeight - destination - viewportHeight));
@@ -338,13 +372,24 @@ export function ChatSurface({
 
   function renderNodeBody(node: RenderNode): JSX.Element | null {
     switch (node.kind) {
-      case 'user_message':
+      case 'user_message': {
+        const source = node.persisted;
         return (
-          <div key={node.key} className="message-block-wrapper">
+          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <UserBubble text={node.text} />
-            <MessageActions onCopy={() => copyText(node.text)} />
+            <MessageActions
+              onCopy={() => copyText(node.text)}
+              onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
+              selectMode={selectMode}
+              onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
+              onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
+              dagUuid={source?.dagUuid}
+              metadata={{ timestamp: source?.timestamp }}
+            />
           </div>
         );
+      }
 
       case 'violation':
         return (
@@ -355,6 +400,43 @@ export function ChatSurface({
             subagentSessionId={node.event.subagent_session_id}
           />
         );
+
+      case 'semantic_event': {
+        const source = node.event.source;
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={source.blockId}>
+            <SemanticEventBlock
+              kind={node.event.semantic_kind}
+              content={node.event.content}
+              label={node.event.label}
+              isError={node.event.is_error}
+            />
+            <MessageActions
+              onCopy={() => copyText(node.event.content)}
+              onSelect={onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={selectedBlockIds?.has(source.blockId)}
+              selectMode={selectMode}
+              metadata={{ timestamp: source.timestamp }}
+            />
+          </div>
+        );
+      }
+
+      case 'unmatched_tool_result': {
+        const source = node.result.source;
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+            <UnmatchedToolResultBlock result={node.result} />
+            <MessageActions
+              onCopy={() => copyText(node.result.fullText ?? extractToolResultText(node.result.content))}
+              onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
+              selectMode={selectMode}
+              metadata={{ timestamp: source?.timestamp }}
+            />
+          </div>
+        );
+      }
 
       case 'assistant_turn': {
         const { turn } = node;
@@ -379,6 +461,11 @@ export function ChatSurface({
               onBlockExpandedChange={(contentBlock, index, expanded) => (
                 setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
               )}
+              selectedBlockIds={selectedBlockIds}
+              selectMode={selectMode}
+              onToggleBlockSelect={onToggleBlockSelect}
+              onFork={onFork}
+              onResume={onResume}
             />
           </div>
         );

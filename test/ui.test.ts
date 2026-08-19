@@ -49,7 +49,7 @@ import { GraphView } from '../ui/src/views/graph';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
-import { getInstructionMessageMeta } from '../ui/src/views/conversations';
+import { getInstructionMessageMeta } from '../ui/src/components/message-blocks/UserBubble';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import { useSidebarResize } from '../ui/src/hooks/useSidebarResize';
 import {

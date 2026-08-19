@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
+import { MessageActions } from '../shared/MessageActions';
+import type { PersistedBlockSource } from '../stream-renderer/types';
 
 export type ToolResultContent =
   | string
@@ -14,6 +16,7 @@ export type ToolResultContentBlock = {
   truncated?: boolean;
   fullText?: string;
   omittedCharacters?: number;
+  source?: PersistedBlockSource;
 };
 
 export type ToolUseBlockProps = {
@@ -26,6 +29,11 @@ export type ToolUseBlockProps = {
   onExpandedChange?: (expanded: boolean) => void;
   compact?: boolean;
   statusEmoji?: string;
+  resultSelected?: boolean;
+  selectMode?: boolean;
+  onToggleResultSelect?: (shiftKey: boolean) => void;
+  onForkResult?: () => void;
+  onResumeResult?: () => void;
 };
 
 export type ToolVisualKind =
@@ -341,6 +349,11 @@ export function ToolCard({
   onExpandedChange,
   compact,
   statusEmoji,
+  resultSelected,
+  selectMode,
+  onToggleResultSelect,
+  onForkResult,
+  onResumeResult,
 }: ToolUseBlockProps): JSX.Element {
   const inputObj = useMemo(() => parseInput(input), [input]);
   const visual = useMemo(() => getToolVisual(toolName), [toolName]);
@@ -407,6 +420,26 @@ export function ToolCard({
     onExpandedChange?.(nextExpanded);
   }
 
+  function renderResult(content: JSX.Element): JSX.Element {
+    if (!result) return content;
+    const source = result.source;
+    return (
+      <div className="message-block-wrapper tool-card__result-wrapper" data-block-id={source?.blockId}>
+        {content}
+        <MessageActions
+          onCopy={() => { navigator.clipboard.writeText(result.fullText ?? extractResultText(result.content)).catch(() => {}); }}
+          onSelect={onToggleResultSelect}
+          isSelected={resultSelected}
+          selectMode={selectMode}
+          onFork={onForkResult}
+          onResume={onResumeResult}
+          dagUuid={source?.dagUuid}
+          metadata={{ timestamp: source?.timestamp }}
+        />
+      </div>
+    );
+  }
+
   return (
     <section
       className={`tool-card${isExpanded ? ' tool-card--expanded' : ' tool-card--collapsed'}${compact ? ' tool-card--compact' : ''}`}
@@ -444,12 +477,10 @@ export function ToolCard({
       {isExpanded ? (
         <div className="tool-card__body">
           {renderInputPanel()}
-          {result && <ResultBody result={result} commandLike={commandLike} />}
+          {result && renderResult(<ResultBody result={result} commandLike={commandLike} />)}
         </div>
       ) : resultSummary ? (
-        <div className="tool-card__summary">
-          {resultSummary}
-        </div>
+        renderResult(<div className="tool-card__summary">{resultSummary}</div>)
       ) : null}
     </section>
   );

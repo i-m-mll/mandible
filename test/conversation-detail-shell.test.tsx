@@ -299,7 +299,11 @@ describe('compact detail pane shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     const menu = screen.getByRole('menu');
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(8);
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(7);
+    expect(screen.queryByText('Inspect raw blocks')).toBeNull();
+    expect(document.querySelector('.conv-blocks')).toBeNull();
+    expect(document.querySelector('.block-user-message')).toBeNull();
+    expect(document.querySelector('.block-assistant-message')).toBeNull();
     fireEvent.click(screen.getByRole('menuitem', { name: 'View metadata' }));
     expect(screen.getByRole('dialog', { name: 'Conversation metadata' })).toBeTruthy();
     const projectLabel = screen.getByText('Project');
