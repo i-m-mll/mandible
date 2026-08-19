@@ -2136,19 +2136,38 @@ async function ingestFile(
           }
         }
       } else if (append.kind === "buffered") {
-        await refreshAppendState(
-          db,
-          filePath,
-          stat,
-          appendState?.line_count ?? alreadyIngestedCount,
-          append.nextPartialLine,
-          append.tailHash,
-        );
-        logger("debug", "ingestion_append_buffered", {
-          file: filePath,
-          appended_bytes: append.appendedBytes,
-        });
-        return;
+        // An append checkpoint can already cover the whole file even though the
+        // conversation row still carries metadata derived by an older parser.
+        // This happens when a previous ingestion version consumed provider
+        // metadata it did not understand: the checkpoint advances, but the
+        // persisted title and source mtime do not. A later reconcile observes
+        // the stale mtime, reaches EOF, and used to return here forever without
+        // invoking the repaired parser.
+        //
+        // No newly buffered bytes means there is no partial append to preserve.
+        // Parse the complete source once so provider-owned metadata can converge;
+        // the normal metadata-only update below retains the existing blocks.
+        if (append.appendedBytes === 0 && existing.source_mtime !== stat.mtimeMs) {
+          logger("debug", "ingestion_append_fallback", {
+            file: filePath,
+            reason: "stale_metadata_at_indexed_extent",
+          });
+          result = await parser.parse(filePath);
+        } else {
+          await refreshAppendState(
+            db,
+            filePath,
+            stat,
+            appendState?.line_count ?? alreadyIngestedCount,
+            append.nextPartialLine,
+            append.tailHash,
+          );
+          logger("debug", "ingestion_append_buffered", {
+            file: filePath,
+            appended_bytes: append.appendedBytes,
+          });
+          return;
+        }
       } else {
         logger("debug", "ingestion_append_fallback", {
           file: filePath,
