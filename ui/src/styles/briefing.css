@@ -225,7 +225,7 @@
 /* Common detail-pane composition. The shell owns the anchored regions; only
  * the artifact document scrolls. */
 .feedback-collection-shell__content {
-  overflow: hidden;
+  overflow: clip;
   padding: 0;
 }
 
