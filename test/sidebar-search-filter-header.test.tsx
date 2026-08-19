@@ -262,6 +262,7 @@ describe('SidebarSearchFilterHeader', () => {
       'ui/src/views/conversations.tsx',
       'ui/src/views/spaces/SpacesSidebar.tsx',
       'ui/src/views/work.tsx',
+      'ui/src/views/tasks.tsx',
       'ui/src/views/feedback/CollectionsSidebar.tsx',
     ];
 
