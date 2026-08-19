@@ -4,10 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShellProvider } from '../ui/src/app-shell';
-import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings } from '../ui/src/api';
+import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings, type InstanceInfo } from '../ui/src/api';
 import { BriefingView } from '../ui/src/views/briefing';
 import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
+import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 import { RICH_BRIEFING_DEMO } from '../src/feedback/rich-briefing-demo';
 
 const source = 'Intro\n:::spec-item{key="decision" type="verdict" required="true"}\nReview this round\n:::\n';
@@ -21,6 +22,51 @@ const ARTIFACT_VERSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const FULL_BRIEFING_ID = `briefing:${'65db040'.padEnd(64, 'a')}`;
 const FULL_ROUND_ID = `briefing-round:${'c76f940'.padEnd(64, 'b')}`;
 const FULL_ARTIFACT_VERSION_REF = `artifact-version:${'264e485'.padEnd(32, 'c')}`;
+const PRODUCTION_ALLOW_INSTANCE: InstanceInfo = {
+  role: 'main', operational_mutations: 'allow', operational_mutations_overridden: false,
+  briefing_response_mutations: 'allow', db_path: '/tmp/mandible.db', db_path_source: 'default',
+};
+const COPIED_PREVIEW_INSTANCE: InstanceInfo = {
+  role: 'preview', operational_mutations: 'reject', operational_mutations_overridden: true,
+  briefing_response_mutations: 'allow', db_path: '/tmp/mandible-copy.db', db_path_source: 'start_options',
+  source_db_path: '/tmp/mandible.db', source_db_path_source: 'start_options',
+};
+const TYPED_SOURCE = [
+  '# Copied preview review',
+  ':::spec-item{key="verdict" type="verdict" required="true"}', 'Keep this?', ':::',
+  ':::spec-item{key="single" type="single_choice" required="true"}', 'Choose one', '::option[Alpha]{key="a"}', '::option[Beta]{key="b"}', ':::',
+  ':::spec-item{key="multi" type="multi_choice" required="true"}', 'Choose evidence', '::option[First]{key="first"}', '::option[Second]{key="second"}', '::option[Third]{key="third"}', ':::',
+  ':::spec-item{key="short" type="short_text" required="true"}', 'Short rationale', ':::',
+  ':::spec-item{key="long" type="long_text" required="true"}', 'Long rationale', ':::',
+  ':::spec-item{key="rating" type="rating" required="true"}', 'Confidence rating', ':::',
+].join('\n');
+const TYPED_DIRECTIVES = parseBriefingDirectives(TYPED_SOURCE);
+
+function typedDetail(roundId: string, annotations: unknown[] = []) {
+  const artifactVersion = roundId === ROUND_ONE ? 'artifact-version:typed-one' : 'artifact-version:typed-two';
+  return {
+    briefing: { id: 'briefing-typed', briefing_key: 'typed-copy', title: 'Copied preview review', latest_round_id: ROUND_TWO, round_count: 2, created_at: 1, updated_at: 2 },
+    rounds: [
+      { id: ROUND_ONE, ordinal: 1, artifact_version_id: 'artifact-version:typed-one', created_at: 1, origin: null },
+      { id: ROUND_TWO, ordinal: 2, artifact_version_id: 'artifact-version:typed-two', created_at: 2, origin: null },
+    ],
+    selected_round: {
+      id: roundId, ordinal: roundId === ROUND_ONE ? 1 : 2, artifact_version_id: artifactVersion,
+      previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2',
+      binding_digest: `binding-${roundId}`, created_at: roundId === ROUND_ONE ? 1 : 2,
+      document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2' },
+      binding: { status: 'valid' },
+      items: TYPED_DIRECTIVES.map((directive, position) => ({
+        id: `item-${directive.key}`, directive_key: directive.key, position,
+        definition_digest: directive.definition_digest, response_type: directive.type,
+        required: 1, prompt: directive.body, options: directive.options,
+        start_offset: directive.start_offset, end_offset: directive.end_offset,
+        body_start_offset: directive.body_start_offset, body_end_offset: directive.body_end_offset,
+      })),
+      answers: [], annotations, latest_submission: null, latest_frozen_membership: null,
+    },
+  };
+}
 
 function selectedRound(roundId: string, artifactVersion: string, submitted = false) {
   return {
@@ -76,7 +122,7 @@ describe('artifact-backed Briefing rounds', () => {
       });
     }));
 
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
 
     const prompt = await screen.findByText('Select a Briefing.');
     expect(prompt.classList.contains('briefing-empty--selection')).toBe(true);
@@ -215,7 +261,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: 'Select briefing arxiv-scan' }));
     expect(window.location.hash).toBe('#/briefing?briefing=briefing%3A65db040');
 
@@ -285,7 +331,7 @@ describe('artifact-backed Briefing rounds', () => {
       });
     }));
 
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
 
     const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
     expect((await within(sidebar).findByRole('alert')).textContent)
@@ -307,7 +353,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({ ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, selectedCollectionId: 'briefing:briefing-1' }));
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
     expect((sidebar as HTMLElement).style.width).toBe('360px');
     expect(screen.getByRole('searchbox', { name: 'Search briefings' })).toBeTruthy();
@@ -381,7 +427,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO.slice(0, 8)} instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO.slice(0, 8)} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
     const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -415,13 +461,143 @@ describe('artifact-backed Briefing rounds', () => {
       }
       throw new Error(`unexpected ${url}`);
     }));
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: action }));
     const submit = screen.getByRole('button', { name: 'Submit correction' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(submit);
     await waitFor(() => expect(posts.length).toBeGreaterThanOrEqual(2));
     expect(posts[0].body).toEqual({ answers: [expectedAnswer] });
+  });
+
+  it('enables the six typed controls in a copied preview and freezes exact actor-scoped answer and annotation membership', async () => {
+    const posts: Array<{ url: string; body: any }> = [];
+    let annotationSaved = false;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human-1', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (!init?.method && url.startsWith('/api/briefings/briefing-typed')) {
+        const selected = new URL(url, 'http://x').searchParams.get('round') ?? ROUND_TWO;
+        const annotations = annotationSaved && selected === ROUND_ONE ? [{
+          annotation_event_id: 'annotation-new', annotation_kind: 'comment',
+          start_offset: TYPED_DIRECTIVES[0].body_start_offset, end_offset: TYPED_DIRECTIVES[0].body_end_offset,
+          quote: 'Keep this?', body: 'Copied-preview note.', replacement_text: null, created_at: 3,
+        }] : [];
+        return new Response(JSON.stringify(typedDetail(selected, annotations)), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: {
+        artifact_id: 'artifact:typed', status: 'available', kind: 'markdown', media_type: 'text/markdown',
+        size_bytes: new TextEncoder().encode(TYPED_SOURCE).byteLength, source: null,
+        preview: { encoding: 'utf-8', text: TYPED_SOURCE, raw_text: TYPED_SOURCE, truncated: false },
+        download: { available: true, media_type: 'text/markdown', size_bytes: TYPED_SOURCE.length, filename: 'typed.md' },
+      } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        posts.push({ url, body });
+        if (url.endsWith('/annotations')) {
+          annotationSaved = true;
+          return new Response(JSON.stringify({ annotation_event_ids: ['annotation-new'] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (url.endsWith('/answers')) return new Response(JSON.stringify({ answer_event_ids: TYPED_DIRECTIVES.map((directive) => `answer-${directive.key}`) }), { status: 200, headers: { 'content-type': 'application/json' } });
+        if (url.endsWith('/submit')) return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`unexpected ${init?.method ?? 'GET'} ${url}`);
+    }));
+    const shell = (roundId: string) => <AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-typed" roundId={roundId} instance={COPIED_PREVIEW_INSTANCE} />
+    </AppShellProvider>;
+    const view = render(shell(ROUND_ONE));
+
+    const keep = await screen.findByRole('button', { name: 'Keep' });
+    await waitFor(() => expect((keep as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(keep);
+    fireEvent.click(screen.getByRole('radio', { name: 'Beta' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Third' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'First' }));
+    fireEvent.input(screen.getByRole('textbox', { name: 'Short rationale' }), { target: { value: 'Short answer' } });
+    fireEvent.input(screen.getByRole('textbox', { name: 'Long rationale' }), { target: { value: 'Long answer' } });
+    fireEvent.click(screen.getByRole('radio', { name: '5' }));
+
+    expect(keep.getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByRole('radio', { name: 'Beta' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'First' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Third' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('textbox', { name: 'Short rationale' }) as HTMLInputElement).value).toBe('Short answer');
+    expect((screen.getByRole('textbox', { name: 'Long rationale' }) as HTMLTextAreaElement).value).toBe('Long answer');
+    expect((screen.getByRole('radio', { name: '5' }) as HTMLInputElement).checked).toBe(true);
+
+    view.rerender(shell(ROUND_TWO));
+    const roundTwoKeep = await screen.findByRole('button', { name: 'Keep' });
+    await waitFor(() => expect(roundTwoKeep.getAttribute('aria-pressed')).toBe('false'));
+    expect((screen.getByRole('radio', { name: 'Beta' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('textbox', { name: 'Short rationale' }) as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('textbox', { name: 'Long rationale' }) as HTMLTextAreaElement).value).toBe('');
+    expect((screen.getByRole('radio', { name: '5' }) as HTMLInputElement).checked).toBe(false);
+
+    view.rerender(shell(ROUND_ONE));
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Short rationale' }) as HTMLInputElement).value).toBe('Short answer'));
+    const addComment = screen.getAllByRole('button', { name: 'Comment' })[0] as HTMLButtonElement;
+    await waitFor(() => expect(addComment.disabled).toBe(false));
+    fireEvent.click(addComment);
+    const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
+    fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Copied-preview note.' } });
+    fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(posts.some((post) => post.url.endsWith('/annotations'))).toBe(true));
+    await screen.findByRole('button', { name: /Keep this.*Comment.*Copied-preview note/ });
+
+    const submit = screen.getByRole('button', { name: 'Submit' });
+    await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
+    fireEvent.click(submit);
+    await waitFor(() => expect(posts.some((post) => post.url.endsWith('/submit'))).toBe(true));
+    expect(posts.map((post) => post.url)).toEqual([
+      `/api/briefings/briefing-typed/rounds/${ROUND_ONE}/annotations`,
+      `/api/briefings/briefing-typed/rounds/${ROUND_ONE}/answers`,
+      `/api/briefings/briefing-typed/rounds/${ROUND_ONE}/submit`,
+    ]);
+    expect(posts[1].body).toEqual({ answers: [
+      { directive_key: 'verdict', operation: 'set', expected_response_event_id: null, value: { verdict: 'keep' } },
+      { directive_key: 'single', operation: 'set', expected_response_event_id: null, value: { option_key: 'b' } },
+      { directive_key: 'multi', operation: 'set', expected_response_event_id: null, value: { option_keys: ['first', 'third'] } },
+      { directive_key: 'short', operation: 'set', expected_response_event_id: null, value: { text: 'Short answer' } },
+      { directive_key: 'long', operation: 'set', expected_response_event_id: null, value: { text: 'Long answer' } },
+      { directive_key: 'rating', operation: 'set', expected_response_event_id: null, value: { rating: 5 } },
+    ] });
+    expect(posts[2].body).toEqual({
+      supersedes_submission_id: null,
+      answers: TYPED_DIRECTIVES.map((directive) => ({ directive_key: directive.key, response_event_id: `answer-${directive.key}` })),
+      annotation_event_ids: ['annotation-new'],
+    });
+  });
+
+  it.each([
+    ['rejected response capability', { ...COPIED_PREVIEW_INSTANCE, briefing_response_mutations: 'reject' } as InstanceInfo, { authenticated: true, user: { id: 'human-1', kind: 'human' } }, 'valid'],
+    ['missing instance capability', null, { authenticated: true, user: { id: 'human-1', kind: 'human' } }, 'valid'],
+    ['agent identity', COPIED_PREVIEW_INSTANCE, { authenticated: true, user: { id: 'agent-1', kind: 'agent' } }, 'valid'],
+    ['anonymous identity', COPIED_PREVIEW_INSTANCE, { authenticated: false, user: null }, 'valid'],
+    ['invalid immutable binding', COPIED_PREVIEW_INSTANCE, { authenticated: true, user: { id: 'human-1', kind: 'human' } }, 'invalid'],
+  ])('fails closed for %s', async (_label, instance, identity, bindingStatus) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify(identity), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url.startsWith('/api/briefings/briefing-typed')) {
+        const payload = typedDetail(ROUND_ONE) as any;
+        payload.selected_round.binding = { status: bindingStatus, ...(bindingStatus === 'invalid' ? { reason: 'Binding mismatch.' } : {}) };
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: {
+        artifact_id: 'artifact:typed', status: 'available', kind: 'markdown', media_type: 'text/markdown',
+        size_bytes: new TextEncoder().encode(TYPED_SOURCE).byteLength, source: null,
+        preview: { encoding: 'utf-8', text: TYPED_SOURCE, raw_text: TYPED_SOURCE, truncated: false },
+        download: { available: true, media_type: 'text/markdown', size_bytes: TYPED_SOURCE.length, filename: 'typed.md' },
+      } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-typed" roundId={ROUND_ONE} instance={instance} />
+    </AppShellProvider>);
+    const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
+    expect(keep.disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('fails closed when materialized document bytes do not match the frozen directive binding', async () => {
@@ -433,7 +609,7 @@ describe('artifact-backed Briefing rounds', () => {
       if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(tampered).byteLength, source: null, preview: { encoding: 'utf-8', text: tampered, raw_text: tampered, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: tampered.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
       throw new Error(`unexpected ${url}`);
     }));
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
     const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
     await waitFor(() => expect(screen.getByText(/does not match its materialized prompt/)).toBeTruthy());
     expect(keep.disabled).toBe(true);

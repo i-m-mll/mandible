@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeBriefingRoundProjection } from '../ui/src/api';
+import { normalizeBriefingRoundProjection, normalizeInstanceInfo } from '../ui/src/api';
 
 const definitions = [
   ['verdict', 'verdict', [], { verdict: 'keep' }],
@@ -27,6 +27,19 @@ function payload() {
 }
 
 describe('Briefing v2 UI projection', () => {
+  it('normalizes the explicit response capability and fails missing or malformed values closed', () => {
+    const base = {
+      role: 'preview', operational_mutations: 'reject', operational_mutations_overridden: true,
+      db_path: '/tmp/copy.db', db_path_source: 'start_options',
+      source_db_path: '/tmp/source.db', source_db_path_source: 'start_options',
+    };
+    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'allow' })?.briefing_response_mutations).toBe('allow');
+    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'reject' })?.briefing_response_mutations).toBe('reject');
+    expect(normalizeInstanceInfo(base)?.briefing_response_mutations).toBe('reject');
+    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'sometimes' })?.briefing_response_mutations).toBe('reject');
+    expect(normalizeInstanceInfo({ ...base, operational_mutations: 'sometimes', briefing_response_mutations: 'allow' })).toBeNull();
+  });
+
   it('accepts the active profile, all six exact values, and backend option order', () => {
     const projection = normalizeBriefingRoundProjection(payload());
     expect(projection.valid).toBe(true);
