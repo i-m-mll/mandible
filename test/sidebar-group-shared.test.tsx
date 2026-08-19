@@ -140,19 +140,48 @@ describe('shared sidebar group presentation', () => {
     expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
   });
 
-  it('reserves a separate 24px group action for hover, focus, and coarse pointers', () => {
+  it('reveals a separate 24px group action only from its exact header line', () => {
     const onPress = vi.fn();
-    render(<SidebarGroupNode presentation="category" id="chats" label="Chats" expanded onToggle={() => undefined} action={{ label: 'New chat', onPress }}><span /></SidebarGroupNode>);
+    render(
+      <SidebarGroupNode presentation="category" id="chats" label="Chats" expanded onToggle={() => undefined} action={{ label: 'New chat', icon: 'new-chat', onPress }}>
+        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: 'new-chat', onPress: () => undefined }}>
+          <span data-testid="descendant">Leaf</span>
+        </SidebarGroupNode>
+      </SidebarGroupNode>,
+    );
     const heading = screen.getByRole('button', { name: 'Chats' });
     const action = screen.getByRole('button', { name: 'New chat' });
     expect(action).not.toBe(heading);
+    expect(action.parentElement?.classList.contains('sidebar-group-node__header')).toBe(true);
+    expect(screen.getByTestId('descendant').closest('.sidebar-group-node__header')).toBeNull();
     fireEvent.click(action);
     expect(onPress).toHaveBeenCalledOnce();
     const actionRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action \{([^}]*)\}/)?.[1] ?? '';
     expect(actionRule).toContain('width: 24px');
     expect(actionRule).toContain('flex: 0 0 24px');
     expect(actionRule).toContain('opacity: 0');
+    expect(action.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
+    expect(sidebarGroupStylesheet).toMatch(
+      /\.sidebar-group-node__header:hover > \.sidebar-group-node__action,\s*\.sidebar-group-node__header:focus-within > \.sidebar-group-node__action \{[^}]*opacity: 1;[^}]*pointer-events: auto;/s,
+    );
+    expect(sidebarGroupStylesheet).not.toMatch(
+      /\.sidebar-group-node:(?:hover|focus-within) > \.sidebar-group-node__header > \.sidebar-group-node__action/,
+    );
     expect(sidebarGroupStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
+  });
+
+  it('keeps category and folder heading backgrounds transparent on hover and focus', () => {
+    const headingRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__heading \{([^}]*)\}/)?.[1] ?? '';
+    expect(headingRule).toContain('background: transparent');
+    expect(sidebarGroupStylesheet).not.toMatch(
+      /\.sidebar-group-node--(?:category|folder)[^{}]*(?::hover|:focus-visible)[^{]*\{[^}]*background:/s,
+    );
+    expect(sidebarGroupStylesheet).toMatch(
+      /\.sidebar-group-node__heading:focus-visible \{[^}]*outline: 2px solid var\(--border-focus\);/s,
+    );
+    expect(sidebarItemStylesheet).toMatch(
+      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*background: var\(--neutral-alpha-05\);/s,
+    );
   });
 
   it('shows and persists the default bounded Chat group size through generic settings', async () => {

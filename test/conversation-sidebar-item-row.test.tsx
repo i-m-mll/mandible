@@ -108,7 +108,7 @@ function sidebarResponse(rows: Conversation[]) {
 }
 
 describe('conversation sidebar labeled-item rows', () => {
-  it('keeps idle Chat width full and reveals the shared overlay for focus and selection without Chat-local geometry', async () => {
+  it('keeps selected and idle Chat widths full until actual focus reveals the shared overlay', async () => {
     const idleConversation = {
       ...conversation,
       id: 'conv-idle',
@@ -131,6 +131,9 @@ describe('conversation sidebar labeled-item rows', () => {
     await waitFor(() => expect(selected.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(true));
     expect(idle.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(false);
     expect(idle.nextElementSibling?.classList.contains('sidebar-item-row__trailing')).toBe(true);
+    expect(sidebarItemRowStylesheet).not.toMatch(
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
+    );
     idle.focus();
     expect(document.activeElement).toBe(idle);
     expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
@@ -178,7 +181,8 @@ describe('conversation sidebar labeled-item rows', () => {
     const trailing = row?.querySelector('.sidebar-item-row__trailing');
     expect(trailing?.firstElementChild?.classList.contains('sidebar-item-row__provider')).toBe(true);
     expect(trailing?.lastElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
+    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__trailing/);
+    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-dot/);
     expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
     expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|provider)/);
     expect(row?.querySelector('.agent-mark')).toBeNull();

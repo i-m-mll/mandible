@@ -290,6 +290,23 @@ describe('Briefing sidebar row actions', () => {
     expect(screen.getByRole('button', { name: 'Select briefing Third briefing' }).tabIndex).toBe(0);
   });
 
+  it('keeps an unpinned selected Briefing row hidden at rest and reveals shared actions on focus', () => {
+    render(<Harness selectedCollectionId={collections[2].id} />);
+    const selected = screen.getByRole('button', { name: 'Select briefing Third briefing' });
+    const row = selected.closest('.sidebar-item-row')!;
+    expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
+    expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
+    expect(sidebarItemRowStylesheet).not.toMatch(
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
+    );
+    selected.focus();
+    expect(document.activeElement).toBe(selected);
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s,
+    );
+    expect(briefingStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|overflow)/);
+  });
+
   it('keeps Pin and Unpin as direct stateful actions', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: 'Unpin First briefing' }));
