@@ -4423,12 +4423,26 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
       },
     };
   }).filter((round) => Boolean(round.id && round.ordinal > 0 && round.artifact_version_id));
+  const briefingId = briefingString(briefing.id);
+  const latestRoundId = briefingString(briefing.latest_round_id);
+  const selectedRoundId = briefingString(selected.id, projection.round_id);
+  const selectedSummary = rounds.find((round) => round.id === selectedRoundId);
+  const identityValid = Boolean(
+    briefingId
+    && latestRoundId
+    && selectedRoundId
+    && selectedRoundId === projection.round_id
+    && rounds.some((round) => round.id === latestRoundId)
+    && selectedSummary
+    && selectedSummary.artifact_version_id === projection.document?.artifact_version_id
+  );
   return {
     ...projection,
-    briefing_id: briefingString(briefing.id),
+    valid: projection.valid && identityValid,
+    briefing_id: briefingId,
     title: briefingString(briefing.title),
-    latest_round_id: briefingString(briefing.latest_round_id),
-    selected_round_id: briefingString(selected.id, projection.round_id),
+    latest_round_id: latestRoundId,
+    selected_round_id: selectedRoundId,
     rounds,
   };
 }
