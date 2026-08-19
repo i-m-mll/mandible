@@ -27,7 +27,8 @@ a {
 .app-shell {
   --app-header-height: 48px;
   --app-rail-width: 208px;
-  --app-view-sidebar-width: 0px;
+  --app-view-sidebar-persisted-width: 0px;
+  --app-view-sidebar-width: var(--app-view-sidebar-persisted-width);
   height: 100vh;
   overflow: hidden;
   display: flex;
@@ -223,6 +224,12 @@ a {
   .app-bottom-panel__resize {
     top: 0;
     height: 8px;
+  }
+}
+
+@media (max-width: 700px) {
+  .app-shell {
+    --app-view-sidebar-width: calc(100vw - var(--app-rail-width));
   }
 }
 

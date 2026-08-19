@@ -103,7 +103,7 @@ describe('ViewSidebar', () => {
     expect(frame.style.width).toBe('512px');
   });
 
-  it('publishes the exact active resize width to shared app chrome in the same render cycle', () => {
+  it('consumes the shell-controlled boundary token without publishing a mirrored width', () => {
     localStorage.setItem('sidebar-width:issues', '420');
     const setViewSidebarWidth = vi.fn();
     const shell: AppShellContextValue = {
@@ -111,6 +111,7 @@ describe('ViewSidebar', () => {
       bottomPanel: null,
       registerBottomPanel: () => () => undefined,
       setViewSidebarWidth,
+      viewSidebarWidth: 420,
     };
     const { container } = render(
       <AppShellProvider value={shell}>
@@ -122,11 +123,10 @@ describe('ViewSidebar', () => {
     const frame = container.querySelector('.view-sidebar') as HTMLElement;
     const handle = container.querySelector('.view-sidebar__resize-handle') as HTMLElement;
 
-    expect(frame.style.width).toBe('420px');
-    expect(setViewSidebarWidth).toHaveBeenLastCalledWith(420);
+    expect(frame.style.width).toBe('var(--app-view-sidebar-width)');
+    expect(setViewSidebarWidth).not.toHaveBeenCalled();
 
     fireEvent.keyDown(handle, { key: 'ArrowRight' });
-    expect(frame.style.width).toBe('428px');
     expect(setViewSidebarWidth).toHaveBeenLastCalledWith(428);
   });
 

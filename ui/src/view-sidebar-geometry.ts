@@ -25,6 +25,8 @@ export const VIEW_SIDEBAR_GEOMETRY = {
 
 export type ViewSidebarRoute = keyof typeof VIEW_SIDEBAR_GEOMETRY;
 
+export type ViewSidebarWidths = Partial<Record<ViewSidebarRoute, number>>;
+
 export function viewSidebarGeometryForRoute(tab: Route['tab']): ViewSidebarGeometry | null {
   return tab in VIEW_SIDEBAR_GEOMETRY
     ? VIEW_SIDEBAR_GEOMETRY[tab as ViewSidebarRoute]
@@ -44,4 +46,18 @@ export function readInitialViewSidebarWidth(
     }
   }
   return geometry.defaultWidth;
+}
+
+/**
+ * Read every route's browser-local width once for the shared shell boundary.
+ * Keeping the values keyed by route preserves independent persisted widths
+ * while making the active route's value the sole physical layout input.
+ */
+export function readInitialViewSidebarWidths(): ViewSidebarWidths {
+  return Object.fromEntries(
+    Object.entries(VIEW_SIDEBAR_GEOMETRY).map(([route, geometry]) => [
+      route,
+      readInitialViewSidebarWidth(geometry, Number.POSITIVE_INFINITY) ?? geometry.defaultWidth,
+    ]),
+  ) as ViewSidebarWidths;
 }
