@@ -100,7 +100,7 @@ describe('SidebarItemRow', () => {
     expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
     expect(labelRule).toContain('text-overflow: clip');
     expect(labelRule).not.toContain('text-overflow: ellipsis');
-    expect(labelRule).toContain('mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent 100%)');
+    expect(labelRule).not.toContain('mask-image');
     expect(trailingRule).toContain('position: absolute');
     expect(trailingRule).toContain('right: 0');
     expect(trailingRule).toContain('opacity: 0');

@@ -190,6 +190,51 @@ describe("ClaudeParser", () => {
     expect(result?.providerTitle).toBe("Latest provider title");
   });
 
+  it("uses Claude's ai-title instead of a continued-session preamble while preserving custom-title precedence", async () => {
+    const parser = new ClaudeParser();
+    const sessionPath = await makeClaudeSession();
+    const continuedPreamble = "This session is being continued from a previous conversation that ran out of context.";
+    await fs.writeFile(sessionPath, [
+      JSON.stringify({
+        type: "ai-title",
+        aiTitle: "Review and take over QA successor briefing task",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+      }),
+      JSON.stringify({
+        uuid: "continued-user",
+        type: "user",
+        timestamp: "2026-05-16T00:00:00.000Z",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        message: { role: "user", content: continuedPreamble },
+      }),
+      JSON.stringify({
+        uuid: "continued-assistant",
+        parentUuid: "continued-user",
+        type: "assistant",
+        timestamp: "2026-05-16T00:00:01.000Z",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        message: { role: "assistant", content: "Resuming." },
+      }),
+      "",
+    ].join("\n"), "utf8");
+
+    const generated = await parser.parse(sessionPath);
+
+    expect(generated?.conversation.title).toBe("Review and take over QA successor briefing task");
+    expect(generated?.conversation.title).not.toContain("This session is being continued");
+    expect(generated?.providerTitle).toBe("Review and take over QA successor briefing task");
+
+    await fs.appendFile(sessionPath, [
+      JSON.stringify({ type: "custom-title", customTitle: "Explicit operator title" }),
+      JSON.stringify({ type: "ai-title", aiTitle: "Later generated title" }),
+      "",
+    ].join("\n"), "utf8");
+    const renamed = await parser.parse(sessionPath);
+
+    expect(renamed?.conversation.title).toBe("Explicit operator title");
+    expect(renamed?.providerTitle).toBe("Explicit operator title");
+  });
+
   it("computes approximate context from Claude effective input tokens", async () => {
     const parser = new ClaudeParser();
     const sessionPath = await makeClaudeSession();
