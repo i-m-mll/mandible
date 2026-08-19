@@ -416,6 +416,12 @@ function railGroupLinks(container: HTMLElement, group: 'primary' | 'secondary'):
   return Array.from(container.querySelectorAll<HTMLAnchorElement>(`.app-rail__group[data-rail-group="${group}"] [data-rail-item]`));
 }
 
+async function railReorderButtonReady(): Promise<HTMLButtonElement> {
+  const button = await screen.findByRole<HTMLButtonElement>('button', { name: 'Reorder navigation' });
+  await waitFor(() => expect(button.disabled).toBe(false));
+  return button;
+}
+
 function mockRailRects(links: HTMLAnchorElement[]): void {
   links.forEach((link, index) => {
     link.getBoundingClientRect = () => ({
@@ -907,6 +913,63 @@ describe('app shell', () => {
     expect(putCalls).not.toHaveBeenCalled();
   });
 
+  it('fails reorder closed until durable settings hydrate and globally cancels keyboard mode', async () => {
+    const browserCachedOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing', 'console'], secondary: ['logs', 'work'] },
+    });
+    installMemoryLocalStorage({
+      mandible_state_cache: JSON.stringify({
+        v: 2,
+        state: { settings: { app_rail_order: browserCachedOrder } },
+      }),
+    });
+    installPointerEventForTest();
+    let resolveSettings!: (response: Response) => void;
+    const settingsResponse = new Promise<Response>((resolve) => {
+      resolveSettings = resolve;
+    });
+    const putCalls = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings') return settingsResponse;
+      if (url === '/api/settings/app_rail_order' && init?.method === 'PUT') {
+        putCalls(input, init);
+        return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+      }
+      if (url === '/api/dashboard/badges') {
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 })));
+      }
+      return Promise.resolve(new Response(JSON.stringify([])));
+    }));
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+
+    const reorder = await screen.findByRole('button', { name: 'Reorder navigation' });
+    expect((reorder as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByRole('link')[0]?.getAttribute('data-rail-item')).toBe('console');
+    const chat = screen.getByRole('link', { name: 'Chat' });
+    fireRailPointer(chat, 'pointerdown', { pointerId: 12, button: 0, clientX: 10, clientY: 10 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 12, clientX: 80, clientY: 80 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 12, clientX: 80, clientY: 80 });
+    expect(putCalls).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSettings(new Response(JSON.stringify({}), {
+        headers: { 'content-type': 'application/json' },
+      }));
+      await settingsResponse;
+    });
+    await waitFor(() => expect((reorder as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(reorder);
+    await waitFor(() => expect(reorder.getAttribute('aria-pressed')).toBe('true'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(reorder.getAttribute('aria-pressed')).toBe('false'));
+    expect(screen.getByRole('status').textContent).toBe('Navigation reorder cancelled.');
+    expect(putCalls).not.toHaveBeenCalled();
+  });
+
   it('pointer-reorders inside one group, suppresses the drag click, and cancels cleanly', async () => {
     installMemoryLocalStorage();
     installPointerEventForTest();
@@ -914,6 +977,7 @@ describe('app shell', () => {
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const mounted = render(h(App, {}));
+    await railReorderButtonReady();
     const primary = railGroupLinks(mounted.container, 'primary');
     mockRailRects(primary);
     const briefing = primary.find((link) => link.dataset.railItem === 'briefing')!;
@@ -948,7 +1012,7 @@ describe('app shell', () => {
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const first = render(h(App, {}));
-    const reorder = await screen.findByRole('button', { name: 'Reorder navigation' });
+    const reorder = await railReorderButtonReady();
     fireEvent.click(reorder);
     const spaces = await screen.findByRole('link', { name: 'Spaces' });
     await waitFor(() => expect(document.activeElement).toBe(spaces));
@@ -979,7 +1043,7 @@ describe('app shell', () => {
     window.history.replaceState(null, '', '#/spaces');
     const { container } = render(h(App, {}));
     const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
-    fireEvent.click(await screen.findByRole('button', { name: 'Reorder navigation' }));
+    fireEvent.click(await railReorderButtonReady());
     const spaces = screen.getByRole('link', { name: 'Spaces' });
     await waitFor(() => expect(document.activeElement).toBe(spaces));
     fireEvent.keyDown(spaces, { key: 'ArrowUp' });
@@ -999,7 +1063,7 @@ describe('app shell', () => {
     window.history.replaceState(null, '', '#/spaces');
     const { container } = render(h(App, {}));
     const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
-    fireEvent.click(await screen.findByRole('button', { name: 'Reorder navigation' }));
+    fireEvent.click(await railReorderButtonReady());
     const spaces = screen.getByRole('link', { name: 'Spaces' });
     await waitFor(() => expect(document.activeElement).toBe(spaces));
     fireEvent.keyDown(spaces, { key: 'ArrowUp' });
