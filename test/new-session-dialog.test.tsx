@@ -53,6 +53,21 @@ describe("NewSessionDialog transport lanes", () => {
     }));
   });
 
+  it("threads an exact scoped cwd and omits it for unscoped creation", async () => {
+    const scopedSubmit = vi.fn();
+    render(<NewSessionDialog open cwd="/registered/project" onClose={vi.fn()} onSubmit={scopedSubmit} />);
+    fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Scoped" } });
+    fireEvent.click(screen.getByText("Create chat"));
+    expect(scopedSubmit).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/registered/project" }));
+
+    cleanup();
+    const unscopedSubmit = vi.fn();
+    render(<NewSessionDialog open onClose={vi.fn()} onSubmit={unscopedSubmit} />);
+    fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Unscoped" } });
+    fireEvent.click(screen.getByText("Create chat"));
+    expect(unscopedSubmit).toHaveBeenCalledWith(expect.objectContaining({ cwd: undefined }));
+  });
+
   it("hides the Claude PTY and Channel lanes when the daemon does not ship them", async () => {
     render(<NewSessionDialog open onClose={vi.fn()} onSubmit={vi.fn()} />);
 

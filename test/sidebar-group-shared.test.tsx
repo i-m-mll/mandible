@@ -80,12 +80,12 @@ describe('shared sidebar group presentation', () => {
     expect(screen.getByLabelText('12 chats in Mandible').textContent).toBe('12');
 
     const countRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--interaction-count > \.sidebar-group-node__heading > \.sidebar-group-node__count \{([^}]*)\}/,
+      /\.sidebar-group-node--interaction-count > \.sidebar-group-node__header > \.sidebar-group-node__heading > \.sidebar-group-node__count \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(countRule).toContain('visibility: hidden');
     expect(countRule).toContain('opacity: 0');
     const revealRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--interaction-count > \.sidebar-group-node__heading:hover > \.sidebar-group-node__count,\s*\.sidebar-group-node--interaction-count > \.sidebar-group-node__heading:focus-visible > \.sidebar-group-node__count \{([^}]*)\}/,
+      /\.sidebar-group-node--interaction-count > \.sidebar-group-node__header > \.sidebar-group-node__heading:hover > \.sidebar-group-node__count,\s*\.sidebar-group-node--interaction-count > \.sidebar-group-node__header > \.sidebar-group-node__heading:focus-visible > \.sidebar-group-node__count \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(revealRule).toContain('visibility: visible');
     expect(revealRule).not.toMatch(/display|width|grid-template-columns/);
@@ -95,20 +95,20 @@ describe('shared sidebar group presentation', () => {
     expect(countTypography).toContain('font-weight: 400');
     expect(countTypography).toContain('color: var(--text-muted)');
     const folderGrid = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--with-icon > \.sidebar-group-node__heading \{([^}]*)\}/,
+      /\.sidebar-group-node--with-icon > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(folderGrid).toContain('grid-template-columns: 16px minmax(0, 1fr) auto');
     const folderPreset = sidebarGroupStylesheet.match(/\.sidebar-group-node--folder \{([^}]*)\}/)?.[1] ?? '';
     expect(folderPreset).toContain('margin-bottom: 2px');
     const categoryHeading = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > \.sidebar-group-node__heading \{([^}]*)\}/,
+      /\.sidebar-group-node--category > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(categoryHeading).toContain('color: var(--text-subdued)');
     expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
     const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
     expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
     const headingTypography = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node > \.sidebar-group-node__heading \{([^}]*)\}/,
+      /\.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(headingTypography).toContain('font: 400 var(--text-md)/1.35 var(--font-sans)');
     const labelTypography = sidebarItemStylesheet.match(
@@ -120,7 +120,7 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(strongTypography).toContain('font-weight: 400');
     const folderHeading = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > \.sidebar-group-node__heading \{([^}]*)\}/,
+      /\.sidebar-group-node--folder > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
     const rootColumn = sidebarGroupStylesheet.match(
@@ -138,6 +138,21 @@ describe('shared sidebar group presentation', () => {
     expect(showMoreRule).toContain('font-size: var(--text-md)');
     expect(chatHistoryStylesheet).not.toMatch(/chat-project-group__items[\s\S]*padding-left/);
     expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
+  });
+
+  it('reserves a separate 24px group action for hover, focus, and coarse pointers', () => {
+    const onPress = vi.fn();
+    render(<SidebarGroupNode presentation="category" id="chats" label="Chats" expanded onToggle={() => undefined} action={{ label: 'New chat', onPress }}><span /></SidebarGroupNode>);
+    const heading = screen.getByRole('button', { name: 'Chats' });
+    const action = screen.getByRole('button', { name: 'New chat' });
+    expect(action).not.toBe(heading);
+    fireEvent.click(action);
+    expect(onPress).toHaveBeenCalledOnce();
+    const actionRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action \{([^}]*)\}/)?.[1] ?? '';
+    expect(actionRule).toContain('width: 24px');
+    expect(actionRule).toContain('flex: 0 0 24px');
+    expect(actionRule).toContain('opacity: 0');
+    expect(sidebarGroupStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
   });
 
   it('shows and persists the default bounded Chat group size through generic settings', async () => {

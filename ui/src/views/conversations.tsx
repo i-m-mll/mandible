@@ -27,6 +27,7 @@ import type {
   ConversationParent,
   ConversationSource,
   ConversationSidebarGroup,
+  CanonicalProject,
   WorkflowRun,
   WorkflowWorker,
 } from '../api.js';
@@ -41,6 +42,7 @@ import {
   getSessionIssues,
   getSessionPresets,
   listWorkflows,
+  listCanonicalProjects,
   navigateSession,
   resumeConversation,
   sendConsolePrompt,
@@ -78,7 +80,6 @@ import { shortRouteId } from '../routing';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import type { WorkRepo } from './work';
 import { useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 // Bug: bce7370 — Shared message-block components
@@ -278,7 +279,7 @@ function sourceFromSession(session: ConsoleSession): ConversationSource | null {
 const CHAT_PROVIDER_TONES: Record<ConversationSource, SidebarItemProviderTone> = {
   claude_code: 'claude',
   codex: 'codex',
-  gemini: 'gemini',
+  gemini: 'agy',
 };
 
 function getSessionProviderFamily(session: ConsoleSession): string {
@@ -306,86 +307,32 @@ function normalizePathish(pathValue: string | null | undefined): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
-function pathKey(pathValue: string | null | undefined): string {
-  if (!pathValue) return '';
-  return normalizePathish(pathValue).toLowerCase().replace(/[^a-z0-9]+/g, '');
+type RegisteredChatProject = {
+  id: string;
+  key: string;
+  label: string;
+  checkoutId: string;
+  checkoutLabel: string;
+  root: string;
+};
+
+function registeredChatProjects(projects: CanonicalProject[]): RegisteredChatProject[] {
+  return projects.flatMap((project) => project.checkouts.map((checkout) => ({
+    id: project.id,
+    key: project.project_key,
+    label: project.display_name?.trim() || project.project_key,
+    checkoutId: checkout.id,
+    checkoutLabel: checkout.name?.trim() || checkout.work_repo_id?.trim() || checkout.root.trim(),
+    root: checkout.root.trim(),
+  })))
+    .filter((project) => Boolean(project.id && project.key && project.checkoutId && project.root))
+    .sort((left, right) => left.label.localeCompare(right.label)
+      || left.id.localeCompare(right.id)
+      || left.checkoutId.localeCompare(right.checkoutId));
 }
 
-function decodeClaudeProjectPath(pathValue: string | null | undefined): string | null {
-  if (!pathValue) return null;
-  const normalized = normalizePathish(pathValue);
-  const leaf = normalized.split('/').filter(Boolean).pop() ?? normalized;
-  if (!leaf.startsWith('-')) return normalized;
-  const parts = leaf.split('-').filter(Boolean);
-  if (parts.length === 0) return normalized;
-  return `/${parts.join('/')}`;
-}
-
-function isCodexUnboundArchivePath(pathValue: string | null | undefined): boolean {
-  return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\/[^/]+$/i.test(normalizePathish(pathValue));
-}
-
-function repoDisplayName(repo: WorkRepo): string | null {
-  const name = typeof repo.name === 'string' ? repo.name.trim() : '';
-  if (name) return name;
-  const root = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-  if (!root) return null;
-  const parts = normalizePathish(root).split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? null;
-}
-
-function projectNameFromPath(pathValue: string | null | undefined): string {
-  const normalized = normalizePathish(pathValue);
-  if (normalized === 'No Project') return normalized;
-  const parts = normalized.split('/').filter(Boolean);
-  return parts[parts.length - 1] || 'No Project';
-}
-
-function getConversationProject(conversation: Conversation, workRepos: WorkRepo[] = []): string {
-  if (
-    conversation.source === 'codex' &&
-    !conversation.project_path &&
-    isCodexUnboundArchivePath(conversation.cwd)
-  ) {
-    return 'No Project';
-  }
-
-  const candidates = [
-    conversation.cwd,
-    conversation.project_path,
-    decodeClaudeProjectPath(conversation.project_path),
-  ].filter((value): value is string => Boolean(value));
-
-  const repos = workRepos
-    .map((repo) => {
-      const root = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-      return {
-        repo,
-        root,
-        rootKey: pathKey(root),
-        rootNorm: normalizePathish(root),
-        name: repoDisplayName(repo),
-      };
-    })
-    .filter((entry) => entry.root && entry.rootKey && entry.name && !entry.rootNorm.includes('/worktrees/'))
-    .sort((a, b) => b.rootKey.length - a.rootKey.length);
-
-  for (const candidate of candidates) {
-    const normalized = normalizePathish(candidate);
-    const candidateKey = pathKey(candidate);
-    for (const repo of repos) {
-      if (
-        normalized === repo.rootNorm ||
-        normalized.startsWith(`${repo.rootNorm}/`) ||
-        candidateKey.startsWith(repo.rootKey)
-      ) {
-        return repo.name!;
-      }
-    }
-  }
-
-  const fallback = decodeClaudeProjectPath(conversation.project_path) ?? conversation.project_path ?? conversation.cwd;
-  return projectNameFromPath(fallback);
+function registeredProjectSelectionValue(project: RegisteredChatProject): string {
+  return `${encodeURIComponent(project.id)}:${encodeURIComponent(project.checkoutId)}`;
 }
 
 function isSubagentConversation(conversation: Conversation): boolean {
@@ -472,7 +419,6 @@ type ChatSelection =
   | null;
 type ChatEntry = {
   key: string;
-  project: string;
   time: number;
   kind: 'conversation' | 'session';
   conversation?: Conversation;
@@ -485,6 +431,9 @@ type ChatProjectGroup = {
   total: number;
   nextCursor: string | null;
   entries: ChatEntry[];
+  exactRoot?: string;
+  canonicalProjectId?: string;
+  canonicalProjectKey?: string;
 };
 type ChatSectionId = 'pinned' | 'projects' | 'chats';
 type ChatSidebarSections = {
@@ -509,7 +458,6 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
 
 export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
-  workRepos: WorkRepo[];
   initialConversationId: string | null;
   initialSessionId: string | null;
   initialPresetId?: string | null;
@@ -526,6 +474,7 @@ export type ConversationsViewProps = {
     channel_enabled?: boolean;
     presetIds?: string[];
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
+    cwd?: string;
   }) => void;
 };
 
@@ -1248,14 +1197,12 @@ function ConversationInfoDialog({
   linkedConsoleSession,
   issueLinks,
   presets,
-  workRepos,
   onClose,
 }: {
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   presets: SessionPreset[];
-  workRepos: WorkRepo[];
   onClose: () => void;
 }): JSX.Element {
   return (
@@ -1282,7 +1229,7 @@ function ConversationInfoDialog({
           </div>
           <div>
             <span className="conv-info-grid__label">Project</span>
-            <span>{getConversationProject(conversation, workRepos)}</span>
+            <span>Unscoped</span>
           </div>
           <div>
             <span className="conv-info-grid__label">Branch</span>
@@ -1346,14 +1293,12 @@ function ConversationDetail({
   initialConversation,
   onNavigate,
   consoleSessions,
-  workRepos,
   sidebarCollapsed,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
-  workRepos: WorkRepo[];
   sidebarCollapsed: boolean;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -2340,7 +2285,6 @@ function ConversationDetail({
           linkedConsoleSession={linkedConsoleSession}
           issueLinks={sessionIssueLinks}
           presets={sessionPresets}
-          workRepos={workRepos}
           onClose={() => setInfoOpen(false)}
         />
       )}
@@ -2568,7 +2512,7 @@ function ChatEntryItem({
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
-  const providerLabel = source ? SOURCE_LABELS[source] : null;
+  const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
@@ -2606,6 +2550,7 @@ function ChatEntryItem({
       label={title}
       selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
       provider={providerLabel && source ? { label: providerLabel, tone: CHAT_PROVIDER_TONES[source] } : undefined}
+      selectionTone={source ? CHAT_PROVIDER_TONES[source] : undefined}
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
@@ -2714,7 +2659,6 @@ function LiveSessionDetail({
 
 export function ConversationsView({
   consoleSessions,
-  workRepos,
   initialConversationId,
   initialSessionId,
   initialPresetId,
@@ -2726,6 +2670,9 @@ export function ConversationsView({
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
   const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
+  const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
+  const [projectChooserOpen, setProjectChooserOpen] = useState(false);
+  const [projectChooserSelection, setProjectChooserSelection] = useState('');
   const [search, setSearch] = useState('');
   const [searchMode, setSearchMode] = useState<'title' | 'full'>('title');
   const [sourceFilter, setSourceFilter] = useState<ConversationSource | 'all'>('all');
@@ -2738,6 +2685,7 @@ export function ConversationsView({
   const [chatViewState, setChatViewState] = useChatViewState();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
+  const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -2750,6 +2698,16 @@ export function ConversationsView({
   const previousGroupLimitRef = useRef(sidebarGroupLimit);
   const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingPinFocusKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listCanonicalProjects().then((projects) => {
+      if (active) setCanonicalProjects(projects);
+    }).catch(() => {
+      if (active) setCanonicalProjects([]);
+    });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const previous = previousGroupLimitRef.current;
@@ -3022,11 +2980,13 @@ export function ConversationsView({
     return map;
   }, [liveSessions]);
 
+  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
+
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
+    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] | 'project' };
     const groups = displayedConversations.map((group): WorkingGroup => ({
       key: group.key,
-      label: group.label,
+      label: group.kind === 'pinned' ? 'Pinned' : 'Chats',
       total: group.total,
       nextCursor: group.next_cursor,
       kind: group.kind,
@@ -3035,12 +2995,23 @@ export function ConversationsView({
     const groupByKey = new Map(groups.map((group) => [group.key, group]));
     const ensureGroup = (
       key: string,
-      kind: ConversationSidebarGroup['kind'],
+      kind: WorkingGroup['kind'],
       label: string,
+      canonicalProject?: RegisteredChatProject,
     ): WorkingGroup => {
       const existing = groupByKey.get(key);
       if (existing) return existing;
-      const created: WorkingGroup = { key, kind, label, total: 0, nextCursor: null, entries: [] };
+      const created: WorkingGroup = {
+        key,
+        kind,
+        label,
+        total: 0,
+        nextCursor: null,
+        entries: [],
+        exactRoot: canonicalProject?.root,
+        canonicalProjectId: canonicalProject?.id,
+        canonicalProjectKey: canonicalProject?.key,
+      };
       groups.push(created);
       groupByKey.set(key, created);
       return created;
@@ -3050,29 +3021,33 @@ export function ConversationsView({
       label: 'Pinned' | 'Chats',
     ): WorkingGroup => groups.find((group) => group.kind === kind)
       ?? ensureGroup(kind, kind, label);
-    const unpinnedTarget = (conversation: Conversation, sourceGroup: WorkingGroup): WorkingGroup => {
-      if (sourceGroup.kind !== 'pinned') return sourceGroup;
-      const project = getConversationProject(conversation, workRepos);
-      if (project === 'No Project') return ensureKindGroup('chats', 'Chats');
-      return groups.find((group) => group.kind === 'project' && group.label === project)
-        ?? ensureGroup(`local-project:${encodeURIComponent(project)}`, 'project', project);
-    };
-    const moveTotal = (source: WorkingGroup, target: WorkingGroup): void => {
-      if (source.key === target.key) return;
-      source.total = Math.max(0, source.total - 1);
-      target.total += 1;
-    };
+
+    for (const shown of chatViewState.shownProjects) {
+      const registered = registeredProjects.find((project) => (
+        project.id === shown.projectId
+        && project.checkoutId === shown.checkoutId
+      ));
+      if (!registered) continue;
+      ensureGroup(
+        `shown-project:${encodeURIComponent(registered.id)}:${encodeURIComponent(registered.checkoutId)}`,
+        'project',
+        registered.label,
+        registered,
+      );
+    }
 
     for (const sourceGroup of displayedConversations) {
       const source = groupByKey.get(sourceGroup.key)!;
       for (const conversation of sourceGroup.conversations) {
         const target = isConversationPinned(conversation)
           ? ensureKindGroup('pinned', 'Pinned')
-          : unpinnedTarget(conversation, source);
-        moveTotal(source, target);
+          : source.kind === 'pinned' ? ensureKindGroup('chats', 'Chats') : source;
+        if (source.key !== target.key) {
+          source.total = Math.max(0, source.total - 1);
+          target.total += 1;
+        }
         target.entries.push({
           key: `conversation:${conversation.id}`,
-          project: target.kind === 'project' ? target.label : 'No Project',
           time: getConversationTime(conversation),
           kind: 'conversation',
           conversation,
@@ -3097,7 +3072,6 @@ export function ConversationsView({
       group.total += 1;
       group.entries.push({
         key: `session:${session.id}`,
-        project: 'No Project',
         time: getSessionTime(session),
         kind: 'session',
         session,
@@ -3127,7 +3101,8 @@ export function ConversationsView({
         )
         : sortEntries(group.entries);
     }
-    const visibleGroups = groups.filter((group) => group.total > 0 || group.entries.length > 0);
+    ensureKindGroup('chats', 'Chats');
+    const visibleGroups = groups.filter((group) => group.kind === 'chats' || group.total > 0 || group.entries.length > 0 || Boolean(group.exactRoot));
     return {
       pinned: visibleGroups.find((group) => group.kind === 'pinned') ?? null,
       projects: visibleGroups
@@ -3135,7 +3110,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, sort, workRepos]);
+  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, sort]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3332,9 +3307,51 @@ export function ConversationsView({
     channel_enabled?: boolean;
     presetIds?: string[];
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
+    cwd?: string;
   }) => {
     onNewSession(input);
     setDialogOpen(false);
+    setNewSessionCwd(undefined);
+  };
+
+  const openNewSession = (cwd?: string) => {
+    setNewSessionCwd(cwd);
+    setDialogOpen(true);
+  };
+
+  const openProjectChooser = () => {
+    setProjectChooserSelection((current) => (
+      registeredProjects.some((project) => registeredProjectSelectionValue(project) === current)
+        ? current
+        : registeredProjects[0] ? registeredProjectSelectionValue(registeredProjects[0]) : ''
+    ));
+    setProjectChooserOpen(true);
+    setCollapsedSections((current) => {
+      if (!current.has('projects')) return current;
+      const next = new Set(current);
+      next.delete('projects');
+      return next;
+    });
+  };
+
+  const addShownProject = () => {
+    const project = registeredProjects.find((candidate) => (
+      registeredProjectSelectionValue(candidate) === projectChooserSelection
+    ));
+    if (!project) return;
+    setChatViewState((current) => {
+      const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
+      const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
+      if (existingIndex < 0) {
+        return { ...current, shownProjects: [...current.shownProjects, nextSelection] };
+      }
+      if (current.shownProjects[existingIndex].checkoutId === project.checkoutId) return current;
+      return {
+        ...current,
+        shownProjects: current.shownProjects.map((shown, index) => index === existingIndex ? nextSelection : shown),
+      };
+    });
+    setProjectChooserOpen(false);
   };
 
   const renderEntry = (entry: ChatEntry) => (
@@ -3386,17 +3403,6 @@ export function ConversationsView({
             searchAriaLabel="Search chats"
             clearAriaLabel="Clear chat search"
             inputType="text"
-            leadingAction={(
-              <button
-                type="button"
-                className="icon-btn chat-sidebar-new"
-                onClick={() => setDialogOpen(true)}
-                title="New chat"
-                aria-label="New chat"
-              >
-                +
-              </button>
-            )}
             filterTrigger={{
               ariaLabel: 'Search and filter options',
               title: 'Search and filter options',
@@ -3489,6 +3495,17 @@ export function ConversationsView({
         bodyClassName="chat-history-list"
       >
 
+            <div className="chat-sidebar-global-actions" role="region" aria-label="Chat actions">
+              <button type="button" className="chat-sidebar-global-action" onClick={() => openNewSession()}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 4h10a2 2 0 0 1 2 2v3" />
+                  <path d="M5 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8" />
+                  <path d="M17 13v8M13 17h8" />
+                </svg>
+                <span>New chat</span>
+              </button>
+            </div>
+
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;
               const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
@@ -3509,14 +3526,33 @@ export function ConversationsView({
               );
             })() : null}
 
-            {chatSections.projects.length > 0 ? (
+            {chatSections.projects.length > 0 || registeredProjects.length > 0 ? (
               <SidebarGroupNode
                 id="chat-projects"
                 presentation="category"
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
+                action={{ label: 'Add shown project', onPress: openProjectChooser }}
               >
+              {projectChooserOpen ? (
+                <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
+                  <select aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
+                    {registeredProjects.map((project) => {
+                      const hasMultipleCheckouts = registeredProjects.some((candidate) => (
+                        candidate.id === project.id && candidate.checkoutId !== project.checkoutId
+                      ));
+                      return (
+                        <option key={`${project.id}:${project.checkoutId}`} value={registeredProjectSelectionValue(project)}>
+                          {hasMultipleCheckouts ? `${project.label} — ${project.checkoutLabel} (${project.root})` : project.label}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
+                  <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
+                </div>
+              ) : null}
               {chatSections.projects.map((group, index) => {
                 const collapsed = collapsedProjects.has(group.key);
                 const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
@@ -3532,6 +3568,7 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
+                    action={{ label: `New chat in ${group.label}`, onPress: () => openNewSession(group.exactRoot!) }}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
                     loadingMore={loadingMoreKeys.has(group.key)}
@@ -3555,6 +3592,7 @@ export function ConversationsView({
                   headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
+                  action={{ label: 'New unscoped chat', onPress: () => openNewSession() }}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
@@ -3580,7 +3618,6 @@ export function ConversationsView({
             initialConversation={selectedConversationSummary}
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
-            workRepos={workRepos}
             sidebarCollapsed={false}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
@@ -3596,7 +3633,8 @@ export function ConversationsView({
       </div>
       <NewSessionDialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        cwd={newSessionCwd}
+        onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
         onSubmit={handleNewSession}
         initialPresetId={initialPresetId}
       />

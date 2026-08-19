@@ -20,7 +20,7 @@ import { transformContent } from "../transform.js";
 import { getConversationSearchCache } from "../conversations/search-cache.js";
 import {
   ConversationSidebarCursorError,
-  projectConversationSidebar,
+  buildConversationSidebar,
   type ConversationSidebarSort,
 } from "../conversations/sidebar-projection.js";
 import type { SessionManager } from "../session-manager.js";
@@ -494,14 +494,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       const matching = new Set(searched.matches.map((match) => match.conversation_id));
       rows = rows.filter((row) => matching.has(row.id));
     }
-    const workRepos = db.prepare(
-      "SELECT root, name FROM work_repos WHERE dir_exists = 1 AND excluded = 0",
-    ).all() as Array<{ root: string; name: string }>;
-
     try {
-      const groups = projectConversationSidebar({
+      const groups = buildConversationSidebar({
         rows,
-        workRepos,
         sort,
         querySignature,
         limit,
