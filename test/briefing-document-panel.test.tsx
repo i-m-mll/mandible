@@ -10,6 +10,7 @@ import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocument
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
+const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
 const bodyStart = source.indexOf('Plan');
@@ -157,12 +158,15 @@ describe('Briefing document panel', () => {
     const interactionRule = briefingStylesheet.match(/\.briefing-directive__interaction \{([^}]*)\}/)?.[1] ?? '';
 
     expect(interaction.classList.contains('briefing-directive__interaction')).toBe(true);
+    expect(interaction.classList.contains('contextual-action-owner')).toBe(true);
     expect(interaction.querySelector('.briefing-directive__passage')).toBeTruthy();
     expect(interaction.querySelector('.briefing-directive__actions')).toBeTruthy();
     expect(directiveRule).toContain('padding: var(--space-3)');
     expect(interactionRule).not.toContain('padding:');
     expect(briefingStylesheet).toMatch(/\.briefing-directive:not\(\.briefing-directive--selected\):has\(> \.briefing-directive__interaction:hover\)/);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__interaction:hover \.briefing-directive__actions/);
+    expect(interaction.querySelector('.briefing-directive__actions')?.classList.contains('contextual-action-group')).toBe(true);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
+    expect(briefingStylesheet).not.toMatch(/\.briefing-directive--selected \.briefing-directive__actions/);
     expect(briefingStylesheet).not.toMatch(/\.briefing-directive:hover(?:\s|,|\{)/);
   });
 

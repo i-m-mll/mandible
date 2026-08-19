@@ -1,4 +1,6 @@
 import type { ComponentChildren } from 'preact';
+import { ContextualAction } from './ContextualAction';
+import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
 
 type SidebarGroupNodeCommonProps = {
   id: string;
@@ -70,15 +72,15 @@ export function SidebarGroupNode({
     </button>
   ) : null;
   const body = bodyAs === 'ul' ? (
-    <ul id={bodyId} className={bodyClassName}>
+    <>
       {children}
       {showMore ? <li className="sidebar-group-node__show-more-row">{showMore}</li> : null}
-    </ul>
+    </>
   ) : (
-    <div id={bodyId} className={bodyClassName}>
+    <>
       {children}
       {showMore ? <div className="sidebar-group-node__show-more-row">{showMore}</div> : null}
-    </div>
+    </>
   );
 
   return (
@@ -86,7 +88,7 @@ export function SidebarGroupNode({
       className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
     >
-      <div className="sidebar-group-node__header">
+      <div className="sidebar-group-node__header contextual-action-owner">
         <button
           id={headingId}
           type="button"
@@ -101,18 +103,27 @@ export function SidebarGroupNode({
           {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
         </button>
         {action ? (
-          <button
-            type="button"
-            className="sidebar-group-node__action"
-            aria-label={action.label}
-            title={action.label}
-            onClick={action.onPress}
-          >
-            {action.icon === 'new-chat' ? <SidebarNewChatIcon /> : <SidebarAddProjectIcon />}
-          </button>
+          <span className="sidebar-group-node__action-slot contextual-action-group">
+            <ContextualAction
+              className="sidebar-group-node__action"
+              aria-label={action.label}
+              title={action.label}
+              onClick={action.onPress}
+            >
+              {action.icon === 'new-chat' ? <SidebarNewChatIcon /> : <SidebarAddProjectIcon />}
+            </ContextualAction>
+          </span>
         ) : null}
       </div>
-      {expanded ? body : null}
+      <SidebarDisclosureRegion
+        id={bodyId}
+        controllerId={headingId}
+        expanded={expanded}
+        contentAs={bodyAs}
+        contentClassName={bodyClassName}
+      >
+        {body}
+      </SidebarDisclosureRegion>
     </section>
   );
 }

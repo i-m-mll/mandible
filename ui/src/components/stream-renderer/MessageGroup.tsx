@@ -115,7 +115,7 @@ export function MessageGroup({
     // Bug: 236d03b — Fix 5: Wrap each block with per-block MessageActions (copy)
     const text = blockCopyText(block);
     return (
-      <div key={`block-wrap-${index}`} className="message-block-wrapper">
+      <div key={`block-wrap-${index}`} className="message-block-wrapper contextual-action-owner">
         {inner}
         <MessageActions
           onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}
