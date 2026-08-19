@@ -17,13 +17,14 @@ export type AppBottomPanelDescriptor = {
 export type AppShellContextValue = {
   bottomPanel: AppBottomPanelDescriptor | null;
   registerBottomPanel(descriptor: AppBottomPanelDescriptor): () => void;
-  /**
-   * Publish the active view sidebar's authoritative resize width to shared app
-   * chrome. ViewSidebar calls this from a layout effect so the sidebar and
-   * header edge update in the same paint without a second React state mirror.
-   * `null` means the responsive stylesheet owns the sidebar width.
-   */
+  /** Update the shell-owned width for the active route. */
   setViewSidebarWidth(width: number | null): void;
+  /**
+   * The active route's shell-owned persisted width. When defined, ViewSidebar
+   * is controlled by the shared physical boundary token instead of publishing
+   * a second copy of its own width after render.
+   */
+  viewSidebarWidth?: number | null;
   /**
    * Whether the subtree under this provider is the CURRENTLY VISIBLE route.
    *

@@ -188,6 +188,42 @@ function setViewportWidth(width: number): void {
   fireEvent(window, new Event('resize'));
 }
 
+function readSharedSidebarWidth(shell: HTMLElement, railWidth = 208): number {
+  if (window.innerWidth <= 700) return window.innerWidth - railWidth;
+  return parseInt(shell.style.getPropertyValue('--app-view-sidebar-persisted-width'), 10);
+}
+
+function mockLeftChromeRects(
+  shell: HTMLElement,
+  header: HTMLElement,
+  sidebar: HTMLElement | null,
+  railWidth = 208,
+): void {
+  const rect = (left: number, width: number): DOMRect => ({
+    x: left,
+    y: 0,
+    left,
+    top: 0,
+    width,
+    height: 48,
+    right: left + width,
+    bottom: 48,
+    toJSON: () => ({}),
+  });
+  header.getBoundingClientRect = () => rect(
+    0,
+    shell.classList.contains('app-shell--view-sidebar-open')
+      ? railWidth + readSharedSidebarWidth(shell, railWidth)
+      : railWidth,
+  );
+  if (sidebar) {
+    sidebar.getBoundingClientRect = () => rect(
+      railWidth,
+      readSharedSidebarWidth(shell, railWidth),
+    );
+  }
+}
+
 function installMemoryLocalStorage(initial: Record<string, string> = {}): () => void {
   const previous = Object.getOwnPropertyDescriptor(window, 'localStorage');
   const store = new Map(Object.entries(initial));
@@ -726,47 +762,69 @@ describe('app shell', () => {
 
     const first = render(h(App, {}));
     const shell = first.container.querySelector<HTMLElement>('.app-shell');
-    const header = first.container.querySelector('.app-header');
-    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('412px');
+    const header = first.container.querySelector<HTMLElement>('.app-header');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('412px');
     const briefingSidebar = await screen.findByLabelText('Briefings');
     const briefingResize = screen.getByLabelText('Resize Briefings sidebar');
 
     expect(shell?.classList.contains('app-shell--view-sidebar-open')).toBe(true);
-    expect((briefingSidebar as HTMLElement).style.width).toBe('412px');
-    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('412px');
+    expect((briefingSidebar as HTMLElement).style.width).toBe('var(--app-view-sidebar-width)');
+    mockLeftChromeRects(shell!, header!, briefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (briefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
     expect(header?.classList.contains('app-header--sidebar-hidden')).toBe(false);
 
-    fireEvent.keyDown(briefingResize, { key: 'ArrowRight' });
+    fireEvent.mouseDown(briefingResize, { clientX: 412 });
+    fireEvent.mouseMove(document, { clientX: 428 });
     await waitFor(() => {
-      expect((briefingSidebar as HTMLElement).style.width).toBe('420px');
-      expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('420px');
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('428px');
     });
+    fireEvent.mouseUp(document);
+    mockLeftChromeRects(shell!, header!, briefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (briefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
 
     fireEvent.click(screen.getByLabelText('Issues'));
-    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('444px');
     await waitFor(() => expect(
       first.container.querySelector('.view-sidebar[aria-label="Issues"]'),
     ).toBeTruthy());
     const issuesSidebar = first.container.querySelector<HTMLElement>('.view-sidebar[aria-label="Issues"]');
-    expect((issuesSidebar as HTMLElement).style.width).toBe('444px');
-    expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('444px');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('444px');
+    expect(issuesSidebar?.style.width).toBe('var(--app-view-sidebar-width)');
+    mockLeftChromeRects(shell!, header!, issuesSidebar);
+    expect(header!.getBoundingClientRect().right).toBe(issuesSidebar!.getBoundingClientRect().right);
 
     fireEvent.click(screen.getByLabelText('Briefing'));
     await waitFor(() => {
-      expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('420px');
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('428px');
     });
 
+    fireEvent.click(screen.getByLabelText('Hide view sidebar'));
+    await waitFor(() => expect(screen.queryByLabelText('Briefings')).toBeNull());
+    mockLeftChromeRects(shell!, header!, null);
+    expect(header!.getBoundingClientRect().right).toBe(208);
+
+    fireEvent.click(screen.getByLabelText('Show view sidebar'));
+    const restoredBriefingSidebar = await screen.findByLabelText('Briefings');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('428px');
+    mockLeftChromeRects(shell!, header!, restoredBriefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (restoredBriefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
+
     setViewportWidth(700);
-    await waitFor(() => {
-      expect((briefingSidebar as HTMLElement).style.width).toBe('');
-      expect(shell?.style.getPropertyValue('--app-view-sidebar-width'))
-        .toBe('calc(100% - var(--app-rail-width))');
-    });
+    mockLeftChromeRects(shell!, header!, restoredBriefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(700);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (restoredBriefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
     setViewportWidth(1024);
-    await waitFor(() => {
-      expect((briefingSidebar as HTMLElement).style.width).toBe('420px');
-      expect(shell?.style.getPropertyValue('--app-view-sidebar-width')).toBe('420px');
-    });
+    mockLeftChromeRects(shell!, header!, restoredBriefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (restoredBriefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
 
     first.unmount();
     window.history.replaceState(null, '', '#/briefing');
@@ -774,11 +832,14 @@ describe('app shell', () => {
     await screen.findByLabelText('Briefings');
     expect(
       refreshed.container.querySelector<HTMLElement>('.app-shell')
-        ?.style.getPropertyValue('--app-view-sidebar-width'),
-    ).toBe('420px');
+        ?.style.getPropertyValue('--app-view-sidebar-persisted-width'),
+    ).toBe('428px');
 
     const css = readResolvedStylesheet();
     expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-width\)\);/s);
+    expect(css).toMatch(/\.view-sidebar\s*\{[^}]*position:\s*relative;/s);
+    expect((await screen.findByLabelText('Briefings') as HTMLElement).style.width)
+      .toBe('var(--app-view-sidebar-width)');
     expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
 
