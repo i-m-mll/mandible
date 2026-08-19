@@ -189,6 +189,46 @@ describe('SidebarItemRow', () => {
     expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__overflow \{[^}]*position: absolute;[^}]*right: calc\(100% \+ 2px\);/s);
   });
 
+  it('remeasures the shared boundary when an existing row becomes persistently pinned', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
+      if (this.classList.contains('sidebar-item-row__overflow')) return { width: 24 } as DOMRect;
+      if (this.classList.contains('sidebar-item-row__trailing')) {
+        return {
+          width: this.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--persistent-pin') ? 28 : 54,
+        } as DOMRect;
+      }
+      return { width: 0 } as DOMRect;
+    });
+    const actions = (pressed: boolean) => (
+      <>
+        <SidebarItemPinAction label="dynamic" pressed={pressed} onPress={() => undefined} />
+        <SidebarItemOverflowMenu label="More dynamic actions" actions={[{ id: 'copy', label: 'Copy', onSelect: () => undefined }]} />
+      </>
+    );
+    const { rerender } = render(
+      <SidebarItemRow
+        label="Dynamic"
+        selectionLabel="Select dynamic"
+        onSelect={() => undefined}
+        actions={actions(false)}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Select dynamic' }).closest('.sidebar-item-row') as HTMLElement;
+    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('54px');
+
+    rerender(
+      <SidebarItemRow
+        label="Dynamic"
+        selectionLabel="Select dynamic"
+        trailingReveal="persistent-pin"
+        onSelect={() => undefined}
+        actions={actions(true)}
+      />,
+    );
+    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('28px');
+    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
+  });
+
   it('keeps an accessible provider in the fixed right footprint and reveals its dot only through interaction or selection', () => {
     render(
       <SidebarItemRow

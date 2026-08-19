@@ -1,5 +1,5 @@
 import type { ComponentChildren, JSX } from 'preact';
-import { useCallback, useRef, useState } from 'preact/hooks';
+import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 export type SidebarItemRowProps = {
   label: string;
@@ -39,6 +39,7 @@ export function SidebarItemRow({
   onKeyDown,
 }: SidebarItemRowProps): JSX.Element {
   const rowRef = useRef<HTMLDivElement>(null);
+  const trailingRef = useRef<HTMLSpanElement>(null);
   const syncTrailingWidth = useCallback((element: HTMLSpanElement | null) => {
     if (!element) {
       rowRef.current?.style.setProperty('--sidebar-item-row-trailing-width', '0px');
@@ -57,6 +58,10 @@ export function SidebarItemRow({
     );
     row?.style.setProperty('--sidebar-item-row-persistent-width', `${restingWidth}px`);
   }, []);
+
+  useLayoutEffect(() => {
+    syncTrailingWidth(trailingRef.current);
+  }, [actions, provider, syncTrailingWidth, trailingReveal]);
 
   return (
     <div ref={rowRef} className={`sidebar-item-row${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
@@ -79,7 +84,13 @@ export function SidebarItemRow({
         </span>
       </button>
       {provider || actions ? (
-        <span ref={syncTrailingWidth} className="sidebar-item-row__trailing">
+        <span
+          ref={(element) => {
+            trailingRef.current = element;
+            syncTrailingWidth(element);
+          }}
+          className="sidebar-item-row__trailing"
+        >
           {provider ? (
             <span className="sidebar-item-row__provider">
               <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
