@@ -21,6 +21,7 @@ import { getConversationSearchCache } from "../conversations/search-cache.js";
 import {
   ConversationSidebarCursorError,
   buildConversationSidebar,
+  type ConversationSidebarProject,
   type ConversationSidebarSort,
 } from "../conversations/sidebar-projection.js";
 import type { SessionManager } from "../session-manager.js";
@@ -123,6 +124,65 @@ function maskSourceBackedConversationRow(row: ConversationRow): ConversationRow 
 
 function mapSearchConversation(row: ConversationRow, sessionManager?: SessionManager) {
   return mapConversation(maskSourceBackedConversationRow(row), sessionManager);
+}
+
+type ProjectedConversationRow = ConversationRow & {
+  canonical_project_id?: string | null;
+  canonical_project_key?: string | null;
+};
+
+function mapSidebarConversation(
+  row: ProjectedConversationRow,
+  fullTextSearch: boolean,
+  sessionManager?: SessionManager,
+) {
+  return {
+    ...(fullTextSearch
+      ? mapSearchConversation(row, sessionManager)
+      : mapConversation(row, sessionManager)),
+    canonical_project_id: row.canonical_project_id ?? null,
+    canonical_project_key: row.canonical_project_key ?? null,
+  };
+}
+
+const MAX_SIDEBAR_PROJECTS = 500;
+const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
+
+function parseSidebarProjectIds(raw: string | undefined): string[] {
+  if (raw === undefined || raw === "") return [];
+  if (raw.length > MAX_SIDEBAR_PROJECT_IDS_LENGTH) {
+    throw new Error(`project_ids exceeds ${MAX_SIDEBAR_PROJECT_IDS_LENGTH} characters`);
+  }
+  const values = raw.split(",").map((value) => value.trim());
+  if (values.some((value) => !value)) throw new Error("project_ids contains an empty id");
+  const ids = [...new Set(values)];
+  if (ids.length > MAX_SIDEBAR_PROJECTS) {
+    throw new Error(`project_ids accepts at most ${MAX_SIDEBAR_PROJECTS} ids`);
+  }
+  return ids;
+}
+
+function loadSidebarProjects(db: ReturnType<typeof getDb>): ConversationSidebarProject[] {
+  const projects = db.prepare(
+    `SELECT id, project_key, display_name
+     FROM ledger_projects
+     ORDER BY id`,
+  ).all() as Array<{ id: string; project_key: string; display_name: string }>;
+  const roots = db.prepare(
+    `SELECT project_id, root
+     FROM ledger_project_checkouts
+     ORDER BY project_id, root`,
+  ).all() as Array<{ project_id: string; root: string }>;
+  const rootsByProject = new Map<string, string[]>();
+  for (const checkout of roots) {
+    const existing = rootsByProject.get(checkout.project_id) ?? [];
+    existing.push(checkout.root);
+    rootsByProject.set(checkout.project_id, existing);
+  }
+  return projects.map((project) => ({
+    ...project,
+    checkout_roots: rootsByProject.get(project.id) ?? [],
+  }));
 }
 
 function canonicalizeTags(value: unknown, field: string): string[] {
@@ -433,6 +493,20 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   // GET /api/conversations/sidebar — bounded, independently paged sidebar groups.
   server.get("/api/conversations/sidebar", async (req, res) => {
     const query = req.query ?? {};
+    let requestedProjectIds: string[];
+    try {
+      requestedProjectIds = parseSidebarProjectIds(query.project_ids);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    const projects = loadSidebarProjects(db);
+    const knownProjectIds = new Set(projects.map((project) => project.id));
+    const unknownProjectIds = requestedProjectIds.filter((id) => !knownProjectIds.has(id));
+    if (unknownProjectIds.length > 0) {
+      sendJson(res, 400, { error: "Unknown canonical project id", project_ids: unknownProjectIds });
+      return;
+    }
     const parsedLimit = parseInt(query.limit || "20", 10);
     const limit = Math.min(100, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 20));
     const groupKey = query.group_key || undefined;
@@ -481,6 +555,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       full_text: fullTextSearch,
       min_blocks: Number.isFinite(minBlocks) && minBlocks > 0 ? minBlocks : null,
       exclude_subagents: excludeSubagents,
+      project_ids: [...requestedProjectIds].sort(),
       sort,
     })).digest("base64url");
 
@@ -502,6 +577,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         limit,
         groupKey,
         cursor,
+        projects,
+        requestedProjectIds,
       });
       if (groupKey && groups.length === 0) {
         sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
@@ -512,10 +589,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
           key: group.key,
           kind: group.kind,
           label: group.label,
+          ...(group.project_id ? { project_id: group.project_id } : {}),
+          ...(group.project_key ? { project_key: group.project_key } : {}),
           total: group.total,
-          conversations: group.rows.map((row) => fullTextSearch
-            ? mapSearchConversation(row, sessionManager)
-            : mapConversation(row, sessionManager)),
+          conversations: group.rows.map((row) => mapSidebarConversation(
+            row,
+            fullTextSearch,
+            sessionManager,
+          )),
           next_cursor: group.next_cursor,
         })),
         limit,
