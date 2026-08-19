@@ -36,10 +36,12 @@ describe('shared contextual action', () => {
     expect(baseRule).toContain('border-radius: 0');
     expect(baseRule).toContain('background: transparent');
     expect(baseRule).toContain('color: var(--text-subdued)');
-    expect(stylesheet).toMatch(/\.contextual-action:is\([^}]*\[aria-expanded='true'\][^}]*\[aria-pressed='true'\]\)\s*{[^}]*background: transparent;[^}]*color: var\(--text-muted\);/s);
+    expect(stylesheet).toMatch(/\.contextual-action:is\([^}]*\[aria-expanded='true'\][^}]*\[aria-pressed='true'\]\)\s*{[^}]*background: transparent;[^}]*color: var\(--chrome-icon-hover-indirect\);/s);
+    expect(stylesheet).toMatch(/\.contextual-action:is\(:hover, :focus-visible\)\s*{[^}]*color: var\(--chrome-icon-hover-direct\);/s);
     expect(stylesheet).toMatch(/\.contextual-action-group\s*{[^}]*opacity: 0;[^}]*pointer-events: none;/s);
     expect(stylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(stylesheet).not.toMatch(/selected[^}]*contextual-action-group/);
     expect(stylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)\s*{[^}]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/s);
+    expect(stylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*:where\(\.contextual-action-group\) \.contextual-action\s*{[^}]*color: var\(--chrome-icon-hover-indirect\);/);
   });
 });

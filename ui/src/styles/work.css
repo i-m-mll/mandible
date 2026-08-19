@@ -80,10 +80,14 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.repo-card__gear:hover,
 .repo-card__gear--active {
   background: var(--neutral-alpha-08);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-indirect);
+}
+
+.repo-card__gear:is(:hover, :focus-visible) {
+  background: var(--neutral-alpha-08);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .work-filter-panel__field,
@@ -455,9 +459,9 @@
   line-height: 1;
 }
 
-.work-settings-modal__close:hover {
+.work-settings-modal__close:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-08);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .repo-settings-strip__row {

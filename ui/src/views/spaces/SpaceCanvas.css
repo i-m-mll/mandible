@@ -97,6 +97,7 @@
 .space-canvas__icon-btn:hover,
 .space-canvas__icon-btn:focus-visible {
   background: var(--bg-card);
+  color: var(--chrome-icon-hover-direct);
   outline: 1px solid var(--border, #2a2a2a);
 }
 

@@ -131,6 +131,8 @@
   --border-faint: var(--neutral-alpha-04);
   --border-strong: var(--neutral-alpha-12);
   --border-focus: rgba(77, 163, 255, 0.72);
+  --chrome-icon-hover-indirect: #8A8A8A;
+  --chrome-icon-hover-direct: #DFDFDF;
 
   --accent-fg: var(--blue-fg);
   --accent-bg: var(--blue-bg);
@@ -336,6 +338,8 @@
   --text-subtle: rgba(23, 32, 42, 0.72);
   --text-subdued: var(--neutral-8);
   --border-focus: rgba(11, 99, 206, 0.64);
+  --chrome-icon-hover-indirect: #868788;
+  --chrome-icon-hover-direct: #1A1C1F;
 
   --inbox-continuation: #0b63ce;
   --inbox-continuation-bg: var(--status-info-bg);
