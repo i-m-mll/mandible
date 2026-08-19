@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { SidebarGroupNode } from '../components/shared/SidebarGroupNode';
+import { SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
 import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
 import {
   SidebarItemBadge,
@@ -3497,11 +3497,7 @@ export function ConversationsView({
 
             <div className="chat-sidebar-global-actions" role="region" aria-label="Chat actions">
               <button type="button" className="chat-sidebar-global-action" onClick={() => openNewSession()}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M5 4h10a2 2 0 0 1 2 2v3" />
-                  <path d="M5 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8" />
-                  <path d="M17 13v8M13 17h8" />
-                </svg>
+                <SidebarNewChatIcon size={16} />
                 <span>New chat</span>
               </button>
             </div>
@@ -3533,7 +3529,7 @@ export function ConversationsView({
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
-                action={{ label: 'Add shown project', onPress: openProjectChooser }}
+                action={{ label: 'Add project', icon: 'add-project', onPress: openProjectChooser }}
               >
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
@@ -3568,7 +3564,7 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
-                    action={{ label: `New chat in ${group.label}`, onPress: () => openNewSession(group.exactRoot!) }}
+                    action={{ label: `New chat in ${group.label}`, icon: 'new-chat', onPress: () => openNewSession(group.exactRoot!) }}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
                     loadingMore={loadingMoreKeys.has(group.key)}
@@ -3592,7 +3588,7 @@ export function ConversationsView({
                   headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
-                  action={{ label: 'New unscoped chat', onPress: () => openNewSession() }}
+                  action={{ label: 'New chat', icon: 'new-chat', onPress: () => openNewSession() }}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}

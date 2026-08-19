@@ -197,14 +197,23 @@ describe('conversation sidebar groups', () => {
     expect(screen.getByRole('textbox', { name: 'Search chats' }).closest('.sidebar-search-filter')
       ?.querySelector('.sidebar-search-filter__leading-action')).toBeNull();
     const globalActions = screen.getByRole('region', { name: 'Chat actions' });
-    fireEvent.click(within(globalActions).getByRole('button', { name: 'New chat' }));
+    const globalNewChat = within(globalActions).getByRole('button', { name: 'New chat' });
+    const newChatGlyph = Array.from(globalNewChat.querySelectorAll('path')).map((path) => path.getAttribute('d'));
+    expect(globalNewChat.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
+    const chatsHeading = screen.getByRole('button', { name: /^Chats/ });
+    const chatsNewChat = within(chatsHeading.parentElement as HTMLElement).getByRole('button', { name: 'New chat' });
+    expect(Array.from(chatsNewChat.querySelectorAll('path')).map((path) => path.getAttribute('d'))).toEqual(newChatGlyph);
+    fireEvent.click(globalNewChat);
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Global chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Global chat', cwd: undefined }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
     expect(screen.queryByRole('combobox', { name: 'Registered project' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Add shown project' }));
+    const addProject = screen.getByRole('button', { name: 'Add project' });
+    expect(addProject.querySelector('[data-sidebar-action-icon="add-project"]')).toBeTruthy();
+    expect(Array.from(addProject.querySelectorAll('path')).map((path) => path.getAttribute('d'))).not.toEqual(newChatGlyph);
+    fireEvent.click(addProject);
     expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Mandible — Primary (/repos/mandible)' })).toBeTruthy();
     expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Mandible — Alternate (/repos/mandible-alt)' })).toBeTruthy();
     expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Feedbax' })).toBeTruthy();
@@ -215,16 +224,18 @@ describe('conversation sidebar groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Scoped chat', cwd: '/repos/mandible' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add shown project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
     fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible-alt' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(screen.getAllByRole('button', { name: 'New chat in Mandible' })).toHaveLength(1);
+    expect(Array.from(screen.getByRole('button', { name: 'New chat in Mandible' }).querySelectorAll('path'))
+      .map((path) => path.getAttribute('d'))).toEqual(newChatGlyph);
     fireEvent.click(screen.getByRole('button', { name: 'New chat in Mandible' }));
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Alternate scoped chat', cwd: '/repos/mandible-alt' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add shown project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
     fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-feedbax:checkout-feedbax' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(await screen.findByRole('button', { name: 'New chat in Feedbax' })).toBeTruthy();
