@@ -13,6 +13,9 @@ import {
   getConversationHeaderProviderLabel,
 } from '../ui/src/views/conversations.js';
 
+const conversationsStylesheet = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
+const contextualActionStylesheet = readFileSync(resolve(process.cwd(), 'ui/src/styles/contextual-action.css'), 'utf8');
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     loadAddon(): void {}
@@ -245,6 +248,32 @@ describe('compact detail pane shell', () => {
     ).container.querySelector('.detail-pane-shell');
     expect(defaultShell?.classList.contains('detail-pane-shell--compact')).toBe(false);
     expect(defaultShell?.querySelector('.detail-pane-shell__footer')).toBeNull();
+  });
+
+  it('keeps block copy contextual, focusable, and neutral when the block is selected', async () => {
+    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    renderConversationDetail(scopedConversation);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation actions' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Inspect raw blocks' }));
+    const copy = await screen.findByRole('button', { name: 'Copy raw markdown' });
+    const group = copy.closest('.block-copy-action') as HTMLElement;
+    const block = copy.closest('.block') as HTMLElement;
+    expect(copy.classList.contains('contextual-action')).toBe(true);
+    expect(group.classList.contains('contextual-action-group')).toBe(true);
+    expect(block.classList.contains('contextual-action-owner')).toBe(true);
+    expect(group.nextElementSibling?.classList.contains('block-timestamp')).toBe(true);
+
+    copy.focus();
+    expect(document.activeElement).toBe(copy);
+    expect(group.contains(document.activeElement)).toBe(true);
+
+    fireEvent.click(block.querySelector('.block-checkbox') as HTMLInputElement);
+    await waitFor(() => expect(block.classList.contains('block-selected')).toBe(true));
+    expect(group.classList.contains('contextual-action-group--persistent')).toBe(false);
+    expect(conversationsStylesheet).not.toMatch(/block-selected[^}]*block-copy/);
+    expect(conversationsStylesheet).not.toMatch(/block-copy-btn:(?:hover|focus-visible)[^{]*{[^}]*background/);
+    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
   });
 
   it('composes Chat detail through the compact shell with stable header actions and footer', async () => {
