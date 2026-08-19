@@ -208,7 +208,10 @@ describe('conversation sidebar groups', () => {
     expect(showMore.tabIndex).toBe(0);
     showMore.focus();
     expect(document.activeElement).toBe(showMore);
-    expect(pinnedSection.lastElementChild?.lastElementChild).toBe(showMore.parentElement);
+    const pinnedBody = document.getElementById(pinnedHeading.getAttribute('aria-controls') ?? '');
+    expect(pinnedBody).not.toBeNull();
+    expect(within(pinnedBody as HTMLElement).getByRole('button', { name: 'Show more' })).toBe(showMore);
+    expect(pinnedBody?.querySelector('.sidebar-group-node__show-more-row')).toBe(showMore.parentElement);
 
     fireEvent.click(showMore);
     await screen.findByRole('button', { name: 'Open conversation Pinned two' });
