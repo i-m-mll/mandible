@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
 import type { Conversation } from '../ui/src/api.js';
@@ -24,6 +24,10 @@ vi.mock('@xterm/xterm', () => ({
 }));
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
+
+beforeEach(() => {
+  vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
+});
 
 afterEach(() => {
   cleanup();
@@ -154,6 +158,10 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation info' }));
+    const projectLabel = screen.getByText('Project');
+    expect(projectLabel.parentElement?.textContent).toBe('ProjectUnscoped');
+    fireEvent.click(screen.getByRole('button', { name: 'Close info' }));
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();

@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../ui/src/api.js";
 import { ConversationsView } from "../ui/src/views/conversations.js";
@@ -17,6 +17,10 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
+
+beforeEach(() => {
+  vi.spyOn(api, "listCanonicalProjects").mockResolvedValue([]);
+});
 
 afterEach(() => {
   cleanup();

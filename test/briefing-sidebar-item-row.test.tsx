@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,8 +11,11 @@ import {
   type FeedbackCollection,
 } from '../ui/src/views/feedback/collection-model';
 import {
+  BRIEFING_VIEW_STATE_KEY,
   DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+  normalizeBriefingCollectionViewState,
   type BriefingCollectionViewState,
+  useBriefingCollectionViewState,
 } from '../ui/src/views/feedback/collection-view-state';
 
 const firstId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
@@ -52,7 +55,21 @@ function Harness({
         onSelect={onSelect}
       />
       <output data-testid="pinned-state">{JSON.stringify(viewState.pinnedCollectionIds)}</output>
+      <output data-testid="view-state">{JSON.stringify(viewState)}</output>
     </>
+  );
+}
+
+function PersistedHarness(): JSX.Element {
+  const [viewState, setViewState] = useBriefingCollectionViewState();
+  return (
+    <CollectionsSidebar
+      collections={collections}
+      selectedCollectionId={null}
+      viewState={viewState}
+      setViewState={setViewState}
+      onSelect={() => undefined}
+    />
   );
 }
 
@@ -62,6 +79,79 @@ afterEach(() => {
 });
 
 describe('Briefing sidebar row actions', () => {
+  it('normalizes persisted Briefing filters and sort to supported values', () => {
+    expect(normalizeBriefingCollectionViewState({
+      pinnedOnly: true,
+      collectionSort: 'round-count',
+    })).toMatchObject({ pinnedOnly: true, collectionSort: 'round-count' });
+    expect(normalizeBriefingCollectionViewState({
+      pinnedOnly: 'yes',
+      collectionSort: 'created',
+    })).toMatchObject({ pinnedOnly: false, collectionSort: 'activity' });
+  });
+
+  it('persists Briefing filter choices through the existing browser-local view-state owner', async () => {
+    const rows = new Map<string, string>();
+    const storage = {
+      get length() { return rows.size; },
+      clear: () => rows.clear(),
+      getItem: (key: string) => rows.get(key) ?? null,
+      key: (index: number) => [...rows.keys()][index] ?? null,
+      removeItem: (key: string) => rows.delete(key),
+      setItem: (key: string, value: string) => rows.set(key, String(value)),
+    } as Storage;
+    Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
+    render(<PersistedHarness />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing filters' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Pinned only' }));
+    fireEvent.input(screen.getByRole('combobox', { name: 'Sort briefings' }), { target: { value: 'name' } });
+
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}'))
+      .toMatchObject({ pinnedOnly: true, collectionSort: 'name' }));
+  });
+
+  it('uses the shared filter trigger, summary, and overlay dismissal contract', async () => {
+    render(<div><Harness /><button type="button">Outside</button></div>);
+    const trigger = screen.getByRole('button', { name: 'Briefing filters' });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'Briefing filter controls' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Pinned only' }));
+    expect(screen.getByText('Pinned only', { selector: '.sidebar-search-filter__summary span' })).toBeTruthy();
+    expect(screen.getByText('1', { selector: '.sidebar-search-filter__badge' })).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Briefing filter controls' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing filters' }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Briefing filter controls' })).toBeTruthy());
+    screen.getByRole('button', { name: 'Outside' }).dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Briefing filter controls' })).toBeNull());
+  });
+
+  it('keeps manual pins first while sorting and filtering unpinned rows deterministically', () => {
+    render(<Harness initialViewState={{ pinnedCollectionIds: [collections[1].id] }} />);
+    const labels = () => screen.getAllByRole('button', { name: /Select briefing/ })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(labels()).toEqual([
+      'Select briefing Second briefing',
+      'Select briefing First briefing',
+      'Select briefing Third briefing',
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing filters' }));
+    fireEvent.input(screen.getByRole('combobox', { name: 'Sort briefings' }), { target: { value: 'round-count' } });
+    expect(labels()).toEqual([
+      'Select briefing Second briefing',
+      'Select briefing Third briefing',
+      'Select briefing First briefing',
+    ]);
+    expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}')).toMatchObject({ collectionSort: 'round-count' });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Pinned only' }));
+    expect(labels()).toEqual(['Select briefing Second briefing']);
+    expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}')).toMatchObject({ pinnedOnly: true });
+  });
+
   it('renders one ordinary pinned-first list with no Pinned group or collapse contract', () => {
     render(<Harness initialViewState={{
       pinnedCollectionIds: [collections[1].id, collections[0].id],
@@ -99,6 +189,8 @@ describe('Briefing sidebar row actions', () => {
     expect(contentRule).toContain('min(12px, var(--sidebar-item-row-reveal-width))');
     expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
     expect(contentRule).not.toContain('var(--sidebar-item-row-reveal-width) - 12px');
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \{[^}]*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-persistent-width, 0px\);/s);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__overflow \{[^}]*position: absolute;[^}]*right: calc\(100% \+ 2px\);/s);
     expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing \{[^}]*opacity: 1;/s);
     expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin:not\([^}]*\.sidebar-item-row__overflow \{[^}]*opacity: 0;[^}]*pointer-events: none;/s);
     expect(briefingStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|overflow)/);

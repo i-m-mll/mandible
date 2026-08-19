@@ -35,6 +35,7 @@ beforeEach(() => {
     setItem: (key: string, value: string) => rows.set(key, String(value)),
   } as Storage;
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
+  vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
 });
 
 afterEach(() => {

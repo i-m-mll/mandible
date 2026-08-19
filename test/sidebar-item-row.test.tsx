@@ -133,6 +133,7 @@ describe('SidebarItemRow', () => {
     );
     expect(row.querySelector('.sidebar-item-row__trailing')).toBeNull();
     expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('0px');
+    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('0px');
   });
 
   it('reveals the shared cluster and shifted mask boundary for selected, persistent-pin, and coarse-pointer rows', () => {
@@ -148,14 +149,44 @@ describe('SidebarItemRow', () => {
     expect(screen.getByRole('button', { name: 'Select pinned' }).closest('.sidebar-item-row')
       ?.classList.contains('sidebar-item-row--persistent-pin')).toBe(true);
     const stateRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within,\s*\.sidebar-item-row--selected,\s*\.sidebar-item-row--persistent-pin \{([^}]*)\}/,
+      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within,\s*\.sidebar-item-row--selected \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(stateRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
+    const persistentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--persistent-pin \{([^}]*)\}/)?.[1] ?? '';
+    expect(persistentRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-persistent-width, 0px)');
     const coarsePointerRule = sidebarItemRowStylesheet.match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*)\n\}/)?.[1] ?? '';
     expect(coarsePointerRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
     expect(coarsePointerRule).toContain('.sidebar-item-row__trailing');
     expect(coarsePointerRule).toContain('opacity: 1');
     expect(coarsePointerRule).toContain('pointer-events: auto');
+  });
+
+  it('measures only the visible pin at persistent rest and the full cluster for reveal', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
+      const width = this.classList.contains('sidebar-item-row__trailing') ? 28
+        : this.classList.contains('sidebar-item-row__overflow') ? 24
+          : 0;
+      return { width } as DOMRect;
+    });
+    render(
+      <SidebarItemRow
+        label="Persistent"
+        selectionLabel="Select persistent"
+        trailingReveal="persistent-pin"
+        onSelect={() => undefined}
+        actions={(
+          <>
+            <SidebarItemPinAction label="persistent" pressed onPress={() => undefined} />
+            <SidebarItemOverflowMenu label="More persistent actions" actions={[{ id: 'copy', label: 'Copy', onSelect: () => undefined }]} />
+          </>
+        )}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Select persistent' }).closest('.sidebar-item-row') as HTMLElement;
+    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('28px');
+    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__actions \{[^}]*width: 24px;/s);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__overflow \{[^}]*position: absolute;[^}]*right: calc\(100% \+ 2px\);/s);
   });
 
   it('keeps an accessible provider in the fixed right footprint and reveals its dot only through interaction or selection', () => {
@@ -200,7 +231,7 @@ describe('SidebarItemRow', () => {
     render(<SidebarItemRow label="Neutral" selectionLabel="Select neutral" selected onSelect={() => undefined} />);
     const neutral = screen.getByRole('button', { name: 'Select neutral' }).closest('.sidebar-item-row')!;
     expect(neutral.classList.contains('sidebar-item-row--selection-codex')).toBe(false);
-    const selectedRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--selected \{([^}]*)\}/)?.[1] ?? '';
+    const selectedRule = sidebarItemRowStylesheet.match(/\n\n\.sidebar-item-row--selected \{([^}]*)\}/)?.[1] ?? '';
     expect(selectedRule).toContain('background: var(--neutral-alpha-05)');
     expect(selectedRule).toContain('color: var(--text-primary)');
     expect(selectedRule).not.toMatch(/accent-bg|accent-fg/);

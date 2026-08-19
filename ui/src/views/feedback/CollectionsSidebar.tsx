@@ -41,18 +41,24 @@ export function CollectionsSidebar({
   onSelect,
 }: CollectionsSidebarProps): JSX.Element {
   const [draggedPinnedId, setDraggedPinnedId] = useState<string | null>(null);
-  const ordered = useMemo(() => orderFeedbackCollections(
-    filterFeedbackCollections(collections, viewState.collectionSourceFilter),
-    viewState.pinnedCollectionIds,
-  ), [
-    collections,
-    viewState.collectionSourceFilter,
-    viewState.pinnedCollectionIds,
-  ]);
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const pinned = useMemo(
     () => new Set(viewState.pinnedCollectionIds),
     [viewState.pinnedCollectionIds],
   );
+  const ordered = useMemo(() => orderFeedbackCollections(
+    filterFeedbackCollections(collections, viewState.collectionSourceFilter)
+      .filter((collection) => !viewState.pinnedOnly || pinned.has(collection.id)),
+    viewState.pinnedCollectionIds,
+    viewState.collectionSort,
+  ), [
+    collections,
+    viewState.collectionSourceFilter,
+    viewState.pinnedOnly,
+    viewState.collectionSort,
+    viewState.pinnedCollectionIds,
+    pinned,
+  ]);
   const visiblePinned = useMemo(
     () => ordered.filter((collection) => pinned.has(collection.id)),
     [ordered, pinned],
@@ -70,6 +76,7 @@ export function CollectionsSidebar({
     onSelect,
   });
   const navigationIndex = new Map(ordered.map((collection, index) => [collection.id, index]));
+  const activeFilterCount = Number(viewState.pinnedOnly) + Number(viewState.collectionSort !== 'activity');
 
   const togglePin = (collectionId: string) => {
     setViewState((current) => {
@@ -210,6 +217,60 @@ export function CollectionsSidebar({
           searchAriaLabel="Search briefings"
           clearAriaLabel="Clear briefing search"
           captureFindShortcut
+          filterTrigger={{
+            ariaLabel: 'Briefing filters',
+            title: 'Briefing filters',
+            open: filterPanelOpen,
+            active: activeFilterCount > 0,
+            count: activeFilterCount,
+            onToggle: () => setFilterPanelOpen((open) => !open),
+          }}
+          summarySlot={activeFilterCount > 0 ? (
+            <>
+              {viewState.pinnedOnly ? <span>Pinned only</span> : null}
+              {viewState.collectionSort === 'name' ? <span>By name</span> : null}
+              {viewState.collectionSort === 'round-count' ? <span>By round count</span> : null}
+            </>
+          ) : undefined}
+          panel={filterPanelOpen ? {
+            id: 'briefing-filter-panel',
+            variant: 'popover',
+            ariaLabel: 'Briefing filter controls',
+            onDismiss: () => setFilterPanelOpen(false),
+            children: (
+              <>
+                <div className="sidebar-search-filter__section">
+                  <label className="sidebar-search-filter__option">
+                    <input
+                      type="checkbox"
+                      checked={viewState.pinnedOnly}
+                      onInput={(event) => setViewState((current) => ({
+                        ...current,
+                        pinnedOnly: event.currentTarget.checked,
+                      }))}
+                    />
+                    <span>Pinned only</span>
+                  </label>
+                </div>
+                <div className="sidebar-search-filter__section">
+                  <label className="sidebar-search-filter__label" for="briefing-sort">Sort</label>
+                  <select
+                    id="briefing-sort"
+                    aria-label="Sort briefings"
+                    value={viewState.collectionSort}
+                    onInput={(event) => setViewState((current) => ({
+                      ...current,
+                      collectionSort: event.currentTarget.value as BriefingCollectionViewState['collectionSort'],
+                    }))}
+                  >
+                    <option value="activity">Recent activity</option>
+                    <option value="name">Name</option>
+                    <option value="round-count">Round count</option>
+                  </select>
+                </div>
+              </>
+            ),
+          } : undefined}
         />
       )}
       bodyClassName="feedback-collections-sidebar__body"

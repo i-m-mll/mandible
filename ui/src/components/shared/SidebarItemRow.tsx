@@ -42,13 +42,20 @@ export function SidebarItemRow({
   const syncTrailingWidth = useCallback((element: HTMLSpanElement | null) => {
     if (!element) {
       rowRef.current?.style.setProperty('--sidebar-item-row-trailing-width', '0px');
+      rowRef.current?.style.setProperty('--sidebar-item-row-persistent-width', '0px');
       return;
     }
     const row = rowRef.current ?? element.closest<HTMLElement>('.sidebar-item-row');
+    const persistent = row?.classList.contains('sidebar-item-row--persistent-pin') === true;
+    const restingWidth = Math.ceil(element.getBoundingClientRect().width);
+    const overflowWidth = persistent
+      ? Math.ceil(element.querySelector<HTMLElement>('.sidebar-item-row__overflow')?.getBoundingClientRect().width ?? 0)
+      : 0;
     row?.style.setProperty(
       '--sidebar-item-row-trailing-width',
-      `${Math.ceil(element.getBoundingClientRect().width)}px`,
+      `${restingWidth + (overflowWidth > 0 ? overflowWidth + 2 : 0)}px`,
     );
+    row?.style.setProperty('--sidebar-item-row-persistent-width', `${restingWidth}px`);
   }, []);
 
   return (
@@ -107,7 +114,7 @@ export function SidebarItemBadge({
   );
 }
 
-export type SidebarItemProviderTone = 'claude' | 'codex' | 'gemini';
+export type SidebarItemProviderTone = 'claude' | 'codex' | 'agy';
 
 export type SidebarItemProvider = {
   label: string;

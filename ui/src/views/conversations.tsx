@@ -27,6 +27,7 @@ import type {
   ConversationParent,
   ConversationSource,
   ConversationSidebarGroup,
+  CanonicalProject,
   WorkflowRun,
   WorkflowWorker,
 } from '../api.js';
@@ -41,6 +42,7 @@ import {
   getSessionIssues,
   getSessionPresets,
   listWorkflows,
+  listCanonicalProjects,
   navigateSession,
   resumeConversation,
   sendConsolePrompt,
@@ -278,7 +280,7 @@ function sourceFromSession(session: ConsoleSession): ConversationSource | null {
 const CHAT_PROVIDER_TONES: Record<ConversationSource, SidebarItemProviderTone> = {
   claude_code: 'claude',
   codex: 'codex',
-  gemini: 'gemini',
+  gemini: 'agy',
 };
 
 function getSessionProviderFamily(session: ConsoleSession): string {
@@ -306,113 +308,32 @@ function normalizePathish(pathValue: string | null | undefined): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
-function pathKey(pathValue: string | null | undefined): string {
-  if (!pathValue) return '';
-  return normalizePathish(pathValue).toLowerCase().replace(/[^a-z0-9]+/g, '');
+type RegisteredChatProject = {
+  id: string;
+  key: string;
+  label: string;
+  checkoutId: string;
+  checkoutLabel: string;
+  root: string;
+};
+
+function registeredChatProjects(projects: CanonicalProject[]): RegisteredChatProject[] {
+  return projects.flatMap((project) => project.checkouts.map((checkout) => ({
+    id: project.id,
+    key: project.project_key,
+    label: project.display_name?.trim() || project.project_key,
+    checkoutId: checkout.id,
+    checkoutLabel: checkout.name?.trim() || checkout.work_repo_id?.trim() || checkout.root.trim(),
+    root: checkout.root.trim(),
+  })))
+    .filter((project) => Boolean(project.id && project.key && project.checkoutId && project.root))
+    .sort((left, right) => left.label.localeCompare(right.label)
+      || left.id.localeCompare(right.id)
+      || left.checkoutId.localeCompare(right.checkoutId));
 }
 
-function decodeClaudeProjectPath(pathValue: string | null | undefined): string | null {
-  if (!pathValue) return null;
-  const normalized = normalizePathish(pathValue);
-  const leaf = normalized.split('/').filter(Boolean).pop() ?? normalized;
-  if (!leaf.startsWith('-')) return normalized;
-  const parts = leaf.split('-').filter(Boolean);
-  if (parts.length === 0) return normalized;
-  return `/${parts.join('/')}`;
-}
-
-function isCodexUnboundArchivePath(pathValue: string | null | undefined): boolean {
-  return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\/[^/]+$/i.test(normalizePathish(pathValue));
-}
-
-function repoDisplayName(repo: WorkRepo): string | null {
-  const name = typeof repo.name === 'string' ? repo.name.trim() : '';
-  if (name) return name;
-  const root = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-  if (!root) return null;
-  const parts = normalizePathish(root).split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? null;
-}
-
-type RegisteredChatProject = { root: string; label: string };
-
-function registeredChatProjects(workRepos: WorkRepo[]): RegisteredChatProject[] {
-  const byRoot = new Map<string, RegisteredChatProject>();
-  for (const repo of workRepos) {
-    const rootValue = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-    const root = rootValue.trim();
-    const label = repoDisplayName(repo);
-    if (!root || !label || normalizePathish(root).includes('/worktrees/')) continue;
-    byRoot.set(normalizePathish(root), { root, label });
-  }
-  return [...byRoot.values()].sort((left, right) => left.label.localeCompare(right.label) || left.root.localeCompare(right.root));
-}
-
-function exactRegisteredRootForConversation(conversation: Conversation, workRepos: WorkRepo[]): string | null {
-  const candidates = [conversation.cwd, conversation.project_path, decodeClaudeProjectPath(conversation.project_path)]
-    .filter((value): value is string => Boolean(value));
-  const matches = registeredChatProjects(workRepos)
-    .filter(({ root }) => candidates.some((candidate) => {
-      const normalized = normalizePathish(candidate);
-      const normalizedRoot = normalizePathish(root);
-      return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}/`);
-    }))
-    .sort((left, right) => normalizePathish(right.root).length - normalizePathish(left.root).length);
-  return matches[0]?.root ?? null;
-}
-
-function projectNameFromPath(pathValue: string | null | undefined): string {
-  const normalized = normalizePathish(pathValue);
-  if (normalized === 'No Project') return normalized;
-  const parts = normalized.split('/').filter(Boolean);
-  return parts[parts.length - 1] || 'No Project';
-}
-
-function getConversationProject(conversation: Conversation, workRepos: WorkRepo[] = []): string {
-  if (
-    conversation.source === 'codex' &&
-    !conversation.project_path &&
-    isCodexUnboundArchivePath(conversation.cwd)
-  ) {
-    return 'No Project';
-  }
-
-  const candidates = [
-    conversation.cwd,
-    conversation.project_path,
-    decodeClaudeProjectPath(conversation.project_path),
-  ].filter((value): value is string => Boolean(value));
-
-  const repos = workRepos
-    .map((repo) => {
-      const root = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-      return {
-        repo,
-        root,
-        rootKey: pathKey(root),
-        rootNorm: normalizePathish(root),
-        name: repoDisplayName(repo),
-      };
-    })
-    .filter((entry) => entry.root && entry.rootKey && entry.name && !entry.rootNorm.includes('/worktrees/'))
-    .sort((a, b) => b.rootKey.length - a.rootKey.length);
-
-  for (const candidate of candidates) {
-    const normalized = normalizePathish(candidate);
-    const candidateKey = pathKey(candidate);
-    for (const repo of repos) {
-      if (
-        normalized === repo.rootNorm ||
-        normalized.startsWith(`${repo.rootNorm}/`) ||
-        candidateKey.startsWith(repo.rootKey)
-      ) {
-        return repo.name!;
-      }
-    }
-  }
-
-  const fallback = decodeClaudeProjectPath(conversation.project_path) ?? conversation.project_path ?? conversation.cwd;
-  return projectNameFromPath(fallback);
+function registeredProjectSelectionValue(project: RegisteredChatProject): string {
+  return `${encodeURIComponent(project.id)}:${encodeURIComponent(project.checkoutId)}`;
 }
 
 function isSubagentConversation(conversation: Conversation): boolean {
@@ -499,7 +420,6 @@ type ChatSelection =
   | null;
 type ChatEntry = {
   key: string;
-  project: string;
   time: number;
   kind: 'conversation' | 'session';
   conversation?: Conversation;
@@ -513,6 +433,8 @@ type ChatProjectGroup = {
   nextCursor: string | null;
   entries: ChatEntry[];
   exactRoot?: string;
+  canonicalProjectId?: string;
+  canonicalProjectKey?: string;
 };
 type ChatSectionId = 'pinned' | 'projects' | 'chats';
 type ChatSidebarSections = {
@@ -1277,14 +1199,12 @@ function ConversationInfoDialog({
   linkedConsoleSession,
   issueLinks,
   presets,
-  workRepos,
   onClose,
 }: {
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   presets: SessionPreset[];
-  workRepos: WorkRepo[];
   onClose: () => void;
 }): JSX.Element {
   return (
@@ -1311,7 +1231,7 @@ function ConversationInfoDialog({
           </div>
           <div>
             <span className="conv-info-grid__label">Project</span>
-            <span>{getConversationProject(conversation, workRepos)}</span>
+            <span>Unscoped</span>
           </div>
           <div>
             <span className="conv-info-grid__label">Branch</span>
@@ -1375,14 +1295,12 @@ function ConversationDetail({
   initialConversation,
   onNavigate,
   consoleSessions,
-  workRepos,
   sidebarCollapsed,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
-  workRepos: WorkRepo[];
   sidebarCollapsed: boolean;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -2369,7 +2287,6 @@ function ConversationDetail({
           linkedConsoleSession={linkedConsoleSession}
           issueLinks={sessionIssueLinks}
           presets={sessionPresets}
-          workRepos={workRepos}
           onClose={() => setInfoOpen(false)}
         />
       )}
@@ -2744,7 +2661,6 @@ function LiveSessionDetail({
 
 export function ConversationsView({
   consoleSessions,
-  workRepos,
   initialConversationId,
   initialSessionId,
   initialPresetId,
@@ -2758,7 +2674,7 @@ export function ConversationsView({
   const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
   const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
-  const [projectChooserRoot, setProjectChooserRoot] = useState('');
+  const [projectChooserSelection, setProjectChooserSelection] = useState('');
   const [search, setSearch] = useState('');
   const [searchMode, setSearchMode] = useState<'title' | 'full'>('title');
   const [sourceFilter, setSourceFilter] = useState<ConversationSource | 'all'>('all');
@@ -2771,6 +2687,7 @@ export function ConversationsView({
   const [chatViewState, setChatViewState] = useChatViewState();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
+  const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -2783,6 +2700,16 @@ export function ConversationsView({
   const previousGroupLimitRef = useRef(sidebarGroupLimit);
   const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingPinFocusKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listCanonicalProjects().then((projects) => {
+      if (active) setCanonicalProjects(projects);
+    }).catch(() => {
+      if (active) setCanonicalProjects([]);
+    });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const previous = previousGroupLimitRef.current;
@@ -3055,43 +2982,38 @@ export function ConversationsView({
     return map;
   }, [liveSessions]);
 
-  const registeredProjects = useMemo(() => registeredChatProjects(workRepos), [workRepos]);
+  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
 
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
-    const groups = displayedConversations.map((group): WorkingGroup => {
-      const sourceGroup = serverGroups.find((candidate) => candidate.key === group.key);
-      const sourceConversations = sourceGroup?.conversations ?? group.conversations;
-      const resolvedRoots = sourceConversations
-        .map((conversation) => exactRegisteredRootForConversation(conversation, workRepos))
-        .filter((root): root is string => Boolean(root));
-      const exactRoots = new Set(resolvedRoots);
-      return {
-        key: group.key,
-        label: group.label,
-        total: group.total,
-        nextCursor: group.next_cursor,
-        kind: group.kind,
-        entries: [],
-        exactRoot: group.kind === 'project' && sourceConversations.length > 0 && resolvedRoots.length === sourceConversations.length && exactRoots.size === 1
-          ? [...exactRoots][0]
-          : undefined,
-      };
-    });
-    for (const root of chatViewState.shownProjectRoots) {
-      const registered = registeredProjects.find((project) => normalizePathish(project.root) === normalizePathish(root));
-      if (!registered || groups.some((group) => group.kind === 'project' && normalizePathish(group.exactRoot) === normalizePathish(root))) continue;
-      groups.push({ key: `shown-project:${encodeURIComponent(root)}`, label: registered.label, total: 0, nextCursor: null, kind: 'project', entries: [], exactRoot: registered.root });
-    }
+    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] | 'project' };
+    const groups = displayedConversations.map((group): WorkingGroup => ({
+      key: group.key,
+      label: group.kind === 'pinned' ? 'Pinned' : 'Chats',
+      total: group.total,
+      nextCursor: group.next_cursor,
+      kind: group.kind,
+      entries: [],
+    }));
     const groupByKey = new Map(groups.map((group) => [group.key, group]));
     const ensureGroup = (
       key: string,
-      kind: ConversationSidebarGroup['kind'],
+      kind: WorkingGroup['kind'],
       label: string,
+      canonicalProject?: RegisteredChatProject,
     ): WorkingGroup => {
       const existing = groupByKey.get(key);
       if (existing) return existing;
-      const created: WorkingGroup = { key, kind, label, total: 0, nextCursor: null, entries: [] };
+      const created: WorkingGroup = {
+        key,
+        kind,
+        label,
+        total: 0,
+        nextCursor: null,
+        entries: [],
+        exactRoot: canonicalProject?.root,
+        canonicalProjectId: canonicalProject?.id,
+        canonicalProjectKey: canonicalProject?.key,
+      };
       groups.push(created);
       groupByKey.set(key, created);
       return created;
@@ -3101,34 +3023,33 @@ export function ConversationsView({
       label: 'Pinned' | 'Chats',
     ): WorkingGroup => groups.find((group) => group.kind === kind)
       ?? ensureGroup(kind, kind, label);
-    const unpinnedTarget = (conversation: Conversation, sourceGroup: WorkingGroup): WorkingGroup => {
-      if (sourceGroup.kind !== 'pinned') return sourceGroup;
-      const exactRoot = exactRegisteredRootForConversation(conversation, workRepos);
-      const exactGroup = exactRoot
-        ? groups.find((group) => group.kind === 'project' && normalizePathish(group.exactRoot) === normalizePathish(exactRoot))
-        : undefined;
-      if (exactGroup) return exactGroup;
-      const project = getConversationProject(conversation, workRepos);
-      if (project === 'No Project') return ensureKindGroup('chats', 'Chats');
-      return groups.find((group) => group.kind === 'project' && group.label === project)
-        ?? ensureGroup(`local-project:${encodeURIComponent(project)}`, 'project', project);
-    };
-    const moveTotal = (source: WorkingGroup, target: WorkingGroup): void => {
-      if (source.key === target.key) return;
-      source.total = Math.max(0, source.total - 1);
-      target.total += 1;
-    };
+
+    for (const shown of chatViewState.shownProjects) {
+      const registered = registeredProjects.find((project) => (
+        project.id === shown.projectId
+        && project.checkoutId === shown.checkoutId
+      ));
+      if (!registered) continue;
+      ensureGroup(
+        `shown-project:${encodeURIComponent(registered.id)}:${encodeURIComponent(registered.checkoutId)}`,
+        'project',
+        registered.label,
+        registered,
+      );
+    }
 
     for (const sourceGroup of displayedConversations) {
       const source = groupByKey.get(sourceGroup.key)!;
       for (const conversation of sourceGroup.conversations) {
         const target = isConversationPinned(conversation)
           ? ensureKindGroup('pinned', 'Pinned')
-          : unpinnedTarget(conversation, source);
-        moveTotal(source, target);
+          : source.kind === 'pinned' ? ensureKindGroup('chats', 'Chats') : source;
+        if (source.key !== target.key) {
+          source.total = Math.max(0, source.total - 1);
+          target.total += 1;
+        }
         target.entries.push({
           key: `conversation:${conversation.id}`,
-          project: target.kind === 'project' ? target.label : 'No Project',
           time: getConversationTime(conversation),
           kind: 'conversation',
           conversation,
@@ -3153,7 +3074,6 @@ export function ConversationsView({
       group.total += 1;
       group.entries.push({
         key: `session:${session.id}`,
-        project: 'No Project',
         time: getSessionTime(session),
         kind: 'session',
         session,
@@ -3192,7 +3112,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjectRoots, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, serverGroups, sort, workRepos]);
+  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, sort]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3402,7 +3322,11 @@ export function ConversationsView({
   };
 
   const openProjectChooser = () => {
-    setProjectChooserRoot((current) => current || registeredProjects[0]?.root || '');
+    setProjectChooserSelection((current) => (
+      registeredProjects.some((project) => registeredProjectSelectionValue(project) === current)
+        ? current
+        : registeredProjects[0] ? registeredProjectSelectionValue(registeredProjects[0]) : ''
+    ));
     setProjectChooserOpen(true);
     setCollapsedSections((current) => {
       if (!current.has('projects')) return current;
@@ -3413,10 +3337,22 @@ export function ConversationsView({
   };
 
   const addShownProject = () => {
-    if (!registeredProjects.some((project) => project.root === projectChooserRoot)) return;
-    setChatViewState((current) => current.shownProjectRoots.includes(projectChooserRoot)
-      ? current
-      : { ...current, shownProjectRoots: [...current.shownProjectRoots, projectChooserRoot] });
+    const project = registeredProjects.find((candidate) => (
+      registeredProjectSelectionValue(candidate) === projectChooserSelection
+    ));
+    if (!project) return;
+    setChatViewState((current) => {
+      const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
+      const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
+      if (existingIndex < 0) {
+        return { ...current, shownProjects: [...current.shownProjects, nextSelection] };
+      }
+      if (current.shownProjects[existingIndex].checkoutId === project.checkoutId) return current;
+      return {
+        ...current,
+        shownProjects: current.shownProjects.map((shown, index) => index === existingIndex ? nextSelection : shown),
+      };
+    });
     setProjectChooserOpen(false);
   };
 
@@ -3603,10 +3539,19 @@ export function ConversationsView({
               >
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
-                  <select aria-label="Registered project" value={projectChooserRoot} onChange={(event) => setProjectChooserRoot(event.currentTarget.value)}>
-                    {registeredProjects.map((project) => <option key={project.root} value={project.root}>{project.label}</option>)}
+                  <select aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
+                    {registeredProjects.map((project) => {
+                      const hasMultipleCheckouts = registeredProjects.some((candidate) => (
+                        candidate.id === project.id && candidate.checkoutId !== project.checkoutId
+                      ));
+                      return (
+                        <option key={`${project.id}:${project.checkoutId}`} value={registeredProjectSelectionValue(project)}>
+                          {hasMultipleCheckouts ? `${project.label} — ${project.checkoutLabel} (${project.root})` : project.label}
+                        </option>
+                      );
+                    })}
                   </select>
-                  <button type="button" onClick={addShownProject} disabled={!projectChooserRoot}>Add</button>
+                  <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
                 </div>
               ) : null}
@@ -3625,7 +3570,7 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
-                    action={group.exactRoot ? { label: `New chat in ${group.label}`, onPress: () => openNewSession(group.exactRoot) } : undefined}
+                    action={{ label: `New chat in ${group.label}`, onPress: () => openNewSession(group.exactRoot!) }}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
                     loadingMore={loadingMoreKeys.has(group.key)}
@@ -3675,7 +3620,6 @@ export function ConversationsView({
             initialConversation={selectedConversationSummary}
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
-            workRepos={workRepos}
             sidebarCollapsed={false}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
