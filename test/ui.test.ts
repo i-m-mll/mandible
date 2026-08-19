@@ -799,7 +799,6 @@ describe('app shell', () => {
     expect(screen.getByLabelText('Main navigation')).toBeTruthy();
     expect(screen.queryByPlaceholderText('Filter issues...')).toBeNull();
     const reveal = screen.getByLabelText('Show view sidebar');
-    const themeToggle = screen.getByLabelText(/^App theme:/);
     const footer = container.querySelector('.app-rail__footer');
     const sidebarControls = container.querySelector('.app-rail__sidebar-controls');
     const header = container.querySelector('.app-header');
@@ -811,12 +810,100 @@ describe('app shell', () => {
     expect(header?.querySelector('.app-header__route')).toBeNull();
     expect(sidebarControls?.parentElement).toBe(footer);
     expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
-    expect(Boolean(reveal.compareDocumentPosition(themeToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(screen.queryByLabelText(/^App theme:/)).toBeNull();
+    expect(container.querySelector('.app-rail__theme-toggle')).toBeNull();
 
     fireEvent.click(reveal);
 
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
+  });
+
+  it('persists Settings theme choices, applies root attributes, and follows system changes', async () => {
+    stubEventSource();
+    window.history.replaceState(null, '', '#/settings');
+    let storedTheme = 'system';
+    let systemListener: (() => void) | null = null;
+    const mediaQuery = {
+      matches: false,
+      media: '(prefers-color-scheme: dark)',
+      onchange: null,
+      addEventListener: vi.fn((_event: string, listener: () => void) => {
+        systemListener = listener;
+      }),
+      removeEventListener: vi.fn((_event: string, listener: () => void) => {
+        if (systemListener === listener) systemListener = null;
+      }),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery));
+    const savedModes: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings' && init?.method !== 'PUT') {
+        return new Response(JSON.stringify({ app_theme: storedTheme }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === '/api/settings/app_theme' && init?.method === 'PUT') {
+        storedTheme = (JSON.parse(String(init.body)) as { value: string }).value;
+        savedModes.push(storedTheme);
+        return new Response('{}', { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({ projects: [] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === '/api/settings/instructions-delivery') {
+        return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    }));
+
+    render(h(App, {}));
+
+    const themeSelect = await screen.findByRole('combobox', { name: 'App theme' });
+    await waitFor(() => {
+      expect(document.documentElement.dataset.themeMode).toBe('system');
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    changeSelect(themeSelect, 'light');
+    await waitFor(() => {
+      expect(savedModes).toEqual(['light']);
+      expect(document.documentElement.dataset.themeMode).toBe('light');
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    const mainNavigation = screen.getByLabelText('Main navigation');
+    fireEvent.click(within(mainNavigation).getByLabelText('Spaces'));
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
+    await waitFor(() => expect((themeSelect as HTMLSelectElement).value).toBe('light'));
+
+    changeSelect(themeSelect, 'dark');
+    await waitFor(() => {
+      expect(savedModes).toEqual(['light', 'dark']);
+      expect(document.documentElement.dataset.themeMode).toBe('dark');
+      expect(document.documentElement.dataset.theme).toBe('dark');
+    });
+
+    changeSelect(themeSelect, 'system');
+    await waitFor(() => {
+      expect(savedModes).toEqual(['light', 'dark', 'system']);
+      expect(document.documentElement.dataset.themeMode).toBe('system');
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    act(() => {
+      mediaQuery.matches = true;
+      systemListener?.();
+    });
+    expect(document.documentElement.dataset.theme).toBe('dark');
   });
 
   it('keeps desktop login in left chrome without a detail-pane overlay', () => {
@@ -1169,6 +1256,25 @@ describe('app shell', () => {
 });
 
 describe('SettingsView', () => {
+  it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
+    const onSave = vi.fn(async () => undefined);
+
+    render(h(SettingsView, { settings: { app_theme: 'system' }, onSave }));
+
+    const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
+    expect(themeSelect.getAttribute('aria-describedby')).toBe('settings-app-theme-description');
+    expect(within(themeSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'System',
+      'Dark',
+      'Light',
+    ]);
+
+    for (const mode of ['light', 'dark', 'system']) {
+      changeSelect(themeSelect, mode);
+      await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('app_theme', mode));
+    }
+  });
+
   it('shows project restriction state and existing grants', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

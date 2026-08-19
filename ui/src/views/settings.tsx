@@ -1874,11 +1874,13 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         <div className="settings-view__section-body">
           <div className="settings-view__select-row">
             <div className="settings-view__select-info">
-              <span className="settings-view__select-label">App theme</span>
-              <span className="settings-view__select-desc">Follow the system appearance or pin Mandible to dark or light</span>
+              <label className="settings-view__select-label" htmlFor="settings-app-theme">App theme</label>
+              <span id="settings-app-theme-description" className="settings-view__select-desc">Follow the system appearance or pin Mandible to dark or light</span>
             </div>
             <select
+              id="settings-app-theme"
               className="settings-view__select"
+              aria-describedby="settings-app-theme-description"
               value={normalizeAppThemeMode(settings.app_theme)}
               onChange={async (e) => {
                 try {

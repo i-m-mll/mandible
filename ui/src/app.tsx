@@ -82,7 +82,7 @@ import {
 } from './state';
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
 import type { BugRef, ConsoleSession } from './state';
-import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
+import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
 import {
   readInitialViewSidebarWidth,
   viewSidebarGeometryForRoute,
@@ -138,13 +138,6 @@ const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#0b0f14',
   light: '#f5f7fb',
 } as const;
-const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
-  system: 'System',
-  light: 'Light',
-  dark: 'Dark',
-};
-const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
-
 type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
 
 const RENDERABLE_TABS: RenderableTab[] = [
@@ -444,52 +437,6 @@ function TasksIcon({ size = 18 }: { size?: number }): JSX.Element {
   );
 }
 
-function SunIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2" />
-      <path d="M12 20v2" />
-      <path d="m4.93 4.93 1.41 1.41" />
-      <path d="m17.66 17.66 1.41 1.41" />
-      <path d="M2 12h2" />
-      <path d="M20 12h2" />
-      <path d="m6.34 17.66-1.41 1.41" />
-      <path d="m19.07 4.93-1.41 1.41" />
-    </svg>
-  );
-}
-
-function MoonIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3a6 6 0 0 0 9 7.4A9 9 0 1 1 12 3Z" />
-    </svg>
-  );
-}
-
-function SunMoonIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2v2" />
-      <path d="M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715" />
-      <path d="M16 12a4 4 0 0 0-4-4" />
-      <path d="m19 5-1.256 1.256" />
-      <path d="M20 12h2" />
-    </svg>
-  );
-}
-
-function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: number }): JSX.Element {
-  if (mode === 'light') {
-    return <SunIcon size={size} />;
-  }
-  if (mode === 'dark') {
-    return <MoonIcon size={size} />;
-  }
-  return <SunMoonIcon size={size} />;
-}
-
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
     return { tab: 'spaces', params: {} };
@@ -626,7 +573,6 @@ function App(): JSX.Element {
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
-  const [themeModeSaving, setThemeModeSaving] = useState(false);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
   const lastDashboardSseAtRef = useRef(0);
   // Current shared-SSE connection state, updated from onState, so the fallback
@@ -1589,23 +1535,6 @@ function App(): JSX.Element {
     dispatch({ type: 'updateSetting', key, value });
   };
 
-  const handleRailThemeCycle = async () => {
-    if (themeModeSaving) {
-      return;
-    }
-    const currentMode = normalizeAppThemeMode(state.settings.app_theme);
-    const currentIndex = APP_THEME_MODE_CYCLE.indexOf(currentMode);
-    const nextMode = APP_THEME_MODE_CYCLE[(currentIndex + 1) % APP_THEME_MODE_CYCLE.length];
-    setThemeModeSaving(true);
-    try {
-      await handleSettingsSave('app_theme', nextMode);
-    } catch {
-      return;
-    } finally {
-      setThemeModeSaving(false);
-    }
-  };
-
   const handleAckContinuation = async (sessionId: string) => {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
@@ -1949,14 +1878,6 @@ function App(): JSX.Element {
       ? `Collapse ${bottomPanel.title}`
       : `Show ${bottomPanel.title}`
     : 'Show detail panel';
-  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
-  const appThemeModeIndex = APP_THEME_MODE_CYCLE.indexOf(appThemeMode);
-  const nextAppThemeMode = APP_THEME_MODE_CYCLE[(appThemeModeIndex + 1) % APP_THEME_MODE_CYCLE.length];
-  const appThemeModeLabel = APP_THEME_MODE_LABELS[appThemeMode];
-  const nextAppThemeModeLabel = APP_THEME_MODE_LABELS[nextAppThemeMode];
-  const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
-  const appThemeModeTooltipLabel = 'App theme';
-
   useLayoutEffect(() => {
     if (!viewSidebarOpen || !viewSidebarGeometry) return;
     setViewSidebarWidth(readInitialViewSidebarWidth(viewSidebarGeometry));
@@ -2128,21 +2049,6 @@ function App(): JSX.Element {
                   placement="rail"
                   showRailLabel={railDisplayMode === 'both'}
                 />
-                <button
-                  type="button"
-                  className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}
-                  onClick={() => void handleRailThemeCycle()}
-                  disabled={themeModeSaving}
-                  data-theme-mode={appThemeMode}
-                  aria-label={appThemeModeControlLabel}
-                  title={appThemeModeTooltipLabel}
-                >
-                  <span className="app-rail__icon">
-                    <AppThemeModeIcon mode={appThemeMode} size={18} />
-                  </span>
-                  {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeModeLabel}</span>}
-                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{appThemeModeTooltipLabel}</span>}
-                </button>
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',
