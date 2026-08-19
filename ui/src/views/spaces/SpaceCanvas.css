@@ -29,7 +29,7 @@
   padding: 6px 10px;
   border-bottom: 1px solid var(--border, #2a2a2a);
   background: var(--bg-secondary);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: none;
   position: relative;
   z-index: 2;
   flex: 0 0 auto;
@@ -195,10 +195,6 @@
 .space-canvas__autosave[data-status='saving'] .space-canvas__autosave-dot {
   background: var(--accent, #4f8cff);
   animation: space-canvas-pulse 1s ease-in-out infinite;
-}
-
-.space-canvas__autosave[data-status='saved'] .space-canvas__autosave-dot {
-  background: var(--success, #3fb950);
 }
 
 .space-canvas__autosave[data-status='error'] .space-canvas__autosave-dot {
