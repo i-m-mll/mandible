@@ -31,12 +31,13 @@ describe('app rail layering styles', () => {
     expect(hiddenSidebarBottomPanelRule).not.toMatch(/box-shadow:\s*var\(--shadow-rail\)/);
   });
 
-  it('does not cast shared app or sidebar shadows over Spaces canvas chrome', () => {
-    const spacesContentTopRule = findRule('.app-content--spaces::before');
+  it('keeps shared content and Spaces sidebar chrome free of competing shadows', () => {
+    const sharedContentTopRule = findRule('.app-content::before');
     const spacesSidebarRule = findRule('.app-layout--view-sidebar-open .view-sidebar.spaces-tree');
 
-    expect(spacesContentTopRule).toBeTruthy();
-    expect(spacesContentTopRule).toMatch(/box-shadow:\s*none/);
+    expect(sharedContentTopRule).toBeTruthy();
+    expect(sharedContentTopRule).toMatch(/content:\s*none/);
+    expect(sharedContentTopRule).not.toMatch(/box-shadow:/);
     expect(spacesSidebarRule).toBeTruthy();
     expect(spacesSidebarRule).toMatch(/box-shadow:\s*none/);
   });
