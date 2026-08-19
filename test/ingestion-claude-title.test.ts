@@ -9,6 +9,8 @@ import { configureIngestionWorker, ingestBatchForWorker, triggerTargetedIngest }
 import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "../src/client-auth/tokens.js";
 import { credentialMaskFor } from "../src/credential-leak-scan.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
 import { addCredential, createUser } from "../src/users/store.js";
 
 let tempDir = "";
@@ -178,6 +180,80 @@ describe("Claude provider title ingestion", () => {
         block_count: before.block_count,
       }),
     });
+  });
+
+  it("repairs an EOF-checkpointed legacy title for both sidebar and detail projection", async () => {
+    const sessionPath = await writeClaudeSession();
+    const initialMtime = new Date(1_800_000_000_000);
+    await fsp.utimes(sessionPath, initialMtime, initialMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    await fsp.appendFile(sessionPath, row({
+      type: "ai-title",
+      aiTitle: "Review and take over QA successor briefing task",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    }), "utf8");
+    const titledMtime = new Date(1_800_000_005_000);
+    await fsp.utimes(sessionPath, titledMtime, titledMtime);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    const indexed = db.prepare(
+      "SELECT id, source_mtime, block_count FROM conversations WHERE source_path = ?",
+    ).get(sessionPath) as { id: string; source_mtime: number; block_count: number };
+    expect(db.prepare(
+      "SELECT byte_offset FROM conversation_ingest_state WHERE file_path = ?",
+    ).get(sessionPath)).toEqual({ byte_offset: fs.statSync(sessionPath).size });
+
+    // Reproduce the live copied-database shape: an older parser advanced the
+    // append checkpoint past the real ai-title record while leaving the
+    // conversation row's fallback title and source metadata stale.
+    const legacyTitle = "This session is being continued from a previous conversation that ran out of context. The summary be";
+    db.prepare(`UPDATE conversations
+      SET title = ?, starred = 1, source_hash = ?, source_mtime = ?
+      WHERE id = ?`).run(
+      legacyTitle,
+      "append:legacy-title-parser",
+      indexed.source_mtime - 5_000,
+      indexed.id,
+    );
+
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+
+    const authoritativeTitle = "Review and take over QA successor briefing task";
+    expect(db.prepare(
+      "SELECT title, source_mtime, block_count FROM conversations WHERE id = ?",
+    ).get(indexed.id)).toEqual({
+      title: authoritativeTitle,
+      source_mtime: fs.statSync(sessionPath).mtimeMs,
+      block_count: indexed.block_count,
+    });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const sidebar = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=10",
+    });
+    expect(sidebar.status).toBe(200);
+    expect(sidebar.body).toEqual(expect.objectContaining({
+      groups: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "pinned",
+          conversations: expect.arrayContaining([
+            expect.objectContaining({ id: indexed.id, title: authoritativeTitle }),
+          ]),
+        }),
+      ]),
+    }));
+
+    const detail = await router.invoke({
+      method: "GET",
+      url: `/api/conversations/${indexed.id}`,
+    });
+    expect(detail.status).toBe(200);
+    expect(detail.body).toEqual(expect.objectContaining({
+      conversation: expect.objectContaining({ id: indexed.id, title: authoritativeTitle }),
+    }));
   });
 
   it("preserves an earlier explicit custom-title when ai-title arrives in a later append", async () => {
