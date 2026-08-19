@@ -1,4 +1,5 @@
 import type { ConversationBlock } from '../api';
+import { classifyTranscriptBlock } from '../../../src/parsers/transcript-visibility';
 import type {
   AssistantEvent,
   StreamEvent,
@@ -210,6 +211,9 @@ export function conversationBlocksToStreamEvents(
     }
 
     if (block.type === 'system' || block.type === 'event') {
+      if (classifyTranscriptBlock(block.type, metadata) === 'bookkeeping') {
+        continue;
+      }
       flushAssistant();
       events.push({
         type: 'transcript:semantic',
@@ -217,7 +221,11 @@ export function conversationBlocksToStreamEvents(
         session_id: providerSessionId,
         semantic_kind: block.type,
         content: block.content,
-        label: typeof metadata.event_type === 'string' ? metadata.event_type : undefined,
+        label: typeof metadata.source_event_type === 'string'
+          ? metadata.source_event_type
+          : typeof metadata.event_type === 'string'
+            ? metadata.event_type
+            : undefined,
         is_error: metadata.is_error === true || metadata.level === 'error',
         source,
       });
