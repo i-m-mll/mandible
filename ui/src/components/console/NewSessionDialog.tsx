@@ -27,6 +27,7 @@ type TransportLaneOption = {
 
 type NewSessionDialogProps = {
   open: boolean;
+  cwd?: string;
   onClose: () => void;
   onSubmit: (input: {
     label: string;
@@ -37,6 +38,7 @@ type NewSessionDialogProps = {
     channel_enabled?: boolean;
     presetIds?: string[];
     runOptions?: Record<string, SessionRunOptionValue>;
+    cwd?: string;
   }) => void;
   /** Pre-selected instruction artifact or legacy preset ID from navigation. */
   initialPresetId?: string | null;
@@ -184,6 +186,7 @@ function OptionCard({
 
 export function NewSessionDialog({
   open,
+  cwd,
   onClose,
   onSubmit,
   initialPresetId,
@@ -346,6 +349,7 @@ export function NewSessionDialog({
       channel_enabled: transportLane === 'channel' || undefined,
       presetIds: supportsPresets ? presetIds : undefined,
       runOptions: Object.keys(runOptionValues).length > 0 ? runOptionValues : undefined,
+      cwd,
     });
     setLabel('');
     setKind('agent');

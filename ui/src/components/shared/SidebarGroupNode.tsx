@@ -13,6 +13,10 @@ type SidebarGroupNodeCommonProps = {
   canShowMore?: boolean;
   loadingMore?: boolean;
   onShowMore?(): void;
+  action?: {
+    label: string;
+    onPress(): void;
+  };
 };
 
 export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
@@ -50,6 +54,7 @@ export function SidebarGroupNode({
   canShowMore = false,
   loadingMore = false,
   onShowMore,
+  action,
 }: SidebarGroupNodeProps): JSX.Element {
   const headingId = `${id}-heading`;
   const bodyId = `${id}-body`;
@@ -80,19 +85,34 @@ export function SidebarGroupNode({
       className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
     >
-      <button
-        id={headingId}
-        type="button"
-        className="sidebar-group-node__heading"
-        aria-expanded={expanded}
-        aria-controls={bodyId}
-        aria-description={headingDescription}
-        onClick={onToggle}
-      >
-        {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
-        <strong>{label}</strong>
-        {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
-      </button>
+      <div className="sidebar-group-node__header">
+        <button
+          id={headingId}
+          type="button"
+          className="sidebar-group-node__heading"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          aria-description={headingDescription}
+          onClick={onToggle}
+        >
+          {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
+          <strong>{label}</strong>
+          {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
+        </button>
+        {action ? (
+          <button
+            type="button"
+            className="sidebar-group-node__action"
+            aria-label={action.label}
+            title={action.label}
+            onClick={action.onPress}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        ) : null}
+      </div>
       {expanded ? body : null}
     </section>
   );
