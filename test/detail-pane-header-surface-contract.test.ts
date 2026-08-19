@@ -92,9 +92,90 @@ function cssRuleEntries(css: string): Array<{ selector: string; body: string }> 
   return entries;
 }
 
+function finalTargetCompound(selector: string): string {
+  let start = 0;
+  let bracketDepth = 0;
+  let parenthesisDepth = 0;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let index = 0; index < selector.length; index += 1) {
+    const character = selector[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '[') {
+      bracketDepth += 1;
+      continue;
+    }
+    if (character === ']') {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (bracketDepth > 0) continue;
+    if (character === '(') {
+      parenthesisDepth += 1;
+      continue;
+    }
+    if (character === ')') {
+      parenthesisDepth = Math.max(0, parenthesisDepth - 1);
+      continue;
+    }
+    if (parenthesisDepth === 0 && (/\s/.test(character) || character === '>' || character === '+' || character === '~')) {
+      start = index + 1;
+    }
+  }
+
+  return selector.slice(start).trim();
+}
+
+function withoutAttributeSelectors(compound: string): string {
+  let bracketDepth = 0;
+  return Array.from(compound, (character) => {
+    if (character === '[') {
+      bracketDepth += 1;
+      return ' ';
+    }
+    if (character === ']') {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      return ' ';
+    }
+    return bracketDepth > 0 ? ' ' : character;
+  }).join('');
+}
+
 function selectorTargetsClass(selector: string, className: string): boolean {
   const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\.${escaped}(?:[:\\[].*)?$`).test(selector);
+  return new RegExp(`\\.${escaped}(?![A-Za-z0-9_-])`).test(
+    withoutAttributeSelectors(finalTargetCompound(selector)),
+  );
+}
+
+function surfaceDeclarationsFor(css: string): Array<{ selector: string; body: string }> {
+  return cssRuleEntries(css).filter(({ selector, body }) => (
+    auditedSurfaceClasses.some((className) => selectorTargetsClass(selector, className))
+    && /(?:^|;)\s*(?:background(?:-color)?|opacity)\s*:/m.test(body)
+  ));
+}
+
+function expectOnlyCanonicalSurfaceDeclarations(css: string): void {
+  expect(surfaceDeclarationsFor(css)).toEqual(canonicalSurfaceClasses.map((className) => ({
+    selector: `.${className}`,
+    body: expect.stringMatching(/background:\s*var\(--surface-app\);/),
+  })));
 }
 
 function tokenBlock(theme: 'dark' | 'light'): string {
@@ -123,11 +204,7 @@ function expectedRgb(hex: string): string {
 
 function renderConsumerFixtures(theme: 'dark' | 'light'): Document {
   const surface = resolvedSurfaceApp(theme);
-  const surfaceCascade = cssRuleEntries(stylesheet)
-    .filter(({ selector, body }) => (
-      auditedSurfaceClasses.some((className) => selectorTargetsClass(selector, className))
-      && /(?:^|;)\s*(?:background(?:-color)?|opacity)\s*:/m.test(body)
-    ))
+  const surfaceCascade = surfaceDeclarationsFor(stylesheet)
     .map(({ selector, body }) => `${selector} {${body}}`)
     .join('\n');
   const fixtures = DIRECT_DETAIL_CONSUMERS.map((consumer) => `
@@ -181,16 +258,28 @@ describe('canonical detail header surface contract', () => {
     }
   });
 
-  it('forbids consumer background, transparency, or opacity overrides on the shared seam', () => {
-    const surfaceDeclarations = cssRuleEntries(stylesheet).filter(({ selector, body }) => (
-      auditedSurfaceClasses.some((className) => selectorTargetsClass(selector, className))
-      && /(?:^|;)\s*(?:background(?:-color)?|opacity)\s*:/m.test(body)
-    ));
+  it('rejects compound-class overrides without treating descendant controls as the header target', () => {
+    const compoundOverride = `
+      .issues-detail .ledger-issue-detail__header.is-loading {
+        background: transparent;
+      }
+    `;
+    const descendantControl = `
+      .ledger-issue-detail__header .nested-control {
+        background: transparent;
+      }
+    `;
 
-    expect(surfaceDeclarations).toEqual(canonicalSurfaceClasses.map((className) => ({
-      selector: `.${className}`,
-      body: expect.stringMatching(/background:\s*var\(--surface-app\);/),
-    })));
+    expect(surfaceDeclarationsFor(compoundOverride)).toEqual([{
+      selector: '.issues-detail .ledger-issue-detail__header.is-loading',
+      body: expect.stringMatching(/background:\s*transparent;/),
+    }]);
+    expect(() => expectOnlyCanonicalSurfaceDeclarations(`${stylesheet}\n${compoundOverride}`)).toThrow();
+    expect(() => expectOnlyCanonicalSurfaceDeclarations(`${stylesheet}\n${descendantControl}`)).not.toThrow();
+  });
+
+  it('forbids consumer background, transparency, or opacity overrides on the shared seam', () => {
+    expectOnlyCanonicalSurfaceDeclarations(stylesheet);
   });
 
   it.each(['dark', 'light'] as const)(
