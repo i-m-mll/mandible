@@ -31,15 +31,6 @@
   align-items: flex-start;
 }
 
-.turn-group .transcript-item {
-  width: fit-content;
-  max-width: min(760px, 100%);
-}
-
-.turn-group--user .transcript-item {
-  max-width: 100%;
-}
-
 /* msg-text-block — unified markdown text block (replaces .stream-text-block + .block-markdown) */
 .msg-text-block {
   line-height: 1.6;
@@ -164,6 +155,97 @@
 
 .user-bubble__text p:last-child {
   margin-bottom: 0;
+}
+
+.instruction-message-block {
+  width: 100%;
+  color: var(--text-primary);
+}
+
+.instruction-message-block__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.instruction-message-block__summary::-webkit-details-marker {
+  display: none;
+}
+
+.instruction-message-block__summary::before {
+  content: '\25B8';
+  font-size: 10px;
+  line-height: 1;
+}
+
+.instruction-message-block[open] .instruction-message-block__summary::before {
+  content: '\25BE';
+}
+
+.instruction-message-block__label {
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.instruction-message-block__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.instruction-message-block__body {
+  margin-top: 12px;
+}
+
+.semantic-event {
+  width: min(100%, 760px);
+  border-left: 2px solid var(--neutral-alpha-10);
+  padding: 6px 10px;
+  color: var(--text-muted);
+}
+
+.semantic-event--error {
+  border-left-color: var(--status-danger-border-soft);
+  color: var(--status-danger-fg);
+}
+
+.semantic-event__summary {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.semantic-event__label {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+.semantic-event__content {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  color: var(--text-primary);
+}
+
+.message-actions.message-actions--selecting {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tool-card__result-wrapper {
+  min-height: 24px;
 }
 
 /* ThinkingBlock — label + chevron for collapsed/expanded state */

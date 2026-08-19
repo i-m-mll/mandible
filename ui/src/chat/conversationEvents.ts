@@ -84,7 +84,7 @@ function parseMetadata(json: string): Record<string, unknown> {
 
 export function conversationBlocksToStreamEvents(
   providerSessionId: string,
-  blocks: Pick<ConversationBlock, 'id' | 'type' | 'content' | 'metadata_json'>[],
+  blocks: Pick<ConversationBlock, 'id' | 'type' | 'content' | 'metadata_json' | 'timestamp' | 'dag_uuid'>[],
   options: { leadingAssistantTurnId?: string | null } = {},
 ): StreamEvent[] {
   const events: StreamEvent[] = [];
@@ -120,6 +120,11 @@ export function conversationBlocksToStreamEvents(
 
   for (const block of blocks) {
     const metadata = parseMetadata(block.metadata_json);
+    const source = {
+      blockId: block.id,
+      timestamp: block.timestamp || undefined,
+      dagUuid: block.dag_uuid ?? undefined,
+    };
 
     if (block.type === 'user_message') {
       flushAssistant();
@@ -130,7 +135,7 @@ export function conversationBlocksToStreamEvents(
         parent_tool_use_id: null,
         message: {
           role: 'user',
-          content: [{ type: 'text', text: block.content }],
+          content: [{ type: 'text', text: block.content, source }],
         },
       });
       continue;
@@ -146,17 +151,17 @@ export function conversationBlocksToStreamEvents(
           cache_creation_input_tokens: tokenUsage.cache_creation ?? tokenUsage.cache_creation_input_tokens,
         };
       }
-      pushAssistantBlock(block.id, { type: 'text', text: block.content });
+      pushAssistantBlock(block.id, { type: 'text', text: block.content, source });
       continue;
     }
 
     if (block.type === 'thinking') {
-      pushAssistantBlock(block.id, { type: 'thinking', thinking: block.content });
+      pushAssistantBlock(block.id, { type: 'thinking', thinking: block.content, source });
       continue;
     }
 
     if (block.type === 'plan') {
-      pushAssistantBlock(block.id, { type: 'plan', text: block.content });
+      pushAssistantBlock(block.id, { type: 'plan', text: block.content, source });
       continue;
     }
 
@@ -166,15 +171,24 @@ export function conversationBlocksToStreamEvents(
         id: String(metadata.tool_id ?? `tool-${events.length}`),
         name: String(metadata.tool_name ?? 'tool'),
         input: (metadata.tool_input as Record<string, unknown> | undefined) ?? {},
+        source,
       });
       continue;
     }
 
     if (block.type === 'tool_result') {
+      // The request must precede its result in the event stream so the render
+      // model can pair them without reordering persisted history.
+      const continuingBlocks = [...assistantBlocks];
+      const continuingTurnId = assistantTurnStartId;
+      const continuingUsage = assistantUsage;
+      flushAssistant();
       const toolResult: ToolResultContentBlock = {
         type: 'tool_result',
         tool_use_id: String(metadata.tool_id ?? ''),
         content: block.content,
+        is_error: metadata.is_error === true || metadata.level === 'error',
+        source,
       };
       events.push({
         type: 'user',
@@ -186,7 +200,27 @@ export function conversationBlocksToStreamEvents(
           content: [toolResult],
         },
       });
+      // Persisted parsers store the result between assistant blocks belonging
+      // to one logical turn. Emit the next assistant snapshot with the same id
+      // and accumulated content, matching live provider snapshot semantics.
+      assistantBlocks = continuingBlocks;
+      assistantTurnStartId = continuingTurnId;
+      assistantUsage = continuingUsage;
       continue;
+    }
+
+    if (block.type === 'system' || block.type === 'event') {
+      flushAssistant();
+      events.push({
+        type: 'transcript:semantic',
+        uuid: block.id,
+        session_id: providerSessionId,
+        semantic_kind: block.type,
+        content: block.content,
+        label: typeof metadata.event_type === 'string' ? metadata.event_type : undefined,
+        is_error: metadata.is_error === true || metadata.level === 'error',
+        source,
+      });
     }
   }
 
