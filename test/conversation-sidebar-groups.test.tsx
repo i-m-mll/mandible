@@ -86,10 +86,9 @@ function group(overrides: Partial<ConversationSidebarGroup> & Pick<ConversationS
   return { total: 0, conversations: [], next_cursor: null, ...overrides };
 }
 
-function renderView(consoleSessions: ConsoleSession[] = [], workRepos: Array<{ name: string; root: string }> = [], onNewSession = vi.fn()): void {
+function renderView(consoleSessions: ConsoleSession[] = [], onNewSession = vi.fn()): void {
   render(<ConversationsView
     consoleSessions={consoleSessions}
-    workRepos={workRepos}
     initialConversationId={null}
     initialSessionId={null}
     sidebarGroupLimit={1}
@@ -189,10 +188,7 @@ describe('conversation sidebar groups', () => {
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const onNewSession = vi.fn();
-    renderView([], [
-      { name: 'Mandible', root: '/repos/mandible' },
-      { name: 'Feedbax', root: '/repos/feedbax' },
-    ], onNewSession);
+    renderView([], onNewSession);
 
     const conversationRow = await screen.findByRole('button', { name: 'Open conversation Project one' });
     const chats = screen.getByRole('button', { name: /^Chats/ });
@@ -241,14 +237,14 @@ describe('conversation sidebar groups', () => {
       .toEqual(['New chat in Feedbax', 'New chat in Mandible']);
   });
 
-  it('keeps exact cwd matches unscoped and cannot synthesize a project from scanner data', async () => {
+  it('keeps conversation paths unscoped under Chats without a scanner-repo input surface', async () => {
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     const unresolved = { ...projectOne, cwd: '/repos/mandible/packages/ui', project_path: '/repos/mandible' };
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
       limit: 1,
       groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [unresolved] })],
     });
-    renderView([], [{ name: 'Forged Mandible label', root: '/repos/mandible' }]);
+    renderView();
     const conversationRow = await screen.findByRole('button', { name: 'Open conversation Project one' });
     const chats = screen.getByRole('button', { name: /^Chats/ });
     expect(chats.closest('section')?.contains(conversationRow)).toBe(true);

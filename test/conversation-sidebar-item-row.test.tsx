@@ -124,7 +124,7 @@ describe('conversation sidebar labeled-item rows', () => {
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
-    render(<ConversationsView consoleSessions={[]} workRepos={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewSession={() => undefined} />);
+    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewSession={() => undefined} />);
 
     const selected = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
     const idle = await screen.findByRole('button', { name: `Open conversation ${idleConversation.title}` });
@@ -158,7 +158,6 @@ describe('conversation sidebar labeled-item rows', () => {
     render(
       <ConversationsView
         consoleSessions={[]}
-        workRepos={[]}
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
@@ -223,7 +222,6 @@ describe('conversation sidebar labeled-item rows', () => {
     const renderView = () => render(
       <ConversationsView
         consoleSessions={[]}
-        workRepos={[]}
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
@@ -299,7 +297,6 @@ describe('conversation sidebar labeled-item rows', () => {
     const renderPreview = () => render(
       <ConversationsView
         consoleSessions={[]}
-        workRepos={[]}
         initialConversationId={null}
         initialSessionId={null}
         instance={rejectModePreview}

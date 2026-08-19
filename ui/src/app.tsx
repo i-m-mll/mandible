@@ -2243,7 +2243,6 @@ function App(): JSX.Element {
           return (
             <LazyConversationsView
               consoleSessions={state.consoleSessions}
-              workRepos={state.workRepos}
               initialConversationId={tabRoute.params.conversation ?? null}
               initialSessionId={tabRoute.params.session ?? null}
               initialPresetId={tabRoute.params.preset ?? null}

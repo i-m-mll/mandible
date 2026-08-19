@@ -134,7 +134,6 @@ describe('compact detail pane shell', () => {
       <ConversationsView
         conversations={[conversation]}
         consoleSessions={[]}
-        workRepos={[]}
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}

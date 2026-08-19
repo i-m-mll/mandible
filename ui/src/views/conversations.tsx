@@ -80,7 +80,6 @@ import { shortRouteId } from '../routing';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import type { WorkRepo } from './work';
 import { useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 // Bug: bce7370 — Shared message-block components
@@ -459,7 +458,6 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
 
 export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
-  workRepos: WorkRepo[];
   initialConversationId: string | null;
   initialSessionId: string | null;
   initialPresetId?: string | null;

@@ -35,7 +35,6 @@ describe("conversation full-text UI request path", () => {
     const getConversationSidebar = vi.spyOn(api, "getConversationSidebar").mockResolvedValue({ groups: [], limit: 5 });
     render(<ConversationsView
       consoleSessions={[]}
-      workRepos={[]}
       initialConversationId={null}
       initialSessionId={null}
       onSelectSession={() => {}}
