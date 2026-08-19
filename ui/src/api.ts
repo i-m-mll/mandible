@@ -20,6 +20,9 @@ import type {
   Conversation as ContractConversation,
   ConversationChild as ContractConversationChild,
   ConversationParent as ContractConversationParent,
+  ConversationPositionTarget as ContractConversationPositionTarget,
+  ConversationPositionTargetKind as ContractConversationPositionTargetKind,
+  ConversationPositionWindow as ContractConversationPositionWindow,
   ConversationSource as ContractConversationSource,
   Role as ContractRole,
   StoredConversationBlock as ContractConversationBlock,
@@ -2250,36 +2253,27 @@ export async function getConversationSidebar(params: {
   return cachedApiGetJson<ConversationSidebarResponse>(`/api/conversations/sidebar?${query.toString()}`);
 }
 
-export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null }> {
-  const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
-  const payload = (await parseMaybeJson(resp)) as {
-    conversation?: Conversation;
-    blocks?: ConversationBlock[];
-    children?: ConversationChild[];
-    parent?: ConversationParent | null;
-  };
-  // Flatten: merge top-level conversation fields with blocks/children arrays
-  return {
-    ...(payload.conversation ?? {} as Conversation),
-    blocks: payload.blocks ?? [],
-    children: payload.children ?? [],
-    parent: payload.parent ?? null,
-  } as Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null };
-}
+export type ConversationWindowRequest =
+  | { target?: 'initial' | 'latest'; limit?: number; signal?: AbortSignal }
+  | { block: string; limit?: number; signal?: AbortSignal }
+  | { turn: string; limit?: number; signal?: AbortSignal }
+  | { position: number; limit?: number; signal?: AbortSignal };
 
-export async function getConversationBlocks(id: string, params?: {
-  types?: string;
-  offset?: number;
-  limit?: number;
-}): Promise<{ blocks: ConversationBlock[]; total: number }> {
+export async function getConversationWindow(
+  id: string,
+  request: ConversationWindowRequest = {},
+): Promise<ConversationPositionWindow> {
   const query = new URLSearchParams();
-  if (params?.types) query.set('types', params.types);
-  if (params?.offset) query.set('offset', String(params.offset));
-  if (params?.limit) query.set('limit', String(params.limit));
-  const qs = query.toString();
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/blocks${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(resp)) as { blocks: ConversationBlock[]; total: number };
+  if ('target' in request && request.target) query.set('target', request.target);
+  if ('block' in request) query.set('block', request.block);
+  if ('turn' in request) query.set('turn', request.turn);
+  if ('position' in request) query.set('position', String(request.position));
+  if (request.limit) query.set('limit', String(request.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
+    signal: request.signal,
+  });
+  return (await parseMaybeJson(resp)) as ConversationPositionWindow;
 }
 
 export async function updateConversation(id: string, data: {
@@ -2671,6 +2665,9 @@ export type Conversation = ContractConversation;
 
 export type ConversationChild = ContractConversationChild;
 export type ConversationParent = ContractConversationParent;
+export type ConversationPositionTarget = ContractConversationPositionTarget;
+export type ConversationPositionTargetKind = ContractConversationPositionTargetKind;
+export type ConversationPositionWindow = ContractConversationPositionWindow;
 export type WorkflowRun = ContractWorkflowRun;
 export type WorkflowPhase = ContractWorkflowPhase;
 export type WorkflowWorker = ContractWorkflowWorker;

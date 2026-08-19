@@ -31,7 +31,6 @@ export function GroupFooter({
 
   return (
     <div className="group-footer">
-      <hr className="group-footer__separator" />
       <div className="group-footer__row">
         <button
           type="button"

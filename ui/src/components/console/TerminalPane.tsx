@@ -45,8 +45,6 @@ type TerminalPaneProps = {
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
-  // Bug: e4845f6 — DAG leaf for history-first hydration path filtering
-  resumeAtMessage?: string | null;
   // Bug: b5e1c51 — Channel-enabled PTY sessions get Terminal + Events tabs
   channelEnabled?: boolean;
   workspaceMode?: boolean;
@@ -215,7 +213,6 @@ export function TerminalPane({
   isVisible,
   viewMode,
   onViewModeChange,
-  resumeAtMessage,
   channelEnabled = false,
   workspaceMode = false,
 }: TerminalPaneProps): JSX.Element {
@@ -229,7 +226,6 @@ export function TerminalPane({
   } = useConsoleStream({
     sessionId,
     providerSessionId,
-    resumeAtMessage,
     sessionStatus,
   });
   const {

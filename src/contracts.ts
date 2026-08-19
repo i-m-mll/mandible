@@ -338,6 +338,35 @@ export type ConversationParent = {
   title: string;
 };
 
+export type ConversationPositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
+
+export type ConversationPositionTarget = {
+  kind: ConversationPositionTargetKind;
+  requested_value: string | number | null;
+  position: number | null;
+  block_id: string | null;
+  turn_id: string | null;
+};
+
+export type ConversationPositionWindow = {
+  conversation: Conversation;
+  body_source: "source" | "legacy";
+  children: ConversationChild[];
+  parent: ConversationParent | null;
+  revision: number;
+  total: number;
+  target: ConversationPositionTarget;
+  window: {
+    start_position: number | null;
+    end_position: number | null;
+    has_before: boolean;
+    has_after: boolean;
+    after_count: number;
+    limit: number;
+  };
+  blocks: StoredConversationBlock[];
+};
+
 export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "warning";
 export type WorkflowWorkerStatus = "pending" | "running" | "completed" | "failed" | "warning";
 

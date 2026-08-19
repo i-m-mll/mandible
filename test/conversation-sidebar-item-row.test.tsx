@@ -113,6 +113,20 @@ function sidebarResponse(rows: ConversationSidebarConversation[]) {
   return { groups, limit: 5 };
 }
 
+function positionWindow(row: Conversation) {
+  return {
+    conversation: row,
+    body_source: 'legacy' as const,
+    blocks: [],
+    children: [],
+    parent: null,
+    revision: row.block_count,
+    total: row.block_count,
+    target: { kind: 'initial' as const, requested_value: null, position: null, block_id: null, turn_id: null },
+    window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 },
+  };
+}
+
 describe('conversation sidebar labeled-item rows', () => {
   it('keeps selected and idle Chat widths full until actual focus reveals the shared overlay', async () => {
     const idleConversation = {
@@ -124,9 +138,9 @@ describe('conversation sidebar labeled-item rows', () => {
       tags: [],
     };
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse([conversation, idleConversation]));
-    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
-      ...(id === idleConversation.id ? idleConversation : conversation), blocks: [], children: [], parent: null,
-    }));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(id === idleConversation.id ? idleConversation : conversation)
+    ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
@@ -149,12 +163,7 @@ describe('conversation sidebar labeled-item rows', () => {
   it('keeps section nodes separate while giving leaf rows direct Pin and secondary overflow actions', async () => {
     let serverRow = conversation;
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse([serverRow]));
-    vi.spyOn(api, 'getConversation').mockResolvedValue({
-      ...conversation,
-      blocks: [],
-      children: [],
-      parent: null,
-    });
+    vi.spyOn(api, 'getConversationWindow').mockResolvedValue(positionWindow(conversation));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
@@ -212,12 +221,9 @@ describe('conversation sidebar labeled-item rows', () => {
   it('reconciles Pin and Unpin into visible sections while preserving order, selection, focus, and reload state', async () => {
     let serverRows = [conversation, existingPinnedConversation];
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse(serverRows));
-    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
-      ...(serverRows.find((row) => row.id === id) ?? conversation),
-      blocks: [],
-      children: [],
-      parent: null,
-    }));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(serverRows.find((row) => row.id === id) ?? conversation)
+    ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
@@ -290,12 +296,9 @@ describe('conversation sidebar labeled-item rows', () => {
   it('uses persisted browser pin membership without PATCH in explicit reject-mode previews', async () => {
     const serverRows = [conversation, existingPinnedConversation];
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse(serverRows));
-    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
-      ...(serverRows.find((row) => row.id === id) ?? conversation),
-      blocks: [],
-      children: [],
-      parent: null,
-    }));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(serverRows.find((row) => row.id === id) ?? conversation)
+    ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);

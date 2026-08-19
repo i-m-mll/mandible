@@ -225,6 +225,53 @@ function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
   return "compressed" in row ? mapBlock(row) : row;
 }
 
+type PositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
+
+function turnIdForBlock(db: ReturnType<typeof getDb>, block: Pick<BlockRow, "id" | "conversation_id" | "position" | "type">): string {
+  if (block.type === "user_message") return block.id;
+  const first = db.prepare(
+    `SELECT id
+       FROM conversation_blocks
+      WHERE conversation_id = ?
+        AND position <= ?
+        AND position > COALESCE((
+          SELECT MAX(position)
+            FROM conversation_blocks
+           WHERE conversation_id = ? AND position <= ? AND type = 'user_message'
+        ), -1)
+        AND type != 'user_message'
+      ORDER BY position ASC
+      LIMIT 1`,
+  ).get(block.conversation_id, block.position, block.conversation_id, block.position) as { id: string } | undefined;
+  return first?.id ?? block.id;
+}
+
+function resolvePositionTarget(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  kind: PositionTargetKind,
+  requestedValue: string | number | null,
+): { block: BlockRow | null; turnId: string | null } | null {
+  let block: BlockRow | undefined;
+  if (kind === "initial" || kind === "latest") {
+    block = db.prepare(
+      "SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position DESC LIMIT 1",
+    ).get(conversationId) as BlockRow | undefined;
+  } else if (kind === "position") {
+    block = db.prepare(
+      "SELECT * FROM conversation_blocks WHERE conversation_id = ? AND position = ?",
+    ).get(conversationId, requestedValue) as BlockRow | undefined;
+  } else {
+    block = db.prepare(
+      "SELECT * FROM conversation_blocks WHERE conversation_id = ? AND id = ?",
+    ).get(conversationId, requestedValue) as BlockRow | undefined;
+  }
+  if (!block) return kind === "initial" || kind === "latest" ? { block: null, turnId: null } : null;
+  const turnId = turnIdForBlock(db, block);
+  if (kind === "turn" && turnId !== requestedValue) return null;
+  return { block, turnId };
+}
+
 async function readAllBlocks(
   reader: ConversationSourceReader,
   conversationId: string,
@@ -861,8 +908,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     });
   }, { fileRpc: "allow" });
 
-  // GET /api/conversations/:id — Full conversation with blocks + children summary
-  // Bug: 40f0298 — optional ?leaf=<dag_uuid> param for DAG path resolution
+  // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
     const id = req.params.id;
     if (!id) {
@@ -879,62 +925,74 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     const query = req.query ?? {};
-    const leafDagUuid = query.leaf || null;
     const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
-
-    let blocks: Array<BlockRow | SourceBackedConversationBlock>;
-    let bodySource: "source" | "legacy" = "legacy";
-
-    if (leafDagUuid) {
-      // DAG path resolution: walk backward from leaf to root via dag_parent_uuid
-      const allBlocks = db
-        .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-        .all(id) as BlockRow[];
-
-      // Index blocks by dag_uuid for efficient lookup
-      const blocksByDagUuid = new Map<string, BlockRow[]>();
-      for (const block of allBlocks) {
-        if (block.dag_uuid) {
-          const group = blocksByDagUuid.get(block.dag_uuid);
-          if (group) {
-            group.push(block);
-          } else {
-            blocksByDagUuid.set(block.dag_uuid, [block]);
-          }
-        }
+    const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
+    const limit = Math.min(500, requestedLimit);
+    if (query.target && query.target !== "initial" && query.target !== "latest") {
+      sendJson(res, 400, { error: "target must be initial or latest" });
+      return;
+    }
+    const explicitAnchors = [query.block, query.turn, query.position].filter((value) => value !== undefined);
+    if (explicitAnchors.length > 1) {
+      sendJson(res, 400, { error: "Choose exactly one of block, turn, or position" });
+      return;
+    }
+    if (useSourceReader && explicitAnchors.length > 0) {
+      sendJson(res, 400, { error: "Exact anchors require the indexed conversation body" });
+      return;
+    }
+    let targetKind: PositionTargetKind = query.target === "latest" ? "latest" : "initial";
+    let requestedValue: string | number | null = null;
+    if (query.block) {
+      targetKind = "block";
+      requestedValue = query.block;
+    } else if (query.turn) {
+      targetKind = "turn";
+      requestedValue = query.turn;
+    } else if (query.position !== undefined) {
+      const position = Number(query.position);
+      if (!Number.isSafeInteger(position) || position < 0) {
+        sendJson(res, 400, { error: "position must be a non-negative integer" });
+        return;
       }
+      targetKind = "position";
+      requestedValue = position;
+    }
+    const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);
+    if (!resolved) {
+      sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
+      return;
+    }
 
-      // Walk backward from leaf
-      const pathGroups: BlockRow[][] = [];
-      let currentUuid: string | null = leafDagUuid;
-      const visited = new Set<string>();
-
-      while (currentUuid && !visited.has(currentUuid)) {
-        visited.add(currentUuid);
-        const group = blocksByDagUuid.get(currentUuid);
-        if (!group || group.length === 0) break;
-        pathGroups.push(group);
-        // All blocks in a dag_uuid group share the same dag_parent_uuid
-        currentUuid = group[0].dag_parent_uuid;
+    const total = (db.prepare(
+      "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ?",
+    ).get(id) as { total: number }).total;
+    let blocks: BlockRow[] = [];
+    if (resolved.block) {
+      if (targetKind === "initial" || targetKind === "latest") {
+        blocks = db.prepare(
+          `SELECT * FROM (
+             SELECT * FROM conversation_blocks
+              WHERE conversation_id = ?
+              ORDER BY position DESC LIMIT ?
+           ) ORDER BY position ASC`,
+        ).all(id, limit) as BlockRow[];
+      } else {
+        const before = Math.floor((limit - 1) / 2);
+        const start = db.prepare(
+          `SELECT position FROM conversation_blocks
+            WHERE conversation_id = ? AND position <= ?
+            ORDER BY position DESC LIMIT 1 OFFSET ?`,
+        ).get(id, resolved.block.position, before) as { position: number } | undefined;
+        const first = start ?? db.prepare(
+          "SELECT MIN(position) AS position FROM conversation_blocks WHERE conversation_id = ?",
+        ).get(id) as { position: number };
+        blocks = db.prepare(
+          `SELECT * FROM conversation_blocks
+            WHERE conversation_id = ? AND position >= ?
+            ORDER BY position ASC LIMIT ?`,
+        ).all(id, first.position, limit) as BlockRow[];
       }
-
-      // Reverse to get root-first order, then flatten
-      pathGroups.reverse();
-      blocks = pathGroups.flat();
-
-      // Fallback: if the leaf dag_uuid didn't match any block (e.g., old conversation
-      // without dag_uuid data), return all blocks ordered by position.
-      if (blocks.length === 0) {
-        blocks = allBlocks;
-      }
-    } else if (useSourceReader) {
-      const sourceBlocks = await readAllBlocks(sourceReader, id);
-      blocks = sourceBlocks.blocks;
-      bodySource = sourceBlocks.bodySource;
-    } else {
-      blocks = db
-        .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-        .all(id) as BlockRow[];
     }
 
     // Fetch sub-agent (child) conversations — Bug: d0759d1
@@ -992,17 +1050,59 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
       : undefined;
 
+    const startPosition = blocks[0]?.position ?? null;
+    const endPosition = blocks[blocks.length - 1]?.position ?? null;
+    let readableBlocks: Array<BlockRow | SourceBackedConversationBlock> = blocks;
+    let bodySource: "source" | "legacy" = "legacy";
+    if (useSourceReader) {
+      const offset = startPosition === null ? 0 : (db.prepare(
+        "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ? AND position < ?",
+      ).get(id, startPosition) as { total: number }).total;
+      const sourcePage = await sourceReader.readPage(id, { offset, limit });
+      if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
+        sendJson(res, sourcePage.status === "not_found" ? 404 : 409, {
+          error: sourcePage.reason,
+          status: sourcePage.status,
+        });
+        return;
+      }
+      readableBlocks = sourcePage.value.blocks;
+      bodySource = sourcePage.status;
+    }
     const mapped = useSourceReader
       ? mapConversation(maskSourceBackedConversationRow(conv), sessionManager)
       : mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
+    const hasBefore = startPosition !== null && Boolean(db.prepare(
+      "SELECT 1 FROM conversation_blocks WHERE conversation_id = ? AND position < ? LIMIT 1",
+    ).get(id, startPosition));
+    const afterCount = endPosition === null ? 0 : (db.prepare(
+      "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ? AND position > ?",
+    ).get(id, endPosition) as { total: number }).total;
 
     sendJson(res, 200, {
       conversation: mapped,
-      blocks: blocks.map(mapReadableBlock),
       body_source: bodySource,
       children: childrenWithDuration,
       parent: parent ?? null,
+      revision: conv.block_count,
+      total,
+      target: {
+        kind: targetKind,
+        requested_value: requestedValue,
+        position: resolved.block?.position ?? null,
+        block_id: resolved.block?.id ?? null,
+        turn_id: resolved.turnId,
+      },
+      window: {
+        start_position: startPosition,
+        end_position: endPosition,
+        has_before: hasBefore,
+        has_after: afterCount > 0,
+        after_count: afterCount,
+        limit,
+      },
+      blocks: readableBlocks.map(mapReadableBlock),
     });
   }, { fileRpc: "allow" });
 

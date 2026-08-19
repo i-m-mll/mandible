@@ -25,6 +25,7 @@ import type {
   ConversationChild,
   InstanceInfo,
   ConversationParent,
+  ConversationPositionWindow,
   ConversationSource,
   ConversationSidebarGroup,
   ConversationSidebarConversation,
@@ -37,7 +38,7 @@ import {
   forkConversation,
   getConsoleSessionUsage,
   getConsoleSessionOptions,
-  getConversation,
+  getConversationWindow,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
@@ -451,13 +452,67 @@ type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
   children: ConversationChild[];
   parent: ConversationParent | null;
+  position_window: Pick<ConversationPositionWindow, 'revision' | 'total' | 'target' | 'window'>;
 };
 type ConversationAppendSseDetail = {
   type: string;
   data?: ConversationAppendPayload;
 };
 function conversationShell(conversation: Conversation): ConversationWithDetails {
-  return { ...conversation, blocks: [], children: [], parent: null };
+  return {
+    ...conversation,
+    blocks: [],
+    children: [],
+    parent: null,
+    position_window: {
+      revision: conversation.block_count,
+      total: conversation.block_count,
+      target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
+      window: {
+        start_position: null,
+        end_position: null,
+        has_before: false,
+        has_after: conversation.block_count > 0,
+        after_count: conversation.block_count,
+        limit: 160,
+      },
+    },
+  };
+}
+
+function flattenConversationWindow(payload: ConversationPositionWindow): ConversationWithDetails {
+  return {
+    ...payload.conversation,
+    blocks: payload.blocks,
+    children: payload.children,
+    parent: payload.parent,
+    position_window: {
+      revision: payload.revision,
+      total: payload.total,
+      target: payload.target,
+      window: payload.window,
+    },
+  };
+}
+
+export function conversationAnchorFromHash(hash: string): { block: string } | { turn: string } | null {
+  const query = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : '';
+  const params = new URLSearchParams(query);
+  const block = params.get('block');
+  const turn = params.get('turn');
+  if (block) return { block };
+  if (turn) return { turn };
+  return null;
+}
+
+export function conversationAnchorHref(
+  conversationId: string,
+  anchor: { block: string } | { turn: string },
+): string {
+  const params = new URLSearchParams({ conversation: conversationId });
+  if ('block' in anchor) params.set('block', anchor.block);
+  else params.set('turn', anchor.turn);
+  return `#/console?${params.toString()}`;
 }
 
 // ── Props ──
@@ -1294,12 +1349,14 @@ function ConversationMetadataModal({
 function ConversationDetail({
   conversationId,
   initialConversation,
+  anchor,
   onNavigate,
   consoleSessions,
   sidebarCollapsed,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
+  anchor: { block: string } | { turn: string } | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
@@ -1314,6 +1371,17 @@ function ConversationDetail({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadNonce, setLoadNonce] = useState(0);
+  const requestGenerationRef = useRef(0);
+  const requestAbortRef = useRef<AbortController | null>(null);
+  const skipNextWindowLoadRef = useRef(false);
+  const latestRevisionRef = useRef(initialConversation?.block_count ?? 0);
+  const [jumpingToLatest, setJumpingToLatest] = useState(false);
+  const [navigationTarget, setNavigationTarget] = useState<{
+    key: string;
+    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
+    turnId: string | null;
+    smooth: boolean;
+  } | null>(null);
 
   // Selection state
   const [selectMode, setSelectMode] = useState(false);
@@ -1345,9 +1413,15 @@ function ConversationDetail({
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
-  const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
-  const conversationRequestKey = detailRequestKey('conversation', { conversationId, leaf: selectedLeaf });
+  const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
+  const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
+  const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
+  const conversationRequestKey = detailRequestKey('conversation', { conversationId, anchor: anchorKey });
   const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
+
+  useEffect(() => {
+    setEffectiveAnchor(anchor);
+  }, [incomingAnchorKey]);
 
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1364,9 +1438,15 @@ function ConversationDetail({
   const [containerHeight, setContainerHeight] = useState(800);
 
   useLayoutEffect(() => {
-    if (selectedLeaf) return undefined;
-    let active = true;
-    const requestKey = detailRequestKey('conversation', { conversationId, leaf: null });
+    if (skipNextWindowLoadRef.current) {
+      skipNextWindowLoadRef.current = false;
+      return undefined;
+    }
+    const controller = new AbortController();
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = controller;
+    const generation = ++requestGenerationRef.current;
+    const requestKey = conversationRequestKey;
     const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
@@ -1376,25 +1456,42 @@ function ConversationDetail({
     }
     setLoading(true);
     setError(null);
-    getConversation(conversationId)
-      .then((conv) => {
-        if (!active) return;
+    getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
+      .then((payload) => {
+        if (generation !== requestGenerationRef.current) return;
+        const conv = flattenConversationWindow(payload);
+        latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
         setConversation(conv);
+        const targetBlock = payload.blocks.find((block) => block.id === payload.target.block_id);
+        const targetTurnMaterialized = payload.blocks.some((block) => block.id === payload.target.turn_id);
+        if (targetBlock && (
+          targetBlock.type === 'system'
+          || targetBlock.type === 'event'
+          || (targetBlock.type === 'tool_result' && !targetTurnMaterialized)
+        )) {
+          setRenderMode('raw');
+        }
         // Bug: bce7370 — Fix 1: Don't add thinking blocks to the outer collapsed set.
         // ThinkingBlock now manages its own collapse state internally.
-        if (collapsedBlocksKeyRef.current !== requestKey) {
-          collapsedBlocksKeyRef.current = requestKey;
+        if (collapsedBlocksKeyRef.current !== conversationId) {
+          collapsedBlocksKeyRef.current = conversationId;
           setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
         }
+        setNavigationTarget({
+          key: `${generation}:${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
+          kind: payload.target.kind,
+          turnId: payload.target.turn_id,
+          smooth: false,
+        });
         setLoading(false);
       })
       .catch((err) => {
-        if (!active) return;
+        if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
-    return () => { active = false; };
-  }, [conversationId, initialConversation, loadNonce, selectedLeaf]);
+    return () => controller.abort();
+  }, [anchorKey, conversationId, conversationRequestKey, effectiveAnchor, initialConversation, loadNonce]);
 
   useEffect(() => {
     if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
@@ -1498,67 +1595,122 @@ function ConversationDetail({
     return () => { active = false; };
   }, [conversation?.session_id]);
 
-  // Reload conversation when a leaf branch is selected
-  useLayoutEffect(() => {
-    if (!selectedLeaf) return;
-    let active = true;
-    const requestKey = detailRequestKey('conversation', { conversationId, leaf: selectedLeaf });
-    const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
-    setLoadedConversationKey(requestKey);
-    setConversation(cached);
-    if (cached && collapsedBlocksKeyRef.current !== requestKey) {
-      collapsedBlocksKeyRef.current = requestKey;
-      setCollapsedBlocks(defaultCollapsedConversationBlocks(cached));
-    }
-    setLoading(true);
-    getConversation(conversationId, selectedLeaf)
-      .then((conv) => {
-        if (!active) return;
-        if (collapsedBlocksKeyRef.current !== requestKey) {
-          collapsedBlocksKeyRef.current = requestKey;
-          setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
-        }
-        setConversation(conv);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-    return () => { active = false; };
-  }, [conversationId, loadNonce, selectedLeaf]);
-
   useEffect(() => {
     const handleConversationSse = (event: Event) => {
       const detail = (event as CustomEvent<ConversationAppendSseDetail>).detail;
       const data = detail?.data;
       if (!data || data.id !== conversationId) return;
-
-      if (selectedLeaf) {
-        setLoadNonce((prev) => prev + 1);
-        return;
+      if (typeof data.block_count === 'number') {
+        latestRevisionRef.current = Math.max(latestRevisionRef.current, data.block_count);
       }
 
       const appendBlocks = data.append?.blocks ?? [];
       if (appendBlocks.length === 0) {
-        setConversation((prev) => prev ? applyConversationAppendPayload(prev, data) ?? prev : prev);
+        setConversation((prev) => {
+          if (!prev) return prev;
+          const nextTotal = Math.max(prev.position_window.total, data.block_count ?? 0);
+          const appendedAfterWindow = prev.position_window.window.has_after
+            ? Math.max(0, nextTotal - prev.position_window.total)
+            : 0;
+          return {
+            ...(applyConversationAppendPayload(prev, data) ?? prev),
+            position_window: {
+              ...prev.position_window,
+              revision: Math.max(prev.position_window.revision, data.block_count ?? 0),
+              total: nextTotal,
+              window: {
+                ...prev.position_window.window,
+                after_count: prev.position_window.window.after_count + appendedAfterWindow,
+              },
+            },
+          };
+        });
         return;
       }
 
       setConversation((prev) => {
         if (!prev) return prev;
+        if (prev.position_window.window.has_after) {
+          const nextTotal = Math.max(prev.position_window.total, data.block_count ?? prev.position_window.total);
+          return {
+            ...prev,
+            block_count: Math.max(prev.block_count, data.block_count ?? prev.block_count),
+            position_window: {
+              ...prev.position_window,
+              revision: Math.max(prev.position_window.revision, data.block_count ?? 0),
+              total: nextTotal,
+              window: {
+                ...prev.position_window.window,
+                after_count: prev.position_window.window.after_count
+                  + Math.max(0, nextTotal - prev.position_window.total),
+              },
+            },
+          };
+        }
         const next = applyConversationAppendPayload(prev, data);
         if (!next) {
           window.setTimeout(() => setLoadNonce((nonce) => nonce + 1), 0);
           return prev;
         }
-        return next;
+        return {
+          ...next,
+          position_window: {
+            ...prev.position_window,
+            revision: Math.max(prev.position_window.revision, data.block_count ?? next.block_count),
+            total: Math.max(prev.position_window.total, data.block_count ?? next.block_count),
+            window: {
+              ...prev.position_window.window,
+              end_position: next.blocks[next.blocks.length - 1]?.position ?? prev.position_window.window.end_position,
+            },
+          },
+        };
       });
     };
 
     window.addEventListener('conversation:sse', handleConversationSse);
     return () => window.removeEventListener('conversation:sse', handleConversationSse);
-  }, [conversationId, selectedLeaf]);
+  }, [conversationId]);
+
+  const handleJumpToLatest = useCallback(async () => {
+    const controller = new AbortController();
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = controller;
+    const generation = ++requestGenerationRef.current;
+    setJumpingToLatest(true);
+    setError(null);
+    try {
+      let payload = await getConversationWindow(conversationId, { target: 'latest', signal: controller.signal });
+      // Appends can land after the indexed end was read but before each response
+      // reaches the browser. Re-resolve until it covers the newest observed revision.
+      while (payload.revision < latestRevisionRef.current) {
+        if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
+        payload = await getConversationWindow(conversationId, { target: 'latest', signal: controller.signal });
+      }
+      if (generation !== requestGenerationRef.current) return;
+      latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
+      setConversation(flattenConversationWindow(payload));
+      const latestRequestKey = detailRequestKey('conversation', { conversationId, anchor: 'initial' });
+      if (effectiveAnchor) {
+        skipNextWindowLoadRef.current = true;
+        setEffectiveAnchor(null);
+      }
+      setLoadedConversationKey(latestRequestKey);
+      const params = new URLSearchParams({ conversation: conversationId });
+      window.history.replaceState(null, '', `#/console?${params.toString()}`);
+      setNavigationTarget({
+        key: `${generation}:${payload.revision}:latest`,
+        kind: 'latest',
+        turnId: payload.target.turn_id,
+        smooth: true,
+      });
+    } catch (err) {
+      if (generation === requestGenerationRef.current && !controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (generation === requestGenerationRef.current) setJumpingToLatest(false);
+    }
+  }, [conversationId, effectiveAnchor]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1622,8 +1774,21 @@ function ConversationDetail({
     [blocks, visibleTypes],
   );
   const chatEvents = useMemo(
-    () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
-    [conversation?.session_id, conversationId, visibleBlocks],
+    () => {
+      const targetTurnId = conversation?.position_window.target.turn_id ?? null;
+      const leadingAssistantTurnId = targetTurnId
+        && visibleBlocks.length > 0
+        && visibleBlocks[0].type !== 'user_message'
+        && !visibleBlocks.some((block) => block.id === targetTurnId)
+        ? targetTurnId
+        : null;
+      return conversationBlocksToStreamEvents(
+        conversation?.session_id ?? conversationId,
+        visibleBlocks,
+        { leadingAssistantTurnId },
+      );
+    },
+    [conversation?.position_window.target.turn_id, conversation?.session_id, conversationId, visibleBlocks],
   );
   const shelfItems = useMemo(
     () => [
@@ -1694,6 +1859,23 @@ function ConversationDetail({
   );
   const shouldVirtualize = visibleBlocks.length > 200;
   const renderedBlocks = shouldVirtualize ? visibleBlocks.slice(startIndex, endIndex) : visibleBlocks;
+
+  useLayoutEffect(() => {
+    if (renderMode !== 'raw' || !navigationTarget) return;
+    if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' || navigationTarget.kind === 'turn') return;
+    const targetId = conversation?.position_window.target.block_id;
+    const container = scrollContainerRef.current;
+    if (!targetId || !container) return;
+    const target = Array.from(container.querySelectorAll<HTMLElement>('[data-block-id]'))
+      .find((element) => element.dataset.blockId === targetId);
+    if (!target) return;
+    const reducedMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    target.scrollIntoView({
+      block: 'center',
+      behavior: navigationTarget.smooth && !reducedMotion ? 'smooth' : 'auto',
+    });
+  }, [conversation?.position_window.target.block_id, navigationTarget, renderMode, renderedBlocks]);
 
   // Selection handlers
   const toggleSelect = (blockId: string) => {
@@ -2432,6 +2614,14 @@ function ConversationDetail({
             events={chatEvents}
             streaming={false}
             emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            unmaterializedAfterCount={conversation.position_window.window.after_count}
+            onJumpToLatest={handleJumpToLatest}
+            jumpingToLatest={jumpingToLatest}
+            navigationTarget={navigationTarget}
+            selectedMessageId={conversation.position_window.target.turn_id}
+            onSelectMessageInfo={(turnId) => {
+              window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
+            }}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
@@ -2672,7 +2862,6 @@ function LiveSessionDetail({
           isVisible
           viewMode={viewMode}
           onViewModeChange={setViewMode}
-          resumeAtMessage={session.resume_at_message}
           channelEnabled={!!session.channel_enabled}
           workspaceMode
         />
@@ -3689,6 +3878,7 @@ export function ConversationsView({
           <ConversationDetail
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
+            anchor={conversationAnchorFromHash(window.location.hash)}
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}

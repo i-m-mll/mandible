@@ -30,11 +30,31 @@ export type ChatSurfaceProps = StreamRendererProps & {
   activePermissionRequest?: ConsolePermissionRequest | null;
   permissionBackendType?: ConsoleBackendType;
   onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
+  unmaterializedAfterCount?: number;
+  onJumpToLatest?: () => void | Promise<void>;
+  jumpingToLatest?: boolean;
+  navigationTarget?: {
+    key: string;
+    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
+    turnId: string | null;
+    smooth: boolean;
+  } | null;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
 const VIRTUAL_OVERSCAN = 6;
 const FOLLOW_THRESHOLD_PX = 80;
+const JUMP_RETURN_SECONDS = 2;
+const MANUAL_RETURN_PX_PER_SECOND = 600;
+
+/**
+ * The follow threshold answers whether appends should stick to the tail. This
+ * separate visibility threshold hides the button for a one-page displacement
+ * and shows it only when returning manually would take roughly two seconds.
+ */
+export function shouldShowJumpToLatest(distancePx: number, viewportHeight: number): boolean {
+  return distancePx > Math.max(viewportHeight * 1.25, JUMP_RETURN_SECONDS * MANUAL_RETURN_PX_PER_SECOND);
+}
 
 type VirtualItem =
   | { kind: 'group'; id: string; group: DisplayGroup }
@@ -169,6 +189,10 @@ export function ChatSurface({
   activePermissionRequest,
   permissionBackendType = 'sdk',
   onPermissionRespond,
+  unmaterializedAfterCount = 0,
+  onJumpToLatest,
+  jumpingToLatest = false,
+  navigationTarget = null,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -179,6 +203,7 @@ export function ChatSurface({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
   const [isFollowing, setIsFollowing] = useState(true);
+  const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => (
     readExpandState(expandStorageKey)
@@ -204,6 +229,11 @@ export function ChatSurface({
   }, [groups, streaming]);
 
   const layout = useVirtualLayout(items, rowHeights, scrollTop, viewportHeight);
+  const estimatedUnmaterializedDistance = Math.max(0, unmaterializedAfterCount) * ESTIMATED_ROW_HEIGHT;
+  const showJumpToLatest = shouldShowJumpToLatest(
+    Math.max(distanceFromBottom, estimatedUnmaterializedDistance),
+    viewportHeight,
+  );
 
   useEffect(() => {
     setExpandedBlocks(readExpandState(expandStorageKey));
@@ -220,6 +250,7 @@ export function ChatSurface({
       setScrollTop(storedTop);
       const atBottom = storedTop + el.clientHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
       setIsFollowing(atBottom);
+      setDistanceFromBottom(Math.max(0, el.scrollHeight - storedTop - el.clientHeight));
     }
     setViewportHeight(el.clientHeight || 720);
   }, [scrollStorageKey]);
@@ -235,6 +266,27 @@ export function ChatSurface({
     }
   }, [items.length, layout.totalHeight, streaming, isFollowing]);
 
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !navigationTarget) return;
+    let destination = layout.totalHeight;
+    if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest' && navigationTarget.turnId) {
+      const itemIndex = items.findIndex((item) => (
+        item.kind === 'group' && item.group.nodes.some((node) => node.key === navigationTarget.turnId)
+      ));
+      if (itemIndex >= 0) destination = layout.offsets[itemIndex] ?? 0;
+    }
+    const reducedMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const behavior: ScrollBehavior = navigationTarget.smooth && !reducedMotion ? 'smooth' : 'auto';
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destination, behavior });
+    else el.scrollTop = destination;
+    setScrollTop(destination);
+    setIsFollowing(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest');
+    setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' ? 0 : Math.max(0, layout.totalHeight - destination - viewportHeight));
+    storageSet(scrollStorageKey, String(destination));
+  }, [items, layout.offsets, layout.totalHeight, navigationTarget, scrollStorageKey, viewportHeight]);
+
   function handleScroll(): void {
     const el = scrollRef.current;
     if (!el) {
@@ -246,16 +298,21 @@ export function ChatSurface({
     setScrollTop(nextScrollTop);
     setViewportHeight(nextViewportHeight);
     setIsFollowing(atBottom);
+    setDistanceFromBottom(Math.max(0, el.scrollHeight - nextScrollTop - nextViewportHeight));
     storageSet(scrollStorageKey, String(nextScrollTop));
   }
 
   function handleJumpToBottom(): void {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = layout.totalHeight;
-      setScrollTop(el.scrollTop);
-      storageSet(scrollStorageKey, String(el.scrollTop));
+    if (onJumpToLatest) {
+      void onJumpToLatest();
+      return;
     }
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = layout.totalHeight;
+    setScrollTop(el.scrollTop);
+    setDistanceFromBottom(0);
+    storageSet(scrollStorageKey, String(el.scrollTop));
     setIsFollowing(true);
   }
 
@@ -351,7 +408,6 @@ export function ChatSurface({
       <TurnGroup
         key={group.id}
         speaker={group.speaker}
-        isShort={group.nodes.length <= 2}
         footer={footer}
       >
         {group.nodes.map(renderNodeBody)}
@@ -415,7 +471,7 @@ export function ChatSurface({
           })}
         </div>
         {activePermissionRequest && onPermissionRespond && (
-          <TurnGroup speaker="system" isShort>
+          <TurnGroup speaker="system">
             <PermissionApprovalCard
               request={activePermissionRequest}
               backendType={permissionBackendType}
@@ -424,13 +480,14 @@ export function ChatSurface({
           </TurnGroup>
         )}
       </div>
-      {!isFollowing && (
+      {showJumpToLatest && (
         <button
           type="button"
           className="stream-renderer__scroll-btn"
           onClick={handleJumpToBottom}
+          disabled={jumpingToLatest}
         >
-          Jump to latest
+          {jumpingToLatest ? 'Loading latest…' : 'Jump to latest'}
         </button>
       )}
     </div>
