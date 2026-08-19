@@ -84,8 +84,9 @@ import { createAuthOutputCoalescer } from './auth-output-coalescer';
 import type { BugRef, ConsoleSession } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
 import {
-  readInitialViewSidebarWidth,
+  readInitialViewSidebarWidths,
   viewSidebarGeometryForRoute,
+  type ViewSidebarWidths,
 } from './view-sidebar-geometry';
 import {
   ChatIcon,
@@ -222,6 +223,9 @@ const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   bottomPanel: null,
   registerBottomPanel: () => () => undefined,
   setViewSidebarWidth: () => undefined,
+  // Keep keep-alive route sidebars in controlled mode while hidden so they
+  // cannot republish a stale local hook value over the active route's storage.
+  viewSidebarWidth: null,
   active: false,
 };
 
@@ -521,12 +525,14 @@ function MandibleHeaderLogo(): JSX.Element {
 }
 
 function App(): JSX.Element {
-  const appShellRef = useRef<HTMLDivElement>(null);
   const [state, dispatch] = useReducer(appReducer, undefined, () => ({
     ...initialState,
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
+    readInitialViewSidebarWidths,
+  );
   const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
     const initial = parseHashRoute();
     return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
@@ -594,21 +600,28 @@ function App(): JSX.Element {
     };
   }, []);
 
+  const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
+  const viewSidebarWidth = viewSidebarGeometry
+    ? viewSidebarWidths[route.tab as keyof ViewSidebarWidths] ?? viewSidebarGeometry.defaultWidth
+    : null;
   const setViewSidebarWidth = useCallback((width: number | null) => {
-    const shell = appShellRef.current;
-    if (!shell) return;
-    shell.style.setProperty(
-      '--app-view-sidebar-width',
-      width === null ? 'calc(100% - var(--app-rail-width))' : `${width}px`,
-    );
-  }, []);
+    if (width === null || !viewSidebarGeometry) return;
+    const tab = route.tab as keyof ViewSidebarWidths;
+    setViewSidebarWidths((current) => (
+      current[tab] === width ? current : { ...current, [tab]: width }
+    ));
+    if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+      localStorage.setItem(viewSidebarGeometry.storageKey, String(width));
+    }
+  }, [route.tab, viewSidebarGeometry]);
 
   const appShellContext = useMemo<AppShellContextValue>(() => ({
     bottomPanel,
     registerBottomPanel,
     setViewSidebarWidth,
+    viewSidebarWidth,
     active: true,
-  }), [bottomPanel, registerBottomPanel, setViewSidebarWidth]);
+  }), [bottomPanel, registerBottomPanel, setViewSidebarWidth, viewSidebarWidth]);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
@@ -1871,7 +1884,6 @@ function App(): JSX.Element {
   );
   const bottomPanelAvailable = Boolean(bottomPanel?.content);
   const bottomPanelOpen = Boolean(bottomPanelAvailable && bottomPanel?.open);
-  const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
@@ -1881,11 +1893,6 @@ function App(): JSX.Element {
       ? `Collapse ${bottomPanel.title}`
       : `Show ${bottomPanel.title}`
     : 'Show detail panel';
-  useLayoutEffect(() => {
-    if (!viewSidebarOpen || !viewSidebarGeometry) return;
-    setViewSidebarWidth(readInitialViewSidebarWidth(viewSidebarGeometry));
-  }, [route.tab, setViewSidebarWidth, viewSidebarGeometry, viewSidebarOpen]);
-
   const startBottomPanelResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
     if (!bottomPanel) {
       return;
@@ -1940,8 +1947,10 @@ function App(): JSX.Element {
 
   return (
     <div
-      ref={appShellRef}
       className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}`}
+      style={{
+        '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
+      } as JSX.CSSProperties}
     >
       {!daemonWarm && (
         <div className="daemon-warm-status" role="status" aria-live="polite">

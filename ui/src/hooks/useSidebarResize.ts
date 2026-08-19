@@ -11,6 +11,10 @@ export type SidebarResizeOptions = {
   mobileBreakpoint?: number;
   /** localStorage key to persist width across sessions */
   storageKey?: string;
+  /** Optional shell-owned width. Presence of onWidthChange enables controlled mode. */
+  controlledWidth?: number | null;
+  /** Receive controlled resize updates instead of maintaining a second width copy. */
+  onWidthChange?: (width: number) => void;
 };
 
 export type SidebarResizeResult = {
@@ -41,14 +45,17 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
     minWidth = 190,
     mobileBreakpoint = 700,
     storageKey,
+    controlledWidth,
+    onWidthChange,
   } = options;
+  const controlled = onWidthChange !== undefined;
 
   const isSmallViewport = useCallback(() => (
     typeof window !== 'undefined' && window.innerWidth <= mobileBreakpoint
   ), [mobileBreakpoint]);
 
   const [width, setWidthState] = useState<number>(() => {
-    if (storageKey && typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
+    if (!controlled && storageKey && typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
       const stored = localStorage.getItem(storageKey);
       if (stored) {
         const parsed = parseInt(stored, 10);
@@ -66,14 +73,14 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
   const startX = useRef(0);
   const startWidth = useRef(0);
   const rafId = useRef<number | null>(null);
-  const latestWidth = useRef(width);
+  const latestWidth = useRef(controlledWidth ?? width);
 
   useEffect(() => {
-    latestWidth.current = width;
-  }, [width]);
+    latestWidth.current = controlled ? (controlledWidth ?? width) : width;
+  }, [controlled, controlledWidth, width]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
+    if (controlled || typeof window === 'undefined') return undefined;
 
     const updateViewportMode = () => {
       setIsMobile(isSmallViewport());
@@ -84,14 +91,14 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
     return () => {
       window.removeEventListener('resize', updateViewportMode);
     };
-  }, [isSmallViewport]);
+  }, [controlled, isSmallViewport]);
 
   // Persist on change
   useEffect(() => {
-    if (storageKey && typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+    if (!controlled && storageKey && typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
       localStorage.setItem(storageKey, String(width));
     }
-  }, [width, storageKey]);
+  }, [controlled, width, storageKey]);
 
   const handleMouseDown = useCallback((e: MouseEvent) => {
     e.preventDefault();
@@ -106,7 +113,8 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
         const delta = ev.clientX - startX.current;
         const maxWidth = Math.floor(window.innerWidth * 0.5);
         const next = Math.max(minWidth, Math.min(maxWidth, startWidth.current + delta));
-        setWidthState(next);
+        if (controlled) onWidthChange(next);
+        else setWidthState(next);
       });
     };
 
@@ -122,7 +130,7 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-  }, [minWidth]);
+  }, [controlled, minWidth, onWidthChange]);
 
   // Imperative clamped setter for keyboard / programmatic resize. Clamps to the
   // same min..50%-viewport range as the drag handler and updates the same state,
@@ -132,14 +140,15 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
       ? Math.floor(window.innerWidth * 0.5)
       : Number.POSITIVE_INFINITY;
     const clamped = Math.max(minWidth, Math.min(maxWidth, Math.round(next)));
-    setWidthState(clamped);
+    if (controlled) onWidthChange(clamped);
+    else setWidthState(clamped);
     return clamped;
-  }, [minWidth]);
+  }, [controlled, minWidth, onWidthChange]);
 
   // Bug: d472f7f — on small screens the inline width overrides CSS media queries
   // (e.g. width: 100%). Return null on mobile so the inline style is omitted and
   // CSS takes over. Mobile breakpoint matches the app's @media (max-width: 700px).
-  const effectiveWidth = isMobile ? null : width;
+  const effectiveWidth = controlled ? (controlledWidth ?? null) : (isMobile ? null : width);
 
   return { width: effectiveWidth, handleMouseDown, setWidth };
 }
