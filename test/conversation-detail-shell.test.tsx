@@ -218,7 +218,7 @@ describe('compact detail pane shell', () => {
       <DetailPaneShell
         variant="compact"
         header={<span>Compact title</span>}
-        footer={<button type="button">Submit</button>}
+        footer={{ content: <button type="button">Submit</button> }}
       >
         <p>Scrollable content</p>
       </DetailPaneShell>,

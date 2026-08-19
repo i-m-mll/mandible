@@ -781,6 +781,7 @@ describe('app shell', () => {
       height: 360,
       onOpenChange: () => undefined,
       onHeightChange: () => undefined,
+      layout: 'full-content',
       content: h('div', {}, 'Inspector content'),
     }), []);
 
@@ -1571,7 +1572,9 @@ describe('app shell', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
     expect(screen.getByLabelText('Collapse Graph detail').closest('.app-rail__footer')).toBeTruthy();
-    expect(screen.getByLabelText('Graph detail')).toBeTruthy();
+    const graphDetail = screen.getByLabelText('Graph detail');
+    expect(graphDetail.classList.contains('app-bottom-panel--anchored-detail')).toBe(true);
+    expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy();
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
       .toBeLessThan(5);
@@ -1628,6 +1631,8 @@ describe('app shell', () => {
     render(h(PendingGraphProbe, {}));
 
     await waitFor(() => expect(registrations.length).toBeGreaterThan(0));
+    expect(registrations[0]?.layout).toBe('anchored-detail');
+    expect(registrations[0]?.content).toBeNull();
 
     for (let pass = 0; pass < 5; pass += 1) {
       // eslint-disable-next-line no-await-in-loop
@@ -1685,8 +1690,16 @@ describe('app shell', () => {
     render(h(App, {}));
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
-    expect(within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'alpha' }))
+    const graphPanel = screen.getByLabelText('Graph detail');
+    expect(within(graphPanel).getByRole('heading', { name: 'alpha' }))
       .toBeTruthy();
+    const detailShell = graphPanel.querySelector('.detail-pane-shell');
+    expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
+      .toEqual(['header', 'body']);
+    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy full Repo reference' });
+    expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
+    expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
+    expect(within(graphPanel).queryByText('Actions')).toBeNull();
     expect(reactFlowMockState.mountCount).toBe(1);
 
     fireEvent.click(screen.getByLabelText('Select graph node rf_beta'));

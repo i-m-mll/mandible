@@ -466,26 +466,28 @@ export function BriefingDocumentRenderer({
           actionsLabel="Briefing actions"
         />
       )}
-      footer={round?.valid ? (
-        <>
-          <button
-            type="button"
-            className="briefing-primary"
-            aria-disabled={Boolean(submitReason)}
-            aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
-            title={submitReason ?? undefined}
-            onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
-            onKeyDown={(event) => {
-              if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
-              event.preventDefault();
-              void submit();
-            }}
-          >
-            {busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}
-          </button>
-          {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
-        </>
-      ) : undefined}
+      footer={round?.valid ? {
+        content: (
+          <>
+            <button
+              type="button"
+              className="briefing-primary"
+              aria-disabled={Boolean(submitReason)}
+              aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
+              title={submitReason ?? undefined}
+              onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
+              onKeyDown={(event) => {
+                if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
+                event.preventDefault();
+                void submit();
+              }}
+            >
+              {busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}
+            </button>
+            {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
+          </>
+        ),
+      } : undefined}
       overlays={(
         <DetailPaneModal
           open={metadataOpen}
