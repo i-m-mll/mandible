@@ -19,6 +19,7 @@ import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
@@ -1282,7 +1283,14 @@ function AuthRequestDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
   // Issue 7d64d8f — a digest means these exact bytes are the merge commit
@@ -1367,24 +1375,6 @@ function AuthRequestDetail({
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [showConsole, consoleText]);
-
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = actionsMenuRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActionsOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-    };
-  }, [actionsOpen]);
 
   const effectiveTimestampLabel = timestampLabel ?? (history
     ? getResolvedTimestampLabel(request)
@@ -1530,8 +1520,9 @@ function AuthRequestDetail({
             </>
           )}
           actions={(
-            <div className="auth-detail__header-actions" ref={actionsMenuRef}>
+            <div className="auth-detail__header-actions">
               <button
+                ref={actionsTriggerRef}
                 type="button"
                 className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
                 aria-label="Auth actions"
@@ -1543,7 +1534,13 @@ function AuthRequestDetail({
                 <HorizontalDotsIcon />
               </button>
               {actionsOpen && (
-                <div className="auth-detail__actions-menu" role="menu">
+                <div
+                  ref={actionsMenuRef}
+                  className="auth-detail__actions-menu app-anchored-menu"
+                  role="menu"
+                  popover="manual"
+                  style={actionsMenuStyle}
+                >
                   <button
                     type="button"
                     className="auth-detail__actions-item"

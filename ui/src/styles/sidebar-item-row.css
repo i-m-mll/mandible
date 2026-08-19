@@ -264,10 +264,7 @@
 }
 
 .sidebar-item-row__menu {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 4px);
-  right: 0;
+  position: fixed;
   min-width: 132px;
   padding: 5px;
   border: 1px solid var(--neutral-alpha-10);
