@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 
 import { openDb } from "../src/db.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
+import { retireBriefingV1ToCustody } from "../src/feedback/migrate-legacy.js";
+import { RICH_BRIEFING_DEMO } from "../src/feedback/rich-briefing-demo.js";
+import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import { createUser } from "../src/users/store.js";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
 const execFileAsync = promisify(execFile);
@@ -95,6 +100,330 @@ function createSeedFixture() {
     worktree, branch, previewBase, previewRoot, db, sourceRoot, sourceDb, metadata, metadataPath,
     env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
   };
+}
+
+const RETIRED_V1_ROUND_ONE = `# Release candidate readiness review
+
+The candidate is feature-complete; this review confirms bounded release readiness with \`release.freeze=true\`.
+
+> Staging rehearsal completed with the candidate artifact and the documented rollback path.
+
+## Bounded scope
+
+- Approve only the signed candidate artifact.
+- Keep rollback within the 15 minute recovery objective.
+- Confirm dashboards before opening the release window.
+
+| Risk | Evidence | Residual |
+| --- | --- | --- |
+| Schema drift | Migration replay passed | Low |
+| Alert gaps | Synthetic checks passed | Medium |
+
+\`\`\`ini
+release.freeze=true
+rollback.window=15m
+\`\`\`
+
+See the [release evidence packet](https://example.com/releases/rc-readiness) for the immutable source record.
+
+:::spec-item{key="scope.approval" required="true"}
+Keep the candidate within the reviewed release scope?
+:::
+
+:::spec-item{key="rollback.plan" required="true"}
+Keep the rehearsed rollback plan as the release fallback?
+:::
+
+:::spec-item{key="observability" required="false"}
+Keep the current observability coverage for the release window?
+:::
+
+:::spec-item{key="operator.runbook"}
+Keep the operator runbook as the execution guide?
+:::
+`;
+
+const RETIRED_V1_ROUND_TWO = `# Release candidate readiness review
+
+The candidate now includes the final migration rehearsal; this review confirms the revised boundary with \`release.freeze=true\`.
+
+> Production-shaped validation completed after the alert thresholds and rollback owner were clarified.
+
+## Bounded scope
+
+- Approve only the newly signed candidate artifact.
+- Require rollback inside the 10 minute recovery objective.
+- Confirm dashboards and the named incident lead before opening the release window.
+
+| Risk | Evidence | Residual |
+| --- | --- | --- |
+| Schema drift | Clean replay plus downgrade rehearsal | Low |
+| Alert gaps | Thresholds exercised end to end | Low |
+
+\`\`\`ini
+release.freeze=true
+rollback.window=10m
+\`\`\`
+
+See the [revised release evidence packet](https://example.com/releases/rc-readiness-v2) for the exact follow-up record.
+
+:::spec-item{key="scope.approval" required="true"}
+Keep the revised candidate inside the final reviewed release scope?
+:::
+
+:::spec-item{key="rollback.plan" required="true"}
+Keep the tightened rollback plan as the release fallback?
+:::
+
+:::spec-item{key="observability" required="false"}
+Keep the exercised alert thresholds for the release window?
+:::
+
+:::spec-item{key="operator.runbook"}
+Keep the clarified operator runbook as the execution guide?
+:::
+`;
+
+function parseRetiredV1TestDirectives(source: string) {
+  const directives: Array<{
+    key: string; required: boolean; body: string; definition_digest: string;
+    start_offset: number; end_offset: number; body_start_offset: number; body_end_offset: number;
+  }> = [];
+  let start = source.indexOf(":::spec-item{");
+  while (start >= 0) {
+    const openerEnd = source.indexOf("\n", start);
+    const closeStart = source.indexOf("\n:::", openerEnd);
+    const opener = source.slice(start, openerEnd);
+    const key = /key="([^"]+)"/.exec(opener)?.[1];
+    if (!key || closeStart < 0) throw new Error("retired v1 test directive is malformed");
+    const end = closeStart + 4;
+    directives.push({
+      key, required: opener.includes('required="true"'), body: source.slice(openerEnd + 1, closeStart),
+      definition_digest: createHash("sha256").update(Buffer.from(source.slice(start, end), "utf8")).digest("hex"),
+      start_offset: start, end_offset: end, body_start_offset: openerEnd + 1, body_end_offset: closeStart,
+    });
+    start = source.indexOf(":::spec-item{", end);
+  }
+  return directives;
+}
+
+function installRetiredV1Demo(
+  fixture: ReturnType<typeof createSeedFixture>,
+  options: { historicalCompatibleUsers?: boolean } = {},
+) {
+  const db = openDb(fixture.db);
+  const artifactRoot = path.join(fs.realpathSync.native(fixture.previewRoot), "rich-briefing-demo-artifacts");
+  setSetting(db, "artifact_root", artifactRoot);
+  const userTimestamp = RICH_BRIEFING_DEMO.roundOneTimestamp - 1_000;
+  const publisher = createUser(db, {
+    slug: RICH_BRIEFING_DEMO.publisherSlug, kind: "agent",
+    display_name: options.historicalCompatibleUsers ? "Existing Preview Publisher" : "Briefing Demo Publisher",
+    metadata: options.historicalCompatibleUsers ? { owner: "pre-existing-preview-state" }
+      : { fixture: "rich-briefing-demo", deterministic: true },
+  }, userTimestamp);
+  const reviewer = createUser(db, {
+    slug: RICH_BRIEFING_DEMO.reviewerSlug, kind: "human",
+    display_name: options.historicalCompatibleUsers ? "Existing Preview Reviewer" : "Briefing Demo Reviewer",
+    metadata: options.historicalCompatibleUsers ? { owner: "pre-existing-preview-state" }
+      : { fixture: "rich-briefing-demo", deterministic: true },
+  }, userTimestamp);
+  const briefingId = randomUUID();
+  const roundIds = [randomUUID(), randomUUID()];
+  const sources = [RETIRED_V1_ROUND_ONE, RETIRED_V1_ROUND_TWO];
+  expect(sources.map((source) => [Buffer.byteLength(source), fileHashFromText(source)])).toEqual([
+    [1168, "744bf3caa29cb8450210da1d2c2bca3c6f0f33dd18f6dcb3ec143e9ad863da09"],
+    [1283, "efbdb374bea7212d55000395aca9d2550737df4ec519250c3dd72f52d2d18480"],
+  ]);
+  const artifacts = sources.map((source, index) => recordArtifactVersion(db, {
+    source_kind: "managed", content: source, series_key: `mandible:briefing:${briefingId}`,
+    logical_name: `${RICH_BRIEFING_DEMO.briefingKey}.md`, title: RICH_BRIEFING_DEMO.title,
+    role: "briefing-document", media_type: "text/markdown",
+    metadata: { profile: "mandible-briefing.v1", briefing_id: briefingId },
+    parent_version_id: index === 0 ? null : undefined,
+  }, index === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp));
+  db.pragma("foreign_keys = OFF");
+  for (const table of [
+    "briefing_submission_annotations", "briefing_submission_answers", "briefing_submissions",
+    "briefing_annotation_events", "briefing_response_events", "briefing_run_occurrences",
+    "briefing_runs", "briefing_directive_instances", "briefing_directive_definitions", "briefing_rounds",
+    "briefing_legacy_custody",
+  ]) db.exec(`DROP TABLE ${table}`);
+  db.exec(`
+    CREATE TABLE briefing_rounds (
+      id TEXT PRIMARY KEY, briefing_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+      artifact_version_id TEXT NOT NULL, previous_round_id TEXT,
+      profile TEXT NOT NULL CHECK(profile = 'mandible-briefing.v1'),
+      binding_digest TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_directive_definitions (
+      id TEXT PRIMARY KEY, artifact_version_id TEXT NOT NULL, directive_key TEXT NOT NULL,
+      definition_digest TEXT NOT NULL, response_type TEXT NOT NULL, required INTEGER NOT NULL,
+      prompt TEXT NOT NULL, options_json TEXT NOT NULL, start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL, body_start_offset INTEGER NOT NULL,
+      body_end_offset INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_directive_instances (
+      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, definition_id TEXT NOT NULL,
+      directive_key TEXT NOT NULL, position INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_runs (
+      id TEXT PRIMARY KEY, briefing_id TEXT NOT NULL, round_id TEXT, artifact_version_id TEXT,
+      publisher_user_id TEXT NOT NULL, task_identity TEXT NOT NULL, run_id TEXT NOT NULL,
+      run_key TEXT NOT NULL, request_digest TEXT NOT NULL, evidence_series_ref TEXT NOT NULL,
+      evidence_version INTEGER NOT NULL, evidence_digest TEXT NOT NULL, source_health_json TEXT NOT NULL,
+      quiet INTEGER NOT NULL, quiet_reason TEXT, received_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_run_occurrences (
+      id TEXT PRIMARY KEY, run_id TEXT NOT NULL, directive_instance_id TEXT,
+      directive_key TEXT NOT NULL, evidence_digest TEXT NOT NULL, occurred_at INTEGER NOT NULL,
+      metadata_json TEXT NOT NULL
+    );
+    CREATE TABLE briefing_response_events (
+      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, directive_instance_id TEXT NOT NULL,
+      operation TEXT NOT NULL, value_json TEXT, retracts_event_id TEXT,
+      actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_annotation_events (
+      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, operation TEXT NOT NULL, annotation_kind TEXT,
+      start_offset INTEGER, end_offset INTEGER, quote TEXT, body TEXT, replacement_text TEXT,
+      retracts_event_id TEXT, actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_submissions (
+      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+      supersedes_submission_id TEXT, actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_submission_answers (
+      submission_id TEXT NOT NULL, directive_instance_id TEXT NOT NULL,
+      response_event_id TEXT NOT NULL, position INTEGER NOT NULL
+    );
+    CREATE TABLE briefing_submission_annotations (
+      submission_id TEXT NOT NULL, annotation_event_id TEXT NOT NULL, position INTEGER NOT NULL
+    );
+  `);
+  db.pragma("foreign_keys = ON");
+
+  db.prepare(
+    `INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 2, ?, ?)`,
+  ).run(briefingId, RICH_BRIEFING_DEMO.briefingKey, RICH_BRIEFING_DEMO.title, roundIds[1],
+    RICH_BRIEFING_DEMO.roundOneTimestamp, RICH_BRIEFING_DEMO.roundTwoTimestamp);
+  db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)")
+    .run(briefingId, reviewer.id, RICH_BRIEFING_DEMO.roundOneTimestamp);
+
+  const parsedDirectives = sources.map((source) => parseRetiredV1TestDirectives(source));
+  parsedDirectives.forEach((directives, roundIndex) => {
+    const timestamp = roundIndex === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp;
+    const bindingDigest = createHash("sha256").update(JSON.stringify(
+      directives.map((directive) => [directive.key, directive.definition_digest]),
+    )).digest("hex");
+    db.prepare(
+      `INSERT INTO briefing_rounds
+        (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
+       VALUES (?, ?, ?, ?, ?, 'mandible-briefing.v1', ?, ?)`,
+    ).run(roundIds[roundIndex], briefingId, roundIndex + 1, artifacts[roundIndex].version.id,
+      roundIndex === 0 ? null : roundIds[0], bindingDigest, timestamp);
+    directives.forEach((directive, position) => {
+      const definitionId = `definition-${roundIndex}-${position}`;
+      const instanceId = `instance-${roundIndex}-${position}`;
+      db.prepare(
+        `INSERT INTO briefing_directive_definitions
+          (id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt,
+           options_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
+         VALUES (?, ?, ?, ?, 'verdict', ?, ?, '[]', ?, ?, ?, ?, ?)`,
+      ).run(definitionId, artifacts[roundIndex].version.id, directive.key, directive.definition_digest,
+        directive.required ? 1 : 0, directive.body, directive.start_offset, directive.end_offset,
+        directive.body_start_offset, directive.body_end_offset, timestamp);
+      db.prepare(
+        `INSERT INTO briefing_directive_instances
+          (id, round_id, definition_id, directive_key, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(instanceId, roundIds[roundIndex], definitionId, directive.key, position, timestamp);
+    });
+  });
+
+  const runIds = ["run-1", "run-2"];
+  [0, 1].forEach((roundIndex) => {
+    const timestamp = roundIndex === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp;
+    db.prepare(
+      `INSERT INTO briefing_runs
+        (id, briefing_id, round_id, artifact_version_id, publisher_user_id, task_identity, run_id, run_key,
+         request_digest, evidence_series_ref, evidence_version, evidence_digest, source_health_json,
+         quiet, quiet_reason, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
+    ).run(runIds[roundIndex], briefingId, roundIds[roundIndex], artifacts[roundIndex].version.id, publisher.id,
+      RICH_BRIEFING_DEMO.taskIdentity, `release-readiness-round-${roundIndex + 1}`,
+      `release-readiness-round-${roundIndex + 1}`, "a".repeat(64), RICH_BRIEFING_DEMO.evidenceSeriesRef,
+      roundIndex + 1, createHash("sha256").update(
+        `mandible-rich-briefing-demo:round-${roundIndex + 1}-evidence`,
+      ).digest("hex"), "{}", timestamp);
+    parsedDirectives[roundIndex].forEach((directive, position) => db.prepare(
+      `INSERT INTO briefing_run_occurrences
+        (id, run_id, directive_instance_id, directive_key, evidence_digest, occurred_at, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`occurrence-${roundIndex}-${position}`, runIds[roundIndex], `instance-${roundIndex}-${position}`,
+      directive.key, "e".repeat(64), timestamp - 30_000,
+      JSON.stringify({ fixture: "rich-briefing-demo", round: roundIndex + 1 })));
+  });
+
+  const responseValues = new Map([
+    ["scope.approval", { verdict: "keep" }], ["rollback.plan", { verdict: "dismiss" }],
+    ["operator.runbook", { verdict: "keep" }],
+  ]);
+  const responseEvents = parsedDirectives[0].filter((directive) => responseValues.has(directive.key)).map((directive) => ({
+    id: `response-${directive.key}`, directive_key: directive.key,
+    directive_instance_id: `instance-0-${parsedDirectives[0].indexOf(directive)}`,
+  }));
+  responseEvents.forEach((event) => db.prepare(
+    `INSERT INTO briefing_response_events
+      (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+     VALUES (?, ?, ?, 'set', ?, NULL, ?, ?)`,
+  ).run(event.id, roundIds[0], event.directive_instance_id, JSON.stringify(responseValues.get(event.directive_key)),
+    reviewer.id, RICH_BRIEFING_DEMO.answersTimestamp));
+  const annotationEvents = [
+    { id: "annotation-comment", annotation_kind: "comment", quote: "Staging rehearsal completed",
+      body: "Confirm the rehearsal log is attached to the final release record.", replacement_text: null,
+    },
+    { id: "annotation-suggestion", annotation_kind: "suggest_replacement", quote: "15 minute recovery objective",
+      body: "Use the tighter objective demonstrated by the final rehearsal.", replacement_text: "10 minute recovery objective",
+    },
+  ];
+  annotationEvents.forEach((event) => {
+    const start = RETIRED_V1_ROUND_ONE.indexOf(event.quote);
+    db.prepare(
+      `INSERT INTO briefing_annotation_events
+        (id, round_id, operation, annotation_kind, start_offset, end_offset, quote, body, replacement_text,
+         retracts_event_id, actor_user_id, created_at)
+       VALUES (?, ?, 'set', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    ).run(event.id, roundIds[0], event.annotation_kind, start, start + event.quote.length, event.quote,
+      event.body, event.replacement_text, reviewer.id, RICH_BRIEFING_DEMO.annotationsTimestamp);
+  });
+  db.prepare(
+    `INSERT INTO briefing_submissions
+      (id, round_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
+     VALUES ('submission-1', ?, 1, NULL, ?, ?)`,
+  ).run(roundIds[0], reviewer.id, RICH_BRIEFING_DEMO.submissionTimestamp);
+  responseEvents.forEach((event, position) => db.prepare(
+    `INSERT INTO briefing_submission_answers
+      (submission_id, directive_instance_id, response_event_id, position) VALUES ('submission-1', ?, ?, ?)`,
+  ).run(event.directive_instance_id, event.id, position));
+  annotationEvents.forEach((event, position) => db.prepare(
+    `INSERT INTO briefing_submission_annotations
+      (submission_id, annotation_event_id, position) VALUES ('submission-1', ?, ?)`,
+  ).run(event.id, position));
+
+  retireBriefingV1ToCustody(db, RICH_BRIEFING_DEMO.roundTwoTimestamp + 1);
+  expect(db.prepare("SELECT disposition FROM briefing_legacy_custody WHERE briefing_id = ?").get(briefingId))
+    .toEqual({ disposition: "sealed_verified" });
+  expect(db.prepare("SELECT latest_round_id, round_count FROM briefings WHERE id = ?").get(briefingId))
+    .toEqual({ latest_round_id: null, round_count: 0 });
+  db.prepare(
+    "INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at) VALUES (?, ?, ?, NULL, 0, 1, 1)",
+  ).run("unrelated-briefing", "demo.unrelated", "Unrelated preview Briefing");
+  db.close();
+  return { briefingId, artifactVersionIds: artifacts.map((artifact) => artifact.version.id) };
+}
+
+function fileHashFromText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function runSeed(fixture: ReturnType<typeof createSeedFixture>, extraArgs: string[] = []) {
@@ -285,6 +614,68 @@ exit 0
 }
 
 describe("iab-preview launcher", () => {
+  it("transactionally replaces the exact migration-143 v1 demo shell and then reseeds as a no-op", () => {
+    const fixture = createSeedFixture();
+    const retired = installRetiredV1Demo(fixture, { historicalCompatibleUsers: true });
+    const sourceHash = fileHash(fixture.sourceDb);
+    const sourceInventory = inventory(fixture.sourceRoot);
+
+    const first = runSeed(fixture);
+    expect(first.status, `${first.stderr}\n${first.stdout}`).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+    expect(firstPayload).toMatchObject({
+      ok: true,
+      status: "upgraded",
+      result: "upgraded",
+      schema: "mandible-rich-briefing-demo@2",
+      briefing: { key: RICH_BRIEFING_DEMO.briefingKey, title: RICH_BRIEFING_DEMO.title },
+      semantic_state: { round_one_frozen_answer_count: 6, round_two_answers: 0, material_revision: true },
+    });
+    expect(firstPayload.briefing.id).not.toBe(retired.briefingId);
+    expect(firstPayload.rounds).toHaveLength(2);
+
+    const upgraded = new Database(fixture.db, { readonly: true });
+    expect(upgraded.prepare("SELECT title, round_count FROM briefings WHERE briefing_key = ?")
+      .get(RICH_BRIEFING_DEMO.briefingKey)).toEqual({ title: RICH_BRIEFING_DEMO.title, round_count: 2 });
+    expect(upgraded.prepare("SELECT title, round_count FROM briefings WHERE id = 'unrelated-briefing'").get())
+      .toEqual({ title: "Unrelated preview Briefing", round_count: 0 });
+    expect(upgraded.prepare("SELECT COUNT(*) AS n FROM briefing_legacy_custody WHERE briefing_id = ?")
+      .get(retired.briefingId)).toEqual({ n: 0 });
+    expect(upgraded.prepare("SELECT COUNT(*) AS n FROM artifact_version WHERE id IN (?, ?)")
+      .get(...retired.artifactVersionIds)).toEqual({ n: 2 });
+    expect(upgraded.prepare("SELECT COUNT(*) AS n FROM artifact_version").get()).toEqual({ n: 4 });
+    expect(upgraded.pragma("foreign_key_check")).toEqual([]);
+    upgraded.close();
+
+    const afterFirst = fs.readFileSync(fixture.db);
+    const second = runSeed(fixture);
+    expect(second.status, `${second.stderr}\n${second.stdout}`).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.status).toBe("already-present");
+    expect(secondPayload.briefing).toEqual(firstPayload.briefing);
+    expect(secondPayload.rounds).toEqual(firstPayload.rounds);
+    expect(fs.readFileSync(fixture.db)).toEqual(afterFirst);
+    expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
+    expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
+  }, 30_000);
+
+  it("keeps an unverified zero-round demo shell fail-closed and byte-identical", () => {
+    const fixture = createSeedFixture();
+    const retired = installRetiredV1Demo(fixture);
+    const db = new Database(fixture.db);
+    db.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
+      .run(retired.briefingId);
+    db.close();
+    const before = fs.readFileSync(fixture.db);
+    const sourceHash = fileHash(fixture.sourceDb);
+
+    const result = runSeed(fixture);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("partial or conflicting: retired v1 custody integrity");
+    expect(fs.readFileSync(fixture.db)).toEqual(before);
+    expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
+  }, 30_000);
+
   it("seeds only the metadata-owned preview copy and repeats as an exact no-op without port access", () => {
     const fixture = createSeedFixture();
     const sourceHash = fileHash(fixture.sourceDb);
@@ -349,7 +740,7 @@ describe("iab-preview launcher", () => {
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
 
     const conflicting = new Database(fixture.db);
-    conflicting.prepare("UPDATE users SET display_name = 'conflicting fixture' WHERE slug = 'briefing-demo-reviewer'").run();
+    conflicting.prepare("UPDATE users SET status = 'retired' WHERE slug = 'briefing-demo-reviewer'").run();
     conflicting.close();
     const beforeConflictCheck = fs.readFileSync(fixture.db);
     const conflictResult = runSeed(fixture);
