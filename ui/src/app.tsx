@@ -21,6 +21,7 @@ import {
   getWorkRepos,
   invalidateApiGetCache,
   invalidateDashboardApiCacheForEvent,
+  normalizeInstanceInfo,
   triggerWorkScan,
   rejectAuthRequest,
   retryAuthRequest,
@@ -257,31 +258,17 @@ declare global {
   }
 }
 
-function isInstanceInfo(value: unknown): value is InstanceInfo {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<InstanceInfo>;
-  return (
-    (candidate.role === 'main' ||
-      candidate.role === 'preview' ||
-      candidate.role === 'dev' ||
-      candidate.role === 'test') &&
-    (candidate.operational_mutations === 'allow' || candidate.operational_mutations === 'reject') &&
-    typeof candidate.operational_mutations_overridden === 'boolean' &&
-    (typeof candidate.db_path === 'string' || candidate.db_path === null) &&
-    (typeof candidate.db_path_source === 'string' || candidate.db_path_source === null)
-  );
-}
-
 function readBootInstanceInfo(): InstanceInfo | null {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   const globalInstance = window.__MANDIBLE_BOOTSTRAP__?.instance;
-  if (isInstanceInfo(globalInstance)) return globalInstance;
+  const normalizedGlobalInstance = normalizeInstanceInfo(globalInstance);
+  if (normalizedGlobalInstance) return normalizedGlobalInstance;
   const script = document.getElementById('mandible-bootstrap');
   const raw = script?.textContent?.trim();
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as MandibleBootstrapData;
-    return isInstanceInfo(parsed.instance) ? parsed.instance : null;
+    return normalizeInstanceInfo(parsed.instance);
   } catch {
     return null;
   }
@@ -1420,7 +1407,7 @@ function App(): JSX.Element {
       }
       if (cancelled) return;
       if (health?.instance) {
-        setInstanceInfo(health.instance);
+        setInstanceInfo(normalizeInstanceInfo(health.instance));
       }
       setDaemonWarm(daemonIsWarm(health));
       const previousEpoch = getLastSeenStartupEpoch();

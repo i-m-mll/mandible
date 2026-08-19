@@ -103,11 +103,34 @@ export type InstanceInfo = {
   role: 'main' | 'preview' | 'dev' | 'test';
   operational_mutations: 'allow' | 'reject';
   operational_mutations_overridden: boolean;
+  briefing_response_mutations: 'allow' | 'reject';
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;
   source_db_path_source?: string | null;
 };
+
+export function normalizeInstanceInfo(value: unknown): InstanceInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<InstanceInfo>;
+  if ((candidate.role !== 'main' && candidate.role !== 'preview' && candidate.role !== 'dev' && candidate.role !== 'test')
+      || (candidate.operational_mutations !== 'allow' && candidate.operational_mutations !== 'reject')
+      || typeof candidate.operational_mutations_overridden !== 'boolean'
+      || (typeof candidate.db_path !== 'string' && candidate.db_path !== null)
+      || (typeof candidate.db_path_source !== 'string' && candidate.db_path_source !== null)
+      || (candidate.source_db_path !== undefined && typeof candidate.source_db_path !== 'string' && candidate.source_db_path !== null)
+      || (candidate.source_db_path_source !== undefined && typeof candidate.source_db_path_source !== 'string' && candidate.source_db_path_source !== null)) return null;
+  return {
+    role: candidate.role,
+    operational_mutations: candidate.operational_mutations,
+    operational_mutations_overridden: candidate.operational_mutations_overridden,
+    briefing_response_mutations: candidate.briefing_response_mutations === 'allow' ? 'allow' : 'reject',
+    db_path: candidate.db_path,
+    db_path_source: candidate.db_path_source,
+    ...(candidate.source_db_path !== undefined ? { source_db_path: candidate.source_db_path } : {}),
+    ...(candidate.source_db_path_source !== undefined ? { source_db_path_source: candidate.source_db_path_source } : {}),
+  };
+}
 
 export type InstructionTargetMode = 'managed-block' | 'standalone';
 
