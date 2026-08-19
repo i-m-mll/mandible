@@ -1709,6 +1709,41 @@ export async function getSettings(): Promise<Record<string, string>> {
   return {};
 }
 
+export type UserAppRailOrderSetting = {
+  version: 1;
+  key: 'app_rail_order';
+  value: string | null;
+  revision: number;
+};
+
+function parseUserAppRailOrderSetting(payload: unknown): UserAppRailOrderSetting {
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'app_rail_order'
+    || (record.value !== null && typeof record.value !== 'string')
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) {
+    throw new Error('Invalid authenticated app rail order response');
+  }
+  return record as UserAppRailOrderSetting;
+}
+
+export async function getUserAppRailOrderSetting(): Promise<UserAppRailOrderSetting> {
+  const response = await apiGet('/api/user-settings/app_rail_order');
+  return parseUserAppRailOrderSetting(await parseMaybeJson(response));
+}
+
+export async function updateUserAppRailOrderSetting(
+  value: string,
+): Promise<UserAppRailOrderSetting> {
+  const response = await apiPut('/api/user-settings/app_rail_order', { value });
+  return parseUserAppRailOrderSetting(await parseMaybeJson(response));
+}
+
 /**
  * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
  * (terminal driving) is local-only and off by default, and the gate is
