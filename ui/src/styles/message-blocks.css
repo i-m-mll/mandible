@@ -31,15 +31,6 @@
   align-items: flex-start;
 }
 
-.turn-group .transcript-item {
-  width: fit-content;
-  max-width: min(760px, 100%);
-}
-
-.turn-group--user .transcript-item {
-  max-width: 100%;
-}
-
 /* msg-text-block — unified markdown text block (replaces .stream-text-block + .block-markdown) */
 .msg-text-block {
   line-height: 1.6;

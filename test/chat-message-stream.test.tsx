@@ -323,6 +323,50 @@ describe('ChatSurface stream behavior', () => {
     expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
   });
 
+  it('materializes and centers a far-off matched tool-result anchor', async () => {
+    const blocks = Array.from({ length: 80 }, (_, index) => ([
+      {
+        id: `prompt-${index}`,
+        type: 'user_message' as const,
+        content: `prompt ${index}`,
+        timestamp: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00Z`,
+        metadata_json: '{}',
+      },
+      {
+        id: `tool-${index}`,
+        type: 'tool_use' as const,
+        content: '{}',
+        timestamp: `2026-01-01T01:${String(index % 60).padStart(2, '0')}:00Z`,
+        metadata_json: JSON.stringify({ tool_id: `call-${index}`, tool_name: 'Read', tool_input: { path: `${index}.ts` } }),
+      },
+      {
+        id: `result-${index}`,
+        type: 'tool_result' as const,
+        content: `result ${index}`,
+        timestamp: `2026-01-01T02:${String(index % 60).padStart(2, '0')}:00Z`,
+        metadata_json: JSON.stringify({ tool_id: `call-${index}` }),
+      },
+    ])).flat();
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    render(
+      <ChatSurface
+        events={conversationBlocksToStreamEvents('matched-result-anchor', blocks)}
+        streaming={false}
+        sessionInfo={{ sessionId: 'matched-result-anchor' }}
+        navigationTarget={{ key: 'matched-result-60', kind: 'block', turnId: null, blockId: 'result-60', smooth: false }}
+      />,
+    );
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' }));
+    expect(document.querySelector('[data-block-id="result-60"]')).toBeTruthy();
+    expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
+  });
+
   it('keeps Jump keyboard activation native and delegates true-end loading', () => {
     const jump = vi.fn();
     render(
