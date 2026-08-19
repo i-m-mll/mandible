@@ -75,6 +75,13 @@ type VirtualLayout = {
   end: number;
 };
 
+type LayoutSnapshot = {
+  ids: string[];
+  offsets: number[];
+  heights: number[];
+  scrollTop: number;
+};
+
 function storageGet(key: string): string | null {
   try {
     return window.localStorage.getItem(key);
@@ -221,6 +228,13 @@ export function ChatSurface({
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => (
     readExpandState(expandStorageKey)
   ));
+  const scrollTopRef = useRef(0);
+  const isFollowingRef = useRef(true);
+  const rowHeightsRef = useRef<Record<string, number>>({});
+  const handledNavigationKeyRef = useRef<string | null>(null);
+  const pendingExactBlockRef = useRef<string | null>(null);
+  const previousLayoutRef = useRef<LayoutSnapshot | null>(null);
+  const skipAnchorReconciliationRef = useRef(false);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
@@ -260,8 +274,10 @@ export function ChatSurface({
     const storedTop = Number(storageGet(scrollStorageKey) ?? 0);
     if (Number.isFinite(storedTop) && storedTop > 0) {
       el.scrollTop = storedTop;
+      scrollTopRef.current = storedTop;
       setScrollTop(storedTop);
       const atBottom = storedTop + el.clientHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
+      isFollowingRef.current = atBottom;
       setIsFollowing(atBottom);
       setDistanceFromBottom(Math.max(0, el.scrollHeight - storedTop - el.clientHeight));
     }
@@ -269,20 +285,29 @@ export function ChatSurface({
   }, [scrollStorageKey]);
 
   useEffect(() => {
-    if (!streaming || !isFollowing) {
+    if (!streaming || !isFollowingRef.current) {
       return;
     }
     const el = scrollRef.current;
     if (el) {
       el.scrollTop = layout.totalHeight;
+      scrollTopRef.current = el.scrollTop;
       setScrollTop(el.scrollTop);
+      setDistanceFromBottom(0);
+      storageSet(scrollStorageKey, String(el.scrollTop));
     }
-  }, [items.length, layout.totalHeight, streaming, isFollowing]);
+  }, [items.length, layout.totalHeight, scrollStorageKey, streaming, isFollowing]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || !navigationTarget) return;
+    if (!navigationTarget) {
+      handledNavigationKeyRef.current = null;
+      pendingExactBlockRef.current = null;
+      return;
+    }
+    if (!el || handledNavigationKeyRef.current === navigationTarget.key) return;
     let destination = layout.totalHeight;
+    let targetFound = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
     if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
       let itemIndex = navigationTarget.turnId ? items.findIndex((item) => (
         item.kind === 'group' && item.group.nodes.some((node) => node.key === navigationTarget.turnId)
@@ -303,25 +328,89 @@ export function ChatSurface({
           })
         ));
       }
-      if (itemIndex >= 0) destination = layout.offsets[itemIndex] ?? 0;
-    }
-    const reducedMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const behavior: ScrollBehavior = navigationTarget.smooth && !reducedMotion ? 'smooth' : 'auto';
-    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destination, behavior });
-    else el.scrollTop = destination;
-    if (navigationTarget.blockId) {
-      const exactBlock = Array.from(el.querySelectorAll<HTMLElement>('[data-block-id]'))
-        .find((candidate) => candidate.dataset.blockId === navigationTarget.blockId);
-      if (exactBlock && typeof exactBlock.scrollIntoView === 'function') {
-        exactBlock.scrollIntoView({ block: 'center', behavior });
+      if (itemIndex >= 0) {
+        destination = layout.offsets[itemIndex] ?? 0;
+        targetFound = true;
       }
     }
-    setScrollTop(destination);
-    setIsFollowing(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest');
+    if (!targetFound) return;
+
+    // Virtual navigation is a controlled two-stage anchor. Keep both the
+    // coarse row materialization and exact-block centering instantaneous so a
+    // browser animation cannot compete with measurement corrections.
+    const behavior: ScrollBehavior = 'auto';
+    handledNavigationKeyRef.current = navigationTarget.key;
+    skipAnchorReconciliationRef.current = true;
+    pendingExactBlockRef.current = navigationTarget.blockId ?? null;
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destination, behavior });
+    else el.scrollTop = destination;
+    scrollTopRef.current = el.scrollTop;
+    setScrollTop(el.scrollTop);
+    const followsTail = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
+    isFollowingRef.current = followsTail;
+    setIsFollowing(followsTail);
     setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' ? 0 : Math.max(0, layout.totalHeight - destination - viewportHeight));
-    storageSet(scrollStorageKey, String(destination));
+    storageSet(scrollStorageKey, String(el.scrollTop));
   }, [items, layout.offsets, layout.totalHeight, navigationTarget, scrollStorageKey, viewportHeight]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const blockId = pendingExactBlockRef.current;
+    if (!el || !blockId) return;
+    const exactBlock = Array.from(el.querySelectorAll<HTMLElement>('[data-block-id]'))
+      .find((candidate) => candidate.dataset.blockId === blockId);
+    if (!exactBlock) return;
+    if (typeof exactBlock.scrollIntoView === 'function') {
+      exactBlock.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+    pendingExactBlockRef.current = null;
+    scrollTopRef.current = el.scrollTop;
+    setScrollTop(el.scrollTop);
+    storageSet(scrollStorageKey, String(el.scrollTop));
+  }, [layout.end, layout.start, scrollStorageKey]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const previous = previousLayoutRef.current;
+    const ids = items.map((item) => item.id);
+    let nextScrollTop = scrollTopRef.current;
+    const skipReconciliation = skipAnchorReconciliationRef.current;
+    skipAnchorReconciliationRef.current = false;
+
+    if (
+      el
+      && previous
+      && !skipReconciliation
+      && !isFollowingRef.current
+      && (!navigationTarget || handledNavigationKeyRef.current === navigationTarget.key)
+      && (previous.ids.length !== ids.length || previous.ids.some((id, index) => ids[index] !== id))
+    ) {
+      const anchorIndex = previous.ids.findIndex((_, index) => (
+        previous.offsets[index] + previous.heights[index] > previous.scrollTop
+      ));
+      if (anchorIndex >= 0) {
+        const newAnchorIndex = ids.indexOf(previous.ids[anchorIndex]);
+        if (newAnchorIndex >= 0) {
+          const anchorInset = previous.scrollTop - previous.offsets[anchorIndex];
+          nextScrollTop = (layout.offsets[newAnchorIndex] ?? 0) + anchorInset;
+          if (Math.abs(nextScrollTop - el.scrollTop) > 0.5) {
+            el.scrollTop = nextScrollTop;
+            scrollTopRef.current = nextScrollTop;
+            setScrollTop(nextScrollTop);
+            setDistanceFromBottom(Math.max(0, layout.totalHeight - nextScrollTop - (el.clientHeight || viewportHeight)));
+            storageSet(scrollStorageKey, String(nextScrollTop));
+          }
+        }
+      }
+    }
+
+    previousLayoutRef.current = {
+      ids,
+      offsets: layout.offsets,
+      heights: items.map((item) => rowHeights[item.id] ?? ESTIMATED_ROW_HEIGHT),
+      scrollTop: nextScrollTop,
+    };
+  }, [items, layout.offsets, layout.totalHeight, navigationTarget, rowHeights, scrollStorageKey, viewportHeight]);
 
   function handleScroll(): void {
     const el = scrollRef.current;
@@ -331,9 +420,13 @@ export function ChatSurface({
     const nextScrollTop = el.scrollTop;
     const nextViewportHeight = el.clientHeight || viewportHeight;
     const atBottom = nextScrollTop + nextViewportHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
+    const movedUp = nextScrollTop < scrollTopRef.current - 0.5;
+    const nextFollowing = movedUp ? false : atBottom;
+    scrollTopRef.current = nextScrollTop;
+    isFollowingRef.current = nextFollowing;
     setScrollTop(nextScrollTop);
     setViewportHeight(nextViewportHeight);
-    setIsFollowing(atBottom);
+    setIsFollowing(nextFollowing);
     setDistanceFromBottom(Math.max(0, el.scrollHeight - nextScrollTop - nextViewportHeight));
     storageSet(scrollStorageKey, String(nextScrollTop));
   }
@@ -346,10 +439,33 @@ export function ChatSurface({
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = layout.totalHeight;
+    scrollTopRef.current = el.scrollTop;
+    isFollowingRef.current = true;
     setScrollTop(el.scrollTop);
     setDistanceFromBottom(0);
     storageSet(scrollStorageKey, String(el.scrollTop));
     setIsFollowing(true);
+  }
+
+  function handleRowMeasure(itemIndex: number, itemId: string, height: number): void {
+    const previousHeight = rowHeightsRef.current[itemId] ?? ESTIMATED_ROW_HEIGHT;
+    if (previousHeight === height) return;
+    const nextHeights = { ...rowHeightsRef.current, [itemId]: height };
+    rowHeightsRef.current = nextHeights;
+    setRowHeights(nextHeights);
+
+    const el = scrollRef.current;
+    const itemTop = layout.offsets[itemIndex] ?? 0;
+    if (!el || isFollowingRef.current || itemTop + previousHeight > scrollTopRef.current) return;
+    const adjustedScrollTop = scrollTopRef.current + height - previousHeight;
+    el.scrollTop = adjustedScrollTop;
+    scrollTopRef.current = adjustedScrollTop;
+    setScrollTop(adjustedScrollTop);
+    setDistanceFromBottom(Math.max(
+      0,
+      layout.totalHeight + height - previousHeight - adjustedScrollTop - (el.clientHeight || viewportHeight),
+    ));
+    storageSet(scrollStorageKey, String(adjustedScrollTop));
   }
 
   function setBlockExpanded(id: string, expanded: boolean): void {
@@ -552,11 +668,7 @@ export function ChatSurface({
               <VirtualRow
                 key={item.id}
                 top={layout.offsets[itemIndex] ?? 0}
-                onMeasure={(height) => {
-                  setRowHeights((current) => (
-                    current[item.id] === height ? current : { ...current, [item.id]: height }
-                  ));
-                }}
+                onMeasure={(height) => handleRowMeasure(itemIndex, item.id, height)}
               >
                 {item.kind === 'group' ? renderGroup(item.group) : renderLiveIndicator()}
               </VirtualRow>

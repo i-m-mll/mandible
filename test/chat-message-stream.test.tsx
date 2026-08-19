@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -233,6 +233,115 @@ describe('ChatSurface stream behavior', () => {
     scroll.scrollTop = 8500;
     fireEvent.scroll(scroll);
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+
+    scroll.scrollTop = 8480;
+    fireEvent.scroll(scroll);
+    rerender(
+      <ChatSurface
+        events={[...events, assistantText('new answer', 'a2'), assistantText('latest answer', 'a3')]}
+        streaming
+        sessionInfo={{ sessionId: 'scroll' }}
+      />,
+    );
+    expect(scroll.scrollTop).toBe(8480);
+  });
+
+  it('does not replay persistent latest navigation after an upward scroll and row measurement', () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    let rowHeight = 168;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallbacks.push(callback);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
+      return this.classList.contains('stream-renderer__virtual-row')
+        ? domRect(0, 0, 600, rowHeight)
+        : domRect(0, 0, 0, 0);
+    });
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo,
+    });
+    const events = Array.from({ length: 80 }, (_, index) => [
+      user(`prompt ${index}`, `u${index}`),
+      assistantText(`answer ${index}`, `a${index}`),
+    ]).flat();
+
+    const { container } = render(
+      <ChatSurface
+        events={events}
+        streaming
+        sessionInfo={{ sessionId: 'persistent-latest' }}
+        navigationTarget={{ key: 'latest-once', kind: 'latest', turnId: null, smooth: true }}
+      />,
+    );
+    const scroll = container.querySelector('.stream-renderer__scroll') as HTMLElement;
+    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
+    Object.defineProperty(scroll, 'scrollHeight', { value: 30000, configurable: true });
+    scrollTo.mockClear();
+
+    scroll.scrollTop = 1000;
+    fireEvent.scroll(scroll);
+    rowHeight = 240;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+
+    // Nine measured rows are wholly above the viewport, so preserving the
+    // visible anchor adds their aggregate 9 * 72px growth.
+    expect(scroll.scrollTop).toBe(1648);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('preserves the visible virtual anchor across measurement changes and history prepends', () => {
+    const observed = new Map<HTMLElement, ResizeObserverCallback>();
+    const heights = new Map<HTMLElement, number>();
+    vi.stubGlobal('ResizeObserver', class {
+      private callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+      }
+      observe(element: Element): void {
+        observed.set(element as HTMLElement, this.callback);
+      }
+      disconnect(): void {}
+    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
+      return this.classList.contains('stream-renderer__virtual-row')
+        ? domRect(0, 0, 600, heights.get(this) ?? 168)
+        : domRect(0, 0, 0, 0);
+    });
+    const events = Array.from({ length: 40 }, (_, index) => [
+      user(`prompt ${index}`, `u${index}`),
+      assistantText(`answer ${index}`, `a${index}`),
+    ]).flat();
+    const { container, rerender } = render(
+      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'stable-anchor' }} />,
+    );
+    const scroll = container.querySelector('.stream-renderer__scroll') as HTMLElement;
+    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
+    Object.defineProperty(scroll, 'scrollHeight', { value: 20000, configurable: true });
+    scroll.scrollTop = 2000;
+    fireEvent.scroll(scroll);
+
+    const rowAboveViewport = Array.from(observed.keys()).find((row) => Number.parseInt(row.style.top, 10) < 2000);
+    expect(rowAboveViewport).toBeTruthy();
+    heights.set(rowAboveViewport!, 268);
+    act(() => observed.get(rowAboveViewport!)!([], {} as ResizeObserver));
+    expect(scroll.scrollTop).toBe(2100);
+
+    rerender(
+      <ChatSurface
+        events={[user('older prompt', 'older-u'), assistantText('older answer', 'older-a'), ...events]}
+        streaming={false}
+        sessionInfo={{ sessionId: 'stable-anchor' }}
+      />,
+    );
+    expect(scroll.scrollTop).toBe(2436);
   });
 
   it('suppresses one-page local and unmaterialized displacement but exposes a distant tail', () => {

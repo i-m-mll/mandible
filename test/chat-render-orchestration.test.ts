@@ -210,6 +210,28 @@ describe("chat render orchestration", () => {
     },
   );
 
+  it("excludes exact provider bookkeeping while keeping semantic and unknown events visible", () => {
+    const events = conversationBlocksToStreamEvents("codex", [
+      { id: "tc1", type: "event", content: "token_count", timestamp: "2026-01-01T00:00:00Z", metadata_json: JSON.stringify({ source_event_type: "token_count", visibility: "default_hidden", context_usage: { source: "mirror_exact", percent: 20 } }) },
+      { id: "dev1", type: "system", content: "developer instructions", timestamp: "2026-01-01T00:00:01Z", metadata_json: JSON.stringify({ source_event_type: "developer", visibility: "default_hidden" }) },
+      { id: "meta1", type: "system", content: "Claude meta context", timestamp: "2026-01-01T00:00:01Z", metadata_json: JSON.stringify({ source_event_type: "user_meta", visibility: "default_hidden" }) },
+      { id: "known1", type: "event", content: "provider stopped", timestamp: "2026-01-01T00:00:02Z", metadata_json: JSON.stringify({ source_event_type: "stop", visibility: "default_visible", level: "error" }) },
+      { id: "unknown1", type: "event", content: "new provider event", timestamp: "2026-01-01T00:00:03Z", metadata_json: JSON.stringify({ source_event_type: "future_kind", visibility: "default_hidden" }) },
+    ]);
+    const semanticEvents = buildStreamState(events).nodes.filter((node) => node.kind === "semantic_event");
+
+    expect(semanticEvents).toHaveLength(2);
+    expect(semanticEvents.map((node) => node.kind === "semantic_event" ? node.event.label : null)).toEqual(["stop", "future_kind"]);
+    expect(semanticEvents.map((node) => node.kind === "semantic_event" ? node.event.source?.timestamp : null)).toEqual([
+      "2026-01-01T00:00:02Z",
+      "2026-01-01T00:00:03Z",
+    ]);
+    expect(semanticEvents[0]).toMatchObject({
+      kind: "semantic_event",
+      event: { content: "provider stopped", is_error: true },
+    });
+  });
+
   it("deduplicates buffered SSE and derives stopped streaming state", () => {
     const resultEvent: StreamEvent = {
       type: "result",
