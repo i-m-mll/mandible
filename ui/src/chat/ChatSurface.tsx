@@ -15,15 +15,13 @@ import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
-import { ContextUsageRing } from './ContextUsageRing';
-import type { ChatUsageSummary } from './contextUsage';
+import { openMarkdownDocument } from './markdownActions';
 import {
   deriveLiveLabel,
   deriveTokenCount,
   extractTurns,
   formatElapsed,
   groupMessagesForDisplay,
-  serializeConversationToMarkdown,
   serializeDisplayGroupToMarkdown,
   useStreamState,
 } from './renderModel';
@@ -32,8 +30,6 @@ export type ChatSurfaceProps = StreamRendererProps & {
   activePermissionRequest?: ConsolePermissionRequest | null;
   permissionBackendType?: ConsoleBackendType;
   onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
-  usageSummary?: ChatUsageSummary;
-  onUsageOpen?: () => void;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -162,13 +158,6 @@ function VirtualRow({
   );
 }
 
-function openMarkdownDocument(markdown: string): void {
-  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener,noreferrer');
-  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
-
 export function ChatSurface({
   events,
   streaming,
@@ -180,8 +169,6 @@ export function ChatSurface({
   activePermissionRequest,
   permissionBackendType = 'sdk',
   onPermissionRespond,
-  usageSummary,
-  onUsageOpen,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -402,27 +389,8 @@ export function ChatSurface({
   }
 
   const visibleItems = items.slice(layout.start, layout.end);
-  const conversationMarkdown = serializeConversationToMarkdown(nodes);
-
   return (
     <div className="stream-renderer">
-      <div className="stream-renderer__toolbar" aria-label="Conversation export actions">
-        <ContextUsageRing usage={usageSummary} size="sm" onClick={onUsageOpen} />
-        <button
-          type="button"
-          className="stream-renderer__toolbar-btn"
-          onClick={() => copyText(conversationMarkdown)}
-        >
-          Copy markdown
-        </button>
-        <button
-          type="button"
-          className="stream-renderer__toolbar-btn"
-          onClick={() => openMarkdownDocument(conversationMarkdown)}
-        >
-          Open markdown
-        </button>
-      </div>
       <div
         ref={scrollRef}
         className="stream-renderer__scroll"

@@ -83,18 +83,23 @@
   --shadow-rail: 10px 0 30px rgba(0, 0, 0, 0.18);
   --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
+  --shadow-app-subdivision: -12px 0 24px -18px rgba(0, 0, 0, 0.72);
+  --z-app-subdivision: 70;
+  --z-anchored-menu: 200;
 
   /* Tier 2: semantic tokens */
-  --surface-app: var(--neutral-1);
-  --surface-page: var(--neutral-1);
+  --surface-main: #181818;
+  --surface-chrome: #222222;
+  --surface-app: var(--surface-main);
+  --surface-page: var(--surface-main);
   --surface-panel: var(--neutral-2);
   --surface-card: var(--neutral-3);
   --surface-raised: var(--neutral-4);
   --surface-app-glow: var(--neutral-4);
-  --surface-header: rgba(8, 12, 17, 0.97);
-  --surface-rail: rgba(8, 12, 17, 0.94);
-  --surface-sidebar: rgba(13, 18, 25, 0.96);
-  --surface-toolbar: rgba(11, 15, 20, 0.92);
+  --surface-header: var(--surface-chrome);
+  --surface-rail: var(--surface-chrome);
+  --surface-sidebar: var(--surface-chrome);
+  --surface-toolbar: var(--surface-chrome);
   --surface-popover: rgba(12, 17, 24, 0.96);
   --surface-content: var(--surface-card);
   --surface-code: rgba(0, 0, 0, 0.3);
@@ -220,7 +225,7 @@
   --bg-page: var(--bg-primary);
   --bg-surface: var(--bg-secondary);
   --bg-panel: var(--bg-card);
-  --issues-detail-bg: var(--bg-primary);
+  --issues-detail-bg: var(--surface-main);
   --bg-inset: var(--surface-inset);
   --bg-muted: var(--surface-muted);
   --bg-hover: var(--surface-hover);
@@ -301,18 +306,21 @@
   --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
   --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
   --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
+  --shadow-app-subdivision: -12px 0 24px -18px rgba(15, 23, 42, 0.32);
 
-  /* Rare Tier 2 light exceptions retained to match the existing app chrome. */
-  --surface-page: var(--neutral-2);
-  --surface-app: var(--neutral-1);
+  /* Exact Codex app subdivision surfaces. */
+  --surface-main: #FFFFFF;
+  --surface-chrome: #FCFCFC;
+  --surface-page: var(--surface-main);
+  --surface-app: var(--surface-main);
   --surface-panel: var(--neutral-1);
   --surface-card: var(--neutral-1);
   --surface-raised: var(--neutral-4);
   --surface-app-glow: var(--neutral-1);
-  --surface-header: rgba(255, 255, 255, 0.96);
-  --surface-rail: rgba(255, 255, 255, 0.94);
-  --surface-sidebar: rgba(250, 252, 255, 0.96);
-  --surface-toolbar: rgba(250, 252, 255, 0.92);
+  --surface-header: var(--surface-chrome);
+  --surface-rail: var(--surface-chrome);
+  --surface-sidebar: var(--surface-chrome);
+  --surface-toolbar: var(--surface-chrome);
   --surface-popover: rgba(255, 255, 255, 0.98);
   --surface-code: rgba(15, 23, 42, 0.06);
   --surface-inset: rgba(241, 245, 249, 0.9);
@@ -324,7 +332,6 @@
   --text-subtle: rgba(23, 32, 42, 0.72);
   --text-subdued: var(--neutral-8);
   --border-focus: rgba(11, 99, 206, 0.64);
-  --issues-detail-bg: var(--neutral-4);
 
   --inbox-continuation: #0b63ce;
   --inbox-continuation-bg: var(--status-info-bg);

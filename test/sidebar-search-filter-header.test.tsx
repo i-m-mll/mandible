@@ -73,6 +73,8 @@ describe('SidebarSearchFilterHeader', () => {
     const panel = document.getElementById('auth-filter-panel');
     expect(panel).toBeTruthy();
     expect(panel!.classList.contains('sidebar-search-filter__panel--popover')).toBe(true);
+    expect(panel!.classList.contains('app-anchored-menu')).toBe(true);
+    expect(panel!.getAttribute('popover')).toBe('manual');
     expect(screen.getByText('active filters')).toBeTruthy();
   });
 

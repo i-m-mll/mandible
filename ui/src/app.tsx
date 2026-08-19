@@ -136,8 +136,8 @@ const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
 const LAST_SEEN_STARTUP_EPOCH_KEY = 'mandible-last-seen-startup-epoch';
 const SPACES_LAST_VIEW_KEY = 'mandible.spaces.lastView:v1';
 const THEME_COLOR_BY_RESOLVED_THEME = {
-  dark: '#0b0f14',
-  light: '#f5f7fb',
+  dark: '#181818',
+  light: '#FFFFFF',
 } as const;
 type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
 
@@ -1990,6 +1990,7 @@ function App(): JSX.Element {
       )}
       <header
         className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
+        data-app-surface="chrome"
         data-tauri-drag-region
       >
         <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
@@ -2008,12 +2009,12 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
+          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
           style={bottomPanelOpen && bottomPanel ? {
             '--app-bottom-panel-height': `${bottomPanel.height}px`,
           } as JSX.CSSProperties : undefined}
         >
-          <aside className="app-rail" data-tauri-drag-region>
+          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region>
               <nav className="app-rail__nav" aria-label="Main navigation">
                 <div className="app-rail__group">
                   {primaryNavItems.map(renderRailItem)}
@@ -2072,6 +2073,7 @@ function App(): JSX.Element {
           </aside>
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
+          data-app-surface="main"
         >
         {renderTabPanel('auth', (() => {
           const tabRoute = routeForTab('auth', route, tabRouteSnapshots);

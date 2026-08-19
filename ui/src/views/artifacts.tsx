@@ -19,6 +19,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { shortRouteId } from '../routing';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
   deleteArtifactDraft,
@@ -915,8 +916,14 @@ export function ArtifactDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
-  const [actionsMenuStyle, setActionsMenuStyle] = useState<{ top: number; left: number } | null>(null);
-  const actionsRef = useRef<HTMLDivElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
   const headerRef = useRef<HTMLElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   // Resolve a project scope for the Add-to-Space picker. Artifacts are not
@@ -983,43 +990,6 @@ export function ArtifactDetail({
   const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
   const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
   latestDraftRef.current = draft;
-
-  const updateActionsMenuPosition = useCallback(() => {
-    const node = actionsRef.current;
-    if (!node) return;
-    const rect = node.getBoundingClientRect();
-    const menuWidth = 190;
-    const margin = 8;
-    const maxLeft = Math.max(margin, window.innerWidth - menuWidth - margin);
-    setActionsMenuStyle({
-      top: Math.round(rect.bottom + 6),
-      left: Math.round(Math.min(Math.max(margin, rect.right - menuWidth), maxLeft)),
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-    updateActionsMenuPosition();
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = actionsRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActionsOpen(false);
-    };
-    const updatePosition = () => updateActionsMenuPosition();
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [actionsOpen, updateActionsMenuPosition]);
 
   useEffect(() => {
     if (!versionHistoryOpen) return undefined;
@@ -1368,8 +1338,9 @@ export function ArtifactDetail({
             copyLabel: 'Copy selected artifact-version reference',
           }}
           actions={(
-          <div className="artifact-detail__actions" ref={actionsRef}>
+          <div className="artifact-detail__actions">
             <button
+              ref={actionsTriggerRef}
               type="button"
               className={`artifact-detail__actions-trigger${actionsOpen ? ' artifact-detail__actions-trigger--active' : ''}`}
               aria-label="Artifact actions"
@@ -1377,7 +1348,6 @@ export function ArtifactDetail({
               aria-expanded={actionsOpen}
               title="Artifact actions"
               onClick={() => {
-                updateActionsMenuPosition();
                 setActionsOpen((open) => !open);
               }}
             >
@@ -1385,9 +1355,11 @@ export function ArtifactDetail({
             </button>
             {actionsOpen && (
               <div
-                className="artifact-detail__actions-menu"
+                ref={actionsMenuRef}
+                className="artifact-detail__actions-menu app-anchored-menu"
                 role="menu"
-                style={actionsMenuStyle ? { top: `${actionsMenuStyle.top}px`, left: `${actionsMenuStyle.left}px` } : undefined}
+                popover="manual"
+                style={actionsMenuStyle}
               >
                 <button
                   type="button"
@@ -1457,6 +1429,7 @@ export function ArtifactDetail({
               </div>
             )}
             <AddToSpace
+              anchorRef={actionsTriggerRef}
               projectId={spaceProjectId}
               targets={spaceTargets}
               label="Add to Space"

@@ -338,10 +338,7 @@
 }
 
 .auth-detail__actions-menu {
-  position: absolute;
-  z-index: 80;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1964,7 +1961,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg-secondary);
 }
 
 .auth-sidebar__header {
@@ -2257,7 +2253,6 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: var(--issues-detail-bg);
 }
 
 .auth-detail__empty {

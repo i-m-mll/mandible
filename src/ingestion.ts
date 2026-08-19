@@ -1653,6 +1653,7 @@ function mergeAppendConversationMetadata(
     },
     blocks: result.blocks,
     ...(result.providerTitle ? { providerTitle: result.providerTitle } : {}),
+    ...(result.providerTitleSource ? { providerTitleSource: result.providerTitleSource } : {}),
   };
 }
 
@@ -2069,6 +2070,36 @@ async function ingestFile(
           sourceHash: append.sourceHash,
           sourceMtime: stat.mtimeMs,
         });
+        // A generated ai-title in the tail cannot prove that no stronger
+        // custom-title appeared earlier in the transcript. Only cross that
+        // provenance boundary when the generated value would change storage:
+        // consult one full parse for title authority, then retain the bounded
+        // tail parse for block ingestion.
+        if (
+          result?.providerTitleSource === "ai-title"
+          && result.providerTitle !== existing.title
+        ) {
+          const fullTitleResult = await parser.parse(filePath);
+          if (!fullTitleResult?.providerTitle) {
+            logger("warn", "ingestion_append_fallback", {
+              file: filePath,
+              reason: "provider_title_history_unavailable",
+              appended_bytes: append.appendedBytes,
+            });
+            forceFullReingest = true;
+            result = fullTitleResult;
+          } else {
+            result = {
+              ...result,
+              conversation: {
+                ...result.conversation,
+                title: fullTitleResult.providerTitle,
+              },
+              providerTitle: fullTitleResult.providerTitle,
+              providerTitleSource: fullTitleResult.providerTitleSource,
+            };
+          }
+        }
         if (!result) {
           await refreshAppendState(
             db,

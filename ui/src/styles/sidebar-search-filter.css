@@ -3,6 +3,7 @@
   flex: 0 0 auto;
   padding: 12px;
   border-bottom: 1px solid var(--neutral-alpha-06);
+  background: inherit;
 }
 
 .sidebar-search-filter__row {
@@ -159,10 +160,7 @@
 }
 
 .sidebar-search-filter__panel--popover {
-  position: absolute;
-  top: calc(100% - 2px);
-  left: 12px;
-  right: 12px;
+  position: fixed;
   max-height: min(70vh, 620px);
   overflow-x: hidden;
   overflow-y: auto;

@@ -51,13 +51,13 @@ describe("conversation attach presentation", () => {
     expect(getConversationAttachPresentation(state("live-external"))).toMatchObject({
       label: "External",
       composer: "disabled",
-      hint: "Live in your terminal.",
     });
     expect(getConversationAttachPresentation(state("resumable"))).toMatchObject({
       label: "Resumable",
       composer: "enabled",
-      hint: "Sending will resume this session.",
     });
+    expect(getConversationAttachPresentation(state("live-external"))).not.toHaveProperty("hint");
+    expect(getConversationAttachPresentation(state("resumable"))).not.toHaveProperty("hint");
     expect(getConversationAttachPresentation(state("historical"))).toMatchObject({
       label: "History",
       composer: "hidden",

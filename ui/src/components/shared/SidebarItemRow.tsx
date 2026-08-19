@@ -1,5 +1,6 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
 export type SidebarItemRowProps = {
   label: string;
@@ -220,6 +221,13 @@ export function SidebarItemOverflowMenu({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLSpanElement>(null);
+  const menuStyle = useAnchoredMenu({
+    open,
+    anchorRef: triggerRef,
+    menuRef,
+    onDismiss: () => setOpen(false),
+  });
   if (actions.length === 0) return null;
 
   return (
@@ -229,13 +237,6 @@ export function SidebarItemOverflowMenu({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
           setOpen(false);
         }
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== 'Escape') return;
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
       }}
     >
       <button
@@ -264,7 +265,14 @@ export function SidebarItemOverflowMenu({
         </svg>
       </button>
       {open ? (
-        <span className="sidebar-item-row__menu" role="menu" aria-label={label}>
+        <span
+          ref={menuRef}
+          className="sidebar-item-row__menu app-anchored-menu"
+          role="menu"
+          popover="manual"
+          aria-label={label}
+          style={menuStyle}
+        >
           {actions.map((action) => (
             <button
               key={action.id}

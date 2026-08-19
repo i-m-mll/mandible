@@ -54,6 +54,7 @@ import {
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
@@ -66,7 +67,9 @@ import {
   Shelf,
   UsageModal,
   conversationBlocksToStreamEvents,
+  buildStreamState,
   deriveChatUsageSummary,
+  serializeConversationToMarkdown,
   useStatuslineTelemetry,
   type ShelfItem,
 } from '../chat';
@@ -76,12 +79,13 @@ import {
   type ConversationAppendPayload,
 } from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
-import { shortRouteId } from '../routing';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { openMarkdownDocument } from '../chat/markdownActions';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
@@ -105,13 +109,12 @@ function defaultCollapsedConversationBlocks(conversation: ConversationWithDetail
 
 export function getConversationAttachPresentation(
   state: ConversationAttachState,
-): { label: string; title: string; composer: AttachComposerMode; hint: string | null } {
+): { label: string; title: string; composer: AttachComposerMode } {
   if (state.kind === 'live-owned') {
     return {
       label: 'Live',
       title: 'Mandible owns the live process for this conversation.',
       composer: 'enabled',
-      hint: null,
     };
   }
   if (state.kind === 'live-external') {
@@ -119,7 +122,6 @@ export function getConversationAttachPresentation(
       label: 'External',
       title: 'This conversation appears live outside Mandible.',
       composer: 'disabled',
-      hint: 'Live in your terminal.',
     };
   }
   if (state.kind === 'resumable') {
@@ -127,14 +129,12 @@ export function getConversationAttachPresentation(
       label: 'Resumable',
       title: 'Sending a message will resume this conversation.',
       composer: 'enabled',
-      hint: 'Sending will resume this session.',
     };
   }
   return {
     label: 'History',
     title: 'This conversation is read-only.',
     composer: 'hidden',
-    hint: null,
   };
 }
 
@@ -785,16 +785,6 @@ function InstructionMessageBlock({
   );
 }
 
-function InfoCircleIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 17v-5" />
-      <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
 function HorizontalDotsIcon(): JSX.Element {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -1192,29 +1182,37 @@ function WorkflowRunDialog({
   );
 }
 
-function ConversationInfoDialog({
+function ConversationMetadataModal({
+  open,
   conversation,
   linkedConsoleSession,
   issueLinks,
   presets,
+  headerRef,
   onClose,
 }: {
+  open: boolean;
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   presets: SessionPreset[];
+  headerRef: { current: HTMLElement | null };
   onClose: () => void;
 }): JSX.Element {
   return (
-    <div className="conv-modal-overlay" onClick={onClose}>
-      <div className="conv-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="conv-modal__header">
-          <h3 className="conv-modal__title">Conversation Info</h3>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close info">
-            &times;
-          </button>
-        </div>
-        <div className="conv-info-grid">
+    <DetailPaneModal
+      open={open}
+      onClose={onClose}
+      titleId="conversation-metadata-title"
+      title="Conversation metadata"
+      closeLabel="Close conversation metadata"
+      excludeAboveRef={headerRef}
+      scrollOwnerSelector=".conv-detail"
+      scrollLockClassName="conv-detail--metadata-open"
+      className="conv-detail__metadata-modal"
+      panelClassName="conv-detail__metadata-panel"
+    >
+      <div className="conv-info-grid">
           <div>
             <span className="conv-info-grid__label">Agent</span>
             <span>{SOURCE_LABELS[conversation.source] ?? conversation.source}</span>
@@ -1251,9 +1249,9 @@ function ConversationInfoDialog({
             <span className="conv-info-grid__label">Session</span>
             <span className="conv-info-grid__mono">{conversation.session_id || linkedConsoleSession?.id || 'none'}</span>
           </div>
-        </div>
-        {(issueLinks.length > 0 || presets.length > 0) && (
-          <div className="conv-modal__section">
+      </div>
+      {(issueLinks.length > 0 || presets.length > 0) && (
+        <div className="conv-modal__section">
             {issueLinks.length > 0 && (
               <div className="conv-modal__chips">
                 {issueLinks.map((link) => (
@@ -1281,10 +1279,9 @@ function ConversationInfoDialog({
                 ))}
               </div>
             )}
-          </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </DetailPaneModal>
   );
 }
 
@@ -1348,6 +1345,15 @@ function ConversationDetail({
 
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(800);
 
@@ -1820,6 +1826,10 @@ function ConversationDetail({
     blocks,
     usageRows,
   }), [blocks, chatEvents, telemetry, usageRows]);
+  const conversationMarkdown = useMemo(
+    () => serializeConversationToMarkdown(buildStreamState(chatEvents).nodes),
+    [chatEvents],
+  );
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
@@ -2056,12 +2066,6 @@ function ConversationDetail({
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
-      identity={{
-        entityLabel: 'Conversation',
-        displayRef: shortRouteId(conversation.id),
-        canonicalRef: conversation.id,
-        copyLabel: 'Copy full conversation ID',
-      }}
       title={(
         <>
           {conversation.parent_conversation_id && (
@@ -2071,36 +2075,25 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
-      status={(
-        <>
-          <span className="conv-detail__provider">
-            {getConversationHeaderProviderLabel(conversation.source)}
-          </span>
-          {attachPresentation && attachState && (
-            <span
-              className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-              title={attachPresentation.title}
-            >
-              {attachPresentation.label}
-            </span>
-          )}
-        </>
-      )}
       actionsLabel="Conversation detail actions"
       actions={(
         <>
-          <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
-          <button
-            type="button"
-            className="conv-info-button"
-            onClick={() => setInfoOpen(true)}
-            title="Conversation info"
-            aria-label="Conversation info"
-          >
-            <InfoCircleIcon />
-          </button>
+          <span className="conv-detail__status">
+            <span className="conv-detail__provider">
+              {getConversationHeaderProviderLabel(conversation.source)}
+            </span>
+            {attachPresentation && attachState && (
+              <span
+                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+                title={attachPresentation.title}
+              >
+                {attachPresentation.label}
+              </span>
+            )}
+          </span>
           <div className="conv-actions">
             <button
+              ref={actionsTriggerRef}
               type="button"
               className="conv-actions__trigger"
               onClick={() => setActionsOpen((prev) => !prev)}
@@ -2112,20 +2105,48 @@ function ConversationDetail({
               <HorizontalDotsIcon />
             </button>
             {actionsOpen && (
-              <div className="conv-actions__menu">
-                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+              <div
+                ref={actionsMenuRef}
+                className="conv-actions__menu app-anchored-menu"
+                role="menu"
+                popover="manual"
+                style={actionsMenuStyle}
+              >
+                <button type="button" role="menuitem" onClick={() => { setInfoOpen(true); setActionsOpen(false); }}>
+                  View metadata
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!conversationMarkdown}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(conversationMarkdown).catch(() => {});
+                    setActionsOpen(false);
+                  }}
+                >
+                  Copy markdown
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!conversationMarkdown}
+                  onClick={() => { openMarkdownDocument(conversationMarkdown); setActionsOpen(false); }}
+                >
+                  Open markdown
+                </button>
+                <button type="button" role="menuitem" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
                   {conversation.starred ? 'Unstar' : 'Star'}
                 </button>
-                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                <button type="button" role="menuitem" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
                   Show in graph
                 </button>
-                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
                   {showMessageFilters ? 'Hide message filters' : 'Message filters'}
                 </button>
-                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
+                <button type="button" role="menuitem" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
                   {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
                 </button>
-                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
                   Select messages
                 </button>
               </div>
@@ -2151,16 +2172,13 @@ function ConversationDetail({
         </div>
       ) : attachPresentation?.composer !== 'hidden' ? (
       <div className="conv-compose">
-        {attachPresentation?.hint && (
-          <div className="conv-compose__hint">{attachPresentation.hint}</div>
-        )}
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
+            placeholder="Message..."
             disabled={continueBusy || attachPresentation?.composer === 'disabled'}
             rows={3}
           />
@@ -2216,16 +2234,19 @@ function ConversationDetail({
                   <option key={model} value={model}>{model}</option>
                 ))}
             </select>
+            <span className="conv-compose__runtime-actions">
+              {canShowSessionControls && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => setComposerControlsOpen((prev) => !prev)}
+                >
+                  Controls
+                </button>
+              )}
+              <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
+            </span>
           </div>
-          {canShowSessionControls && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setComposerControlsOpen((prev) => !prev)}
-            >
-              Controls
-            </button>
-          )}
         </div>
         {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
           <div className="conv-compose__controls">
@@ -2279,15 +2300,15 @@ function ConversationDetail({
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-      {infoOpen && (
-        <ConversationInfoDialog
-          conversation={conversation}
-          linkedConsoleSession={linkedConsoleSession}
-          issueLinks={sessionIssueLinks}
-          presets={sessionPresets}
-          onClose={() => setInfoOpen(false)}
-        />
-      )}
+      <ConversationMetadataModal
+        open={infoOpen}
+        conversation={conversation}
+        linkedConsoleSession={linkedConsoleSession}
+        issueLinks={sessionIssueLinks}
+        presets={sessionPresets}
+        headerRef={headerRef}
+        onClose={() => setInfoOpen(false)}
+      />
     </>
   );
 
@@ -2295,8 +2316,9 @@ function ConversationDetail({
     <DetailPaneShell
       as="div"
       variant="compact"
-      className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
+      className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
       headerClassName="conv-detail__shell-header"
+      headerRef={headerRef}
       subheaderClassName="conv-detail__parent"
       bodyClassName="conv-detail__body"
       footerClassName="conv-detail__footer"
@@ -2409,8 +2431,6 @@ function ConversationDetail({
               backend: conversation.source,
               model: conversation.model ?? undefined,
             }}
-            usageSummary={usageSummary}
-            onUsageOpen={openUsage}
           />
         </div>
       ) : (
