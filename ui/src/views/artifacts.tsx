@@ -692,11 +692,6 @@ export function ArtifactsView({
   const activeFilterCount = Object.values(filters).filter(Boolean).length
     + Number(sortField !== DEFAULT_ARTIFACT_LIST_STATE.sortField)
     + Number(sortDirection !== DEFAULT_ARTIFACT_LIST_STATE.sortDirection);
-  const activeFilterSummary = [
-    ...Object.entries(filters).filter(([, value]) => Boolean(value)).map(([key, value]) => `${key}: ${value}`),
-    `sort: ${sortField} ${sortDirection}`,
-  ].join(' · ');
-
   return (
     <div className="artifacts-view">
       <ViewSidebar
@@ -719,7 +714,6 @@ export function ArtifactsView({
               count: activeFilterCount,
               onToggle: () => setAdvancedOpen((open) => !open),
             }}
-            summarySlot={<span>{activeFilterSummary}</span>}
             panel={advancedOpen ? {
               id: 'artifact-filter-panel',
               variant: 'popover',
