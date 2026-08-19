@@ -109,6 +109,16 @@ import {
   subscribeAgentPageBinding,
 } from './agent-page-binding';
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
+import {
+  APP_RAIL_ORDER_SETTING_KEY,
+  DEFAULT_APP_RAIL_ORDER,
+  moveAppRailItem,
+  parseAppRailOrderSetting,
+  reconcileAppRailOrder,
+  serializeAppRailOrderSetting,
+  type AppRailGroup,
+  type AppRailOrderPreference,
+} from './app-rail-order';
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
@@ -387,6 +397,21 @@ type NavItem = {
   icon: (props: { size?: number }) => JSX.Element;
 };
 
+type AppRailPreviewOrder = Record<AppRailGroup, string[]>;
+
+type AppRailDrag = {
+  group: AppRailGroup;
+  itemId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  overId: string;
+  order: AppRailPreviewOrder;
+};
+
+const APP_RAIL_DRAG_THRESHOLD_PX = 6;
+
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
 // full-bleed content (no .app-content gutters). Issue e29a8c5.
 const RESIZE_RAIL_TABS = new Set<Route['tab']>([
@@ -525,6 +550,18 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [railDrag, setRailDrag] = useState<AppRailDrag | null>(null);
+  const railDragRef = useRef<AppRailDrag | null>(null);
+  const [keyboardRailOrder, setKeyboardRailOrder] = useState<AppRailPreviewOrder | null>(null);
+  const [pendingRailOrder, setPendingRailOrder] = useState<AppRailPreviewOrder | null>(null);
+  const [railOrderReady, setRailOrderReady] = useState(false);
+  const [railOrderSetting, setRailOrderSetting] = useState<string | undefined>(undefined);
+  const railMutationRef = useRef(0);
+  const [railAnnouncement, setRailAnnouncement] = useState('');
+  const railNavRef = useRef<HTMLElement | null>(null);
+  const railRouteRef = useRef(route.tab);
+  const lastRailFocusIdRef = useRef<string | null>(null);
+  const suppressedRailClickRef = useRef<{ itemId: string; until: number } | null>(null);
   const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
     readInitialViewSidebarWidths,
   );
@@ -721,6 +758,34 @@ function App(): JSX.Element {
     };
   }, []);
 
+  const cancelRailInteraction = useCallback((announce = false) => {
+    railDragRef.current = null;
+    suppressedRailClickRef.current = null;
+    setRailDrag(null);
+    setKeyboardRailOrder(null);
+    if (announce) setRailAnnouncement('Navigation reorder cancelled.');
+  }, []);
+
+  useEffect(() => {
+    if (railRouteRef.current === route.tab) return;
+    railRouteRef.current = route.tab;
+    cancelRailInteraction(false);
+  }, [route.tab, cancelRailInteraction]);
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || (!railDragRef.current && !keyboardRailOrder)) return;
+      event.preventDefault();
+      cancelRailInteraction(true);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('keydown', handleEscape);
+      railDragRef.current = null;
+      suppressedRailClickRef.current = null;
+    };
+  }, [cancelRailInteraction, keyboardRailOrder]);
+
   useEffect(() => {
     let disposed = false;
     let removeListener: (() => void) | undefined;
@@ -860,7 +925,11 @@ function App(): JSX.Element {
     // Start the visible view request before the small global aggregate.
     void loadVisibleRouteData(route.tab);
     void getSettings()
-      .then((settings) => dispatch({ type: 'setSettings', settings }))
+      .then((settings) => {
+        dispatch({ type: 'setSettings', settings });
+        setRailOrderSetting(settings[APP_RAIL_ORDER_SETTING_KEY]);
+        setRailOrderReady(true);
+      })
       .catch(() => undefined);
     void loadDashboardBadges();
   }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
@@ -1825,17 +1894,249 @@ function App(): JSX.Element {
     },
   ];
 
-  const renderRailItem = (item: NavItem): JSX.Element => {
+  const railOrderPreference = parseAppRailOrderSetting(railOrderSetting);
+
+  const canonicalRailItems: Record<AppRailGroup, NavItem[]> = {
+    primary: primaryNavItems,
+    secondary: secondaryNavItems,
+  };
+  const persistedRailOrder: AppRailPreviewOrder = {
+    primary: reconcileAppRailOrder(
+      primaryNavItems.map((item) => item.tab),
+      railOrderPreference.groups.primary,
+    ),
+    secondary: reconcileAppRailOrder(
+      secondaryNavItems.map((item) => item.tab),
+      railOrderPreference.groups.secondary,
+    ),
+  };
+  // Pointer movement previews only the insertion marker. Keeping DOM order
+  // stable until pointerup preserves native pointer capture and link identity.
+  const visibleRailOrder = keyboardRailOrder ?? pendingRailOrder ?? persistedRailOrder;
+  const orderedRailItems = (group: AppRailGroup): NavItem[] => {
+    const byId = new Map(canonicalRailItems[group].map((item) => [item.tab, item]));
+    return visibleRailOrder[group]
+      .map((id) => byId.get(id as Route['tab']))
+      .filter((item): item is NavItem => Boolean(item));
+  };
+
+  const focusRailItem = (itemId: string) => {
+    window.setTimeout(() => {
+      const target = Array.from(railNavRef.current?.querySelectorAll<HTMLAnchorElement>('[data-rail-item]') ?? [])
+        .find((item) => item.dataset.railItem === itemId);
+      target?.focus();
+    }, 0);
+  };
+
+  const persistRailOrder = async (
+    order: AppRailPreviewOrder,
+    successMessage: string,
+    focusItemId?: string,
+  ) => {
+    const preference: AppRailOrderPreference = {
+      version: DEFAULT_APP_RAIL_ORDER.version,
+      groups: {
+        primary: [...order.primary],
+        secondary: [...order.secondary],
+      },
+    };
+    const value = serializeAppRailOrderSetting(preference);
+    const mutation = railMutationRef.current + 1;
+    railMutationRef.current = mutation;
+    setPendingRailOrder(order);
+    try {
+      await updateSetting(APP_RAIL_ORDER_SETTING_KEY, value);
+      if (railMutationRef.current !== mutation) return;
+      setRailOrderSetting(value);
+      dispatch({ type: 'updateSetting', key: APP_RAIL_ORDER_SETTING_KEY, value });
+      setPendingRailOrder(null);
+      setRailAnnouncement(successMessage);
+      if (focusItemId) focusRailItem(focusItemId);
+    } catch {
+      if (railMutationRef.current !== mutation) return;
+      setPendingRailOrder(null);
+      setRailAnnouncement('Navigation order was not saved. The previous order has been restored.');
+      if (focusItemId) focusRailItem(focusItemId);
+    }
+  };
+
+  const beginRailPointer = (
+    event: JSX.TargetedPointerEvent<HTMLAnchorElement>,
+    group: AppRailGroup,
+    itemId: string,
+  ) => {
+    if (
+      !railOrderReady
+      || pendingRailOrder
+      || event.button !== 0
+      || event.metaKey
+      || event.ctrlKey
+      || event.shiftKey
+      || event.altKey
+    ) return;
+
+    if (keyboardRailOrder) {
+      setKeyboardRailOrder(null);
+      setRailAnnouncement('Navigation reorder cancelled.');
+    }
+    const candidate: AppRailDrag = {
+      group,
+      itemId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+      overId: itemId,
+      order: {
+        primary: [...visibleRailOrder.primary],
+        secondary: [...visibleRailOrder.secondary],
+      },
+    };
+    railDragRef.current = candidate;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveRailPointer = (event: JSX.TargetedPointerEvent<HTMLAnchorElement>) => {
+    const current = railDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+    if (!current.active && distance < APP_RAIL_DRAG_THRESHOLD_PX) return;
+
+    event.preventDefault();
+    const groupElement = event.currentTarget.closest<HTMLElement>('.app-rail__group');
+    const rows = Array.from(groupElement?.querySelectorAll<HTMLAnchorElement>('[data-rail-item]') ?? []);
+    let target = rows.find((row) => event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+    target ??= rows.at(-1);
+    const targetId = target?.dataset.railItem ?? current.overId;
+    const next: AppRailDrag = {
+      ...current,
+      active: true,
+      overId: targetId,
+      order: {
+        ...current.order,
+        [current.group]: moveAppRailItem(current.order[current.group], current.itemId, targetId),
+      },
+    };
+    railDragRef.current = next;
+    setRailDrag(next);
+  };
+
+  const finishRailPointer = (event: JSX.TargetedPointerEvent<HTMLAnchorElement>) => {
+    const current = railDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    railDragRef.current = null;
+    setRailDrag(null);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (!current.active) return;
+
+    void persistRailOrder(
+      current.order,
+      `${event.currentTarget.getAttribute('aria-label') ?? current.itemId} moved to position ${current.order[current.group].indexOf(current.itemId) + 1} of ${current.order[current.group].length}.`,
+    );
+    suppressedRailClickRef.current = { itemId: current.itemId, until: Date.now() + 500 };
+  };
+
+  const cancelRailPointer = (event: JSX.TargetedPointerEvent<HTMLAnchorElement>) => {
+    const current = railDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    railDragRef.current = null;
+    setRailDrag(null);
+  };
+
+  const handleRailItemKeyDown = (
+    event: JSX.TargetedKeyboardEvent<HTMLAnchorElement>,
+    group: AppRailGroup,
+    item: NavItem,
+  ) => {
+    if (!keyboardRailOrder) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setKeyboardRailOrder(null);
+      setRailAnnouncement('Navigation reorder cancelled.');
+      focusRailItem(item.tab);
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      void persistRailOrder(keyboardRailOrder, 'Navigation order saved.', item.tab);
+      setKeyboardRailOrder(null);
+      return;
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+
+    event.preventDefault();
+    const ids = keyboardRailOrder[group];
+    const index = ids.indexOf(item.tab);
+    const targetIndex = Math.max(0, Math.min(ids.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
+    if (index === targetIndex) {
+      setRailAnnouncement(`${item.title} is already at position ${index + 1} of ${ids.length}.`);
+      return;
+    }
+    const nextIds = moveAppRailItem(ids, item.tab, ids[targetIndex]);
+    setKeyboardRailOrder({ ...keyboardRailOrder, [group]: nextIds });
+    setRailAnnouncement(`${item.title} moved to position ${targetIndex + 1} of ${ids.length}.`);
+  };
+
+  const toggleKeyboardRailReorder = () => {
+    if (!railOrderReady || pendingRailOrder) return;
+    if (keyboardRailOrder) {
+      void persistRailOrder(keyboardRailOrder, 'Navigation order saved.');
+      setKeyboardRailOrder(null);
+      return;
+    }
+
+    const next = {
+      primary: [...persistedRailOrder.primary],
+      secondary: [...persistedRailOrder.secondary],
+    };
+    setKeyboardRailOrder(next);
+    setRailAnnouncement('Reorder mode. Focus a navigation link, use Up and Down arrows to move it, Enter to save, or Escape to cancel.');
+    window.setTimeout(() => {
+      const allIds = [...next.primary, ...next.secondary];
+      const targetId = (
+        lastRailFocusIdRef.current && allIds.includes(lastRailFocusIdRef.current)
+          ? lastRailFocusIdRef.current
+          : allIds.includes(route.tab) ? route.tab : allIds[0]
+      );
+      if (!targetId) return;
+      const target = Array.from(railNavRef.current?.querySelectorAll<HTMLAnchorElement>('[data-rail-item]') ?? [])
+        .find((item) => item.dataset.railItem === targetId);
+      target?.focus();
+    }, 0);
+  };
+
+  const renderRailItem = (item: NavItem, group?: AppRailGroup): JSX.Element => {
     const Icon = item.icon;
     const active = route.tab === item.tab;
+    const dragging = railDrag?.active && railDrag.itemId === item.tab;
+    const dropTarget = railDrag?.active && railDrag.overId === item.tab;
     return (
       <a
         key={item.tab}
         href={item.href}
-        className={`app-rail__item${active ? ' app-rail__item--active' : ''}`}
+        className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
         aria-label={item.title}
+        aria-describedby={group && keyboardRailOrder ? 'app-rail-reorder-status' : undefined}
+        data-rail-item={group ? item.tab : undefined}
+        data-rail-group={group}
+        draggable={false}
+        onFocus={() => {
+          if (group) lastRailFocusIdRef.current = item.tab;
+        }}
+        onPointerDown={group ? (event) => beginRailPointer(event, group, item.tab) : undefined}
+        onPointerMove={group ? moveRailPointer : undefined}
+        onPointerUp={group ? finishRailPointer : undefined}
+        onPointerCancel={group ? cancelRailPointer : undefined}
+        onLostPointerCapture={group ? cancelRailPointer : undefined}
+        onKeyDown={group ? (event) => handleRailItemKeyDown(event, group, item) : undefined}
         onClick={(event) => {
+          const suppressed = suppressedRailClickRef.current;
+          if (suppressed?.itemId === item.tab && Date.now() <= suppressed.until) {
+            suppressedRailClickRef.current = null;
+            event.preventDefault();
+            return;
+          }
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
             return;
           }
@@ -2010,13 +2311,34 @@ function App(): JSX.Element {
           } as JSX.CSSProperties : undefined}
         >
           <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region>
-              <nav className="app-rail__nav" aria-label="Main navigation">
-                <div className="app-rail__group">
-                  {primaryNavItems.map(renderRailItem)}
+              <nav
+                ref={railNavRef}
+                className={`app-rail__nav${keyboardRailOrder ? ' app-rail__nav--reordering' : ''}`}
+                aria-label="Main navigation"
+              >
+                <div className="app-rail__group" data-rail-group="primary">
+                  {orderedRailItems('primary').map((item) => renderRailItem(item, 'primary'))}
                 </div>
-                <div className="app-rail__group app-rail__group--secondary">
-                  {secondaryNavItems.map(renderRailItem)}
+                <div className="app-rail__group app-rail__group--secondary" data-rail-group="secondary">
+                  {orderedRailItems('secondary').map((item) => renderRailItem(item, 'secondary'))}
                 </div>
+                <button
+                  type="button"
+                  className="app-rail__item app-rail__reorder-toggle"
+                  aria-label={keyboardRailOrder ? 'Finish reordering navigation' : 'Reorder navigation'}
+                  aria-pressed={Boolean(keyboardRailOrder)}
+                  disabled={!railOrderReady || Boolean(pendingRailOrder)}
+                  aria-describedby="app-rail-reorder-status"
+                  title={keyboardRailOrder ? 'Finish reordering navigation' : 'Reorder navigation'}
+                  onClick={toggleKeyboardRailReorder}
+                >
+                  <span className="app-rail__icon app-rail__reorder-icon" aria-hidden="true">↕</span>
+                  {railDisplayMode === 'both' && <span className="app-rail__label">Reorder</span>}
+                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">Reorder navigation</span>}
+                </button>
+                <span id="app-rail-reorder-status" className="sr-only" role="status" aria-live="polite">
+                  {railAnnouncement}
+                </span>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
                 {bottomPanelAvailable ? (

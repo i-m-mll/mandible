@@ -22,14 +22,18 @@ afterEach(() => {
 });
 
 describe('shared app-shell chrome contract', () => {
-  it('aligns sidebar header text while keeping the current view right-aligned', () => {
+  it('aligns the brand to sidebar content and centers the current view in that segment', () => {
     const identity = ruleBody(base, '.app-header__identity');
     const text = ruleBody(base, '.app-header__text');
     const route = ruleBody(base, '.app-header__route');
 
     expect(identity).toContain('grid-template-columns: var(--app-rail-width) minmax(0, 1fr)');
     expect(text).toContain('padding: 0 14px');
-    expect(route).toContain('text-align: right');
+    expect(text).toContain('grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)');
+    expect(ruleBody(base, '.app-header__brand')).toContain('justify-self: start');
+    expect(route).toContain('grid-column: 2');
+    expect(route).toContain('justify-self: center');
+    expect(route).toContain('text-align: center');
   });
 
   it('keeps chrome-internal hairlines on one token and below the unsubdivided header', () => {
