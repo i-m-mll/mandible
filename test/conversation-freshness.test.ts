@@ -9,7 +9,11 @@ import {
   ensureExactConversationFresh,
   resolveExactConversation,
 } from "../src/conversations/freshness.js";
-import { triggerExactPathIngest, triggerTargetedIngest } from "../src/ingestion.js";
+import {
+  INGEST_RANGE_READ_CHUNK_BYTES,
+  triggerExactPathIngest,
+  triggerTargetedIngest,
+} from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { decompressContent } from "../src/compression.js";
@@ -127,6 +131,24 @@ describe("exact conversation freshness", () => {
     expect(JSON.stringify(detail.body)).toContain("new exact tail");
     expect(JSON.stringify(blocks.body)).toContain("new exact tail");
     expect(JSON.stringify(exported.body)).toContain("new exact tail");
+  });
+
+  it("runs authoritative exact catch-up across bounded read and UTF-8 chunk boundaries", async () => {
+    const seeded = await seed("chunk-boundary-session");
+    const template = assistant("BOUNDARY", 3);
+    const markerOffset = Buffer.byteLength(template.slice(0, template.indexOf("BOUNDARY")));
+    const padding = "x".repeat(INGEST_RANGE_READ_CHUNK_BYTES - markerOffset - 1);
+    await appendAt(seeded.file, assistant(`${padding}€`, 3), 2);
+
+    await expect(ensureExactConversationFresh(db, seeded.id)).resolves.toMatchObject({
+      conversationId: seeded.id,
+      refreshed: true,
+    });
+    const last = db.prepare(`
+      SELECT content, compressed FROM conversation_blocks
+       WHERE conversation_id = ? ORDER BY position DESC LIMIT 1
+    `).get(seeded.id) as { content: Buffer | string; compressed: number };
+    expect(decompressContent(last.content, last.compressed === 1)).toBe(`${padding}€`);
   });
 
   it("chooses the sole available duplicate owner and fails closed when two owners are available", async () => {
