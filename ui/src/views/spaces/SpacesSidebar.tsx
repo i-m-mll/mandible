@@ -691,7 +691,6 @@ export function SpacesSidebar({
             <div
               key={kg.key}
               className={`spaces-tree__group${dragKey === kg.key ? ' spaces-tree__group--dragging' : ''}`}
-              data-testid={`spaces-group-${kg.key}`}
             >
               <div
                 className="spaces-tree__group-drag-target"
@@ -715,9 +714,14 @@ export function SpacesSidebar({
                   expanded={!isCollapsed}
                   onToggle={() => toggleCollapse(kg.key)}
                   leadingIcon={<ProjectsIcon size={13} />}
+                  testIds={{
+                    root: `spaces-group-${kg.key}`,
+                    heading: `spaces-group-toggle-${kg.key}`,
+                    action: `create-in-${kg.key}`,
+                  }}
                   action={{
                     label: `Create space in ${projectName}`,
-                    icon: 'new-chat',
+                    icon: <PlusIcon />,
                     onPress: () => openChooser({ kind: 'project', projectId: kg.key, projectName }),
                   }}
                 >

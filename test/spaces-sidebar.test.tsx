@@ -118,10 +118,11 @@ describe('SpacesSidebar render + grouping', () => {
 
     // Top-level group sits above the first project group in DOM order.
     const scroll = screen.getByTestId('spaces-tree-scroll');
-    const topIdx = Array.from(scroll.children).indexOf(screen.getByTestId('spaces-group-top-level'));
-    const alphaIdx = Array.from(scroll.children).indexOf(screen.getByTestId('spaces-group-proj-a'));
-    expect(topIdx).toBeGreaterThanOrEqual(0);
-    expect(topIdx).toBeLessThan(alphaIdx);
+    const topLevelGroup = screen.getByTestId('spaces-group-top-level');
+    const alphaGroup = screen.getByTestId('spaces-group-proj-a');
+    expect(scroll.contains(topLevelGroup)).toBe(true);
+    expect(scroll.contains(alphaGroup)).toBe(true);
+    expect(topLevelGroup.compareDocumentPosition(alphaGroup) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it('renders nothing when hidden', () => {
