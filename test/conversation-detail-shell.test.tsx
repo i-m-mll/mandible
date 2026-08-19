@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation } from '../ui/src/api.js';
+import type { Conversation, ConversationBlock, ConversationAttachState } from '../ui/src/api.js';
 import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js';
 import {
   ConversationsView,
@@ -67,6 +67,58 @@ const conversation: Conversation = {
   },
 };
 
+const transcriptBlock: ConversationBlock = {
+  id: 'block-user-1',
+  conversation_id: conversation.id,
+  type: 'user_message',
+  role: 'user',
+  content: 'Preserve the whole conversation export.',
+  position: 0,
+  timestamp: '2026-08-18T12:01:00.000Z',
+  parent_id: null,
+  metadata_json: JSON.stringify({
+    context_usage: {
+      source: 'mirror_exact',
+      percent: 42,
+      used_tokens: 42_000,
+      window_tokens: 100_000,
+    },
+  }),
+  dag_uuid: 'dag-user-1',
+  dag_parent_uuid: null,
+};
+
+function mockConversationDetail(
+  attachState: ConversationAttachState,
+  blocks: ConversationBlock[] = [transcriptBlock],
+): Conversation {
+  const scopedConversation = { ...conversation, attach_state: attachState, block_count: blocks.length };
+  vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [scopedConversation], total: 1 });
+  vi.spyOn(api, 'getConversation').mockResolvedValue({
+    ...scopedConversation,
+    blocks,
+    children: [],
+    parent: null,
+  });
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+  vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+  vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
+  return scopedConversation;
+}
+
+function renderConversationDetail(scopedConversation: Conversation): void {
+  render(
+    <ConversationsView
+      conversations={[scopedConversation]}
+      consoleSessions={[]}
+      initialConversationId={scopedConversation.id}
+      initialSessionId={null}
+      onSelectSession={() => undefined}
+      onNewSession={() => undefined}
+    />,
+  );
+}
+
 describe('compact detail pane shell', () => {
   it('uses the compact-header provider presentation contract', () => {
     expect(getConversationHeaderProviderLabel('claude_code')).toBe('Claude');
@@ -119,27 +171,15 @@ describe('compact detail pane shell', () => {
       configurable: true,
       value: vi.fn(() => false),
     });
-    vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [conversation], total: 1 });
-    vi.spyOn(api, 'getConversation').mockResolvedValue({
-      ...conversation,
-      blocks: [],
-      children: [],
-      parent: null,
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:conversation-markdown'),
+      revokeObjectURL: vi.fn(),
     });
-    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
-
-    render(
-      <ConversationsView
-        conversations={[conversation]}
-        consoleSessions={[]}
-        initialConversationId={conversation.id}
-        initialSessionId={null}
-        onSelectSession={() => undefined}
-        onNewSession={() => undefined}
-      />,
-    );
+    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    renderConversationDetail(scopedConversation);
 
     await screen.findByRole('heading', { name: conversation.title! });
     const shell = document.querySelector('.conv-detail.detail-pane-shell--compact');
@@ -148,30 +188,123 @@ describe('compact detail pane shell', () => {
     const footer = shell?.querySelector(':scope > .detail-pane-shell__footer.conv-detail__footer');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
-    expect(canonicalHeader?.textContent).toContain('01a01639');
+    expect(canonicalHeader?.textContent).not.toContain('Conversation');
+    expect(canonicalHeader?.textContent).not.toContain('01a01639');
     expect(canonicalHeader?.textContent).not.toContain(conversation.id);
-    const status = canonicalHeader?.querySelector('.detail-pane-header__status');
+    expect(canonicalHeader?.querySelector('.detail-pane-header__identity')).toBeNull();
+    expect(canonicalHeader?.querySelector('.ledger-copy-ref-button')).toBeNull();
+    const status = canonicalHeader?.querySelector('.conv-detail__status');
     expect(status?.querySelector('.conv-detail__provider')?.textContent).toBe('Codex');
     expect(status?.textContent).toContain('Resumable');
+    expect(status?.nextElementSibling?.classList.contains('conv-actions')).toBe(true);
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
-    expect(canonicalHeader?.querySelector('.conv-info-button')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation info' }));
+    expect(canonicalHeader?.querySelector('.conv-info-button')).toBeNull();
+    expect(body?.querySelector('.stream-renderer__toolbar')).toBeNull();
+    expect(body?.querySelector('.context-ring')).toBeNull();
+    expect(shell?.querySelectorAll('.context-ring')).toHaveLength(1);
+    const runtime = footer?.querySelector('.conv-compose__runtime');
+    expect(runtime?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Model' }));
+    expect(runtime?.lastElementChild?.classList.contains('conv-compose__runtime-actions')).toBe(true);
+    expect(runtime?.lastElementChild?.lastElementChild?.classList.contains('context-ring')).toBe(true);
+    expect(footer?.querySelector('.conv-compose__hint')).toBeNull();
+    expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
+    expect(footer?.textContent).not.toContain('Sending will resume this session.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    const menu = screen.getByRole('menu');
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(8);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View metadata' }));
+    expect(screen.getByRole('dialog', { name: 'Conversation metadata' })).toBeTruthy();
     const projectLabel = screen.getByText('Project');
     expect(projectLabel.parentElement?.textContent).toBe('ProjectUnscoped');
-    fireEvent.click(screen.getByRole('button', { name: 'Close info' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation metadata' }));
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose')).toBeTruthy();
     expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
     expect(modelSelect.title).toBe('Model');
-    fireEvent.click(screen.getByRole('button', { name: 'Copy full conversation ID' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(conversation.id));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Message filters' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy markdown' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('## User')));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open markdown' }));
+    expect(open).toHaveBeenCalledWith('blob:conversation-markdown', '_blank', 'noopener,noreferrer');
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Message filters' }));
     expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
+  });
+
+  it.each([
+    {
+      label: 'live',
+      attachState: {
+        kind: 'live-owned',
+        reason: 'owned',
+        console_session_id: 'console-live',
+        resumable: true,
+        can_fork: false,
+        checked_at: 2,
+      } satisfies ConversationAttachState,
+      badge: 'Live',
+      hasComposer: true,
+    },
+    {
+      label: 'external live',
+      attachState: {
+        kind: 'live-external',
+        reason: 'transcript-recent',
+        external_session_id: 'external-live',
+        resumable: false,
+        can_fork: true,
+        checked_at: 2,
+      } satisfies ConversationAttachState,
+      badge: 'External',
+      hasComposer: true,
+    },
+    {
+      label: 'resumable',
+      attachState: conversation.attach_state,
+      badge: 'Resumable',
+      hasComposer: true,
+    },
+    {
+      label: 'historical',
+      attachState: {
+        kind: 'historical',
+        reason: 'complete',
+        resumable: false,
+        can_fork: false,
+        checked_at: 3,
+      } satisfies ConversationAttachState,
+      badge: 'History',
+      hasComposer: false,
+    },
+  ])('keeps the simplified header and footer contract in $label state', async ({ attachState, badge, hasComposer }) => {
+    const scopedConversation = mockConversationDetail(attachState);
+    renderConversationDetail(scopedConversation);
+
+    await screen.findByRole('heading', { name: conversation.title! });
+    const header = document.querySelector('.detail-pane-header--compact') as HTMLElement;
+    const status = header.querySelector('.conv-detail__status');
+    expect(status?.textContent).toContain(badge);
+    expect(status?.nextElementSibling?.classList.contains('conv-actions')).toBe(true);
+    expect(header.querySelector('.detail-pane-header__topline')).toBeNull();
+    expect(header.querySelector('.detail-pane-header__identity')).toBeNull();
+    expect(header.querySelector('.conv-info-button')).toBeNull();
+    expect(document.querySelector('.stream-renderer__toolbar')).toBeNull();
+    expect(Boolean(document.querySelector('.conv-compose'))).toBe(hasComposer);
+    if (attachState.kind === 'live-external') {
+      expect(document.querySelectorAll('.conv-compose__hint')).toHaveLength(0);
+      expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).disabled).toBe(true);
+      expect(document.querySelector('.conv-compose')?.textContent?.match(/Live in your terminal\./g)).toHaveLength(1);
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    expect(screen.getByRole('menuitem', { name: 'View metadata' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Copy markdown' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Open markdown' })).toBeTruthy();
   });
 });
