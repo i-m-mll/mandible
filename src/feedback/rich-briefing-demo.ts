@@ -154,6 +154,12 @@ const DIRECTIVE_TYPES = [
   "verdict", "single_choice", "multi_choice", "short_text", "long_text", "rating",
 ] as const;
 
+const RETIRED_V1_DOCUMENTS = [
+  { ordinal: 1, byte_length: 1168, content_hash: "744bf3caa29cb8450210da1d2c2bca3c6f0f33dd18f6dcb3ec143e9ad863da09" },
+  { ordinal: 2, byte_length: 1283, content_hash: "efbdb374bea7212d55000395aca9d2550737df4ec519250c3dd72f52d2d18480" },
+] as const;
+const RETIRED_V1_DIRECTIVE_KEYS = ["scope.approval", "rollback.plan", "observability", "operator.runbook"];
+
 const ROUND_ONE_ANSWERS = [
   { directive_key: "release.verdict", operation: "set", expected_response_event_id: null, value: { verdict: "keep" } },
   { directive_key: "release.posture", operation: "set", expected_response_event_id: null, value: { option_key: "guarded" } },
@@ -175,17 +181,14 @@ const ROUND_ONE_EXPECTED_VALUES = [
   { rating: 4 },
 ] as const;
 
-function exactDemoUser(user: User, kind: UserKind, displayName: string): boolean {
-  return user.kind === kind && user.status === "active" && user.display_name === displayName && user.email === null &&
-    user.created_at === RICH_BRIEFING_DEMO.roundOneTimestamp - 1_000 &&
-    user.updated_at === RICH_BRIEFING_DEMO.roundOneTimestamp - 1_000 &&
-    JSON.stringify(user.metadata) === JSON.stringify({ fixture: "rich-briefing-demo", deterministic: true });
+function compatibleDemoUser(user: User, kind: UserKind): boolean {
+  return user.kind === kind && user.status === "active";
 }
 
 function demoUser(db: Db, slug: string, kind: UserKind, displayName: string): User {
   const existing = getUserBySlug(db, slug);
   if (existing) {
-    if (!exactDemoUser(existing, kind, displayName)) {
+    if (!compatibleDemoUser(existing, kind)) {
       throw new Error(`Demo user '${slug}' exists with incompatible registry state.`);
     }
     return existing;
@@ -237,7 +240,7 @@ function runRequest(markdown: string, reviewerId: string, ordinal: 1 | 2) {
 
 export type RichBriefingDemoManifest = {
   schema: "mandible-rich-briefing-demo@2";
-  result: "seeded" | "already-present";
+  result: "seeded" | "upgraded" | "already-present";
   database_path: string;
   artifact_root: string | null;
   users: { publisher_user_id: string; reviewer_user_id: string };
@@ -302,6 +305,178 @@ function manifestFor(
   };
 }
 
+function records(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) && value.every((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry))
+    ? value as Array<Record<string, unknown>>
+    : [];
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function sortedStrings(values: unknown[]): string[] {
+  return values.filter((value): value is string => typeof value === "string").sort();
+}
+
+/**
+ * Migration 143 sealed the deployed verdict-only demo and left its logical row
+ * at zero rounds. Retire only that exact transient fixture shell. Its immutable
+ * artifact versions remain in custody; unrelated preview rows are never swept.
+ */
+function retireExactV1DemoShell(db: Db, options: { artifactRoot?: string }): boolean {
+  const briefing = db.prepare(
+    "SELECT id, title, latest_round_id, round_count, created_at, updated_at FROM briefings WHERE briefing_key = ?",
+  ).get(RICH_BRIEFING_DEMO.briefingKey) as {
+    id: string; title: string; latest_round_id: string | null; round_count: number; created_at: number; updated_at: number;
+  } | undefined;
+  if (!briefing || briefing.round_count !== 0 || briefing.latest_round_id !== null) return false;
+
+  const conflict = (detail: string): never => {
+    throw new Error(`Rich Briefing demo state is partial or conflicting: retired v1 ${detail}.`);
+  };
+  if (briefing.title !== RICH_BRIEFING_DEMO.title ||
+      briefing.created_at !== RICH_BRIEFING_DEMO.roundOneTimestamp ||
+      briefing.updated_at !== RICH_BRIEFING_DEMO.roundTwoTimestamp) conflict("logical identity");
+  const publisher = getUserBySlug(db, RICH_BRIEFING_DEMO.publisherSlug);
+  const reviewer = getUserBySlug(db, RICH_BRIEFING_DEMO.reviewerSlug);
+  if (!publisher) return conflict("publisher registry state");
+  if (!compatibleDemoUser(publisher, "agent")) conflict("publisher registry state");
+  if (!reviewer) return conflict("reviewer registry state");
+  if (!compatibleDemoUser(reviewer, "human")) conflict("reviewer registry state");
+  if (options.artifactRoot && getSetting(db, "artifact_root") !== options.artifactRoot) {
+    conflict("artifact custody");
+  }
+
+  const membership = db.prepare(
+    "SELECT user_id, created_at FROM briefing_members WHERE briefing_id = ? ORDER BY user_id",
+  ).all(briefing.id) as Array<{ user_id: string; created_at: number }>;
+  if (membership.length !== 1 || membership[0]?.user_id !== reviewer.id ||
+      membership[0]?.created_at !== RICH_BRIEFING_DEMO.roundOneTimestamp) conflict("membership");
+
+  const activeCounts = db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM briefing_rounds WHERE briefing_id = ?) AS rounds,
+       (SELECT COUNT(*) FROM briefing_runs WHERE briefing_id = ?) AS runs,
+       (SELECT COUNT(*) FROM briefing_directive_instances WHERE briefing_id = ?) AS instances,
+       (SELECT COUNT(*) FROM briefing_response_events WHERE briefing_id = ?) AS responses,
+       (SELECT COUNT(*) FROM briefing_annotation_events WHERE briefing_id = ?) AS annotations,
+       (SELECT COUNT(*) FROM briefing_submissions WHERE briefing_id = ?) AS submissions`,
+  ).get(briefing.id, briefing.id, briefing.id, briefing.id, briefing.id, briefing.id) as Record<string, number>;
+  if (Object.values(activeCounts).some((count) => count !== 0)) conflict("active descendants");
+
+  const custodyRows = db.prepare(
+    `SELECT source_profile, disposition, packet_json, packet_digest
+       FROM briefing_legacy_custody WHERE briefing_id = ?`,
+  ).all(briefing.id) as Array<{
+    source_profile: string; disposition: string; packet_json: string; packet_digest: string;
+  }>;
+  if (custodyRows.length !== 1) conflict("custody row count");
+  const custody = custodyRows[0];
+  if (custody.source_profile !== "mandible-briefing.v1" || custody.disposition !== "sealed_verified" ||
+      createHash("sha256").update(custody.packet_json).digest("hex") !== custody.packet_digest) {
+    conflict("custody integrity");
+  }
+  let packet: Record<string, unknown>;
+  try {
+    packet = record(JSON.parse(custody.packet_json)) ?? conflict("custody packet");
+  } catch {
+    return conflict("custody packet");
+  }
+  const components = record(packet.components) ?? conflict("custody components");
+  const sealedBriefing = record(components.briefing) ?? conflict("sealed logical identity");
+  if (packet.schema !== "mandible-briefing-v1-custody.v1" || packet.source_profile !== "mandible-briefing.v1" ||
+      sealedBriefing.id !== briefing.id || sealedBriefing.briefing_key !== RICH_BRIEFING_DEMO.briefingKey ||
+      sealedBriefing.title !== RICH_BRIEFING_DEMO.title || sealedBriefing.round_count !== 2 ||
+      sealedBriefing.created_at !== RICH_BRIEFING_DEMO.roundOneTimestamp ||
+      sealedBriefing.updated_at !== RICH_BRIEFING_DEMO.roundTwoTimestamp) conflict("sealed logical identity");
+  if (!Array.isArray(packet.verification_errors) || packet.verification_errors.length !== 0) conflict("verification errors");
+
+  const sealedMembership = records(components.membership);
+  if (sealedMembership.length !== 1 || sealedMembership[0]?.briefing_id !== briefing.id ||
+      sealedMembership[0]?.user_id !== reviewer.id ||
+      sealedMembership[0]?.created_at !== RICH_BRIEFING_DEMO.roundOneTimestamp) conflict("sealed membership");
+
+  const artifactVersions = records(components.artifact_versions);
+  const rounds = records(components.rounds).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+  if (artifactVersions.length !== 2 || rounds.length !== 2) conflict("round or artifact count");
+  for (const expected of RETIRED_V1_DOCUMENTS) {
+    const round = rounds[expected.ordinal - 1];
+    const artifact = artifactVersions.find((entry) => entry.id === round?.artifact_version_id);
+    if (!round) return conflict(`round ${expected.ordinal} immutable document`);
+    if (!artifact) return conflict(`round ${expected.ordinal} immutable document`);
+    if (round.briefing_id !== briefing.id || round.ordinal !== expected.ordinal ||
+        round.profile !== "mandible-briefing.v1" || round.created_at !== (expected.ordinal === 1
+          ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp) ||
+        artifact.content_hash !== expected.content_hash || artifact.source_sha256 !== expected.content_hash ||
+        artifact.byte_length !== expected.byte_length) conflict(`round ${expected.ordinal} immutable document`);
+    const liveArtifact = db.prepare(
+      "SELECT content_hash FROM artifact_version WHERE id = ?",
+    ).get(artifact.id) as { content_hash: string } | undefined;
+    if (!liveArtifact || liveArtifact.content_hash !== expected.content_hash) conflict(`round ${expected.ordinal} artifact custody`);
+  }
+  if (rounds[0]?.previous_round_id !== null || rounds[1]?.previous_round_id !== rounds[0]?.id ||
+      sealedBriefing.latest_round_id !== rounds[1]?.id) conflict("round lineage");
+
+  const definitions = records(components.definitions);
+  const instances = records(components.instances);
+  if (definitions.length !== 8 || instances.length !== 8 ||
+      definitions.some((entry) => entry.response_type !== "verdict") ||
+      JSON.stringify(sortedStrings(definitions.map((entry) => entry.directive_key))) !==
+        JSON.stringify([...RETIRED_V1_DIRECTIVE_KEYS, ...RETIRED_V1_DIRECTIVE_KEYS].sort()) ||
+      JSON.stringify(sortedStrings(instances.map((entry) => entry.directive_key))) !==
+        JSON.stringify([...RETIRED_V1_DIRECTIVE_KEYS, ...RETIRED_V1_DIRECTIVE_KEYS].sort())) {
+    conflict("directive graph");
+  }
+
+  const runs = records(components.runs).sort((a, b) => String(a.run_key).localeCompare(String(b.run_key)));
+  if (runs.length !== 2 || runs.some((run, index) => run.briefing_id !== briefing.id ||
+      run.publisher_user_id !== publisher.id || run.task_identity !== RICH_BRIEFING_DEMO.taskIdentity ||
+      run.run_id !== `release-readiness-round-${index + 1}` || run.run_key !== `release-readiness-round-${index + 1}` ||
+      run.round_id !== rounds[index]?.id || run.artifact_version_id !== rounds[index]?.artifact_version_id ||
+      run.evidence_series_ref !== RICH_BRIEFING_DEMO.evidenceSeriesRef || run.evidence_version !== index + 1 ||
+      run.evidence_digest !== fixedDigest(`round-${index + 1}-evidence`) || run.quiet !== 0 ||
+      run.received_at !== (index === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp))) {
+    conflict("run graph");
+  }
+  const occurrences = records(components.occurrences);
+  if (occurrences.length !== 8 || JSON.stringify(sortedStrings(occurrences.map((entry) => entry.directive_key))) !==
+      JSON.stringify([...RETIRED_V1_DIRECTIVE_KEYS, ...RETIRED_V1_DIRECTIVE_KEYS].sort())) conflict("occurrences");
+
+  const instanceKeyById = new Map(instances.map((entry) => [entry.id, entry.directive_key]));
+  const responses = records(components.response_events).map((event) => ({
+    key: instanceKeyById.get(event.directive_instance_id), operation: event.operation,
+    value: event.value_json, actor: event.actor_user_id, created_at: event.created_at,
+  })).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  if (JSON.stringify(responses) !== JSON.stringify([
+    { key: "operator.runbook", operation: "set", value: JSON.stringify({ verdict: "keep" }), actor: reviewer.id,
+      created_at: RICH_BRIEFING_DEMO.answersTimestamp },
+    { key: "rollback.plan", operation: "set", value: JSON.stringify({ verdict: "dismiss" }), actor: reviewer.id,
+      created_at: RICH_BRIEFING_DEMO.answersTimestamp },
+    { key: "scope.approval", operation: "set", value: JSON.stringify({ verdict: "keep" }), actor: reviewer.id,
+      created_at: RICH_BRIEFING_DEMO.answersTimestamp },
+  ])) conflict("responses");
+  const annotations = records(components.annotation_events).sort((a, b) => String(a.annotation_kind).localeCompare(String(b.annotation_kind)));
+  if (annotations.length !== 2 || annotations.some((event) => event.operation !== "set" ||
+      event.actor_user_id !== reviewer.id || event.created_at !== RICH_BRIEFING_DEMO.annotationsTimestamp) ||
+      annotations[0]?.annotation_kind !== "comment" || annotations[0]?.quote !== "Staging rehearsal completed" ||
+      annotations[1]?.annotation_kind !== "suggest_replacement" || annotations[1]?.quote !== "15 minute recovery objective") {
+    conflict("annotations");
+  }
+  const submissions = records(components.submissions);
+  if (submissions.length !== 1 || submissions[0]?.round_id !== rounds[0]?.id || submissions[0]?.ordinal !== 1 ||
+      submissions[0]?.actor_user_id !== reviewer.id || submissions[0]?.created_at !== RICH_BRIEFING_DEMO.submissionTimestamp ||
+      records(components.submission_answers).length !== 3 || records(components.submission_annotations).length !== 2 ||
+      records(components.prior_audit).length !== 0) conflict("frozen submission");
+
+  db.prepare("DELETE FROM briefing_legacy_custody WHERE briefing_id = ?").run(briefing.id);
+  db.prepare("DELETE FROM briefing_members WHERE briefing_id = ?").run(briefing.id);
+  db.prepare("DELETE FROM briefings WHERE id = ?").run(briefing.id);
+  return true;
+}
+
 function exactExistingDemo(
   db: Db,
   options: { databasePath: string; artifactRoot?: string },
@@ -327,9 +502,9 @@ function exactExistingDemo(
   const publisher = getUserBySlug(db, RICH_BRIEFING_DEMO.publisherSlug);
   const reviewer = getUserBySlug(db, RICH_BRIEFING_DEMO.reviewerSlug);
   if (!publisher) return conflict("publisher registry state");
-  if (!exactDemoUser(publisher, "agent", "Briefing Demo Publisher")) conflict("publisher registry state");
+  if (!compatibleDemoUser(publisher, "agent")) conflict("publisher registry state");
   if (!reviewer) return conflict("reviewer registry state");
-  if (!exactDemoUser(reviewer, "human", "Briefing Demo Reviewer")) conflict("reviewer registry state");
+  if (!compatibleDemoUser(reviewer, "human")) conflict("reviewer registry state");
   if (options.artifactRoot && getSetting(db, "artifact_root") !== options.artifactRoot) {
     conflict("artifact custody does not match the requested root");
   }
@@ -479,14 +654,19 @@ export function seedRichBriefingDemo(
   db: Db,
   options: { databasePath: string; artifactRoot?: string },
 ): RichBriefingDemoManifest {
-  const existing = exactExistingDemo(db, options);
-  if (existing) return existing;
-  return db.transaction(() => seedNewRichBriefingDemo(db, options))();
+  return db.transaction(() => {
+    const upgraded = retireExactV1DemoShell(db, options);
+    if (upgraded) return seedNewRichBriefingDemo(db, options, "upgraded");
+    const existing = exactExistingDemo(db, options);
+    if (existing) return existing;
+    return seedNewRichBriefingDemo(db, options, "seeded");
+  }).immediate();
 }
 
 function seedNewRichBriefingDemo(
   db: Db,
   options: { databasePath: string; artifactRoot?: string },
+  result: "seeded" | "upgraded",
 ): RichBriefingDemoManifest {
   if (options.artifactRoot) setSetting(db, "artifact_root", options.artifactRoot);
   const publisher = demoUser(db, RICH_BRIEFING_DEMO.publisherSlug, "agent", "Briefing Demo Publisher");
@@ -578,5 +758,5 @@ function seedNewRichBriefingDemo(
         directive_types: DIRECTIVE_TYPES,
         directive_count: 6, answer_count: 0, annotation_count: 0, submitted: false,
       },
-    ], "seeded");
+    ], result);
 }
