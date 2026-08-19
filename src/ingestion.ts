@@ -6,6 +6,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import { getDb, type Db } from "./db.js";
 import { broadcast } from "./sse.js";
@@ -62,6 +63,10 @@ export const RECONCILE_INTERVAL_MS = 60 * 60_000;
 export const DIRTY_INGEST_BATCH_SIZE = 16;
 export const MAX_DIRTY_INGEST_PATHS = 4096;
 const INGEST_TAIL_HASH_BYTES = 4096;
+/** Keep every native fs.read length well below Node's signed-32-bit boundary. */
+export const INGEST_RANGE_READ_CHUNK_BYTES = 1024 * 1024;
+/** The existing incremental parser accepts one string, so bound that materialization. */
+export const MAX_BUFFERED_APPEND_BYTES = 16 * 1024 * 1024;
 export const INGEST_COMPRESSION_CONCURRENCY = 4;
 
 /** One recursive watch root: every glob that shares a base directory. */
@@ -1376,19 +1381,75 @@ async function hashFileTailAt(filePath: string, offset: number): Promise<string>
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
-async function readFileRange(filePath: string, start: number, end: number): Promise<string> {
-  if (end <= start) {
-    return "";
+type RangeReadHandle = Pick<fs.promises.FileHandle, "read" | "close">;
+
+interface RangeReadOptions {
+  chunkBytes?: number;
+  openFile?: (filePath: string) => Promise<RangeReadHandle>;
+}
+
+/**
+ * Consume an exact byte range without making a native read or allocation the
+ * size of the logical range. The explicit-position loop advances by bytesRead,
+ * including after short reads; only a zero-byte read is EOF.
+ *
+ * Exported as a narrow test seam so sparse ranges beyond INT32_MAX can exercise
+ * real FileHandle reads without scanning gigabytes.
+ */
+export async function consumeFileRangeForTest(
+  filePath: string,
+  start: number,
+  end: number,
+  consume: (chunk: Buffer, position: number) => void | Promise<void>,
+  options: RangeReadOptions = {},
+): Promise<number> {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < 0) {
+    throw new RangeError("file range offsets must be non-negative safe integers");
   }
-  const length = end - start;
-  const buffer = Buffer.alloc(length);
-  const handle = await fs.promises.open(filePath, "r");
+  if (end <= start) return 0;
+  const chunkBytes = options.chunkBytes ?? INGEST_RANGE_READ_CHUNK_BYTES;
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes > INGEST_RANGE_READ_CHUNK_BYTES) {
+    throw new RangeError(`file read chunks must be between 1 and ${INGEST_RANGE_READ_CHUNK_BYTES} bytes`);
+  }
+  const handle = await (options.openFile ?? ((target) => fs.promises.open(target, "r")))(filePath);
+  const buffer = Buffer.allocUnsafe(Math.min(chunkBytes, end - start));
+  let position = start;
   try {
-    await handle.read(buffer, 0, length, start);
+    while (position < end) {
+      const length = Math.min(buffer.length, end - position);
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      if (bytesRead === 0) break;
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > length) {
+        throw new Error(`invalid bytesRead ${bytesRead} for requested length ${length}`);
+      }
+      await consume(buffer.subarray(0, bytesRead), position);
+      position += bytesRead;
+    }
+    return position - start;
   } finally {
     await handle.close();
   }
-  return buffer.toString("utf8");
+}
+
+export async function readUtf8FileRangeForTest(
+  filePath: string,
+  start: number,
+  end: number,
+  options: RangeReadOptions = {},
+): Promise<string> {
+  const decoder = new StringDecoder("utf8");
+  const decoded: string[] = [];
+  await consumeFileRangeForTest(filePath, start, end, (chunk) => {
+    const text = decoder.write(chunk);
+    if (text) decoded.push(text);
+  }, options);
+  const final = decoder.end();
+  if (final) decoded.push(final);
+  return decoded.join("");
+}
+
+async function readFileRange(filePath: string, start: number, end: number): Promise<string> {
+  return readUtf8FileRangeForTest(filePath, start, end);
 }
 
 async function readTrailingPartialLine(filePath: string, size: number): Promise<string> {
@@ -1752,6 +1813,13 @@ async function readAppend(
     return { kind: "buffered", appendedBytes: 0, nextPartialLine: state.partial_line, tailHash: currentTailHash };
   }
 
+  // Provider incremental parsers currently accept one raw string. Beyond this
+  // ceiling, reuse their existing whole-file streaming parser instead of
+  // materializing an unbounded append tail or calling fs.read with its length.
+  if (appendedBytes > MAX_BUFFERED_APPEND_BYTES) {
+    return { kind: "fallback", reason: "append_range_exceeds_buffer_limit" };
+  }
+
   const appended = await readFileRange(filePath, state.byte_offset, stat.size);
   const combined = `${state.partial_line}${appended}`;
   const endedWithLineBreak = combined.endsWith("\n") || combined.endsWith("\r");
@@ -1772,6 +1840,19 @@ async function readAppend(
     sourceHash: `append:${stat.size}:${tailHash}`,
     tailHash,
   };
+}
+
+/** Exercise the production append-range decision without constructing ledger state. */
+export async function readAppendForTest(
+  filePath: string,
+  state: Pick<IngestAppendState, "byte_offset" | "line_count" | "tail_hash" | "partial_line">,
+): Promise<AppendReadResult> {
+  return readAppend(filePath, await fs.promises.stat(filePath), {
+    file_path: filePath,
+    empty_source_mtime: null,
+    empty_source_size: null,
+    ...state,
+  });
 }
 
 function mergeAppendConversationMetadata(
