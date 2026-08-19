@@ -133,7 +133,9 @@ describe('Briefing document panel', () => {
     fireEvent.input(short, { target: { value: '  exact  ' } });
     fireEvent.input(long, { target: { value: 'Detailed' } });
     const rating = screen.getByRole('group', { name: 'Rate confidence' });
-    fireEvent.click(within(rating).getByRole('radio', { name: '5' }));
+    const ratingFive = within(rating).getByRole('radio', { name: '5' }) as HTMLInputElement;
+    fireEvent.click(ratingFive);
+    expect(ratingFive.checked).toBe(true);
     expect(changes).toEqual(expect.arrayContaining([
       { id: 'single', value: { option_key: 'b' } },
       { id: 'multi', value: { option_keys: ['first', 'third'] } },
