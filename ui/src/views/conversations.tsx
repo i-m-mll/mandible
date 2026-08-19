@@ -69,7 +69,6 @@ import {
   conversationBlocksToStreamEvents,
   buildStreamState,
   deriveChatUsageSummary,
-  openMarkdownDocument,
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
   type ShelfItem,
@@ -85,6 +84,8 @@ import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { openMarkdownDocument } from '../chat/markdownActions';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
@@ -1345,6 +1346,14 @@ function ConversationDetail({
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(800);
 
@@ -2084,6 +2093,7 @@ function ConversationDetail({
           </span>
           <div className="conv-actions">
             <button
+              ref={actionsTriggerRef}
               type="button"
               className="conv-actions__trigger"
               onClick={() => setActionsOpen((prev) => !prev)}
@@ -2095,7 +2105,13 @@ function ConversationDetail({
               <HorizontalDotsIcon />
             </button>
             {actionsOpen && (
-              <div className="conv-actions__menu" role="menu">
+              <div
+                ref={actionsMenuRef}
+                className="conv-actions__menu app-anchored-menu"
+                role="menu"
+                popover="manual"
+                style={actionsMenuStyle}
+              >
                 <button type="button" role="menuitem" onClick={() => { setInfoOpen(true); setActionsOpen(false); }}>
                   View metadata
                 </button>
@@ -2300,7 +2316,7 @@ function ConversationDetail({
     <DetailPaneShell
       as="div"
       variant="compact"
-      className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
+      className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
       headerClassName="conv-detail__shell-header"
       headerRef={headerRef}
       subheaderClassName="conv-detail__parent"
@@ -2415,9 +2431,6 @@ function ConversationDetail({
               backend: conversation.source,
               model: conversation.model ?? undefined,
             }}
-            usageSummary={usageSummary}
-            onUsageOpen={openUsage}
-            showConversationToolbar={false}
           />
         </div>
       ) : (

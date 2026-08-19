@@ -130,7 +130,7 @@ export function RichChatPane({
   return (
     <div className="terminal-pane__rich-wrapper">
       <div className="terminal-pane__rich-main">
-        <div className="chat-usage-host" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {backendType === 'pty' && <PtyBanner />}
           {(backendType === 'sdk' || backendType === 'acp') && (
             <div className="terminal-pane__policy-row">
@@ -175,8 +175,6 @@ export function RichChatPane({
             activePermissionRequest={permissionRequest}
             permissionBackendType={backendType}
             onPermissionRespond={onPermissionRespond}
-            usageSummary={usageSummary}
-            onUsageOpen={openUsage}
           />
           <ChatOverlay
             open={usageModalOpen}
