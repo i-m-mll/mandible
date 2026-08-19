@@ -4,7 +4,12 @@ import { readArtifactBytesFull } from "../artifact-content.js";
 import type { FeedbackResponseType, FeedbackResponseValue } from "../contracts.js";
 import type { Db } from "../db.js";
 import { getCanonicalArtifactVersion, recordArtifactVersion } from "../provider-artifacts.js";
-import { BRIEFING_PROFILE, BriefingDirectiveError, parseBriefingDirectives } from "./briefing-directives.js";
+import {
+  BRIEFING_PROFILE,
+  BriefingDirectiveError,
+  parseBriefingDirectives,
+  type BriefingDirective,
+} from "./briefing-directives.js";
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 
@@ -56,6 +61,11 @@ function text(value: unknown, label: string): string {
   return value.trim();
 }
 
+function exactNonblankText(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new BriefingStoreError(`${label} must be a nonblank string`);
+  return value;
+}
+
 function sha(value: unknown, label: string): string {
   const parsed = text(value, label).toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(parsed)) throw new BriefingStoreError(`${label} must be a SHA-256 digest`);
@@ -74,6 +84,26 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
+}
+
+function directiveBinding(directive: BriefingDirective, position: number) {
+  return {
+    position,
+    key: directive.key,
+    type: directive.type,
+    required: directive.required,
+    prompt: directive.body,
+    options: directive.options,
+    start_offset: directive.start_offset,
+    end_offset: directive.end_offset,
+    body_start_offset: directive.body_start_offset,
+    body_end_offset: directive.body_end_offset,
+    definition_digest: directive.definition_digest,
+  };
+}
+
+function roundBindingDigest(directives: BriefingDirective[]): string {
+  return createHash("sha256").update(canonical(directives.map(directiveBinding))).digest("hex");
 }
 
 export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
@@ -99,7 +129,7 @@ export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
   }
   const document = body.document === null || body.document === undefined ? null : record(body.document, "document");
   if (document) only(document, ["markdown"], "document");
-  const markdown = document ? text(document.markdown, "document.markdown") : null;
+  const markdown = document ? exactNonblankText(document.markdown, "document.markdown") : null;
   const quietReason = body.quiet_reason === null || body.quiet_reason === undefined
     ? null : text(body.quiet_reason, "quiet_reason");
   if ((markdown === null) === (quietReason === null)) {
@@ -245,9 +275,7 @@ export function publishBriefingRun(
       }, now);
       artifactVersionId = artifact.version.id;
       const directives = parseBriefingDirectives(request.document.markdown);
-      const bindingDigest = createHash("sha256")
-        .update(JSON.stringify(directives.map((directive) => [directive.key, directive.definition_digest])))
-        .digest("hex");
+      const bindingDigest = roundBindingDigest(directives);
       roundId = randomUUID();
       db.prepare(
         `INSERT INTO briefing_rounds
@@ -265,18 +293,24 @@ export function publishBriefingRun(
             `INSERT INTO briefing_directive_definitions
               (id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt,
                options_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
-             VALUES (?, ?, ?, ?, 'verdict', ?, ?, '[]', ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(definition.id, artifactVersionId, directive.key, directive.definition_digest,
-            directive.required ? 1 : 0, directive.body, directive.start_offset, directive.end_offset,
+            directive.type, directive.required ? 1 : 0, directive.body, canonical(directive.options),
+            directive.start_offset, directive.end_offset,
             directive.body_start_offset, directive.body_end_offset, now);
         }
         const instanceId = randomUUID();
         db.prepare(
           `INSERT INTO briefing_directive_instances
-            (id, round_id, definition_id, directive_key, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-        ).run(instanceId, roundId, definition.id, directive.key, position, now);
+            (id, round_id, briefing_id, artifact_version_id, definition_id, directive_key, position, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(instanceId, roundId, briefing.id, artifactVersionId, definition.id, directive.key, position, now);
         instanceByKey.set(directive.key, instanceId);
       });
+      const verified = verifyBriefingRoundBinding(db, roundId);
+      if (!verified.valid) {
+        throw new BriefingStoreError(`published round binding is invalid: ${verified.reason}`, 409, "invalid_round_binding");
+      }
       db.prepare(
         "UPDATE briefings SET latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?",
       ).run(roundId, now, briefing.id);
@@ -295,9 +329,9 @@ export function publishBriefingRun(
     for (const occurrence of request.occurrences) {
       db.prepare(
         `INSERT INTO briefing_run_occurrences
-          (id, run_id, directive_instance_id, directive_key, evidence_digest, occurred_at, metadata_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(randomUUID(), receiptId, instanceByKey.get(occurrence.directive_key) ?? null,
+          (id, run_id, round_id, briefing_id, directive_instance_id, directive_key, evidence_digest, occurred_at, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(randomUUID(), receiptId, roundId, briefing.id, instanceByKey.get(occurrence.directive_key) ?? null,
         occurrence.directive_key, occurrence.evidence_digest, occurrence.occurred_at,
         JSON.stringify(occurrence.metadata));
     }
@@ -337,10 +371,94 @@ function pinnedRoundDocument(db: Db, artifactVersionId: string): { source: strin
   }
 }
 
+export type BriefingBindingVerification =
+  | { valid: true; source: string; content_hash: string; directives: BriefingDirective[] }
+  | { valid: false; reason: string; source: string | null; content_hash: string | null };
+
+/** One authoritative exact-byte verifier used by publication, reads, answers, annotations, and submission. */
+export function verifyBriefingRoundBinding(db: Db, roundId: string): BriefingBindingVerification {
+  const round = db.prepare(
+    `SELECT id, briefing_id, artifact_version_id, profile, binding_digest
+       FROM briefing_rounds WHERE id = ?`,
+  ).get(roundId) as {
+    id: string; briefing_id: string; artifact_version_id: string; profile: string; binding_digest: string;
+  } | undefined;
+  if (!round) return { valid: false, reason: "round is missing", source: null, content_hash: null };
+  if (round.profile !== BRIEFING_PROFILE) {
+    return { valid: false, reason: "round profile is not mandible-briefing.v2", source: null, content_hash: null };
+  }
+  let document: { source: string; content_hash: string };
+  try {
+    document = pinnedRoundDocument(db, round.artifact_version_id);
+  } catch (error) {
+    return { valid: false, reason: error instanceof Error ? error.message : String(error), source: null, content_hash: null };
+  }
+  let directives: BriefingDirective[];
+  try {
+    directives = parseBriefingDirectives(document.source);
+  } catch (error) {
+    return { valid: false, reason: error instanceof Error ? error.message : String(error),
+      source: document.source, content_hash: document.content_hash };
+  }
+  const rows = db.prepare(
+    `SELECT i.position, i.directive_key, i.briefing_id, i.artifact_version_id,
+            d.artifact_version_id AS definition_artifact_version_id,
+            d.definition_digest, d.response_type, d.required, d.prompt, d.options_json,
+            d.start_offset, d.end_offset, d.body_start_offset, d.body_end_offset
+       FROM briefing_directive_instances i
+       JOIN briefing_directive_definitions d ON d.id = i.definition_id
+      WHERE i.round_id = ? ORDER BY i.position`,
+  ).all(roundId) as Array<{
+    position: number; directive_key: string; briefing_id: string; artifact_version_id: string;
+    definition_artifact_version_id: string; definition_digest: string; response_type: string;
+    required: number; prompt: string; options_json: string; start_offset: number; end_offset: number;
+    body_start_offset: number; body_end_offset: number;
+  }>;
+  if (rows.length !== directives.length) {
+    return { valid: false, reason: "stored definition count does not match artifact", ...document };
+  }
+  for (const [position, directive] of directives.entries()) {
+    const row = rows[position];
+    let options: unknown;
+    try { options = JSON.parse(row.options_json); } catch { options = null; }
+    const expected = directiveBinding(directive, position);
+    const stored = {
+      position: row.position,
+      key: row.directive_key,
+      type: row.response_type,
+      required: row.required === 1,
+      prompt: row.prompt,
+      options,
+      start_offset: row.start_offset,
+      end_offset: row.end_offset,
+      body_start_offset: row.body_start_offset,
+      body_end_offset: row.body_end_offset,
+      definition_digest: row.definition_digest,
+    };
+    if (row.briefing_id !== round.briefing_id || row.artifact_version_id !== round.artifact_version_id
+        || row.definition_artifact_version_id !== round.artifact_version_id
+        || canonical(stored) !== canonical(expected)) {
+      return { valid: false, reason: `stored definition '${directive.key}' does not match artifact`, ...document };
+    }
+  }
+  if (roundBindingDigest(directives) !== round.binding_digest) {
+    return { valid: false, reason: "round binding digest does not match artifact", ...document };
+  }
+  return { valid: true, ...document, directives };
+}
+
+function requireValidBriefingRoundBinding(db: Db, roundId: string): Extract<BriefingBindingVerification, { valid: true }> {
+  const verification = verifyBriefingRoundBinding(db, roundId);
+  if (!verification.valid) {
+    throw new BriefingStoreError(`briefing round binding is invalid: ${verification.reason}`, 409, "invalid_round_binding");
+  }
+  return verification;
+}
+
 function effectiveAnswers(db: Db, roundId: string, actorUserId: string) {
   return db.prepare(
     `SELECT e.id AS response_event_id, i.id AS directive_instance_id, i.directive_key,
-            d.response_type, e.value_json, e.created_at
+            d.response_type, d.options_json, e.value_json, e.created_at
        FROM briefing_response_events e
        JOIN briefing_directive_instances i ON i.id = e.directive_instance_id
        JOIN briefing_directive_definitions d ON d.id = i.definition_id
@@ -349,8 +467,22 @@ function effectiveAnswers(db: Db, roundId: string, actorUserId: string) {
       ORDER BY i.position`,
   ).all(roundId, actorUserId) as Array<{
     response_event_id: string; directive_instance_id: string; directive_key: string;
-    response_type: FeedbackResponseType; value_json: string; created_at: number;
+    response_type: FeedbackResponseType; options_json: string; value_json: string; created_at: number;
   }>;
+}
+
+function validatedEffectiveAnswers(db: Db, roundId: string, actorUserId: string) {
+  return effectiveAnswers(db, roundId, actorUserId).map((answer) => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(answer.value_json); } catch {
+      throw new BriefingStoreError("stored answer is not valid JSON", 409, "invalid_stored_answer");
+    }
+    const value = validateValue(answer.response_type, parsed, answer.options_json);
+    if (canonical(value) !== answer.value_json) {
+      throw new BriefingStoreError("stored answer is not canonical for its directive", 409, "invalid_stored_answer");
+    }
+    return { ...answer, value };
+  });
 }
 
 function effectiveAnnotations(db: Db, roundId: string, actorUserId: string) {
@@ -409,17 +541,7 @@ export function readBriefing(
   }
   if (roundRef && !selected) throw new BriefingStoreError("round not found", 404, "not_found");
   if (!selected) return { briefing, rounds, selected_round: null };
-  const document = pinnedRoundDocument(db, selected.artifact_version_id);
-  let bindingStatus: "valid" | "invalid" = "valid";
-  try {
-    const parsed = parseBriefingDirectives(document.source);
-    const digest = createHash("sha256")
-      .update(JSON.stringify(parsed.map((directive) => [directive.key, directive.definition_digest])))
-      .digest("hex");
-    if (digest !== selected.binding_digest) bindingStatus = "invalid";
-  } catch {
-    bindingStatus = "invalid";
-  }
+  const verification = verifyBriefingRoundBinding(db, selected.id);
   const items = db.prepare(
     `SELECT i.id, i.directive_key, i.position, d.definition_digest, d.response_type, d.required,
             d.prompt, d.options_json, d.start_offset, d.end_offset, d.body_start_offset, d.body_end_offset
@@ -438,21 +560,29 @@ export function readBriefing(
       "SELECT annotation_event_id FROM briefing_submission_annotations WHERE submission_id = ? ORDER BY position",
     ).all(latestSubmission.id) as Array<{ annotation_event_id: string }>).map((row) => row.annotation_event_id),
   } : null;
+  let projectedAnswers: ReturnType<typeof validatedEffectiveAnswers> = [];
+  let projectionError: string | null = null;
+  if (verification.valid) {
+    try { projectedAnswers = validatedEffectiveAnswers(db, selected.id, options.actorUserId); }
+    catch (error) { projectionError = error instanceof Error ? error.message : String(error); }
+  }
+  const projectionValid = verification.valid && projectionError === null;
   return {
     briefing,
     rounds,
     selected_round: {
       ...selected,
-      document: { artifact_version_id: selected.artifact_version_id, content_hash: document.content_hash,
-        previous_round_id: selected.previous_round_id, profile: selected.profile, source: document.source },
-      binding: { status: bindingStatus },
-      items: items.map(({ options_json, ...item }) => ({ ...item, options: JSON.parse(options_json) })),
-      answers: effectiveAnswers(db, selected.id, options.actorUserId).map(({ value_json, ...answer }) => ({
-        ...answer, value: JSON.parse(value_json),
-      })),
-      annotations: effectiveAnnotations(db, selected.id, options.actorUserId),
-      latest_submission: latestSubmission ?? null,
-      latest_frozen_membership: latestFrozenMembership,
+      document: { artifact_version_id: selected.artifact_version_id, content_hash: verification.content_hash,
+        previous_round_id: selected.previous_round_id, profile: selected.profile, source: verification.source },
+      binding: projectionValid ? { status: "valid" as const } : {
+        status: "invalid" as const, reason: projectionError ?? (verification.valid ? "invalid projection" : verification.reason),
+      },
+      items: projectionValid
+        ? items.map(({ options_json, ...item }) => ({ ...item, options: JSON.parse(options_json) })) : [],
+      answers: projectionValid ? projectedAnswers.map(({ value_json: _valueJson, options_json: _optionsJson, ...answer }) => answer) : [],
+      annotations: projectionValid ? effectiveAnnotations(db, selected.id, options.actorUserId) : [],
+      latest_submission: projectionValid ? latestSubmission ?? null : null,
+      latest_frozen_membership: projectionValid ? latestFrozenMembership : null,
     },
   };
 }
@@ -467,20 +597,49 @@ function requireRoundMember(db: Db, briefingId: string, roundId: string, actorUs
   }
 }
 
-function validateValue(responseType: FeedbackResponseType, value: unknown): FeedbackResponseValue {
+function validateValue(responseType: FeedbackResponseType, value: unknown, optionsJson: string): FeedbackResponseValue {
   const payload = record(value, "answer.value");
+  const options = JSON.parse(optionsJson) as Array<{ key: string }>;
   if (responseType === "verdict") {
     only(payload, ["verdict"], "answer.value");
     if (payload.verdict !== "keep" && payload.verdict !== "dismiss") {
       throw new BriefingStoreError("verdict must be keep or dismiss");
     }
-  } else if (responseType === "free_text") {
+    return { verdict: payload.verdict } as FeedbackResponseValue;
+  } else if (responseType === "single_choice") {
+    only(payload, ["option_key"], "answer.value");
+    if (typeof payload.option_key !== "string" || !options.some((option) => option.key === payload.option_key)) {
+      throw new BriefingStoreError("option_key must name one defined option");
+    }
+    return { option_key: payload.option_key };
+  } else if (responseType === "multi_choice") {
+    only(payload, ["option_keys"], "answer.value");
+    if (!Array.isArray(payload.option_keys) || payload.option_keys.length === 0
+        || payload.option_keys.some((key) => typeof key !== "string")) {
+      throw new BriefingStoreError("option_keys must be a nonempty string array");
+    }
+    const supplied = new Set(payload.option_keys as string[]);
+    if (supplied.size !== payload.option_keys.length
+        || [...supplied].some((key) => !options.some((option) => option.key === key))) {
+      throw new BriefingStoreError("option_keys must be unique defined options");
+    }
+    return { option_keys: options.map((option) => option.key).filter((key) => supplied.has(key)) };
+  } else if (responseType === "short_text" || responseType === "long_text") {
     only(payload, ["text"], "answer.value");
-    if (typeof payload.text !== "string") throw new BriefingStoreError("text must be a string");
+    const maximum = responseType === "short_text" ? 240 : 4000;
+    if (typeof payload.text !== "string" || !payload.text.trim() || payload.text.length > maximum) {
+      throw new BriefingStoreError(`text must be nonblank and at most ${maximum} UTF-16 code units`);
+    }
+    return { text: payload.text };
+  } else if (responseType === "rating") {
+    only(payload, ["rating"], "answer.value");
+    if (!Number.isSafeInteger(payload.rating) || (payload.rating as number) < 1 || (payload.rating as number) > 5) {
+      throw new BriefingStoreError("rating must be a safe integer from 1 through 5");
+    }
+    return { rating: payload.rating as number };
   } else {
-    throw new BriefingStoreError(`response type '${responseType}' is not supported by mandible-briefing.v1`);
+    throw new BriefingStoreError(`response type '${responseType}' is not supported by mandible-briefing.v2`);
   }
-  return payload as FeedbackResponseValue;
 }
 
 export function applyBriefingAnswers(
@@ -491,9 +650,10 @@ export function applyBriefingAnswers(
   answers: unknown,
   now = Date.now(),
 ) {
-  requireRoundMember(db, briefingId, roundId, actorUserId);
   if (!Array.isArray(answers)) throw new BriefingStoreError("answers must be an array");
   return db.transaction(() => {
+    requireRoundMember(db, briefingId, roundId, actorUserId);
+    requireValidBriefingRoundBinding(db, roundId);
     const answerEventIds: string[] = [];
     for (const [index, raw] of answers.entries()) {
       const answer = record(raw, `answers[${index}]`);
@@ -503,10 +663,10 @@ export function applyBriefingAnswers(
         throw new BriefingStoreError(`answers[${index}].operation must be set or retract`);
       }
       const directive = db.prepare(
-        `SELECT i.id, d.response_type FROM briefing_directive_instances i
+        `SELECT i.id, d.response_type, d.options_json FROM briefing_directive_instances i
           JOIN briefing_directive_definitions d ON d.id = i.definition_id
          WHERE i.round_id = ? AND i.directive_key = ?`,
-      ).get(roundId, key) as { id: string; response_type: FeedbackResponseType } | undefined;
+      ).get(roundId, key) as { id: string; response_type: FeedbackResponseType; options_json: string } | undefined;
       if (!directive) throw new BriefingStoreError(`directive '${key}' not found`, 404, "directive_not_found");
       const current = db.prepare(
         `SELECT e.id, e.value_json FROM briefing_response_events e
@@ -514,6 +674,15 @@ export function applyBriefingAnswers(
             AND NOT EXISTS (SELECT 1 FROM briefing_response_events r WHERE r.retracts_event_id = e.id)
           ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
       ).get(roundId, directive.id, actorUserId) as { id: string; value_json: string } | undefined;
+      if (current) {
+        let parsed: unknown;
+        try { parsed = JSON.parse(current.value_json); } catch {
+          throw new BriefingStoreError("stored answer is not valid JSON", 409, "invalid_stored_answer");
+        }
+        if (canonical(validateValue(directive.response_type, parsed, directive.options_json)) !== current.value_json) {
+          throw new BriefingStoreError("stored answer is not canonical for its directive", 409, "invalid_stored_answer");
+        }
+      }
       const expected = answer.expected_response_event_id === null
         ? null : text(answer.expected_response_event_id, `answers[${index}].expected_response_event_id`);
       if ((current?.id ?? null) !== expected) {
@@ -526,35 +695,35 @@ export function applyBriefingAnswers(
         const retractionId = randomUUID();
         db.prepare(
           `INSERT INTO briefing_response_events
-            (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-           VALUES (?, ?, ?, 'retract', NULL, ?, ?, ?)`,
-        ).run(retractionId, roundId, directive.id, current.id, actorUserId, now);
+            (id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+           VALUES (?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+        ).run(retractionId, roundId, briefingId, directive.id, current.id, actorUserId, now);
         answerEventIds.push(retractionId);
         continue;
       }
       if (!Object.hasOwn(answer, "value")) throw new BriefingStoreError("set requires value");
-      const value = validateValue(directive.response_type, answer.value);
+      const value = validateValue(directive.response_type, answer.value, directive.options_json);
       const serialized = canonical(value);
       if (current && canonical(JSON.parse(current.value_json)) === serialized) {
         throw new BriefingStoreError("answer is unchanged", 409, "answer_noop");
       }
       if (current) db.prepare(
         `INSERT INTO briefing_response_events
-          (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-         VALUES (?, ?, ?, 'retract', NULL, ?, ?, ?)`,
-      ).run(randomUUID(), roundId, directive.id, current.id, actorUserId, now);
+          (id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+         VALUES (?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+      ).run(randomUUID(), roundId, briefingId, directive.id, current.id, actorUserId, now);
       const eventId = randomUUID();
       db.prepare(
         `INSERT INTO briefing_response_events
-          (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-         VALUES (?, ?, ?, 'set', ?, NULL, ?, ?)`,
-      ).run(eventId, roundId, directive.id, serialized, actorUserId, now);
+          (id, round_id, briefing_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
+         VALUES (?, ?, ?, ?, 'set', ?, NULL, ?, ?)`,
+      ).run(eventId, roundId, briefingId, directive.id, serialized, actorUserId, now);
       answerEventIds.push(eventId);
     }
-    return { answer_event_ids: answerEventIds, answers: effectiveAnswers(db, roundId, actorUserId).map(({ value_json, ...answer }) => ({
-      ...answer, value: JSON.parse(value_json),
-    })) };
-  })();
+    return { answer_event_ids: answerEventIds,
+      answers: validatedEffectiveAnswers(db, roundId, actorUserId)
+        .map(({ value_json: _valueJson, options_json: _optionsJson, ...answer }) => answer) };
+  }).immediate();
 }
 
 export function applyBriefingAnnotations(
@@ -565,11 +734,10 @@ export function applyBriefingAnnotations(
   annotations: unknown,
   now = Date.now(),
 ) {
-  requireRoundMember(db, briefingId, roundId, actorUserId);
   if (!Array.isArray(annotations)) throw new BriefingStoreError("annotations must be an array");
-  const round = db.prepare("SELECT artifact_version_id FROM briefing_rounds WHERE id = ?").get(roundId) as { artifact_version_id: string };
-  const source = pinnedRoundDocument(db, round.artifact_version_id).source;
   return db.transaction(() => {
+    requireRoundMember(db, briefingId, roundId, actorUserId);
+    const source = requireValidBriefingRoundBinding(db, roundId).source;
     const ids: string[] = [];
     for (const [index, raw] of annotations.entries()) {
       const annotation = record(raw, `annotations[${index}]`);
@@ -585,10 +753,10 @@ export function applyBriefingAnnotations(
         const retractionId = randomUUID();
         db.prepare(
           `INSERT INTO briefing_annotation_events
-            (id, round_id, operation, annotation_kind, start_offset, end_offset, quote, body,
+            (id, round_id, briefing_id, operation, annotation_kind, start_offset, end_offset, quote, body,
              replacement_text, retracts_event_id, actor_user_id, created_at)
-           VALUES (?, ?, 'retract', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
-        ).run(retractionId, roundId, targetId, actorUserId, now);
+           VALUES (?, ?, ?, 'retract', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+        ).run(retractionId, roundId, briefingId, targetId, actorUserId, now);
         ids.push(retractionId);
         continue;
       }
@@ -620,14 +788,14 @@ export function applyBriefingAnnotations(
       const id = randomUUID();
       db.prepare(
         `INSERT INTO briefing_annotation_events
-          (id, round_id, operation, annotation_kind, start_offset, end_offset, quote, body,
+          (id, round_id, briefing_id, operation, annotation_kind, start_offset, end_offset, quote, body,
            replacement_text, retracts_event_id, actor_user_id, created_at)
-         VALUES (?, ?, 'set', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-      ).run(id, roundId, kind, start, end, quote, body, replacement, actorUserId, now);
+         VALUES (?, ?, ?, 'set', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      ).run(id, roundId, briefingId, kind, start, end, quote, body, replacement, actorUserId, now);
       ids.push(id);
     }
     return { annotation_event_ids: ids, annotations: effectiveAnnotations(db, roundId, actorUserId) };
-  })();
+  }).immediate();
 }
 
 export function submitBriefingRound(
@@ -638,7 +806,6 @@ export function submitBriefingRound(
   payload: unknown,
   now = Date.now(),
 ) {
-  requireRoundMember(db, briefingId, roundId, actorUserId);
   const body = record(payload, "request body");
   only(body, ["answers", "annotation_event_ids", "supersedes_submission_id"], "request body");
   if (!Array.isArray(body.answers) || !Array.isArray(body.annotation_event_ids)) {
@@ -654,7 +821,9 @@ export function submitBriefingRound(
     throw new BriefingStoreError("annotation_event_ids must contain nonblank strings");
   }
   return db.transaction(() => {
-    const current = effectiveAnswers(db, roundId, actorUserId);
+    requireRoundMember(db, briefingId, roundId, actorUserId);
+    requireValidBriefingRoundBinding(db, roundId);
+    const current = validatedEffectiveAnswers(db, roundId, actorUserId);
     const currentKeys = current.map((answer) => `${answer.directive_key}\0${answer.response_event_id}`).sort();
     const suppliedKeys = supplied.map((answer) => `${answer.directive_key}\0${answer.response_event_id}`).sort();
     if (canonical(currentKeys) !== canonical(suppliedKeys)) {
@@ -697,16 +866,19 @@ export function submitBriefingRound(
       .get(roundId) as { n: number }).n;
     const submissionId = randomUUID();
     db.prepare(
-      `INSERT INTO briefing_submissions (id, round_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(submissionId, roundId, ordinal, supersedes, actorUserId, now);
+      `INSERT INTO briefing_submissions
+        (id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(submissionId, roundId, briefingId, ordinal, supersedes, actorUserId, now);
     current.forEach((answer, position) => db.prepare(
       `INSERT INTO briefing_submission_answers
-        (submission_id, directive_instance_id, response_event_id, position) VALUES (?, ?, ?, ?)`,
-    ).run(submissionId, answer.directive_instance_id, answer.response_event_id, position));
+        (submission_id, round_id, actor_user_id, directive_instance_id, response_event_id, position)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(submissionId, roundId, actorUserId, answer.directive_instance_id, answer.response_event_id, position));
     currentAnnotationIds.forEach((id, position) => db.prepare(
-      `INSERT INTO briefing_submission_annotations (submission_id, annotation_event_id, position) VALUES (?, ?, ?)`,
-    ).run(submissionId, id, position));
+      `INSERT INTO briefing_submission_annotations
+        (submission_id, round_id, actor_user_id, annotation_event_id, position) VALUES (?, ?, ?, ?, ?)`,
+    ).run(submissionId, roundId, actorUserId, id, position));
     return { submission_id: submissionId, ordinal, supersedes_submission_id: supersedes,
       actor_user_id: actorUserId, created_at: now };
   }).immediate();

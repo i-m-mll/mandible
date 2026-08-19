@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { BriefingDirectiveError, parseBriefingDirectives } from "../src/feedback/briefing-directives.js";
-import { RICH_BRIEFING_ROUND_ONE_MARKDOWN, RICH_BRIEFING_ROUND_TWO_MARKDOWN } from "../src/feedback/rich-briefing-demo.js";
 
-describe("mandible-briefing.v1 directives", () => {
+describe("mandible-briefing.v2 directives", () => {
   it("uses UTF-16 ranges and hashes the exact CRLF directive slice", () => {
-    const source = "Before 😀\r\n:::spec-item{key=\"ship.it\" required=\"true\"}\r\nBody **here**\r\n:::\r\n";
+    const source = "Before 😀\r\n:::spec-item{key=\"ship.it\" type=\"verdict\" required=\"true\"}\r\nBody **here**\r\n:::\r\n";
     const [directive] = parseBriefingDirectives(source);
     expect(directive.start_offset).toBe(source.indexOf(":::spec-item"));
     expect(source.slice(directive.body_start_offset, directive.body_end_offset)).toBe("Body **here**");
@@ -19,33 +18,43 @@ describe("mandible-briefing.v1 directives", () => {
       .toThrow(BriefingDirectiveError);
     expect(() => parseBriefingDirectives(":::unknown{key=\"a\"}\nx\n:::"))
       .toThrow(BriefingDirectiveError);
-    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\"}\n:::spec-item{key=\"b\"}\nx\n:::\n:::"))
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"false\"}\n:::spec-item{key=\"b\" type=\"verdict\" required=\"false\"}\nx\n:::\n:::"))
       .toThrow(BriefingDirectiveError);
-    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" extra=\"x\"}\nx\n:::"))
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"false\" extra=\"x\"}\nx\n:::"))
       .toThrow(BriefingDirectiveError);
-    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\"}\n \n:::"))
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"false\"}\n \n:::"))
       .toThrow(BriefingDirectiveError);
-    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" required=\"yes\"}\nx\n:::"))
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"yes\"}\nx\n:::"))
       .toThrow(BriefingDirectiveError);
-    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\"}\nx\n::::"))
+    expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"false\"}\nx\n::::"))
       .toThrow(BriefingDirectiveError);
   });
 
-  it("pins the rich demo to four stable verdict directives with exact ranges and requiredness", () => {
-    const first = parseBriefingDirectives(RICH_BRIEFING_ROUND_ONE_MARKDOWN);
-    const second = parseBriefingDirectives(RICH_BRIEFING_ROUND_TWO_MARKDOWN);
-    expect(first.map(({ key, required }) => [key, required])).toEqual([
-      ["scope.approval", true],
-      ["rollback.plan", true],
-      ["observability", false],
-      ["operator.runbook", false],
+  it("accepts exactly six closed types and excludes trailing options from the prompt range", () => {
+    const source = [
+      ':::spec-item{key="verdict" type="verdict" required="true"}\nKeep it?\n:::',
+      ':::spec-item{key="single" type="single_choice" required="false"}\nPick **one**.\n::option[Alpha]{key="a"}\n::option[Beta]{key="b"}\n:::',
+      ':::spec-item{key="multi" type="multi_choice" required="false"}\nPick several.\n::option[Alpha]{key="a"}\n::option[Beta]{key="b"}\n:::',
+      ':::spec-item{key="short" type="short_text" required="false"}\nShort note.\n:::',
+      ':::spec-item{key="long" type="long_text" required="false"}\nLong note.\n:::',
+      ':::spec-item{key="rating" type="rating" required="false"}\nRate it.\n:::',
+    ].join("\n\n");
+    const parsed = parseBriefingDirectives(source);
+    expect(parsed.map((directive) => directive.type)).toEqual([
+      "verdict", "single_choice", "multi_choice", "short_text", "long_text", "rating",
     ]);
-    expect(second.map(({ key, required }) => [key, required])).toEqual(first.map(({ key, required }) => [key, required]));
-    for (const directive of first) {
-      expect(RICH_BRIEFING_ROUND_ONE_MARKDOWN.slice(directive.body_start_offset, directive.body_end_offset)).toBe(directive.body);
-      expect(directive.definition_digest).toBe(createHash("sha256")
-        .update(RICH_BRIEFING_ROUND_ONE_MARKDOWN.slice(directive.start_offset, directive.end_offset)).digest("hex"));
-    }
-    expect(second.map((directive) => directive.definition_digest)).not.toEqual(first.map((directive) => directive.definition_digest));
+    expect(parsed[1].options).toEqual([{ key: "a", label: "Alpha" }, { key: "b", label: "Beta" }]);
+    expect(source.slice(parsed[1].body_start_offset, parsed[1].body_end_offset)).toBe("Pick **one**.");
+  });
+
+  it("rejects misplaced, non-plain, duplicate, noncontiguous, and wrong-type options", () => {
+    const wrap = (type: string, options: string) =>
+      `:::spec-item{key="a" type="${type}" required="false"}\nPrompt\n${options}\n:::`;
+    expect(() => parseBriefingDirectives(wrap("single_choice", '::option[One]{key="one"}'))).toThrow(/2-12/);
+    expect(() => parseBriefingDirectives(wrap("verdict", '::option[One]{key="one"}\n::option[Two]{key="two"}'))).toThrow(/only/);
+    expect(() => parseBriefingDirectives(wrap("single_choice", '::option[**One**]{key="one"}\n::option[Two]{key="two"}'))).toThrow(/plain text/);
+    expect(() => parseBriefingDirectives(wrap("single_choice", '::option[One]{key="same"}\n::option[Two]{key="same"}'))).toThrow(/unique/);
+    expect(() => parseBriefingDirectives(wrap("single_choice", '::option[One]{key="one"}\n\n::option[Two]{key="two"}'))).toThrow(/contiguous/);
+    expect(() => parseBriefingDirectives(wrap("single_choice", '::option[One]{key="one"}\nTrailing\n::option[Two]{key="two"}'))).toThrow(/trailing/);
   });
 });

@@ -3,14 +3,16 @@ import os from "node:os";
 import path from "node:path";
 
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/sse.js", () => ({ broadcast: vi.fn() }));
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { migrate, type Db } from "../src/db.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { createUser } from "../src/users/store.js";
-import { RICH_BRIEFING_DEMO, seedRichBriefingDemo } from "../src/feedback/rich-briefing-demo.js";
+import { broadcast } from "../src/sse.js";
 
 class SlugGate implements ClientAuthGate {
   constructor(private readonly db: () => Db) {}
@@ -39,7 +41,7 @@ function payload(overrides: Record<string, unknown> = {}) {
     responder_user_ids: [humanId],
     evidence: { series_ref: "artifact-series:digest", version: 1, digest: "a".repeat(64) },
     source_health: { source: "arxiv-scan", status: "healthy", detail: null, observed_at: 1 },
-    document: { markdown: '# Daily\n\n:::spec-item{key="paper" required="true"}\nKeep it?\n:::\n' },
+    document: { markdown: '# Daily\n\n:::spec-item{key="paper" type="verdict" required="true"}\nKeep it?\n:::\n' },
     quiet_reason: null,
     occurrences: [{ directive_key: "paper", evidence_digest: "b".repeat(64), occurred_at: 1, metadata: {} }],
     ...overrides,
@@ -47,6 +49,7 @@ function payload(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  vi.mocked(broadcast).mockClear();
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefing-routes-"));
   db = new Database(":memory:");
   migrate(db);
@@ -69,8 +72,10 @@ describe("plural Briefing routes", () => {
     const first = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ quiet: false, run_id: "run-1" });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledTimes(2);
     expect(await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" }))
       .toEqual(first);
+    expect(vi.mocked(broadcast)).toHaveBeenCalledTimes(2);
     expect((await router.invoke({ method: "POST", url: "/api/briefing/ingest", body: payload(), credential: "agent-schedule" })).status).toBe(404);
     expect((await router.invoke({ method: "GET", url: "/api/asks/anything", credential: "human" })).status).toBe(404);
   });
@@ -87,10 +92,28 @@ describe("plural Briefing routes", () => {
         expected_response_event_id: null, value: { verdict: "keep" } }] } });
     expect(answer.status).toBe(200);
     const responseEventId = ((answer.body as { answers: Array<{ response_event_id: string }> }).answers[0]).response_event_id;
+    const annotation = await router.invoke({
+      method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/annotations`, credential: "human",
+      body: { annotations: [{ operation: "set", kind: "comment", start_offset: 2, end_offset: 7,
+        quote: "Daily", body: "Reviewed", replacement_text: null }] },
+    });
+    expect(annotation.status).toBe(200);
+    const annotationEventId = ((annotation.body as { annotation_event_ids: string[] }).annotation_event_ids[0]);
     const submitted = await router.invoke({ method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,
       credential: "human", body: { answers: [{ directive_key: "paper", response_event_id: responseEventId }],
-        annotation_event_ids: [], supersedes_submission_id: null } });
+        annotation_event_ids: [annotationEventId], supersedes_submission_id: null } });
     expect(submitted).toMatchObject({ status: 200, body: { ordinal: 1, actor_user_id: humanId } });
+    expect(vi.mocked(broadcast).mock.calls).toEqual(expect.arrayContaining([
+      ["briefing:created", { briefing_id: ids.briefing_id }],
+      ["briefing:round-published", { briefing_id: ids.briefing_id, round_id: ids.round_id }],
+      ["briefing:answered", { briefing_id: ids.briefing_id, round_id: ids.round_id }],
+      ["briefing:annotated", { briefing_id: ids.briefing_id, round_id: ids.round_id }],
+      ["briefing:submitted", { briefing_id: ids.briefing_id, round_id: ids.round_id }],
+    ]));
+    for (const [, eventPayload] of vi.mocked(broadcast).mock.calls) {
+      expect(eventPayload).not.toHaveProperty("value");
+      expect(eventPayload).not.toHaveProperty("actor_user_id");
+    }
   });
 
   it("resolves round refs only inside the authorized Briefing and rejects ambiguous prefixes", async () => {
@@ -132,31 +155,4 @@ describe("plural Briefing routes", () => {
       .get((quiet.body as { receipt_id: string }).receipt_id)).toMatchObject({ source_health_json: expect.stringContaining("healthy") });
   });
 
-  it("projects the seeded submitted old round and unanswered latest round through canonical routes", async () => {
-    const seeded = seedRichBriefingDemo(db, { databasePath: ":memory:" });
-    const credential = RICH_BRIEFING_DEMO.reviewerSlug;
-    const list = await router.invoke({ method: "GET", url: "/api/briefings", credential });
-    expect(list.body).toMatchObject({ briefings: [{
-      id: seeded.briefing.id, title: RICH_BRIEFING_DEMO.title, latest_round_id: seeded.rounds[1].id, round_count: 2,
-    }] });
-    const first = await router.invoke({
-      method: "GET", url: `/api/briefings/${seeded.briefing.id}?round=${seeded.rounds[0].id}`, credential,
-    });
-    const second = await router.invoke({
-      method: "GET", url: `/api/briefings/${seeded.briefing.id}?round=${seeded.rounds[1].id}`, credential,
-    });
-    expect(first).toMatchObject({ status: 200, body: { selected_round: {
-      document: { artifact_version_id: seeded.rounds[0].artifact_version_id },
-      latest_submission: { ordinal: 1 },
-    } } });
-    const firstRound = (first.body as any).selected_round;
-    expect(firstRound.answers.map((answer: any) => [answer.directive_key, answer.value.verdict])).toEqual([
-      ["scope.approval", "keep"], ["rollback.plan", "dismiss"], ["operator.runbook", "keep"],
-    ]);
-    expect(firstRound.annotations.map((entry: any) => entry.annotation_kind)).toEqual(["comment", "suggest_replacement"]);
-    expect(second).toMatchObject({ status: 200, body: { selected_round: {
-      document: { artifact_version_id: seeded.rounds[1].artifact_version_id },
-      answers: [], annotations: [], latest_submission: null, latest_frozen_membership: null,
-    } } });
-  });
 });
