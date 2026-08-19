@@ -40,6 +40,8 @@ export type SidebarSearchFilterHeaderProps = {
 export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const dismissRef = useRef(props.panel?.onDismiss);
+  dismissRef.current = props.panel?.onDismiss;
   const rootClass = props.className
     ? `sidebar-search-filter ${props.className}`
     : 'sidebar-search-filter';
@@ -72,14 +74,13 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
 
   useEffect(() => {
     if (!props.panel?.onDismiss) return undefined;
-    const dismiss = props.panel.onDismiss;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       event.preventDefault();
-      dismiss();
+      dismissRef.current?.();
     };
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.target && !rootRef.current?.contains(event.target as Node)) dismiss();
+      if (event.target && !rootRef.current?.contains(event.target as Node)) dismissRef.current?.();
     };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', handlePointerDown);
@@ -87,7 +88,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('pointerdown', handlePointerDown);
     };
-  }, [props.panel?.onDismiss]);
+  }, [Boolean(props.panel?.onDismiss)]);
 
   return (
     <div ref={rootRef} className={rootClass} onFocusOut={props.onBlurWithin} data-testid={props.testId}>

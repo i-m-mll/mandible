@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation, ConversationSidebarGroup } from '../ui/src/api.js';
+import type { CanonicalProject, Conversation, ConversationSidebarGroup } from '../ui/src/api.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
 import { normalizeSidebarGroupLimit } from '../ui/src/components/shared/sidebar-group-settings.js';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared.js';
@@ -40,6 +40,7 @@ beforeEach(() => {
     setItem: (key: string, value: string) => rows.set(key, String(value)),
   } as Storage;
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
+  vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -67,14 +68,27 @@ const pinnedTwo = conversation('pin-2', 'Pinned two', true);
 const projectOne = conversation('project-1', 'Project one');
 const projectTwo = conversation('project-2', 'Project two');
 
+const canonicalProjects: CanonicalProject[] = [
+  {
+    id: 'prj-mandible', project_key: 'mandible', display_name: 'Mandible',
+    checkouts: [
+      { id: 'checkout-mandible', project_id: 'prj-mandible', work_repo_id: 'mandible', root: '/repos/mandible', name: 'Primary', default_branch: 'main', remote_url: '' },
+      { id: 'checkout-mandible-alt', project_id: 'prj-mandible', work_repo_id: 'mandible-alt', root: '/repos/mandible-alt', name: 'Alternate', default_branch: 'main', remote_url: '' },
+    ],
+  },
+  {
+    id: 'prj-feedbax', project_key: 'feedbax', display_name: 'Feedbax',
+    checkouts: [{ id: 'checkout-feedbax', project_id: 'prj-feedbax', work_repo_id: 'feedbax', root: '/repos/feedbax', name: 'Feedbax', default_branch: 'main', remote_url: '' }],
+  },
+];
+
 function group(overrides: Partial<ConversationSidebarGroup> & Pick<ConversationSidebarGroup, 'key' | 'kind' | 'label'>): ConversationSidebarGroup {
   return { total: 0, conversations: [], next_cursor: null, ...overrides };
 }
 
-function renderView(consoleSessions: ConsoleSession[] = [], workRepos: Array<{ name: string; root: string }> = [], onNewSession = vi.fn()): void {
+function renderView(consoleSessions: ConsoleSession[] = [], onNewSession = vi.fn()): void {
   render(<ConversationsView
     consoleSessions={consoleSessions}
-    workRepos={workRepos}
     initialConversationId={null}
     initialSessionId={null}
     sidebarGroupLimit={1}
@@ -84,27 +98,36 @@ function renderView(consoleSessions: ConsoleSession[] = [], workRepos: Array<{ n
 }
 
 describe('conversation sidebar groups', () => {
-  it('normalizes shown-project roots as bounded browser-local additive intent', () => {
-    expect(normalizeChatViewState({ shownProjectRoots: [' /one ', '/one', '', 42, '/two'] })).toMatchObject({
-      shownProjectRoots: ['/one', '/two'],
+  it('normalizes canonical shown-project selections as bounded browser-local additive intent', () => {
+    expect(normalizeChatViewState({ shownProjects: [
+      { projectId: ' p1 ', checkoutId: ' c1 ' },
+      { projectId: 'p1', checkoutId: 'c1' },
+      { projectId: 'p1', checkoutId: 'c3' },
+      { projectId: '', checkoutId: 'bad' },
+      { projectId: 'p2', checkoutId: 'c2' },
+    ] })).toMatchObject({
+      shownProjects: [
+        { projectId: 'p1', checkoutId: 'c3' },
+        { projectId: 'p2', checkoutId: 'c2' },
+      ],
       pinnedConversationIds: [],
       previewPinOverrides: {},
     });
   });
 
-  it('advances only the requested opaque group cursor and places a semantic Show more after its final leaf', async () => {
+  it('advances only the requested pinned cursor and leaves the generic Chats cursor independent', async () => {
     const requests: Array<Parameters<typeof api.getConversationSidebar>[0]> = [];
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
       requests.push(params);
       if (params.group_key === 'opaque:pinned') {
         return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
       }
-      if (params.group_key === 'opaque:project') {
-        return { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [projectTwo], next_cursor: null })] };
+      if (params.group_key === 'opaque:chats') {
+        return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [projectTwo], next_cursor: null })] };
       }
       return { limit: 1, groups: [
         group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' }),
-        group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [projectOne], next_cursor: 'project-cursor' }),
+        group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [projectOne], next_cursor: 'chats-cursor' }),
       ] };
     });
     renderView();
@@ -126,16 +149,12 @@ describe('conversation sidebar groups', () => {
       expect.objectContaining({ group_key: 'opaque:pinned', cursor: 'pin-cursor', limit: 1 }),
     ]);
     expect(screen.getByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
-    expect(within(screen.getByRole('button', { name: /^Mandible/ }).closest('section') as HTMLElement)
+    expect(within(screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement)
       .getByRole('button', { name: 'Show more' })).toBeTruthy();
-    const projectsHeading = screen.getByRole('button', { name: 'Projects' });
-    expect(projectsHeading.querySelector('em')).toBeNull();
-    const projectHeading = screen.getByRole('button', { name: /^Mandible/ });
-    expect(projectHeading.closest('section')?.classList.contains('sidebar-group-node--interaction-count')).toBe(true);
-    expect(within(projectHeading).getByLabelText('2 chats in Mandible').textContent).toBe('2');
+    expect(screen.queryByRole('button', { name: 'Projects' })).toBeNull();
   });
 
-  it('maps agy live sessions to the accessible Gemini provider dot', async () => {
+  it('maps agy live sessions to the accessible agy Chat provider dot', async () => {
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
@@ -149,29 +168,32 @@ describe('conversation sidebar groups', () => {
 
     renderView([agySession]);
     const row = await screen.findByRole('button', { name: 'Open session Agy review' });
-    expect(row.getAttribute('aria-description')).toBe('Provider: Gemini');
+    expect(row.getAttribute('aria-description')).toBe('Provider: agy');
     expect(row.querySelector('.sidebar-item-row__badges')).toBeNull();
-    expect(within(row.closest('.sidebar-item-row') as HTMLElement).getByRole('img', { name: 'Provider: Gemini' })
-      .classList.contains('sidebar-item-row__provider-dot--gemini')).toBe(true);
+    const sharedRow = row.closest('.sidebar-item-row') as HTMLElement;
+    expect(sharedRow.classList.contains('sidebar-item-row--selection-agy')).toBe(true);
+    expect(within(sharedRow).getByRole('img', { name: 'Provider: agy' })
+      .classList.contains('sidebar-item-row__provider-dot--agy')).toBe(true);
   });
 
   it('creates unscoped and exact-root chats and persists added empty project groups', async () => {
     const scopedProject = { ...projectOne, cwd: '/repos/mandible/packages/ui' };
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
       limit: 1,
-      groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 1, conversations: [scopedProject] })],
+      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [scopedProject] })],
     });
     vi.spyOn(api, 'getConversation').mockResolvedValue({ ...scopedProject, blocks: [], children: [], parent: null });
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const onNewSession = vi.fn();
-    renderView([], [
-      { name: 'Mandible', root: '/repos/mandible' },
-      { name: 'Feedbax', root: '/repos/feedbax' },
-    ], onNewSession);
+    renderView([], onNewSession);
 
-    await screen.findByRole('button', { name: 'New chat in Mandible' });
+    const conversationRow = await screen.findByRole('button', { name: 'Open conversation Project one' });
+    const chats = screen.getByRole('button', { name: /^Chats/ });
+    expect(chats.closest('section')?.contains(conversationRow)).toBe(true);
+    expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
     expect(screen.getByRole('textbox', { name: 'Search chats' }).closest('.sidebar-search-filter')
       ?.querySelector('.sidebar-search-filter__leading-action')).toBeNull();
     const globalActions = screen.getByRole('region', { name: 'Chat actions' });
@@ -180,28 +202,53 @@ describe('conversation sidebar groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Global chat', cwd: undefined }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'New chat in Mandible' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+    expect(screen.queryByRole('combobox', { name: 'Registered project' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add shown project' }));
+    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Mandible — Primary (/repos/mandible)' })).toBeTruthy();
+    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Mandible — Alternate (/repos/mandible-alt)' })).toBeTruthy();
+    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Feedbax' })).toBeTruthy();
+    fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Scoped chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Scoped chat', cwd: '/repos/mandible' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
-    expect(screen.queryByRole('combobox', { name: 'Registered project' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Add shown project' }));
-    fireEvent.change(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: '/repos/feedbax' } });
+    fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible-alt' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getAllByRole('button', { name: 'New chat in Mandible' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'New chat in Mandible' }));
+    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
+    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Alternate scoped chat', cwd: '/repos/mandible-alt' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add shown project' }));
+    fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-feedbax:checkout-feedbax' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(await screen.findByRole('button', { name: 'New chat in Feedbax' })).toBeTruthy();
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjectRoots)
-      .toEqual(['/repos/feedbax']));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
+      .toEqual([
+        { projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' },
+        { projectId: 'prj-feedbax', checkoutId: 'checkout-feedbax' },
+      ]));
+    expect(screen.getAllByRole('button', { name: /^New chat in / }).map((button) => button.getAttribute('aria-label')).sort())
+      .toEqual(['New chat in Feedbax', 'New chat in Mandible']);
   });
 
-  it('fails closed when a legacy project label cannot resolve an exact registered root', async () => {
+  it('keeps conversation paths unscoped under Chats without a scanner-repo input surface', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    const unresolved = { ...projectOne, cwd: '/repos/mandible/packages/ui', project_path: '/repos/mandible' };
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
       limit: 1,
-      groups: [group({ key: 'legacy:project', kind: 'project', label: 'Mandible', total: 1, conversations: [projectOne] })],
+      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [unresolved] })],
     });
-    renderView([], [{ name: 'Mandible', root: '/repos/mandible' }]);
-    await screen.findByRole('button', { name: /^Mandible/ });
+    renderView();
+    const conversationRow = await screen.findByRole('button', { name: 'Open conversation Project one' });
+    const chats = screen.getByRole('button', { name: /^Chats/ });
+    expect(chats.closest('section')?.contains(conversationRow)).toBe(true);
+    expect(screen.queryByRole('button', { name: /^Mandible/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
   });
 
@@ -280,13 +327,13 @@ describe('conversation sidebar groups', () => {
     };
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => (
       params.group_key
-        ? { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [second], next_cursor: null })] }
-        : { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [first], next_cursor: 'date-cursor' })] }
+        ? { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [second], next_cursor: null })] }
+        : { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [first], next_cursor: 'date-cursor' })] }
     ));
     renderView();
 
-    const section = (await screen.findByRole('button', { name: /^Mandible/ })).closest('section') as HTMLElement;
-    const original = within(section).getByRole('button', { name: 'Open conversation Zulu first' });
+    const original = await screen.findByRole('button', { name: 'Open conversation Zulu first' });
+    const section = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
     await waitFor(() => expect(original.getAttribute('aria-current')).toBe('true'));
     const originalHtml = original.outerHTML;
     fireEvent.click(within(section).getByRole('button', { name: 'Show more' }));
@@ -310,12 +357,12 @@ describe('conversation sidebar groups', () => {
     expect(compareConversationSidebarRows(first, second, 'block_count')).toBeLessThan(0);
     const getSidebar = vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => (
       params.group_key
-        ? { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [second], next_cursor: null })] }
-        : { limit: 1, groups: [group({ key: 'opaque:project', kind: 'project', label: 'Mandible', total: 2, conversations: [first], next_cursor: 'block-cursor' })] }
+        ? { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [second], next_cursor: null })] }
+        : { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [first], next_cursor: 'block-cursor' })] }
     ));
     renderView();
     await screen.findByRole('button', { name: 'Open conversation Zulu first' });
-    const section = screen.getByRole('button', { name: /^Mandible/ }).closest('section') as HTMLElement;
+    const section = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
     fireEvent.click(within(section).getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(within(section).getByRole('button', { name: 'Open conversation Alpha second' })).toBeTruthy());
     expect(within(section).getAllByRole('button', { name: /^Open conversation/ }).map((row) => row.getAttribute('aria-label')))

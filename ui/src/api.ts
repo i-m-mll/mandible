@@ -2201,7 +2201,7 @@ export async function getConversations(params?: {
 
 export type ConversationSidebarGroup = {
   key: string;
-  kind: 'pinned' | 'project' | 'chats';
+  kind: 'pinned' | 'chats';
   label: string;
   total: number;
   conversations: Conversation[];
@@ -3379,6 +3379,20 @@ export type ProjectPickerItem = {
   display_name: string | null;
 };
 
+export type CanonicalProjectCheckout = {
+  id: string;
+  project_id: string;
+  work_repo_id: string | null;
+  root: string;
+  name: string;
+  default_branch: string;
+  remote_url: string;
+};
+
+export type CanonicalProject = ProjectPickerItem & {
+  checkouts: CanonicalProjectCheckout[];
+};
+
 export type ProjectPermissionGrant = {
   id: string;
   subject_type: 'user' | 'group';
@@ -3421,6 +3435,24 @@ export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
     id: p.id,
     project_key: p.project_key,
     display_name: p.display_name ?? null,
+  }));
+}
+
+/** Canonical registry identity and checkouts for Chat project headings and scoped actions. */
+export async function listCanonicalProjects(): Promise<CanonicalProject[]> {
+  const payload = await cachedApiGetJson<{
+    projects?: Array<{
+      id: string;
+      project_key: string;
+      display_name?: string | null;
+      checkouts?: CanonicalProjectCheckout[];
+    }>;
+  }>('/api/projects');
+  return (payload.projects ?? []).map((project) => ({
+    id: project.id,
+    project_key: project.project_key,
+    display_name: project.display_name ?? null,
+    checkouts: project.checkouts ?? [],
   }));
 }
 

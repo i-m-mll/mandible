@@ -1,4 +1,5 @@
 import { orderByPinnedIds } from '../../components/shared/orderedPins';
+import type { BriefingCollectionSort } from './collection-view-state';
 
 export type FeedbackCollection = {
   id: string;
@@ -29,12 +30,21 @@ export function filterFeedbackCollections(briefings: readonly FeedbackCollection
   return needle ? briefings.filter((briefing) => briefing.label.toLocaleLowerCase().includes(needle)) : [...briefings];
 }
 
-export function orderFeedbackCollections(briefings: readonly FeedbackCollection[], pinnedIds: readonly string[]): FeedbackCollection[] {
+export function orderFeedbackCollections(
+  briefings: readonly FeedbackCollection[],
+  pinnedIds: readonly string[],
+  sort: BriefingCollectionSort = 'activity',
+): FeedbackCollection[] {
+  const compare = sort === 'name'
+    ? (left: FeedbackCollection, right: FeedbackCollection) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
+    : sort === 'round-count'
+      ? (left: FeedbackCollection, right: FeedbackCollection) => (right.itemCount - left.itemCount) || left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
+      : (left: FeedbackCollection, right: FeedbackCollection) => (right.updatedAt - left.updatedAt) || left.id.localeCompare(right.id);
   return orderByPinnedIds(
     briefings,
     pinnedIds,
     (briefing) => briefing.id,
-    (left, right) => (right.updatedAt - left.updatedAt) || left.id.localeCompare(right.id),
+    compare,
   );
 }
 
