@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
@@ -82,7 +83,7 @@ describe("conversations CLI file RPC", () => {
       if (requestPath.startsWith("/api/conversations?")) {
         return { status: 200, body: { conversations: [conversation], total: 1, page: 1, limit: 20, pages: 1 } };
       }
-      if (requestPath.startsWith("/api/conversations/conv-1/blocks")) {
+      if (requestPath.startsWith("/api/conversations/session-1/blocks")) {
         return { status: 200, body: { blocks: [block], total: 1, page: 1, limit: 100, pages: 1 } };
       }
       return { status: 404, body: { error: "not_found", path: requestPath } };
@@ -101,7 +102,7 @@ describe("conversations CLI file RPC", () => {
       expect(blocks.status).toBe(0);
       expect(JSON.parse(blocks.stdout)).toEqual([expect.objectContaining({ id: "block-1", role: "assistant" })]);
       expect(seenPaths.some((item) => item.startsWith("/api/conversations?"))).toBe(true);
-      expect(seenPaths.some((item) => item.startsWith("/api/conversations/conv-1/blocks"))).toBe(true);
+      expect(seenPaths.some((item) => item.startsWith("/api/conversations/session-1/blocks"))).toBe(true);
     } finally {
       responder.stop();
     }
@@ -118,7 +119,7 @@ describe("conversations CLI file RPC", () => {
       if (requestPath.startsWith("/api/conversations?")) {
         return { status: 200, body: { conversations: [conversation], total: 1, page: 1, limit: 1, pages: 1 } };
       }
-      if (requestPath.startsWith("/api/conversations/conv-1/blocks")) {
+      if (requestPath.startsWith("/api/conversations/session-1/blocks")) {
         return {
           status: 200,
           body: {
@@ -148,7 +149,7 @@ describe("conversations CLI file RPC", () => {
       expect(result.stderr).toContain("output truncated");
       expect(result.stderr).toContain("907 blocks");
       expect(result.stderr).toContain("--offset 501");
-      expect(seenPaths).toContain("/api/conversations/conv-1/blocks?limit=999&offset=500");
+      expect(seenPaths).toContain("/api/conversations/session-1/blocks?limit=999&offset=500");
     } finally {
       responder.stop();
     }
@@ -251,6 +252,62 @@ describe("conversations CLI file RPC", () => {
       expect(seenPaths.some((item) => item.startsWith("/api/conversations/search?"))).toBe(true);
     } finally {
       responder.stop();
+    }
+  });
+});
+
+describe("conversations CLI canonical HTTP reads", () => {
+  it("sends show, blocks, and export exact refs directly to the shared server boundary", async () => {
+    const seen: Array<{ method: string; url: string }> = [];
+    const conversation = {
+      id: "conv-1", source: "codex", source_path: "/logs/codex/session.jsonl",
+      title: "Sandbox session", started_at: "2026-06-12T12:00:00.000Z",
+      updated_at: "2026-06-12T12:01:00.000Z", block_count: 1,
+      session_id: "session-1", cwd: "/repo/mandible",
+    };
+    const block = {
+      id: "block-1", conversation_id: "conv-1", type: "assistant_message",
+      role: "assistant", content: "canonical body", position: 1,
+      timestamp: "2026-06-12T12:01:00.000Z", parent_id: null,
+      metadata_json: "{}", dag_uuid: null, dag_parent_uuid: null,
+    };
+    const server = http.createServer((request, response) => {
+      seen.push({ method: request.method ?? "", url: request.url ?? "" });
+      response.setHeader("Content-Type", "application/json");
+      if (request.method === "GET" && request.url?.startsWith("/api/conversations/session-1?")) {
+        response.end(JSON.stringify({ conversation, blocks: [block] }));
+      } else if (request.method === "GET" && request.url?.startsWith("/api/conversations/session-1/blocks?")) {
+        response.end(JSON.stringify({ blocks: [block], total: 1, offset: 0, limit: 50, truncated: false }));
+      } else if (request.method === "POST" && request.url === "/api/conversations/session-1/export") {
+        response.end(JSON.stringify({ content: "# canonical export" }));
+      } else {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: "not_found" }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("HTTP test server did not bind");
+    const env = {
+      MANDIBLE_BASE: `http://127.0.0.1:${address.port}`,
+      MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+    };
+    try {
+      const show = await run(["conversations", "show", "session-1", "--json", "--blocks"], env);
+      const blocks = await run(["conversations", "blocks", "session-1", "--json"], env);
+      const exported = await run(["conversations", "export", "session-1"], env);
+      expect(show.status).toBe(0);
+      expect(blocks.status).toBe(0);
+      expect(exported.status).toBe(0);
+      expect(exported.stdout).toContain("canonical export");
+      expect(seen).toEqual(expect.arrayContaining([
+        { method: "GET", url: "/api/conversations/session-1?target=latest" },
+        { method: "GET", url: "/api/conversations/session-1/blocks?limit=100&offset=0" },
+        { method: "POST", url: "/api/conversations/session-1/export" },
+      ]));
+      expect(seen.some((request) => request.url.includes("session_id="))).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
 });
