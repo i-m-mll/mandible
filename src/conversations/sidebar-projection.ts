@@ -1,12 +1,10 @@
-import { createHash } from "node:crypto";
-
 import {
   compareConversationSidebarRows,
   type ConversationSidebarSort,
 } from "./sidebar-order.js";
 
 export type { ConversationSidebarSort } from "./sidebar-order.js";
-export type ConversationSidebarGroupKind = "pinned" | "project" | "chats";
+export type ConversationSidebarGroupKind = "pinned" | "chats";
 
 export interface ConversationSidebarRow {
   id: string;
@@ -16,11 +14,6 @@ export interface ConversationSidebarRow {
   starred: number;
   started_at: string;
   block_count: number;
-}
-
-export interface ConversationSidebarRepo {
-  root: string;
-  name: string;
 }
 
 export interface ConversationSidebarGroup<Row extends ConversationSidebarRow> {
@@ -42,84 +35,6 @@ interface CursorPayload {
 }
 
 export class ConversationSidebarCursorError extends Error {}
-
-function normalizePathish(value: string | null | undefined): string {
-  return (value ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
-function pathKey(value: string | null | undefined): string {
-  return normalizePathish(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function decodeClaudeProjectPath(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const normalized = normalizePathish(value);
-  const leaf = normalized.split("/").filter(Boolean).pop() ?? normalized;
-  if (!leaf.startsWith("-")) return normalized;
-  const parts = leaf.split("-").filter(Boolean);
-  return parts.length === 0 ? normalized : `/${parts.join("/")}`;
-}
-
-function isCodexUnboundArchivePath(value: string | null | undefined): boolean {
-  return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\/[^/]+$/i.test(normalizePathish(value));
-}
-
-function projectNameFromPath(value: string | null | undefined): string {
-  const normalized = normalizePathish(value);
-  if (normalized === "No Project") return normalized;
-  const parts = normalized.split("/").filter(Boolean);
-  return parts[parts.length - 1] || "No Project";
-}
-
-export function conversationSidebarProject(
-  conversation: ConversationSidebarRow,
-  workRepos: ConversationSidebarRepo[],
-): string {
-  if (
-    conversation.source === "codex"
-    && !conversation.project_path
-    && isCodexUnboundArchivePath(conversation.cwd)
-  ) {
-    return "No Project";
-  }
-
-  const candidates = [
-    conversation.cwd,
-    conversation.project_path,
-    decodeClaudeProjectPath(conversation.project_path),
-  ].filter((value): value is string => Boolean(value));
-  const repos = workRepos
-    .map((repo) => ({
-      root: normalizePathish(repo.root),
-      rootKey: pathKey(repo.root),
-      name: repo.name.trim() || projectNameFromPath(repo.root),
-    }))
-    .filter((repo) => repo.root && repo.rootKey && repo.name && !repo.root.includes("/worktrees/"))
-    .sort((left, right) => right.rootKey.length - left.rootKey.length);
-
-  for (const candidate of candidates) {
-    const normalized = normalizePathish(candidate);
-    const candidateKey = pathKey(candidate);
-    for (const repo of repos) {
-      if (
-        normalized === repo.root
-        || normalized.startsWith(`${repo.root}/`)
-        || candidateKey.startsWith(repo.rootKey)
-      ) {
-        return repo.name;
-      }
-    }
-  }
-
-  const fallback = decodeClaudeProjectPath(conversation.project_path)
-    ?? conversation.project_path
-    ?? conversation.cwd;
-  return projectNameFromPath(fallback);
-}
-
-function projectGroupKey(label: string): string {
-  return `project:${createHash("sha256").update(label).digest("base64url")}`;
-}
 
 function sortValue(row: ConversationSidebarRow, sort: ConversationSidebarSort): string | number {
   return sort === "block_count" ? row.block_count : row.started_at;
@@ -188,7 +103,6 @@ function paginate<Row extends ConversationSidebarRow>(
 
 export function projectConversationSidebar<Row extends ConversationSidebarRow>(options: {
   rows: Row[];
-  workRepos: ConversationSidebarRepo[];
   sort: ConversationSidebarSort;
   querySignature: string;
   limit: number;
@@ -197,28 +111,17 @@ export function projectConversationSidebar<Row extends ConversationSidebarRow>(o
 }): ConversationSidebarGroup<Row>[] {
   const pinned: Row[] = [];
   const chats: Row[] = [];
-  const projects = new Map<string, Row[]>();
 
   for (const row of options.rows) {
     if (row.starred === 1) {
       pinned.push(row);
       continue;
     }
-    const project = conversationSidebarProject(row, options.workRepos);
-    if (project === "No Project") {
-      chats.push(row);
-      continue;
-    }
-    const group = projects.get(project) ?? [];
-    group.push(row);
-    projects.set(project, group);
+    chats.push(row);
   }
 
   const groups: Array<{ key: string; kind: ConversationSidebarGroupKind; label: string; rows: Row[] }> = [];
   if (pinned.length > 0) groups.push({ key: "pinned", kind: "pinned", label: "Pinned", rows: pinned });
-  for (const [label, rows] of [...projects.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    groups.push({ key: projectGroupKey(label), kind: "project", label, rows });
-  }
   if (chats.length > 0) groups.push({ key: "chats", kind: "chats", label: "Chats", rows: chats });
 
   const selected = options.groupKey
