@@ -108,7 +108,6 @@ import {
   getAgentPageBinding,
   subscribeAgentPageBinding,
 } from './agent-page-binding';
-import { LoadingSkeleton } from './components/LoadingSkeleton';
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 
 import '@xterm/xterm/css/xterm.css';
@@ -458,10 +457,6 @@ function routeForTab(
   snapshots: Partial<Record<RenderableTab, Route>>,
 ): Route {
   return activeRoute.tab === tab ? activeRoute : snapshots[tab] ?? { tab, params: {} };
-}
-
-function TabChunkFallback(): JSX.Element {
-  return <LoadingSkeleton variant="tab" label="Loading view" />;
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
@@ -1926,7 +1921,7 @@ function App(): JSX.Element {
           aria-hidden={active ? undefined : 'true'}
           data-tab={tab}
         >
-          <Suspense fallback={<TabChunkFallback />}>
+          <Suspense fallback={null}>
             {children}
           </Suspense>
         </section>
