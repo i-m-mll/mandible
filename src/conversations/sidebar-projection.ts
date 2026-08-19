@@ -1,10 +1,20 @@
+import path from "node:path";
+import { createHash } from "node:crypto";
+
 import {
   compareConversationSidebarRows,
   type ConversationSidebarSort,
 } from "./sidebar-order.js";
 
 export type { ConversationSidebarSort } from "./sidebar-order.js";
-export type ConversationSidebarGroupKind = "pinned" | "chats";
+export type ConversationSidebarGroupKind = "pinned" | "project" | "chats";
+
+export interface ConversationSidebarProject {
+  id: string;
+  project_key: string;
+  display_name: string;
+  checkout_roots: string[];
+}
 
 export interface ConversationSidebarRow {
   id: string;
@@ -14,12 +24,16 @@ export interface ConversationSidebarRow {
   starred: number;
   started_at: string;
   block_count: number;
+  canonical_project_id?: string | null;
+  canonical_project_key?: string | null;
 }
 
 export interface ConversationSidebarGroup<Row extends ConversationSidebarRow> {
   key: string;
   kind: ConversationSidebarGroupKind;
   label: string;
+  project_id?: string;
+  project_key?: string;
   total: number;
   rows: Row[];
   next_cursor: string | null;
@@ -35,6 +49,47 @@ interface CursorPayload {
 }
 
 export class ConversationSidebarCursorError extends Error {}
+
+export function conversationProjectGroupKey(projectId: string): string {
+  return `project-${createHash("sha256").update(projectId).digest("base64url")}`;
+}
+
+function normalizedAbsolutePath(value: string | null): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed || !path.isAbsolute(trimmed)) return null;
+  return path.normalize(trimmed);
+}
+
+function pathMatchesRoot(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+}
+
+function rootSpecificity(root: string): number {
+  return root.split(path.sep).filter(Boolean).length;
+}
+
+function resolveCanonicalProject(
+  row: ConversationSidebarRow,
+  projects: ConversationSidebarProject[],
+): ConversationSidebarProject | null {
+  const storedPaths = [normalizedAbsolutePath(row.cwd), normalizedAbsolutePath(row.project_path)]
+    .filter((value): value is string => value !== null);
+  let specificity = -1;
+  const matches = new Map<string, ConversationSidebarProject>();
+  for (const project of projects) {
+    for (const rawRoot of project.checkout_roots) {
+      const root = normalizedAbsolutePath(rawRoot);
+      if (!root || !storedPaths.some((candidate) => pathMatchesRoot(candidate, root))) continue;
+      const rootDepth = rootSpecificity(root);
+      if (rootDepth > specificity) {
+        specificity = rootDepth;
+        matches.clear();
+      }
+      if (rootDepth === specificity) matches.set(project.id, project);
+    }
+  }
+  return matches.size === 1 ? matches.values().next().value ?? null : null;
+}
 
 function sortValue(row: ConversationSidebarRow, sort: ConversationSidebarSort): string | number {
   return sort === "block_count" ? row.block_count : row.started_at;
@@ -108,20 +163,55 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
   limit: number;
   groupKey?: string;
   cursor?: string;
+  projects?: ConversationSidebarProject[];
+  requestedProjectIds?: string[];
 }): ConversationSidebarGroup<Row>[] {
   const pinned: Row[] = [];
   const chats: Row[] = [];
+  const requestedIds = new Set(options.requestedProjectIds ?? []);
+  const projectRows = new Map<string, Row[]>(
+    (options.requestedProjectIds ?? []).map((id) => [id, []]),
+  );
 
-  for (const row of options.rows) {
+  for (const originalRow of options.rows) {
+    const project = resolveCanonicalProject(originalRow, options.projects ?? []);
+    const row = {
+      ...originalRow,
+      canonical_project_id: project?.id ?? null,
+      canonical_project_key: project?.project_key ?? null,
+    } as Row;
     if (row.starred === 1) {
       pinned.push(row);
+      continue;
+    }
+    if (project && requestedIds.has(project.id)) {
+      projectRows.get(project.id)!.push(row);
       continue;
     }
     chats.push(row);
   }
 
-  const groups: Array<{ key: string; kind: ConversationSidebarGroupKind; label: string; rows: Row[] }> = [];
+  const groups: Array<{
+    key: string;
+    kind: ConversationSidebarGroupKind;
+    label: string;
+    project_id?: string;
+    project_key?: string;
+    rows: Row[];
+  }> = [];
   if (pinned.length > 0) groups.push({ key: "pinned", kind: "pinned", label: "Pinned", rows: pinned });
+  for (const projectId of options.requestedProjectIds ?? []) {
+    const project = options.projects?.find((candidate) => candidate.id === projectId);
+    if (!project) continue;
+    groups.push({
+      key: conversationProjectGroupKey(project.id),
+      kind: "project",
+      label: project.display_name,
+      project_id: project.id,
+      project_key: project.project_key,
+      rows: projectRows.get(project.id) ?? [],
+    });
+  }
   if (chats.length > 0) groups.push({ key: "chats", kind: "chats", label: "Chats", rows: chats });
 
   const selected = options.groupKey
@@ -143,6 +233,8 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
       key: group.key,
       kind: group.kind,
       label: group.label,
+      ...(group.project_id ? { project_id: group.project_id } : {}),
+      ...(group.project_key ? { project_key: group.project_key } : {}),
       total: sorted.length,
       rows: page.rows,
       next_cursor: page.next_cursor,
