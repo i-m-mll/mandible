@@ -1814,24 +1814,10 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
-      actionsLabel="Conversation detail actions"
-      actions={(
-        <>
-          <span className="conv-detail__status">
-            <span className="conv-detail__provider">
-              {getConversationHeaderProviderLabel(conversation.source)}
-            </span>
-            {attachPresentation && attachState && (
-              <span
-                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-                title={attachPresentation.title}
-              >
-                {attachPresentation.label}
-              </span>
-            )}
-          </span>
-          <div className="conv-actions">
-            <button
+      menuLabel="Conversation detail actions"
+      menu={(
+        <div className="conv-actions">
+          <button
               ref={actionsTriggerRef}
               type="button"
               className="conv-actions__trigger"
@@ -1842,9 +1828,9 @@ function ConversationDetail({
               aria-expanded={actionsOpen}
             >
               <HorizontalDotsIcon />
-            </button>
-            {actionsOpen && (
-              <div
+          </button>
+          {actionsOpen && (
+            <div
                 ref={actionsMenuRef}
                 className="conv-actions__menu app-anchored-menu"
                 role="menu"
@@ -1885,10 +1871,24 @@ function ConversationDetail({
                 <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
                   Select messages
                 </button>
-              </div>
-            )}
-          </div>
-        </>
+            </div>
+          )}
+        </div>
+      )}
+      metadata={(
+        <span className="conv-detail__status">
+          <span className="conv-detail__provider">
+            {getConversationHeaderProviderLabel(conversation.source)}
+          </span>
+          {attachPresentation && attachState && (
+            <span
+              className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+              title={attachPresentation.title}
+            >
+              {attachPresentation.label}
+            </span>
+          )}
+        </span>
       )}
     />
   );

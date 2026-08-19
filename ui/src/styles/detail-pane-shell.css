@@ -65,6 +65,8 @@
 .detail-pane-header__selector,
 .detail-pane-header__title-row,
 .detail-pane-header__actions,
+.detail-pane-header__menu,
+.detail-pane-header__compact-metadata,
 .detail-pane-header__status {
   display: flex;
   align-items: center;
@@ -180,10 +182,9 @@
 }
 
 .detail-pane-header--compact .detail-pane-header__main {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 6px 12px;
+  gap: 12px;
   height: 100%;
   min-height: 0;
 }
@@ -198,6 +199,9 @@
 
 .detail-pane-header--compact .detail-pane-header__title-row {
   align-items: center;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
 }
 
 .detail-pane-header--compact .detail-pane-header__title {
@@ -210,8 +214,16 @@
   white-space: nowrap;
 }
 
-.detail-pane-header--compact .detail-pane-header__metadata {
-  grid-column: 2 / -1;
+.detail-pane-header--compact .detail-pane-header__menu {
+  position: relative;
+  flex: none;
+}
+
+.detail-pane-header--compact .detail-pane-header__compact-metadata {
+  flex: none;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .detail-pane-header--versioned .detail-pane-header__main {
@@ -266,14 +278,6 @@
 @media (max-width: 720px) {
   .detail-pane-header {
     padding-inline: 16px;
-  }
-
-  .detail-pane-header--compact .detail-pane-header__main {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .detail-pane-header--compact .detail-pane-header__topline {
-    grid-column: 1 / -1;
   }
 
   .detail-pane-header__selector {
