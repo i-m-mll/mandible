@@ -1382,7 +1382,6 @@ code.inbox-detail__meta-value {
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .issues-detail .ledger-issue-detail__header {
-  background: var(--surface-popover);
   border-bottom-color: var(--neutral-alpha-08);
   box-shadow: var(--shadow-header);
 }

@@ -1,0 +1,225 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { JSDOM } from 'jsdom';
+import { describe, expect, it } from 'vitest';
+
+import { readResolvedStylesheet } from './helpers/css-manifest';
+
+type DirectDetailConsumer = {
+  name: string;
+  path: string;
+  variant: 'standard' | 'compact' | 'versioned';
+  headerClasses: string[];
+  primaryClasses: string[];
+  ancestorClass?: string;
+};
+
+const DIRECT_DETAIL_CONSUMERS: DirectDetailConsumer[] = [
+  {
+    name: 'Artifact',
+    path: 'ui/src/views/artifacts.tsx',
+    variant: 'versioned',
+    headerClasses: ['artifact-detail__header'],
+    primaryClasses: [],
+  },
+  {
+    name: 'Auth',
+    path: 'ui/src/views/auth.tsx',
+    variant: 'standard',
+    headerClasses: ['auth-detail__header'],
+    primaryClasses: ['auth-detail__header-primary'],
+  },
+  {
+    name: 'Briefing',
+    path: 'ui/src/views/feedback/BriefingDocumentRenderer.tsx',
+    variant: 'versioned',
+    headerClasses: ['briefing-detail__header'],
+    primaryClasses: [],
+  },
+  {
+    name: 'Chat',
+    path: 'ui/src/views/conversations.tsx',
+    variant: 'compact',
+    headerClasses: ['conv-detail__shell-header'],
+    primaryClasses: [],
+  },
+  {
+    name: 'Issue',
+    path: 'ui/src/components/ledger/IssueDetail.tsx',
+    variant: 'standard',
+    headerClasses: ['ledger-issue-detail__header'],
+    primaryClasses: ['ledger-issue-detail__header-primary'],
+    ancestorClass: 'issues-detail',
+  },
+];
+
+const INHERITED_DETAIL_CONSUMERS = [
+  {
+    name: 'Spaces',
+    path: 'ui/src/views/spaces/SpaceReferenceDetailPanel.tsx',
+    inheritedPaths: [
+      'ui/src/components/ledger/IssueDetail.tsx',
+      'ui/src/views/artifacts.tsx',
+    ],
+  },
+] as const;
+
+const canonicalSurfaceClasses = [
+  'detail-pane-shell__header',
+  'detail-pane-shell__header-primary',
+  'detail-pane-header',
+];
+
+const auditedSurfaceClasses = [
+  ...canonicalSurfaceClasses,
+  ...DIRECT_DETAIL_CONSUMERS.flatMap(({ headerClasses, primaryClasses }) => [
+    ...headerClasses,
+    ...primaryClasses,
+  ]),
+];
+
+const stylesheet = readResolvedStylesheet();
+const tokensStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
+
+function cssRuleEntries(css: string): Array<{ selector: string; body: string }> {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const entries: Array<{ selector: string; body: string }> = [];
+  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    for (const selector of match[1]!.split(',')) {
+      entries.push({ selector: selector.trim(), body: match[2]! });
+    }
+  }
+  return entries;
+}
+
+function selectorTargetsClass(selector: string, className: string): boolean {
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\.${escaped}(?:[:\\[].*)?$`).test(selector);
+}
+
+function tokenBlock(theme: 'dark' | 'light'): string {
+  const selector = theme === 'dark' ? ':root' : "[data-theme='light']";
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return tokensStylesheet.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+}
+
+function tokenValue(block: string, token: string): string {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return block.match(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*:\\s*([^;]+);`))?.[1]?.trim() ?? '';
+}
+
+function resolvedSurfaceApp(theme: 'dark' | 'light'): string {
+  const block = tokenBlock(theme);
+  const surface = tokenValue(block, '--surface-app');
+  const referencedToken = surface.match(/^var\((--[^)]+)\)$/)?.[1];
+  return referencedToken ? tokenValue(block, referencedToken) : surface;
+}
+
+function expectedRgb(hex: string): string {
+  const match = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!match) throw new Error(`Expected a six-digit solid color, received ${hex}`);
+  return `rgb(${Number.parseInt(match[1]!, 16)}, ${Number.parseInt(match[2]!, 16)}, ${Number.parseInt(match[3]!, 16)})`;
+}
+
+function renderConsumerFixtures(theme: 'dark' | 'light'): Document {
+  const surface = resolvedSurfaceApp(theme);
+  const surfaceCascade = cssRuleEntries(stylesheet)
+    .filter(({ selector, body }) => (
+      auditedSurfaceClasses.some((className) => selectorTargetsClass(selector, className))
+      && /(?:^|;)\s*(?:background(?:-color)?|opacity)\s*:/m.test(body)
+    ))
+    .map(({ selector, body }) => `${selector} {${body}}`)
+    .join('\n');
+  const fixtures = DIRECT_DETAIL_CONSUMERS.map((consumer) => `
+    <div class="${consumer.ancestorClass ?? ''}">
+      <article class="detail-pane-shell" data-consumer="${consumer.name}">
+        <header class="detail-pane-shell__header ${consumer.headerClasses.join(' ')}">
+          <div class="detail-pane-shell__header-primary ${consumer.primaryClasses.join(' ')}">
+            <div class="detail-pane-header detail-pane-header--${consumer.variant}"></div>
+          </div>
+        </header>
+      </article>
+    </div>
+  `).join('');
+  const dom = new JSDOM(`<!doctype html><html data-theme="${theme}"><head></head><body>${fixtures}</body></html>`, {
+    pretendToBeVisual: true,
+  });
+  const style = dom.window.document.createElement('style');
+  style.textContent = surfaceCascade.replaceAll('var(--surface-app)', surface);
+  dom.window.document.head.append(style);
+  return dom.window.document;
+}
+
+describe('canonical detail header surface contract', () => {
+  it('keeps the eligible direct-consumer audit explicit and canonical', () => {
+    const uiRoot = resolve('ui/src');
+    const discoveredConsumers = readdirSync(uiRoot, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.tsx'))
+      .map((entry) => resolve(entry.parentPath, entry.name))
+      .filter((path) => readFileSync(path, 'utf8').includes('<DetailPaneShell'))
+      .map((path) => path.replace(`${process.cwd()}/`, ''))
+      .sort();
+    expect(discoveredConsumers).toEqual(DIRECT_DETAIL_CONSUMERS.map(({ path }) => path).sort());
+
+    for (const consumer of DIRECT_DETAIL_CONSUMERS) {
+      const source = readFileSync(consumer.path, 'utf8');
+      expect(source, consumer.name).toContain('<DetailPaneShell');
+      expect(source, consumer.name).toContain('<DetailPaneHeader');
+      expect(source, consumer.name).toContain(`variant="${consumer.variant}"`);
+      for (const className of [...consumer.headerClasses, ...consumer.primaryClasses]) {
+        expect(source, `${consumer.name}:${className}`).toContain(`"${className}"`);
+      }
+    }
+
+    for (const consumer of INHERITED_DETAIL_CONSUMERS) {
+      const source = readFileSync(consumer.path, 'utf8');
+      expect(source, consumer.name).not.toContain('DetailPaneHeader');
+      for (const inheritedPath of consumer.inheritedPaths) {
+        const componentName = inheritedPath.endsWith('IssueDetail.tsx') ? 'LedgerIssueDetail' : 'ArtifactDetail';
+        expect(source, `${consumer.name}:${componentName}`).toContain(`<${componentName}`);
+      }
+    }
+  });
+
+  it('forbids consumer background, transparency, or opacity overrides on the shared seam', () => {
+    const surfaceDeclarations = cssRuleEntries(stylesheet).filter(({ selector, body }) => (
+      auditedSurfaceClasses.some((className) => selectorTargetsClass(selector, className))
+      && /(?:^|;)\s*(?:background(?:-color)?|opacity)\s*:/m.test(body)
+    ));
+
+    expect(surfaceDeclarations).toEqual(canonicalSurfaceClasses.map((className) => ({
+      selector: `.${className}`,
+      body: expect.stringMatching(/background:\s*var\(--surface-app\);/),
+    })));
+  });
+
+  it.each(['dark', 'light'] as const)(
+    'resolves Artifact, Issue/Auth, Chat, Briefing, and inherited Spaces headers to the solid app surface in %s',
+    (theme) => {
+      const surface = resolvedSurfaceApp(theme);
+      expect(surface).toMatch(/^#[0-9a-f]{6}$/i);
+      const document = renderConsumerFixtures(theme);
+      const expected = expectedRgb(surface);
+
+      for (const consumer of DIRECT_DETAIL_CONSUMERS) {
+        const shell = document.querySelector(`[data-consumer="${consumer.name}"]`);
+        expect(shell, consumer.name).toBeTruthy();
+        for (const selector of [
+          '.detail-pane-shell__header',
+          '.detail-pane-shell__header-primary',
+          `.detail-pane-header--${consumer.variant}`,
+        ]) {
+          const element = shell!.querySelector(selector);
+          expect(element, `${consumer.name}:${selector}`).toBeTruthy();
+          expect(document.defaultView!.getComputedStyle(element!).backgroundColor).toBe(expected);
+        }
+      }
+
+      // Spaces renders the same audited Issue and Artifact components rather than a bespoke seam.
+      expect(INHERITED_DETAIL_CONSUMERS[0].inheritedPaths).toEqual([
+        'ui/src/components/ledger/IssueDetail.tsx',
+        'ui/src/views/artifacts.tsx',
+      ]);
+    },
+  );
+});
