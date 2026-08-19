@@ -38,8 +38,9 @@ import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
-import { ContextualAction } from '../../components/shared/ContextualAction';
-import { SidebarDisclosureRegion } from '../../components/shared/SidebarDisclosureRegion';
+import { SidebarItemRow } from '../../components/shared/SidebarItemRow';
+import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
+import { ProjectsIcon } from '../../components/icons/TabIcons';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
 
@@ -204,19 +205,6 @@ function applyOrder(projectGroups: KeyedGroup[], order: string[]): KeyedGroup[] 
 const PlusIcon = (): JSX.Element => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
     <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
-  </svg>
-);
-
-const CaretIcon = ({ open }: { open: boolean }): JSX.Element => (
-  <svg
-    width="10"
-    height="10"
-    viewBox="0 0 10 10"
-    aria-hidden="true"
-    focusable="false"
-    style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.12s' }}
-  >
-    <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
   </svg>
 );
 
@@ -477,29 +465,30 @@ export function SpacesSidebar({
 
   const renderSpaceRow = (space: Space): JSX.Element => {
     const active = selectedSpaceId === space.id;
+    const title = space.title || 'Untitled space';
     return (
-      <button
+      <SidebarItemRow
         key={space.id}
-        type="button"
-        className={`spaces-tree__space${active ? ' spaces-tree__space--active' : ''}`}
-        aria-current={active ? 'true' : undefined}
-        aria-label={`${space.title || 'Untitled space'} (${spaceTypeLabel(space.default_renderer)})`}
-        data-testid={`space-row-${space.id}`}
-        onClick={() =>
+        className="spaces-tree__space"
+        label={title}
+        selectionLabel={`${title} (${spaceTypeLabel(space.default_renderer)})`}
+        selected={active}
+        ariaCurrent={active ? 'true' : undefined}
+        leading={(
+          <SpaceTypeIndicator
+            renderer={space.default_renderer}
+            className="spaces-tree__space-type"
+            data-testid={`space-row-type-${space.id}`}
+          />
+        )}
+        onSelect={() =>
           onSelectSpace({
             projectId: space.project_id,
             spaceId: space.id,
             renderer: null,
           })
         }
-      >
-        <SpaceTypeIndicator
-          renderer={space.default_renderer}
-          className="spaces-tree__space-type"
-          data-testid={`space-row-type-${space.id}`}
-        />
-        <span className="spaces-tree__space-title">{space.title || 'Untitled space'}</span>
-      </button>
+      />
     );
   };
 
@@ -508,21 +497,6 @@ export function SpacesSidebar({
       event.stopPropagation();
       openChooser(target);
     };
-    if (target.kind === 'project') {
-      return (
-        <span className="spaces-tree__create-slot contextual-action-group">
-          <ContextualAction
-            className="spaces-tree__create spaces-tree__create--project"
-            aria-label={ariaLabel}
-            title={ariaLabel}
-            data-testid={testId}
-            onClick={handleCreate}
-          >
-            <PlusIcon />
-          </ContextualAction>
-        </span>
-      );
-    }
     return (
       <button
         type="button"
@@ -720,7 +694,7 @@ export function SpacesSidebar({
               data-testid={`spaces-group-${kg.key}`}
             >
               <div
-                className="spaces-tree__group-header contextual-action-owner"
+                className="spaces-tree__group-drag-target"
                 draggable
                 data-testid={`spaces-group-header-${kg.key}`}
                 onDragStart={() => beginDrag(kg.key)}
@@ -731,40 +705,25 @@ export function SpacesSidebar({
                 }}
                 onDragEnd={endDrag}
               >
-                <button
-                  id={`spaces-group-toggle-${kg.key}`}
-                  type="button"
-                  className="spaces-tree__group-caret"
-                  aria-label={isCollapsed ? `Expand ${projectName}` : `Collapse ${projectName}`}
-                  aria-expanded={!isCollapsed}
-                  aria-controls={kg.group.spaces.length > 0 ? `spaces-group-${kg.key}-body` : undefined}
-                  data-testid={`spaces-group-toggle-${kg.key}`}
-                  onClick={() => toggleCollapse(kg.key)}
-                >
-                  <CaretIcon open={!isCollapsed} />
-                </button>
-                <span className="spaces-tree__group-name" title={projectName}>
-                  {projectName}
-                </span>
-                {createButton(
-                  { kind: 'project', projectId: kg.key, projectName },
-                  `Create space in ${projectName}`,
-                  `create-in-${kg.key}`,
-                )}
-              </div>
-              {/* Empty projects render as a compact foldable header row only —
-                  no per-project "No spaces yet" filler. Projects WITH spaces
-                  show their space lines here. (Stage 3 polish, issue e29a8c5.) */}
-              {kg.group.spaces.length > 0 ? (
-                <SidebarDisclosureRegion
-                  id={`spaces-group-${kg.key}-body`}
-                  controllerId={`spaces-group-toggle-${kg.key}`}
+                <SidebarGroupNode
+                  id={`spaces-group-${kg.key}`}
+                  presentation="folder"
+                  label={projectName}
+                  count={kg.group.spaces.length}
+                  countLabel={`${kg.group.spaces.length} space${kg.group.spaces.length === 1 ? '' : 's'} in ${projectName}`}
+                  countVisibility="interaction"
                   expanded={!isCollapsed}
-                  contentClassName="spaces-tree__group-spaces"
+                  onToggle={() => toggleCollapse(kg.key)}
+                  leadingIcon={<ProjectsIcon size={13} />}
+                  action={{
+                    label: `Create space in ${projectName}`,
+                    icon: 'new-chat',
+                    onPress: () => openChooser({ kind: 'project', projectId: kg.key, projectName }),
+                  }}
                 >
                   {kg.group.spaces.map(renderSpaceRow)}
-                </SidebarDisclosureRegion>
-              ) : null}
+                </SidebarGroupNode>
+              </div>
             </div>
           );
         })}
