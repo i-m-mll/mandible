@@ -20,7 +20,7 @@ import { transformContent } from "../transform.js";
 import { getConversationSearchCache } from "../conversations/search-cache.js";
 import {
   ConversationSidebarCursorError,
-  projectConversationSidebar,
+  buildConversationSidebar,
   type ConversationSidebarSort,
 } from "../conversations/sidebar-projection.js";
 import type { SessionManager } from "../session-manager.js";
@@ -495,7 +495,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       rows = rows.filter((row) => matching.has(row.id));
     }
     try {
-      const groups = projectConversationSidebar({
+      const groups = buildConversationSidebar({
         rows,
         sort,
         querySignature,

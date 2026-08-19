@@ -101,7 +101,7 @@ function paginate<Row extends ConversationSidebarRow>(
   return { rows: page, next_cursor: nextCursor };
 }
 
-export function projectConversationSidebar<Row extends ConversationSidebarRow>(options: {
+export function buildConversationSidebar<Row extends ConversationSidebarRow>(options: {
   rows: Row[];
   sort: ConversationSidebarSort;
   querySignature: string;
