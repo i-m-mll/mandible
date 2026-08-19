@@ -36,6 +36,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  document.head.querySelector('[data-test-compact-header-styles]')?.remove();
   window.history.replaceState(null, '', '#/');
 });
 
@@ -249,6 +250,12 @@ describe('compact detail pane shell', () => {
   });
 
   it('composes Chat detail through the compact shell with stable header actions and footer', async () => {
+    const style = document.createElement('style');
+    style.dataset.testCompactHeaderStyles = '';
+    style.textContent = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8')
+      .replaceAll('var(--app-header-height)', '48px');
+    document.head.append(style);
+
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -286,9 +293,15 @@ describe('compact detail pane shell', () => {
     const titleRow = canonicalHeader?.querySelector('.detail-pane-header__title-row');
     const compactMenu = canonicalHeader?.querySelector('.detail-pane-header__menu');
     const metadata = canonicalHeader?.querySelector('.detail-pane-header__compact-metadata');
+    const main = canonicalHeader?.querySelector(':scope > .detail-pane-header__main');
     expect(titleRow?.querySelector('.detail-pane-header__title')?.nextElementSibling).toBe(compactMenu);
     expect(titleRow?.nextElementSibling).toBe(metadata);
     expect(metadata?.contains(status ?? null)).toBe(true);
+    expect(getComputedStyle(canonicalHeader!).height).toBe('48px');
+    expect(getComputedStyle(main!).height).toBe('100%');
+    expect(getComputedStyle(main!).flexDirection).toBe('row');
+    expect(getComputedStyle(main!).alignItems).toBe('center');
+    expect(getComputedStyle(metadata!).marginLeft).toBe('auto');
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(compactMenu?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
