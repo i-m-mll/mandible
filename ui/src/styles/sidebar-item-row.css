@@ -18,8 +18,7 @@
 }
 
 .sidebar-item-row:hover,
-.sidebar-item-row:focus-within,
-.sidebar-item-row--selected {
+.sidebar-item-row:focus-within {
   --sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px);
 }
 
@@ -107,7 +106,6 @@
 
 .sidebar-item-row:hover .sidebar-item-row__trailing,
 .sidebar-item-row:focus-within .sidebar-item-row__trailing,
-.sidebar-item-row--selected .sidebar-item-row__trailing,
 .sidebar-item-row--persistent-pin .sidebar-item-row__trailing {
   opacity: 1;
 }
@@ -135,7 +133,6 @@
 .sidebar-item-row:hover .sidebar-item-row__provider-dot,
 .sidebar-item-row__select:focus .sidebar-item-row__provider-dot,
 .sidebar-item-row:focus-within .sidebar-item-row__provider-dot,
-.sidebar-item-row--selected .sidebar-item-row__provider-dot,
 .sidebar-item-row--persistent-pin .sidebar-item-row__provider-dot {
   opacity: 1;
 }
@@ -209,12 +206,11 @@
 
 .sidebar-item-row:hover .sidebar-item-row__actions,
 .sidebar-item-row:focus-within .sidebar-item-row__actions,
-.sidebar-item-row--selected .sidebar-item-row__actions,
 .sidebar-item-row--persistent-pin .sidebar-item-row__actions {
   pointer-events: auto;
 }
 
-.sidebar-item-row--persistent-pin:not(.sidebar-item-row--selected):not(:hover):not(:focus-within) .sidebar-item-row__overflow {
+.sidebar-item-row--persistent-pin:not(:hover):not(:focus-within) .sidebar-item-row__overflow {
   opacity: 0;
   pointer-events: none;
 }
