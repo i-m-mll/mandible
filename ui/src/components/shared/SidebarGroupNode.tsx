@@ -1,4 +1,5 @@
 import type { ComponentChildren } from 'preact';
+import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
 
 type SidebarGroupNodeCommonProps = {
   id: string;
@@ -70,15 +71,15 @@ export function SidebarGroupNode({
     </button>
   ) : null;
   const body = bodyAs === 'ul' ? (
-    <ul id={bodyId} className={bodyClassName}>
+    <>
       {children}
       {showMore ? <li className="sidebar-group-node__show-more-row">{showMore}</li> : null}
-    </ul>
+    </>
   ) : (
-    <div id={bodyId} className={bodyClassName}>
+    <>
       {children}
       {showMore ? <div className="sidebar-group-node__show-more-row">{showMore}</div> : null}
-    </div>
+    </>
   );
 
   return (
@@ -112,7 +113,15 @@ export function SidebarGroupNode({
           </button>
         ) : null}
       </div>
-      {expanded ? body : null}
+      <SidebarDisclosureRegion
+        id={bodyId}
+        controllerId={headingId}
+        expanded={expanded}
+        contentAs={bodyAs}
+        contentClassName={bodyClassName}
+      >
+        {body}
+      </SidebarDisclosureRegion>
     </section>
   );
 }

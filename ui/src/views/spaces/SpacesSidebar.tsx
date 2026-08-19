@@ -38,6 +38,7 @@ import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import { SidebarDisclosureRegion } from '../../components/shared/SidebarDisclosureRegion';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
 
@@ -712,10 +713,12 @@ export function SpacesSidebar({
                 onDragEnd={endDrag}
               >
                 <button
+                  id={`spaces-group-toggle-${kg.key}`}
                   type="button"
                   className="spaces-tree__group-caret"
                   aria-label={isCollapsed ? `Expand ${projectName}` : `Collapse ${projectName}`}
                   aria-expanded={!isCollapsed}
+                  aria-controls={kg.group.spaces.length > 0 ? `spaces-group-${kg.key}-body` : undefined}
                   data-testid={`spaces-group-toggle-${kg.key}`}
                   onClick={() => toggleCollapse(kg.key)}
                 >
@@ -733,10 +736,15 @@ export function SpacesSidebar({
               {/* Empty projects render as a compact foldable header row only —
                   no per-project "No spaces yet" filler. Projects WITH spaces
                   show their space lines here. (Stage 3 polish, issue e29a8c5.) */}
-              {!isCollapsed && kg.group.spaces.length > 0 ? (
-                <div className="spaces-tree__group-spaces">
+              {kg.group.spaces.length > 0 ? (
+                <SidebarDisclosureRegion
+                  id={`spaces-group-${kg.key}-body`}
+                  controllerId={`spaces-group-toggle-${kg.key}`}
+                  expanded={!isCollapsed}
+                  contentClassName="spaces-tree__group-spaces"
+                >
                   {kg.group.spaces.map(renderSpaceRow)}
-                </div>
+                </SidebarDisclosureRegion>
               ) : null}
             </div>
           );

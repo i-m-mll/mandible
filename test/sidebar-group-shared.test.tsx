@@ -124,10 +124,10 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
     const rootColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > :is\(div, ul\) \{([^}]*)\}/,
+      /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,
     )?.[1] ?? '';
     const folderColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > :is\(div, ul\) \{([^}]*)\}/,
+      /\.sidebar-group-node--folder > \.sidebar-disclosure-region \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(rootColumn).toContain('--sidebar-title-column-inset: 7px');
     expect(folderColumn).toContain('--sidebar-title-column-inset: 29px');
