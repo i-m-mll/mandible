@@ -1,187 +1,140 @@
-import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
+import { BASELINE_SCHEMA_VERSION } from "../src/db-baseline.js";
 import { migrate, type Db } from "../src/db.js";
-import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from "../src/db-migrations.js";
+import { BRIEFING_SCHEMA_TABLES } from "../src/feedback/schema.js";
 import { createUser } from "../src/users/store.js";
 
-const roots: string[] = [];
-
-afterEach(() => {
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-});
-
-function oldV142Graph(db: Db): void {
-  db.pragma("foreign_keys = OFF");
-  for (const table of [
-    "briefing_submission_annotations", "briefing_submission_answers", "briefing_submissions",
-    "briefing_annotation_events", "briefing_response_events", "briefing_run_occurrences",
-    "briefing_runs", "briefing_directive_instances", "briefing_directive_definitions", "briefing_rounds",
-    "briefing_legacy_custody",
-  ]) db.exec(`DROP TABLE ${table}`);
-  db.exec(`
-    CREATE TABLE briefing_rounds (
-      id TEXT PRIMARY KEY, briefing_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-      artifact_version_id TEXT NOT NULL, previous_round_id TEXT,
-      profile TEXT NOT NULL CHECK(profile = 'mandible-briefing.v1'),
-      binding_digest TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_directive_definitions (
-      id TEXT PRIMARY KEY, artifact_version_id TEXT NOT NULL, directive_key TEXT NOT NULL,
-      definition_digest TEXT NOT NULL, response_type TEXT NOT NULL, required INTEGER NOT NULL,
-      prompt TEXT NOT NULL, options_json TEXT NOT NULL, start_offset INTEGER NOT NULL,
-      end_offset INTEGER NOT NULL, body_start_offset INTEGER NOT NULL,
-      body_end_offset INTEGER NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_directive_instances (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, definition_id TEXT NOT NULL,
-      directive_key TEXT NOT NULL, position INTEGER NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_runs (
-      id TEXT PRIMARY KEY, briefing_id TEXT NOT NULL, round_id TEXT, artifact_version_id TEXT,
-      publisher_user_id TEXT NOT NULL, task_identity TEXT NOT NULL, run_id TEXT NOT NULL,
-      run_key TEXT NOT NULL, request_digest TEXT NOT NULL, evidence_series_ref TEXT NOT NULL,
-      evidence_version INTEGER NOT NULL, evidence_digest TEXT NOT NULL, source_health_json TEXT NOT NULL,
-      quiet INTEGER NOT NULL, quiet_reason TEXT, received_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_run_occurrences (
-      id TEXT PRIMARY KEY, run_id TEXT NOT NULL, directive_instance_id TEXT,
-      directive_key TEXT NOT NULL, evidence_digest TEXT NOT NULL, occurred_at INTEGER NOT NULL,
-      metadata_json TEXT NOT NULL
-    );
-    CREATE TABLE briefing_response_events (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, directive_instance_id TEXT NOT NULL,
-      operation TEXT NOT NULL, value_json TEXT, retracts_event_id TEXT,
-      actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_annotation_events (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, operation TEXT NOT NULL, annotation_kind TEXT,
-      start_offset INTEGER, end_offset INTEGER, quote TEXT, body TEXT, replacement_text TEXT,
-      retracts_event_id TEXT, actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_submissions (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-      supersedes_submission_id TEXT, actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_submission_answers (
-      submission_id TEXT NOT NULL, directive_instance_id TEXT NOT NULL,
-      response_event_id TEXT NOT NULL, position INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_submission_annotations (
-      submission_id TEXT NOT NULL, annotation_event_id TEXT NOT NULL, position INTEGER NOT NULL
-    );
-  `);
-  db.pragma("foreign_keys = ON");
-  db.prepare("UPDATE meta SET value = '142' WHERE key = 'schema_version'").run();
+function installLegacyFeedback(db: Db): void {
+  for (const version of [125, 127, 137, 142]) {
+    for (const statement of MIGRATIONS.find((entry) => entry.version === version)!.statements) db.exec(statement);
+  }
 }
 
-function insertV1Round(db: Db, source: string, key: string, humanId: string): string {
-  const briefingId = `briefing-${key}`;
-  db.prepare(
-    "INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at) VALUES (?, ?, ?, NULL, 0, 1, 1)",
-  ).run(briefingId, key, key);
-  db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, 1)").run(briefingId, humanId);
-  const artifact = recordArtifactVersion(db, {
-    source_kind: "managed", content: source, series_key: `test:${key}`, logical_name: `${key}.md`,
-    title: key, role: "briefing-document", media_type: "text/markdown", metadata: { profile: "mandible-briefing.v1" },
-  }, 1);
-  const openerEnd = source.indexOf("\n");
-  const closeStart = source.indexOf("\n:::", openerEnd);
-  const end = closeStart + 4;
-  const bodyStart = openerEnd + 1;
-  const bodyEnd = closeStart;
-  const definitionDigest = createHash("sha256").update(Buffer.from(source.slice(0, end), "utf8")).digest("hex");
-  const bindingDigest = createHash("sha256").update(JSON.stringify([["item", definitionDigest]])).digest("hex");
-  const roundId = randomUUID();
-  const definitionId = randomUUID();
-  db.prepare(
-    `INSERT INTO briefing_rounds
-      (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
-     VALUES (?, ?, 1, ?, NULL, 'mandible-briefing.v1', ?, 1)`,
-  ).run(roundId, briefingId, artifact.version.id, bindingDigest);
-  db.prepare(
-    `INSERT INTO briefing_directive_definitions
-      (id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt,
-       options_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
-     VALUES (?, ?, 'item', ?, 'verdict', 1, ?, '[]', 0, ?, ?, ?, 1)`,
-  ).run(definitionId, artifact.version.id, definitionDigest, source.slice(bodyStart, bodyEnd), end, bodyStart, bodyEnd);
-  db.prepare(
-    "INSERT INTO briefing_directive_instances (id, round_id, definition_id, directive_key, position, created_at) VALUES (?, ?, ?, 'item', 0, 1)",
-  ).run(randomUUID(), roundId, definitionId);
-  db.prepare("UPDATE briefings SET latest_round_id = ?, round_count = 1 WHERE id = ?").run(roundId, briefingId);
-  return briefingId;
-}
-
-describe("migration 143 typed Briefing cutover", () => {
-  it("seals deployed old-column v142 rows and never verifies extra directive structure", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-v143-old-"));
-    roots.push(root);
+describe("migration v143: artifact-backed Briefing rounds", () => {
+  it("keeps fresh baseline and migration head converged without obsolete feedback tables", () => {
     const db = new Database(":memory:");
-    try {
-      migrate(db);
-      setSetting(db, "artifact_root", root);
-      const humanId = createUser(db, { slug: "reviewer", kind: "human", display_name: "Reviewer" }).id;
-      oldV142Graph(db);
-      expect((db.prepare("PRAGMA table_info(briefing_directive_instances)").all() as Array<{ name: string }>)
-        .map((column) => column.name)).not.toContain("artifact_version_id");
-      const good = insertV1Round(db, ':::spec-item{key="item" required="true"}\nPrompt\n:::\n', "good", humanId);
-      const malformed = [
-        ["extra", ':::spec-item{key="item" required="true"}\nPrompt\n:::\n\n::unknown[extra]\n'],
-        ["nested", ':::spec-item{key="item" required="true"}\nPrompt\n:::spec-item{key="nested"}\nNested\n:::\n:::\n'],
-        ["misplaced", ':::spec-item{key="item" required="true"}\nPrompt\n:::\n\n::option[orphan]{key="x"}\n'],
-        ["malformed", ':::spec-item{key="item" required="true"}\nPrompt\n:::\n\n:::spec-item{broken}\n'],
-      ].map(([key, source]) => insertV1Round(db, source, key, humanId));
-
-      migrate(db);
-
-      expect(db.prepare("SELECT disposition FROM briefing_legacy_custody WHERE briefing_id = ?").get(good))
-        .toEqual({ disposition: "sealed_verified" });
-      for (const briefingId of malformed) {
-        expect(db.prepare("SELECT disposition, reason FROM briefing_legacy_custody WHERE briefing_id = ?").get(briefingId))
-          .toMatchObject({ disposition: "sealed_ambiguous", reason: expect.stringMatching(/top-level|directive|definition/) });
-      }
-      expect(db.prepare("SELECT latest_round_id, round_count FROM briefings WHERE id = ?").get(good))
-        .toEqual({ latest_round_id: null, round_count: 0 });
-      expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 0 });
-      expect((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'briefing_rounds'").get() as { sql: string }).sql)
-        .toContain("mandible-briefing.v2");
-      expect(db.pragma("foreign_key_check")).toEqual([]);
-    } finally {
-      db.close();
-    }
+    migrate(db);
+    expect(BASELINE_SCHEMA_VERSION).toBe(144);
+    expect(CURRENT_SCHEMA_VERSION).toBe(144);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "144" });
+    expect(BRIEFING_SCHEMA_TABLES.every((table) => db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(table))).toBe(true);
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feedback_collections'").get())
+      .toBeUndefined();
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    db.close();
   });
 
-  it("converges a rewound v141 shape through transient v142 and v143", () => {
+  it("seals reconstructed frozen submissions into v1 custody before activating v2", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-v143-"));
     const db = new Database(":memory:");
-    try {
-      migrate(db);
-      db.pragma("foreign_keys = OFF");
-      for (const table of [
-        "briefing_submission_annotations", "briefing_submission_answers", "briefing_submissions",
-        "briefing_annotation_events", "briefing_response_events", "briefing_run_occurrences", "briefing_runs",
-        "briefing_directive_instances", "briefing_directive_definitions", "briefing_rounds",
-        "briefing_legacy_custody", "briefing_legacy_audit", "briefing_members", "briefings",
-      ]) db.exec(`DROP TABLE ${table}`);
-      db.pragma("foreign_keys = ON");
-      db.prepare("UPDATE meta SET value = '141' WHERE key = 'schema_version'").run();
+    migrate(db);
+    setSetting(db, "artifact_root", root);
+    db.pragma("foreign_keys = OFF");
+    for (const table of [...BRIEFING_SCHEMA_TABLES].reverse()) db.exec(`DROP TABLE IF EXISTS ${table}`);
+    db.pragma("foreign_keys = ON");
+    installLegacyFeedback(db);
+    const agent = createUser(db, { slug: "legacy-agent", kind: "agent", display_name: "Legacy Agent" }).id;
+    const human = createUser(db, { slug: "legacy-human", kind: "human", display_name: "Legacy Human" }).id;
+    db.prepare("INSERT INTO sessions (id, app, status, owner_user_id) VALUES ('legacy-session','codex','active',?)").run(agent);
+    db.exec(`
+      INSERT INTO feedback_collections
+        (id, kind, interaction_mode, source, created_at, tombstoned_at)
+      VALUES ('legacy-ask','bounded_ask','explicit_submit',NULL,10,NULL);
+      INSERT INTO feedback_ask_sessions
+        (collection_id, requester_user_id, requester_session_id, request_key, request_digest,
+         responder_user_ids_json, expires_at, retention_expires_at, created_at)
+      VALUES ('legacy-ask','${agent}','legacy-session','legacy request','${"a".repeat(64)}','["${human}"]',1000,NULL,10);
+      INSERT INTO feedback_items
+        (id, collection_id, parent_item_id, item_kind, identity_mode, external_key, client_item_key,
+         current_revision_id, created_at, tombstoned_at)
+      VALUES ('legacy-item','legacy-ask',NULL,'item','opaque',NULL,'decision',NULL,10,NULL);
+      INSERT INTO feedback_item_revisions
+        (id,item_id,ordinal,title,prompt,description,response_type,required,content_json,evidence_digest,publication_id,position,created_at)
+      VALUES ('legacy-revision','legacy-item',1,'Decision','Keep it?',NULL,'verdict',1,'{}',NULL,NULL,0,10);
+      UPDATE feedback_items SET current_revision_id = 'legacy-revision' WHERE id = 'legacy-item';
+      INSERT INTO feedback_collection_events
+        (id,collection_id,operation,previous_event_id,actor_user_id,metadata_json,created_at)
+      VALUES ('legacy-open','legacy-ask','opened',NULL,NULL,'{}',10),
+             ('legacy-submit','legacy-ask','submitted','legacy-open','${human}','{}',20);
+      INSERT INTO feedback_response_events
+        (id,collection_id,item_id,item_revision_id,operation,value_json,retracts_event_id,actor_user_id,created_at)
+      VALUES ('legacy-response','legacy-ask','legacy-item','legacy-revision','set','{"verdict":"keep"}',NULL,'${human}',19);
+      INSERT INTO feedback_submissions
+        (id,collection_id,ordinal,supersedes_submission_id,lifecycle_event_id,actor_user_id,created_at)
+      VALUES ('legacy-submission','legacy-ask',1,NULL,'legacy-submit','${human}',20);
+      INSERT INTO feedback_submission_answers
+        (submission_id,item_id,item_revision_id,response_event_id,position)
+      VALUES ('legacy-submission','legacy-item','legacy-revision','legacy-response',0);
+      INSERT INTO feedback_comments
+        (id,collection_id,item_id,item_revision_id,body,actor_user_id,created_at)
+      VALUES ('legacy-comment','legacy-ask','legacy-item','legacy-revision','range unknown','${human}',18);
+      UPDATE meta SET value = '142' WHERE key = 'schema_version';
+    `);
+    migrate(db);
+    expect(db.prepare("SELECT disposition, reason FROM briefing_legacy_audit").get())
+      .toMatchObject({ disposition: "sealed_ambiguous", reason: expect.stringContaining("1 exact frozen") });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submission_answers").get()).toEqual({ n: 0 });
+    const custody = db.prepare(
+      "SELECT disposition, packet_json, packet_digest FROM briefing_legacy_custody",
+    ).get() as { disposition: string; packet_json: string; packet_digest: string };
+    expect(custody.disposition).toBe("sealed_verified");
+    expect(custody.packet_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(custody.packet_json)).toMatchObject({
+      source_profile: "mandible-briefing.v1",
+      row_counts: { submissions: 1, submission_answers: 1, prior_audit: 1 },
+      verification_errors: [],
+    });
+    const audit = db.prepare("SELECT provenance_json FROM briefing_legacy_audit").get() as { provenance_json: string };
+    expect(JSON.parse(audit.provenance_json)).toMatchObject({ comments: [{ body: "range unknown" }] });
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feedback_collections'").get())
+      .toBeUndefined();
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 
-      migrate(db);
-
-      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "143" });
-      const columns = (db.prepare("PRAGMA table_info(briefing_directive_instances)").all() as Array<{ name: string }>)
-        .map((column) => column.name);
-      expect(columns).toEqual(expect.arrayContaining(["briefing_id", "artifact_version_id"]));
-      expect((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'briefing_rounds'").get() as { sql: string }).sql)
-        .toContain("mandible-briefing.v2");
-      expect(db.pragma("foreign_key_check")).toEqual([]);
-    } finally {
-      db.close();
-    }
+  it("marks recurring decision history without a frozen boundary as sealed ambiguity", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-v143-ambiguous-"));
+    const db = new Database(":memory:");
+    migrate(db);
+    setSetting(db, "artifact_root", root);
+    db.pragma("foreign_keys = OFF");
+    for (const table of [...BRIEFING_SCHEMA_TABLES].reverse()) db.exec(`DROP TABLE IF EXISTS ${table}`);
+    db.pragma("foreign_keys = ON");
+    installLegacyFeedback(db);
+    const human = createUser(db, { slug: "legacy-reviewer", kind: "human", display_name: "Reviewer" }).id;
+    db.exec(`
+      INSERT INTO feedback_collections (id,kind,interaction_mode,source,created_at,tombstoned_at)
+        VALUES ('legacy-feed','recurring_feed','immediate_per_item','arxiv-scan',10,NULL);
+      INSERT INTO feedback_recurring_profiles VALUES ('legacy-feed','arxiv-scan',1000,10,10);
+      INSERT INTO feedback_items
+        (id,collection_id,parent_item_id,item_kind,identity_mode,external_key,client_item_key,current_revision_id,created_at,tombstoned_at)
+        VALUES ('candidate','legacy-feed',NULL,'item','publisher_dedup','paper',NULL,NULL,10,NULL);
+      INSERT INTO feedback_item_revisions
+        (id,item_id,ordinal,title,prompt,description,response_type,required,content_json,evidence_digest,publication_id,position,created_at)
+        VALUES ('revision','candidate',1,'Paper','Review paper',NULL,'verdict',0,'{}','${"b".repeat(64)}',NULL,0,10);
+      UPDATE feedback_items SET current_revision_id = 'revision' WHERE id = 'candidate';
+      INSERT INTO feedback_response_events
+        (id,collection_id,item_id,item_revision_id,operation,value_json,retracts_event_id,actor_user_id,created_at)
+        VALUES ('decision','legacy-feed','candidate','revision','set','{"verdict":"keep"}',NULL,'${human}',20);
+      UPDATE meta SET value = '142' WHERE key = 'schema_version';
+    `);
+    migrate(db);
+    expect(db.prepare("SELECT disposition FROM briefing_legacy_audit").get())
+      .toEqual({ disposition: "sealed_ambiguous" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 0 });
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });

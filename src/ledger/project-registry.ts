@@ -274,6 +274,67 @@ export function resolveProjectRef(db: Db, ref: string): ResolveProjectResult {
 }
 
 /**
+ * Resolve any accepted project/checkout alias to the registry's canonical
+ * outward repo identity. Work-unit state uses project_key, never a checkout's
+ * path-local work_repo_id or a caller-supplied display spelling.
+ */
+export function canonicalProjectRepoId(db: Db, ref: string | null | undefined): string | null {
+  const trimmed = ref?.trim() ?? "";
+  if (!trimmed) return null;
+  try {
+    const direct = db.prepare(
+      `SELECT project_key FROM ledger_projects
+       WHERE id = ? OR project_key = ?
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
+       LIMIT 1`,
+    ).get(trimmed, trimmed, trimmed) as { project_key: string } | undefined;
+    if (direct?.project_key) return direct.project_key;
+
+    const checkoutKeys = (where: string, params: unknown[]): string[] =>
+      (db.prepare(
+        `SELECT DISTINCT p.project_key
+         FROM ledger_project_checkouts c
+         JOIN ledger_projects p ON p.id = c.project_id
+         WHERE ${where} AND p.project_key != ''
+         ORDER BY p.project_key`,
+      ).all(...params) as Array<{ project_key: string }>).map((row) => row.project_key);
+    const byWorkRepo = checkoutKeys("c.work_repo_id = ?", [trimmed]);
+    if (byWorkRepo.length > 0) return byWorkRepo.length === 1 ? byWorkRepo[0] : null;
+
+    const resolvedRoot = path.resolve(trimmed);
+    const byRoot = checkoutKeys("c.root = ? OR c.root = ?", [trimmed, resolvedRoot]);
+    if (byRoot.length > 0) return byRoot.length === 1 ? byRoot[0] : null;
+
+    const remote = normalizeRemoteIdentity(trimmed);
+    if (remote) {
+      const rows = db.prepare(
+        `SELECT project_key FROM ledger_projects
+         WHERE remote_identity = ? AND remote_identity != '' AND project_key != ''
+         ORDER BY project_key`,
+      ).all(remote) as Array<{ project_key: string }>;
+      if (rows.length > 0) return rows.length === 1 ? rows[0].project_key : null;
+    }
+
+    const byDisplay = db.prepare(
+      `SELECT project_key FROM ledger_projects
+       WHERE display_name = ? AND project_key != ''
+       ORDER BY project_key`,
+    ).all(trimmed) as Array<{ project_key: string }>;
+    return byDisplay.length === 1 ? byDisplay[0].project_key : null;
+  } catch {
+    // Registry tables are intentionally absent in some compatibility fixtures.
+    return null;
+  }
+}
+
+/** Preserve compatibility for an unregistered repo while canonicalizing every
+ * registry-backed alias. */
+export function normalizeProjectRepoId(db: Db, ref: string): string {
+  const trimmed = ref.trim();
+  return canonicalProjectRepoId(db, trimmed) ?? trimmed;
+}
+
+/**
  * Resolve a filesystem path to a REGISTERED checkout -> project. Returns null
  * when the path is not a registered checkout root. This is the cwd-inference
  * gate: cwd only resolves a project when it is a known checkout, never by

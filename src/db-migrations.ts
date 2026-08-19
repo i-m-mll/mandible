@@ -17,7 +17,7 @@ import {
   TRANSIENT_BRIEFING_V1_SCHEMA_SQL,
 } from "./feedback/schema.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
-import { backfillProjectKeys } from "./ledger/project-registry.js";
+import { backfillProjectKeys, normalizeProjectRepoId } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -4716,6 +4716,15 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
   },
   {
     version: 141,
+    name: "canonical_work_unit_repo_ids",
+    // Issue ba1ced2 — work-unit repo identity is the canonical project_key.
+    // The guarded helper rewrites only registry-resolvable aliases and paths;
+    // unresolved historical strings, work-unit IDs, timestamps, state, and all
+    // other provenance remain byte-for-byte unchanged.
+    statements: [],
+  },
+  {
+    version: 142,
     name: "briefing_directive_bindings",
     statements: [
       `ALTER TABLE feedback_collection_documents ADD COLUMN profile TEXT CHECK(profile IS NULL OR profile = 'mandible-briefing.v1')`,
@@ -4734,12 +4743,12 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     ],
   },
   {
-    version: 142,
+    version: 143,
     name: "artifact_backed_briefing_rounds",
     statements: [...TRANSIENT_BRIEFING_V1_SCHEMA_SQL],
   },
   {
-    version: 143,
+    version: 144,
     name: "typed_briefing_v2_and_v1_custody_retirement",
     statements: [],
   },
@@ -4750,17 +4759,17 @@ function hasColumn(db: Db, table: string, column: string): boolean {
     .some((entry) => entry.name === column);
 }
 
-function verifyBriefingDirectiveV141Schema(db: Db): void {
+function verifyBriefingDirectiveV142Schema(db: Db): void {
   const documentColumns = (db.prepare("PRAGMA table_info(feedback_collection_documents)").all() as Array<{ name: string }>)
     .map((column) => column.name);
   if (!documentColumns.includes("profile") || !tableExists(db, "feedback_item_directives")) {
-    throw new Error("migration 141 verification: directive profile schema is incomplete");
+    throw new Error("migration 142 verification: directive profile schema is incomplete");
   }
   const required = ["collection_id", "item_revision_id", "directive_key", "definition_digest", "start_offset", "end_offset", "body_start_offset", "body_end_offset", "created_at"];
   const columns = (db.prepare("PRAGMA table_info(feedback_item_directives)").all() as Array<{ name: string }>)
     .map((column) => column.name);
   if (required.some((column) => !columns.includes(column))) {
-    throw new Error("migration 141 verification: directive binding columns diverge");
+    throw new Error("migration 142 verification: directive binding columns diverge");
   }
   const sql = ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'feedback_item_directives'")
     .get() as { sql: string } | undefined)?.sql ?? "").replace(/\s+/g, " ");
@@ -4770,7 +4779,7 @@ function verifyBriefingDirectiveV141Schema(db: Db): void {
     "UNIQUE(collection_id, directive_key)",
     "body_end_offset > body_start_offset",
   ]) {
-    if (!sql.includes(fragment)) throw new Error(`migration 141 verification: missing ${fragment}`);
+    if (!sql.includes(fragment)) throw new Error(`migration 142 verification: missing ${fragment}`);
   }
 }
 
@@ -5018,10 +5027,10 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         migrateTaskCommandV2(db);
       }
       let statements = migration.statements;
-      // Rewinding only schema_version on a v142 database must not resurrect or
+      // Rewinding only schema_version on a v144 database must not resurrect or
       // reference the retired feedback product. Advance those historical
       // markers as no-ops while continuing every unrelated migration.
-      if (canonicalBriefingCutover && [125, 127, 133, 137, 141].includes(migration.version)) {
+      if (canonicalBriefingCutover && [125, 127, 133, 137, 142].includes(migration.version)) {
         statements = [];
       }
       if (migration.name === "operational_incidents" && tableExists(db, "operational_incidents")) {
@@ -5035,7 +5044,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.name === "agent_dispatch_events" && tableExists(db, "agent_dispatch_events")
           && !hasColumn(db, "agent_dispatch_events", "candidate_id")) {
-        // A rewound v142 fixture already has the canonical issue/incident-only
+        // A rewound v144 fixture already has the canonical issue/incident-only
         // dispatch table. Never replay the retired finding indexes onto it.
         statements = [];
       }
@@ -5086,11 +5095,11 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           statements = [];
         } else if (hasColumn(db, "feedback_collection_documents", "profile")) {
           if (!tableExists(db, table)) {
-            throw new Error("migration 141 precondition: document profile exists without directive bindings");
+            throw new Error("migration 142 precondition: document profile exists without directive bindings");
           }
           // Rewound head-shaped test databases already have the full additive
-          // v141 shape. Never replay ALTER TABLE against that shape.
-          verifyBriefingDirectiveV141Schema(db);
+          // v142 shape. Never replay ALTER TABLE against that shape.
+          verifyBriefingDirectiveV142Schema(db);
           statements = [];
         } else if (tableExists(db, table)) {
           // A historical fixture may retain the additive binding table while
@@ -5112,20 +5121,23 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         ensureAuthHookRequiredColumn(db);
       }
       if (migration.version === 141) {
-        if (tableExists(db, "feedback_collection_documents")) verifyBriefingDirectiveV141Schema(db);
+        canonicalizeWorkUnitRepoIds(db);
       }
       if (migration.version === 142) {
+        if (tableExists(db, "feedback_collection_documents")) verifyBriefingDirectiveV142Schema(db);
+      }
+      if (migration.version === 143) {
         migrateLegacyFeedbackToBriefings(db);
         for (const table of BRIEFING_SCHEMA_TABLES) {
           if (!tableExists(db, table)) {
-            throw new Error(`migration 142 verification: ${table} is missing`);
+            throw new Error(`migration 143 verification: ${table} is missing`);
           }
         }
       }
-      if (migration.version === 143) {
+      if (migration.version === 144) {
         retireBriefingV1ToCustody(db);
         for (const table of BRIEFING_SCHEMA_TABLES) {
-          if (!tableExists(db, table)) throw new Error(`migration 143 verification: ${table} is missing`);
+          if (!tableExists(db, table)) throw new Error(`migration 144 verification: ${table} is missing`);
         }
       }
       if (migration.name === "operational_incidents") {
@@ -5161,9 +5173,9 @@ export function migrate(db: Db): void {
   // earlier SQL/hooks now; later migrations remain pending until v105 commits.
   const beforeV105 = pending.filter((migration) => migration.version < 105);
   const afterV105 = pending.filter((migration) => migration.version > 105 && migration.version < 126);
-  const afterV126 = pending.filter((migration) => migration.version > 126 && migration.version < 142);
-  const v142 = pending.filter((migration) => migration.version === 142);
+  const afterV126 = pending.filter((migration) => migration.version > 126 && migration.version < 143);
   const v143 = pending.filter((migration) => migration.version === 143);
+  const v144 = pending.filter((migration) => migration.version === 144);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -5426,30 +5438,30 @@ export function migrate(db: Db): void {
     migrateFeedbackRecurringCutover(db);
   }
   applySchemaMigrations(db, afterV126);
-  if (v142.length > 0) {
+  if (v143.length > 0) {
     // The cutover retires FK-linked legacy tables. SQLite cannot change
     // foreign_keys inside the generic migration transaction, so establish the
     // guarded rebuild boundary before entering it and verify on restoration.
-    db.pragma("foreign_keys = OFF");
-    try {
-      applySchemaMigrations(db, v142);
-    } finally {
-      db.pragma("foreign_keys = ON");
-    }
-    assertScopedForeignKeys(
-      db,
-      [...BRIEFING_SCHEMA_TABLES, "agent_dispatch_events", "space_items"],
-      "migration 142 verification",
-    );
-  }
-  if (v143.length > 0) {
     db.pragma("foreign_keys = OFF");
     try {
       applySchemaMigrations(db, v143);
     } finally {
       db.pragma("foreign_keys = ON");
     }
-    assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 143 verification");
+    assertScopedForeignKeys(
+      db,
+      [...BRIEFING_SCHEMA_TABLES, "agent_dispatch_events", "space_items"],
+      "migration 143 verification",
+    );
+  }
+  if (v144.length > 0) {
+    db.pragma("foreign_keys = OFF");
+    try {
+      applySchemaMigrations(db, v144);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 144 verification");
   }
 
   // v133 was exercised by development daemons before release, under its
@@ -7329,6 +7341,33 @@ function canonicalizeProjectRepoIds(db: Db): void {
         "UPDATE work_repos SET id = ?, updated_at = datetime('now') WHERE root = ? AND id = ?",
       ).run(plan.target_id, plan.root, temporaryIds.get(plan.root));
     }
+  }
+}
+
+function canonicalizeWorkUnitRepoIds(db: Db): void {
+  if (
+    !tableExists(db, "work_units") ||
+    !tableExists(db, "ledger_projects") ||
+    !tableExists(db, "ledger_project_checkouts")
+  ) {
+    return;
+  }
+
+  const refs = db.prepare(
+    "SELECT DISTINCT repo_id FROM work_units WHERE trim(repo_id) != '' ORDER BY repo_id",
+  ).all() as Array<{ repo_id: string }>;
+  const update = db.prepare("UPDATE work_units SET repo_id = ? WHERE repo_id = ?");
+  let changed = 0;
+  for (const row of refs) {
+    const canonical = normalizeProjectRepoId(db, row.repo_id);
+    if (canonical === row.repo_id) continue;
+    changed += update.run(canonical, row.repo_id).changes;
+  }
+  if (changed > 0) {
+    dbLog("info", "db_work_unit_repo_ids_canonicalized", {
+      subsystem: "db",
+      row_count: changed,
+    });
   }
 }
 

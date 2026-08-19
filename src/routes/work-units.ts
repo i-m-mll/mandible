@@ -6,6 +6,7 @@ import {
 } from "../ambient-provider-identity.js";
 import { getDb } from "../db.js";
 import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
+import { normalizeProjectRepoId } from "../ledger/project-registry.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
@@ -132,9 +133,10 @@ export function registerWorkUnitRoutes(
       return;
     }
 
+    const repoId = normalizeProjectRepoId(db, body.repo_id);
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
-    const existing = findExistingClaimWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
+    const existing = findExistingClaimWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
 
     if (existing) {
       const updates: string[] = [];
@@ -155,7 +157,7 @@ export function registerWorkUnitRoutes(
         params.push(existing.id);
         db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
       }
-      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
+      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, repoId) ?? existing.ledger_issue_id;
       sendJson(res, 200, {
         id: existing.id,
         state: existing.state,
@@ -189,7 +191,7 @@ export function registerWorkUnitRoutes(
     ).run(
       id,
       body.issue_id,
-      body.repo_id,
+      repoId,
       body.branch ?? null,
       body.parent_branch ?? null,
       kind,
@@ -200,7 +202,7 @@ export function registerWorkUnitRoutes(
       ownerUserId,
     );
 
-    const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
+    const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, repoId);
     sendJson(res, 201, { id, ledger_issue_id: ledgerIssueId });
   }, { fileRpc: "allow" });
 
@@ -217,11 +219,12 @@ export function registerWorkUnitRoutes(
       return;
     }
 
+    const repoId = normalizeProjectRepoId(db, body.repo_id);
     const now = Date.now();
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
 
-    const existing = findExistingActivateWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
+    const existing = findExistingActivateWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
 
     if (existing) {
       // Update to committed state, update timestamps
@@ -250,7 +253,7 @@ export function registerWorkUnitRoutes(
         `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
       ).run(...params);
 
-      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
+      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, repoId) ?? existing.ledger_issue_id;
       sendJson(res, 200, { id: existing.id, state: "committed", ledger_issue_id: ledgerIssueId });
     } else {
       // No existing work unit — create one in committed state (auto-claim)
@@ -274,7 +277,7 @@ export function registerWorkUnitRoutes(
       ).run(
         id,
         body.issue_id,
-        body.repo_id,
+        repoId,
         body.branch ?? null,
         assignedSessionId,
         ambientIdentity?.provider ?? null,
@@ -285,7 +288,7 @@ export function registerWorkUnitRoutes(
         ownerUserId,
       );
 
-      const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
+      const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, repoId);
       sendJson(res, 201, { id, state: "committed", ledger_issue_id: ledgerIssueId });
     }
   }, { fileRpc: "allow" });
@@ -303,7 +306,8 @@ export function registerWorkUnitRoutes(
       return;
     }
 
-    const lookup = buildWorkUnitLookup(db, body.issue_id, body.repo_id);
+    const repoId = normalizeProjectRepoId(db, body.repo_id);
+    const lookup = buildWorkUnitLookup(db, body.issue_id, repoId);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
     const updates = ["state = 'open'", "assigned_session_id = NULL"];
     const params: unknown[] = [];
@@ -338,7 +342,7 @@ export function registerWorkUnitRoutes(
     }
     if (req.query.repo_id) {
       conditions.push("repo_id = ?");
-      params.push(req.query.repo_id);
+      params.push(normalizeProjectRepoId(db, req.query.repo_id));
     }
     if (req.query.branch) {
       conditions.push("branch = ?");

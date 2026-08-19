@@ -213,12 +213,12 @@ if [[ "$was_running" == "true" ]]; then
   if [[ -n "${MANDIBLE_DESKTOP_RELAUNCH_COMMAND:-}" ]]; then
     bash -lc "$MANDIBLE_DESKTOP_RELAUNCH_COMMAND"
   else
-    relaunch_log_dir="${HOME}/Library/Logs/Mandible"
-    mkdir -p "$relaunch_log_dir"
-    nohup bash "$repo_root/cli/install-desktop-app.sh" --relaunch \
+    # Keep relaunch inside the convergence process. A detached helper can be
+    # reaped when the self-merge daemon exits, falsely reporting success while
+    # the old desktop shell remains alive.
+    relaunch_installed_app \
       "$install_app" "$expected_executable" \
-      "${MANDIBLE_DESKTOP_RELAUNCH_DELAY_SECONDS:-4}" \
-      >>"$relaunch_log_dir/desktop-relaunch.log" 2>&1 </dev/null &
+      "${MANDIBLE_DESKTOP_RELAUNCH_DELAY_SECONDS:-4}"
   fi
-  err "[desktop-install] scheduled restart of the running desktop shell"
+  err "[desktop-install] restarted the running desktop shell"
 fi
