@@ -151,7 +151,7 @@ export const METADATA_BACKUP_TABLES = [
   "user_groups",
   "user_group_members",
   "permission_grants",
-  // One Briefing model (migration 142). Logical identity precedes immutable
+  // One Briefing model (migrations 142-143). Logical identity precedes immutable
   // rounds, definitions precede round-specific instances, then run provenance,
   // append-only drafts, frozen actor submissions, and sealed migration audit.
   "briefings",
@@ -167,6 +167,7 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_submission_answers",
   "briefing_submission_annotations",
   "briefing_legacy_audit",
+  "briefing_legacy_custody",
   // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",
   // Executor task inventory receipts (issue 0bc2279, migration 124). Each row

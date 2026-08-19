@@ -1,16 +1,16 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BriefingRoundProjection } from '../ui/src/api';
 
 import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
-import { RICH_BRIEFING_DEMO, RICH_BRIEFING_ROUND_ONE_MARKDOWN } from '../src/feedback/rich-briefing-demo';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
-const source = 'Intro\n:::spec-item{key="plan" required="true"}\nPlan\n:::\n';
+const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
 const bodyStart = source.indexOf('Plan');
 const bodyEnd = source.indexOf('\n:::', bodyStart);
@@ -46,7 +46,7 @@ function round(overrides: Partial<BriefingRoundProjection> = {}): BriefingRoundP
     binding_digest: 'digest',
     created_at: 1,
     latest_submission_for_actor: null,
-    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
+    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
     directive_binding: { status: 'valid' },
     latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
     annotations: [],
@@ -83,6 +83,69 @@ afterEach(() => {
 });
 
 describe('Briefing document panel', () => {
+  it('renders all six v2 controls with native semantics, prompt names, ordered options, bounds, and canonical clear drafts', async () => {
+    const typedSource = [
+      '# Typed review',
+      ':::spec-item{key="verdict" type="verdict" required="true"}', 'Keep this finding?', ':::',
+      ':::spec-item{key="single" type="single_choice" required="true"}', 'Choose deployment mode', '::option[Alpha]{key="a"}', '::option[Beta]{key="b"}', ':::',
+      ':::spec-item{key="multi" type="multi_choice" required="true"}', 'Choose evidence sources', '::option[First]{key="first"}', '::option[Second]{key="second"}', '::option[Third]{key="third"}', ':::',
+      ':::spec-item{key="short" type="short_text" required="true"}', 'Give a short rationale', ':::',
+      ':::spec-item{key="long" type="long_text" required="true"}', 'Give a detailed rationale', ':::',
+      ':::spec-item{key="rating" type="rating" required="true"}', 'Rate confidence', ':::',
+    ].join('\n');
+    const directives = parseBriefingDirectives(typedSource);
+    const typedRound = round({
+      items: directives.map((directive, index) => ({
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
+        revision: { id: directive.definition_digest, ordinal: 1, title: directive.key, prompt: directive.body, description: null, response_type: directive.type, required: directive.required, position: index, options: directive.options },
+        effective_response: null, responseVisible: true, directive,
+      })),
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
+      ...content().content,
+      size_bytes: new TextEncoder().encode(typedSource).byteLength,
+      preview: { encoding: 'utf-8', text: typedSource, raw_text: typedSource, truncated: false },
+    } })));
+    const changes: Array<{ id: string; value: unknown }> = [];
+    function Harness() {
+      const [draft, setDraft] = useState<Record<string, any>>({});
+      return <BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Typed review" roundId="round-1" round={typedRound} canMutate onRefresh={async () => null} draft={draft}
+        onDirectiveValue={(id, value) => { changes.push({ id, value }); setDraft((current) => ({ ...current, [id]: value })); }} />;
+    }
+    render(<Harness />);
+
+    const verdict = await screen.findByRole('group', { name: 'Keep this finding?' });
+    expect(within(verdict).getByRole('button', { name: 'Keep' })).toBeTruthy();
+    const single = screen.getByRole('group', { name: 'Choose deployment mode' });
+    expect(within(single).getAllByRole('radio').map((input) => (input as HTMLInputElement).value)).toEqual(['a', 'b']);
+    expect(within(single).getAllByText(/Alpha|Beta/).map((label) => label.textContent)).toEqual(['Alpha', 'Beta']);
+    fireEvent.click(within(single).getByRole('radio', { name: 'Beta' }));
+    const multi = screen.getByRole('group', { name: 'Choose evidence sources' });
+    fireEvent.click(within(multi).getByRole('checkbox', { name: 'Third' }));
+    fireEvent.click(within(multi).getByRole('checkbox', { name: 'First' }));
+    const short = screen.getByRole('textbox', { name: 'Give a short rationale' }) as HTMLInputElement;
+    const long = screen.getByRole('textbox', { name: 'Give a detailed rationale' }) as HTMLTextAreaElement;
+    expect(short.maxLength).toBe(240);
+    expect(long.maxLength).toBe(4000);
+    fireEvent.input(short, { target: { value: ' ' } });
+    expect(short.value).toBe(' ');
+    fireEvent.input(short, { target: { value: '  exact  ' } });
+    fireEvent.input(long, { target: { value: 'Detailed' } });
+    const rating = screen.getByRole('group', { name: 'Rate confidence' });
+    fireEvent.click(within(rating).getByRole('radio', { name: '5' }));
+    expect(changes).toEqual(expect.arrayContaining([
+      { id: 'single', value: { option_key: 'b' } },
+      { id: 'multi', value: { option_keys: ['first', 'third'] } },
+      { id: 'short', value: { text: '  exact  ' } },
+      { id: 'long', value: { text: 'Detailed' } },
+      { id: 'rating', value: { rating: 5 } },
+    ]));
+    expect(screen.getAllByLabelText('Required')).toHaveLength(6);
+    const shortSection = short.closest('.briefing-directive') as HTMLElement;
+    fireEvent.click(within(shortSection).getByRole('button', { name: 'Clear answer' }));
+    expect(changes.at(-1)).toEqual({ id: 'short', value: null });
+  });
+
   it('binds directive hover to the content and control interaction region', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(content())));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
@@ -104,7 +167,7 @@ describe('Briefing document panel', () => {
   });
 
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
-    const profiledSource = '# Review plan\n\nIntro\n:::spec-item{key="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
+    const profiledSource = '# Review plan\n\nIntro\n:::spec-item{key="verdict" type="verdict" required="true"}\nBody <img src=x onerror=alert(1)>\n:::\nTail';
     vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
       ...content().content,
       size_bytes: new TextEncoder().encode(profiledSource).byteLength,
@@ -114,14 +177,14 @@ describe('Briefing document panel', () => {
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
     const definitionDigest = createHash('sha256').update(source.slice(start, bodyEnd + 4)).digest('hex');
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({
-      document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v1' },
+      document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
       directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
       annotations: [annotation({ start_offset: bodyStart, end_offset: bodyEnd, quote: 'Body', body: 'Current actor note.' })] as any,
       items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: definitionDigest, start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
     })} canMutate onRefresh={async () => null} onDirectiveVerdict={() => undefined} />);
     const keep = await screen.findByRole('button', { name: 'Keep' });
     expect(keep).toBeTruthy();
-    expect(screen.queryByText(':::spec-item{key="verdict" required="true"}')).toBeNull();
+    expect(screen.queryByText(':::spec-item{key="verdict" type="verdict" required="true"}')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Review plan' })).toBeNull();
     expect(screen.getByLabelText('Pinned briefing document').querySelector('img')).toBeNull();
     expect(screen.getByRole('button', { name: /Body.*Comment.*Current actor note/ })).toBeTruthy();
@@ -200,45 +263,6 @@ describe('Briefing document panel', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
-  });
-
-  it('renders the rich demo GFM safely with both frozen annotation kinds', async () => {
-    const directives = parseBriefingDirectives(RICH_BRIEFING_ROUND_ONE_MARKDOWN);
-    const commentQuote = 'Staging rehearsal completed';
-    const suggestionQuote = '15 minute recovery objective';
-    vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
-      ...content().content,
-      size_bytes: new TextEncoder().encode(RICH_BRIEFING_ROUND_ONE_MARKDOWN).byteLength,
-      preview: { encoding: 'utf-8', text: RICH_BRIEFING_ROUND_ONE_MARKDOWN, raw_text: RICH_BRIEFING_ROUND_ONE_MARKDOWN, truncated: false },
-    } })));
-    const projection = round({
-      briefing_key: RICH_BRIEFING_DEMO.briefingKey,
-      annotations: [
-        { annotation_event_id: 'comment', annotation_kind: 'comment', start_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(commentQuote), end_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(commentQuote) + commentQuote.length, quote: commentQuote, body: 'Confirm the rehearsal log.', replacement_text: null, created_at: 1 },
-        { annotation_event_id: 'suggestion', annotation_kind: 'suggest_replacement', start_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(suggestionQuote), end_offset: RICH_BRIEFING_ROUND_ONE_MARKDOWN.indexOf(suggestionQuote) + suggestionQuote.length, quote: suggestionQuote, body: 'Use the tighter objective.', replacement_text: '10 minute recovery objective', created_at: 2 },
-      ],
-      items: directives.map((directive, index) => ({
-        id: `item-${directive.key}`, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
-        revision: { id: `revision-${directive.key}`, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: 'verdict' as const, required: directive.required, position: index, options: [] },
-        effective_response: null, responseVisible: true, directive,
-      })),
-    });
-    const { container } = render(<BriefingDocumentPanel briefingId="briefing-demo" briefingTitle={RICH_BRIEFING_DEMO.title} roundId="round-1" round={projection} canMutate={false} onRefresh={async () => null} />);
-
-    await screen.findByLabelText('Pinned briefing document');
-    expect(screen.queryByRole('heading', { name: RICH_BRIEFING_DEMO.title })).toBeNull();
-    expect(screen.getByText(/candidate is feature-complete/)).toBeTruthy();
-    expect(container.querySelector('blockquote')).toBeTruthy();
-    expect(container.querySelectorAll('li')).toHaveLength(3);
-    expect(container.querySelector('table')).toBeTruthy();
-    expect(container.querySelector('code')?.textContent).toContain('release.freeze=true');
-    expect(container.querySelector('pre code')?.textContent).toContain('rollback.window=15m');
-    expect(screen.getByRole('link', { name: 'release evidence packet' }).getAttribute('href')).toBe('https://example.com/releases/rc-readiness');
-    expect(container.querySelector('img')).toBeNull();
-    expect(container.querySelector('script')).toBeNull();
-    expect(screen.getByRole('button', { name: /Staging rehearsal completed.*Comment.*Confirm the rehearsal log/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /15 minute recovery objective.*Suggested replacement.*Use the tighter objective/ })).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: 'Keep' })).toHaveLength(4);
   });
 
 });

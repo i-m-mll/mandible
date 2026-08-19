@@ -9,7 +9,7 @@ import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
 import { RICH_BRIEFING_DEMO } from '../src/feedback/rich-briefing-demo';
 
-const source = 'Intro\n:::spec-item{key="decision" required="true"}\nReview this round\n:::\n';
+const source = 'Intro\n:::spec-item{key="decision" type="verdict" required="true"}\nReview this round\n:::\n';
 const bodyStart = source.indexOf('Review this round');
 const bodyEnd = source.indexOf('\n:::', bodyStart);
 const directiveEnd = bodyEnd + '\n:::'.length;
@@ -24,9 +24,9 @@ const FULL_ARTIFACT_VERSION_REF = `artifact-version:${'264e485'.padEnd(32, 'c')}
 function selectedRound(roundId: string, artifactVersion: string, submitted = false) {
   return {
     id: roundId, ordinal: roundId === ROUND_ONE ? 1 : 2, artifact_version_id: artifactVersion,
-    previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v1',
+    previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2',
     binding_digest: `binding-${roundId}`, created_at: roundId === ROUND_ONE ? 1 : 2,
-    document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v1' },
+    document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2' },
     binding: { status: 'valid' },
     items: [{ id: `item-${roundId}`, directive_key: 'decision', position: 0, definition_digest: digest,
       response_type: 'verdict', required: 1, prompt: 'Review this round', options: [],
@@ -99,7 +99,7 @@ describe('artifact-backed Briefing rounds', () => {
   it.each([
     ['missing', undefined],
     ['null', null],
-    ['unsupported', 'mandible-briefing.v2'],
+    ['unsupported', 'mandible-briefing.v1'],
   ])('fails closed for a %s selected-document profile', (_label, profile) => {
     const payload = detail() as any;
     if (profile === undefined) delete payload.selected_round.document.profile;
@@ -111,7 +111,7 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('never renders a raw-source fallback for an invalid profile', async () => {
     const payload = detail() as any;
-    payload.selected_round.document.profile = 'mandible-briefing.v2';
+    payload.selected_round.document.profile = 'mandible-briefing.v1';
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -314,9 +314,12 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.click(within(metadata).getByRole('button', { name: 'Close Briefing metadata' }));
     const latestSubmit = screen.getByRole('button', { name: 'Submit' }) as HTMLButtonElement;
     expect(latestSubmit.getAttribute('aria-disabled')).toBe('true');
+    await waitFor(() => expect(latestSubmit.getAttribute('title')).toBe('Complete the required directives before submitting.'));
     fireEvent.keyDown(latestSubmit, { key: 'Enter' });
     fireEvent.click(latestSubmit);
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
+    expect(await screen.findByText('This answer is required.')).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep' })));
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
     await waitFor(() => expect(latestSubmit.getAttribute('aria-disabled')).toBe('false'));
@@ -365,6 +368,36 @@ describe('artifact-backed Briefing rounds', () => {
       `/api/briefings/briefing-1/rounds/${ROUND_TWO}/submit`,
     ]));
     expect(calls).toContainEqual({ url: `/api/briefings/briefing-1?round=${ROUND_TWO.slice(0, 8)}`, method: 'GET' });
+  });
+
+  it.each([
+    ['correction', 'Dismiss', { directive_key: 'decision', operation: 'set', expected_response_event_id: 'answer-old', value: { verdict: 'dismiss' } }],
+    ['retraction', 'Clear answer', { directive_key: 'decision', operation: 'retract', expected_response_event_id: 'answer-old' }],
+  ])('preserves the exact current response event ID for %s payloads', async (_label, action, expectedAnswer) => {
+    const posts: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (!init?.method && url === `/api/briefings/briefing-1?round=${ROUND_ONE}`) {
+        const payload = detail(ROUND_ONE) as any;
+        if (action === 'Clear answer') payload.selected_round.items[0].required = 0;
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, source: null, preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (init?.method === 'POST') {
+        posts.push({ url, body: JSON.parse(String(init.body)) });
+        if (url.endsWith('/answers')) return new Response(JSON.stringify({ answer_event_ids: ['answer-result'] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        if (url.endsWith('/submit')) return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`unexpected ${url}`);
+    }));
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={null} /></AppShellProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: action }));
+    const submit = screen.getByRole('button', { name: 'Submit correction' });
+    await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
+    fireEvent.click(submit);
+    await waitFor(() => expect(posts.length).toBeGreaterThanOrEqual(2));
+    expect(posts[0].body).toEqual({ answers: [expectedAnswer] });
   });
 
   it('fails closed when materialized document bytes do not match the frozen directive binding', async () => {

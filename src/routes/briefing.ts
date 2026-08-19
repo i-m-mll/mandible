@@ -14,6 +14,7 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
 import { publisherMayIngest } from "../briefing.js";
+import { BRIEFING_EVENTS } from "../contracts.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
@@ -57,8 +58,15 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         throw new ClientAuthzError(403, "source_namespace_forbidden",
           `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);
       }
+      const existed = Boolean(db.prepare("SELECT 1 FROM briefings WHERE briefing_key = ?").get(request.briefing_key));
+      const replayed = Boolean(db.prepare(
+        "SELECT 1 FROM briefing_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
+      ).get(publisher.userId, request.task_identity, request.run_key));
       const receipt = publishBriefingRun(db, request, publisher.userId);
-      broadcast("briefings.changed", receipt);
+      if (!replayed && !existed) broadcast(BRIEFING_EVENTS.created, { briefing_id: receipt.briefing_id });
+      if (!replayed && receipt.round_id) broadcast(BRIEFING_EVENTS.roundPublished, {
+        briefing_id: receipt.briefing_id, round_id: receipt.round_id,
+      });
       sendJson(res, 200, receipt);
     } catch (error) {
       handleError(res, error);
@@ -99,8 +107,12 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.post("/api/briefings/:briefingId/rounds/:roundId/answers", (req, res) => {
     try {
       const actor = activeHuman(db, req);
-      sendJson(res, 200, applyBriefingAnswers(db, req.params.briefingId, req.params.roundId,
-        actor.user.id, body(req).answers));
+      const result = applyBriefingAnswers(db, req.params.briefingId, req.params.roundId,
+        actor.user.id, body(req).answers);
+      if (result.answer_event_ids.length > 0) {
+        broadcast(BRIEFING_EVENTS.answered, { briefing_id: req.params.briefingId, round_id: req.params.roundId });
+      }
+      sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
     }
@@ -109,8 +121,12 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.post("/api/briefings/:briefingId/rounds/:roundId/annotations", (req, res) => {
     try {
       const actor = activeHuman(db, req);
-      sendJson(res, 200, applyBriefingAnnotations(db, req.params.briefingId, req.params.roundId,
-        actor.user.id, body(req).annotations));
+      const result = applyBriefingAnnotations(db, req.params.briefingId, req.params.roundId,
+        actor.user.id, body(req).annotations);
+      if (result.annotation_event_ids.length > 0) {
+        broadcast(BRIEFING_EVENTS.annotated, { briefing_id: req.params.briefingId, round_id: req.params.roundId });
+      }
+      sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
     }
@@ -121,8 +137,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const actor = activeHuman(db, req);
       const submission = submitBriefingRound(db, req.params.briefingId, req.params.roundId,
         actor.user.id, body(req));
-      broadcast("briefings.submitted", { briefing_id: req.params.briefingId,
-        round_id: req.params.roundId, ...submission });
+      broadcast(BRIEFING_EVENTS.submitted, { briefing_id: req.params.briefingId,
+        round_id: req.params.roundId });
       sendJson(res, 200, submission);
     } catch (error) {
       handleError(res, error);

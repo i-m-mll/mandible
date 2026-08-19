@@ -365,8 +365,171 @@
 .briefing-directive__interaction {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: var(--space-3);
+}
+
+.briefing-directive__passage {
+  min-width: 0;
+}
+
+.briefing-directive__required {
+  display: inline-block;
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.briefing-directive__response {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.briefing-directive__verdict,
+.briefing-directive__rating {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.briefing-directive__verdict button,
+.briefing-directive__rating label,
+.briefing-directive__choices label {
+  min-height: 36px;
+}
+
+.briefing-directive__verdict button {
+  display: grid;
+  width: 36px;
+  padding: 7px;
+  place-items: center;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.briefing-directive__verdict button:hover,
+.briefing-directive__verdict button:focus-visible,
+.briefing-directive__verdict button[aria-pressed='true'] {
+  border-color: var(--accent-border);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+}
+
+.briefing-directive__verdict svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.briefing-directive__choices,
+.briefing-directive__rating {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.briefing-directive__choices {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.briefing-directive__choices label,
+.briefing-directive__rating label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.briefing-directive__choices label:has(input:checked),
+.briefing-directive__rating label:has(input:checked) {
+  border-color: var(--border-muted);
+  background: var(--surface-inset);
+}
+
+.briefing-directive__choices input,
+.briefing-directive__rating input {
+  margin: 0;
+  accent-color: var(--accent-fg);
+}
+
+.briefing-directive__choices label:focus-within,
+.briefing-directive__rating label:focus-within {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
+.briefing-directive__rating label {
+  justify-content: center;
+  min-width: 36px;
+}
+
+.briefing-directive__rating input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+}
+
+.briefing-directive__text {
+  box-sizing: border-box;
+  width: min(100%, 36rem);
+  min-height: 40px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+textarea.briefing-directive__text {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.briefing-directive__text:focus-visible {
+  border-color: var(--accent-border);
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
+.briefing-directive__clear {
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.briefing-directive__clear:hover,
+.briefing-directive__clear:focus-visible {
+  background: var(--surface-inset);
+  color: var(--text-primary);
+}
+
+.briefing-directive__error {
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
 }
 
 .briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover),
@@ -486,6 +649,15 @@
   .briefing-directive__actions {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .briefing-directive__verdict button,
+  .briefing-directive__choices label,
+  .briefing-directive__rating label,
+  .briefing-directive__clear,
+  .briefing-directive__actions button {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 

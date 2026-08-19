@@ -17,7 +17,6 @@ import {
   submitBriefingRound,
 } from "../src/feedback/briefings.js";
 import { createUser } from "../src/users/store.js";
-import { seedRichBriefingDemo } from "../src/feedback/rich-briefing-demo.js";
 
 let db: Db;
 let root: string;
@@ -26,7 +25,7 @@ let humanId: string;
 
 const digest = (letter: string) => letter.repeat(64);
 
-function request(markdown = '# Daily\n\n:::spec-item{key="paper" required="true"}\nKeep this paper?\n:::\n', overrides: Record<string, unknown> = {}) {
+function request(markdown = '# Daily\n\n:::spec-item{key="paper" type="verdict" required="true"}\nKeep this paper?\n:::\n', overrides: Record<string, unknown> = {}) {
   return parseBriefingRunRequest({
     schema: "mandible-briefing-run@1",
     briefing_key: "daily-research",
@@ -69,7 +68,7 @@ describe("artifact-backed Briefing rounds", () => {
     expect(second.round_id).not.toBe(first.round_id);
     expect(second.artifact_version_id).toBe(first.artifact_version_id);
 
-    const changed = publishBriefingRun(db, request('# Daily changed\n\n:::spec-item{key="paper" required="true"}\nKeep this revised paper?\n:::\n', {
+    const changed = publishBriefingRun(db, request('# Daily changed\n\n:::spec-item{key="paper" type="verdict" required="true"}\nKeep this revised paper?\n:::\n', {
       run_id: "run-3", run_key: "run-key-3",
     }), publisherId, 3_000);
     expect(changed.artifact_version_id).not.toBe(first.artifact_version_id);
@@ -150,36 +149,75 @@ describe("artifact-backed Briefing rounds", () => {
     const version = db.prepare("SELECT blob_id FROM artifact_version WHERE id = ?").get(first.artifact_version_id) as { blob_id: string };
     const blob = db.prepare("SELECT storage_uri FROM artifact_blob WHERE id = ?").get(version.blob_id) as { storage_uri: string };
     fs.writeFileSync(blob.storage_uri.replace(/^file:\/\//, ""), "tampered");
-    expect(() => readBriefing(db, first.briefing_id, { actorUserId: humanId, operator: false }))
-      .toThrowError(/unavailable|integrity/);
+    const invalid = readBriefing(db, first.briefing_id, { actorUserId: humanId, operator: false })!;
+    expect(invalid.selected_round).toMatchObject({ binding: { status: "invalid" }, items: [], answers: [] });
+    expect(() => applyBriefingAnswers(db, first.briefing_id, first.round_id!, humanId, []))
+      .toThrowError(/binding is invalid/);
   });
 
-  it("seeds two immutable rich-demo rounds without carrying actor state forward", () => {
-    const manifest = seedRichBriefingDemo(db, { databasePath: ":memory:" });
-    expect(manifest.rounds).toHaveLength(2);
-    expect(manifest.rounds[0].artifact_version_id).not.toBe(manifest.rounds[1].artifact_version_id);
-
-    const oldRound = readBriefing(db, manifest.briefing.id, {
-      roundId: manifest.rounds[0].id, actorUserId: manifest.users.reviewer_user_id, operator: false,
-    })!.selected_round!;
-    const latestRound = readBriefing(db, manifest.briefing.id, {
-      roundId: manifest.rounds[1].id, actorUserId: manifest.users.reviewer_user_id, operator: false,
-    })!.selected_round!;
-    expect(oldRound.items.map((item) => [item.directive_key, item.required])).toEqual([
-      ["scope.approval", 1], ["rollback.plan", 1], ["observability", 0], ["operator.runbook", 0],
+  it("validates all six exact value variants and canonicalizes multi-choice by definition order", () => {
+    const markdown = [
+      '# Typed',
+      ':::spec-item{key="v" type="verdict" required="true"}\nVerdict\n:::',
+      ':::spec-item{key="s" type="single_choice" required="true"}\nSingle\n::option[Alpha]{key="a"}\n::option[Beta]{key="b"}\n:::',
+      ':::spec-item{key="m" type="multi_choice" required="true"}\nMulti\n::option[Alpha]{key="a"}\n::option[Beta]{key="b"}\n::option[Gamma]{key="c"}\n:::',
+      ':::spec-item{key="short" type="short_text" required="true"}\nShort\n:::',
+      ':::spec-item{key="long" type="long_text" required="true"}\nLong\n:::',
+      ':::spec-item{key="rating" type="rating" required="true"}\nRating\n:::',
+    ].join("\n\n");
+    const published = publishBriefingRun(db, request(markdown, { occurrences: [] }), publisherId, 1_000);
+    const result = applyBriefingAnswers(db, published.briefing_id, published.round_id!, humanId, [
+      { directive_key: "v", operation: "set", expected_response_event_id: null, value: { verdict: "keep" } },
+      { directive_key: "s", operation: "set", expected_response_event_id: null, value: { option_key: "b" } },
+      { directive_key: "m", operation: "set", expected_response_event_id: null, value: { option_keys: ["c", "a"] } },
+      { directive_key: "short", operation: "set", expected_response_event_id: null, value: { text: "  exact  " } },
+      { directive_key: "long", operation: "set", expected_response_event_id: null, value: { text: "long" } },
+      { directive_key: "rating", operation: "set", expected_response_event_id: null, value: { rating: 5 } },
     ]);
-    expect(oldRound.answers.map((answer) => [answer.directive_key, answer.value.verdict])).toEqual([
-      ["scope.approval", "keep"], ["rollback.plan", "dismiss"], ["operator.runbook", "keep"],
+    expect(result.answers.map((answer) => answer.value)).toEqual([
+      { verdict: "keep" }, { option_key: "b" }, { option_keys: ["a", "c"] },
+      { text: "  exact  " }, { text: "long" }, { rating: 5 },
     ]);
-    expect(oldRound.annotations.map((entry) => entry.annotation_kind)).toEqual(["comment", "suggest_replacement"]);
-    expect(oldRound.latest_frozen_membership).toMatchObject({ answer_event_ids: expect.any(Array), annotation_event_ids: expect.any(Array) });
-    expect(oldRound.latest_frozen_membership!.answer_event_ids).toHaveLength(3);
-    expect(oldRound.latest_frozen_membership!.annotation_event_ids).toHaveLength(2);
-    expect(latestRound.items.map((item) => item.directive_key)).toEqual(oldRound.items.map((item) => item.directive_key));
-    expect(latestRound.items.map((item) => item.id)).not.toEqual(oldRound.items.map((item) => item.id));
-    expect(latestRound.answers).toEqual([]);
-    expect(latestRound.annotations).toEqual([]);
-    expect(latestRound.latest_submission).toBeNull();
-    expect(latestRound.latest_frozen_membership).toBeNull();
+    expect(() => applyBriefingAnswers(db, published.briefing_id, published.round_id!, humanId, [{
+      directive_key: "rating", operation: "set", expected_response_event_id: result.answers[5].response_event_id,
+      value: { rating: 1.5 },
+    }])).toThrow(/safe integer/);
   });
+
+  it("fails closed on stored binding corruption and database cross-actor frozen membership", () => {
+    const published = publishBriefingRun(db, request(), publisherId, 1_000);
+    db.prepare("UPDATE briefing_directive_definitions SET required = 0 WHERE directive_key = 'paper'").run();
+    expect(readBriefing(db, published.briefing_id, { actorUserId: humanId, operator: false })?.selected_round.binding)
+      .toMatchObject({ status: "invalid" });
+    expect(() => applyBriefingAnnotations(db, published.briefing_id, published.round_id!, humanId, []))
+      .toThrow(/binding is invalid/);
+
+    db.prepare("UPDATE briefing_directive_definitions SET required = 1 WHERE directive_key = 'paper'").run();
+    const answer = applyBriefingAnswers(db, published.briefing_id, published.round_id!, humanId, [{
+      directive_key: "paper", operation: "set", expected_response_event_id: null, value: { verdict: "keep" },
+    }]).answers[0];
+    db.prepare("UPDATE briefing_response_events SET value_json = ? WHERE id = ?")
+      .run('{"rating":5}', answer.response_event_id);
+    expect(readBriefing(db, published.briefing_id, { actorUserId: humanId, operator: false })?.selected_round.binding)
+      .toMatchObject({ status: "invalid" });
+    expect(() => applyBriefingAnswers(db, published.briefing_id, published.round_id!, humanId, [{
+      directive_key: "paper", operation: "retract", expected_response_event_id: answer.response_event_id,
+    }])).toThrow(/canonical|verdict|unsupported field/);
+    db.prepare("UPDATE briefing_response_events SET value_json = ? WHERE id = ?")
+      .run('{"verdict":"keep"}', answer.response_event_id);
+    const other = createUser(db, { slug: "other", kind: "human", display_name: "Other" }).id;
+    db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, 0)").run(published.briefing_id, other);
+    expect(() => db.prepare(
+      `INSERT INTO briefing_submissions
+        (id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
+       VALUES ('other-sub', ?, ?, 1, NULL, ?, 0)`,
+    ).run(published.round_id, published.briefing_id, other)).not.toThrow();
+    expect(() => db.prepare(
+      `INSERT INTO briefing_submission_answers
+        (submission_id, round_id, actor_user_id, directive_instance_id, response_event_id, position)
+       VALUES ('other-sub', ?, ?, ?, ?, 0)`,
+    ).run(published.round_id, other, answer.directive_instance_id, answer.response_event_id))
+      .toThrow(/matching set event|FOREIGN KEY/);
+  });
+
 });

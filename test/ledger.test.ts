@@ -1147,6 +1147,7 @@ describe("ledger backup contract", () => {
     expect(unclassified, "metadata backup table classification drift").toEqual([]);
     expect(backedUp.has("briefing_runs")).toBe(true);
     expect(backedUp.has("briefing_submissions")).toBe(true);
+    expect(backedUp.has("briefing_legacy_custody")).toBe(true);
     expect(backedUp.has("feedback_ingest_requests")).toBe(false);
     expect(backedUp.has("task_command_requests")).toBe(true);
     expect(backedUp.has("task_command_events")).toBe(true);
