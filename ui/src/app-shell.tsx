@@ -11,6 +11,12 @@ export type AppBottomPanelDescriptor = {
   maxHeight?: number;
   onOpenChange(open: boolean): void;
   onHeightChange(height: number): void;
+  /**
+   * `full-content` preserves the existing panel-wide scroll owner. An
+   * `anchored-detail` panel starts at the detail/canvas edge and lets its
+   * DetailPaneShell body own scrolling so header and footer remain anchored.
+   */
+  layout: 'full-content' | 'anchored-detail';
   content: JSX.Element | null;
 };
 

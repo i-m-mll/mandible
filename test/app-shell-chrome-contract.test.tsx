@@ -8,6 +8,10 @@ import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell';
 
 const base = readFileSync('ui/src/styles/base.css', 'utf8');
 const detailPaneShell = readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8');
+const appShellSource = readFileSync('ui/src/app-shell.tsx', 'utf8');
+const appSource = readFileSync('ui/src/app.tsx', 'utf8');
+const graphSource = readFileSync('ui/src/views/graph.tsx', 'utf8');
+const timelineSource = readFileSync('ui/src/views/timeline.tsx', 'utf8');
 
 function ruleBody(css: string, selector: string): string {
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -94,6 +98,20 @@ describe('shared app-shell chrome contract', () => {
     expect(compactShellHeaderStyle.minHeight).toBe(appHeaderStyle.minHeight);
     expect(ruleBody(detailPaneShell, '.detail-pane-header')).not.toContain('height: var(--app-header-height)');
     expect(ruleBody(detailPaneShell, '.detail-pane-header--versioned')).not.toContain('height: var(--app-header-height)');
+  });
+
+  it('types bottom-panel confinement while preserving Timeline full-content geometry', () => {
+    expect(appShellSource).toContain("layout: 'full-content' | 'anchored-detail'");
+    expect(graphSource).toContain("layout: 'anchored-detail'");
+    expect(timelineSource).toContain("layout: 'full-content'");
+    expect(appSource).toContain('app-bottom-panel--${bottomPanel.layout}');
+
+    expect(ruleBody(base, '.app-bottom-panel')).toContain('grid-column: 2');
+    expect(ruleBody(base, '.app-layout--view-sidebar-open .app-bottom-panel--anchored-detail'))
+      .toContain('margin-left: var(--app-view-sidebar-width)');
+    expect(ruleBody(base, '.app-bottom-panel--anchored-detail .app-bottom-panel__content'))
+      .toContain('overflow: hidden');
+    expect(ruleBody(base, '.app-bottom-panel__content')).toContain('overflow: auto');
   });
 
   it('leaves lazy view loading unowned by the shell', () => {

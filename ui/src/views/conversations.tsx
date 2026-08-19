@@ -2060,7 +2060,7 @@ function ConversationDetail({
       footerClassName="conv-detail__footer"
       header={detailHeader}
       subheader={parentLink}
-      footer={shouldRenderDetailFooter ? detailFooter : undefined}
+      footer={shouldRenderDetailFooter ? { content: detailFooter } : undefined}
       overlays={detailOverlays}
       ariaBusy={loading}
     >

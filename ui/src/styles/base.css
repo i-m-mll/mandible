@@ -256,6 +256,14 @@ a {
   overflow: auto;
 }
 
+.app-layout--view-sidebar-open .app-bottom-panel--anchored-detail {
+  margin-left: var(--app-view-sidebar-width);
+}
+
+.app-bottom-panel--anchored-detail .app-bottom-panel__content {
+  overflow: hidden;
+}
+
 @media (max-width: 800px) {
   .app-header__text {
     padding-inline: 10px;

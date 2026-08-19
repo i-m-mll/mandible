@@ -34,6 +34,9 @@ import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { shortRouteId } from '../routing';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -756,9 +759,13 @@ function DetailPane({
 
   if (!node) {
     return (
-      <aside className="graph-detail-pane">
+      <DetailPaneShell
+        as="aside"
+        className="graph-detail-pane"
+        header={<DetailPaneHeader variant="compact" title="Graph detail" />}
+      >
         <div className="graph-detail-pane__empty">Select a node</div>
-      </aside>
+      </DetailPaneShell>
     );
   }
   if (ledgerIssueId) {
@@ -832,16 +839,51 @@ function DetailPane({
     if (annotation.target.startsWith('session:')) onNavigate('session', annotation.target);
     if (annotation.target.startsWith('artifact:')) onNavigate('artifact', annotation.target);
   };
+  const detailActions = canNavigate || (node.actions ?? []).length > 0 ? (
+    <>
+      {canNavigate && (
+        <button type="button" className="btn" onClick={() => onNavigate(node.type, node.id, node.repo_id ?? node.repo)}>
+          Open
+        </button>
+      )}
+      {(node.actions ?? []).map((action) => {
+        const opensNode = action.kind === 'navigate' || (action.kind === 'preview' && (node.type === 'artifact' || node.type === 'report'));
+        return (
+          <button
+            key={action.id}
+            type="button"
+            className="btn"
+            disabled={action.disabled || !opensNode}
+            onClick={() => opensNode && onNavigate(node.type, action.target ?? node.id, node.repo_id ?? node.repo)}
+            title={action.description}
+          >
+            {action.label}{action.requires_auth ? ' *' : ''}
+          </button>
+        );
+      })}
+    </>
+  ) : undefined;
   return (
-    <aside className="graph-detail-pane">
-      <div className="graph-detail-pane__header">
-        <div>
-          <div className="graph-detail-pane__type">{typeLabel(node.type)}</div>
-          <h3>{node.label}</h3>
-        </div>
-        {node.status && <span className="graph-detail-pane__status">{node.status}</span>}
-      </div>
-
+    <DetailPaneShell
+      as="aside"
+      className="graph-detail-pane"
+      bodyClassName="graph-detail-pane__body"
+      header={(
+        <DetailPaneHeader
+          variant="standard"
+          identity={{
+            entityLabel: typeLabel(node.type),
+            displayRef: shortRouteId(node.id),
+            canonicalRef: node.id,
+            copyLabel: `Copy full ${typeLabel(node.type)} reference`,
+          }}
+          title={node.label}
+          status={node.status ? <span className="graph-detail-pane__status">{node.status}</span> : undefined}
+          actions={detailActions}
+          actionsLabel="Graph detail actions"
+        />
+      )}
+    >
       <div className="graph-detail-pane__section">
         <div className="graph-detail-pane__section-title">Context</div>
         <div className="graph-detail-pane__kv">
@@ -888,32 +930,6 @@ function DetailPane({
       )}
 
       <div className="graph-detail-pane__section">
-        <div className="graph-detail-pane__section-title">Actions</div>
-        <div className="graph-detail-pane__actions">
-          {canNavigate && (
-            <button type="button" className="btn" onClick={() => onNavigate(node.type, node.id, node.repo_id ?? node.repo)}>
-              Open
-            </button>
-          )}
-          {(node.actions ?? []).map((action) => {
-            const opensNode = action.kind === 'navigate' || (action.kind === 'preview' && (node.type === 'artifact' || node.type === 'report'));
-            return (
-            <button
-              key={action.id}
-              type="button"
-              className="btn"
-              disabled={action.disabled || !opensNode}
-              onClick={() => opensNode && onNavigate(node.type, action.target ?? node.id, node.repo_id ?? node.repo)}
-              title={action.description}
-            >
-              {action.label}{action.requires_auth ? ' *' : ''}
-            </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="graph-detail-pane__section">
         <div className="graph-detail-pane__section-title">Connected</div>
         <div className="graph-detail-pane__edges">
           {connected.length === 0 && <span className="text-muted">No visible edges</span>}
@@ -925,7 +941,7 @@ function DetailPane({
           ))}
         </div>
       </div>
-    </aside>
+    </DetailPaneShell>
   );
 }
 
@@ -1119,6 +1135,7 @@ export function GraphView({
     maxHeight: MAX_GRAPH_DETAIL_PANEL_HEIGHT,
     onOpenChange: setDetailPanelOpen,
     onHeightChange: setDetailPanelHeight,
+    layout: 'anchored-detail' as const,
     content: selectedNode ? detailPanelContent : null,
   }), [detailPanelContent, detailPanelHeight, detailPanelOpen, selectedNode]);
 
