@@ -20,15 +20,12 @@ describe('app rail layering styles', () => {
     expect(hiddenSidebarRailRule).toMatch(/box-shadow:\s*none/);
   });
 
-  it('uses a separator, not a shadow overlay, for the hidden-sidebar bottom-panel rail edge', () => {
+  it('does not add a duplicate bottom-panel divider beside the app subdivision', () => {
     const hiddenSidebarBottomPanelRule = findRule(
       '.app-layout--bottom-panel-open:not(.app-layout--view-sidebar-open)::before',
     );
 
-    expect(hiddenSidebarBottomPanelRule).toBeTruthy();
-    expect(hiddenSidebarBottomPanelRule).toMatch(/background:\s*var\(--border-muted\)/);
-    expect(hiddenSidebarBottomPanelRule).toMatch(/box-shadow:\s*none/);
-    expect(hiddenSidebarBottomPanelRule).not.toMatch(/box-shadow:\s*var\(--shadow-rail\)/);
+    expect(hiddenSidebarBottomPanelRule).toBeUndefined();
   });
 
   it('keeps shared content and Spaces sidebar chrome free of competing shadows', () => {
