@@ -38,6 +38,8 @@ import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import { ContextualAction } from '../../components/shared/ContextualAction';
+import { SidebarDisclosureRegion } from '../../components/shared/SidebarDisclosureRegion';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
 
@@ -501,21 +503,39 @@ export function SpacesSidebar({
     );
   };
 
-  const createButton = (target: CreateTarget, ariaLabel: string, testId: string): JSX.Element => (
-    <button
-      type="button"
-      className="spaces-tree__create"
-      aria-label={ariaLabel}
-      title={ariaLabel}
-      data-testid={testId}
-      onClick={(event) => {
-        event.stopPropagation();
-        openChooser(target);
-      }}
-    >
-      <PlusIcon />
-    </button>
-  );
+  const createButton = (target: CreateTarget, ariaLabel: string, testId: string): JSX.Element => {
+    const handleCreate = (event: MouseEvent) => {
+      event.stopPropagation();
+      openChooser(target);
+    };
+    if (target.kind === 'project') {
+      return (
+        <span className="spaces-tree__create-slot contextual-action-group">
+          <ContextualAction
+            className="spaces-tree__create spaces-tree__create--project"
+            aria-label={ariaLabel}
+            title={ariaLabel}
+            data-testid={testId}
+            onClick={handleCreate}
+          >
+            <PlusIcon />
+          </ContextualAction>
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className="spaces-tree__create spaces-tree__create--top-level"
+        aria-label={ariaLabel}
+        title={ariaLabel}
+        data-testid={testId}
+        onClick={handleCreate}
+      >
+        <PlusIcon />
+      </button>
+    );
+  };
 
   const renderChooser = (): JSX.Element | null => {
     if (!popover || popover.mode !== 'create') return null;
@@ -700,7 +720,7 @@ export function SpacesSidebar({
               data-testid={`spaces-group-${kg.key}`}
             >
               <div
-                className="spaces-tree__group-header"
+                className="spaces-tree__group-header contextual-action-owner"
                 draggable
                 data-testid={`spaces-group-header-${kg.key}`}
                 onDragStart={() => beginDrag(kg.key)}
@@ -712,10 +732,12 @@ export function SpacesSidebar({
                 onDragEnd={endDrag}
               >
                 <button
+                  id={`spaces-group-toggle-${kg.key}`}
                   type="button"
                   className="spaces-tree__group-caret"
                   aria-label={isCollapsed ? `Expand ${projectName}` : `Collapse ${projectName}`}
                   aria-expanded={!isCollapsed}
+                  aria-controls={kg.group.spaces.length > 0 ? `spaces-group-${kg.key}-body` : undefined}
                   data-testid={`spaces-group-toggle-${kg.key}`}
                   onClick={() => toggleCollapse(kg.key)}
                 >
@@ -733,10 +755,15 @@ export function SpacesSidebar({
               {/* Empty projects render as a compact foldable header row only —
                   no per-project "No spaces yet" filler. Projects WITH spaces
                   show their space lines here. (Stage 3 polish, issue e29a8c5.) */}
-              {!isCollapsed && kg.group.spaces.length > 0 ? (
-                <div className="spaces-tree__group-spaces">
+              {kg.group.spaces.length > 0 ? (
+                <SidebarDisclosureRegion
+                  id={`spaces-group-${kg.key}-body`}
+                  controllerId={`spaces-group-toggle-${kg.key}`}
+                  expanded={!isCollapsed}
+                  contentClassName="spaces-tree__group-spaces"
+                >
                   {kg.group.spaces.map(renderSpaceRow)}
-                </div>
+                </SidebarDisclosureRegion>
               ) : null}
             </div>
           );

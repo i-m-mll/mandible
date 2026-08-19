@@ -1015,47 +1015,16 @@
 }
 
 /* Copy-markdown button — Bug: 372edcb */
+.block-copy-action {
+  display: inline-flex;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+}
+
 .block-copy-btn {
   width: 20px;
   height: 20px;
-  padding: 0;
-  border-radius: 999px;
-  border: 1px solid var(--neutral-alpha-08);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.block:hover .block-copy-btn,
-.block-selected .block-copy-btn,
-.transcript-item:hover .block-copy-btn,
-.transcript-item--selected .block-copy-btn {
-  opacity: 1;
-}
-
-.block-copy-btn:hover {
-  background: var(--neutral-alpha-07);
-  color: var(--text-primary);
-}
-
-/* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .block-copy-btn {
-  background: var(--surface-popover);
-  border-color: var(--neutral-alpha-12);
-  color: var(--text-muted);
-  box-shadow: var(--shadow-header);
-}
-
-:root[data-theme='light'] .block-copy-btn:hover,
-:root[data-theme='light'] .block-copy-btn:focus-visible {
-  background: var(--bg-hover);
-  border-color: var(--neutral-alpha-18);
-  color: var(--text-primary);
 }
 
 .block-copy-btn svg {

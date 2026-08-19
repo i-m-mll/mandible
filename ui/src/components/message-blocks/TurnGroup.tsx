@@ -20,8 +20,8 @@ export function TurnGroup({
   const entityClass = `turn-group--${speaker}`;
 
   return (
-    <div className={`turn-group ${entityClass}`}>
-      <div className="turn-group__body">
+    <div className={`turn-group contextual-action-owner ${entityClass}`}>
+      <div className="turn-group__body contextual-action-scope">
         {children}
         {footer}
       </div>

@@ -10,6 +10,7 @@ import {
   type BriefingRoundProjection,
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
+import { ContextualAction } from '../../components/shared/ContextualAction';
 
 export type BriefingDocumentPanelProps = {
   briefingId: string;
@@ -298,15 +299,15 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <section className={`briefing-directive${current || selectedDirectiveId === item.id ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
           onClick={() => setSelectedDirectiveId(item.id)}
           onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
-          <div className="briefing-directive__interaction">
+          <div className="briefing-directive__interaction contextual-action-owner">
             <div className="briefing-directive__passage">
               <div id={promptId} className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
               {item.revision.required ? <span className="briefing-directive__required" aria-label="Required">Required</span> : null}
               {inlineAnnotations(directive.start_offset, directive.end_offset)}
               {responseControls(item, current, promptId)}
             </div>
-            <div className="briefing-directive__actions" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
-              <button type="button" aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></button>
+            <div className="briefing-directive__actions contextual-action-group" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
+              <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>
             </div>
           </div>
         </section>,
