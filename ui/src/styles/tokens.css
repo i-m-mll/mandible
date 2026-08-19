@@ -127,6 +127,7 @@
   --text-secondary: var(--neutral-10);
   --text-muted: var(--neutral-9);
   --text-subdued: var(--neutral-10);
+  --text-chrome-muted: #747474;
   --text-disabled: rgba(154, 164, 178, 0.56);
   --text-inverse: #fff;
   --text-on-accent: var(--text-inverse);
@@ -344,6 +345,7 @@
   --text-primary-subtle: rgba(23, 32, 42, 0.72);
   --text-subtle: rgba(23, 32, 42, 0.72);
   --text-subdued: var(--neutral-8);
+  --text-chrome-muted: #A8A9A9;
   --border-focus: rgba(11, 99, 206, 0.64);
 
   --inbox-continuation: #0b63ce;

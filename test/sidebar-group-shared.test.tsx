@@ -104,10 +104,10 @@ describe('shared sidebar group presentation', () => {
     const categoryHeading = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--category > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(categoryHeading).toContain('color: var(--text-subdued)');
-    expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
+    expect(categoryHeading).toContain('color: var(--text-chrome-muted)');
+    expect(tokenStylesheet).toContain('--text-chrome-muted: #747474;');
     const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
-    expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
+    expect(lightTheme).toContain('--text-chrome-muted: #A8A9A9;');
     const headingTypography = sidebarGroupStylesheet.match(
       /\.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
@@ -137,6 +137,7 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(showMoreRule).toContain('padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px)');
     expect(showMoreRule).toContain('font-size: var(--text-md)');
+    expect(showMoreRule).toContain('color: var(--text-chrome-muted)');
     expect(chatHistoryStylesheet).not.toMatch(/chat-project-group__items[\s\S]*padding-left/);
     expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
   });
