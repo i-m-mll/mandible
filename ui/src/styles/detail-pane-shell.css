@@ -8,6 +8,12 @@
   overflow: hidden;
 }
 
+.detail-pane-shell__header,
+.detail-pane-shell__header-primary,
+.detail-pane-header {
+  background: var(--surface-app);
+}
+
 .detail-pane-shell__header {
   flex: none;
   width: 100%;
@@ -39,7 +45,6 @@
   min-width: 0;
   padding: 20px 24px;
   border-bottom: 1px solid var(--neutral-alpha-06);
-  background: var(--bg);
 }
 
 .detail-pane-header__main {
