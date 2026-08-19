@@ -136,9 +136,9 @@ a {
 .app-header__text {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: baseline;
-  padding: 0 14px;
+  padding-left: 14px;
 }
 
 .app-header__brand {
@@ -147,7 +147,7 @@ a {
   align-items: baseline;
   justify-self: start;
   gap: 10px;
-  color: var(--text-primary);
+  color: #747474;
 }
 
 .app-header__mark {
@@ -159,7 +159,7 @@ a {
   justify-content: center;
   align-self: center;
   margin-left: 14px;
-  color: inherit;
+  color: var(--text-muted);
 }
 
 .app-header--sidebar-hidden .app-header__mark {
@@ -170,7 +170,9 @@ a {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  background-color: currentColor;
+  -webkit-mask: var(--app-header-logo-image) center / contain no-repeat;
+  mask: var(--app-header-logo-image) center / contain no-repeat;
 }
 
 .app-header__brand-text {
@@ -180,9 +182,13 @@ a {
   letter-spacing: 0;
 }
 
+:root[data-theme='light'] .app-header__brand {
+  color: #A8A9A9;
+}
+
 .app-header__route {
   grid-column: 2;
-  justify-self: center;
+  justify-self: stretch;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -994,11 +1000,6 @@ a {
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .app-toast {
   background: var(--bg-secondary);
-}
-
-/* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .app-header__logo {
-  filter: brightness(0) saturate(100%);
 }
 
 :root[data-theme='light'] .app-rail__tooltip {
