@@ -202,6 +202,52 @@ describe("conversation sidebar projection", () => {
       .toEqual(["older-high", "date-a", "date-b"]);
   });
 
+  it("places projected conversations from their canonical star fact, not a similarly identified console session pin", async () => {
+    insertConversation({
+      id: "continued-starred",
+      source: "claude_code",
+      sourcePath: "/tmp/provider-session-starred.jsonl",
+      title: "Review and take over QA successor briefing task",
+      starred: true,
+    });
+    insertConversation({
+      id: "ordinary-unstarred",
+      source: "claude_code",
+      sourcePath: "/tmp/provider-session-unstarred.jsonl",
+      title: "Ordinary unstarred conversation",
+      starred: false,
+    });
+    db.prepare("INSERT INTO sessions (id, app, pinned, status) VALUES (?, 'claude', 0, 'dead')")
+      .run("session-continued-starred");
+    db.prepare("INSERT INTO sessions (id, app, pinned, status) VALUES (?, 'claude', 1, 'dead')")
+      .run("session-ordinary-unstarred");
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const groups = groupsOf(await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=10",
+    }));
+
+    expect(groups.find((group) => group.kind === "pinned")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "continued-starred",
+        source: "claude_code",
+        source_path: "/tmp/provider-session-starred.jsonl",
+        session_id: "session-continued-starred",
+        title: "Review and take over QA successor briefing task",
+        starred: true,
+      }),
+    ]);
+    expect(groups.find((group) => group.kind === "chats")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "ordinary-unstarred",
+        session_id: "session-ordinary-unstarred",
+        starred: false,
+      }),
+    ]);
+  });
+
   it("preserves filters, exact full-text authority, subagent exclusion, and both sorts", async () => {
     insertConversation({
       id: "alpha-high",
