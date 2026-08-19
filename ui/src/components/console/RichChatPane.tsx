@@ -11,7 +11,6 @@ import {
   deriveChatUsageSummary,
   useStatuslineTelemetry,
 } from '../../chat';
-import { ContextIndicator } from '../presets/ContextIndicator';
 import { PtyBanner } from './PtyBanner';
 import { SessionControls, SessionModelControl } from './SessionControls';
 import { LivePresetPills } from './LivePresetPills';
@@ -188,11 +187,6 @@ export function RichChatPane({
             />
           </ChatOverlay>
         </div>
-        {backendType === 'sdk' && (
-          <div style={{ padding: '0 16px', flexShrink: 0 }}>
-            <ContextIndicator tokenCount={presetTokenCount} modelName={model} variant="bar" />
-          </div>
-        )}
         <Composer
           prompt={prompt}
           disabled={interactionMode === 'inbox_only'}
