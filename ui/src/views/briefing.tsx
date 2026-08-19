@@ -1,184 +1,121 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import {
-  getCachedFeedbackCollections,
-  getFeedbackCollections,
-  patchFeedbackCollectionExpiry,
-  type InstanceInfo,
-} from '../api';
-import { AppShellProvider, useAppShell } from '../app-shell';
+import { getBriefings, getCachedBriefings, isApiErrorStatus, type InstanceInfo } from '../api';
+import { useAppShell } from '../app-shell';
+import { briefingRoute } from '../routing';
+import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { CollectionShell } from './feedback/CollectionShell';
-import { BoundedAskRenderer } from './feedback/BoundedAskRenderer';
-import {
-  feedbackCollectionIdentity,
-  legacyFeedbackCollectionIdentity,
-} from './feedback/collection-model';
-import type { FeedbackCollection } from './feedback/collection-model';
+import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
 import { OperationalIncidentsRegion } from './operational-incidents';
-import { RecurringReviewRenderer } from './feedback/RecurringReviewRenderer';
-
-export * from './feedback/RecurringReviewRenderer';
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
-  initialFilter?: string;
-  initialCandidateId?: string | null;
-  initialAskId?: string | null;
-  initialCollectionId?: string | null;
+  initialBriefingId?: string | null;
+  initialRoundId?: string | null;
   sidebarHidden?: boolean;
   nowMs?: number;
 };
 
-export function BriefingView({
-  instance,
-  initialFilter,
-  initialCandidateId,
-  initialAskId,
-  initialCollectionId,
-  sidebarHidden = false,
-  nowMs,
-}: BriefingViewProps): JSX.Element {
+function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
+  window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
+}
+
+export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
-  const [collections, setCollections] = useState<FeedbackCollection[]>(
-    () => getCachedFeedbackCollections(nowMs) ?? [],
-  );
+  const [briefings, setBriefings] = useState<FeedbackCollection[]>(() => getCachedBriefings(nowMs) ?? []);
+  const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const loadSequence = useRef(0);
-  useEffect(() => {
-    const routedCollectionId = initialCollectionId ?? initialAskId;
-    if (routedCollectionId) {
-      setViewState((current) => ({
-        ...current,
-        selectedCollectionId: feedbackCollectionIdentity(routedCollectionId),
-      }));
-    }
-  }, [initialAskId, initialCollectionId, setViewState]);
+  const sequence = useRef(0);
 
-  const loadCollections = useCallback(async (signal: AbortSignal) => {
-    const sequence = ++loadSequence.current;
+  useEffect(() => {
+    if (!initialBriefingId) return;
+    const briefing = resolveFeedbackCollection(briefings, initialBriefingId);
+    if (!briefing) return;
+    const id = briefing.id;
+    setViewState((current) => ({
+      ...current,
+      selectedCollectionId: id,
+      selectedRoundIds: initialRoundId
+        ? { ...current.selectedRoundIds, [id]: initialRoundId }
+        : current.selectedRoundIds,
+    }));
+  }, [briefings, initialBriefingId, initialRoundId, setViewState]);
+
+  const load = useCallback(async (signal: AbortSignal) => {
+    const request = ++sequence.current;
     try {
-      const next = await getFeedbackCollections(signal);
-      if (!signal.aborted && sequence === loadSequence.current) setCollections(next);
-    } catch {
-      // Keep the last reconciled list. A transient poll failure must not flicker
-      // the sidebar or disturb browser-owned filter, pin, selection, or scroll.
+      const next = await getBriefings(signal);
+      if (!signal.aborted && request === sequence.current) {
+        setBriefings(next);
+        setError(null);
+      }
+    } catch (cause) {
+      if (!signal.aborted && request === sequence.current) {
+        setError(isApiErrorStatus(cause, 401) || isApiErrorStatus(cause, 403)
+          ? 'Authentication is required to load Briefings.'
+          : cause instanceof Error ? cause.message : String(cause));
+      }
     }
   }, []);
 
   useEffect(() => {
     if (!appShell.active) return undefined;
     const controller = new AbortController();
-    void loadCollections(controller.signal);
+    void load(controller.signal);
     return () => controller.abort();
-  }, [appShell.active, loadCollections, reloadNonce]);
-
-  useEffect(() => {
-    if (!appShell.active) return undefined;
-    const interval = window.setInterval(() => setReloadNonce((value) => value + 1), 60_000);
-    return () => window.clearInterval(interval);
-  }, [appShell.active]);
-
-  useEffect(() => {
-    if (collections.length === 0) return;
-    const legacyIds = new Map(
-      collections.map((collection) => [legacyFeedbackCollectionIdentity(collection), collection.id]),
-    );
-    setViewState((current) => {
-      const selectedCollectionId = current.selectedCollectionId
-        ? legacyIds.get(current.selectedCollectionId) ?? current.selectedCollectionId
-        : null;
-      const pinnedCollectionIds = current.pinnedCollectionIds.map(
-        (id) => legacyIds.get(id) ?? id,
-      );
-      const changed = selectedCollectionId !== current.selectedCollectionId
-        || pinnedCollectionIds.some((id, index) => id !== current.pinnedCollectionIds[index]);
-      return changed ? { ...current, selectedCollectionId, pinnedCollectionIds } : current;
-    });
-  }, [collections, setViewState]);
+  }, [appShell.active, load, reloadNonce]);
 
   useEffect(() => {
     if (!appShell.active) return undefined;
     let timer: number | null = null;
     const reconcile = (event: Event) => {
       const type = (event as CustomEvent<{ type?: string }>).detail?.type;
-      if (type !== 'reconnected'
-          && type !== 'feedback:collection-updated'
-          && !type?.startsWith('ask:')
-          && !type?.startsWith('briefing:')) return;
+      if (type !== 'reconnected' && !type?.startsWith('briefing:')) return;
       if (timer !== null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        setReloadNonce((value) => value + 1);
-      }, 100);
+      timer = window.setTimeout(() => { timer = null; setReloadNonce((value) => value + 1); }, 100);
     };
-    window.addEventListener('feedback:sse', reconcile);
+    window.addEventListener('briefing:sse', reconcile);
     return () => {
-      window.removeEventListener('feedback:sse', reconcile);
+      window.removeEventListener('briefing:sse', reconcile);
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [appShell.active]);
 
-  const selectedCollection = useMemo(() => (
-    collections.find((collection) => collection.id === viewState.selectedCollectionId)
-      ?? collections.find((collection) => collection.source !== null && collection.source === viewState.source)
-      ?? null
-  ), [collections, viewState.selectedCollectionId, viewState.source]);
-  const routedAskId = initialAskId && viewState.selectedCollectionId === feedbackCollectionIdentity(initialAskId)
-    ? initialAskId
-    : null;
-  const selectedAskId = selectedCollection?.interactionMode === 'explicit_submit'
-    ? selectedCollection.collectionId
-    : selectedCollection === null ? routedAskId : null;
-  const selectedAsk = selectedAskId !== null;
+  const selected = useMemo(() => briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null, [briefings, viewState.selectedCollectionId]);
+  const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
 
-  const setCollectionExpiry = useCallback(async (collection: FeedbackCollection) => {
-    const updated = await patchFeedbackCollectionExpiry(
-      collection.collectionId,
-      collection.state === 'expired' ? null : Date.now(),
-    );
-    setCollections((current) => current.map((entry) => (
-      entry.collectionId === updated.collectionId ? updated : entry
-    )));
-  }, []);
+  const selectBriefing = (briefing: FeedbackCollection) => {
+    setViewState((current) => ({ ...current, selectedCollectionId: briefing.id }));
+    replaceBriefingRoute(briefing.collectionId, viewState.selectedRoundIds[briefing.id] ?? null);
+  };
+
+  const selectRound = (roundId: string | null) => {
+    if (!selected) return;
+    setViewState((current) => {
+      const selectedRoundIds = { ...current.selectedRoundIds };
+      if (roundId) selectedRoundIds[selected.id] = roundId;
+      else delete selectedRoundIds[selected.id];
+      return { ...current, selectedRoundIds };
+    });
+    replaceBriefingRoute(selected.collectionId, roundId);
+  };
 
   return (
-    <CollectionShell
-      collections={collections}
-      sidebarHidden={sidebarHidden}
-      viewState={viewState}
-      setViewState={setViewState}
-      onSetExpiry={setCollectionExpiry}
-    >
-      {/* Issue 5308097 spec §8: operational incidents come FIRST, before the
-          recurring findings and bounded asks. An unattended executor failure
-          outranks review work, and it stays visible whichever collection is
-          selected — including while a bounded ask is open — because it is not
-          part of the feedback collection model at all. */}
+    <CollectionShell collections={briefings} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
-      <div hidden={selectedAsk}>
-        <AppShellProvider value={{ ...appShell, active: appShell.active && !selectedAsk }}>
-          <RecurringReviewRenderer
-            instance={instance}
-            viewState={viewState}
-            setViewState={setViewState}
-            initialFilter={initialFilter}
-            initialCandidateId={initialCandidateId}
-            nowMs={nowMs}
-          />
-        </AppShellProvider>
-      </div>
-      {selectedAskId ? (
-        <div hidden={!selectedAsk}>
-          <AppShellProvider value={{ ...appShell, active: appShell.active && selectedAsk }}>
-            <BoundedAskRenderer
-              askId={selectedAskId}
-              instance={instance}
-            />
-          </AppShellProvider>
-        </div>
-      ) : null}
+      {error ? <p className="briefing-error" role="alert">{error}</p> : null}
+      {!selected ? <p className="briefing-empty">Select a Briefing to review its latest immutable round.</p> : (
+        <BriefingDocumentRenderer
+          key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`}
+          briefingId={selected.collectionId}
+          briefingTitle={selected.label}
+          roundId={explicitRoundId}
+          instance={instance}
+          onRoundChange={selectRound}
+        />
+      )}
     </CollectionShell>
   );
 }

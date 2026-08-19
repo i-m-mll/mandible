@@ -186,7 +186,7 @@ export function compactArtifactBlobRef(ref: string, length = 12): string {
   );
 }
 
-function compactLongIdSegments(value: string, length = 7): string {
+export function compactLongIdSegments(value: string, length = 7): string {
   return value.replace(/[0-9a-f]{12,64}/gi, (segment) =>
     segment.slice(0, Math.max(7, Math.min(length, segment.length))).toLowerCase(),
   );
@@ -482,56 +482,3 @@ export const artifactHref = resourceRefHref;
 export const isArtifactLikeRef = isResourceRef;
 export const displayArtifactRef = displayResourceRef;
 export const linkifyArtifactRefs = linkifyResourceRefs;
-
-// --- finding references (briefing umbrella 99b74d6) --------------------------
-// Appended, self-contained section: the `finding:<candidate id>` form is a
-// Spaces-side ref for a briefing review candidate. It is deliberately NOT
-// registered into the built-in resource-ref grammar above — the shared
-// `ParsedResourceRef` kinds address resolver-backed entities, while a finding
-// resolves through its own dedicated endpoint with revision semantics attached.
-
-const FINDING_REF = /^finding:([^\s\]]+)$/i;
-
-export interface ParsedFindingRef {
-  /** The original matched ref text. */
-  raw: string;
-  /** Canonical `finding:<candidate id>` form. */
-  canonical: string;
-  /** The bare review-candidate id. */
-  candidateId: string;
-  /** Compact human-friendly label. */
-  display: string;
-}
-
-/** Canonical ref string for a review candidate. */
-export function findingRefString(candidateId: string): string {
-  return `finding:${candidateId.trim()}`;
-}
-
-/** Parse a `finding:<candidate id>` ref; returns null for any other form. */
-export function parseFindingRef(candidate: string): ParsedFindingRef | null {
-  const raw = (candidate ?? '').trim();
-  const match = FINDING_REF.exec(raw);
-  if (!match) return null;
-  const candidateId = match[1];
-  const canonical = findingRefString(candidateId);
-  return { raw, canonical, candidateId, display: compactFindingRef(canonical) };
-}
-
-/** Compact a finding ref for display, clipping long hex ids like other refs. */
-export function compactFindingRef(ref: string, length = 12): string {
-  return ref.replace(
-    /^finding:(.+)$/i,
-    (_match, id: string) => `finding:${compactLongIdSegments(id, length)}`,
-  );
-}
-
-/**
- * Navigation target for a finding reference. The Briefing view is the single
- * write surface for review state, so every finding link from Spaces points
- * there; keeping the route in one helper makes it a one-line change if the
- * Briefing route registration settles on a different query key.
- */
-export function findingDetailHref(candidateId: string): string {
-  return `#/briefing?candidate=${encodeURIComponent(candidateId.trim())}`;
-}

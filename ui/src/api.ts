@@ -2,6 +2,7 @@ import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
+import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
   ApiList,
   ArtifactAliasRecord as ContractArtifactAliasRecord,
@@ -470,41 +471,25 @@ export function invalidateApiGetCache(
   }
 }
 
-const BRIEFING_FEEDBACK_EVENTS = new Set([
-  'briefing:ingested',
-  'briefing:decided',
-  'briefing:commented',
-  'briefing:expired',
+const BRIEFING_EVENTS = new Set([
+  'briefing:created',
+  'briefing:round-published',
+  'briefing:answered',
+  'briefing:annotated',
+  'briefing:submitted',
 ]);
 
-const ASK_FEEDBACK_EVENTS = new Set([
-  'ask:created',
-  'ask:submitted',
-  'ask:cancelled',
-  'ask:expired',
-]);
-
-const COLLECTION_FEEDBACK_EVENTS = new Set([
-  'feedback:collection-updated',
-]);
-
-/** Exact cache families affected by a feedback lifecycle event. */
-export function feedbackApiCacheFamiliesForEvent(type: string): readonly string[] {
-  if (COLLECTION_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/feedback/collections'];
-  }
-  if (BRIEFING_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/briefing', '/api/feedback/collections', '/api/dashboard/badges'];
-  }
-  if (ASK_FEEDBACK_EVENTS.has(type)) {
-    return ['/api/asks', '/api/feedback/collections', '/api/dashboard/badges'];
+/** Exact cache families affected by a Briefing lifecycle event. */
+export function briefingApiCacheFamiliesForEvent(type: string): readonly string[] {
+  if (BRIEFING_EVENTS.has(type)) {
+    return ['/api/briefings', '/api/dashboard/badges'];
   }
   return [];
 }
 
-/** Narrow feedback invalidation; returns whether the event was handled. */
-export function invalidateFeedbackApiCacheForEvent(type: string): boolean {
-  const families = feedbackApiCacheFamiliesForEvent(type);
+/** Narrow Briefing invalidation; returns whether the event was handled. */
+export function invalidateBriefingApiCacheForEvent(type: string): boolean {
+  const families = briefingApiCacheFamiliesForEvent(type);
   for (const family of families) invalidateApiGetCache(family);
   return families.length > 0;
 }
@@ -537,7 +522,7 @@ export function invalidateOperationalIncidentApiCacheForEvent(type: string): boo
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
-  if (invalidateFeedbackApiCacheForEvent(type)) return;
+  if (invalidateBriefingApiCacheForEvent(type)) return;
   if (invalidateOperationalIncidentApiCacheForEvent(type)) return;
   // Streamed auth output does not change any dashboard count, so the badge
   // cache is left intact for that event; every other family below can move a
@@ -545,7 +530,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
   if (type !== 'auth:output') {
     invalidateApiGetCache('/api/dashboard/badges');
   }
-  if (type.startsWith('session:') || type.startsWith('console:session:')) {
+  if (type.startsWith('conversation:')) {
+    invalidateApiGetCache('/api/conversations');
+  } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
     invalidateApiGetCache('/api/conversations');
@@ -1862,7 +1849,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue> },
+  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -1902,6 +1889,9 @@ export async function createConsoleSession(
     runOptions?: Record<string, SessionRunOptionValue>;
   };
   const body: SessionBody = { label, command: '', args: [] };
+  if (options?.cwd) {
+    body.cwd = options.cwd;
+  }
   if (options?.channel_enabled) {
     body.channel_enabled = true;
   }
@@ -2209,6 +2199,47 @@ export async function getConversations(params?: {
   );
 }
 
+export type ConversationSidebarGroup = {
+  key: string;
+  kind: 'pinned' | 'chats';
+  label: string;
+  total: number;
+  conversations: Conversation[];
+  next_cursor: string | null;
+};
+
+export type ConversationSidebarResponse = {
+  groups: ConversationSidebarGroup[];
+  limit: number;
+};
+
+export async function getConversationSidebar(params: {
+  source?: string;
+  starred?: boolean;
+  search?: string;
+  full_text?: boolean;
+  sort?: string;
+  min_blocks?: number;
+  exclude_subagents?: boolean;
+  limit: number;
+  group_key?: string;
+  cursor?: string;
+}): Promise<ConversationSidebarResponse> {
+  const query = new URLSearchParams();
+  if (params.source) query.set('source', params.source);
+  if (params.starred) query.set('starred', '1');
+  if (params.search) query.set('search', params.search);
+  if (params.full_text) query.set('full_text', 'true');
+  if (params.sort) query.set('sort', params.sort);
+  if (params.min_blocks) query.set('min_blocks', String(params.min_blocks));
+  if (params.exclude_subagents) query.set('exclude_subagents', 'true');
+  const limit = Math.min(50, Math.max(1, Math.trunc(Number.isFinite(params.limit) ? params.limit : 5)));
+  query.set('limit', String(limit));
+  if (params.group_key) query.set('group_key', params.group_key);
+  if (params.cursor) query.set('cursor', params.cursor);
+  return cachedApiGetJson<ConversationSidebarResponse>(`/api/conversations/sidebar?${query.toString()}`);
+}
+
 export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null }> {
   const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
@@ -2250,6 +2281,7 @@ export async function updateConversation(id: string, data: {
   notes_append?: string;
 }): Promise<Conversation> {
   const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
+  invalidateApiGetCache('/api/conversations');
   return (await parseMaybeJson(resp)) as Conversation;
 }
 
@@ -3347,6 +3379,20 @@ export type ProjectPickerItem = {
   display_name: string | null;
 };
 
+export type CanonicalProjectCheckout = {
+  id: string;
+  project_id: string;
+  work_repo_id: string | null;
+  root: string;
+  name: string;
+  default_branch: string;
+  remote_url: string;
+};
+
+export type CanonicalProject = ProjectPickerItem & {
+  checkouts: CanonicalProjectCheckout[];
+};
+
 export type ProjectPermissionGrant = {
   id: string;
   subject_type: 'user' | 'group';
@@ -3389,6 +3435,24 @@ export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
     id: p.id,
     project_key: p.project_key,
     display_name: p.display_name ?? null,
+  }));
+}
+
+/** Canonical registry identity and checkouts for Chat project headings and scoped actions. */
+export async function listCanonicalProjects(): Promise<CanonicalProject[]> {
+  const payload = await cachedApiGetJson<{
+    projects?: Array<{
+      id: string;
+      project_key: string;
+      display_name?: string | null;
+      checkouts?: CanonicalProjectCheckout[];
+    }>;
+  }>('/api/projects');
+  return (payload.projects ?? []).map((project) => ({
+    id: project.id,
+    project_key: project.project_key,
+    display_name: project.display_name ?? null,
+    checkouts: project.checkouts ?? [],
   }));
 }
 
@@ -3739,314 +3803,6 @@ export async function getSpaceExportDrift(
   return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
 }
 
-// --- finding (briefing review candidate) references -------------------------
-// Appended trailing section (briefing umbrella 99b74d6, lane d7e51a1). Every
-// call here is READ-ONLY: Spaces displays a finding's review state and never
-// mutates it. Saving a finding to a Space goes through the ordinary
-// `addSpaceItem` / occurrence writes above — a placement fact that creates no
-// decision event.
-
-import type {
-  FeedbackCollectionProjection as ContractFeedbackCollectionProjection,
-  SpaceFindingCandidateSummary as ContractSpaceFindingCandidateSummary,
-  SpaceFindingListResponse,
-  SpaceFindingRefMetadata as ContractSpaceFindingRefMetadata,
-  SpaceFindingResolution as ContractSpaceFindingResolution,
-  SpaceFindingResolveResponse,
-} from '../../src/contracts';
-import {
-  feedbackCollectionIdentity,
-  filterFeedbackCollections,
-  orderFeedbackCollections,
-  type FeedbackCollection,
-} from './views/feedback/collection-model';
-
-export { filterFeedbackCollections, orderFeedbackCollections };
-
-export type {
-  FindingReviewState,
-  SpaceFindingCandidateSummary,
-  SpaceFindingListResponse,
-  SpaceFindingRefMetadata,
-  SpaceFindingResolution,
-  SpaceFindingResolveResponse,
-  SpaceFindingRevisionMode,
-  SpaceFindingRevisionState,
-  SpaceFindingRevisionSummary,
-} from '../../src/contracts';
-
-export {
-  SPACE_FINDING_REVISION_MODES,
-  SPACE_FINDING_WARNING_LATEST_NOT_PINNED,
-  SPACE_FINDING_WARNING_PINNED_MISSING,
-  SPACE_FINDING_WARNING_PINNED_SUPERSEDED,
-  SPACE_FINDING_WARNING_STORE_UNAVAILABLE,
-} from '../../src/contracts';
-
-/** Pickable review candidates for the Space item picker. */
-export async function listSpaceFindings(
-  options: { limit?: number; query?: string } = {},
-): Promise<ContractSpaceFindingCandidateSummary[]> {
-  const params = new URLSearchParams();
-  if (options.limit !== undefined) params.set('limit', String(options.limit));
-  if (options.query) params.set('q', options.query);
-  const suffix = params.toString() ? `?${params.toString()}` : '';
-  const response = await apiGet(`/api/spaces/findings${suffix}`);
-  const payload = (await parseMaybeJson(response)) as SpaceFindingListResponse;
-  return payload.findings ?? [];
-}
-
-/**
- * Resolve a candidate under caller-supplied revision semantics (preview before a
- * placement exists). Pass the same metadata the placement will carry so the
- * preview and the placed reference agree.
- */
-export async function resolveSpaceFinding(
-  candidateId: string,
-  metadata: ContractSpaceFindingRefMetadata = { revision_mode: 'latest' },
-): Promise<ContractSpaceFindingResolution> {
-  const params = new URLSearchParams({ revision_mode: metadata.revision_mode });
-  if (metadata.revision_mode === 'pinned' && metadata.pinned_revision_id) {
-    params.set('pinned_revision_id', metadata.pinned_revision_id);
-  }
-  const response = await apiGet(
-    `/api/spaces/findings/${encodeURIComponent(candidateId)}/resolve?${params.toString()}`,
-  );
-  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
-  return payload.resolution;
-}
-
-/** Resolve one PLACED finding reference under the semantics stored on the item. */
-export async function resolveSpaceItemFinding(
-  spaceId: string,
-  itemId: string,
-): Promise<ContractSpaceFindingResolution> {
-  const response = await apiGet(
-    `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/finding`,
-  );
-  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
-  return payload.resolution;
-}
-
-// ===========================================================================
-// Briefing review queue — client section (umbrella 99b74d6, lane d304a9b).
-//
-// APPEND-ONLY SECTION. The server routes live in lane ce22a3a and are pinned by
-// "Briefing pilot — integration contract v1" §4:
-//
-//   GET  /api/briefing/queue                          (read-only)
-//   GET  /api/briefing/candidates/:id/history          (read-only)
-//   POST /api/briefing/candidates/:id/decision         (human-only mutation)
-//   POST /api/briefing/candidates/:id/comments         (human-only mutation)
-//
-// THE SERVER CONTRACT IS THE SOURCE OF TRUTH (issue 223d090). Every field read
-// off a briefing payload below goes through a `Partial<…>` projection of the
-// corresponding type in src/contracts.ts, so a name that does not exist in the
-// contract is a mistake at the point of the read rather than a silently empty
-// render. The types here stay UI-local only where they are deliberately weaker
-// than the contract: normalization widens required fields to nullable so a
-// partial payload degrades into an honest "unknown" instead of a fake value.
-//
-// TRUST BOUNDARY: `title`, `why_notable`, and `refs` originate from an LLM
-// analyzer. They are carried as plain strings and MUST be rendered as untrusted
-// text (never as HTML, never as an unfiltered href). See ui/src/views/briefing.tsx.
-// ===========================================================================
-
-import type {
-  BriefingCandidateHistoryResponse as ContractBriefingHistoryResponse,
-  BriefingCandidateState,
-  BriefingComment as ContractBriefingComment,
-  BriefingCommentResponse as ContractBriefingCommentResponse,
-  BriefingDecisionAction,
-  BriefingDecisionEvent as ContractBriefingDecisionEvent,
-  BriefingDecisionRequest as ContractBriefingDecisionRequest,
-  BriefingDecisionResponse as ContractBriefingDecisionResponse,
-  BriefingEvidenceKind,
-  BriefingOccurrenceStats as ContractBriefingOccurrenceStats,
-  BriefingQueueEntry as ContractBriefingQueueEntry,
-  BriefingQueueResponse as ContractBriefingQueueResponse,
-  BriefingReviewAction,
-  BriefingRevision as ContractBriefingRevision,
-  BriefingSourceHealth as ContractBriefingSourceHealth,
-} from '../../src/contracts';
-
-// The plain unions are the contract's own: re-exported, never re-declared, so
-// a value the server can send always has a name the view can match on.
-export type {
-  BriefingCandidateState,
-  BriefingDecisionAction,
-  BriefingEvidenceKind,
-  BriefingReviewAction,
-};
-
-/** Human-initiated subset the UI is allowed to POST (contract `BriefingReviewAction`). */
-export type BriefingJudgeAction = BriefingReviewAction;
-
-const BRIEFING_CANDIDATE_STATES: readonly BriefingCandidateState[] = [
-  'pending',
-  'kept',
-  'dismissed',
-  'expired_unreviewed',
-];
-
-const BRIEFING_DECISION_ACTIONS: readonly BriefingDecisionAction[] = [
-  'keep',
-  'dismiss',
-  'undo',
-  'expire',
-];
-
-/** Contract §2 `candidate_revisions` row, with `refs_json` already parsed. */
-export type BriefingRevision = {
-  id: string;
-  candidate_id: string;
-  /** LLM-authored. Untrusted text. */
-  title: string;
-  /** LLM-authored one-sentence rationale. Untrusted text. */
-  why_notable: string;
-  /** LLM-selected refs. Untrusted; linkify only allowlisted schemes. */
-  refs: string[];
-  /** The finding's verbatim ref (identity input for candidate_key). */
-  source_ref: string;
-  evidence_hash: string;
-  evidence_kind: BriefingEvidenceKind | null;
-  captured_at: string | null;
-  run_id: string | null;
-  digest_series_ref: string | null;
-  digest_version: number | null;
-  rank: number | null;
-  publisher_advisory: {
-    code: 'admission_gate_rejected';
-    reason: string;
-  } | null;
-  batch_key: string | null;
-  ingested_at: number | null;
-};
-
-/** Contract §2 `candidate_occurrences`, aggregated per candidate. */
-export type BriefingOccurrenceStats = {
-  count: number;
-  first_seen_at: number | null;
-  last_seen_at: number | null;
-};
-
-/** Contract §2 `decision_events` row. */
-export type BriefingDecisionEvent = {
-  id: string;
-  candidate_id: string;
-  revision_id: string;
-  action: BriefingDecisionAction;
-  /** NULL marks a system-generated event (`expire`). */
-  actor_user_id: string | null;
-  comment_id: string | null;
-  created_at: number | null;
-};
-
-/** Contract §2 `candidate_comments` row. Operator-authored, immutable. */
-export type BriefingComment = {
-  id: string;
-  candidate_id: string;
-  revision_id: string;
-  body: string;
-  actor_user_id: string | null;
-  created_at: number | null;
-};
-
-/**
- * One pending candidate plus its current revision and provenance. Mirrors the
- * contract's `BriefingQueueEntry`; `candidate_id` is that entry's `id`.
- */
-export type BriefingQueueItem = {
-  candidate_id: string;
-  source: string;
-  candidate_key: string;
-  created_at: number | null;
-  state: BriefingCandidateState;
-  revision: BriefingRevision;
-  revision_count: number | null;
-  occurrences: BriefingOccurrenceStats;
-  /**
-   * Producer of THIS entry's current revision (contract
-   * `BriefingQueueEntry.task_identity`). Distinct from
-   * {@link BriefingSourceHealth.last_task_identity}, which is the identity of
-   * the source's most recent batch; the two agree only when the newest batch
-   * is also the one that carried this revision.
-   */
-  task_identity: string | null;
-  group: { id: string; candidate_key: string; title: string } | null;
-};
-
-/**
- * Deterministic per-source health, projected from the contract's
- * `BriefingSourceHealth`. The server reports batch-ledger FACTS and never a
- * classification, so `status` is always derived here by
- * {@link deriveBriefingSourceStatus}. Nothing in this summary is model-derived.
- *
- * There is no `failed` state: nothing in the ledger distinguishes "the
- * collector ran and failed" from "the collector has not reported", so a
- * silent source reads as `stale` (it reported once, long ago) or `unknown`
- * (it has candidates but no batch on record) — never as a failure the server
- * never observed.
- */
-export type BriefingSourceStatus = 'current' | 'stale' | 'unknown';
-
-export type BriefingSourceHealth = {
-  source: string;
-  status: BriefingSourceStatus;
-  last_ingested_at: number | null;
-  /** Server-computed age at response time; preferred over the client clock. */
-  last_ingest_age_ms: number | null;
-  /** The publisher task identity that produced the last batch. */
-  last_task_identity: string | null;
-  last_run_id: string | null;
-  last_digest_version: number | null;
-  last_batch_item_count: number | null;
-  pending_count: number | null;
-};
-
-/** The queue envelope, matching the contract's `BriefingQueueResponse`. */
-export type BriefingQueue = {
-  candidates: BriefingQueueItem[];
-  sources: BriefingSourceHealth[];
-};
-
-/** Contract `BriefingCandidateHistoryResponse`: revisions + decisions + comments. */
-export type BriefingHistory = {
-  candidate_id: string;
-  state: BriefingCandidateState;
-  revisions: BriefingRevision[];
-  decisions: BriefingDecisionEvent[];
-  comments: BriefingComment[];
-};
-
-/** Contract `BriefingDecisionResponse`. */
-export type BriefingDecisionResult = {
-  candidate_id: string;
-  revision_id: string | null;
-  action: BriefingDecisionAction;
-  event_id: string | null;
-  state: BriefingCandidateState;
-};
-
-/** Staleness horizon applied to the server's last-ingest facts. */
-export const BRIEFING_SOURCE_STALE_AFTER_MS = 36 * 60 * 60 * 1000;
-
-/**
- * Deterministic classification from the batch-ledger facts the server actually
- * reports. `lastIngestAgeMs` is the server's own age at response time and wins
- * over the client clock when present; `now` covers the case where it is absent.
- * Pure, testable, and never dependent on model output.
- */
-export function deriveBriefingSourceStatus(
-  lastIngestedAt: number | null,
-  lastIngestAgeMs: number | null,
-  now: number,
-): BriefingSourceStatus {
-  if (lastIngestedAt === null && lastIngestAgeMs === null) return 'unknown';
-  const age = lastIngestAgeMs ?? now - (lastIngestedAt as number);
-  return age > BRIEFING_SOURCE_STALE_AFTER_MS ? 'stale' : 'current';
-}
-
 function briefingRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -4086,197 +3842,22 @@ function briefingStringArray(value: unknown): string[] {
   return [];
 }
 
-function normalizeBriefingRevision(value: unknown, candidateId: string): BriefingRevision {
-  const row = briefingContractRecord<ContractBriefingRevision>(value);
-  const evidenceKind = briefingOptionalString(row.evidence_kind);
-  const advisory = briefingRecord(row.publisher_advisory);
-  const publisherAdvisory = advisory.code === 'admission_gate_rejected'
-    && typeof advisory.reason === 'string'
-    && advisory.reason !== ''
-    ? { code: 'admission_gate_rejected' as const, reason: advisory.reason }
-    : null;
-  return {
-    id: briefingString(row.id),
-    candidate_id: briefingString(row.candidate_id, candidateId),
-    title: briefingString(row.title),
-    why_notable: briefingString(row.why_notable),
-    refs: briefingStringArray(row.refs),
-    source_ref: briefingString(row.source_ref),
-    evidence_hash: briefingString(row.evidence_hash),
-    evidence_kind:
-      evidenceKind === 'snapshot-item' || evidenceKind === 'finding-only' ? evidenceKind : null,
-    captured_at: briefingOptionalString(row.captured_at),
-    run_id: briefingOptionalString(row.run_id),
-    digest_series_ref: briefingOptionalString(row.digest_series_ref),
-    digest_version: briefingOptionalNumber(row.digest_version),
-    rank: briefingOptionalNumber(row.rank),
-    publisher_advisory: publisherAdvisory,
-    batch_key: briefingOptionalString(row.batch_key),
-    ingested_at: briefingOptionalNumber(row.ingested_at),
-  };
-}
+// --- immutable Briefing rounds ----------------------------------------------
 
-function normalizeBriefingOccurrenceStats(value: unknown): BriefingOccurrenceStats {
-  const row = briefingContractRecord<ContractBriefingOccurrenceStats>(value);
-  return {
-    count: briefingOptionalNumber(row.count) ?? 0,
-    first_seen_at: briefingOptionalNumber(row.first_seen_at),
-    last_seen_at: briefingOptionalNumber(row.last_seen_at),
-  };
-}
-
-function normalizeBriefingCandidateState(value: unknown): BriefingCandidateState {
-  const state = briefingOptionalString(value);
-  return BRIEFING_CANDIDATE_STATES.includes(state as BriefingCandidateState)
-    ? (state as BriefingCandidateState)
-    : 'pending';
-}
-
-function normalizeBriefingQueueItem(value: unknown): BriefingQueueItem | null {
-  const row = briefingContractRecord<ContractBriefingQueueEntry>(value);
-  const candidateId = briefingString(row.id);
-  if (!candidateId) return null;
-  const group = briefingRecord(row.group);
-  const normalizedGroup = briefingString(group.id) && briefingString(group.candidate_key)
-    ? {
-      id: briefingString(group.id),
-      candidate_key: briefingString(group.candidate_key),
-      title: briefingString(group.title),
-    }
-    : null;
-  return {
-    candidate_id: candidateId,
-    source: briefingString(row.source, 'unknown'),
-    candidate_key: briefingString(row.candidate_key),
-    created_at: briefingOptionalNumber(row.created_at),
-    state: normalizeBriefingCandidateState(row.state),
-    revision: normalizeBriefingRevision(row.revision, candidateId),
-    revision_count: briefingOptionalNumber(row.revision_count),
-    occurrences: normalizeBriefingOccurrenceStats(row.occurrences),
-    task_identity: briefingOptionalString(row.task_identity),
-    group: normalizedGroup,
-  };
-}
-
-function normalizeBriefingSourceHealth(value: unknown, now: number): BriefingSourceHealth {
-  const row = briefingContractRecord<ContractBriefingSourceHealth>(value);
-  const lastIngestedAt = briefingOptionalNumber(row.last_ingested_at);
-  const lastIngestAgeMs = briefingOptionalNumber(row.last_ingest_age_ms);
-  return {
-    source: briefingString(row.source, 'unknown'),
-    status: deriveBriefingSourceStatus(lastIngestedAt, lastIngestAgeMs, now),
-    last_ingested_at: lastIngestedAt,
-    last_ingest_age_ms: lastIngestAgeMs,
-    last_task_identity: briefingOptionalString(row.last_task_identity),
-    last_run_id: briefingOptionalString(row.last_run_id),
-    last_digest_version: briefingOptionalNumber(row.last_digest_version),
-    last_batch_item_count: briefingOptionalNumber(row.last_batch_item_count),
-    pending_count: briefingOptionalNumber(row.pending_count),
-  };
-}
-
-/**
- * Normalize a raw `/api/briefing/queue` payload (contract
- * `BriefingQueueResponse`). Exported for tests; `now` is injected so the
- * staleness classification stays deterministic.
- */
-export function normalizeBriefingQueue(payload: unknown, now: number = Date.now()): BriefingQueue {
-  const root = briefingContractRecord<ContractBriefingQueueResponse>(payload);
-  const rawCandidates = Array.isArray(root.candidates) ? root.candidates : [];
-  const rawSources = Array.isArray(root.sources) ? root.sources : [];
-  return {
-    candidates: rawCandidates
-      .map((entry) => normalizeBriefingQueueItem(entry))
-      .filter((entry): entry is BriefingQueueItem => entry !== null),
-    sources: rawSources.map((entry) => normalizeBriefingSourceHealth(entry, now)),
-  };
-}
-
-const FEEDBACK_COLLECTIONS_PATH = '/api/feedback/collections';
-
-function normalizeFeedbackCollection(value: unknown): FeedbackCollection | null {
-  const row = briefingContractRecord<ContractFeedbackCollectionProjection>(value);
-  const collectionId = briefingString(row.id);
-  const kind = briefingString(row.kind);
-  const interactionMode = briefingString(row.interaction_mode);
-  const state = briefingString(row.state);
-  if (!collectionId
-      || !kind
-      || (interactionMode !== 'immediate_per_item' && interactionMode !== 'explicit_submit')
-      || (state !== 'open' && state !== 'expired')) return null;
-  return {
-    id: feedbackCollectionIdentity(collectionId),
-    collectionId,
-    kind,
-    interactionMode,
-    state,
-    source: briefingOptionalString(row.source),
-    label: briefingString(row.label, `Collection ${collectionId.slice(0, 8)}`),
-    itemCount: briefingOptionalNumber(row.item_count) ?? 0,
-    expiresAt: briefingOptionalNumber(row.expires_at),
-    createdAt: briefingOptionalNumber(row.created_at) ?? 0,
-    updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
-    expiryReversible: row.expiry_reversible === 1,
-  };
-}
-
-export function normalizeFeedbackCollections(payload: unknown): FeedbackCollection[] {
-  const root = briefingRecord(payload);
-  const rows = Array.isArray(root.collections) ? root.collections : [];
-  return rows
-    .map((entry) => normalizeFeedbackCollection(entry))
-    .filter((entry): entry is FeedbackCollection => entry !== null);
-}
-
-export function getCachedFeedbackCollections(now: number = Date.now()): FeedbackCollection[] | null {
-  const cached = getJsonCache.get(cacheKeyForGet(FEEDBACK_COLLECTIONS_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeFeedbackCollections(cached.value);
-}
-
-export async function getFeedbackCollections(signal?: AbortSignal): Promise<FeedbackCollection[]> {
-  const response = await apiGet(FEEDBACK_COLLECTIONS_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(FEEDBACK_COLLECTIONS_PATH), {
-    value: payload,
-    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
-    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
-  });
-  return normalizeFeedbackCollections(payload);
-}
-
-export async function patchFeedbackCollectionExpiry(
-  collectionId: string,
-  expiresAt: number | null,
-): Promise<FeedbackCollection> {
-  const response = await apiPatch(
-    `/api/feedback/collections/${encodeURIComponent(collectionId)}`,
-    { expires_at: expiresAt },
-  );
-  const collection = normalizeFeedbackCollection(await parseMaybeJson(response));
-  if (!collection) throw new Error('Feedback collection response was invalid.');
-  invalidateApiGetCache(FEEDBACK_COLLECTIONS_PATH);
-  return collection;
-}
-
-// --- bounded ask form -------------------------------------------------------
-
-export type AskResponseType = 'verdict' | 'free_text' | 'single_choice' | 'multi_choice';
-export type AskResponseValue =
+export type BriefingResponseType = 'verdict' | 'single_choice' | 'multi_choice' | 'short_text' | 'long_text' | 'rating';
+export type BriefingResponseValue =
   | { verdict: 'keep' | 'dismiss' }
   | { text: string }
   | { option_key: string }
-  | { option_keys: string[] };
+  | { option_keys: string[] }
+  | { rating: number };
 
-export type AskOption = {
-  option_key: string;
+export type BriefingDirectiveOption = {
+  key: string;
   label: string;
-  description: string | null;
-  position: number;
 };
 
-export type AskItem = {
+export type BriefingDirectiveItem = {
   id: string;
   client_item_key: string | null;
   parent_item_id: string | null;
@@ -4287,38 +3868,52 @@ export type AskItem = {
     title: string;
     prompt: string;
     description: string | null;
-    response_type: AskResponseType | null;
+    response_type: BriefingResponseType | null;
     required: boolean;
     position: number;
-    options: AskOption[];
+    options: BriefingDirectiveOption[];
   };
-  effective_response: null | { response_event_id: string; value: AskResponseValue };
+  effective_response: null | { response_event_id: string; value: BriefingResponseValue };
   responseVisible: boolean;
+  directive?: {
+    key: string;
+    definition_digest: string;
+    start_offset: number;
+    end_offset: number;
+    body_start_offset: number;
+    body_end_offset: number;
+  };
 };
 
-export type AskProjection = {
-  ask_id: string;
-  state: 'open' | 'submitted' | 'expired' | 'cancelled' | 'closed';
-  request_key: string;
-  request_digest: string;
-  requester_user_id: string;
-  requester_session_id: string;
-  responder_user_ids: string[];
-  expires_at: number | null;
-  retention_expires_at: number | null;
+export type BriefingRoundProjection = {
+  round_id: string;
+  state: 'open' | 'submitted';
+  briefing_key: string;
+  binding_digest: string;
   created_at: number;
-  lifecycle_event_id: string;
-  latest_submission: null | { id: string; ordinal: number };
   latest_submission_for_actor: null | { id: string; ordinal: number };
-  document: null | { artifact_version_id: string; previous_round_id: string | null };
-  annotations?: AskAnnotation[];
-  previous_round: null | {
-    ask_id: string;
-    artifact_version_id: string;
-    annotations: AskPreviousRoundAnnotation[];
-  };
-  items: AskItem[];
+  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v2' };
+  directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
+  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
+  annotations?: BriefingAnnotation[];
+  items: BriefingDirectiveItem[];
   valid: boolean;
+};
+
+export type BriefingRoundSummary = {
+  id: string;
+  ordinal: number;
+  artifact_version_id: string;
+  created_at: number;
+  origin: null | { source: string | null; run_id: string | null; task_identity: string | null };
+};
+
+export type BriefingProjection = BriefingRoundProjection & {
+  briefing_id: string;
+  title: string;
+  latest_round_id: string;
+  selected_round_id: string;
+  rounds: BriefingRoundSummary[];
 };
 
 export type ClientAuthWhoami = {
@@ -4326,21 +3921,19 @@ export type ClientAuthWhoami = {
   user: null | { id: string; slug: string; kind: string | null; display_name: string | null };
 };
 
-export type AskAnswerOperation = {
-  item_id: string;
-  item_revision_id: string;
+export type BriefingAnswerOperation = {
+  directive_key: string;
   operation: 'set' | 'retract';
   expected_response_event_id: string | null;
-  value?: AskResponseValue;
+  value?: BriefingResponseValue;
 };
 
-export type AskSubmissionAnswer = {
-  item_id: string;
-  item_revision_id: string;
+export type BriefingSubmissionAnswer = {
+  directive_key: string;
   response_event_id: string;
 };
 
-export type AskAnnotation = {
+export type BriefingAnnotation = {
   annotation_event_id: string;
   annotation_kind: 'comment' | 'suggest_replacement';
   start_offset: number;
@@ -4351,12 +3944,7 @@ export type AskAnnotation = {
   created_at: number;
 };
 
-export type AskPreviousRoundAnnotation = AskAnnotation & {
-  actor_user_id: string;
-  submission_ordinal: number;
-};
-
-export type AskAnnotationOperation =
+export type BriefingAnnotationOperation =
   | {
     operation: 'set';
     annotation_kind: 'comment';
@@ -4376,50 +3964,65 @@ export type AskAnnotationOperation =
   }
   | { operation: 'retract'; annotation_event_id: string };
 
-const ASK_STATES = new Set(['open', 'submitted', 'expired', 'cancelled', 'closed']);
-const ASK_RESPONSE_TYPES = new Set<AskResponseType>([
-  'verdict', 'free_text', 'single_choice', 'multi_choice',
+const BRIEFING_ROUND_STATES = new Set(['open', 'submitted']);
+const BRIEFING_RESPONSE_TYPES = new Set<BriefingResponseType>([
+  'verdict', 'single_choice', 'multi_choice', 'short_text', 'long_text', 'rating',
 ]);
 
-function exactAskValueKeys(row: Record<string, unknown>, expected: readonly string[]): boolean {
+function exactBriefingValueKeys(row: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(row).sort();
   const sortedExpected = [...expected].sort();
   return keys.length === sortedExpected.length
     && keys.every((key, index) => key === sortedExpected[index]);
 }
 
-function askResponseValue(
+function briefingResponseValue(
   value: unknown,
-  responseType: AskResponseType,
+  responseType: BriefingResponseType,
   optionKeys: readonly string[],
-): AskResponseValue | null {
+): BriefingResponseValue | null {
   const row = briefingRecord(value);
   if (responseType === 'verdict') {
-    return exactAskValueKeys(row, ['verdict']) && (row.verdict === 'keep' || row.verdict === 'dismiss')
+    return exactBriefingValueKeys(row, ['verdict']) && (row.verdict === 'keep' || row.verdict === 'dismiss')
       ? { verdict: row.verdict }
       : null;
   }
-  if (responseType === 'free_text') {
-    return exactAskValueKeys(row, ['text']) && typeof row.text === 'string' ? { text: row.text } : null;
+  if (responseType === 'short_text' || responseType === 'long_text') {
+    const maximum = responseType === 'short_text' ? 240 : 4000;
+    return exactBriefingValueKeys(row, ['text'])
+      && typeof row.text === 'string'
+      && Boolean(row.text.trim())
+      && row.text.length <= maximum
+      ? { text: row.text }
+      : null;
+  }
+  if (responseType === 'rating') {
+    return exactBriefingValueKeys(row, ['rating'])
+      && Number.isSafeInteger(row.rating)
+      && (row.rating as number) >= 1
+      && (row.rating as number) <= 5
+      ? { rating: row.rating as number }
+      : null;
   }
   const allowed = new Set(optionKeys);
   if (responseType === 'single_choice') {
-    return exactAskValueKeys(row, ['option_key'])
+    return exactBriefingValueKeys(row, ['option_key'])
       && typeof row.option_key === 'string'
       && allowed.has(row.option_key)
       ? { option_key: row.option_key }
       : null;
   }
-  if (!exactAskValueKeys(row, ['option_keys'])
+  if (!exactBriefingValueKeys(row, ['option_keys'])
       || !Array.isArray(row.option_keys)
       || row.option_keys.some((key) => typeof key !== 'string')
       || row.option_keys.some((key) => !allowed.has(key as string))
       || new Set(row.option_keys).size !== row.option_keys.length) return null;
   const selected = new Set(row.option_keys as string[]);
-  return { option_keys: optionKeys.filter((key) => selected.has(key)) };
+  const canonical = optionKeys.filter((key) => selected.has(key));
+  return canonical.length > 0 ? { option_keys: canonical } : null;
 }
 
-function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | AskPreviousRoundAnnotation | null {
+function briefingAnnotation(value: unknown): BriefingAnnotation | null {
   const row = briefingRecord(value);
   const annotationKind = row.annotation_kind;
   const start = row.start_offset;
@@ -4436,7 +4039,7 @@ function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | 
       || !Number.isSafeInteger(row.created_at)
       || (annotationKind === 'comment' && (typeof body !== 'string' || !body.trim() || replacement !== null))
       || (annotationKind === 'suggest_replacement' && typeof replacement !== 'string')) return null;
-  const annotation: AskAnnotation = {
+  const annotation: BriefingAnnotation = {
     annotation_event_id: briefingString(row.annotation_event_id),
     annotation_kind: annotationKind,
     start_offset: start as number,
@@ -4446,34 +4049,26 @@ function askAnnotation(value: unknown, previousRound: boolean): AskAnnotation | 
     replacement_text: replacement as string | null,
     created_at: row.created_at as number,
   };
-  if (!previousRound) return annotation;
-  if (!briefingString(row.actor_user_id)
-      || !Number.isSafeInteger(row.submission_ordinal)
-      || (row.submission_ordinal as number) < 1) return null;
-  return {
-    ...annotation,
-    actor_user_id: briefingString(row.actor_user_id),
-    submission_ordinal: row.submission_ordinal as number,
-  };
+  return annotation;
 }
 
-export function normalizeAskProjection(payload: unknown): AskProjection {
+export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoundProjection {
   const root = briefingRecord(payload);
   let valid = true;
-  const askId = briefingString(root.ask_id);
+  const roundId = briefingString(root.round_id);
   const rawState = briefingString(root.state);
-  if (!askId || !ASK_STATES.has(rawState) || !briefingString(root.lifecycle_event_id)) valid = false;
+  if (!roundId || !BRIEFING_ROUND_STATES.has(rawState)) valid = false;
   const rawItems = Array.isArray(root.items) ? root.items : [];
   if (!Array.isArray(root.items)) valid = false;
-  const items = rawItems.map((entry): AskItem | null => {
+  const items = rawItems.map((entry): BriefingDirectiveItem | null => {
     const row = briefingRecord(entry);
     const revision = briefingRecord(row.revision);
     const id = briefingString(row.id);
     const revisionId = briefingString(revision.id);
     const itemKind = row.item_kind;
     const rawType = revision.response_type;
-    const responseType = typeof rawType === 'string' && ASK_RESPONSE_TYPES.has(rawType as AskResponseType)
-      ? rawType as AskResponseType
+    const responseType = typeof rawType === 'string' && BRIEFING_RESPONSE_TYPES.has(rawType as BriefingResponseType)
+      ? rawType as BriefingResponseType
       : null;
     if (!id || !revisionId || (itemKind !== 'item' && itemKind !== 'group')) {
       valid = false;
@@ -4484,26 +4079,39 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
     if (!Array.isArray(revision.options)) valid = false;
     const options = (Array.isArray(revision.options) ? revision.options : []).map((option) => {
       const value = briefingRecord(option);
+      if (!exactBriefingValueKeys(value, ['key', 'label'])) valid = false;
       return {
-        option_key: briefingString(value.option_key),
+        key: briefingString(value.key),
         label: briefingString(value.label),
-        description: briefingOptionalString(value.description),
-        position: briefingOptionalNumber(value.position) ?? 0,
       };
     }).filter((option) => {
-      if (!option.option_key) valid = false;
-      return Boolean(option.option_key);
-    }).sort((left, right) => left.position - right.position || left.option_key.localeCompare(right.option_key));
+      if (!option.key || !option.label) valid = false;
+      return Boolean(option.key && option.label);
+    });
     const choice = responseType === 'single_choice' || responseType === 'multi_choice';
     if (itemKind === 'group' && (revision.required === true || options.length > 0)) valid = false;
     if (itemKind === 'item' && ((choice && options.length === 0) || (!choice && options.length > 0))) valid = false;
     const hasEffective = Object.prototype.hasOwnProperty.call(row, 'effective_response');
     const effective = briefingRecord(row.effective_response);
     const effectiveValue = responseType && hasEffective && row.effective_response !== null
-      ? askResponseValue(effective.value, responseType, options.map((option) => option.option_key))
+      ? briefingResponseValue(effective.value, responseType, options.map((option) => option.key))
       : null;
     if (hasEffective && row.effective_response !== null
         && (!briefingString(effective.response_event_id) || !effectiveValue)) valid = false;
+    const rawDirective = briefingRecord(row.directive);
+    let directive: BriefingDirectiveItem['directive'];
+    if (Object.prototype.hasOwnProperty.call(row, 'directive')) {
+      const key = briefingString(rawDirective.key);
+      const definitionDigest = briefingString(rawDirective.definition_digest);
+      const start = rawDirective.start_offset;
+      const end = rawDirective.end_offset;
+      const bodyStart = rawDirective.body_start_offset;
+      const bodyEnd = rawDirective.body_end_offset;
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || !/^[0-9a-f]{64}$/.test(definitionDigest) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+          || !Number.isSafeInteger(bodyStart) || !Number.isSafeInteger(bodyEnd)
+          || start < 0 || start >= bodyStart || bodyStart >= bodyEnd || bodyEnd > end) valid = false;
+      else directive = { key, definition_digest: definitionDigest, start_offset: start, end_offset: end, body_start_offset: bodyStart, body_end_offset: bodyEnd };
+    }
     return {
       id,
       client_item_key: briefingOptionalString(row.client_item_key),
@@ -4524,8 +4132,9 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
         ? { response_event_id: briefingString(effective.response_event_id), value: effectiveValue }
         : null,
       responseVisible: hasEffective,
+      ...(directive ? { directive } : {}),
     };
-  }).filter((item): item is AskItem => item !== null)
+  }).filter((item): item is BriefingDirectiveItem => item !== null)
     .sort((left, right) => left.revision.position - right.revision.position || left.id.localeCompare(right.id));
   const itemIds = new Set<string>();
   for (const item of items) {
@@ -4535,7 +4144,7 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
   const itemById = new Map(items.map((item) => [item.id, item]));
   for (const item of items) {
     if (item.parent_item_id && itemById.get(item.parent_item_id)?.item_kind !== 'group') valid = false;
-    if (new Set(item.revision.options.map((option) => option.option_key)).size !== item.revision.options.length) valid = false;
+    if (new Set(item.revision.options.map((option) => option.key)).size !== item.revision.options.length) valid = false;
     const ancestors = new Set<string>([item.id]);
     let parent = item.parent_item_id;
     while (parent) {
@@ -4547,12 +4156,6 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
       parent = itemById.get(parent)?.parent_item_id ?? null;
     }
   }
-  const latest = briefingRecord(root.latest_submission);
-  const latestSubmission = root.latest_submission === null ? null : {
-    id: briefingString(latest.id),
-    ordinal: briefingOptionalNumber(latest.ordinal) ?? 0,
-  };
-  if (root.latest_submission !== null && (!latestSubmission.id || latestSubmission.ordinal < 1)) valid = false;
   const actorLatest = briefingRecord(root.latest_submission_for_actor);
   const latestSubmissionForActor = root.latest_submission_for_actor == null ? null : {
     id: briefingString(actorLatest.id),
@@ -4561,59 +4164,72 @@ export function normalizeAskProjection(payload: unknown): AskProjection {
   if (root.latest_submission_for_actor != null
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
-  const document = root.document === null ? null : {
+  const profile = rawDocument.profile;
+  const document = root.document !== null && profile === 'mandible-briefing.v2' ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
-  };
-  if (root.document !== null
-      && (!document.artifact_version_id
-        || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string'))) valid = false;
-  let annotations: AskAnnotation[] | undefined;
+    profile,
+  } : null;
+  if (!document
+      || !document.artifact_version_id
+      || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string')) valid = false;
+  const bindingRow = briefingRecord(root.directive_binding);
+  const bindingStatus = bindingRow.status;
+  const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
+    && (bindingStatus === 'valid' || bindingStatus === 'invalid' || bindingStatus === 'unavailable')
+    && (bindingRow.reason === undefined || typeof bindingRow.reason === 'string')
+    ? { status: bindingStatus, ...(typeof bindingRow.reason === 'string' ? { reason: bindingRow.reason } : {}) }
+    : undefined;
+  if (Object.prototype.hasOwnProperty.call(root, 'directive_binding') && directiveBinding === undefined) valid = false;
+  const frozenRow = briefingRecord(root.latest_frozen_membership);
+  const latestFrozenMembership = root.latest_frozen_membership === null ? null : Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership')
+    && Array.isArray(frozenRow.answer_event_ids) && Array.isArray(frozenRow.annotation_event_ids)
+    && frozenRow.answer_event_ids.every((id) => briefingString(id))
+    && frozenRow.annotation_event_ids.every((id) => briefingString(id))
+    ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids) }
+    : undefined;
+  if (Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership') && latestFrozenMembership === undefined) valid = false;
+  if (document) {
+    if (!directiveBinding) valid = false;
+    const keys = new Set<string>();
+    let previousEnd = -1;
+    const sortedDirectives = items.map((item) => item.directive).filter((directive): directive is NonNullable<BriefingDirectiveItem['directive']> => Boolean(directive))
+      .sort((left, right) => left.start_offset - right.start_offset);
+    for (const directive of sortedDirectives) {
+      if (directive.start_offset < previousEnd) valid = false;
+      previousEnd = directive.end_offset;
+    }
+    for (const item of items) {
+      const directive = item.directive;
+      const choice = item.revision.response_type === 'single_choice' || item.revision.response_type === 'multi_choice';
+      if (item.item_kind !== 'item' || !item.revision.response_type || (choice ? item.revision.options.length < 2 || item.revision.options.length > 12 : item.revision.options.length !== 0)
+          || !item.client_item_key || !directive || directive.key !== item.client_item_key || keys.has(directive.key)) valid = false;
+      if (directive) keys.add(directive.key);
+    }
+    if (items.length === 0) valid = false;
+  }
+  let annotations: BriefingAnnotation[] | undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {
     if (!Array.isArray(root.annotations)) valid = false;
     annotations = (Array.isArray(root.annotations) ? root.annotations : []).map((entry) => {
-      const parsed = askAnnotation(entry, false) as AskAnnotation | null;
+      const parsed = briefingAnnotation(entry);
       if (!parsed) valid = false;
       return parsed;
-    }).filter((entry): entry is AskAnnotation => entry !== null);
+    }).filter((entry): entry is BriefingAnnotation => entry !== null);
   }
-  const rawPreviousRound = briefingRecord(root.previous_round);
-  let previousRound: AskProjection['previous_round'] = null;
-  if (root.previous_round !== null) {
-    const rawAnnotations = rawPreviousRound.annotations;
-    if (!briefingString(rawPreviousRound.ask_id)
-        || !briefingString(rawPreviousRound.artifact_version_id)
-        || !Array.isArray(rawAnnotations)) valid = false;
-    const previousAnnotations = (Array.isArray(rawAnnotations) ? rawAnnotations : []).map((entry) => {
-      const parsed = askAnnotation(entry, true) as AskPreviousRoundAnnotation | null;
-      if (!parsed) valid = false;
-      return parsed;
-    }).filter((entry): entry is AskPreviousRoundAnnotation => entry !== null);
-    previousRound = {
-      ask_id: briefingString(rawPreviousRound.ask_id),
-      artifact_version_id: briefingString(rawPreviousRound.artifact_version_id),
-      annotations: previousAnnotations,
-    };
-  }
-  if ((rawState === 'open' && latestSubmission !== null)
-      || (rawState === 'submitted' && latestSubmission === null)) valid = false;
+  if ((rawState === 'open' && latestSubmissionForActor !== null)
+      || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
   return {
-    ask_id: askId,
-    state: ASK_STATES.has(rawState) ? rawState as AskProjection['state'] : 'closed',
-    request_key: briefingString(root.request_key),
-    request_digest: briefingString(root.request_digest),
-    requester_user_id: briefingString(root.requester_user_id),
-    requester_session_id: briefingString(root.requester_session_id),
-    responder_user_ids: briefingStringArray(root.responder_user_ids),
-    expires_at: briefingOptionalNumber(root.expires_at),
-    retention_expires_at: briefingOptionalNumber(root.retention_expires_at),
+    round_id: roundId,
+    state: BRIEFING_ROUND_STATES.has(rawState) ? rawState as BriefingRoundProjection['state'] : 'open',
+    briefing_key: briefingString(root.briefing_key),
+    binding_digest: briefingString(root.binding_digest),
     created_at: briefingOptionalNumber(root.created_at) ?? 0,
-    lifecycle_event_id: briefingString(root.lifecycle_event_id),
-    latest_submission: latestSubmission,
     latest_submission_for_actor: latestSubmissionForActor,
     document,
+    directive_binding: directiveBinding ?? null,
+    ...(latestFrozenMembership !== undefined ? { latest_frozen_membership: latestFrozenMembership } : {}),
     ...(annotations ? { annotations } : {}),
-    previous_round: previousRound,
     items,
     valid,
   };
@@ -4634,217 +4250,192 @@ export async function getClientAuthWhoami(signal?: AbortSignal): Promise<ClientA
   };
 }
 
-export async function getAsk(askId: string, signal?: AbortSignal): Promise<AskProjection> {
-  const response = await apiGet(`/api/asks/${encodeURIComponent(askId)}`, signal ? { signal } : {});
-  return normalizeAskProjection(await parseMaybeJson(response));
+export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
+  const root = briefingRecord(payload);
+  const rows = Array.isArray(root.briefings) ? root.briefings : [];
+  return rows.map((entry) => {
+    const row = briefingRecord(entry);
+    const id = briefingString(row.id);
+    return {
+      id: feedbackCollectionIdentity(id),
+      collectionId: id,
+      label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
+      itemCount: briefingOptionalNumber(row.round_count) ?? 0,
+      latestRoundId: briefingString(row.latest_round_id),
+      createdAt: briefingOptionalNumber(row.created_at) ?? 0,
+      updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
+    };
+  }).filter((entry) => Boolean(entry.collectionId && entry.latestRoundId));
 }
 
-export async function postAskAnswers(
-  askId: string,
-  answers: readonly AskAnswerOperation[],
+const BRIEFINGS_PATH = '/api/briefings';
+
+export function getCachedBriefings(now: number = Date.now()): FeedbackCollection[] | null {
+  const cached = getJsonCache.get(cacheKeyForGet(BRIEFINGS_PATH));
+  if (!cached || now >= cached.staleUntil) return null;
+  return normalizeBriefings(cached.value);
+}
+
+export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollection[]> {
+  const response = await apiGet(BRIEFINGS_PATH, signal ? { signal } : {});
+  const payload = await parseMaybeJson(response);
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(BRIEFINGS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
+  return normalizeBriefings(payload);
+}
+
+export function normalizeBriefingProjection(payload: unknown): BriefingProjection {
+  const root = briefingRecord(payload);
+  const briefing = briefingRecord(root.briefing);
+  const selected = briefingRecord(root.selected_round);
+  const answers = Array.isArray(selected.answers) ? selected.answers.map(briefingRecord) : [];
+  const answerByInstance = new Map(answers.map((answer) => [
+    briefingString(answer.directive_instance_id),
+    answer,
+  ]));
+  const items = (Array.isArray(selected.items) ? selected.items : []).map((entry) => {
+    const item = briefingRecord(entry);
+    const id = briefingString(item.id);
+    const answer = answerByInstance.get(id);
+    return {
+      id,
+      client_item_key: briefingString(item.directive_key),
+      parent_item_id: null,
+      item_kind: 'item',
+      revision: {
+        id: briefingString(item.definition_digest),
+        ordinal: 1,
+        title: briefingString(item.directive_key),
+        prompt: briefingString(item.prompt),
+        description: null,
+        response_type: item.response_type,
+        required: item.required === true || item.required === 1,
+        position: briefingOptionalNumber(item.position) ?? 0,
+        options: Array.isArray(item.options) ? item.options : [],
+      },
+      effective_response: answer ? {
+        response_event_id: briefingString(answer.response_event_id),
+        value: answer.value,
+      } : null,
+      responseVisible: true,
+      directive: {
+        key: briefingString(item.directive_key),
+        definition_digest: briefingString(item.definition_digest),
+        start_offset: item.start_offset,
+        end_offset: item.end_offset,
+        body_start_offset: item.body_start_offset,
+        body_end_offset: item.body_end_offset,
+      },
+    };
+  });
+  const selectedId = briefingString(selected.id);
+  const latestSubmission = selected.latest_submission ?? null;
+  const projection = normalizeBriefingRoundProjection({
+    round_id: selectedId,
+    state: latestSubmission ? 'submitted' : 'open',
+    briefing_key: briefingString(briefing.briefing_key, selectedId),
+    binding_digest: briefingString(selected.binding_digest),
+    created_at: briefingOptionalNumber(selected.created_at) ?? 0,
+    latest_submission_for_actor: latestSubmission,
+    document: selected.document ?? null,
+    directive_binding: selected.binding ?? null,
+    latest_frozen_membership: selected.latest_frozen_membership ?? null,
+    annotations: selected.annotations ?? [],
+    items,
+  });
+  const rounds = (Array.isArray(root.rounds) ? root.rounds : []).map((entry): BriefingRoundSummary => {
+    const row = briefingRecord(entry);
+    const origin = briefingRecord(row.origin);
+    return {
+      id: briefingString(row.id),
+      ordinal: briefingOptionalNumber(row.ordinal) ?? 0,
+      artifact_version_id: briefingString(row.artifact_version_id),
+      created_at: briefingOptionalNumber(row.created_at) ?? 0,
+      origin: row.origin == null ? null : {
+        source: briefingOptionalString(origin.source),
+        run_id: briefingOptionalString(origin.run_id),
+        task_identity: briefingOptionalString(origin.task_identity),
+      },
+    };
+  }).filter((round) => Boolean(round.id && round.ordinal > 0 && round.artifact_version_id));
+  return {
+    ...projection,
+    briefing_id: briefingString(briefing.id),
+    title: briefingString(briefing.title),
+    latest_round_id: briefingString(briefing.latest_round_id),
+    selected_round_id: briefingString(selected.id, projection.round_id),
+    rounds,
+  };
+}
+
+export async function getBriefing(briefingId: string, roundId?: string | null, signal?: AbortSignal): Promise<BriefingProjection> {
+  const query = roundId ? `?round=${encodeURIComponent(roundId)}` : '';
+  const response = await apiGet(`/api/briefings/${encodeURIComponent(briefingId)}${query}`, signal ? { signal } : {});
+  return normalizeBriefingProjection(await parseMaybeJson(response));
+}
+
+export async function postBriefingAnswers(
+  briefingId: string,
+  roundId: string,
+  answers: readonly BriefingAnswerOperation[],
 ): Promise<{ answer_event_ids: string[] }> {
-  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/answers`, { answers });
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/answers`, {
+    answers: answers.map((answer) => ({
+      directive_key: answer.directive_key,
+      operation: answer.operation,
+      expected_response_event_id: answer.expected_response_event_id,
+      ...(answer.operation === 'set' ? { value: answer.value } : {}),
+    })),
+  });
   const root = briefingRecord(await parseMaybeJson(response));
   return { answer_event_ids: briefingStringArray(root.answer_event_ids) };
 }
 
-export async function postAskAnnotations(
-  askId: string,
-  annotations: readonly AskAnnotationOperation[],
+export async function postBriefingAnnotations(
+  briefingId: string,
+  roundId: string,
+  annotations: readonly BriefingAnnotationOperation[],
 ): Promise<{ annotation_event_ids: string[] }> {
-  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/annotations`, { annotations });
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/annotations`, {
+    annotations: annotations.map((annotation) => annotation.operation === 'retract'
+      ? annotation
+      : {
+        operation: 'set',
+        kind: annotation.annotation_kind,
+        start_offset: annotation.start_offset,
+        end_offset: annotation.end_offset,
+        quote: annotation.quote,
+        body: annotation.body ?? null,
+        replacement_text: annotation.operation === 'set' && annotation.annotation_kind === 'suggest_replacement'
+          ? annotation.replacement_text
+          : null,
+      }),
+  });
   const root = briefingRecord(await parseMaybeJson(response));
-  invalidateApiGetCache(`/api/asks/${encodeURIComponent(askId)}`);
+  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   return { annotation_event_ids: briefingStringArray(root.annotation_event_ids) };
 }
 
-export async function postAskSubmission(
-  askId: string,
+export async function postBriefingSubmission(
+  briefingId: string,
+  roundId: string,
   input: {
-    expected_lifecycle_event_id: string;
     supersedes_submission_id?: string;
-    answers: readonly AskSubmissionAnswer[];
+    answers: readonly BriefingSubmissionAnswer[];
     annotations?: ReadonlyArray<{ annotation_event_id: string }>;
   },
 ): Promise<unknown> {
-  const response = await apiPost(`/api/asks/${encodeURIComponent(askId)}/submit`, input);
-  invalidateApiGetCache(`/api/asks/${encodeURIComponent(askId)}`);
+  const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/submit`, {
+    supersedes_submission_id: input.supersedes_submission_id ?? null,
+    answers: input.answers.map((answer) => ({
+      directive_key: answer.directive_key,
+      response_event_id: answer.response_event_id,
+    })),
+    annotation_event_ids: (input.annotations ?? []).map((annotation) => annotation.annotation_event_id),
+  });
+  invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   invalidateApiGetCache('/api/dashboard/badges');
   return parseMaybeJson(response);
-}
-
-/** Normalize a raw `/api/briefing/candidates/:id/history` payload. */
-export function normalizeBriefingHistory(payload: unknown, candidateId: string): BriefingHistory {
-  const root = briefingContractRecord<ContractBriefingHistoryResponse>(payload);
-  const candidate = briefingContractRecord<ContractBriefingHistoryResponse['candidate']>(
-    root.candidate,
-  );
-  const revisions = (Array.isArray(root.revisions) ? root.revisions : []).map((entry) =>
-    normalizeBriefingRevision(entry, candidateId),
-  );
-  const decisions = (Array.isArray(root.decisions) ? root.decisions : []).map((entry) =>
-    normalizeBriefingDecisionEvent(entry, candidateId),
-  );
-  const comments = (Array.isArray(root.comments) ? root.comments : []).map((entry) => {
-    const row = briefingContractRecord<ContractBriefingComment>(entry);
-    return {
-      id: briefingString(row.id),
-      candidate_id: briefingString(row.candidate_id, candidateId),
-      revision_id: briefingString(row.revision_id),
-      body: briefingString(row.body),
-      actor_user_id: briefingOptionalString(row.actor_user_id),
-      created_at: briefingOptionalNumber(row.created_at),
-    } satisfies BriefingComment;
-  });
-  return {
-    candidate_id: briefingString(candidate.id, candidateId),
-    state: normalizeBriefingCandidateState(candidate.state),
-    revisions,
-    decisions,
-    comments,
-  };
-}
-
-function normalizeBriefingDecisionEvent(
-  value: unknown,
-  candidateId: string,
-): BriefingDecisionEvent {
-  const row = briefingContractRecord<ContractBriefingDecisionEvent>(value);
-  const action = briefingOptionalString(row.action);
-  return {
-    id: briefingString(row.id),
-    candidate_id: briefingString(row.candidate_id, candidateId),
-    revision_id: briefingString(row.revision_id),
-    action: BRIEFING_DECISION_ACTIONS.includes(action as BriefingDecisionAction)
-      ? (action as BriefingDecisionAction)
-      : 'expire',
-    actor_user_id: briefingOptionalString(row.actor_user_id),
-    comment_id: briefingOptionalString(row.comment_id),
-    created_at: briefingOptionalNumber(row.created_at),
-  };
-}
-
-/** Contract §4 — pending queue + deterministic per-source health. Read-only. */
-const BRIEFING_QUEUE_PATH = '/api/briefing/queue';
-
-/** Synchronously project a still-usable shared GET-cache entry for warm rendering. */
-export function getCachedBriefingQueue(now: number = Date.now()): BriefingQueue | null {
-  const cached = getJsonCache.get(cacheKeyForGet(BRIEFING_QUEUE_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeBriefingQueue(cached.value, now);
-}
-
-export async function getBriefingQueue(signal?: AbortSignal): Promise<BriefingQueue> {
-  const response = await apiGet(BRIEFING_QUEUE_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(BRIEFING_QUEUE_PATH), {
-    value: payload,
-    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
-    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
-  });
-  return normalizeBriefingQueue(payload, now);
-}
-
-/** Contract §4 — revisions + decisions + comments for one candidate. Read-only. */
-export async function getBriefingHistory(
-  candidateId: string,
-  signal?: AbortSignal,
-): Promise<BriefingHistory> {
-  const response = await apiGet(
-    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/history`,
-    signal ? { signal } : {},
-  );
-  return normalizeBriefingHistory(await parseMaybeJson(response), candidateId);
-}
-
-/**
- * The exact thing a judgment is about: a candidate AND the revision of it the
- * reviewer was shown. Both are required on purpose. A candidate-only decision
- * is resolved server-side against whatever revision is current at write time,
- * which silently misaddresses every decision made about a row the page rendered
- * before a re-ingest — most visibly, Undo on an older judged row clearing the
- * decision on a newer revision the operator never touched. Making the revision
- * part of the argument means no call site can express that decision at all.
- *
- * `expected_event_id` narrows an undo from "this revision" to "this judgment":
- * the decision event the caller was handed when it judged. The revision alone
- * does not stop an Undo from erasing a NEWER decision on the same revision made
- * elsewhere; naming the event makes that case a 409 instead.
- */
-export type BriefingDecisionTarget = {
-  candidate_id: string;
-  revision_id: string;
-  expected_event_id?: string;
-};
-
-/**
- * Contract §4 — record a human keep/dismiss/undo against one revision. The
- * server rejects publisher and agent credential classes and refuses in
- * read-only mode; the UI additionally gates every call site on
- * `operational_mutations === 'allow'`. Attribution comes from the authenticated
- * user, never from an agent_session param.
- */
-export async function postBriefingDecision(
-  target: BriefingDecisionTarget,
-  action: BriefingJudgeAction,
-): Promise<BriefingDecisionResult> {
-  const candidateId = target.candidate_id;
-  const request: ContractBriefingDecisionRequest = {
-    action,
-    revision_id: target.revision_id,
-    ...(target.expected_event_id ? { expected_event_id: target.expected_event_id } : {}),
-  };
-  const response = await apiPost(
-    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/decision`,
-    request,
-  );
-  const payload = briefingContractRecord<ContractBriefingDecisionResponse>(
-    await parseMaybeJson(response),
-  );
-  const resolvedAction = briefingOptionalString(payload.action);
-  // The pending count changed: drop the cached badge read so the nav badge
-  // reconciles from the server instead of a stale SWR entry.
-  invalidateApiGetCache('/api/dashboard/badges');
-  return {
-    candidate_id: briefingString(payload.candidate_id, candidateId),
-    revision_id: briefingOptionalString(payload.revision_id),
-    action: BRIEFING_DECISION_ACTIONS.includes(resolvedAction as BriefingDecisionAction)
-      ? (resolvedAction as BriefingDecisionAction)
-      : action,
-    event_id: briefingOptionalString(payload.event_id),
-    state: normalizeBriefingCandidateState(payload.state),
-  };
-}
-
-/**
- * Contract §4 — append an immutable operator comment to a candidate. A non-2xx
- * response throws in `apiPost`, so reaching the return means the comment landed.
- */
-export async function postBriefingComment(
-  candidateId: string,
-  body: string,
-  // The revision the note is about — the one this client displayed. Omitting
-  // it means "whatever revision is current server-side", which can silently
-  // drift under a concurrent re-ingest; callers that showed a revision pass it.
-  revisionId?: string,
-): Promise<BriefingComment> {
-  const response = await apiPost(
-    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/comments`,
-    { body, ...(revisionId ? { revision_id: revisionId } : {}) },
-  );
-  const payload = briefingContractRecord<ContractBriefingCommentResponse>(
-    await parseMaybeJson(response),
-  );
-  const row = briefingContractRecord<ContractBriefingComment>(payload.comment);
-  return {
-    id: briefingString(row.id),
-    candidate_id: briefingString(row.candidate_id, candidateId),
-    revision_id: briefingString(row.revision_id),
-    body: briefingString(row.body),
-    actor_user_id: briefingOptionalString(row.actor_user_id),
-    created_at: briefingOptionalNumber(row.created_at),
-  };
 }
 
 // ===========================================================================
@@ -4865,10 +4456,9 @@ export async function postBriefingComment(
 // an explicitly untrusted block. The dialog MUST render it as plain text.
 // ===========================================================================
 
-export type AgentDispatchSubjectKind = 'finding' | 'issue' | 'incident';
+export type AgentDispatchSubjectKind = 'issue' | 'incident';
 
 export type AgentDispatchSubject =
-  | { kind: 'finding'; candidate_id: string }
   | { kind: 'issue'; issue_ref: string }
   // Issue 5308097 spec §9. An incident subject is identified by the episode id
   // alone; the telemetry it carries is executor-asserted and re-read server-side
@@ -4902,7 +4492,6 @@ export type AgentDispatchPlan = {
 export type AgentDispatchEvent = {
   id: string;
   subject_kind: AgentDispatchSubjectKind;
-  candidate_id: string | null;
   comment_id: string | null;
   issue_id: string | null;
   incident_id: string | null;
@@ -4920,7 +4509,7 @@ export type AgentDispatchResult = {
   event: AgentDispatchEvent;
   /**
    * Incident subjects only: the incident projection the server moved as part of
-   * the confirmed dispatch (spec §7). `null` for finding/issue subjects and for
+   * the confirmed dispatch (spec §7). `null` for issue subjects and for
    * servers that do not report it.
    */
   incident: { id: string; remediation: ContractOperationalIncidentRemediation } | null;
@@ -4939,7 +4528,7 @@ export type AgentDispatchConfirmation = {
 function normalizeAgentDispatchSubjectKind(value: unknown): AgentDispatchSubjectKind {
   if (value === 'issue') return 'issue';
   if (value === 'incident') return 'incident';
-  return 'finding';
+  return 'issue';
 }
 
 function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
@@ -4948,7 +4537,6 @@ function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
   return {
     id: briefingString(row.id),
     subject_kind: normalizeAgentDispatchSubjectKind(row.subject_kind),
-    candidate_id: briefingOptionalString(row.candidate_id),
     comment_id: briefingOptionalString(row.comment_id),
     issue_id: briefingOptionalString(row.issue_id),
     incident_id: briefingOptionalString(row.incident_id),
@@ -4989,7 +4577,7 @@ export async function previewAgentDispatch(
  * way and the UI must show which happened.
  *
  * `confirmation` carries the digests a preview returned. They are sent verbatim
- * and only when present, so finding/issue callers keep the original two-argument
+ * and only when present, so issue callers keep the original two-argument
  * contract while an incident confirm pins the exact plan it displayed.
  */
 export async function dispatchAgent(
@@ -5020,13 +4608,12 @@ export async function dispatchAgent(
   };
 }
 
-/** Read the recorded dispatch chain for one finding or issue. */
+/** Read the recorded dispatch chain for one issue. */
 export async function getAgentDispatchEvents(
-  filter: { candidateId?: string; issueId?: string },
+  filter: { issueId?: string },
   signal?: AbortSignal,
 ): Promise<AgentDispatchEvent[]> {
   const query = new URLSearchParams();
-  if (filter.candidateId) query.set('candidate_id', filter.candidateId);
   if (filter.issueId) query.set('issue_id', filter.issueId);
   const response = await apiGet(
     `/api/agent-dispatch/events?${query.toString()}`,

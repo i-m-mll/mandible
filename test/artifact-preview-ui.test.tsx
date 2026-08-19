@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -404,10 +404,18 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(container.querySelector('.artifact-preview')).toBeNull();
   });
 
-  it('keeps custody and role metadata out of the header eyebrow', () => {
-    const { container } = renderArtifactDetail(null);
-    const eyebrow = container.querySelector('.artifact-detail__eyebrow');
+  it('uses the shared versioned geometry with bare series identity and canonical copy authority', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const selected = version({ id: 'artifact-version:v1-full', version_no: 1 });
+    const { container } = renderArtifactDetail(null, {
+      versions: [selected],
+      selectedVersion: selected,
+      selectedVersionNo: null,
+    });
     const header = container.querySelector('.artifact-detail__header');
+    const composition = header?.querySelector('.detail-pane-header[data-detail-pane-header-variant="versioned"]');
+    const main = composition?.querySelector('.detail-pane-header__main');
     const pane = container.querySelector('.artifact-detail__pane');
     const body = container.querySelector('.artifact-detail__body');
     const detail = container.querySelector('.artifact-detail');
@@ -415,16 +423,32 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(detail?.classList.contains('detail-pane-shell')).toBe(true);
     expect(header?.classList.contains('detail-pane-shell__header')).toBe(true);
     expect(pane?.classList.contains('detail-pane-shell__body')).toBe(true);
-    expect(header?.querySelector('.detail-pane-shell__header-primary.artifact-detail__header-primary')).toBeTruthy();
-    expect(eyebrow?.textContent).toContain('rlrmp');
-    expect(eyebrow?.textContent).toContain('156f240');
-    expect(eyebrow?.textContent).not.toContain('link');
-    expect(eyebrow?.textContent).not.toContain('script');
+    expect(main?.children).toHaveLength(2);
+    expect(main?.children[0]?.classList.contains('detail-pane-header__topline')).toBe(true);
+    expect(main?.children[1]?.classList.contains('detail-pane-header__title-row')).toBe(true);
+    expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).toContain('156f240');
+    expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).not.toContain('artifact-series:');
+    expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).not.toContain('rlrmp');
+    expect(within(composition as HTMLElement).getByText('Latest', { selector: '.detail-pane-header__state' })).toBeTruthy();
+    const selectorGroup = within(composition as HTMLElement).getByRole('group', { name: 'Artifact version' });
+    const selectorControl = selectorGroup.querySelector('.detail-pane-header__selector-control') as HTMLElement;
+    const selector = within(selectorGroup).getByRole('combobox', { name: 'Artifact version' });
+    const selectorCopy = within(selectorGroup).getByRole('button', { name: 'Copy selected artifact-version reference' });
+    expect(selectorControl.firstElementChild).toBe(selector);
+    expect(selectorControl.nextElementSibling).toBe(selectorCopy);
+    expect(composition?.querySelector('.artifact-detail__version-control')).toBeNull();
+    expect(within(composition as HTMLElement).getByRole('heading', { name: 'train.py' })).toBeTruthy();
+    expect(within(composition as HTMLElement).getByRole('button', { name: 'Artifact actions' })).toBeTruthy();
+    fireEvent.click(within(composition as HTMLElement).getByRole('button', { name: 'Copy full artifact series ref' }));
+    fireEvent.click(selectorCopy);
+    await waitFor(() => expect(writeText).toHaveBeenNthCalledWith(1, 'artifact-series:156f240abcdef'));
+    expect(writeText).toHaveBeenNthCalledWith(2, 'artifact-version:v1-full');
     expect(detail?.contains(header as Node)).toBe(true);
     expect(detail?.contains(pane as Node)).toBe(true);
     expect(header?.nextElementSibling).toBe(pane);
     expect(pane?.contains(header as Node)).toBe(false);
     expect(pane?.contains(body as Node)).toBe(true);
+    expect(pane?.querySelector('.artifact-detail__context')?.textContent).toContain('link · script');
   });
 
   it('shows compact raw JSON after toggling without changing the code preview surface', () => {

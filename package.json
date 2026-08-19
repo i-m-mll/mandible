@@ -15,6 +15,7 @@
     "dev": "node scripts/run-tsc.js --watch & node ui/esbuild.config.js --watch",
     "iab-preview": "node scripts/iab-preview.mjs",
     "iab-preview-cleanup": "node scripts/iab-preview.mjs cleanup",
+    "demo:briefing": "node scripts/demo-briefing.mjs",
     "preview-db-snapshot": "node scripts/project-db-snapshot.mjs",
     "conversation-cutover": "node scripts/conversation-cutover-proof.mjs",
     "test:iab-preview-cleanup": "node scripts/test-iab-preview-cleanup.mjs",
@@ -32,7 +33,10 @@
     "better-sqlite3": "^11.10.0",
     "chokidar": "^4.0.3",
     "node-pty": "^1.1.0",
+    "remark-directive": "^3.0.0",
+    "remark-parse": "^11.0.0",
     "smol-toml": "^1.6.1",
+    "unified": "^11.0.5",
     "ws": "^8.21.0"
   },
   "devDependencies": {
@@ -62,10 +66,7 @@
     "jsdom": "^24.0.0",
     "marked": "^13.0.2",
     "preact": "^10.19.3",
-    "remark-directive": "^3.0.0",
-    "remark-parse": "^11.0.0",
     "typescript": "^5.0.0",
-    "unified": "^11.0.5",
     "vitest": "^4.1.8"
   }
 }

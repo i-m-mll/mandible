@@ -28,6 +28,7 @@ import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { appColors } from '../theme';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { useRegisterAppBottomPanel } from '../app-shell';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
@@ -1163,9 +1164,7 @@ export function GraphView({
     <div className={`graph-view${sidebarHidden ? ' graph-view--sidebar-hidden' : ''}`}>
       <ViewSidebar
         hidden={sidebarHidden}
-        storageKey="mandible_graph_sidebar_width:v1"
-        defaultWidth={320}
-        minWidth={260}
+        {...VIEW_SIDEBAR_GEOMETRY.graph}
         ariaLabel="Graph controls"
         className="graph-sidebar"
       >

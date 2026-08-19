@@ -6,10 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 // Issue 24f0316 — the ledger database lives under the durable root now.
 // Previews stay in the disposable cache root: they are regenerable copies.
-const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
+const require = createRequire(import.meta.url);
+const { liveDbPath } = require("../cli/mandible-paths.cjs");
 
 const DEFAULT_PORT_START = 19421;
 const DEFAULT_PORT_END = 19499;
@@ -19,8 +21,10 @@ const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
 
-const command = process.argv[2] === "cleanup" ? "cleanup" : "preview";
-const args = parseArgs(command === "cleanup" ? process.argv.slice(3) : process.argv.slice(2), command);
+const command = process.argv[2] === "cleanup"
+  ? "cleanup"
+  : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo" : "preview";
+const args = parseArgs(command === "preview" ? process.argv.slice(2) : process.argv.slice(3), command);
 
 if (args.help) {
   printUsage(command);
@@ -28,7 +32,9 @@ if (args.help) {
 }
 
 try {
-  const result = command === "cleanup" ? await cleanupPreviewCache(args) : await main(args);
+  const result = command === "cleanup"
+    ? await cleanupPreviewCache(args)
+    : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
   printResult(result, args.json);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -59,14 +65,18 @@ async function main(options) {
     branch = currentBranch;
     worktree = repoRoot;
     mode = "current-integration";
-    const existing = await healthyExistingPreview(branch);
+    const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
+      const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+      if (existing.health?.startup_commit?.hash !== currentHead) {
+        return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
+      }
       return {
+        ...withBrowserReadyUrl(existing),
         ok: true,
         status: "already-running",
         mode,
         message: "Already on an integration branch with a healthy preview.",
-        ...existing,
       };
     }
   } else {
@@ -80,14 +90,30 @@ async function main(options) {
         `Current branch is ${currentBranch}; run from ${protectedBranch}, run from an integration branch, or pass --force-new.`,
       );
     }
-    const existing = !options.forceNew ? await healthyExistingPreview(branch) : null;
+    const selectedWorktree = worktreeForBranch(repoRoot, branch);
+    const existing = !options.forceNew
+      ? await healthyExistingPreview(branch, { worktree: selectedWorktree })
+      : null;
     if (existing && !options.dryRun) {
+      if (!selectedWorktree) {
+        throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
+      }
+      const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
+      if (existing.health?.startup_commit?.hash !== currentHead) {
+        return refreshExistingPreview(existing, {
+          branch,
+          worktree: selectedWorktree,
+          mode,
+          currentHead,
+          options,
+        });
+      }
       return {
+        ...withBrowserReadyUrl(existing),
         ok: true,
         status: "already-running",
         mode,
         message: "Preview metadata points to a healthy instance.",
-        ...existing,
       };
     }
     worktree = options.dryRun
@@ -121,6 +147,7 @@ async function main(options) {
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
         MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
         MANDIBLE_FILE_RPC_DIR: path.join(preview.root, "agent-rpc"),
+        MANDIBLE_CONFIG_DIR: path.join(preview.root, "config"),
       },
     };
   }
@@ -149,7 +176,7 @@ async function main(options) {
   const stdoutLog = path.join(preview.root, "stdout.log");
   const stderrLog = path.join(preview.root, "stderr.log");
   const pidFile = path.join(preview.root, "mandible.pid");
-  const launchLabel = `bio.mll.mandible.preview.${port}.${slugify(branch)}`.slice(0, 240);
+  const launchLabel = previewLaunchLabel(port, branch);
   const runScript = path.join(preview.root, "run.sh");
   writeRunScript(runScript, {
     worktree,
@@ -208,7 +235,145 @@ async function main(options) {
     keepDbPaths: [dbCopy],
   });
   fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
-  return metadata;
+  return withBrowserReadyUrl(metadata);
+}
+
+async function seedBriefingDemo(options) {
+  const custody = validateBriefingDemoCustody();
+  buildServer(custody.worktree);
+
+  const priorEnv = {};
+  const seedEnv = {
+    MANDIBLE_DB: custody.db,
+    MANDIBLE_ARTIFACT_DIR: custody.artifactRoot,
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_INSTANCE_SOURCE_DB: custody.sourceDb,
+  };
+  for (const [key, value] of Object.entries(seedEnv)) {
+    priorEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
+
+  let db = null;
+  try {
+    const cacheBust = `?iab-preview-seed=${Date.now()}`;
+    const [{ openDb }, { seedRichBriefingDemo }] = await Promise.all([
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "db.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "feedback", "rich-briefing-demo.js")).href}${cacheBust}`),
+    ]);
+    db = openDb(custody.db);
+    const manifest = seedRichBriefingDemo(db, {
+      databasePath: custody.db,
+      artifactRoot: custody.artifactRoot,
+    });
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    db.close();
+    db = null;
+    return {
+      ...manifest,
+      ok: true,
+      status: manifest.result,
+      branch: custody.branch,
+      worktree: custody.worktree,
+      previewRoot: custody.previewRoot,
+      db: custody.db,
+      sourceDb: custody.sourceDb,
+      artifactRoot: custody.artifactRoot,
+    };
+  } finally {
+    db?.close();
+    for (const [key, value] of Object.entries(priorEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function validateBriefingDemoCustody() {
+  const cwd = process.cwd();
+  const worktree = git(["rev-parse", "--show-toplevel"], { cwd }).stdout.trim();
+  const branch = git(["branch", "--show-current"], { cwd: worktree }).stdout.trim();
+  const protectedBranch = resolveProtectedBranch(worktree);
+  if (!branch.startsWith("integration/") || branch === protectedBranch) {
+    throw new Error(`Refusing demo seed: current branch must be a non-protected integration branch, got ${branch || "<detached>"}.`);
+  }
+
+  const preview = previewPaths(branch);
+  if (!fs.existsSync(preview.metadata)) {
+    throw new Error(`Refusing demo seed: launcher metadata is missing: ${preview.metadata}`);
+  }
+  const metadata = readJsonFile(preview.metadata);
+  if (!metadata) throw new Error(`Refusing demo seed: launcher metadata is unreadable: ${preview.metadata}`);
+  if (metadata.branch !== branch) throw new Error("Refusing demo seed: metadata branch does not match the current integration branch.");
+  if (!metadata.worktree || canonicalPath(metadata.worktree) !== canonicalPath(worktree)) {
+    throw new Error("Refusing demo seed: metadata worktree does not match the current worktree.");
+  }
+  if (!metadata.previewRoot || canonicalPath(metadata.previewRoot) !== canonicalPath(preview.root)) {
+    throw new Error("Refusing demo seed: metadata previewRoot does not match the computed launcher preview root.");
+  }
+
+  if (!metadata.db || !path.isAbsolute(metadata.db) || !fs.existsSync(metadata.db)) {
+    throw new Error("Refusing demo seed: metadata database is missing.");
+  }
+  const db = canonicalPath(metadata.db);
+  const previewRoot = canonicalPath(preview.root);
+  if (!isPathWithin(previewRoot, db) || !fs.statSync(db).isFile()) {
+    throw new Error("Refusing demo seed: metadata database is outside the computed preview root or is not a file.");
+  }
+  const currentPath = path.join(previewRoot, "current.db");
+  const currentTarget = readSymlinkTarget(currentPath);
+  if (!currentTarget || canonicalPath(currentTarget) !== db || path.resolve(currentTarget) !== path.resolve(metadata.db)) {
+    throw new Error("Refusing demo seed: current.db does not exactly select the metadata database.");
+  }
+
+  const expectedPolicy = {
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+  };
+  for (const [key, value] of Object.entries(expectedPolicy)) {
+    if (metadata.instanceEnv?.[key] !== value) {
+      throw new Error(`Refusing demo seed: persisted ${key} does not match the preview policy.`);
+    }
+  }
+  const persistedInstance = metadata.health?.instance;
+  if (persistedInstance?.role !== "preview" || persistedInstance?.operational_mutations !== "reject" ||
+      persistedInstance?.db_path_source !== "iab-preview-copy") {
+    throw new Error("Refusing demo seed: metadata instance policy does not match the persisted preview contract.");
+  }
+  if (metadata.instanceEnv?.MANDIBLE_DB !== metadata.db) {
+    throw new Error("Refusing demo seed: persisted MANDIBLE_DB does not match metadata.db.");
+  }
+  if (!metadata.sourceDb || !path.isAbsolute(metadata.sourceDb) || !fs.existsSync(metadata.sourceDb)) {
+    throw new Error("Refusing demo seed: metadata sourceDb is missing.");
+  }
+  if (metadata.instanceEnv?.MANDIBLE_INSTANCE_SOURCE_DB !== metadata.sourceDb) {
+    throw new Error("Refusing demo seed: persisted MANDIBLE_INSTANCE_SOURCE_DB does not match metadata.sourceDb.");
+  }
+  const sourceDb = canonicalPath(metadata.sourceDb);
+  if (!fs.statSync(sourceDb).isFile() || isPathWithin(previewRoot, sourceDb) ||
+      path.resolve(metadata.sourceDb) === path.resolve(metadata.db) || sourceDb === db) {
+    throw new Error("Refusing demo seed: sourceDb aliases the target or is not isolated outside the preview root.");
+  }
+  if (canonicalPath(persistedInstance.db_path ?? "") !== db ||
+      canonicalPath(persistedInstance.source_db_path ?? "") !== sourceDb) {
+    throw new Error("Refusing demo seed: metadata instance database custody does not match db and sourceDb.");
+  }
+
+  const artifactRoot = canonicalFuturePath(path.join(previewRoot, "rich-briefing-demo-artifacts"));
+  if (!isPathWithin(previewRoot, artifactRoot) || artifactRoot === previewRoot ||
+      artifactRoot === canonicalFuturePath(`${metadata.sourceDb}.artifacts`)) {
+    throw new Error("Refusing demo seed: demo artifact custody is not isolated inside the preview root.");
+  }
+  return { branch, worktree: canonicalPath(worktree), previewRoot, db, sourceDb, artifactRoot };
+}
+
+function buildServer(worktree) {
+  const typescriptEntry = require.resolve("typescript");
+  const compiler = path.join(path.dirname(typescriptEntry), "tsc.js");
+  run(process.execPath, [compiler, "-p", path.join(worktree, "tsconfig.json")], { cwd: worktree });
 }
 
 async function cleanupPreviewCache(options) {
@@ -290,6 +455,9 @@ function parseArgs(argv, commandName) {
   if (commandName === "cleanup") {
     return parseCleanupArgs(argv);
   }
+  if (commandName === "seed-briefing-demo") {
+    return parseSeedBriefingDemoArgs(argv);
+  }
 
   const options = {
     branch: null,
@@ -341,6 +509,16 @@ function parseArgs(argv, commandName) {
   return options;
 }
 
+function parseSeedBriefingDemoArgs(argv) {
+  const options = { help: false, json: false };
+  for (const arg of argv) {
+    if (arg === "--help" || arg === "-h") options.help = true;
+    else if (arg === "--json") options.json = true;
+    else throw new Error(`Unknown argument for seed-briefing-demo: ${arg}`);
+  }
+  return options;
+}
+
 function parseCleanupArgs(argv) {
   const options = {
     apply: false,
@@ -385,6 +563,14 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage(commandName = "preview") {
+  if (commandName === "seed-briefing-demo") {
+    console.log(`Usage: node scripts/iab-preview.mjs seed-briefing-demo [--json]
+
+Seed the deterministic rich Briefing fixture into the current integration
+branch's launcher-owned preview copy after validating metadata custody.
+`);
+    return;
+  }
   if (commandName === "cleanup") {
     console.log(`Usage: node scripts/iab-preview.mjs cleanup [options]
 
@@ -438,6 +624,15 @@ function printResult(result, json) {
     for (const entry of result.entries ?? []) {
       console.log(`${entry.action}: ${entry.path} (${formatBytes(entry.bytes ?? 0)}) - ${entry.reason}`);
     }
+    return;
+  }
+
+  if (result.schema === "mandible-rich-briefing-demo@2") {
+    console.log(`Mandible rich Briefing demo ${result.status}`);
+    console.log(`Database: ${result.db}`);
+    console.log(`Source database: ${result.sourceDb}`);
+    console.log(`Artifact custody: ${result.artifactRoot}`);
+    console.log(`Briefing: ${result.briefing.id}`);
     return;
   }
 
@@ -527,7 +722,7 @@ function branchExists(repoRoot, branch) {
   }).status === 0;
 }
 
-async function healthyExistingPreview(branch) {
+async function healthyExistingPreview(branch, expected = {}) {
   const preview = previewPaths(branch);
   if (!fs.existsSync(preview.metadata)) return null;
 
@@ -538,12 +733,199 @@ async function healthyExistingPreview(branch) {
   if (!health) return null;
   if (!hasExpectedPreviewPolicy(health)) return null;
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
+  validatePreviewIdentity(metadata, preview, branch, expected.worktree);
 
   return {
     ...metadata,
     health,
-    freshUrl: `http://127.0.0.1:${metadata.port}/?fresh=${Date.now()}#/timeline`,
+    freshUrl: browserUrl(metadata.port),
   };
+}
+
+async function refreshExistingPreview(existing, details) {
+  const preview = previewPaths(details.branch);
+  const validated = validateRefreshContract(existing, preview, details);
+
+  ensureDependencies(details.worktree);
+  run("npm", ["run", "build"], { cwd: details.worktree });
+
+  writeRunScript(validated.runScript, {
+    worktree: details.worktree,
+    port: validated.port,
+    dbCopy: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+    pidFile: validated.pidFile,
+    nodePath: process.execPath,
+    stdoutLog: validated.stdoutLog,
+    stderrLog: validated.stderrLog,
+  });
+
+  const restartLifecycle = await restartPreviewProcess({
+    launchLabel: validated.launchLabel,
+    runScript: validated.runScript,
+    worktree: details.worktree,
+    port: validated.port,
+    dbCopy: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+    pidFile: validated.pidFile,
+    stdoutLog: validated.stdoutLog,
+    stderrLog: validated.stderrLog,
+  });
+
+  const health = await waitForPreviewRevision(
+    validated.port,
+    {
+      head: details.currentHead,
+      dbCopy: validated.dbCopy,
+      sourceDb: validated.sourceDb,
+      previewRoot: preview.root,
+    },
+    HEALTH_TIMEOUT_MS,
+    validated.stderrLog,
+  );
+  const refreshed = {
+    ...existing,
+    ok: true,
+    status: "refreshed",
+    mode: details.mode,
+    message: `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
+    branch: details.branch,
+    worktree: details.worktree,
+    port: validated.port,
+    db: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+    previewRoot: preview.root,
+    launchLabel: validated.launchLabel,
+    pidFile: validated.pidFile,
+    stdoutLog: validated.stdoutLog,
+    stderrLog: validated.stderrLog,
+    runScript: validated.runScript,
+    instanceEnv: validated.instanceEnv,
+    restartLifecycle,
+    health,
+    refreshedAt: new Date().toISOString(),
+    previousStartupCommit: existing.health.startup_commit,
+  };
+  delete refreshed.freshUrl;
+  delete refreshed.browserEnrollment;
+  fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
+  return withBrowserReadyUrl(refreshed);
+}
+
+function validatePreviewIdentity(metadata, preview, branch, expectedWorktree) {
+  if (metadata.branch !== branch) {
+    throw new Error(`Refusing preview reuse: metadata branch ${metadata.branch ?? "<missing>"} does not match ${branch}.`);
+  }
+  if (expectedWorktree && (!metadata.worktree || canonicalPath(metadata.worktree) !== canonicalPath(expectedWorktree))) {
+    throw new Error(
+      `Refusing preview reuse: metadata worktree ${metadata.worktree ?? "<missing>"} does not match ${expectedWorktree}.`,
+    );
+  }
+  if (metadata.previewRoot && canonicalPath(metadata.previewRoot) !== canonicalPath(preview.root)) {
+    throw new Error(`Refusing preview reuse: metadata preview root does not match ${preview.root}.`);
+  }
+}
+
+function validateRefreshContract(existing, preview, details) {
+  validatePreviewIdentity(existing, preview, details.branch, details.worktree);
+  if (!/^[0-9a-f]{40}$/.test(details.currentHead)) {
+    throw new Error(`Cannot refresh preview from invalid worktree HEAD: ${details.currentHead}`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(existing.health?.startup_commit?.hash ?? "")) {
+    throw new Error("Cannot refresh preview because health.startup_commit.hash is missing or is not a full commit hash.");
+  }
+
+  const port = existing.port;
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error("Cannot refresh preview because metadata.port is invalid.");
+  }
+  const expectedLabel = previewLaunchLabel(port, details.branch);
+  if (existing.launchLabel !== expectedLabel) {
+    throw new Error(`Refusing preview refresh: launch label ${existing.launchLabel ?? "<missing>"} does not match ${expectedLabel}.`);
+  }
+
+  const expectedPaths = {
+    dbCopy: path.join(preview.root, path.basename(existing.db ?? "")),
+    pidFile: path.join(preview.root, "mandible.pid"),
+    stdoutLog: path.join(preview.root, "stdout.log"),
+    stderrLog: path.join(preview.root, "stderr.log"),
+    runScript: path.join(preview.root, "run.sh"),
+  };
+  if (!existing.db || canonicalPath(existing.db) !== canonicalPath(expectedPaths.dbCopy)) {
+    throw new Error("Refusing preview refresh: metadata database is missing or outside the selected preview root.");
+  }
+  const currentDb = readSymlinkTarget(path.join(preview.root, "current.db"));
+  if (!fs.existsSync(existing.db) || !currentDb || canonicalPath(currentDb) !== canonicalPath(existing.db)) {
+    throw new Error("Refusing preview refresh: metadata database is missing or current.db does not select it.");
+  }
+  for (const [key, expectedPath] of Object.entries(expectedPaths)) {
+    if (key === "dbCopy") continue;
+    if (!existing[key] || canonicalPath(existing[key]) !== canonicalPath(expectedPath)) {
+      throw new Error(`Refusing preview refresh: metadata ${key} does not match ${expectedPath}.`);
+    }
+  }
+  if (!existing.sourceDb || !fs.existsSync(existing.sourceDb)) {
+    throw new Error("Refusing preview refresh: metadata sourceDb is missing or unreadable.");
+  }
+
+  const instanceEnv = previewInstanceEnv({
+    port,
+    dbCopy: existing.db,
+    sourceDb: existing.sourceDb,
+    pidFile: expectedPaths.pidFile,
+  });
+  for (const [key, value] of Object.entries(instanceEnv)) {
+    if (existing.instanceEnv?.[key] !== value) {
+      throw new Error(`Refusing preview refresh: persisted ${key} does not match the required preview contract.`);
+    }
+  }
+  if (!hasExpectedPreviewFileRpc(existing, existing.health, preview.root)) {
+    throw new Error("Refusing preview refresh: preview file-RPC custody is not isolated to the selected preview root.");
+  }
+
+  return {
+    port,
+    launchLabel: expectedLabel,
+    ...expectedPaths,
+    sourceDb: existing.sourceDb,
+    instanceEnv,
+  };
+}
+
+function withBrowserReadyUrl(preview) {
+  const tokenPath = path.join(
+    preview.previewRoot ?? path.dirname(preview.db),
+    "config",
+    "client-auth",
+    "bootstrap-token",
+  );
+  const token = readProtectedToken(tokenPath);
+  return {
+    ...preview,
+    freshUrl: browserUrl(preview.port, token),
+    browserEnrollment: token ? "one-time-fragment" : "existing-session",
+  };
+}
+
+function browserUrl(port, token = null) {
+  const hashQuery = token
+    ? `?${new URLSearchParams({ mandible_auth: token }).toString()}`
+    : "";
+  return `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline${hashQuery}`;
+}
+
+function readProtectedToken(tokenPath) {
+  try {
+    const stat = fs.statSync(tokenPath);
+    if (!stat.isFile()) return null;
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error(`Preview bootstrap token has unsafe permissions: ${tokenPath}`);
+    }
+    return fs.readFileSync(tokenPath, "utf8").trim() || null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 async function analyzePreviewDirForCleanup(dirPath, apply) {
@@ -763,6 +1145,18 @@ function canonicalPath(candidatePath) {
   }
 }
 
+function canonicalFuturePath(candidatePath) {
+  let probe = path.resolve(candidatePath);
+  const suffix = [];
+  while (!fs.existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    suffix.unshift(path.basename(probe));
+    probe = parent;
+  }
+  return path.join(canonicalPath(probe), ...suffix);
+}
+
 function ensureDependencies(worktree) {
   const tsc = path.join(worktree, "node_modules", "typescript", "lib", "tsc.js");
   const esbuild = path.join(worktree, "node_modules", "esbuild", "bin", "esbuild");
@@ -803,9 +1197,10 @@ function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
 }
 
 async function startPreviewProcess(details) {
-  if (process.platform === "darwin" && commandExists("launchctl")) {
-    run("launchctl", ["remove", details.launchLabel], { allowFailure: true });
-    run("launchctl", ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript]);
+  const launchctl = launchctlCommand();
+  if (launchctl) {
+    run(launchctl, ["remove", details.launchLabel], { allowFailure: true });
+    run(launchctl, ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript]);
     return;
   }
 
@@ -818,6 +1213,94 @@ async function startPreviewProcess(details) {
     stdio: ["ignore", stdout, stderr],
   });
   child.unref();
+}
+
+async function restartPreviewProcess(details) {
+  const launchctl = launchctlCommand();
+  if (!launchctl) {
+    return startPreviewProcess(details);
+  }
+
+  // `launchctl remove` returns while a submitted job may still be SIGTERMed and
+  // registered. An immediate `submit` can therefore race deregistration after
+  // the old daemon is already down (and can also sever the session carrying
+  // this command). Kickstart keeps launchd registration intact throughout.
+  const serviceTarget = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/${details.launchLabel}`;
+  const before = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+  if (before.status !== 0) {
+    throw new Error(
+      `Refusing preview restart because launchd service ${serviceTarget} is not registered.\n` +
+      describeCommandResult(launchctl, ["print", serviceTarget], before),
+    );
+  }
+
+  const replacementArgs = ["kickstart", "-kp", serviceTarget];
+  const replacement = run(launchctl, replacementArgs, { allowFailure: true });
+  if (replacement.status === 0) {
+    const confirmed = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+    if (confirmed.status === 0) {
+      return {
+        mechanism: "launchctl-kickstart",
+        serviceTarget,
+        replacementPid: parseLaunchctlPid(replacement.stdout),
+        recovery: "not-needed",
+      };
+    }
+    return recoverLaunchdPreview(details, launchctl, serviceTarget, {
+      reason: "replacement command succeeded but service registration could not be confirmed",
+      evidence: describeCommandResult(launchctl, ["print", serviceTarget], confirmed),
+    });
+  }
+
+  return recoverLaunchdPreview(details, launchctl, serviceTarget, {
+    reason: "replacement kickstart failed",
+    evidence: describeCommandResult(launchctl, replacementArgs, replacement),
+  });
+}
+
+function recoverLaunchdPreview(details, launchctl, serviceTarget, failure) {
+  const registration = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+  let recoveryArgs;
+  if (registration.status === 0) {
+    recoveryArgs = ["kickstart", "-p", serviceTarget];
+  } else {
+    recoveryArgs = ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript];
+  }
+  const recovery = run(launchctl, recoveryArgs, { allowFailure: true });
+  const confirmed = run(launchctl, ["print", serviceTarget], { allowFailure: true });
+  if (recovery.status === 0 && confirmed.status === 0) {
+    return {
+      mechanism: "launchctl-kickstart",
+      serviceTarget,
+      replacementPid: parseLaunchctlPid(recovery.stdout),
+      recovery: registration.status === 0 ? "kickstart-registered-service" : "resubmit-missing-service",
+      initialFailure: failure,
+    };
+  }
+
+  throw new Error([
+    `Preview restart failed and recovery could not confirm launchd service ${serviceTarget}.`,
+    failure.reason,
+    failure.evidence,
+    describeCommandResult(launchctl, recoveryArgs, recovery),
+    describeCommandResult(launchctl, ["print", serviceTarget], confirmed),
+    `Recovery command: ${[launchctl, ...recoveryArgs].join(" ")}`,
+  ].join("\n"));
+}
+
+function launchctlCommand() {
+  return process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
+    (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
+}
+
+function parseLaunchctlPid(stdout) {
+  const value = Number.parseInt(String(stdout ?? "").trim(), 10);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function describeCommandResult(command, args, result) {
+  const output = [result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join("\n") || "no output";
+  return `${command} ${args.join(" ")} exited ${result.status ?? "without status"}: ${output}`;
 }
 
 function writeRunScript(runScript, details) {
@@ -834,6 +1317,7 @@ ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value)
 
 function previewInstanceEnv(details) {
   const fileRpcDir = path.join(path.dirname(details.dbCopy), "agent-rpc");
+  const configDir = path.join(path.dirname(details.dbCopy), "config");
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.dbCopy,
@@ -843,6 +1327,7 @@ function previewInstanceEnv(details) {
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
     MANDIBLE_FILE_RPC_DIR: fileRpcDir,
+    MANDIBLE_CONFIG_DIR: configDir,
   };
 }
 
@@ -873,6 +1358,39 @@ async function waitForHealth(port, timeoutMs, stderrLog) {
     ? fs.readFileSync(stderrLog, "utf8").split(/\r?\n/).slice(-80).join("\n")
     : "";
   throw new Error(`Preview did not become healthy on port ${port}.${tail ? `\nRecent stderr:\n${tail}` : ""}`);
+}
+
+async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
+  const start = Date.now();
+  let lastHealth = null;
+  while (Date.now() - start < timeoutMs) {
+    const health = await readHealth(port);
+    if (health) {
+      lastHealth = health;
+      if (!hasExpectedPreviewPolicy(health)) {
+        throw new Error(
+          `Preview on port ${port} became healthy without preview/reject instance policy: ` +
+          `${describePreviewPolicy(health)}`,
+        );
+      }
+      if (health.ready === true && health.warm === true &&
+          health.startup_commit?.hash === expected.head &&
+          hasExpectedRefreshHealth(health, expected)) {
+        return health;
+      }
+    }
+    await delay(500);
+  }
+
+  const tail = fs.existsSync(stderrLog)
+    ? fs.readFileSync(stderrLog, "utf8").split(/\r?\n/).slice(-80).join("\n")
+    : "";
+  const observed = lastHealth?.startup_commit?.hash ?? "unavailable";
+  throw new Error(
+    `Preview on port ${port} did not become ready and warm at ${expected.head} with the persisted isolation contract; ` +
+    `last startup commit was ${observed}.` +
+    `${tail ? `\nRecent stderr:\n${tail}` : ""}`,
+  );
 }
 
 function readHealth(port) {
@@ -921,6 +1439,13 @@ function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {
     health?.file_rpc_dir,
   ].filter(Boolean).map(canonicalPath);
   return candidates.length > 0 && candidates.every((candidate) => candidate === expected);
+}
+
+function hasExpectedRefreshHealth(health, expected) {
+  return canonicalPath(health?.instance?.db_path ?? "") === canonicalPath(expected.dbCopy) &&
+    health?.instance?.db_path_source === "iab-preview-copy" &&
+    canonicalPath(health?.instance?.source_db_path ?? "") === canonicalPath(expected.sourceDb) &&
+    canonicalPath(health?.file_rpc_dir ?? "") === canonicalPath(path.join(expected.previewRoot, "agent-rpc"));
 }
 
 function describePreviewPolicy(health) {
@@ -1080,6 +1605,14 @@ function slugify(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
+}
+
+function previewLaunchLabel(port, branch) {
+  return `bio.mll.mandible.preview.${port}.${slugify(branch)}`.slice(0, 240);
+}
+
+function shortHash(value) {
+  return String(value).slice(0, 8);
 }
 
 function expandHome(value) {

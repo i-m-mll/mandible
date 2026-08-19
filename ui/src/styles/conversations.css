@@ -218,39 +218,19 @@
   margin-bottom: 4px;
 }
 
-.conv-detail__header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 48px;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.conv-detail__header-left {
+.conv-detail__body {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.conv-detail__title-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.conv-detail__title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.25;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.conv-detail__shell-header {
+  display: flex;
+  flex-direction: column;
+}
+
+.conv-detail__parent {
+  order: -1;
 }
 
 .conv-attach-badge {
@@ -282,6 +262,12 @@
   border-color: color-mix(in srgb, var(--accent-blue) 42%, transparent);
 }
 
+.conv-detail__provider {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .conv-detail__meta {
   display: flex;
   align-items: center;
@@ -289,13 +275,6 @@
   flex-wrap: wrap;
   color: var(--text-muted);
   font-size: 11px;
-}
-
-.conv-detail__header-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
 }
 
 .conv-actions {

@@ -7,49 +7,44 @@ import type { BriefingCollectionViewState } from './collection-view-state';
 
 export type CollectionShellProps = {
   collections: readonly FeedbackCollection[];
+  loadError?: string | null;
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
-  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
+  onSelect?(collection: FeedbackCollection): void;
   children: ComponentChildren;
 };
 
 export function CollectionShell({
   collections,
+  loadError = null,
   sidebarHidden = false,
   viewState,
   setViewState,
-  onSetExpiry,
+  onSelect,
   children,
 }: CollectionShellProps): JSX.Element {
-  const storedSelectionIsVisible = collections.some(
-    (collection) => collection.id === viewState.selectedCollectionId,
-  );
-  const selectedCollectionId = storedSelectionIsVisible
-    ? viewState.selectedCollectionId
-    : collections.find((collection) => collection.source === viewState.source)?.id
-      ?? viewState.selectedCollectionId
-      ?? null;
+  const selectedCollectionId = viewState.selectedCollectionId;
   const selectCollection = (collection: FeedbackCollection) => {
     setViewState((current) => ({
       ...current,
       selectedCollectionId: collection.id,
-      source: collection.source ?? current.source,
     }));
+    onSelect?.(collection);
   };
 
   return (
     <div className="feedback-collection-shell" data-testid="feedback-collection-shell">
       <CollectionsSidebar
         collections={collections}
+        loadError={loadError}
         hidden={sidebarHidden}
         selectedCollectionId={selectedCollectionId}
         viewState={viewState}
         setViewState={setViewState}
         onSelect={selectCollection}
-        onSetExpiry={onSetExpiry}
       />
-      <section className="feedback-collection-shell__content" aria-label="Selected feedback collection">
+      <section className="feedback-collection-shell__content" aria-label="Selected Briefing">
         <div className="feedback-collection-shell__content-inner">
           {children}
         </div>

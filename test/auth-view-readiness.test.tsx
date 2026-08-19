@@ -150,6 +150,8 @@ describe('AuthQueueView daemon readiness gate', () => {
     const requestPane = document.querySelector('.auth-detail-pane');
     const requestHeader = document.querySelector('.auth-detail__header');
     const requestBody = document.querySelector('.auth-detail__body');
+    const canonicalHeaders = requestHeader?.querySelectorAll('[data-detail-pane-header-variant="standard"]');
+    const canonicalHeader = canonicalHeaders?.[0] as HTMLElement | undefined;
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(warning).toBeTruthy();
     expect(warning?.getAttribute('data-testid')).toBe('preview-disabled-notice');
@@ -161,11 +163,14 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(requestHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
     expect(requestBody?.classList.contains('detail-pane-shell__body')).toBe(true);
     expect(requestHeader?.querySelector('.detail-pane-shell__header-primary.auth-detail__header-primary')).toBeTruthy();
+    expect(canonicalHeaders).toHaveLength(1);
+    expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
     expect(requestHeader && warning?.compareDocumentPosition(requestHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(requestBody?.contains(warning as Node)).toBe(false);
     expect(requestBody?.contains(requestHeader as Node)).toBe(false);
     expect(requestBody?.contains(approve)).toBe(false);
     expect(requestHeader?.contains(approve)).toBe(true);
+    expect(canonicalHeader?.contains(screen.getByRole('button', { name: 'Auth actions' }))).toBe(true);
     expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
 
     expect(approve.disabled).toBe(true);

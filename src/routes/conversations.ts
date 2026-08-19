@@ -1,6 +1,6 @@
 // API routes for the chat log / conversation system.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
@@ -18,6 +18,11 @@ import {
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
 import { getConversationSearchCache } from "../conversations/search-cache.js";
+import {
+  ConversationSidebarCursorError,
+  buildConversationSidebar,
+  type ConversationSidebarSort,
+} from "../conversations/sidebar-projection.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
@@ -424,6 +429,105 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       });
     }
   }, { fileRpc: "deny" });
+
+  // GET /api/conversations/sidebar — bounded, independently paged sidebar groups.
+  server.get("/api/conversations/sidebar", async (req, res) => {
+    const query = req.query ?? {};
+    const parsedLimit = parseInt(query.limit || "20", 10);
+    const limit = Math.min(100, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 20));
+    const groupKey = query.group_key || undefined;
+    const cursor = query.cursor || undefined;
+    if (cursor && !groupKey) {
+      sendJson(res, 400, { error: "group_key is required with cursor" });
+      return;
+    }
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (query.source) {
+      conditions.push("c.source = ?");
+      params.push(query.source);
+    }
+    if (query.starred === "true" || query.starred === "1") {
+      conditions.push("c.starred = 1");
+    } else if (query.starred === "false" || query.starred === "0") {
+      conditions.push("c.starred = 0");
+    }
+
+    const searchNeedle = (query.search ?? "").trim();
+    const fullTextSearch = query.full_text === "true" || query.full_text === "1";
+    if (searchNeedle && !fullTextSearch) {
+      conditions.push("c.title LIKE ?");
+      params.push(`%${searchNeedle}%`);
+    }
+    const minBlocks = parseInt(query.min_blocks || "", 10);
+    if (Number.isFinite(minBlocks) && minBlocks > 0) {
+      conditions.push("c.block_count >= ?");
+      params.push(minBlocks);
+    }
+    const excludeSubagents = query.exclude_subagents === "true" || query.exclude_subagents === "1";
+    if (excludeSubagents) {
+      conditions.push("c.parent_conversation_id IS NULL");
+      conditions.push("(c.project_path IS NULL OR c.project_path != 'subagents')");
+      conditions.push("LOWER(c.source_path) NOT LIKE '%/subagents/%'");
+      conditions.push("LOWER(c.title) NOT LIKE 'you are a subagent%'");
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const sort: ConversationSidebarSort = query.sort === "block_count" ? "block_count" : "started_at";
+    const querySignature = createHash("sha256").update(JSON.stringify({
+      source: query.source || null,
+      starred: query.starred || null,
+      search: searchNeedle,
+      full_text: fullTextSearch,
+      min_blocks: Number.isFinite(minBlocks) && minBlocks > 0 ? minBlocks : null,
+      exclude_subagents: excludeSubagents,
+      sort,
+    })).digest("base64url");
+
+    let rows = db.prepare(`SELECT c.* FROM conversations c ${where}`).all(...params) as ConversationRow[];
+    if (searchNeedle && fullTextSearch && rows.length > 0) {
+      const searched = await getConversationSearchCache(db).search({
+        conversationIds: rows.map((row) => row.id),
+        needle: searchNeedle,
+        limit: rows.length,
+      });
+      const matching = new Set(searched.matches.map((match) => match.conversation_id));
+      rows = rows.filter((row) => matching.has(row.id));
+    }
+    try {
+      const groups = buildConversationSidebar({
+        rows,
+        sort,
+        querySignature,
+        limit,
+        groupKey,
+        cursor,
+      });
+      if (groupKey && groups.length === 0) {
+        sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
+        return;
+      }
+      sendJson(res, 200, {
+        groups: groups.map((group) => ({
+          key: group.key,
+          kind: group.kind,
+          label: group.label,
+          total: group.total,
+          conversations: group.rows.map((row) => fullTextSearch
+            ? mapSearchConversation(row, sessionManager)
+            : mapConversation(row, sessionManager)),
+          next_cursor: group.next_cursor,
+        })),
+        limit,
+      });
+    } catch (error) {
+      if (error instanceof ConversationSidebarCursorError) {
+        sendJson(res, 400, { error: error.message });
+        return;
+      }
+      throw error;
+    }
+  }, { fileRpc: "allow" });
 
   // --- Parameterized routes ---
 

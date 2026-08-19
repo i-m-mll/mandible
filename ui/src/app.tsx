@@ -1,6 +1,6 @@
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 
 import {
   acknowledgeInboxItem,
@@ -12,7 +12,6 @@ import {
   getAuthHistory,
   getAuthQueue,
   getConsoleSessions,
-  getConversations,
   getDashboardBadges,
   getInboxGlobal,
   getIssueRepos,
@@ -83,7 +82,12 @@ import {
 } from './state';
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
 import type { BugRef, ConsoleSession } from './state';
-import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
+import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
+import {
+  readInitialViewSidebarWidths,
+  viewSidebarGeometryForRoute,
+  type ViewSidebarWidths,
+} from './view-sidebar-geometry';
 import {
   ChatIcon,
   IssuesIcon,
@@ -105,6 +109,7 @@ import {
   subscribeAgentPageBinding,
 } from './agent-page-binding';
 import { LoadingSkeleton } from './components/LoadingSkeleton';
+import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
@@ -134,13 +139,6 @@ const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#0b0f14',
   light: '#f5f7fb',
 } as const;
-const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
-  system: 'System',
-  light: 'Light',
-  dark: 'Dark',
-};
-const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
-
 type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
 
 const RENDERABLE_TABS: RenderableTab[] = [
@@ -224,6 +222,10 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   bottomPanel: null,
   registerBottomPanel: () => () => undefined,
+  setViewSidebarWidth: () => undefined,
+  // Keep keep-alive route sidebars in controlled mode while hidden so they
+  // cannot republish a stale local hook value over the active route's storage.
+  viewSidebarWidth: null,
   active: false,
 };
 
@@ -386,18 +388,6 @@ type NavItem = {
   icon: (props: { size?: number }) => JSX.Element;
 };
 
-const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
-  'console',
-  'graph',
-  'timeline',
-  'auth',
-  'issues',
-  'artifacts',
-  'inbox',
-  'spaces',
-  'tasks',
-]);
-
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
 // full-bleed content (no .app-content gutters). Issue e29a8c5.
 const RESIZE_RAIL_TABS = new Set<Route['tab']>([
@@ -449,52 +439,6 @@ function TasksIcon({ size = 18 }: { size?: number }): JSX.Element {
       <path d="M18 16.5V18l1 1" />
     </svg>
   );
-}
-
-function SunIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2" />
-      <path d="M12 20v2" />
-      <path d="m4.93 4.93 1.41 1.41" />
-      <path d="m17.66 17.66 1.41 1.41" />
-      <path d="M2 12h2" />
-      <path d="M20 12h2" />
-      <path d="m6.34 17.66-1.41 1.41" />
-      <path d="m19.07 4.93-1.41 1.41" />
-    </svg>
-  );
-}
-
-function MoonIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3a6 6 0 0 0 9 7.4A9 9 0 1 1 12 3Z" />
-    </svg>
-  );
-}
-
-function SunMoonIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2v2" />
-      <path d="M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715" />
-      <path d="M16 12a4 4 0 0 0-4-4" />
-      <path d="m19 5-1.256 1.256" />
-      <path d="M20 12h2" />
-    </svg>
-  );
-}
-
-function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: number }): JSX.Element {
-  if (mode === 'light') {
-    return <SunIcon size={size} />;
-  }
-  if (mode === 'dark') {
-    return <MoonIcon size={size} />;
-  }
-  return <SunMoonIcon size={size} />;
 }
 
 function parseHashRoute(): Route {
@@ -586,6 +530,9 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
+    readInitialViewSidebarWidths,
+  );
   const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
     const initial = parseHashRoute();
     return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
@@ -632,7 +579,6 @@ function App(): JSX.Element {
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
-  const [themeModeSaving, setThemeModeSaving] = useState(false);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
   const lastDashboardSseAtRef = useRef(0);
   // Current shared-SSE connection state, updated from onState, so the fallback
@@ -654,11 +600,28 @@ function App(): JSX.Element {
     };
   }, []);
 
+  const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
+  const viewSidebarWidth = viewSidebarGeometry
+    ? viewSidebarWidths[route.tab as keyof ViewSidebarWidths] ?? viewSidebarGeometry.defaultWidth
+    : null;
+  const setViewSidebarWidth = useCallback((width: number | null) => {
+    if (width === null || !viewSidebarGeometry) return;
+    const tab = route.tab as keyof ViewSidebarWidths;
+    setViewSidebarWidths((current) => (
+      current[tab] === width ? current : { ...current, [tab]: width }
+    ));
+    if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+      localStorage.setItem(viewSidebarGeometry.storageKey, String(width));
+    }
+  }, [route.tab, viewSidebarGeometry]);
+
   const appShellContext = useMemo<AppShellContextValue>(() => ({
     bottomPanel,
     registerBottomPanel,
+    setViewSidebarWidth,
+    viewSidebarWidth,
     active: true,
-  }), [bottomPanel, registerBottomPanel]);
+  }), [bottomPanel, registerBottomPanel, setViewSidebarWidth, viewSidebarWidth]);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
@@ -863,8 +826,6 @@ function App(): JSX.Element {
         case 'console':
         case 'chat-history':
           await Promise.all([
-            getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
-              .then((result) => dispatch({ type: 'setConversations', conversations: result.conversations })),
             getConsoleSessions<ConsoleSession>().then((sessions) => dispatch({
               type: 'setConsoleSessions',
               sessions: sessions.map((session) => ({ pinned: false, unread_count: 0, ...session })),
@@ -947,13 +908,13 @@ function App(): JSX.Element {
       dispatch({ type: 'sse', payload });
       scheduleBadgeRefresh();
     };
-    // Feedback lifecycle events carry only a topic across this bridge. The
-    // active renderer refetches its normalized snapshot; question bodies and
+    // Briefing lifecycle events carry only a topic across this bridge. The
+    // active renderer refetches its normalized snapshot; directive bodies and
     // answer values are never consumed from SSE payloads.
-    const feedbackHandler = (payload: SSEPayload) => {
+    const briefingHandler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
-      window.dispatchEvent(new CustomEvent('feedback:sse', {
+      window.dispatchEvent(new CustomEvent('briefing:sse', {
         detail: { type: payload.type },
       }));
       scheduleBadgeRefresh();
@@ -1156,15 +1117,11 @@ function App(): JSX.Element {
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
-      client.on('briefing:ingested', feedbackHandler),
-      client.on('briefing:decided', feedbackHandler),
-      client.on('briefing:commented', feedbackHandler),
-      client.on('briefing:expired', feedbackHandler),
-      client.on('ask:created', feedbackHandler),
-      client.on('ask:submitted', feedbackHandler),
-      client.on('ask:cancelled', feedbackHandler),
-      client.on('ask:expired', feedbackHandler),
-      client.on('feedback:collection-updated', feedbackHandler),
+      client.on('briefing:created', briefingHandler),
+      client.on('briefing:round-published', briefingHandler),
+      client.on('briefing:answered', briefingHandler),
+      client.on('briefing:annotated', briefingHandler),
+      client.on('briefing:submitted', briefingHandler),
       client.on('operational-incident:ingested', operationalIncidentHandler),
       client.on('operational-incident:acknowledged', operationalIncidentHandler),
       client.on('operational-incident:remediation-changed', operationalIncidentHandler),
@@ -1230,7 +1187,7 @@ function App(): JSX.Element {
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
-      window.dispatchEvent(new CustomEvent('feedback:sse', {
+      window.dispatchEvent(new CustomEvent('briefing:sse', {
         detail: { type: 'reconnected' },
       }));
       // The same gap may have hidden an incident raise, acknowledgement or
@@ -1461,7 +1418,6 @@ function App(): JSX.Element {
     state.workRepos,
     state.workBranches,
     state.issueRepos,
-    state.conversations,
     state.inboxData,
     state.consoleSessions,
     state.settings,
@@ -1592,23 +1548,6 @@ function App(): JSX.Element {
     dispatch({ type: 'updateSetting', key, value });
   };
 
-  const handleRailThemeCycle = async () => {
-    if (themeModeSaving) {
-      return;
-    }
-    const currentMode = normalizeAppThemeMode(state.settings.app_theme);
-    const currentIndex = APP_THEME_MODE_CYCLE.indexOf(currentMode);
-    const nextMode = APP_THEME_MODE_CYCLE[(currentIndex + 1) % APP_THEME_MODE_CYCLE.length];
-    setThemeModeSaving(true);
-    try {
-      await handleSettingsSave('app_theme', nextMode);
-    } catch {
-      return;
-    } finally {
-      setThemeModeSaving(false);
-    }
-  };
-
   const handleAckContinuation = async (sessionId: string) => {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
@@ -1676,6 +1615,7 @@ function App(): JSX.Element {
     channel_enabled,
     presetIds,
     runOptions,
+    cwd,
   }: {
     label: string;
     backend: string;
@@ -1685,6 +1625,7 @@ function App(): JSX.Element {
     channel_enabled?: boolean;
     presetIds?: string[];
     runOptions?: Record<string, import('./api').SessionRunOptionValue>;
+    cwd?: string;
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type, {
@@ -1692,6 +1633,7 @@ function App(): JSX.Element {
         transport_lane,
         presetIds,
         runOptions,
+        cwd,
       });
       const session = {
         pinned: false,
@@ -1839,7 +1781,7 @@ function App(): JSX.Element {
       badgeClass: 'tab-badge--briefing',
       // Issue 5308097 §8 — a SECOND, independent badge for active and
       // unacknowledged operational incidents. It is deliberately not folded
-      // into the briefing count: an unattended executor failure and a finding
+      // into the briefing count: an unattended executor failure and a Briefing
       // awaiting review are different obligations, and adding them together
       // would let either one hide the other.
       secondaryBadge: badges.incidents,
@@ -1942,7 +1884,7 @@ function App(): JSX.Element {
   );
   const bottomPanelAvailable = Boolean(bottomPanel?.content);
   const bottomPanelOpen = Boolean(bottomPanelAvailable && bottomPanel?.open);
-  const viewSidebarAvailable = VIEW_SIDEBAR_TABS.has(route.tab);
+  const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
@@ -1951,14 +1893,6 @@ function App(): JSX.Element {
       ? `Collapse ${bottomPanel.title}`
       : `Show ${bottomPanel.title}`
     : 'Show detail panel';
-  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
-  const appThemeModeIndex = APP_THEME_MODE_CYCLE.indexOf(appThemeMode);
-  const nextAppThemeMode = APP_THEME_MODE_CYCLE[(appThemeModeIndex + 1) % APP_THEME_MODE_CYCLE.length];
-  const appThemeModeLabel = APP_THEME_MODE_LABELS[appThemeMode];
-  const nextAppThemeModeLabel = APP_THEME_MODE_LABELS[nextAppThemeMode];
-  const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
-  const appThemeModeTooltipLabel = 'App theme';
-
   const startBottomPanelResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
     if (!bottomPanel) {
       return;
@@ -2012,7 +1946,12 @@ function App(): JSX.Element {
   }
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}`}
+      style={{
+        '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
+      } as JSX.CSSProperties}
+    >
       {!daemonWarm && (
         <div className="daemon-warm-status" role="status" aria-live="polite">
           Still loading workspace data…
@@ -2049,27 +1988,21 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      <header className="app-header" data-tauri-drag-region>
-        <div className="app-header__brand" title="Mandible">
+      <header
+        className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
+        data-tauri-drag-region
+      >
+        <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
           <span className="app-header__mark" aria-hidden="true">
             <MandibleHeaderLogo />
           </span>
-          <span className="app-header__brand-text">Mandible</span>
-        </div>
-        <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
-        <div className="app-header__actions">
-          <DesktopLoginStatus />
-          {bottomPanelAvailable ? (
-            <button
-              type="button"
-              className={`app-header__icon-button${bottomPanelOpen ? ' app-header__icon-button--active' : ''}`}
-              onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
-              aria-label={bottomPanelToggleLabel}
-              aria-pressed={bottomPanelOpen}
-              title={bottomPanelToggleLabel}
-            >
-              <BottomPanelIcon open={bottomPanelOpen} />
-            </button>
+          {viewSidebarOpen ? (
+            <div className="app-header__text">
+              <div className="app-header__brand">
+                <span className="app-header__brand-text">Mandible</span>
+              </div>
+              <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
+            </div>
           ) : null}
         </div>
       </header>
@@ -2090,6 +2023,22 @@ function App(): JSX.Element {
                 </div>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
+                {bottomPanelAvailable ? (
+                  <button
+                    type="button"
+                    className={`app-rail__item app-rail__bottom-panel-toggle${bottomPanelOpen ? ' app-rail__item--active' : ''}`}
+                    onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
+                    aria-label={bottomPanelToggleLabel}
+                    aria-pressed={bottomPanelOpen}
+                    title={bottomPanelToggleLabel}
+                  >
+                    <span className="app-rail__icon">
+                      <BottomPanelIcon open={bottomPanelOpen} />
+                    </span>
+                    {railDisplayMode === 'both' && <span className="app-rail__label">{bottomPanel?.title}</span>}
+                    {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{bottomPanelToggleLabel}</span>}
+                  </button>
+                ) : null}
                 {viewSidebarAvailable ? (
                   <div className="app-rail__sidebar-controls">
                     <button
@@ -2108,21 +2057,10 @@ function App(): JSX.Element {
                     </button>
                   </div>
                 ) : null}
-                <button
-                  type="button"
-                  className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}
-                  onClick={() => void handleRailThemeCycle()}
-                  disabled={themeModeSaving}
-                  data-theme-mode={appThemeMode}
-                  aria-label={appThemeModeControlLabel}
-                  title={appThemeModeTooltipLabel}
-                >
-                  <span className="app-rail__icon">
-                    <AppThemeModeIcon mode={appThemeMode} size={18} />
-                  </span>
-                  {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeModeLabel}</span>}
-                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{appThemeModeTooltipLabel}</span>}
-                </button>
+                <DesktopLoginStatus
+                  placement="rail"
+                  showRailLabel={railDisplayMode === 'both'}
+                />
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',
@@ -2219,13 +2157,13 @@ function App(): JSX.Element {
           const tabRoute = routeForTab('console', route, tabRouteSnapshots);
           return (
             <LazyConversationsView
-              conversations={state.conversations}
               consoleSessions={state.consoleSessions}
-              workRepos={state.workRepos}
               initialConversationId={tabRoute.params.conversation ?? null}
               initialSessionId={tabRoute.params.session ?? null}
               initialPresetId={tabRoute.params.preset ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
+              sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
+              instance={instanceInfo}
               onSelectSession={handleConsoleSelectSession}
               onNewSession={handleConsoleNewSession}
             />
@@ -2277,10 +2215,8 @@ function App(): JSX.Element {
           return (
             <LazyBriefingView
               instance={instanceInfo}
-              initialFilter={tabRoute.params.filter}
-              initialCandidateId={tabRoute.params.candidate ?? null}
-              initialAskId={tabRoute.params.ask ?? null}
-              initialCollectionId={tabRoute.params.collection ?? null}
+              initialBriefingId={tabRoute.params.briefing ?? null}
+              initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );

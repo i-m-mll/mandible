@@ -23,6 +23,11 @@ export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
 // available on instances that reject operational mutations.
 export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/check",
+  // The browser handshake rotates bounded, ephemeral client-auth state only;
+  // it does not mutate the ledger or authorize a different identity. Preview
+  // dashboards need it to exchange their one-time bootstrap proof before any
+  // identity-scoped reads can succeed.
+  "POST /api/client-auth/handshake",
   "POST /api/timeline/project",
 ]);
 
@@ -33,10 +38,9 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   // able to launch a worker against a real working directory.
   { prefix: "/api/agent-dispatch", category: "agent_dispatch" },
   { prefix: "/api/artifacts", category: "artifacts" },
-  { prefix: "/api/asks", category: "asks" },
   { prefix: "/api/auth", category: "auth" },
   { prefix: "/api/backup", category: "backup" },
-  { prefix: "/api/briefing", category: "briefing" },
+  { prefix: "/api/briefings", category: "briefing" },
   { prefix: "/api/chats", category: "chats" },
   { prefix: "/api/console", category: "console" },
   { prefix: "/api/conversations", category: "conversations" },

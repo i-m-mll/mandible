@@ -17,6 +17,14 @@ export type AppBottomPanelDescriptor = {
 export type AppShellContextValue = {
   bottomPanel: AppBottomPanelDescriptor | null;
   registerBottomPanel(descriptor: AppBottomPanelDescriptor): () => void;
+  /** Update the shell-owned width for the active route. */
+  setViewSidebarWidth(width: number | null): void;
+  /**
+   * The active route's shell-owned persisted width. When defined, ViewSidebar
+   * is controlled by the shared physical boundary token instead of publishing
+   * a second copy of its own width after render.
+   */
+  viewSidebarWidth?: number | null;
   /**
    * Whether the subtree under this provider is the CURRENTLY VISIBLE route.
    *
@@ -34,6 +42,7 @@ export type AppShellContextValue = {
 const noopContext: AppShellContextValue = {
   bottomPanel: null,
   registerBottomPanel: () => () => undefined,
+  setViewSidebarWidth: () => undefined,
   active: true,
 };
 

@@ -2,10 +2,20 @@ import type { Dispatch, StateUpdater } from 'preact/hooks';
 import { useMemo, useState } from 'preact/hooks';
 
 import { ViewSidebar } from '../../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import {
+  SidebarItemBadge,
+  SidebarItemOverflowMenu,
+  SidebarItemPinAction,
+  SidebarItemRow,
+  type SidebarItemOverflowAction,
+} from '../../components/shared/SidebarItemRow';
 import { useSidebarListNavigation } from '../../hooks/useSidebarListNavigation';
+import { briefingRoute } from '../../routing';
 import {
   filterFeedbackCollections,
+  moveVisiblePinnedCollection,
   orderFeedbackCollections,
   type FeedbackCollection,
 } from './collection-model';
@@ -13,60 +23,60 @@ import type { BriefingCollectionViewState } from './collection-view-state';
 
 export type CollectionsSidebarProps = {
   collections: readonly FeedbackCollection[];
+  loadError?: string | null;
   hidden?: boolean;
   selectedCollectionId: string | null;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
   onSelect(collection: FeedbackCollection): void;
-  onSetExpiry?(collection: FeedbackCollection): Promise<void>;
 };
-
-function kindLabel(kind: FeedbackCollection['kind']): string {
-  const words = kind.replaceAll('_', ' ');
-  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
-}
 
 export function CollectionsSidebar({
   collections,
+  loadError = null,
   hidden = false,
   selectedCollectionId,
   viewState,
   setViewState,
   onSelect,
-  onSetExpiry,
 }: CollectionsSidebarProps): JSX.Element {
-  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
-  const [expiryBusyId, setExpiryBusyId] = useState<string | null>(null);
-  const ordered = useMemo(() => orderFeedbackCollections(
-    filterFeedbackCollections(collections, {
-      kind: viewState.collectionKindFilter,
-      source: viewState.collectionSourceFilter,
-      state: viewState.collectionStateFilter,
-    }),
-    viewState.pinnedCollectionIds,
-  ), [
-    collections,
-    viewState.collectionKindFilter,
-    viewState.collectionSourceFilter,
-    viewState.collectionStateFilter,
-    viewState.pinnedCollectionIds,
-  ]);
+  const [draggedPinnedId, setDraggedPinnedId] = useState<string | null>(null);
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const pinned = useMemo(
     () => new Set(viewState.pinnedCollectionIds),
     [viewState.pinnedCollectionIds],
   );
-  const kinds = useMemo(
-    () => [...new Set(collections.map((collection) => collection.kind))].sort(),
-    [collections],
+  const ordered = useMemo(() => orderFeedbackCollections(
+    filterFeedbackCollections(collections, viewState.collectionSourceFilter)
+      .filter((collection) => !viewState.pinnedOnly || pinned.has(collection.id)),
+    viewState.pinnedCollectionIds,
+    viewState.collectionSort,
+  ), [
+    collections,
+    viewState.collectionSourceFilter,
+    viewState.pinnedOnly,
+    viewState.collectionSort,
+    viewState.pinnedCollectionIds,
+    pinned,
+  ]);
+  const visiblePinned = useMemo(
+    () => ordered.filter((collection) => pinned.has(collection.id)),
+    [ordered, pinned],
   );
-  const activeFilterCount = Number(viewState.collectionKindFilter !== 'all')
-    + Number(viewState.collectionStateFilter !== 'all');
+  const visiblePinnedIndexes = new Map(
+    visiblePinned.map((collection, index) => [collection.id, index]),
+  );
+  const navigableIds = new Set(ordered.map((collection) => collection.id));
   const listNavigation = useSidebarListNavigation({
     items: ordered,
     getKey: (collection) => collection.id,
-    selectedKey: selectedCollectionId,
+    selectedKey: selectedCollectionId && navigableIds.has(selectedCollectionId)
+      ? selectedCollectionId
+      : null,
     onSelect,
   });
+  const navigationIndex = new Map(ordered.map((collection, index) => [collection.id, index]));
+  const activeFilterCount = Number(viewState.pinnedOnly) + Number(viewState.collectionSort !== 'activity');
 
   const togglePin = (collectionId: string) => {
     setViewState((current) => {
@@ -80,23 +90,121 @@ export function CollectionsSidebar({
     });
   };
 
-  const toggleExpiry = async (collection: FeedbackCollection) => {
-    if (!onSetExpiry || expiryBusyId) return;
-    setExpiryBusyId(collection.id);
-    try {
-      await onSetExpiry(collection);
-    } finally {
-      setExpiryBusyId(null);
+  const movePinned = (collectionId: string, targetIndex: number) => {
+    const visibleIds = visiblePinned.map((collection) => collection.id);
+    setViewState((current) => {
+      const next = moveVisiblePinnedCollection(
+        current.pinnedCollectionIds,
+        visibleIds,
+        collectionId,
+        targetIndex,
+      );
+      return next.every((id, index) => id === current.pinnedCollectionIds[index])
+        ? current
+        : { ...current, pinnedCollectionIds: next };
+    });
+  };
+
+  const copyBriefingLink = (briefingId: string) => {
+    const target = new URL(briefingRoute(briefingId), window.location.origin).href;
+    navigator.clipboard?.writeText(target).catch(() => {});
+  };
+
+  const renderCollection = (collection: FeedbackCollection, pinnedIndex: number | null) => {
+    const navigation = listNavigation.getItemNavigationProps(
+      collection,
+      navigationIndex.get(collection.id) ?? 0,
+    );
+    const isPinned = pinnedIndex !== null;
+    const overflowActions: SidebarItemOverflowAction[] = [{
+      id: 'copy-link',
+      label: 'Copy link',
+      ariaLabel: `Copy link to ${collection.label}`,
+      onSelect: () => copyBriefingLink(collection.collectionId),
+    }];
+    if (isPinned) {
+      overflowActions.push(
+        {
+          id: 'move-up',
+          label: 'Move up',
+          ariaLabel: `Move ${collection.label} up`,
+          disabled: pinnedIndex === 0,
+          onSelect: () => movePinned(collection.id, pinnedIndex - 1),
+        },
+        {
+          id: 'move-down',
+          label: 'Move down',
+          ariaLabel: `Move ${collection.label} down`,
+          disabled: pinnedIndex === visiblePinned.length - 1,
+          onSelect: () => movePinned(collection.id, pinnedIndex + 1),
+        },
+      );
     }
+    return (
+      <li
+        key={collection.id}
+        className={`feedback-collection-row${isPinned ? ' feedback-collection-row--pinned' : ''}${draggedPinnedId === collection.id ? ' feedback-collection-row--dragging' : ''}`}
+        draggable={isPinned}
+        onDragStart={isPinned ? (event) => {
+          setDraggedPinnedId(collection.id);
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', collection.id);
+        } : undefined}
+        onDragOver={isPinned ? (event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+        } : undefined}
+        onDrop={isPinned ? (event) => {
+          event.preventDefault();
+          const movedId = draggedPinnedId || event.dataTransfer.getData('text/plain');
+          if (movedId) movePinned(movedId, pinnedIndex);
+          setDraggedPinnedId(null);
+        } : undefined}
+        onDragEnd={isPinned ? () => setDraggedPinnedId(null) : undefined}
+      >
+        <SidebarItemRow
+          tabIndex={navigation.tabIndex}
+          selectRef={navigation.ref}
+          label={collection.label}
+          selectionLabel={`Select briefing ${collection.label}`}
+          selectionDescription={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
+          selected={selectedCollectionId === collection.id}
+          trailingReveal={isPinned ? 'persistent-pin' : 'interaction'}
+          ariaCurrent={navigation['aria-current']}
+          onKeyDown={navigation.onKeyDown}
+          onSelect={() => onSelect(collection)}
+          badges={(
+            <SidebarItemBadge
+              className="feedback-collection-row__count"
+              ariaLabel={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
+              title={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
+            >
+              {collection.itemCount}
+            </SidebarItemBadge>
+          )}
+          actions={(
+            <>
+              <SidebarItemPinAction
+                label={collection.label}
+                pressed={isPinned}
+                onPress={() => togglePin(collection.id)}
+              />
+              <SidebarItemOverflowMenu
+                label={`Briefing actions for ${collection.label}`}
+                actions={overflowActions}
+              />
+            </>
+          )}
+        />
+      </li>
+    );
   };
 
   return (
     <ViewSidebar
       hidden={hidden}
-      storageKey="sidebar-width:briefing"
-      defaultWidth={290}
-      minWidth={230}
-      ariaLabel="Feedback collections"
+      {...VIEW_SIDEBAR_GEOMETRY.briefing}
+      ariaLabel="Briefings"
       className="feedback-collections-sidebar"
       header={(
         <SidebarSearchFilterHeader
@@ -105,75 +213,60 @@ export function CollectionsSidebar({
             ...current,
             collectionSourceFilter: value,
           }))}
-          placeholder="Search collections"
-          searchAriaLabel="Search collections"
-          clearAriaLabel="Clear collection search"
+          placeholder="Search briefings"
+          searchAriaLabel="Search briefings"
+          clearAriaLabel="Clear briefing search"
           captureFindShortcut
-          onBlurWithin={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setFilterMenuOpen(false);
-            }
-          }}
           filterTrigger={{
-            ariaLabel: 'Collection filters',
-            title: 'Collection filters',
-            open: filterMenuOpen,
+            ariaLabel: 'Briefing filters',
+            title: 'Briefing filters',
+            open: filterPanelOpen,
             active: activeFilterCount > 0,
             count: activeFilterCount,
-            onToggle: () => setFilterMenuOpen((open) => !open),
+            onToggle: () => setFilterPanelOpen((open) => !open),
           }}
-          panel={filterMenuOpen ? {
-            id: 'collection-filter-panel',
+          summarySlot={activeFilterCount > 0 ? (
+            <>
+              {viewState.pinnedOnly ? <span>Pinned only</span> : null}
+              {viewState.collectionSort === 'name' ? <span>By name</span> : null}
+              {viewState.collectionSort === 'round-count' ? <span>By round count</span> : null}
+            </>
+          ) : undefined}
+          panel={filterPanelOpen ? {
+            id: 'briefing-filter-panel',
             variant: 'popover',
-            ariaLabel: 'Collection filter controls',
-            onDismiss: () => setFilterMenuOpen(false),
+            ariaLabel: 'Briefing filter controls',
+            onDismiss: () => setFilterPanelOpen(false),
             children: (
               <>
-                <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
-                  <span>Filters</span>
-                  <button
-                    type="button"
-                    className="sidebar-search-filter__clear-action"
-                    onClick={() => setViewState((current) => ({
+                <div className="sidebar-search-filter__section">
+                  <label className="sidebar-search-filter__option">
+                    <input
+                      type="checkbox"
+                      checked={viewState.pinnedOnly}
+                      onInput={(event) => setViewState((current) => ({
+                        ...current,
+                        pinnedOnly: event.currentTarget.checked,
+                      }))}
+                    />
+                    <span>Pinned only</span>
+                  </label>
+                </div>
+                <div className="sidebar-search-filter__section">
+                  <label className="sidebar-search-filter__label" for="briefing-sort">Sort</label>
+                  <select
+                    id="briefing-sort"
+                    aria-label="Sort briefings"
+                    value={viewState.collectionSort}
+                    onInput={(event) => setViewState((current) => ({
                       ...current,
-                      collectionKindFilter: 'all',
-                      collectionStateFilter: 'all',
+                      collectionSort: event.currentTarget.value as BriefingCollectionViewState['collectionSort'],
                     }))}
                   >
-                    Clear
-                  </button>
-                </div>
-                <div className="sidebar-search-filter__section">
-                  <span className="sidebar-search-filter__label">Kind</span>
-                  <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
-                    {(['all', ...kinds] as const).map((kind) => (
-                      <button
-                        key={kind}
-                        type="button"
-                        className={`sidebar-search-filter__option${viewState.collectionKindFilter === kind ? ' sidebar-search-filter__option--active' : ''}`}
-                        aria-pressed={viewState.collectionKindFilter === kind}
-                        onClick={() => setViewState((current) => ({ ...current, collectionKindFilter: kind }))}
-                      >
-                        {kind === 'all' ? 'All' : kindLabel(kind)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="sidebar-search-filter__section">
-                  <span className="sidebar-search-filter__label">State</span>
-                  <div className="sidebar-search-filter__options">
-                    {(['all', 'open', 'expired'] as const).map((state) => (
-                      <button
-                        key={state}
-                        type="button"
-                        className={`sidebar-search-filter__option${viewState.collectionStateFilter === state ? ' sidebar-search-filter__option--active' : ''}`}
-                        aria-pressed={viewState.collectionStateFilter === state}
-                        onClick={() => setViewState((current) => ({ ...current, collectionStateFilter: state }))}
-                      >
-                        {state === 'all' ? 'All' : `${state.charAt(0).toUpperCase()}${state.slice(1)}`}
-                      </button>
-                    ))}
-                  </div>
+                    <option value="activity">Recent activity</option>
+                    <option value="name">Name</option>
+                    <option value="round-count">Round count</option>
+                  </select>
                 </div>
               </>
             ),
@@ -183,71 +276,25 @@ export function CollectionsSidebar({
       bodyClassName="feedback-collections-sidebar__body"
     >
       <div data-testid="feedback-collections-sidebar">
-        {ordered.length === 0 ? (
+        {loadError ? (
+          <div className="feedback-collections-sidebar__list">
+            <p className="feedback-collections-sidebar__empty" role="alert">
+              {loadError}
+            </p>
+          </div>
+        ) : ordered.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="status">
               {collections.length === 0
-                ? 'No briefing collections have been reported yet.'
-                : 'No collections match these filters.'}
+                ? 'No Briefings have been reported yet.'
+                : 'No Briefings match this search.'}
             </p>
           </div>
         ) : (
           <ul className="feedback-collections-sidebar__list">
-            {ordered.map((collection, index) => {
-              const isPinned = pinned.has(collection.id);
-              const navigation = listNavigation.getItemNavigationProps(collection, index);
-              return (
-                <li key={collection.id} className="feedback-collection-row">
-                  <button
-                    ref={navigation.ref}
-                    type="button"
-                    tabIndex={navigation.tabIndex}
-                    className={`sidebar-list-item feedback-collection-row__select${selectedCollectionId === collection.id ? ' feedback-collection-row__select--active' : ''}`}
-                    aria-label={`Select collection ${collection.label}`}
-                    aria-current={navigation['aria-current']}
-                    onKeyDown={navigation.onKeyDown}
-                    onClick={() => onSelect(collection)}
-                  >
-                    <span className="feedback-collection-row__title">
-                      <span
-                        className={`feedback-collection-row__state feedback-collection-row__state--${collection.state}`}
-                        aria-label={`State: ${collection.state}`}
-                        title={collection.state}
-                      />
-                      <span className="feedback-collection-row__label">{collection.label}</span>
-                    </span>
-                    <span className="feedback-collection-row__facts">
-                      <span>{kindLabel(collection.kind)}</span>
-                      {collection.source ? <span>Source: {collection.source}</span> : null}
-                      <span>{collection.itemCount} item{collection.itemCount === 1 ? '' : 's'}</span>
-                    </span>
-                  </button>
-                  <span className="feedback-collection-row__actions">
-                    <button
-                      type="button"
-                      className="feedback-collection-row__pin"
-                      aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${collection.label}`}
-                      aria-pressed={isPinned}
-                      onClick={() => togglePin(collection.id)}
-                    >
-                      {isPinned ? 'Pinned' : 'Pin'}
-                    </button>
-                    {onSetExpiry && collection.expiryReversible ? (
-                      <button
-                        type="button"
-                        className="feedback-collection-row__expiry"
-                        aria-label={`${collection.state === 'expired' ? 'Un-expire' : 'Expire'} ${collection.label}`}
-                        disabled={expiryBusyId !== null}
-                        onClick={() => void toggleExpiry(collection)}
-                      >
-                        {expiryBusyId === collection.id
-                          ? 'Saving…'
-                          : collection.state === 'expired' ? 'Un-expire' : 'Expire'}
-                      </button>
-                    ) : null}
-                  </span>
-                </li>
-              );
+            {ordered.map((collection) => {
+              const pinnedIndex = visiblePinnedIndexes.get(collection.id);
+              return renderCollection(collection, pinnedIndex ?? null);
             })}
           </ul>
         )}

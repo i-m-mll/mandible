@@ -3,7 +3,6 @@ import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
 import type { SessionIdentityMismatch } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
-import type { Conversation } from './api';
 import type { SSEPayload } from './sse-client';
 
 type BugRef = {
@@ -110,7 +109,6 @@ type AppState = {
   issueRepos: IssueRepoSummary[];
   daemonReload: DaemonReloadInfo | null;
   settings: Record<string, string>;
-  conversations: Conversation[];
   inboxData: InboxData | null;
   inboxLoading: boolean;
   consoleSessions: ConsoleSession[];
@@ -140,8 +138,6 @@ type Action =
   | { type: 'setDaemonReload'; reload: DaemonReloadInfo | null }
   | { type: 'setSettings'; settings: Record<string, string> }
   | { type: 'updateSetting'; key: string; value: string }
-  | { type: 'setConversations'; conversations: Conversation[] }
-  | { type: 'upsertConversation'; conversation: Conversation }
   | { type: 'setInboxData'; data: InboxData }
   | { type: 'setInboxLoading'; loading: boolean }
   | { type: 'ackInboxContinuation'; sessionId: string }
@@ -169,7 +165,6 @@ const initialState: AppState = {
   issueRepos: [],
   daemonReload: null,
   settings: {},
-  conversations: [],
   inboxData: null,
   inboxLoading: false,
   consoleSessions: [],
@@ -335,13 +330,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, settings: action.settings };
     case 'updateSetting':
       return { ...state, settings: { ...state.settings, [action.key]: action.value } };
-    case 'setConversations':
-      return { ...state, conversations: action.conversations };
-    case 'upsertConversation': {
-      const getId = (c: Conversation) => c.id;
-      const updated = upsertById(state.conversations, getId, action.conversation);
-      return { ...state, conversations: updated };
-    }
     case 'setInboxData':
       return { ...state, inboxData: action.data, inboxLoading: false };
     case 'setInboxLoading':
@@ -544,15 +532,6 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       }
       return state;
     }
-    case 'conversation:new':
-    case 'conversation:updated':
-      if (payload.data && typeof payload.data === 'object') {
-        const conv = payload.data as Conversation;
-        if (conv.id) {
-          return appReducer(state, { type: 'upsertConversation', conversation: conv });
-        }
-      }
-      return state;
     case 'work:branch:updated':
       {
         const unwrapped = unwrapSseData(payload);
@@ -706,7 +685,7 @@ const CACHE_VERSION = 2;
 // Bug: 7136f0d — starredChats removed from cache (Chats tab removed, starring via History tab)
 type CachedFields = Pick<
   AppState,
-  'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos' | 'conversations'
+  'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos'
   | 'inboxData' | 'consoleSessions' | 'settings'
 >;
 
@@ -782,7 +761,6 @@ function saveCachedState(state: AppState): void {
       workRepos: state.workRepos,
       workBranches: state.workBranches,
       issueRepos: state.issueRepos,
-      conversations: state.conversations,
       inboxData: state.inboxData,
       consoleSessions: state.consoleSessions,
       settings: state.settings,

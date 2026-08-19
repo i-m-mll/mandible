@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
+import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
+import {
+  SidebarItemBadge,
+  SidebarItemOverflowMenu,
+  SidebarItemPinAction,
+  SidebarItemRow,
+  type SidebarItemOverflowAction,
+  type SidebarItemProviderTone,
+} from '../components/shared/SidebarItemRow';
+import {
+  orderByPinnedIds,
+  reconcileOrderedPinIds,
+} from '../components/shared/orderedPins';
 import type { ConsoleSession } from '../state';
 import type {
   BlockType,
@@ -8,8 +23,11 @@ import type {
   ConversationAttachState,
   ConversationBlock,
   ConversationChild,
+  InstanceInfo,
   ConversationParent,
   ConversationSource,
+  ConversationSidebarGroup,
+  CanonicalProject,
   WorkflowRun,
   WorkflowWorker,
 } from '../api.js';
@@ -19,10 +37,12 @@ import {
   getConsoleSessionUsage,
   getConsoleSessionOptions,
   getConversation,
+  getConversationSidebar,
   getConversations,
   getSessionIssues,
   getSessionPresets,
   listWorkflows,
+  listCanonicalProjects,
   navigateSession,
   resumeConversation,
   sendConsolePrompt,
@@ -33,6 +53,8 @@ import {
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
@@ -54,10 +76,12 @@ import {
   type ConversationAppendPayload,
 } from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
+import { shortRouteId } from '../routing';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import type { WorkRepo } from './work';
+import { useChatViewState } from './conversation-view-state';
+import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
@@ -178,17 +202,15 @@ const SOURCE_LABELS: Record<ConversationSource, string> = {
   gemini: 'Gemini',
 };
 
-const SOURCE_CLASSES: Record<ConversationSource, string> = {
-  claude_code: 'source-badge--claude',
-  codex: 'source-badge--codex',
-  gemini: 'source-badge--gemini',
+const DETAIL_HEADER_PROVIDER_LABELS: Record<ConversationSource, string> = {
+  claude_code: 'Claude',
+  codex: 'Codex',
+  gemini: 'agy',
 };
 
-const SOURCE_MARKS: Record<ConversationSource, string> = {
-  claude_code: 'CL',
-  codex: 'CX',
-  gemini: 'GM',
-};
+export function getConversationHeaderProviderLabel(source: ConversationSource): string {
+  return DETAIL_HEADER_PROVIDER_LABELS[source];
+}
 
 const AGENT_LABELS: Record<string, string> = {
   operator: 'Operator',
@@ -198,7 +220,6 @@ const AGENT_LABELS: Record<string, string> = {
   shell: 'Shell',
 };
 
-const PAGE_SIZE = 50;
 const VIRTUAL_BUFFER = 10;
 const ESTIMATED_BLOCK_HEIGHT = 120;
 
@@ -246,24 +267,20 @@ function getAgentLabel(agentType: string): string {
   return AGENT_LABELS[agentType] ?? agentType;
 }
 
-function getSourceMark(source: ConversationSource): string {
-  return SOURCE_MARKS[source] ?? source.slice(0, 2).toUpperCase();
-}
-
 function sourceFromSession(session: ConsoleSession): ConversationSource | null {
   const agent = session.agent_type.toLowerCase();
   const command = (session.command ?? '').toLowerCase();
   if (agent.includes('claude') || command.includes('claude')) return 'claude_code';
   if (agent.includes('codex') || command.includes('codex')) return 'codex';
-  if (agent.includes('gemini') || command.includes('gemini')) return 'gemini';
+  if (agent.includes('gemini') || command.includes('gemini') || agent.includes('agy') || command.includes('agy')) return 'gemini';
   return null;
 }
 
-function getSessionMark(session: ConsoleSession): string {
-  const source = sourceFromSession(session);
-  if (source) return getSourceMark(source);
-  return getAgentLabel(session.agent_type).slice(0, 2).toUpperCase();
-}
+const CHAT_PROVIDER_TONES: Record<ConversationSource, SidebarItemProviderTone> = {
+  claude_code: 'claude',
+  codex: 'codex',
+  gemini: 'agy',
+};
 
 function getSessionProviderFamily(session: ConsoleSession): string {
   if (session.is_operator) return 'claude';
@@ -290,86 +307,32 @@ function normalizePathish(pathValue: string | null | undefined): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
-function pathKey(pathValue: string | null | undefined): string {
-  if (!pathValue) return '';
-  return normalizePathish(pathValue).toLowerCase().replace(/[^a-z0-9]+/g, '');
+type RegisteredChatProject = {
+  id: string;
+  key: string;
+  label: string;
+  checkoutId: string;
+  checkoutLabel: string;
+  root: string;
+};
+
+function registeredChatProjects(projects: CanonicalProject[]): RegisteredChatProject[] {
+  return projects.flatMap((project) => project.checkouts.map((checkout) => ({
+    id: project.id,
+    key: project.project_key,
+    label: project.display_name?.trim() || project.project_key,
+    checkoutId: checkout.id,
+    checkoutLabel: checkout.name?.trim() || checkout.work_repo_id?.trim() || checkout.root.trim(),
+    root: checkout.root.trim(),
+  })))
+    .filter((project) => Boolean(project.id && project.key && project.checkoutId && project.root))
+    .sort((left, right) => left.label.localeCompare(right.label)
+      || left.id.localeCompare(right.id)
+      || left.checkoutId.localeCompare(right.checkoutId));
 }
 
-function decodeClaudeProjectPath(pathValue: string | null | undefined): string | null {
-  if (!pathValue) return null;
-  const normalized = normalizePathish(pathValue);
-  const leaf = normalized.split('/').filter(Boolean).pop() ?? normalized;
-  if (!leaf.startsWith('-')) return normalized;
-  const parts = leaf.split('-').filter(Boolean);
-  if (parts.length === 0) return normalized;
-  return `/${parts.join('/')}`;
-}
-
-function isCodexUnboundArchivePath(pathValue: string | null | undefined): boolean {
-  return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\/[^/]+$/i.test(normalizePathish(pathValue));
-}
-
-function repoDisplayName(repo: WorkRepo): string | null {
-  const name = typeof repo.name === 'string' ? repo.name.trim() : '';
-  if (name) return name;
-  const root = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-  if (!root) return null;
-  const parts = normalizePathish(root).split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? null;
-}
-
-function projectNameFromPath(pathValue: string | null | undefined): string {
-  const normalized = normalizePathish(pathValue);
-  if (normalized === 'No Project') return normalized;
-  const parts = normalized.split('/').filter(Boolean);
-  return parts[parts.length - 1] || 'No Project';
-}
-
-function getConversationProject(conversation: Conversation, workRepos: WorkRepo[] = []): string {
-  if (
-    conversation.source === 'codex' &&
-    !conversation.project_path &&
-    isCodexUnboundArchivePath(conversation.cwd)
-  ) {
-    return 'No Project';
-  }
-
-  const candidates = [
-    conversation.cwd,
-    conversation.project_path,
-    decodeClaudeProjectPath(conversation.project_path),
-  ].filter((value): value is string => Boolean(value));
-
-  const repos = workRepos
-    .map((repo) => {
-      const root = typeof repo.root === 'string' ? repo.root : typeof repo.path === 'string' ? repo.path : '';
-      return {
-        repo,
-        root,
-        rootKey: pathKey(root),
-        rootNorm: normalizePathish(root),
-        name: repoDisplayName(repo),
-      };
-    })
-    .filter((entry) => entry.root && entry.rootKey && entry.name && !entry.rootNorm.includes('/worktrees/'))
-    .sort((a, b) => b.rootKey.length - a.rootKey.length);
-
-  for (const candidate of candidates) {
-    const normalized = normalizePathish(candidate);
-    const candidateKey = pathKey(candidate);
-    for (const repo of repos) {
-      if (
-        normalized === repo.rootNorm ||
-        normalized.startsWith(`${repo.rootNorm}/`) ||
-        candidateKey.startsWith(repo.rootKey)
-      ) {
-        return repo.name!;
-      }
-    }
-  }
-
-  const fallback = decodeClaudeProjectPath(conversation.project_path) ?? conversation.project_path ?? conversation.cwd;
-  return projectNameFromPath(fallback);
+function registeredProjectSelectionValue(project: RegisteredChatProject): string {
+  return `${encodeURIComponent(project.id)}:${encodeURIComponent(project.checkoutId)}`;
 }
 
 function isSubagentConversation(conversation: Conversation): boolean {
@@ -456,7 +419,6 @@ type ChatSelection =
   | null;
 type ChatEntry = {
   key: string;
-  project: string;
   time: number;
   kind: 'conversation' | 'session';
   conversation?: Conversation;
@@ -464,15 +426,20 @@ type ChatEntry = {
   liveSession?: ConsoleSession | null;
 };
 type ChatProjectGroup = {
-  project: string;
-  latestTime: number;
+  key: string;
+  label: string;
+  total: number;
+  nextCursor: string | null;
   entries: ChatEntry[];
+  exactRoot?: string;
+  canonicalProjectId?: string;
+  canonicalProjectKey?: string;
 };
 type ChatSectionId = 'pinned' | 'projects' | 'chats';
 type ChatSidebarSections = {
-  pinned: ChatEntry[];
+  pinned: ChatProjectGroup | null;
   projects: ChatProjectGroup[];
-  chats: ChatEntry[];
+  chats: ChatProjectGroup | null;
 };
 type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
@@ -487,21 +454,16 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
   return { ...conversation, blocks: [], children: [], parent: null };
 }
 
-function getEntryTitle(entry: ChatEntry): string {
-  if (entry.conversation) return getConversationTitle(entry.conversation);
-  return stripMarkdownText(entry.session?.label) || 'Untitled';
-}
-
 // ── Props ──
 
 export type ConversationsViewProps = {
-  conversations: Conversation[];
   consoleSessions: ConsoleSession[];
-  workRepos: WorkRepo[];
   initialConversationId: string | null;
   initialSessionId: string | null;
   initialPresetId?: string | null;
   sidebarHidden?: boolean;
+  sidebarGroupLimit?: number;
+  instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
     label: string;
@@ -512,6 +474,7 @@ export type ConversationsViewProps = {
     channel_enabled?: boolean;
     presetIds?: string[];
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
+    cwd?: string;
   }) => void;
 };
 
@@ -1234,14 +1197,12 @@ function ConversationInfoDialog({
   linkedConsoleSession,
   issueLinks,
   presets,
-  workRepos,
   onClose,
 }: {
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   presets: SessionPreset[];
-  workRepos: WorkRepo[];
   onClose: () => void;
 }): JSX.Element {
   return (
@@ -1268,7 +1229,7 @@ function ConversationInfoDialog({
           </div>
           <div>
             <span className="conv-info-grid__label">Project</span>
-            <span>{getConversationProject(conversation, workRepos)}</span>
+            <span>Unscoped</span>
           </div>
           <div>
             <span className="conv-info-grid__label">Branch</span>
@@ -1332,14 +1293,12 @@ function ConversationDetail({
   initialConversation,
   onNavigate,
   consoleSessions,
-  workRepos,
   sidebarCollapsed,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
-  workRepos: WorkRepo[];
   sidebarCollapsed: boolean;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -2082,73 +2041,54 @@ function ConversationDetail({
     );
   }
 
-  return (
-    <div className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
-      {/* Parent link for sub-agent conversations */}
-      {conversation.parent_conversation_id && (
-        <div className="conv-parent-link">
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => onNavigate(conversation.parent_conversation_id!)}
-          >
-            Subagent of {conversation.parent?.title ? truncate(stripMarkdownText(conversation.parent.title), 80) : 'parent conversation'}
-          </button>
-        </div>
-      )}
+  const parentLink = conversation.parent_conversation_id ? (
+    <div className="conv-parent-link">
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm"
+        onClick={() => onNavigate(conversation.parent_conversation_id!)}
+      >
+        Subagent of {conversation.parent?.title ? truncate(stripMarkdownText(conversation.parent.title), 80) : 'parent conversation'}
+      </button>
+    </div>
+  ) : undefined;
 
-      <div className="conv-detail__header">
-        <div className="conv-detail__header-left">
-          <div className="conv-detail__title-row">
-            <h2 className="conv-detail__title">
-              {conversation.parent_conversation_id && (
-                <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
-              )}
-              <span>{getConversationTitle(conversation)}</span>
-            </h2>
-            {attachPresentation && attachState && (
-              <span
-                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-                title={attachPresentation.title}
-              >
-                {attachPresentation.label}
-              </span>
-            )}
-            <div className="conv-actions">
-              <button
-                type="button"
-                className="conv-actions__trigger"
-                onClick={() => setActionsOpen((prev) => !prev)}
-                title="Conversation actions"
-                aria-label="Conversation actions"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-              >
-                <HorizontalDotsIcon />
-              </button>
-              {actionsOpen && (
-                <div className="conv-actions__menu">
-                  <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
-                    {conversation.starred ? 'Unstar' : 'Star'}
-                  </button>
-                  <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
-                    Show in graph
-                  </button>
-                  <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                    {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                  </button>
-                  <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
-                    {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
-                  </button>
-                  <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                    Select messages
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="conv-detail__header-right">
+  const detailHeader = (
+    <DetailPaneHeader
+      variant="compact"
+      identity={{
+        entityLabel: 'Conversation',
+        displayRef: shortRouteId(conversation.id),
+        canonicalRef: conversation.id,
+        copyLabel: 'Copy full conversation ID',
+      }}
+      title={(
+        <>
+          {conversation.parent_conversation_id && (
+            <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
+          )}
+          <span>{getConversationTitle(conversation)}</span>
+        </>
+      )}
+      titleTooltip={getConversationTitle(conversation)}
+      status={(
+        <>
+          <span className="conv-detail__provider">
+            {getConversationHeaderProviderLabel(conversation.source)}
+          </span>
+          {attachPresentation && attachState && (
+            <span
+              className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+              title={attachPresentation.title}
+            >
+              {attachPresentation.label}
+            </span>
+          )}
+        </>
+      )}
+      actionsLabel="Conversation detail actions"
+      actions={(
+        <>
           <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
           <button
             type="button"
@@ -2159,9 +2099,213 @@ function ConversationDetail({
           >
             <InfoCircleIcon />
           </button>
-        </div>
-      </div>
+          <div className="conv-actions">
+            <button
+              type="button"
+              className="conv-actions__trigger"
+              onClick={() => setActionsOpen((prev) => !prev)}
+              title="Conversation actions"
+              aria-label="Conversation actions"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+            >
+              <HorizontalDotsIcon />
+            </button>
+            {actionsOpen && (
+              <div className="conv-actions__menu">
+                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+                  {conversation.starred ? 'Unstar' : 'Star'}
+                </button>
+                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                  Show in graph
+                </button>
+                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
+                </button>
+                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
+                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
+                </button>
+                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                  Select messages
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    />
+  );
 
+  const detailFooter = (
+    <>
+      <Shelf
+        conversationId={conversation.id}
+        title="Activity"
+        items={shelfItems}
+        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
+      />
+
+      {isReadOnlyChild ? (
+        <div className="conv-compose conv-compose--readonly">
+          <span>Read-only subagent transcript</span>
+        </div>
+      ) : attachPresentation?.composer !== 'hidden' ? (
+      <div className="conv-compose">
+        {attachPresentation?.hint && (
+          <div className="conv-compose__hint">{attachPresentation.hint}</div>
+        )}
+        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
+          <textarea
+            className="conv-compose__input"
+            value={continueDraft}
+            onInput={(event) => setContinueDraft(event.currentTarget.value)}
+            onKeyDown={handleComposerKeyDown}
+            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
+            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
+            rows={3}
+          />
+          <button
+            type="submit"
+            className="conv-compose__send"
+            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
+            title="Send message"
+            aria-label="Send message"
+          >
+            {continueBusy ? '...' : '↑'}
+          </button>
+        </form>
+        {attachState?.kind === 'live-external' && (
+          <div className="conv-compose__actions">
+            {attachState.external_session_id && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => { void handleFocusExternalSession(); }}
+              >
+                Go to terminal
+              </button>
+            )}
+            {attachState.can_fork && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={continueBusy || !latestDagUuid}
+                onClick={() => { void handleForkHere(); }}
+              >
+                Fork here
+              </button>
+            )}
+          </div>
+        )}
+        <div className="conv-compose__footer">
+          <div className="conv-compose__runtime">
+            <select
+              className="conv-compose__model"
+              value={composerModel}
+              disabled={continueBusy || modelOptions.length === 0}
+              title="Model"
+              aria-label="Model"
+              onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
+            >
+              <option value={currentModel === 'default' ? '' : currentModel}>
+                {currentModel === 'default' ? 'Default' : currentModel}
+              </option>
+              {modelOptions
+                .filter((model) => model !== currentModel)
+                .map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+            </select>
+          </div>
+          {canShowSessionControls && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => setComposerControlsOpen((prev) => !prev)}
+            >
+              Controls
+            </button>
+          )}
+        </div>
+        {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
+          <div className="conv-compose__controls">
+            <SessionControls
+              sessionId={linkedConsoleSession.id}
+              runOptions={sessionRunOptions}
+              allowedTools={linkedConsoleSession.allowed_tools}
+            />
+          </div>
+        )}
+        {(continueError || continueDisabledReason) && (
+          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
+            {continueError ?? continueDisabledReason}
+          </div>
+        )}
+        {resumeErrorDetails && (
+          <details className="conv-compose__details">
+            <summary>Details</summary>
+            <pre>{resumeErrorDetails}</pre>
+          </details>
+        )}
+      </div>
+      ) : null}
+    </>
+  );
+  const shouldRenderDetailFooter = shelfItems.length > 0
+    || isReadOnlyChild
+    || attachPresentation?.composer !== 'hidden';
+
+  const detailOverlays = (
+    <>
+      <ChatOverlay
+        open={usageModalOpen}
+        titleId="conversation-usage-modal-title"
+        onClose={() => setUsageModalOpen(false)}
+      >
+        <UsageModal
+          usage={usageSummary}
+          titleId="conversation-usage-modal-title"
+          onClose={() => setUsageModalOpen(false)}
+        />
+      </ChatOverlay>
+
+      {activeWorkflow && (
+        <WorkflowRunDialog
+          workflow={activeWorkflow}
+          onClose={() => setActiveWorkflowId(null)}
+          onNavigate={onNavigate}
+        />
+      )}
+
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
+
+      {infoOpen && (
+        <ConversationInfoDialog
+          conversation={conversation}
+          linkedConsoleSession={linkedConsoleSession}
+          issueLinks={sessionIssueLinks}
+          presets={sessionPresets}
+          onClose={() => setInfoOpen(false)}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <DetailPaneShell
+      as="div"
+      variant="compact"
+      className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
+      headerClassName="conv-detail__shell-header"
+      subheaderClassName="conv-detail__parent"
+      bodyClassName="conv-detail__body"
+      footerClassName="conv-detail__footer"
+      header={detailHeader}
+      subheader={parentLink}
+      footer={shouldRenderDetailFooter ? detailFooter : undefined}
+      overlays={detailOverlays}
+      ariaBusy={loading}
+    >
       {error && (
         <div className="conv-load-error">
           <span>{error}</span>
@@ -2317,180 +2461,11 @@ function ConversationDetail({
           )}
         </div>
       )}
-
-      <ChatOverlay
-        open={usageModalOpen}
-        titleId="conversation-usage-modal-title"
-        onClose={() => setUsageModalOpen(false)}
-      >
-        <UsageModal
-          usage={usageSummary}
-          titleId="conversation-usage-modal-title"
-          onClose={() => setUsageModalOpen(false)}
-        />
-      </ChatOverlay>
-
-      <Shelf
-        conversationId={conversation.id}
-        title="Activity"
-        items={shelfItems}
-        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
-      />
-
-      {activeWorkflow && (
-        <WorkflowRunDialog
-          workflow={activeWorkflow}
-          onClose={() => setActiveWorkflowId(null)}
-          onNavigate={onNavigate}
-        />
-      )}
-
-      {isReadOnlyChild ? (
-        <div className="conv-compose conv-compose--readonly">
-          <span>Read-only subagent transcript</span>
-        </div>
-      ) : attachPresentation?.composer !== 'hidden' ? (
-      <div className="conv-compose">
-        {attachPresentation?.hint && (
-          <div className="conv-compose__hint">{attachPresentation.hint}</div>
-        )}
-        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
-          <textarea
-            className="conv-compose__input"
-            value={continueDraft}
-            onInput={(event) => setContinueDraft(event.currentTarget.value)}
-            onKeyDown={handleComposerKeyDown}
-            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
-            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
-            rows={3}
-          />
-          <button
-            type="submit"
-            className="conv-compose__send"
-            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
-            title="Send message"
-            aria-label="Send message"
-          >
-            {continueBusy ? '...' : '↑'}
-          </button>
-        </form>
-        {attachState?.kind === 'live-external' && (
-          <div className="conv-compose__actions">
-            {attachState.external_session_id && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                onClick={() => { void handleFocusExternalSession(); }}
-              >
-                Go to terminal
-              </button>
-            )}
-            {attachState.can_fork && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={continueBusy || !latestDagUuid}
-                onClick={() => { void handleForkHere(); }}
-              >
-                Fork here
-              </button>
-            )}
-          </div>
-        )}
-        <div className="conv-compose__footer">
-          <div className="conv-compose__runtime">
-            <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
-              {getSourceMark(conversation.source)}
-            </span>
-            <select
-              className="conv-compose__model"
-              value={composerModel}
-              disabled={continueBusy || modelOptions.length === 0}
-              title="Model"
-              aria-label="Model"
-              onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
-            >
-              <option value={currentModel === 'default' ? '' : currentModel}>
-                {currentModel === 'default' ? 'Default' : currentModel}
-              </option>
-              {modelOptions
-                .filter((model) => model !== currentModel)
-                .map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-            </select>
-          </div>
-          {canShowSessionControls && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setComposerControlsOpen((prev) => !prev)}
-            >
-              Controls
-            </button>
-          )}
-        </div>
-        {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
-          <div className="conv-compose__controls">
-            <SessionControls
-              sessionId={linkedConsoleSession.id}
-              runOptions={sessionRunOptions}
-              allowedTools={linkedConsoleSession.allowed_tools}
-            />
-          </div>
-        )}
-        {(continueError || continueDisabledReason) && (
-          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
-            {continueError ?? continueDisabledReason}
-          </div>
-        )}
-        {resumeErrorDetails && (
-          <details className="conv-compose__details">
-            <summary>Details</summary>
-            <pre>{resumeErrorDetails}</pre>
-          </details>
-        )}
-      </div>
-      ) : null}
-
-      {/* Toast notification */}
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
-
-      {infoOpen && (
-        <ConversationInfoDialog
-          conversation={conversation}
-          linkedConsoleSession={linkedConsoleSession}
-          issueLinks={sessionIssueLinks}
-          presets={sessionPresets}
-          workRepos={workRepos}
-          onClose={() => setInfoOpen(false)}
-        />
-      )}
-    </div>
+    </DetailPaneShell>
   );
 }
 
 // ── Sidebar Item ──
-
-function PinIcon({ size = 13 }: { size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 17v5" />
-      <path d="M5 17h14" />
-      <path d="M7 17l2-8-2-3V3h10v3l-2 3 2 8" />
-    </svg>
-  );
-}
 
 function FolderIcon({ size = 13, open = false }: { size?: number; open?: boolean }): JSX.Element {
   return (
@@ -2519,39 +2494,38 @@ function ChatEntryItem({
   isSelected,
   onClick,
   onTogglePin,
+  pinned,
+  pinActionRef,
   onEditTags,
   onRenameSession,
-  showPinnedIcon = false,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
   onClick: () => void;
   onTogglePin?: () => void;
+  pinned?: boolean;
+  pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
-  showPinnedIcon?: boolean;
 }): JSX.Element {
-  const [actionsOpen, setActionsOpen] = useState(false);
   const conversation = entry.conversation;
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
+  const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
-  const isPinned = Boolean(conversation?.starred || session?.pinned);
+  const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
+  const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
-  const handleEditTags = (event: MouseEvent) => {
-    event.stopPropagation();
-    setActionsOpen(false);
+  const handleEditTags = () => {
     if (!onEditTags) return;
     const nextLabel = window.prompt('Edit tags (comma-separated)', conversation?.tags.join(', ') ?? '');
     if (nextLabel === null) return;
     onEditTags(parseConversationTagsInput(nextLabel));
   };
 
-  const handleRenameSession = (event: MouseEvent) => {
-    event.stopPropagation();
-    setActionsOpen(false);
+  const handleRenameSession = () => {
     if (!onRenameSession) return;
     const nextLabel = window.prompt('Rename session', title);
     if (nextLabel === null) return;
@@ -2559,84 +2533,63 @@ function ChatEntryItem({
     onRenameSession(normalized || null);
   };
 
-  const handleTogglePin = (event: MouseEvent) => {
-    event.stopPropagation();
-    setActionsOpen(false);
+  const handleTogglePin = () => {
     onTogglePin?.();
   };
 
+  const overflowActions: SidebarItemOverflowAction[] = [];
+  if (onEditTags) {
+    overflowActions.push({ id: 'edit-tags', label: 'Edit tags', onSelect: handleEditTags });
+  }
+  if (onRenameSession) {
+    overflowActions.push({ id: 'rename-session', label: 'Rename session', onSelect: handleRenameSession });
+  }
+
   return (
-    <div
-      className={`chat-history-item${isSelected ? ' chat-history-item--selected' : ''}${isSubAgent ? ' chat-history-item--subagent' : ''}`}
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
-    >
-      <div className="chat-history-item__line">
-        {showPinnedIcon && (
-          <span className="chat-history-item__pin" title="Pinned">
-            <PinIcon />
-          </span>
-        )}
-        <span className="chat-history-item__title">
-          {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
-          <span>{truncate(title, 70)}</span>
-          {conversation && conversation.tags.length > 0 && (
-            <span className="chat-history-item__tags">{conversation.tags.join(' · ')}</span>
-          )}
-        </span>
-        {session?.owner && (
-          <span
-            className="chat-history-item__owner"
-            title={`${session.owner.display_name} (${session.owner.kind})`}
-          >
-            {session.owner.display_name}
-          </span>
-        )}
-        {canShowActions && (
-          <div className="chat-history-item__actions">
-            <button
-              type="button"
-              className="chat-history-item__menu-btn"
-              onClick={(event) => {
-                event.stopPropagation();
-                setActionsOpen((prev) => !prev);
-              }}
-              title="Chat actions"
-              aria-label="Chat actions"
+    <SidebarItemRow
+      label={title}
+      selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
+      provider={providerLabel && source ? { label: providerLabel, tone: CHAT_PROVIDER_TONES[source] } : undefined}
+      selectionTone={source ? CHAT_PROVIDER_TONES[source] : undefined}
+      selected={isSelected}
+      ariaCurrent={isSelected ? 'true' : undefined}
+      className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
+      onSelect={onClick}
+      leading={isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : undefined}
+      badges={hasBadges ? (
+        <>
+          {conversation && conversation.tags.length > 0 ? (
+            <SidebarItemBadge className="chat-history-item__tags" title={conversation.tags.join(' · ')}>
+              {conversation.tags.join(' · ')}
+            </SidebarItemBadge>
+          ) : null}
+          {session?.owner ? (
+            <SidebarItemBadge
+              className="chat-history-item__owner"
+              title={`${session.owner.display_name} (${session.owner.kind})`}
             >
-              ...
-            </button>
-            {actionsOpen && (
-              <div className="chat-history-item__menu" onClick={(event) => event.stopPropagation()}>
-                {onTogglePin && (
-                  <button type="button" onClick={handleTogglePin}>
-                    {isPinned ? 'Unpin' : 'Pin'}
-                  </button>
-                )}
-                {onEditTags && (
-                  <button type="button" onClick={handleEditTags}>
-                    Edit tags
-                  </button>
-                )}
-                {onRenameSession && (
-                  <button type="button" onClick={handleRenameSession}>
-                    Rename session
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        <span
-          className={`agent-mark ${source ? SOURCE_CLASSES[source] || '' : ''}`}
-          title={source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : undefined}
-        >
-          {source ? getSourceMark(source) : session ? getSessionMark(session) : '??'}
-        </span>
-      </div>
-    </div>
+              {session.owner.display_name}
+            </SidebarItemBadge>
+          ) : null}
+        </>
+      ) : undefined}
+      actions={canShowActions ? (
+        <>
+          {onTogglePin ? (
+            <SidebarItemPinAction
+              label={title}
+              pressed={isPinned}
+              actionRef={pinActionRef}
+              onPress={handleTogglePin}
+            />
+          ) : null}
+          <SidebarItemOverflowMenu
+            label={`Chat actions for ${title}`}
+            actions={overflowActions}
+          />
+        </>
+      ) : undefined}
+    />
   );
 }
 
@@ -2705,18 +2658,21 @@ function LiveSessionDetail({
 // ── Main View ──
 
 export function ConversationsView({
-  conversations: initialConversations,
   consoleSessions,
-  workRepos,
   initialConversationId,
   initialSessionId,
   initialPresetId,
   sidebarHidden = false,
+  sidebarGroupLimit: rawSidebarGroupLimit,
+  instance = null,
   onSelectSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
   const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
+  const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
+  const [projectChooserOpen, setProjectChooserOpen] = useState(false);
+  const [projectChooserSelection, setProjectChooserSelection] = useState('');
   const [search, setSearch] = useState('');
   const [searchMode, setSearchMode] = useState<'title' | 'full'>('title');
   const [sourceFilter, setSourceFilter] = useState<ConversationSource | 'all'>('all');
@@ -2726,15 +2682,60 @@ export function ConversationsView({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
-  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
-  const [total, setTotal] = useState(0);
+  const [chatViewState, setChatViewState] = useChatViewState();
+  const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
+  const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
+  const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
+  const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
+  const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const searchTimer = useRef<number | null>(null);
-  const conversationsRef = useRef(conversations);
-  conversationsRef.current = conversations;
+  const fetchGenerationRef = useRef(0);
+  const groupsRef = useRef(serverGroups);
+  groupsRef.current = serverGroups;
+  const targetsRef = useRef(visibleTargets);
+  targetsRef.current = visibleTargets;
+  const previousGroupLimitRef = useRef(sidebarGroupLimit);
+  const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingPinFocusKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listCanonicalProjects().then((projects) => {
+      if (active) setCanonicalProjects(projects);
+    }).catch(() => {
+      if (active) setCanonicalProjects([]);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const previous = previousGroupLimitRef.current;
+    if (previous === sidebarGroupLimit) return;
+    previousGroupLimitRef.current = sidebarGroupLimit;
+    setVisibleTargets((current) => new Map(
+      Array.from(current, ([key, target]) => [key, target === previous ? sidebarGroupLimit : target]),
+    ));
+  }, [sidebarGroupLimit]);
+
+  useLayoutEffect(() => {
+    const key = pendingPinFocusKey.current;
+    if (!key) return;
+    const action = pinActionRefs.current.get(key);
+    if (!action) return;
+    action.focus({ preventScroll: true });
+    pendingPinFocusKey.current = null;
+  });
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
+  const previewMutationsRejected = instance?.operational_mutations === 'reject';
+  const isConversationPinned = useCallback((conversation: Conversation): boolean => {
+    if (!previewMutationsRejected) return conversation.starred;
+    return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)
+      ? chatViewState.previewPinOverrides[conversation.id]
+      : conversation.starred;
+  }, [chatViewState.previewPinOverrides, previewMutationsRejected]);
 
   const liveSessions = useMemo(() => {
     return consoleSessions
@@ -2816,46 +2817,60 @@ export function ConversationsView({
     };
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
-  // Fetch conversations. Uses ref for offset to avoid stale closure.
-  const fetchConversations = useCallback(async (reset = true) => {
+  const sidebarRequestParams = useCallback((limit: number) => {
+    const params: Parameters<typeof getConversationSidebar>[0] = {
+      limit,
+      sort: sort === 'blocks' ? 'block_count' : 'started_at',
+      exclude_subagents: true,
+    };
+    if (sourceFilter !== 'all') params.source = sourceFilter;
+    if (starredOnly) params.starred = true;
+    if (hideEmpty) params.min_blocks = 1;
+    applyConversationSearchParams(params, search, searchMode);
+    return params;
+  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
+
+  // A refresh starts from one bounded page per logical group, then replays only
+  // the extra pages needed to restore that group's current visible target.
+  const fetchConversationGroups = useCallback(async () => {
+    const generation = ++fetchGenerationRef.current;
     setLoading(true);
     try {
-      const params: {
-        source?: string;
-        starred?: boolean;
-        search?: string;
-        full_text?: boolean;
-        offset?: number;
-        limit?: number;
-        sort?: string;
-        min_blocks?: number;
-        group?: boolean;
-        exclude_subagents?: boolean;
-      } = {
-        limit: PAGE_SIZE,
-        offset: reset ? 0 : conversationsRef.current.length,
-        sort: sort === 'blocks' ? 'block_count' : 'started_at',
-      };
-      if (sourceFilter !== 'all') params.source = sourceFilter;
-      if (starredOnly) params.starred = true;
-      if (hideEmpty) params.min_blocks = 1;
-      applyConversationSearchParams(params, search, searchMode);
-      params.group = true;
-      params.exclude_subagents = true;
-
-      const result = await getConversations(params);
-      if (reset) {
-        setConversations(result.conversations);
-      } else {
-        setConversations((prev) => [...prev, ...result.conversations]);
-      }
-      setTotal(result.total);
+      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit));
+      const reconciled = await Promise.all(result.groups.map(async (initialGroup) => {
+        const target = targetsRef.current.get(initialGroup.key) ?? sidebarGroupLimit;
+        let group = initialGroup;
+        while (group.conversations.length < target && group.next_cursor) {
+          const page = await getConversationSidebar({
+            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length)),
+            group_key: group.key,
+            cursor: group.next_cursor,
+          });
+          const next = page.groups[0];
+          if (!next) break;
+          const seen = new Set(group.conversations.map((conversation) => conversation.id));
+          group = {
+            ...next,
+            conversations: [...group.conversations, ...next.conversations.filter((conversation) => !seen.has(conversation.id))],
+          };
+        }
+        return group;
+      }));
+      if (generation !== fetchGenerationRef.current) return;
+      setServerGroups(reconciled);
+      setVisibleTargets((current) => {
+        const next = new Map(current);
+        for (const group of reconciled) {
+          if (!next.has(group.key)) next.set(group.key, sidebarGroupLimit);
+        }
+        return next;
+      });
     } catch {
       // ignore fetch errors
     } finally {
-      setLoading(false);
+      if (generation === fetchGenerationRef.current) setLoading(false);
     }
-  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [sidebarGroupLimit, sidebarRequestParams]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
@@ -2874,16 +2889,31 @@ export function ConversationsView({
       if (refetchTimer !== null) return;
       refetchTimer = window.setTimeout(() => {
         refetchTimer = null;
-        void fetchConversations(true);
+        void fetchConversationGroups();
       }, 1000);
     };
     const offUpdated = client.on('conversation:updated', (payload) => {
       const data = (
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
-      const result = mergeConversationSummaryIntoList(conversationsRef.current, data);
+      const groupIndex = data.id
+        ? groupsRef.current.findIndex((group) => group.conversations.some((conversation) => conversation.id === data.id))
+        : -1;
+      if (groupIndex < 0) {
+        scheduleListRefetch();
+        return;
+      }
+      const currentGroup = groupsRef.current[groupIndex];
+      const currentConversation = currentGroup.conversations.find((conversation) => conversation.id === data.id)!;
+      const sortKeyChanged = sort === 'blocks'
+        ? typeof data.block_count === 'number' && data.block_count !== currentConversation.block_count
+        : typeof data.started_at === 'string' && data.started_at !== currentConversation.started_at;
+      const result = mergeConversationSummaryIntoList(currentGroup.conversations, data);
       if (result.applied) {
-        setConversations(result.conversations);
+        setServerGroups(groupsRef.current.map((group, index) => (
+          index === groupIndex ? { ...group, conversations: result.conversations } : group
+        )));
+        if (sortKeyChanged) scheduleListRefetch();
       } else if (result.refetch) {
         scheduleListRefetch();
       }
@@ -2893,7 +2923,7 @@ export function ConversationsView({
       scheduleListRefetch();
     });
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void fetchConversations(true);
+      if (reconnected) void fetchConversationGroups();
     });
     client.connect();
     return () => {
@@ -2905,42 +2935,40 @@ export function ConversationsView({
       offState();
       client.close();
     };
-  }, [fetchConversations]);
+  }, [fetchConversationGroups]);
 
   // Debounced fetch on filter changes
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
-      fetchConversations(true);
+      fetchConversationGroups();
     }, 300);
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [fetchConversations]);
+  }, [fetchConversationGroups]);
 
-  const loadMore = () => {
-    fetchConversations(false);
-  };
-
-  const remainingConversationCount = Math.max(0, total - conversations.length);
-  const hasMore = remainingConversationCount > 0;
   const selectedConversationSummary = selection?.type === 'conversation'
-    ? conversations.find((conv) => conv.id === selection.id) ?? null
+    ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
     : null;
 
   // Client-side title-only filter (when searchMode === 'title', server already
   // searched summary too, so we narrow here to title-only for the title mode).
   // When searchMode === 'full', server search is sufficient — show all results.
   const displayedConversations = useMemo(() => {
-    const base = conversations.filter((conv) =>
-      !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
-    );
+    const base = serverGroups.map((group) => ({
+      ...group,
+      conversations: group.conversations.filter((conv) =>
+        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
+      ),
+    }));
     if (!search.trim() || searchMode === 'full') return base;
     const needle = search.trim().toLowerCase();
-    return base.filter((conv) =>
-      getConversationTitle(conv).toLowerCase().includes(needle)
-    );
-  }, [conversations, hideEmpty, search, searchMode]);
+    return base.map((group) => ({
+      ...group,
+      conversations: group.conversations.filter((conv) => getConversationTitle(conv).toLowerCase().includes(needle)),
+    }));
+  }, [serverGroups, hideEmpty, search, searchMode]);
 
   const liveByProviderSession = useMemo(() => {
     const map = new Map<string, ConsoleSession>();
@@ -2952,16 +2980,84 @@ export function ConversationsView({
     return map;
   }, [liveSessions]);
 
+  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
+
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    const entries: ChatEntry[] = displayedConversations.map((conversation) => ({
-      key: `conversation:${conversation.id}`,
-      project: getConversationProject(conversation, workRepos),
-      time: getConversationTime(conversation),
-      kind: 'conversation',
-      conversation,
-      liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] | 'project' };
+    const groups = displayedConversations.map((group): WorkingGroup => ({
+      key: group.key,
+      label: group.kind === 'pinned' ? 'Pinned' : 'Chats',
+      total: group.total,
+      nextCursor: group.next_cursor,
+      kind: group.kind,
+      entries: [],
     }));
-    const conversationProviderIds = new Set(displayedConversations.map((conversation) => conversation.session_id));
+    const groupByKey = new Map(groups.map((group) => [group.key, group]));
+    const ensureGroup = (
+      key: string,
+      kind: WorkingGroup['kind'],
+      label: string,
+      canonicalProject?: RegisteredChatProject,
+    ): WorkingGroup => {
+      const existing = groupByKey.get(key);
+      if (existing) return existing;
+      const created: WorkingGroup = {
+        key,
+        kind,
+        label,
+        total: 0,
+        nextCursor: null,
+        entries: [],
+        exactRoot: canonicalProject?.root,
+        canonicalProjectId: canonicalProject?.id,
+        canonicalProjectKey: canonicalProject?.key,
+      };
+      groups.push(created);
+      groupByKey.set(key, created);
+      return created;
+    };
+    const ensureKindGroup = (
+      kind: 'pinned' | 'chats',
+      label: 'Pinned' | 'Chats',
+    ): WorkingGroup => groups.find((group) => group.kind === kind)
+      ?? ensureGroup(kind, kind, label);
+
+    for (const shown of chatViewState.shownProjects) {
+      const registered = registeredProjects.find((project) => (
+        project.id === shown.projectId
+        && project.checkoutId === shown.checkoutId
+      ));
+      if (!registered) continue;
+      ensureGroup(
+        `shown-project:${encodeURIComponent(registered.id)}:${encodeURIComponent(registered.checkoutId)}`,
+        'project',
+        registered.label,
+        registered,
+      );
+    }
+
+    for (const sourceGroup of displayedConversations) {
+      const source = groupByKey.get(sourceGroup.key)!;
+      for (const conversation of sourceGroup.conversations) {
+        const target = isConversationPinned(conversation)
+          ? ensureKindGroup('pinned', 'Pinned')
+          : source.kind === 'pinned' ? ensureKindGroup('chats', 'Chats') : source;
+        if (source.key !== target.key) {
+          source.total = Math.max(0, source.total - 1);
+          target.total += 1;
+        }
+        target.entries.push({
+          key: `conversation:${conversation.id}`,
+          time: getConversationTime(conversation),
+          kind: 'conversation',
+          conversation,
+          liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+        });
+      }
+    }
+    const conversationProviderIds = new Set(
+      displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.session_id)),
+    );
     for (const session of liveSessions) {
       if (isSubagentSession(session)) {
         continue;
@@ -2969,9 +3065,13 @@ export function ConversationsView({
       if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
         continue;
       }
-      entries.push({
+      const kind = session.pinned ? 'pinned' : 'chats';
+      const group = kind === 'pinned'
+        ? ensureKindGroup('pinned', 'Pinned')
+        : ensureKindGroup('chats', 'Chats');
+      group.total += 1;
+      group.entries.push({
         key: `session:${session.id}`,
-        project: 'No Project',
         time: getSessionTime(session),
         kind: 'session',
         session,
@@ -2979,39 +3079,57 @@ export function ConversationsView({
       });
     }
 
-    const sortEntries = (items: ChatEntry[]) => [...items].sort((a, b) => {
-      if (sort === 'blocks') {
-        const aBlocks = a.conversation?.block_count ?? 0;
-        const bBlocks = b.conversation?.block_count ?? 0;
-        if (aBlocks !== bBlocks) return bBlocks - aBlocks;
-      }
-      return b.time - a.time || getEntryTitle(a).localeCompare(getEntryTitle(b));
-    });
+    const entryOrderRow = (entry: ChatEntry) => entry.conversation ?? {
+      id: entry.key,
+      started_at: Number.isFinite(entry.time) ? new Date(entry.time).toISOString() : '',
+      block_count: 0,
+    };
+    const compareEntries = (a: ChatEntry, b: ChatEntry) => compareConversationSidebarRows(
+      entryOrderRow(a),
+      entryOrderRow(b),
+      sort === 'blocks' ? 'block_count' : 'started_at',
+    );
+    const sortEntries = (items: ChatEntry[]) => [...items].sort(compareEntries);
 
-    const pinned = sortEntries(entries.filter((entry) => Boolean(entry.conversation?.starred || entry.session?.pinned)));
-    const unpinned = entries.filter((entry) => !entry.conversation?.starred && !entry.session?.pinned);
-    const looseChats = sortEntries(unpinned.filter((entry) => entry.project === 'No Project'));
-    const groupMap = new Map<string, ChatEntry[]>();
-    for (const entry of unpinned) {
-      if (entry.project === 'No Project') continue;
-      const group = groupMap.get(entry.project) ?? [];
-      group.push(entry);
-      groupMap.set(entry.project, group);
+    for (const group of groups) {
+      group.entries = group.kind === 'pinned'
+        ? orderByPinnedIds(
+          group.entries,
+          chatViewState.pinnedConversationIds,
+          (entry) => entry.conversation?.id ?? `session:${entry.session?.id ?? entry.key}`,
+          compareEntries,
+        )
+        : sortEntries(group.entries);
     }
-    const projects = Array.from(groupMap.entries())
-      .map(([project, groupEntries]) => ({
-        project,
-        latestTime: Math.max(...groupEntries.map((entry) => entry.time)),
-        entries: sortEntries(groupEntries),
-      }))
-      .sort((a, b) => a.project.localeCompare(b.project));
-    return { pinned, projects, chats: looseChats };
-  }, [displayedConversations, liveByProviderSession, liveSessions, sort, workRepos]);
+    ensureKindGroup('chats', 'Chats');
+    const visibleGroups = groups.filter((group) => group.kind === 'chats' || group.total > 0 || group.entries.length > 0 || Boolean(group.exactRoot));
+    return {
+      pinned: visibleGroups.find((group) => group.kind === 'pinned') ?? null,
+      projects: visibleGroups
+        .filter((group) => group.kind === 'project')
+        .sort((left, right) => left.label.localeCompare(right.label)),
+      chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
+    };
+  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, sort]);
+
+  useEffect(() => {
+    const effectivePinnedIds = displayedConversations
+      .flatMap((group) => group.conversations)
+      .filter(isConversationPinned)
+      .map((conversation) => conversation.id);
+    setChatViewState((current) => {
+      const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, effectivePinnedIds);
+      return reconciled.length === current.pinnedConversationIds.length
+        && reconciled.every((id, index) => id === current.pinnedConversationIds[index])
+        ? current
+        : { ...current, pinnedConversationIds: reconciled };
+    });
+  }, [displayedConversations, isConversationPinned, setChatViewState]);
 
   const firstChatEntry =
-    chatSections.pinned[0] ??
+    chatSections.pinned?.entries[0] ??
     chatSections.projects[0]?.entries[0] ??
-    chatSections.chats[0] ??
+    chatSections.chats?.entries[0] ??
     null;
   const activeFilterCount = [
     sourceFilter !== 'all',
@@ -3076,15 +3194,84 @@ export function ConversationsView({
   };
 
   const updateConversationInList = (updated: Conversation) => {
-    setConversations((prev) => prev.map((conv) => (conv.id === updated.id ? { ...conv, ...updated } : conv)));
+    // Pinning can change group membership and manual order, so reconcile from
+    // the grouped endpoint while keeping selection, folds, and quotas intact.
+    setServerGroups((current) => current.map((group) => ({
+      ...group,
+      conversations: group.conversations.map((conv) => (conv.id === updated.id ? { ...conv, ...updated } : conv)),
+    })));
+    void fetchConversationGroups();
   };
+
+  const showMore = useCallback((group: ChatProjectGroup) => {
+    const currentTarget = targetsRef.current.get(group.key) ?? sidebarGroupLimit;
+    const nextTarget = currentTarget + sidebarGroupLimit;
+    const nextTargets = new Map(targetsRef.current).set(group.key, nextTarget);
+    targetsRef.current = nextTargets;
+    setVisibleTargets(nextTargets);
+    if (group.entries.length >= nextTarget || !group.nextCursor) return;
+
+    setLoadingMoreKeys((current) => new Set(current).add(group.key));
+    void getConversationSidebar({
+      ...sidebarRequestParams(sidebarGroupLimit),
+      group_key: group.key,
+      cursor: group.nextCursor,
+    })
+      .then((page) => {
+        const fetched = page.groups[0];
+        if (!fetched) return;
+        setServerGroups((current) => current.map((candidate) => {
+          if (candidate.key !== group.key) return candidate;
+          const seen = new Set(candidate.conversations.map((conversation) => conversation.id));
+          return {
+            ...fetched,
+            conversations: [
+              ...candidate.conversations,
+              ...fetched.conversations.filter((conversation) => !seen.has(conversation.id)),
+            ],
+          };
+        }));
+      })
+      .catch(() => {
+        const rolledBackTargets = new Map(targetsRef.current).set(group.key, currentTarget);
+        targetsRef.current = rolledBackTargets;
+        setVisibleTargets(rolledBackTargets);
+      })
+      .finally(() => setLoadingMoreKeys((current) => {
+        const next = new Set(current);
+        next.delete(group.key);
+        return next;
+      }));
+  }, [sidebarGroupLimit, sidebarRequestParams]);
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
-    const starred = !entry.conversation.starred;
+    const conversationId = entry.conversation.id;
+    const starred = !isConversationPinned(entry.conversation);
+    if (previewMutationsRejected) {
+      pendingPinFocusKey.current = entry.key;
+      setChatViewState((current) => ({
+        ...current,
+        pinnedConversationIds: starred
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
+          : current.pinnedConversationIds.filter((id) => id !== conversationId),
+        previewPinOverrides: {
+          ...current.previewPinOverrides,
+          [conversationId]: starred,
+        },
+      }));
+      return;
+    }
     try {
-      const updated = await updateConversation(entry.conversation.id, { starred });
+      const updated = await updateConversation(conversationId, { starred });
+      pendingPinFocusKey.current = entry.key;
       updateConversationInList(updated);
+      setChatViewState((current) => ({
+        ...current,
+        pinnedConversationIds: starred
+          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
+          : current.pinnedConversationIds.filter((id) => id !== conversationId),
+      }));
     } catch {
       // keep the current list state if persistence fails
     }
@@ -3120,20 +3307,66 @@ export function ConversationsView({
     channel_enabled?: boolean;
     presetIds?: string[];
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
+    cwd?: string;
   }) => {
     onNewSession(input);
     setDialogOpen(false);
+    setNewSessionCwd(undefined);
   };
 
-  const renderEntry = (entry: ChatEntry, showPinnedIcon = false) => (
+  const openNewSession = (cwd?: string) => {
+    setNewSessionCwd(cwd);
+    setDialogOpen(true);
+  };
+
+  const openProjectChooser = () => {
+    setProjectChooserSelection((current) => (
+      registeredProjects.some((project) => registeredProjectSelectionValue(project) === current)
+        ? current
+        : registeredProjects[0] ? registeredProjectSelectionValue(registeredProjects[0]) : ''
+    ));
+    setProjectChooserOpen(true);
+    setCollapsedSections((current) => {
+      if (!current.has('projects')) return current;
+      const next = new Set(current);
+      next.delete('projects');
+      return next;
+    });
+  };
+
+  const addShownProject = () => {
+    const project = registeredProjects.find((candidate) => (
+      registeredProjectSelectionValue(candidate) === projectChooserSelection
+    ));
+    if (!project) return;
+    setChatViewState((current) => {
+      const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
+      const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
+      if (existingIndex < 0) {
+        return { ...current, shownProjects: [...current.shownProjects, nextSelection] };
+      }
+      if (current.shownProjects[existingIndex].checkoutId === project.checkoutId) return current;
+      return {
+        ...current,
+        shownProjects: current.shownProjects.map((shown, index) => index === existingIndex ? nextSelection : shown),
+      };
+    });
+    setProjectChooserOpen(false);
+  };
+
+  const renderEntry = (entry: ChatEntry) => (
     <ChatEntryItem
       key={entry.key}
       entry={entry}
       isSelected={entry.kind === 'conversation'
         ? selectedConversationId === entry.conversation?.id
         : selectedSessionId === entry.session?.id}
-      showPinnedIcon={showPinnedIcon}
+      pinned={entry.conversation ? isConversationPinned(entry.conversation) : undefined}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
+      pinActionRef={entry.conversation ? (element) => {
+        if (element) pinActionRefs.current.set(entry.key, element);
+        else pinActionRefs.current.delete(entry.key);
+      } : undefined}
       onEditTags={entry.conversation ? (tags) => { void handleEditEntryTags(entry, tags); } : undefined}
       onRenameSession={!entry.conversation && entry.session
         ? (label) => { void handleRenameSession(entry, label); }
@@ -3151,16 +3384,14 @@ export function ConversationsView({
   );
 
   const totalVisibleEntries =
-    chatSections.pinned.length +
+    (chatSections.pinned?.entries.length ?? 0) +
     chatSections.projects.reduce((sum, group) => sum + group.entries.length, 0) +
-    chatSections.chats.length;
+    (chatSections.chats?.entries.length ?? 0);
 
   return (
     <div className="chat-history-view">
       <ViewSidebar
-        storageKey="sidebar-width:conversations"
-        defaultWidth={320}
-        minWidth={190}
+        {...VIEW_SIDEBAR_GEOMETRY.console}
         className="chat-history-sidebar"
         ariaLabel="Conversations"
         hidden={sidebarHidden}
@@ -3172,17 +3403,6 @@ export function ConversationsView({
             searchAriaLabel="Search chats"
             clearAriaLabel="Clear chat search"
             inputType="text"
-            leadingAction={(
-              <button
-                type="button"
-                className="icon-btn chat-sidebar-new"
-                onClick={() => setDialogOpen(true)}
-                title="New chat"
-                aria-label="New chat"
-              >
-                +
-              </button>
-            )}
             filterTrigger={{
               ariaLabel: 'Search and filter options',
               title: 'Search and filter options',
@@ -3275,72 +3495,114 @@ export function ConversationsView({
         bodyClassName="chat-history-list"
       >
 
-            <div className="chat-sidebar-section">
-              <button
-                type="button"
-                className="chat-sidebar-section__heading"
-                onClick={() => toggleSection('pinned')}
-              >
-                <strong>Pinned</strong>
-                <em>{chatSections.pinned.length}</em>
+            <div className="chat-sidebar-global-actions" role="region" aria-label="Chat actions">
+              <button type="button" className="chat-sidebar-global-action" onClick={() => openNewSession()}>
+                <SidebarNewChatIcon size={16} />
+                <span>New chat</span>
               </button>
-              {!collapsedSections.has('pinned') && chatSections.pinned.map((entry) => renderEntry(entry, true))}
             </div>
 
-            <div className="chat-sidebar-section">
-              <button
-                type="button"
-                className="chat-sidebar-section__heading"
-                onClick={() => toggleSection('projects')}
+            {chatSections.pinned ? (() => {
+              const group = chatSections.pinned;
+              const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
+              return (
+                <SidebarGroupNode
+                  id="chat-pinned"
+                  presentation="category"
+                  label={group.label}
+                  headingDescription={`${group.total} pinned chat${group.total === 1 ? '' : 's'}`}
+                  expanded={!collapsedSections.has('pinned')}
+                  onToggle={() => toggleSection('pinned')}
+                  canShowMore={group.entries.length > target || group.nextCursor !== null}
+                  loadingMore={loadingMoreKeys.has(group.key)}
+                  onShowMore={() => { void showMore(group); }}
+                >
+                  {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                </SidebarGroupNode>
+              );
+            })() : null}
+
+            {chatSections.projects.length > 0 || registeredProjects.length > 0 ? (
+              <SidebarGroupNode
+                id="chat-projects"
+                presentation="category"
+                label="Projects"
+                expanded={!collapsedSections.has('projects')}
+                onToggle={() => toggleSection('projects')}
+                action={{ label: 'Add project', icon: 'add-project', onPress: openProjectChooser }}
               >
-                <strong>Projects</strong>
-                <em>{chatSections.projects.length}</em>
-              </button>
-              {!collapsedSections.has('projects') && chatSections.projects.map((group) => {
-                const collapsed = collapsedProjects.has(group.project);
+              {projectChooserOpen ? (
+                <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
+                  <select aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
+                    {registeredProjects.map((project) => {
+                      const hasMultipleCheckouts = registeredProjects.some((candidate) => (
+                        candidate.id === project.id && candidate.checkoutId !== project.checkoutId
+                      ));
+                      return (
+                        <option key={`${project.id}:${project.checkoutId}`} value={registeredProjectSelectionValue(project)}>
+                          {hasMultipleCheckouts ? `${project.label} — ${project.checkoutLabel} (${project.root})` : project.label}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
+                  <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
+                </div>
+              ) : null}
+              {chatSections.projects.map((group, index) => {
+                const collapsed = collapsedProjects.has(group.key);
+                const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
                 return (
-                  <div key={group.project} className="chat-project-group">
-                    <button
-                      type="button"
-                      className="chat-project-group__header"
-                      onClick={() => toggleProject(group.project)}
-                    >
-                      <span className="chat-project-group__folder"><FolderIcon open={!collapsed} /></span>
-                      <strong>{group.project}</strong>
-                      <em>{group.entries.length}</em>
-                    </button>
-                    {!collapsed && (
-                      <div className="chat-project-group__items">
-                        {group.entries.map((entry) => renderEntry(entry))}
-                      </div>
-                    )}
-                  </div>
+                  <SidebarGroupNode
+                    key={group.key}
+                    id={`chat-project-${index}`}
+                    presentation="folder"
+                    bodyClassName="chat-project-group__items"
+                    label={group.label}
+                    count={group.total}
+                    countLabel={`${group.total} chat${group.total === 1 ? '' : 's'} in ${group.label}`}
+                    countVisibility="interaction"
+                    expanded={!collapsed}
+                    onToggle={() => toggleProject(group.key)}
+                    action={{ label: `New chat in ${group.label}`, icon: 'new-chat', onPress: () => openNewSession(group.exactRoot!) }}
+                    leadingIcon={<FolderIcon open={!collapsed} />}
+                    canShowMore={group.entries.length > target || group.nextCursor !== null}
+                    loadingMore={loadingMoreKeys.has(group.key)}
+                    onShowMore={() => { void showMore(group); }}
+                  >
+                    {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                  </SidebarGroupNode>
                 );
               })}
-            </div>
+              </SidebarGroupNode>
+            ) : null}
 
-            <div className="chat-sidebar-section">
-              <button
-                type="button"
-                className="chat-sidebar-section__heading"
-                onClick={() => toggleSection('chats')}
-              >
-                <strong>Chats</strong>
-                <em>{chatSections.chats.length}</em>
-              </button>
-              {!collapsedSections.has('chats') && chatSections.chats.map((entry) => renderEntry(entry))}
-            </div>
+            {chatSections.chats ? (() => {
+              const group = chatSections.chats;
+              const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
+              return (
+                <SidebarGroupNode
+                  id="chat-chats"
+                  presentation="category"
+                  label={group.label}
+                  headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
+                  expanded={!collapsedSections.has('chats')}
+                  onToggle={() => toggleSection('chats')}
+                  action={{ label: 'New chat', icon: 'new-chat', onPress: () => openNewSession() }}
+                  canShowMore={group.entries.length > target || group.nextCursor !== null}
+                  loadingMore={loadingMoreKeys.has(group.key)}
+                  onShowMore={() => { void showMore(group); }}
+                >
+                  {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                </SidebarGroupNode>
+              );
+            })() : null}
 
             {totalVisibleEntries === 0 && !loading && (
               <div className="chat-history-empty">No conversations found.</div>
             )}
             {loading && (
               <div className="chat-history-empty">Loading…</div>
-            )}
-            {hasMore && !loading && (
-              <button type="button" className="btn btn--ghost chat-history-load-more" onClick={loadMore}>
-                Load more ({remainingConversationCount} remaining)
-              </button>
             )}
       </ViewSidebar>
 
@@ -3352,7 +3614,6 @@ export function ConversationsView({
             initialConversation={selectedConversationSummary}
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
-            workRepos={workRepos}
             sidebarCollapsed={false}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
@@ -3368,7 +3629,8 @@ export function ConversationsView({
       </div>
       <NewSessionDialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        cwd={newSessionCwd}
+        onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
         onSubmit={handleNewSession}
         initialPresetId={initialPresetId}
       />

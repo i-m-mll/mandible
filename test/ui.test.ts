@@ -188,6 +188,62 @@ function setViewportWidth(width: number): void {
   fireEvent(window, new Event('resize'));
 }
 
+function readSharedSidebarWidth(shell: HTMLElement, railWidth = 208): number {
+  if (window.innerWidth <= 700) return window.innerWidth - railWidth;
+  return parseInt(shell.style.getPropertyValue('--app-view-sidebar-persisted-width'), 10);
+}
+
+function mockLeftChromeRects(
+  shell: HTMLElement,
+  header: HTMLElement,
+  sidebar: HTMLElement | null,
+  railWidth = 208,
+): void {
+  const rect = (left: number, width: number): DOMRect => ({
+    x: left,
+    y: 0,
+    left,
+    top: 0,
+    width,
+    height: 48,
+    right: left + width,
+    bottom: 48,
+    toJSON: () => ({}),
+  });
+  header.getBoundingClientRect = () => rect(
+    0,
+    shell.classList.contains('app-shell--view-sidebar-open')
+      ? railWidth + readSharedSidebarWidth(shell, railWidth)
+      : railWidth,
+  );
+  if (sidebar) {
+    sidebar.getBoundingClientRect = () => rect(
+      railWidth,
+      readSharedSidebarWidth(shell, railWidth),
+    );
+  }
+}
+
+function installMemoryLocalStorage(initial: Record<string, string> = {}): () => void {
+  const previous = Object.getOwnPropertyDescriptor(window, 'localStorage');
+  const store = new Map(Object.entries(initial));
+  const storage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+    removeItem: (key: string) => store.delete(key),
+    clear: () => store.clear(),
+    key: (index: number) => [...store.keys()][index] ?? null,
+    get length() { return store.size; },
+  };
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: storage,
+  });
+  return () => {
+    if (previous) Object.defineProperty(window, 'localStorage', previous);
+  };
+}
+
 function stubFetch(): void {
   const mockFetch = vi.fn((input: RequestInfo) => {
     const url = String(input);
@@ -475,9 +531,12 @@ describe('App routing', () => {
   });
 
   // Issue f59b5bd — deterministically emitted links shorten full UUIDs to the
-  // 8-char short form; anything else passes through untouched.
-  it('shortens only full UUIDs in shortRouteId', () => {
+  // 8-char short form and typed long-hex refs through the shared 7-char ref
+  // formatter; ordinary identifiers pass through untouched.
+  it('shortens ambiguity-aware UUID and typed-ref routes', () => {
     expect(shortRouteId('e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe('e4c52737');
+    expect(shortRouteId(`briefing:${'a'.repeat(64)}`)).toBe('briefing:aaaaaaa');
+    expect(shortRouteId(`briefing-round:${'b'.repeat(64)}`)).toBe('briefing-round:bbbbbbb');
     expect(shortRouteId('e4c52737')).toBe('e4c52737');
     expect(shortRouteId('req-active-1')).toBe('req-active-1');
     expect(shortRouteId('codex-e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe(
@@ -632,6 +691,8 @@ describe('app shell', () => {
     const shell = useMemo<AppShellContextValue>(() => ({
       bottomPanel,
       registerBottomPanel,
+      setViewSidebarWidth: () => undefined,
+      active: true,
     }), [bottomPanel, registerBottomPanel]);
 
     return h(AppShellProvider, { value: shell }, [
@@ -672,6 +733,119 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
+  it('centers the shared header text group independently while preserving its baseline', () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/briefing');
+
+    const { container } = render(h(App, {}));
+    const css = readResolvedStylesheet();
+    const identity = container.querySelector('.app-header__identity');
+    const text = identity?.querySelector(':scope > .app-header__text');
+
+    expect(text?.querySelector(':scope > .app-header__brand')).toBeTruthy();
+    expect(text?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
+    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;/s);
+    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*baseline;/s);
+    expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
+    expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
+  });
+
+  it('couples the Briefing and Issues header edge to the active persisted sidebar width', async () => {
+    const restoreLocalStorage = installMemoryLocalStorage({
+      'sidebar-width:briefing': '412',
+      'sidebar-width:issues': '444',
+    });
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/briefing');
+
+    const first = render(h(App, {}));
+    const shell = first.container.querySelector<HTMLElement>('.app-shell');
+    const header = first.container.querySelector<HTMLElement>('.app-header');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('412px');
+    const briefingSidebar = await screen.findByLabelText('Briefings');
+    const briefingResize = screen.getByLabelText('Resize Briefings sidebar');
+
+    expect(shell?.classList.contains('app-shell--view-sidebar-open')).toBe(true);
+    expect((briefingSidebar as HTMLElement).style.width).toBe('var(--app-view-sidebar-width)');
+    mockLeftChromeRects(shell!, header!, briefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (briefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
+    expect(header?.classList.contains('app-header--sidebar-hidden')).toBe(false);
+
+    fireEvent.mouseDown(briefingResize, { clientX: 412 });
+    fireEvent.mouseMove(document, { clientX: 428 });
+    await waitFor(() => {
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('428px');
+    });
+    fireEvent.mouseUp(document);
+    mockLeftChromeRects(shell!, header!, briefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (briefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
+
+    fireEvent.click(screen.getByLabelText('Issues'));
+    await waitFor(() => expect(
+      first.container.querySelector('.view-sidebar[aria-label="Issues"]'),
+    ).toBeTruthy());
+    const issuesSidebar = first.container.querySelector<HTMLElement>('.view-sidebar[aria-label="Issues"]');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('444px');
+    expect(issuesSidebar?.style.width).toBe('var(--app-view-sidebar-width)');
+    mockLeftChromeRects(shell!, header!, issuesSidebar);
+    expect(header!.getBoundingClientRect().right).toBe(issuesSidebar!.getBoundingClientRect().right);
+
+    fireEvent.click(screen.getByLabelText('Briefing'));
+    await waitFor(() => {
+      expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('428px');
+    });
+
+    fireEvent.click(screen.getByLabelText('Hide view sidebar'));
+    await waitFor(() => expect(screen.queryByLabelText('Briefings')).toBeNull());
+    mockLeftChromeRects(shell!, header!, null);
+    expect(header!.getBoundingClientRect().right).toBe(208);
+
+    fireEvent.click(screen.getByLabelText('Show view sidebar'));
+    const restoredBriefingSidebar = await screen.findByLabelText('Briefings');
+    expect(shell?.style.getPropertyValue('--app-view-sidebar-persisted-width')).toBe('428px');
+    mockLeftChromeRects(shell!, header!, restoredBriefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (restoredBriefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
+
+    setViewportWidth(700);
+    mockLeftChromeRects(shell!, header!, restoredBriefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(700);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (restoredBriefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
+    setViewportWidth(1024);
+    mockLeftChromeRects(shell!, header!, restoredBriefingSidebar as HTMLElement);
+    expect(header!.getBoundingClientRect().right).toBe(
+      (restoredBriefingSidebar as HTMLElement).getBoundingClientRect().right,
+    );
+
+    first.unmount();
+    window.history.replaceState(null, '', '#/briefing');
+    const refreshed = render(h(App, {}));
+    await screen.findByLabelText('Briefings');
+    expect(
+      refreshed.container.querySelector<HTMLElement>('.app-shell')
+        ?.style.getPropertyValue('--app-view-sidebar-persisted-width'),
+    ).toBe('428px');
+
+    const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-width\)\);/s);
+    expect(css).toMatch(/\.view-sidebar\s*\{[^}]*position:\s*relative;/s);
+    expect((await screen.findByLabelText('Briefings') as HTMLElement).style.width)
+      .toBe('var(--app-view-sidebar-width)');
+    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
+
+    restoreLocalStorage();
+  });
+
   it('keeps the app rail visible while sidebar=hidden hides the view sidebar', async () => {
     stubAppShellFetch();
     stubEventSource();
@@ -686,19 +860,127 @@ describe('app shell', () => {
     expect(screen.getByLabelText('Main navigation')).toBeTruthy();
     expect(screen.queryByPlaceholderText('Filter issues...')).toBeNull();
     const reveal = screen.getByLabelText('Show view sidebar');
-    const themeToggle = screen.getByLabelText(/^App theme:/);
     const footer = container.querySelector('.app-rail__footer');
     const sidebarControls = container.querySelector('.app-rail__sidebar-controls');
+    const header = container.querySelector('.app-header');
 
     expect(footer).toBeTruthy();
+    expect(header?.classList.contains('app-header--sidebar-hidden')).toBe(true);
+    expect(header?.querySelector('.app-header__mark')).toBeTruthy();
+    expect(header?.querySelector('.app-header__brand-text')).toBeNull();
+    expect(header?.querySelector('.app-header__route')).toBeNull();
     expect(sidebarControls?.parentElement).toBe(footer);
     expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
-    expect(Boolean(reveal.compareDocumentPosition(themeToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(screen.queryByLabelText(/^App theme:/)).toBeNull();
+    expect(container.querySelector('.app-rail__theme-toggle')).toBeNull();
 
     fireEvent.click(reveal);
 
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
+  });
+
+  it('persists Settings theme choices, applies root attributes, and follows system changes', async () => {
+    stubEventSource();
+    window.history.replaceState(null, '', '#/settings');
+    let storedTheme = 'system';
+    let systemListener: (() => void) | null = null;
+    const mediaQuery = {
+      matches: false,
+      media: '(prefers-color-scheme: dark)',
+      onchange: null,
+      addEventListener: vi.fn((_event: string, listener: () => void) => {
+        systemListener = listener;
+      }),
+      removeEventListener: vi.fn((_event: string, listener: () => void) => {
+        if (systemListener === listener) systemListener = null;
+      }),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery));
+    const savedModes: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings' && init?.method !== 'PUT') {
+        return new Response(JSON.stringify({ app_theme: storedTheme }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === '/api/settings/app_theme' && init?.method === 'PUT') {
+        storedTheme = (JSON.parse(String(init.body)) as { value: string }).value;
+        savedModes.push(storedTheme);
+        return new Response('{}', { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({ projects: [] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === '/api/settings/instructions-delivery') {
+        return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    }));
+
+    render(h(App, {}));
+
+    const themeSelect = await screen.findByRole('combobox', { name: 'App theme' });
+    await waitFor(() => {
+      expect(document.documentElement.dataset.themeMode).toBe('system');
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    changeSelect(themeSelect, 'light');
+    await waitFor(() => {
+      expect(savedModes).toEqual(['light']);
+      expect(document.documentElement.dataset.themeMode).toBe('light');
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    const mainNavigation = screen.getByLabelText('Main navigation');
+    fireEvent.click(within(mainNavigation).getByLabelText('Spaces'));
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
+    await waitFor(() => expect((themeSelect as HTMLSelectElement).value).toBe('light'));
+
+    changeSelect(themeSelect, 'dark');
+    await waitFor(() => {
+      expect(savedModes).toEqual(['light', 'dark']);
+      expect(document.documentElement.dataset.themeMode).toBe('dark');
+      expect(document.documentElement.dataset.theme).toBe('dark');
+    });
+
+    changeSelect(themeSelect, 'system');
+    await waitFor(() => {
+      expect(savedModes).toEqual(['light', 'dark', 'system']);
+      expect(document.documentElement.dataset.themeMode).toBe('system');
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    act(() => {
+      mediaQuery.matches = true;
+      systemListener?.();
+    });
+    expect(document.documentElement.dataset.theme).toBe('dark');
+  });
+
+  it('keeps desktop login in left chrome without a detail-pane overlay', () => {
+    const appSource = readFileSync(
+      `${process.cwd()}/ui/src/app.tsx`,
+      'utf8',
+    );
+    const footerStart = appSource.indexOf('<nav className="app-rail__footer"');
+    const footerEnd = appSource.indexOf('</nav>', footerStart);
+    const login = appSource.indexOf('<DesktopLoginStatus', footerStart);
+
+    expect(footerStart).toBeGreaterThan(-1);
+    expect(login).toBeGreaterThan(footerStart);
+    expect(login).toBeLessThan(footerEnd);
+    expect(appSource).not.toContain('app-shell__session-status');
+    expect(readResolvedStylesheet()).not.toContain('.app-shell__session-status');
   });
 
   it('renders a deep-linked issue detail while the global issue list is pending', async () => {
@@ -810,6 +1092,7 @@ describe('app shell', () => {
     render(h(App, {}));
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
+    expect(screen.getByLabelText('Collapse Graph detail').closest('.app-rail__footer')).toBeTruthy();
     expect(screen.getByLabelText('Graph detail')).toBeTruthy();
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
@@ -854,6 +1137,8 @@ describe('app shell', () => {
       const shell = useMemo<AppShellContextValue>(() => ({
         bottomPanel: null,
         registerBottomPanel,
+        setViewSidebarWidth: () => undefined,
+        active: true,
       }), [registerBottomPanel]);
 
       return h(AppShellProvider, { value: shell }, h(GraphView, {
@@ -1032,6 +1317,25 @@ describe('app shell', () => {
 });
 
 describe('SettingsView', () => {
+  it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
+    const onSave = vi.fn(async () => undefined);
+
+    render(h(SettingsView, { settings: { app_theme: 'system' }, onSave }));
+
+    const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
+    expect(themeSelect.getAttribute('aria-describedby')).toBe('settings-app-theme-description');
+    expect(within(themeSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'System',
+      'Dark',
+      'Light',
+    ]);
+
+    for (const mode of ['light', 'dark', 'system']) {
+      changeSelect(themeSelect, mode);
+      await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('app_theme', mode));
+    }
+  });
+
   it('shows project restriction state and existing grants', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1259,11 +1563,15 @@ describe('AuthQueueView', () => {
     const authPane = document.querySelector('.auth-detail-pane');
     const authHeader = document.querySelector('.auth-detail__header');
     const authBody = document.querySelector('.auth-detail__body');
+    const canonicalHeaders = authHeader?.querySelectorAll('[data-detail-pane-header-variant="standard"]');
+    const canonicalHeader = canonicalHeaders?.[0] as HTMLElement | undefined;
     expect(authPane).toBeTruthy();
     expect(authPane?.classList.contains('detail-pane-shell')).toBe(true);
     expect(authHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
     expect(authBody?.classList.contains('detail-pane-shell__body')).toBe(true);
     expect(authHeader?.querySelector('.detail-pane-shell__header-primary.auth-detail__header-primary')).toBeTruthy();
+    expect(canonicalHeaders).toHaveLength(1);
+    expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
     expect(authPane?.contains(authHeader as Node)).toBe(true);
     expect(authPane?.contains(authBody as Node)).toBe(true);
     expect(authHeader?.nextElementSibling).toBe(authBody);
@@ -1275,22 +1583,28 @@ describe('AuthQueueView', () => {
     expect(screen.queryByText('Branch flow')).toBeNull();
     expect(screen.queryByText('Request')).toBeNull();
     expect(screen.queryByText('Metadata')).toBeNull();
-    expect(document.querySelector('.auth-detail__repo')?.textContent).toBe('mandible');
-    expect(document.querySelector('.auth-detail__short-ref')?.textContent).toBe('req-stru');
-    expect(document.querySelector('.auth-detail__eyebrow .type-badge')).toBeNull();
+    expect(canonicalHeader?.querySelector('.detail-pane-header__entity')?.textContent).toBe('mandible');
+    expect(canonicalHeader?.querySelector('.detail-pane-header__display-ref')?.textContent).toBe('req-stru');
+    expect(canonicalHeader?.querySelector('.detail-pane-header__identity .type-badge')).toBeNull();
     expect(document.querySelector('.auth-detail-meta')).toBeNull();
     expect(document.querySelector('.auth-detail__header-side')).toBeNull();
     expect(screen.getByText('merge · feature/detail → main')).toBeTruthy();
     expect(screen.getByText('Approve')).toBeTruthy();
 
-    const eyebrow = document.querySelector('.auth-detail__eyebrow') as HTMLElement | null;
+    const topline = canonicalHeader?.querySelector('.detail-pane-header__topline') as HTMLElement | null;
+    const identity = canonicalHeader?.querySelector('.detail-pane-header__identity') as HTMLElement | null;
+    const status = canonicalHeader?.querySelector('.detail-pane-header__status') as HTMLElement | null;
+    const controls = status?.parentElement;
     const copyButton = screen.getByRole('button', { name: 'Copy auth:req-stru' });
-    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
-    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+    const statusPill = status?.querySelector('.status-pill') as HTMLElement | null;
+    const toplineChildren = Array.from(topline?.children ?? []);
     expect(statusPill?.textContent).toBe('Pending');
-    expect(copyButton.parentElement).toBe(eyebrow);
-    expect(statusPill?.parentElement).toBe(eyebrow);
-    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(copyButton.parentElement).toBe(identity);
+    expect(statusPill?.parentElement).toBe(status);
+    expect(toplineChildren.indexOf(controls as Element)).toBe(toplineChildren.indexOf(identity as Element) + 1);
+    const overflowAction = screen.getByRole('button', { name: 'Auth actions' });
+    expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.contains(overflowAction)).toBe(true);
+    expect(authBody?.contains(overflowAction)).toBe(false);
     expect(document.querySelector('.auth-detail__aux-header .auth-detail__action-strip .auth-actions')).toBeTruthy();
     const diffToggle = screen.getByRole('button', { name: 'Show changes diff' });
     expect(diffToggle.closest('.auth-detail__aux-header')).toBeTruthy();
@@ -1316,7 +1630,7 @@ describe('AuthQueueView', () => {
     expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
 
     fireEvent.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith('auth:req-stru');
+    expect(writeText).toHaveBeenCalledWith('req-structured-detail');
 
     fireEvent.click(diffToggle);
     const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
@@ -2760,25 +3074,35 @@ describe('API contract helpers', () => {
 
 describe('LedgerIssueDetail', () => {
   it('renders issue status in the top metadata row after the copy affordance', () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     const detail = issueDetailProjection({
       displayId: 'abc123',
       title: 'Status placement',
     });
+    detail.id = 'abc123-full-canonical-id';
 
     render(h(LedgerIssueDetail, { detail }));
 
-    const eyebrow = document.querySelector('.ledger-issue-detail__eyebrow') as HTMLElement | null;
+    const canonicalHeaders = document.querySelectorAll('[data-detail-pane-header-variant="standard"]');
+    const canonicalHeader = canonicalHeaders[0] as HTMLElement | undefined;
+    const topline = canonicalHeader?.querySelector('.detail-pane-header__topline') as HTMLElement | null;
+    const identity = canonicalHeader?.querySelector('.detail-pane-header__identity') as HTMLElement | null;
+    const status = canonicalHeader?.querySelector('.detail-pane-header__status') as HTMLElement | null;
+    const controls = status?.parentElement;
     const copyButton = screen.getByRole('button', { name: 'Copy mandible/abc123' });
-    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
-    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+    const statusPill = status?.querySelector('.status-pill') as HTMLElement | null;
+    const toplineChildren = Array.from(topline?.children ?? []);
 
-    expect(eyebrow).toBeTruthy();
+    expect(canonicalHeaders).toHaveLength(1);
+    expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
     expect(statusPill?.textContent).toBe('open');
-    expect(copyButton.parentElement).toBe(eyebrow);
-    expect(statusPill?.parentElement).toBe(eyebrow);
-    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
-    expect(document.querySelector('.ledger-issue-detail__title-row .status-pill')).toBeNull();
-    expect(document.querySelector('.ledger-issue-detail__header-actions .status-pill')).toBeNull();
+    expect(copyButton.parentElement).toBe(identity);
+    expect(statusPill?.parentElement).toBe(status);
+    expect(toplineChildren.indexOf(controls as Element)).toBe(toplineChildren.indexOf(identity as Element) + 1);
     const detailPane = document.querySelector('.ledger-issue-detail');
     const header = document.querySelector('.ledger-issue-detail__header');
     const body = document.querySelector('.ledger-issue-detail__body');
@@ -2790,6 +3114,12 @@ describe('LedgerIssueDetail', () => {
     expect(detailPane?.contains(body as Node)).toBe(true);
     expect(header?.nextElementSibling).toBe(body);
     expect(body?.contains(header as Node)).toBe(false);
+    const overflowAction = screen.getByRole('button', { name: 'Issue actions' });
+    expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.contains(overflowAction)).toBe(true);
+    expect(body?.contains(overflowAction)).toBe(false);
+
+    fireEvent.click(copyButton);
+    expect(writeText).toHaveBeenCalledWith('mandible/abc123-full-canonical-id');
   });
 
   it('prefers canonical project keys over checkout repo ids in copy refs', () => {
@@ -3811,7 +4141,7 @@ describe('ArtifactsView', () => {
     expect(detailShell?.classList.contains('detail-pane-shell')).toBe(true);
     expect(detailHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
     expect(detailBody?.classList.contains('detail-pane-shell__body')).toBe(true);
-    expect(detailHeader?.querySelector('.detail-pane-shell__header-primary.artifact-detail__header-primary')).toBeTruthy();
+    expect(detailHeader?.querySelector('.detail-pane-shell__header-primary > .detail-pane-header--versioned')).toBeTruthy();
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('demo-report.md');
     expect(detailHeader?.textContent).not.toContain('present');
     expect(detailHeader?.textContent).not.toContain('pinned');
@@ -3834,28 +4164,28 @@ describe('ArtifactsView', () => {
     expect(sectionHeadings).not.toContain('Custody');
     expect(sectionHeadings[0]).toBe('Links');
     expect(sectionHeadings.indexOf('Links')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
-    expect(screen.getByLabelText('Artifact version')).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Artifact version' })).toBeTruthy();
     expect(screen.queryByText('Version')).toBeNull();
     expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
     expect(detailHeader?.textContent).toContain('demo-rep');
-    expect(document.querySelector('.artifact-detail__repo')?.textContent).toBe('mandible');
-    expect(detailHeader?.textContent).toContain('managed · report');
-    expect(detailHeader?.textContent).toContain('Created:');
-    expect(detailHeader?.textContent).toContain('Updated:');
-    const seriesCopyButton = screen.getByLabelText('Copy artifact series ref');
+    expect(detailHeader?.textContent).not.toContain('mandible');
+    expect(detailBody?.querySelector('.artifact-detail__context')?.textContent).toContain('managed · report');
+    expect(detailBody?.querySelector('.artifact-detail__context')?.textContent).toContain('Created:');
+    expect(detailBody?.querySelector('.artifact-detail__context')?.textContent).toContain('Updated:');
+    const seriesCopyButton = screen.getByRole('button', { name: 'Copy full artifact series ref' });
     fireEvent.click(seriesCopyButton);
     fireEvent.pointerUp(seriesCopyButton);
     expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report');
     expect(seriesCopyButton.className).not.toContain('active');
     expect(document.activeElement).not.toBe(seriesCopyButton);
-    const artifactCopyButton = screen.getByLabelText('Copy selected artifact ref');
+    const artifactCopyButton = screen.getByRole('button', { name: 'Copy selected artifact-version reference' });
     fireEvent.click(artifactCopyButton);
     fireEvent.pointerUp(artifactCopyButton);
-    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report@1');
+    expect(writeText).toHaveBeenCalledWith('artifact-version:artifact-series:demo-report:1');
     expect(artifactCopyButton.className).not.toContain('active');
     expect(document.activeElement).not.toBe(artifactCopyButton);
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     const actionsMenu = screen.getByRole('menu');
     expect(actionsMenu.className).toContain('artifact-detail__actions-menu');
     expect((actionsMenu as HTMLElement).style.top).toBeTruthy();
@@ -4001,7 +4331,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
     await waitFor(() => expect(screen.getByText('Auto-formatted JSON-like text')).toBeTruthy());
-    expect(document.querySelector('.artifact-detail__repo')?.textContent).toBe('rlrmp');
+    expect(document.querySelector('.artifact-detail__repo')).toBeNull();
     const previewCode = document.querySelector('.artifact-preview code');
     expect(previewCode?.textContent).toContain('\n  "loss": 0.125,');
 
@@ -4106,12 +4436,12 @@ describe('ArtifactsView', () => {
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
 
-    fireEvent.click(screen.getByLabelText('Copy artifact ref'));
-    fireEvent.click(screen.getByLabelText('Copy selected artifact ref'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full artifact ref' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy selected artifact-version reference' }));
     expect(writeText).toHaveBeenNthCalledWith(1, collisionSafeRef);
     expect(writeText).toHaveBeenNthCalledWith(2, collisionSafeRef);
 
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
     fireEvent.click(within(metadataDialog).getByText('bbbbbbb').closest('button') as HTMLButtonElement);
@@ -4371,7 +4701,7 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(listUrl).toContain('summary=true'));
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
     await waitFor(() => expect(screen.getAllByText('Loading preview...')).toHaveLength(1));
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -4384,7 +4714,7 @@ describe('ArtifactsView', () => {
     });
 
     await waitFor(() => expect(screen.queryByText('Locators')).toBeNull());
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const hydratedMetadata = screen.getByRole('dialog', { name: 'Artifact metadata' });
     await waitFor(() => expect(within(hydratedMetadata).getByText('Locators')).toBeTruthy());
@@ -4586,7 +4916,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.issues-detail__content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*gap:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*12;[^}]*padding:\s*24px 24px 14px;[^}]*background:\s*#0b0f14;/s);
+    expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*12;/s);
+    expect(css).not.toMatch(/(?:^|\n)\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*(?:padding|background):/s);
     expect(css).not.toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*sticky;/s);
     expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;/s);
     expect(css).toMatch(/\.issues-detail--metadata-open \.ledger-issue-detail__body\s*\{[^}]*overflow:\s*hidden;/s);
@@ -4596,7 +4927,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
     expect(css).toMatch(/\.artifact-detail\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.artifact-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*8;[^}]*padding:\s*24px 24px 14px;/s);
+    expect(css).toMatch(/\.artifact-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*8;/s);
+    expect(css).not.toMatch(/\.artifact-detail__header\s*\{[^}]*padding:/s);
     expect(css).not.toMatch(/\.artifact-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
     expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).not.toMatch(/\.artifact-detail__pane\s*\{[^}]*margin:\s*0 -24px -24px;/s);
@@ -4614,8 +4946,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
-    expect(css).toMatch(/\.artifact-detail__copy-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s);
-    expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);
+    expect(css).toMatch(/\.detail-pane-header :is\(button, select, a\):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
+    expect(css).not.toMatch(/\.artifact-detail__copy-button/);
   });
 
   it('keeps auth light detail surfaces visually separated by CSS contract', () => {
@@ -4629,7 +4961,7 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
     expect(css).not.toMatch(/\.auth-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
     expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*20px 24px 24px;/s);
-    expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
+    expect(css).not.toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*padding:\s*20px 24px;/s);
     expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
     expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
     expect(css).toMatch(/\.auth-detail__panels--single\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
@@ -4641,7 +4973,6 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line,\s*\.auth-diff-file \.d2h-code-side-line\s*\{[^}]*display:\s*flex;[^}]*height:\s*18px;[^}]*line-height:\s*18px;[^}]*overflow:\s*visible;[^}]*white-space:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-ctn\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 auto;[^}]*overflow-wrap:\s*normal;[^}]*white-space:\s*pre;[^}]*word-break:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-prefix\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 12px;[^}]*line-height:\s*18px;/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__header\s*\{[^}]*background:\s*#ffffff;[^}]*box-shadow:\s*none;/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
   });
@@ -4872,7 +5203,7 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
     expect(await screen.findByText('sidebar-first.md')).toBeTruthy();
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(ref)).toBeTruthy();
   });
@@ -4930,9 +5261,9 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: v1.id }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('report-v1.md'));
-    const versionSelect = screen.getByLabelText('Artifact version') as HTMLSelectElement;
+    const versionSelect = screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement;
     await waitFor(() => expect(versionSelect.value).toBe('1'));
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     expect(screen.getByRole('menuitem', { name: 'Jump to latest' })).toBeTruthy();
     expect(screen.queryByText('series_latest_not_pinned')).toBeNull();
     expect(versionRefs).toContain(v1.id);
@@ -4989,7 +5320,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: ref }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('latest-v2.md'));
-    expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('');
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
   });
@@ -5125,7 +5456,7 @@ describe('ArtifactsView', () => {
         await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe(artifact.metadata.title));
         await waitFor(() => expect(versionRequests).toHaveLength(1));
         await waitFor(() => {
-          expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value)
+          expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value)
             .toBe(kind === 'series' ? '' : '1');
         });
       }
@@ -5172,7 +5503,7 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md'));
     await waitFor(() => expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0));
 
-    changeSelect(screen.getByLabelText('Artifact version') as HTMLSelectElement, '2');
+    changeSelect(screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement, '2');
 
     await waitFor(() => expect(screen.getByRole('status')?.textContent).toBe('Loading artifact...'));
     expect(document.querySelector('.artifact-detail h2')).toBeNull();
@@ -5225,7 +5556,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:pinned-series', initialVersionNo: 1 }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md'));
-    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Version history' }));
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
 
@@ -5233,7 +5564,7 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(seriesCalls).toBeGreaterThan(2));
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
-    expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('1');
+    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
     const pinnedRow = screen.getByRole('button', { name: /pinned-report\.md/ });
     expect(pinnedRow.textContent).toContain('pinned-');
@@ -5303,7 +5634,7 @@ describe('ArtifactsView', () => {
     rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
-    expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('1');
+    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
   });
 
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {

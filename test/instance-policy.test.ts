@@ -99,6 +99,35 @@ describe("instance mutation policy", () => {
     expect(response.body).toEqual({ check: { status: "clean" } });
   });
 
+  it("allows only the ephemeral dashboard handshake on preview instances", async () => {
+    const router = previewRouter();
+    router.post("/api/client-auth/handshake", (_req, res) => {
+      res.status(200).json({ token: "ephemeral-dashboard-session" });
+    }, { fileRpc: "deny" });
+    router.post("/api/client-auth/agent-session", (_req, res) => {
+      res.status(200).json({ token: "agent-session" });
+    }, { fileRpc: "deny" });
+
+    const handshake = await router.invoke({
+      method: "POST",
+      url: "/api/client-auth/handshake",
+      body: {},
+    });
+    const agentSession = await router.invoke({
+      method: "POST",
+      url: "/api/client-auth/agent-session",
+      body: {},
+    });
+
+    expect(handshake.status).toBe(200);
+    expect(handshake.body).toEqual({ token: "ephemeral-dashboard-session" });
+    expect(agentSession.status).toBe(403);
+    expect(agentSession.body).toMatchObject({
+      error: "instance_mutation_forbidden",
+      category: "api",
+    });
+  });
+
   it("leaves Timeline projection queries available on preview instances", async () => {
     const router = previewRouter();
     router.post("/api/timeline/project", (_req, res) => {
@@ -349,7 +378,7 @@ describe("route mutation category table has one source", () => {
     },
     { method: "POST", pattern: "/api/work-units/claim", url: "/api/work-units/claim", category: "work_units" },
     { method: "POST", pattern: "/api/work/push", url: "/api/work/push", category: "work" },
-    { method: "POST", pattern: "/api/asks", url: "/api/asks", category: "asks" },
+    { method: "POST", pattern: "/api/briefings/runs", url: "/api/briefings/runs", category: "briefing" },
     {
       method: "POST",
       pattern: "/api/knowledge-backrefs",
@@ -461,7 +490,7 @@ const REPRESENTATIVE_UNSAFE_ROUTES = [
   { method: "POST", url: "/api/runtime/update", name: "runtime-update", category: "runtime" },
   { method: "POST", url: "/api/runtime/reset", name: "runtime-reset", category: "runtime" },
   { method: "POST", url: "/api/artifacts/ingest", name: "artifacts-ingest", category: "artifacts" },
-  { method: "POST", url: "/api/asks", name: "asks", category: "asks" },
+  { method: "POST", url: "/api/briefings/runs", name: "briefing-runs", category: "briefing" },
   { method: "POST", url: "/api/artifacts/link", name: "artifacts-link", category: "artifacts" },
   { method: "POST", url: "/api/providers/register", name: "providers", category: "providers" },
   { method: "POST", url: "/api/provider-manifests/ingest", name: "provider-manifests", category: "providers" },

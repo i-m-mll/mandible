@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
 import { spawnIssueAgent } from '../api';
 import { formatRelativeTime } from '../lib/format';
@@ -1079,9 +1080,7 @@ export function InboxView({
   return (
     <div className={`inbox-sidebar-layout${sidebarHidden ? ' inbox-sidebar-layout--sidebar-hidden' : ''}`}>
       <ViewSidebar
-        storageKey="sidebar-width:inbox"
-        defaultWidth={400}
-        minWidth={190}
+        {...VIEW_SIDEBAR_GEOMETRY.inbox}
         className="inbox-sidebar"
         ariaLabel="Inbox"
         hidden={sidebarHidden}

@@ -45,7 +45,7 @@ function body(key: string) {
     idempotency_key: key,
     project: "route-project",
     message: "Durable route reminder",
-    predicate: { kind: "at", at: "2026-08-15T12:00:00Z" },
+    predicate: { kind: "at", at: "2099-08-15T12:00:00Z" },
   };
 }
 

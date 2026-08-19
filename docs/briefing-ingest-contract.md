@@ -1,76 +1,60 @@
-# Briefing ingest contract
+# Briefing run publication contract
 
-Recurring Briefing publication is an authenticated agent boundary. It accepts
-`briefing-ingest@1` and `briefing-ingest@2`; every object is validated against
-the exact key set for its declared version. Unknown keys are rejected rather
-than ignored, including v2 keys sent under v1.
+Recurring publication is an authenticated origin and run-policy boundary for
+the one Briefing model. It does not create a separate product kind, renderer,
+or response lifecycle. `POST /api/briefings/runs` accepts exactly
+`mandible-briefing-run@1`; unknown fields fail closed.
 
 ## Publisher authorization
 
 Publication requires a durable API token belonging to an active `agent` user.
 Session credentials, human users, inactive users, and unmapped agents are
-rejected identically over HTTP and file-RPC. Every stored publication records
-the authenticated user ID.
+rejected. The operator setting `briefing.ingest.publishers` retains its exact
+publisher, task-identity, and source allowlist shape. Prefixes and wildcards
+have no meaning.
 
-The operator setting `briefing.ingest.publishers` is JSON with this exact
-shape:
+## Request
 
-```json
-{
-  "agent-schedule": [
-    {
-      "task_identity": "agent-schedule/daily-digest",
-      "sources": ["arxiv-scan"]
-    },
-    {
-      "task_identity": "agent-schedule/task-health",
-      "sources": ["task-health"]
-    }
-  ]
-}
-```
+The top-level fields are:
 
-User slugs, task identities, and source names match exactly. Prefixes and
-wildcards have no meaning. A blank, malformed, partially malformed, or
-unknown-key setting override fails the whole override closed. Before a batch
-writes anything, every distinct item source must be allowed by one binding.
+- `schema`, `briefing_key`, `title`, `task_identity`, `run_id`, and `run_key`
+- a non-empty `responder_user_ids` array of active human user IDs
+- `evidence`: exact `series_ref`, non-negative `version`, and SHA-256 `digest`
+- `source_health`: `source`, `status` (`healthy`, `degraded`, or `unavailable`),
+  nullable `detail`, and integer `observed_at`
+- exactly one of `document: { markdown }` or nonblank `quiet_reason`
+- optional `occurrences`, each containing a document `directive_key`, SHA-256
+  `evidence_digest`, integer `occurred_at`, and object `metadata`
 
-An independent code-owned task gate admits only
-`agent-schedule/daily-digest` and `agent-schedule/task-health`. Deployed task
-bundles cannot widen this gate.
+A document must parse as `mandible-briefing.v1`. Every occurrence key must name
+a directive in that exact document. A quiet run cannot contain occurrences.
 
-## Version 1
+## Identity and immutable binding
 
-The v1 request keys are `schema`, `task_identity`, `run_id`, `digest`,
-`batch_key`, and `items`. Its digest object contains only `series_ref` and
-`version`. A v1 item contains only `candidate_key`, `source`, `ref`, `title`,
-`why_notable`, `refs`, `evidence_hash`, `evidence_kind`, `captured_at`, and
-`rank`. Existing v1 revision JSON remains encoded and decoded as v1.
+`briefing_key` resolves the stable logical Briefing. A document-bearing run
+creates an immutable round and pins the exact managed artifact version,
+directive definitions, and round-specific directive instances. Identical
+Markdown may reuse artifact content identity while still creating a new round;
+changed prose or directive definitions produce a new artifact version before
+the round is bound.
 
-## Version 2 groups and advisories
+Quiet runs store authenticated publisher, task, replay, evidence, and
+source-health provenance without inventing a human-facing round.
 
-V2 has the same request and digest keys. Its item key set adds `item_kind`,
-`parent`, and `publisher_advisory`.
+## Replay and receipt
 
-- `item_kind` is `item` (the default) or `group`.
-- A group is top-level and has no parent.
-- An item's `parent`, when present, is the exact `candidate_key` of a group in
-  the same source collection. A group cannot contain another group, and a leaf
-  cannot be a parent.
-- Leaf response type remains `verdict`. Groups have no response type.
-- `publisher_advisory`, when present, is exactly
-  `{"code":"admission_gate_rejected","reason":"..."}`.
+The server computes SHA-256 over the canonical parsed request. Replay identity
+is `(authenticated publisher user, task_identity, run_key)`. The same identity
+and digest returns the original receipt; a different digest returns `409`.
+Publication, artifact and round binding, occurrences, and the stored receipt
+commit in one immediate transaction.
 
-Advisories are immutable publisher metadata on the item revision. They never
-create `feedback_response_events`, never decide an item, and every leaf arrives
-pending for a human decision. The UI labels the advisory as publisher-reported
-and places advisory items in a collapsed, explicitly untrusted quarantine.
+The receipt contains `receipt_id`, `briefing_id`, publisher `run_id`, nullable
+`round_id`, nullable `artifact_version_id`, and `quiet`.
 
-## Replay identity
+## Response lifecycle
 
-The server computes SHA-256 over the parser-reconstructed request. Replay
-identity is `(authenticated publisher user, exact task_identity, batch_key)`.
-The same identity and digest returns the original result without writing;
-the same identity with a different digest returns `409`. The replay check,
-request ledger insert, publications, items, revisions, and stored result execute
-in one SQLite immediate transaction.
+Human answers and annotations are actor-scoped events on one exact round.
+Submissions freeze the exact effective event membership. Corrections supersede
+an actor's prior submission without mutation; responses never carry forward to
+a later round.

@@ -70,8 +70,8 @@ export function AgentDispatchDialog({
     return () => {
       cancelled = true;
     };
-  }, [subject.kind, (subject as { candidate_id?: string }).candidate_id,
-    (subject as { issue_ref?: string }).issue_ref, instruction]);
+  }, [subject.kind, (subject as { issue_ref?: string }).issue_ref,
+    (subject as { incident_id?: string }).incident_id, instruction]);
 
   const confirm = async () => {
     if (phase !== 'ready') return;

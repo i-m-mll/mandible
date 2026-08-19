@@ -7,8 +7,10 @@ import {
   type DiffViewMode,
 } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
-import { AttributionIdentity, DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
+import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
@@ -1400,7 +1402,6 @@ function AuthRequestDetail({
   const flowText = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : commitBranch;
   const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
   const shortRef = requestHash || 'unknown';
-  const copyRef = requestHash ? `auth:${requestHash}` : '';
   const requester = request.requester ?? null;
   const approver = request.approver ?? null;
   const hasActionBundle = Boolean(actionBundle);
@@ -1509,117 +1510,120 @@ function AuthRequestDetail({
       subheader={subheader}
       overlays={overlays}
       header={(
-        <>
-          <div className="auth-detail__header-main">
-            <DetailHeaderIdentity
-              className="auth-detail__eyebrow"
-              contextLabel={repoName}
-              contextClassName="auth-detail__repo"
-              shortId={shortRef}
-              shortIdClassName="auth-detail__short-ref"
-              copyValue={copyRef}
-              copyLabel={`Copy ${copyRef || 'auth reference'}`}
-            >
+        <DetailPaneHeader
+          variant="standard"
+          identity={{
+            entityLabel: repoName,
+            displayRef: shortRef,
+            canonicalRef: fullId,
+            copyLabel: `Copy auth:${shortRef}`,
+          }}
+          title={<span dangerouslySetInnerHTML={{
+            __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
+          }} />}
+          status={(
+            <>
               <span className={statusClass}>{statusLabel}</span>
               <ConvergencePill request={request} />
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
               {branchMerged && <span className="branch-merged-tag">branch merged</span>}
-            </DetailHeaderIdentity>
-            <h2
-              className="auth-detail__title"
-              dangerouslySetInnerHTML={{
-                __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
-              }}
-            />
-            <div className="auth-detail__subtitle">
-              <span>{primarySubtitle}</span>
-              <span className="auth-detail__subtitle-line">
-                {typeSubtitle}
-              </span>
-            </div>
-            {(requester || approver || request.verified_signature) && (
-              <div className="auth-detail__attribution" aria-label="Auth attribution">
-                {requester && (
-                  <div>
-                    Requested by{' '}
-                    <AttributionIdentity
-                      display={requester.display_name}
-                      user={requester}
-                      source="auth_queue"
-                    />
-                  </div>
-                )}
-                {approver && (
-                  <div>
-                    Approved by{' '}
-                    <AttributionIdentity
-                      display={approver.display_name}
-                      user={approver}
-                      attribution={request.execution_evidence}
-                      source="auth_queue"
-                    />
-                  </div>
-                )}
-                {request.verified_signature && (
-                  <span className="auth-detail__verified-signature">Verified signature</span>
-                )}
-              </div>
-            )}
-            {hasLinks && (
-              <div className="auth-detail__links">
-                {sessionId && (
-                  <a
-                    className="auth-card__link"
-                    href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
+            </>
+          )}
+          actions={(
+            <div className="auth-detail__header-actions" ref={actionsMenuRef}>
+              <button
+                type="button"
+                className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
+                aria-label="Auth actions"
+                aria-haspopup="menu"
+                aria-expanded={actionsOpen}
+                title="Auth actions"
+                onClick={() => setActionsOpen((open) => !open)}
+              >
+                <HorizontalDotsIcon />
+              </button>
+              {actionsOpen && (
+                <div className="auth-detail__actions-menu" role="menu">
+                  <button
+                    type="button"
+                    className="auth-detail__actions-item"
+                    role="menuitem"
+                    onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
                   >
-                    Session
-                  </a>
-                )}
-                {referenceRefs.length > 0 && canIssueLink && (
-                  <span className="auth-card__issue-group">
-                    <span className="auth-card__issue-group-label">References</span>
-                    {referenceRefs.map((ref) => (
-                      <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
-                    ))}
-                  </span>
-                )}
-                {closureRefs.length > 0 && canIssueLink && (
-                  <span className="auth-card__issue-group">
-                    <span className="auth-card__issue-group-label">Closes</span>
-                    {closureRefs.map((ref) => (
-                      <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
-                    ))}
-                  </span>
-                )}
+                    Show metadata
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          actionsLabel="Auth header actions"
+          secondaryMetadata={(
+            <div className="auth-detail__secondary-metadata">
+              <div className="auth-detail__subtitle">
+                <span>{primarySubtitle}</span>
+                <span className="auth-detail__subtitle-line">
+                  {typeSubtitle}
+                </span>
               </div>
-            )}
-          </div>
-          <div className="auth-detail__header-actions" ref={actionsMenuRef}>
-            <button
-              type="button"
-              className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
-              aria-label="Auth actions"
-              aria-haspopup="menu"
-              aria-expanded={actionsOpen}
-              title="Auth actions"
-              onClick={() => setActionsOpen((open) => !open)}
-            >
-              <HorizontalDotsIcon />
-            </button>
-            {actionsOpen && (
-              <div className="auth-detail__actions-menu" role="menu">
-                <button
-                  type="button"
-                  className="auth-detail__actions-item"
-                  role="menuitem"
-                  onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
-                >
-                  Show metadata
-                </button>
-              </div>
-            )}
-          </div>
-        </>
+              {(requester || approver || request.verified_signature) && (
+                <div className="auth-detail__attribution" aria-label="Auth attribution">
+                  {requester && (
+                    <div>
+                      Requested by{' '}
+                      <AttributionIdentity
+                        display={requester.display_name}
+                        user={requester}
+                        source="auth_queue"
+                      />
+                    </div>
+                  )}
+                  {approver && (
+                    <div>
+                      Approved by{' '}
+                      <AttributionIdentity
+                        display={approver.display_name}
+                        user={approver}
+                        attribution={request.execution_evidence}
+                        source="auth_queue"
+                      />
+                    </div>
+                  )}
+                  {request.verified_signature && (
+                    <span className="auth-detail__verified-signature">Verified signature</span>
+                  )}
+                </div>
+              )}
+              {hasLinks && (
+                <div className="auth-detail__links">
+                  {sessionId && (
+                    <a
+                      className="auth-card__link"
+                      href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
+                    >
+                      Session
+                    </a>
+                  )}
+                  {referenceRefs.length > 0 && canIssueLink && (
+                    <span className="auth-card__issue-group">
+                      <span className="auth-card__issue-group-label">References</span>
+                      {referenceRefs.map((ref) => (
+                        <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                      ))}
+                    </span>
+                  )}
+                  {closureRefs.length > 0 && canIssueLink && (
+                    <span className="auth-card__issue-group">
+                      <span className="auth-card__issue-group-label">Closes</span>
+                      {closureRefs.map((ref) => (
+                        <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                      ))}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        />
       )}
     >
         {showFailure && (
@@ -3360,9 +3364,7 @@ export function AuthQueueView({
       )}
 
       <ViewSidebar
-        storageKey="sidebar-width:auth"
-        defaultWidth={320}
-        minWidth={190}
+        {...VIEW_SIDEBAR_GEOMETRY.auth}
         className="auth-sidebar"
         ariaLabel="Auth requests"
         hidden={sidebarHidden}

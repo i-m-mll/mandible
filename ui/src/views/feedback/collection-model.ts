@@ -1,64 +1,62 @@
-export type FeedbackCollectionKind = string;
-export type FeedbackInteractionMode = 'immediate_per_item' | 'explicit_submit';
-export type FeedbackCollectionState = 'open' | 'expired';
+import { orderByPinnedIds } from '../../components/shared/orderedPins';
+import type { BriefingCollectionSort } from './collection-view-state';
 
-/** The single sidebar row model returned by the collection-general listing. */
 export type FeedbackCollection = {
   id: string;
   collectionId: string;
-  kind: FeedbackCollectionKind;
-  interactionMode: FeedbackInteractionMode;
-  state: FeedbackCollectionState;
-  source: string | null;
   label: string;
   itemCount: number;
-  expiresAt: number | null;
+  latestRoundId: string;
   createdAt: number;
   updatedAt: number;
-  expiryReversible: boolean;
 };
 
-export type FeedbackCollectionFilters = {
-  kind: 'all' | FeedbackCollectionKind;
-  source: string;
-  state: 'all' | FeedbackCollectionState;
-};
-
-export function feedbackCollectionIdentity(collectionId: string): string {
-  return `feedback_collection:${encodeURIComponent(collectionId)}`;
+export function feedbackCollectionIdentity(briefingId: string): string {
+  return `briefing:${encodeURIComponent(briefingId)}`;
 }
 
-/** Compatibility alias for view-state written before durable collection ids. */
-export function legacyFeedbackCollectionIdentity(collection: FeedbackCollection): string {
-  return `${collection.kind}:${encodeURIComponent(collection.source ?? collection.collectionId)}`;
+export function resolveFeedbackCollection(
+  briefings: readonly FeedbackCollection[],
+  briefingRef: string,
+): FeedbackCollection | null {
+  const exact = briefings.find((briefing) => briefing.collectionId === briefingRef);
+  if (exact) return exact;
+  const matches = briefings.filter((briefing) => briefing.collectionId.startsWith(briefingRef));
+  return matches.length === 1 ? matches[0] : null;
 }
 
-export function filterFeedbackCollections(
-  collections: readonly FeedbackCollection[],
-  filters: Readonly<FeedbackCollectionFilters>,
-): FeedbackCollection[] {
-  const sourceNeedle = filters.source.trim().toLocaleLowerCase();
-  return collections.filter((collection) => {
-    if (filters.kind !== 'all' && collection.kind !== filters.kind) return false;
-    if (filters.state !== 'all' && collection.state !== filters.state) return false;
-    if (!sourceNeedle) return true;
-    return (collection.source ?? '').toLocaleLowerCase().includes(sourceNeedle)
-      || collection.label.toLocaleLowerCase().includes(sourceNeedle);
-  });
-}
-
-function compareCollections(left: FeedbackCollection, right: FeedbackCollection): number {
-  const updated = right.updatedAt - left.updatedAt;
-  return updated !== 0 ? updated : left.id.localeCompare(right.id);
+export function filterFeedbackCollections(briefings: readonly FeedbackCollection[], search: string): FeedbackCollection[] {
+  const needle = search.trim().toLocaleLowerCase();
+  return needle ? briefings.filter((briefing) => briefing.label.toLocaleLowerCase().includes(needle)) : [...briefings];
 }
 
 export function orderFeedbackCollections(
-  collections: readonly FeedbackCollection[],
-  pinnedCollectionIds: readonly string[],
+  briefings: readonly FeedbackCollection[],
+  pinnedIds: readonly string[],
+  sort: BriefingCollectionSort = 'activity',
 ): FeedbackCollection[] {
-  const pinned = new Set(pinnedCollectionIds);
-  return [...collections].sort((left, right) => {
-    const pinOrder = Number(pinned.has(right.id)) - Number(pinned.has(left.id));
-    return pinOrder !== 0 ? pinOrder : compareCollections(left, right);
-  });
+  const compare = sort === 'name'
+    ? (left: FeedbackCollection, right: FeedbackCollection) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
+    : sort === 'round-count'
+      ? (left: FeedbackCollection, right: FeedbackCollection) => (right.itemCount - left.itemCount) || left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
+      : (left: FeedbackCollection, right: FeedbackCollection) => (right.updatedAt - left.updatedAt) || left.id.localeCompare(right.id);
+  return orderByPinnedIds(
+    briefings,
+    pinnedIds,
+    (briefing) => briefing.id,
+    compare,
+  );
+}
+
+export function moveVisiblePinnedCollection(pinnedIds: readonly string[], visiblePinnedIds: readonly string[], briefingId: string, targetIndex: number): string[] {
+  const visible = new Set(visiblePinnedIds);
+  const slots = pinnedIds.map((id, index) => visible.has(id) ? index : -1).filter((index) => index >= 0);
+  const ordered = slots.map((index) => pinnedIds[index]);
+  const current = ordered.indexOf(briefingId);
+  if (current < 0) return [...pinnedIds];
+  const [moved] = ordered.splice(current, 1);
+  ordered.splice(Math.max(0, Math.min(targetIndex, ordered.length)), 0, moved);
+  const next = [...pinnedIds];
+  slots.forEach((slot, index) => { next[slot] = ordered[index]; });
+  return next;
 }

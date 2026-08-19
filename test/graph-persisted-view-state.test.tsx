@@ -52,7 +52,12 @@ function renderGraph(refreshToken = 0) {
       if (descriptor === next) descriptor = null;
     };
   };
-  const value: AppShellContextValue = { bottomPanel: null, registerBottomPanel };
+  const value: AppShellContextValue = {
+    bottomPanel: null,
+    registerBottomPanel,
+    setViewSidebarWidth: () => undefined,
+    active: true,
+  };
   const rendered = render(
     <AppShellProvider value={value}>
       <GraphView onNavigate={() => undefined} refreshToken={refreshToken} />

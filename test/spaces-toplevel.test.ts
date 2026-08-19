@@ -19,6 +19,7 @@ import {
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
+import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
 // Issue 812df41 (umbrella de56ffa): top-level / global Spaces + grouped-list API +
 // cross-project item resolution. The v86 migration rebuilds `spaces` with a
@@ -299,12 +300,16 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
       actor_type: "agent",
       author_display: "Codex",
     });
-    // An artifact (project-agnostic custody) discovered in project A's context.
-    const artifactId = "artifact:sha256:deadbeefcafe";
-    db.prepare(
-      `INSERT INTO artifacts (id, algorithm, content_hash, uri, created_at)
-       VALUES (?, 'sha256', 'deadbeefcafe', ?, ?)`,
-    ).run(artifactId, artifactId, now());
+    // A canonical artifact version (project-agnostic custody) discovered in
+    // project A's context.
+    const artifact = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "spaces-toplevel-test",
+      logical_name: "cross-project.md",
+      content: "cross-project artifact\n",
+      media_type: "text/markdown",
+    }, now());
+    const artifactRef = artifact.version.id;
 
     // Top-level Space: NO owning project, so an issue ref from ANY project is accepted.
     const topRes = await call("POST", "/api/spaces", { title: "Global" });
@@ -323,7 +328,7 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     const bId = (bRes.body as { space: { id: string } }).space.id;
     const addBArtifact = await call("POST", `/api/spaces/${bId}/items`, {
       ref_type: "artifact",
-      ref_id: artifactId,
+      ref_id: artifactRef,
     });
     expect(addBArtifact.status).toBe(201);
 
@@ -340,12 +345,12 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
 
     const resolvedArtifact = await call(
       "GET",
-      `/api/spaces/resolve?ref=${encodeURIComponent(artifactId)}`,
+      `/api/spaces/resolve?ref=${encodeURIComponent(artifactRef)}`,
     );
     expect(resolvedArtifact.status).toBe(200);
-    const artifactResolution = (resolvedArtifact.body as { resolution: { resolved: boolean; entity: { id: string } | null } }).resolution;
+    const artifactResolution = (resolvedArtifact.body as { resolution: { resolved: boolean; entity: { content_hash: string } | null } }).resolution;
     expect(artifactResolution.resolved).toBe(true);
-    expect(artifactResolution.entity?.id).toBe(artifactId);
+    expect(artifactResolution.entity?.content_hash).toBe(artifact.artifact.content_hash);
   });
 
   it("accepts a cross-project issue ref on a PROJECT-SCOPED Space (cross-project membership is universal)", async () => {
