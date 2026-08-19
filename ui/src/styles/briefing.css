@@ -212,6 +212,14 @@
 
 .briefing-empty, .briefing-error { margin: 0; font-size: var(--text-sm); }
 .briefing-empty { color: var(--text-muted); }
+.briefing-empty--selection {
+  flex: 1;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  text-align: center;
+}
 .briefing-error { color: var(--status-danger-fg); }
 
 /* Common detail-pane composition. The shell owns the anchored regions; only
