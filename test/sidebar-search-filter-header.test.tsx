@@ -283,4 +283,27 @@ describe('SidebarSearchFilterHeader', () => {
       expect(migratedSource).not.toContain(staleClass);
     }
   });
+
+  it('keeps passive sort summaries out of standard sidebar headers without banning menu controls', () => {
+    const standardSidebarViews = [
+      'ui/src/views/issues.tsx',
+      'ui/src/views/auth.tsx',
+      'ui/src/views/artifacts.tsx',
+      'ui/src/views/conversations.tsx',
+      'ui/src/views/spaces/SpacesSidebar.tsx',
+      'ui/src/views/work.tsx',
+      'ui/src/views/feedback/CollectionsSidebar.tsx',
+      'ui/src/views/tasks.tsx',
+    ];
+
+    for (const viewPath of standardSidebarViews) {
+      const source = readFileSync(viewPath, 'utf8');
+      expect(source, viewPath).not.toMatch(/['"`]sort:\s/i);
+    }
+
+    const artifactSource = readFileSync('ui/src/views/artifacts.tsx', 'utf8');
+    expect(artifactSource).toContain("<span className=\"sidebar-search-filter__label\">Sort</span>");
+    expect(artifactSource).toContain('sortField: value as ArtifactSortField');
+    expect(artifactSource).toContain('sortDirection: direction');
+  });
 });

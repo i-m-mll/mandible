@@ -21,6 +21,7 @@ export const VIEW_SIDEBAR_GEOMETRY = {
   spaces: { storageKey: 'sidebar-width:spaces', defaultWidth: 300, minWidth: 220 },
   tasks: { storageKey: 'sidebar-width:tasks', defaultWidth: 340, minWidth: 240 },
   timeline: { storageKey: 'mandible_timeline_sidebar_width:v1', defaultWidth: 320, minWidth: 260 },
+  work: { storageKey: 'sidebar-width:work', defaultWidth: 340, minWidth: 280 },
 } as const satisfies Partial<Record<Route['tab'], ViewSidebarGeometry>>;
 
 export type ViewSidebarRoute = keyof typeof VIEW_SIDEBAR_GEOMETRY;
