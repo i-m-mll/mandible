@@ -140,6 +140,7 @@ async function main(options) {
       projection: {
         logs: "all rows from 24h plus warn/error rows from 7d",
         conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
+        conversationTitleConvergence: "parser-backed convergence on the private copy before daemon start",
       },
       instanceEnv: {
         MANDIBLE_INSTANCE_ROLE: "preview",
