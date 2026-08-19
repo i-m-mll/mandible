@@ -145,8 +145,8 @@ function mapSidebarConversation(
   };
 }
 
-const MAX_SIDEBAR_PROJECTS = 50;
-const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 8_192;
+const MAX_SIDEBAR_PROJECTS = 500;
+const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
 
 function parseSidebarProjectIds(raw: string | undefined): string[] {
   if (raw === undefined || raw === "") return [];

@@ -557,7 +557,7 @@ describe("conversation sidebar projection", () => {
       method: "GET",
       url: `/api/conversations/sidebar?project_ids=${alpha.id},`,
     })).toMatchObject({ status: 400 });
-    const tooMany = Array.from({ length: 51 }, (_, index) => `${alpha.id}-${index}`).join(",");
+    const tooMany = Array.from({ length: 501 }, (_, index) => `${alpha.id}-${index}`).join(",");
     expect(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?project_ids=${tooMany}`,
