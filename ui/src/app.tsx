@@ -407,6 +407,7 @@ type AppRailDrag = {
   startY: number;
   active: boolean;
   overId: string;
+  originOrder: AppRailPreviewOrder;
   order: AppRailPreviewOrder;
 };
 
@@ -1979,6 +1980,10 @@ function App(): JSX.Element {
       setKeyboardRailOrder(null);
       setRailAnnouncement('Navigation reorder cancelled.');
     }
+    const originOrder: AppRailPreviewOrder = {
+      primary: [...visibleRailOrder.primary],
+      secondary: [...visibleRailOrder.secondary],
+    };
     const candidate: AppRailDrag = {
       group,
       itemId,
@@ -1987,10 +1992,8 @@ function App(): JSX.Element {
       startY: event.clientY,
       active: false,
       overId: itemId,
-      order: {
-        primary: [...visibleRailOrder.primary],
-        secondary: [...visibleRailOrder.secondary],
-      },
+      originOrder,
+      order: originOrder,
     };
     railDragRef.current = candidate;
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -2008,13 +2011,22 @@ function App(): JSX.Element {
     let target = rows.find((row) => event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
     target ??= rows.at(-1);
     const targetId = target?.dataset.railItem ?? current.overId;
+    // Pointer capture keeps dispatching move frames to the dragged link while
+    // the DOM remains in its persisted order. Derive every preview from the
+    // immutable pointerdown snapshot so repeated or revisited targets are
+    // idempotent instead of toggling the already-moved preview.
+    const nextGroupOrder = moveAppRailItem(
+      current.originOrder[current.group],
+      current.itemId,
+      targetId,
+    );
     const next: AppRailDrag = {
       ...current,
       active: true,
       overId: targetId,
       order: {
         ...current.order,
-        [current.group]: moveAppRailItem(current.order[current.group], current.itemId, targetId),
+        [current.group]: nextGroupOrder,
       },
     };
     railDragRef.current = next;
