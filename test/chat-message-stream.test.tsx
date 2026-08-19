@@ -4,10 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   boundToolResultBlock,
   buildStreamState,
+  conversationBlocksToStreamEvents,
   groupMessagesForDisplay,
   serializeConversationToMarkdown,
 } from '../ui/src/chat';
-import { ChatSurface } from '../ui/src/chat/ChatSurface';
+import { ChatSurface, shouldShowJumpToLatest } from '../ui/src/chat/ChatSurface';
 import { MessageActions } from '../ui/src/components/shared/MessageActions';
 import type { StreamEvent, ToolResultContentBlock } from '../ui/src/components/stream-renderer/types';
 
@@ -95,9 +96,21 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
 });
 
 describe('chat message stream render model', () => {
+  it('preserves the stable logical turn id when a bounded window starts mid-turn', () => {
+    const events = conversationBlocksToStreamEvents('session', [{
+      id: 'visible-middle-block',
+      type: 'assistant_message',
+      content: 'middle',
+      metadata_json: '{}',
+    }], { leadingAssistantTurnId: 'stable-turn-start' });
+    const state = buildStreamState(events);
+    expect(state.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: 'stable-turn-start' });
+  });
+
   it('groups consecutive same-speaker nodes before rendering and serializes markdown', () => {
     const state = buildStreamState([
       user('first', 'u1'),
@@ -132,6 +145,14 @@ describe('chat message stream render model', () => {
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('uses a distance-plus-viewport threshold distinct from the follow threshold', () => {
+    expect(shouldShowJumpToLatest(79, 800)).toBe(false);
+    expect(shouldShowJumpToLatest(800, 800)).toBe(false);
+    expect(shouldShowJumpToLatest(1200, 800)).toBe(false);
+    expect(shouldShowJumpToLatest(1201, 800)).toBe(true);
+    expect(shouldShowJumpToLatest(1501, 1200)).toBe(true);
+  });
+
   it('windows large conversations to a bounded DOM row count', () => {
     const events: StreamEvent[] = [];
     for (let i = 0; i < 520; i += 1) {
@@ -212,6 +233,83 @@ describe('ChatSurface stream behavior', () => {
     scroll.scrollTop = 8500;
     fireEvent.scroll(scroll);
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  it('suppresses one-page local and unmaterialized displacement but exposes a distant tail', () => {
+    const events = [user('prompt', 'u1'), assistantText('answer', 'a1')];
+    const { container, rerender } = render(
+      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'threshold' }} />,
+    );
+    const scroll = container.querySelector('.stream-renderer__scroll') as HTMLElement;
+    Object.defineProperty(scroll, 'clientHeight', { value: 800, configurable: true });
+    Object.defineProperty(scroll, 'scrollHeight', { value: 1800, configurable: true });
+    scroll.scrollTop = 200;
+    fireEvent.scroll(scroll);
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+
+    rerender(
+      <ChatSurface
+        events={events}
+        streaming={false}
+        unmaterializedAfterCount={4}
+        sessionInfo={{ sessionId: 'threshold' }}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+
+    rerender(
+      <ChatSurface
+        events={events}
+        streaming={false}
+        unmaterializedAfterCount={10}
+        sessionInfo={{ sessionId: 'threshold' }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy();
+  });
+
+  it('materializes an exact turn before scrolling and honors reduced motion', () => {
+    const events: StreamEvent[] = [];
+    for (let i = 0; i < 80; i += 1) {
+      events.push(user(`prompt ${i}`, `u${i}`));
+      events.push(assistantText(`answer ${i}`, `a${i}`));
+    }
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo,
+    });
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+
+    render(
+      <ChatSurface
+        events={events}
+        streaming={false}
+        sessionInfo={{ sessionId: 'anchor' }}
+        navigationTarget={{ key: 'anchor-a50', kind: 'turn', turnId: 'a50', smooth: true }}
+      />,
+    );
+
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }));
+    expect(scrollTo.mock.calls.at(-1)?.[0].top).toBeGreaterThan(0);
+    expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
+  });
+
+  it('keeps Jump keyboard activation native and delegates true-end loading', () => {
+    const jump = vi.fn();
+    render(
+      <ChatSurface
+        events={[user('prompt', 'u1')]}
+        streaming={false}
+        unmaterializedAfterCount={10}
+        onJumpToLatest={jump}
+        sessionInfo={{ sessionId: 'jump-keyboard' }}
+      />,
+    );
+    const button = screen.getByRole('button', { name: /jump to latest/i });
+    expect(button.getAttribute('type')).toBe('button');
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+    expect(jump).toHaveBeenCalledTimes(1);
   });
 
   it('expands thinking while streaming and collapses it after resolution by default', () => {

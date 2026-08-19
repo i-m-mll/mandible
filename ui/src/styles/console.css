@@ -1372,23 +1372,24 @@
 /* Jump-to-bottom floating button */
 .stream-renderer__scroll-btn {
   position: absolute;
-  bottom: calc(var(--space-8) + var(--space-2));
-  right: var(--space-5);
+  bottom: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 10;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
-  color: var(--accent-fg);
+  background: #5f6368;
+  border: 1px solid #73777c;
+  color: #fff;
   border-radius: 999px;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
+  padding: 3px var(--space-3);
+  font-size: var(--text-xs);
   font-family: var(--font-sans);
   cursor: pointer;
-  backdrop-filter: blur(4px);
-  transition: background 0.2s ease, opacity 0.2s ease;
+  opacity: 1;
+  transition: background 0.2s ease;
 }
 
 .stream-renderer__scroll-btn:hover {
-  background: var(--status-info-bg);
+  background: #4d5156;
 }
 
 /* Bug: db5e986 — optimistic user prompt bubble shown immediately after submission */
@@ -1583,13 +1584,9 @@
   z-index: 5;
 }
 
-/* Show on parent hover — parent must have position: relative */
-*:hover > .message-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* Also show when a button inside is focused (keyboard nav) */
+/* Reveal only from the message that owns this action bar. */
+.message-block-wrapper:is(:hover, :focus-within) > .message-actions,
+.transcript-item:is(:hover, :focus-within) > .message-actions,
 .message-actions:focus-within {
   opacity: 1;
   pointer-events: auto;
@@ -1717,22 +1714,27 @@
   position: static;
 }
 
-/* Bug: 35edd3d — GroupFooter: always-visible footer for multi-node assistant groups */
+/* GroupFooter — turn-scoped aggregate actions without a reserved row. */
 .group-footer {
-  margin-top: var(--space-1);
-}
-
-.group-footer__separator {
-  border: none;
-  border-top: 1px solid var(--border-faint);
-  margin: var(--space-1) 0;
+  align-self: stretch;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: relative;
+  z-index: 5;
 }
 
 .group-footer__row {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
-  padding: var(--space-1) 0;
+}
+
+.turn-group:is(:hover, :focus-within) .group-footer,
+.group-footer:focus-within {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .group-footer__btn {
@@ -1766,6 +1768,19 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
   opacity: 0.5;
+}
+
+/* Hoverless/coarse pointers need an explicit, persistent action target. */
+@media (hover: none), (pointer: coarse) {
+  .message-actions,
+  .group-footer {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .group-footer {
+    height: auto;
+  }
 }
 
 /* Chat composer redesign */

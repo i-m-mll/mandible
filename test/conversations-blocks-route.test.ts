@@ -47,6 +47,35 @@ function insertConversationWithBlocks(count: number): void {
   tx();
 }
 
+function insertIndexedConversation(count: number): void {
+  const now = "2026-07-08T12:00:00.000Z";
+  db.prepare(
+    `INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title, started_at,
+      session_id, created_at, updated_at, block_count
+    ) VALUES ('conv-indexed', 'codex', '/tmp/indexed.jsonl', 'hash', 0,
+      'Indexed conversation', ?, 'session-indexed', ?, ?, ?)`,
+  ).run(now, now, now, count);
+  const insert = db.prepare(
+    `INSERT INTO conversation_blocks (
+      id, conversation_id, type, role, content, compressed, position, timestamp, metadata_json
+    ) VALUES (?, 'conv-indexed', ?, ?, ?, 0, ?, ?, '{}')`,
+  );
+  db.transaction(() => {
+    for (let position = 1; position <= count; position += 1) {
+      const user = position % 10 === 1;
+      insert.run(
+        `indexed-${position}`,
+        user ? "user_message" : "assistant_message",
+        user ? "user" : "assistant",
+        `content ${position}`,
+        position,
+        now,
+      );
+    }
+  })();
+}
+
 describe("conversation blocks route pagination", () => {
   it("caps large limits, accepts explicit offsets, and reports truncation metadata", async () => {
     insertConversationWithBlocks(600);
@@ -88,5 +117,90 @@ describe("conversation blocks route pagination", () => {
     expect((second.body as { blocks: Array<{ id: string; position: number }> }).blocks).toHaveLength(100);
     expect((second.body as { blocks: Array<{ id: string; position: number }> }).blocks[0])
       .toMatchObject({ id: "block-501", position: 501 });
+  });
+});
+
+describe("indexed conversation position window", () => {
+  it("uses the block primary key and conversation-position index for exact resolution", () => {
+    insertIndexedConversation(10_000);
+    const blockPlan = db.prepare(
+      "EXPLAIN QUERY PLAN SELECT * FROM conversation_blocks WHERE conversation_id = ? AND id = ?",
+    ).all("conv-indexed", "indexed-5000") as Array<{ detail: string }>;
+    const positionPlan = db.prepare(
+      "EXPLAIN QUERY PLAN SELECT * FROM conversation_blocks WHERE conversation_id = ? AND position = ?",
+    ).all("conv-indexed", 5000) as Array<{ detail: string }>;
+    expect(blockPlan.map((row) => row.detail).join(" ")).toMatch(/sqlite_autoindex_conversation_blocks_1|PRIMARY KEY/);
+    expect(positionPlan.map((row) => row.detail).join(" ")).toMatch(/conversation_id=.*position=|sqlite_autoindex_conversation_blocks_2/);
+  });
+
+  it("keeps initial, exact start, middle, and latest responses bounded at 10k scale", async () => {
+    insertIndexedConversation(10_000);
+    const router = new Router();
+    registerConversationRoutes(router);
+
+    const initial = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed" });
+    expect(initial.status).toBe(200);
+    expect(initial.body).toMatchObject({
+      revision: 10_000,
+      total: 10_000,
+      target: { kind: "initial", position: 10_000, block_id: "indexed-10000", turn_id: "indexed-9992" },
+      window: { start_position: 9841, end_position: 10_000, has_before: true, has_after: false, after_count: 0, limit: 160 },
+    });
+    expect((initial.body as { blocks: unknown[] }).blocks).toHaveLength(160);
+
+    const start = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/conv-indexed?position=1&limit=80",
+    });
+    expect(start.body).toMatchObject({
+      target: { kind: "position", position: 1, block_id: "indexed-1", turn_id: "indexed-1" },
+      window: { start_position: 1, has_before: false, has_after: true, after_count: 9920, limit: 80 },
+    });
+    expect((start.body as { blocks: unknown[] }).blocks).toHaveLength(80);
+
+    const middle = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/conv-indexed?block=indexed-5005&limit=101",
+    });
+    expect(middle.body).toMatchObject({
+      target: { kind: "block", position: 5005, block_id: "indexed-5005", turn_id: "indexed-5002" },
+      window: { start_position: 4955, end_position: 5055, has_before: true, has_after: true, after_count: 4945, limit: 101 },
+    });
+    expect((middle.body as { blocks: unknown[] }).blocks).toHaveLength(101);
+
+    const latest = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/conv-indexed?target=latest&limit=25",
+    });
+    expect(latest.body).toMatchObject({
+      target: { kind: "latest", position: 10_000 },
+      window: { start_position: 9976, end_position: 10_000, has_after: false, after_count: 0, limit: 25 },
+    });
+  });
+
+  it("resolves stable logical turn ids and rejects unknown or non-boundary anchors", async () => {
+    insertIndexedConversation(10_000);
+    const router = new Router();
+    registerConversationRoutes(router);
+
+    const turn = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/conv-indexed?turn=indexed-5001&limit=40",
+    });
+    expect(turn.status).toBe(200);
+    expect(turn.body).toMatchObject({
+      target: { kind: "turn", block_id: "indexed-5001", turn_id: "indexed-5001", position: 5001 },
+    });
+
+    for (const url of [
+      "/api/conversations/conv-indexed?block=missing",
+      "/api/conversations/conv-indexed?turn=missing",
+      "/api/conversations/conv-indexed?turn=indexed-5005",
+      "/api/conversations/conv-indexed?position=10001",
+    ]) {
+      const response = await router.invoke({ method: "GET", url });
+      expect(response.status).toBe(404);
+      expect(response.body).toHaveProperty("error");
+    }
   });
 });

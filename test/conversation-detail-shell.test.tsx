@@ -4,10 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation, ConversationBlock, ConversationAttachState } from '../ui/src/api.js';
+import type { Conversation, ConversationBlock, ConversationAttachState, ConversationPositionWindow } from '../ui/src/api.js';
 import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js';
 import {
   ConversationsView,
+  conversationAnchorFromHash,
+  conversationAnchorHref,
   getConversationHeaderProviderLabel,
 } from '../ui/src/views/conversations.js';
 
@@ -33,6 +35,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, '', '#/');
 });
 
 const conversation: Conversation = {
@@ -108,11 +111,29 @@ function mockConversationDetail(
 ): Conversation {
   const scopedConversation = { ...conversation, attach_state: attachState, block_count: blocks.length };
   vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [scopedConversation], total: 1 });
-  vi.spyOn(api, 'getConversation').mockResolvedValue({
-    ...scopedConversation,
+  vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
+    conversation: scopedConversation,
+    body_source: 'legacy',
     blocks,
     children: [],
     parent: null,
+    revision: blocks.length,
+    total: blocks.length,
+    target: {
+      kind: 'initial',
+      requested_value: null,
+      position: blocks.at(-1)?.position ?? null,
+      block_id: blocks.at(-1)?.id ?? null,
+      turn_id: blocks.at(-1)?.id ?? null,
+    },
+    window: {
+      start_position: blocks[0]?.position ?? null,
+      end_position: blocks.at(-1)?.position ?? null,
+      has_before: false,
+      has_after: false,
+      after_count: 0,
+      limit: 160,
+    },
   });
   vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
   vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
@@ -133,7 +154,58 @@ function renderConversationDetail(scopedConversation: Conversation): void {
   );
 }
 
+function positionPayload(
+  scopedConversation: Conversation,
+  blocks: ConversationBlock[],
+  options: {
+    kind?: 'initial' | 'latest' | 'block';
+    hasAfter?: boolean;
+    afterCount?: number;
+    revision?: number;
+  } = {},
+): ConversationPositionWindow {
+  const target = blocks.at(-1) ?? null;
+  const revision = options.revision ?? blocks.length;
+  return {
+    conversation: { ...scopedConversation, block_count: revision },
+    body_source: 'legacy',
+    blocks,
+    children: [],
+    parent: null,
+    revision,
+    total: revision,
+    target: {
+      kind: options.kind ?? 'initial',
+      requested_value: options.kind === 'block' ? target?.id ?? null : null,
+      position: target?.position ?? null,
+      block_id: target?.id ?? null,
+      turn_id: target?.id ?? null,
+    },
+    window: {
+      start_position: blocks[0]?.position ?? null,
+      end_position: target?.position ?? null,
+      has_before: false,
+      has_after: options.hasAfter ?? false,
+      after_count: options.hasAfter ? (options.afterCount ?? Math.max(1, revision - blocks.length)) : 0,
+      limit: 160,
+    },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('compact detail pane shell', () => {
+  it('parses exact block and turn anchors from shareable Chat URLs', () => {
+    expect(conversationAnchorFromHash('#/console?conversation=conv&block=block-42')).toEqual({ block: 'block-42' });
+    expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
+    expect(conversationAnchorFromHash('#/console?conversation=conv')).toBeNull();
+    expect(conversationAnchorHref('conv 1', { block: 'block/42' })).toBe('#/console?conversation=conv+1&block=block%2F42');
+  });
+
   it('uses the compact-header provider presentation contract', () => {
     expect(getConversationHeaderProviderLabel('claude_code')).toBe('Claude');
     expect(getConversationHeaderProviderLabel('codex')).toBe('Codex');
@@ -354,5 +426,99 @@ describe('compact detail pane shell', () => {
     expect(screen.getByRole('menuitem', { name: 'View metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Copy markdown' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Open markdown' })).toBeTruthy();
+  });
+
+  it('keeps exact-anchor loading last-request-wins', async () => {
+    const scopedConversation = mockConversationDetail(conversation.attach_state, []);
+    const initial = deferred<ConversationPositionWindow>();
+    const exact = deferred<ConversationPositionWindow>();
+    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => (
+      'block' in request ? exact.promise : initial.promise
+    ));
+    window.history.replaceState(null, '', `#/console?conversation=${conversation.id}`);
+    const props = {
+      consoleSessions: [],
+      initialConversationId: scopedConversation.id,
+      initialSessionId: null,
+      onSelectSession: () => undefined,
+      onNewSession: () => undefined,
+    };
+    const view = render(<ConversationsView {...props} />);
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(1));
+
+    window.history.replaceState(null, '', `#/console?conversation=${conversation.id}&block=exact-block`);
+    view.rerender(<ConversationsView {...props} />);
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
+
+    const exactBlock = { ...transcriptBlock, id: 'exact-block', content: 'Exact anchor wins', position: 50 };
+    exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasAfter: true, revision: 100 }));
+    expect(await screen.findByText('Exact anchor wins')).toBeTruthy();
+
+    initial.resolve(positionPayload(scopedConversation, [{ ...transcriptBlock, content: 'Late initial loses' }], { revision: 100 }));
+    await Promise.resolve();
+    expect(screen.queryByText('Late initial loses')).toBeNull();
+    expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+  });
+
+  it('re-resolves the true end when an append arrives during Jump to latest', async () => {
+    const scopedConversation = mockConversationDetail(conversation.attach_state, []);
+    const firstLatest = deferred<ConversationPositionWindow>();
+    const trueLatest = deferred<ConversationPositionWindow>();
+    let latestCalls = 0;
+    const middleBlock = { ...transcriptBlock, id: 'middle', content: 'Middle window', position: 1 };
+    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
+      if ('target' in request && request.target === 'latest') {
+        latestCalls += 1;
+        return latestCalls === 1 ? firstLatest.promise : trueLatest.promise;
+      }
+      return positionPayload(scopedConversation, [middleBlock], {
+        kind: 'block',
+        hasAfter: true,
+        afterCount: 1,
+        revision: 2,
+      });
+    });
+    window.history.replaceState(null, '', `#/console?conversation=${conversation.id}&block=middle`);
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText('Middle window')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+
+    window.dispatchEvent(new CustomEvent('conversation:sse', {
+      detail: {
+        type: 'conversation:updated',
+        data: {
+          id: conversation.id,
+          block_count: 12,
+          append: {
+            from_position: 2,
+            blocks: Array.from({ length: 10 }, (_, index) => ({
+              ...transcriptBlock,
+              id: `append-${index + 2}`,
+              position: index + 2,
+              content: `append ${index + 2}`,
+            })),
+          },
+        },
+      },
+    }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
+    await waitFor(() => expect(latestCalls).toBe(1));
+    window.dispatchEvent(new CustomEvent('conversation:sse', {
+      detail: {
+        type: 'conversation:updated',
+        data: {
+          id: conversation.id,
+          block_count: 13,
+          append: { from_position: 12, blocks: [{ ...transcriptBlock, id: 'append-12', position: 12, content: 'append 12' }] },
+        },
+      },
+    }));
+    firstLatest.resolve(positionPayload(scopedConversation, [{ ...transcriptBlock, id: 'old-tail', position: 11, content: 'Old tail' }], { kind: 'latest', revision: 12 }));
+    await waitFor(() => expect(latestCalls).toBe(2));
+    trueLatest.resolve(positionPayload(scopedConversation, [{ ...transcriptBlock, id: 'true-tail', position: 12, content: 'Newest true tail' }], { kind: 'latest', revision: 13 }));
+    expect(await screen.findByText('Newest true tail')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+    expect(window.location.hash).toBe(`#/console?conversation=${conversation.id}`);
   });
 });

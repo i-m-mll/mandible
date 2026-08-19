@@ -85,10 +85,11 @@ function parseMetadata(json: string): Record<string, unknown> {
 export function conversationBlocksToStreamEvents(
   providerSessionId: string,
   blocks: Pick<ConversationBlock, 'id' | 'type' | 'content' | 'metadata_json'>[],
+  options: { leadingAssistantTurnId?: string | null } = {},
 ): StreamEvent[] {
   const events: StreamEvent[] = [];
   let assistantBlocks: Array<Record<string, unknown>> = [];
-  let assistantTurnStartId: string | null = null;
+  let assistantTurnStartId: string | null = options.leadingAssistantTurnId ?? null;
   let assistantUsage: Record<string, unknown> | undefined;
 
   const flushAssistant = () => {
