@@ -29,6 +29,11 @@ import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import type { SourceBackedConversationBlock } from "../conversations/source-types.js";
+import {
+  ConversationFreshnessError,
+  ensureExactConversationFresh,
+} from "../conversations/freshness.js";
+import type { ResponseLike } from "../server.js";
 
 // --- Row mapping helpers ---
 
@@ -278,9 +283,26 @@ async function readAllBlocks(
 ): Promise<{ blocks: SourceBackedConversationBlock[]; bodySource: "source" | "legacy" }> {
   const result = await reader.readAll(conversationId);
   if (result.status !== "source" && result.status !== "legacy") {
-    return { blocks: [], bodySource: "legacy" };
+    throw new ConversationFreshnessError("source_unavailable", result.reason);
   }
   return { blocks: result.value, bodySource: result.status };
+}
+
+function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
+  if (!(error instanceof ConversationFreshnessError)) return false;
+  if (error.code === "freshness_pending") {
+    res.header?.("Retry-After", "1");
+    res.status(error.status);
+    if (res.empty) res.empty();
+    else res.json(null);
+    return true;
+  }
+  sendJson(res, error.status, {
+    error: error.code,
+    message: error.message,
+    ...(error.candidates.length > 0 ? { candidates: error.candidates } : {}),
+  });
+  return true;
 }
 
 function parseSinceQuery(value: string | undefined): string | null {
@@ -910,9 +932,18 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const requestedRef = req.params.id;
+    if (!requestedRef) {
       sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    let id: string;
+    try {
+      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
       return;
     }
 
@@ -1388,9 +1419,18 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
   server.get("/api/conversations/:id/blocks", async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const requestedRef = req.params.id;
+    if (!requestedRef) {
       sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    let id: string;
+    try {
+      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
       return;
     }
 
@@ -1541,9 +1581,18 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
   server.post("/api/conversations/:id/export", async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const requestedRef = req.params.id;
+    if (!requestedRef) {
       sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    let id: string;
+    try {
+      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
       return;
     }
 
@@ -1567,9 +1616,16 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return;
     }
 
-    const readable = body.source_backed
-      ? await readAllBlocks(sourceReader, id)
-      : null;
+    let readable: Awaited<ReturnType<typeof readAllBlocks>> | null = null;
+    if (body.source_backed) {
+      try {
+        readable = await readAllBlocks(sourceReader, id);
+      } catch (error) {
+        if (sendFreshnessError(res, error)) return;
+        sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+    }
     const blocks = readable
       ? readable.blocks.map((block) => ({ ...block, compressed: 0 })) as DecompressedBlock[]
       : decompressBlocks(db.prepare(
