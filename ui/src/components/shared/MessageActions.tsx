@@ -9,6 +9,7 @@ export type MessageActionsMeta = {
   tokenCount?: number;
   elapsedMs?: number;
   model?: string;
+  timestamp?: string;
 };
 
 export type MessageActionsProps = {
@@ -20,6 +21,9 @@ export type MessageActionsProps = {
   showResume?: boolean;          // show resume action (default true when dagUuid present)
   showFork?: boolean;            // show fork action (default true when dagUuid present)
   metadata?: MessageActionsMeta;
+  onSelect?: (shiftKey: boolean) => void;
+  isSelected?: boolean;
+  selectMode?: boolean;
 };
 
 /** Format elapsed milliseconds as "Xs" or "Xm Ys". */
@@ -40,6 +44,9 @@ export function MessageActions({
   showResume,
   showFork,
   metadata,
+  onSelect,
+  isSelected = false,
+  selectMode = false,
 }: MessageActionsProps): JSX.Element {
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -89,9 +96,16 @@ export function MessageActions({
   if (metadata?.model) {
     metaParts.push(metadata.model);
   }
+  if (metadata?.timestamp) {
+    const parsed = Date.parse(metadata.timestamp);
+    metaParts.push(Number.isNaN(parsed) ? metadata.timestamp : new Date(parsed).toLocaleString());
+  }
 
   return (
-    <div className="message-actions contextual-action-group" data-dag-uuid={dagUuid}>
+    <div
+      className={`message-actions contextual-action-group${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
+      data-dag-uuid={dagUuid}
+    >
       {/* Metadata — subdued text on left */}
       {metaParts.length > 0 && (
         <span className="message-actions__meta">
@@ -100,6 +114,18 @@ export function MessageActions({
       )}
 
       {/* Primary actions — buttons on right */}
+      {onSelect && (selectMode || isSelected) && (
+        <button
+          type="button"
+          className={`message-actions__btn${isSelected ? ' message-actions__btn--selected' : ''}`}
+          onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }}
+          title={isSelected ? 'Deselect' : 'Select'}
+          aria-label={isSelected ? 'Deselect message' : 'Select message'}
+          aria-pressed={isSelected}
+        >
+          {isSelected ? '✓' : '□'}
+        </button>
+      )}
       {onCopy && (
         <ContextualAction
           className="message-actions__btn"

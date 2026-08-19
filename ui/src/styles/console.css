@@ -1276,52 +1276,6 @@
   contain: layout style;
 }
 
-.stream-turn {
-  display: grid;
-  grid-template-columns: calc(var(--space-8) + var(--space-7) + var(--space-5)) minmax(0, 1fr);
-  gap: var(--space-3);
-  align-items: start;
-  margin-bottom: var(--space-4);
-}
-
-.stream-turn__speaker {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: var(--space-2);
-  /* Bug: fbca9d5 — Sticky role pills: pin speaker badge while scrolling */
-  position: sticky;
-  top: 0;
-  align-self: start;
-  z-index: 2;
-}
-
-.stream-turn__badge {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--text-xs);
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  background: var(--surface-muted);
-  color: var(--text-muted);
-}
-
-.stream-turn--user .stream-turn__badge {
-  background: var(--status-info-bg-soft);
-  color: var(--status-info-fg);
-}
-
-.stream-turn--assistant .stream-turn__badge {
-  background: var(--surface-active);
-  color: var(--text-primary);
-}
-
-.stream-turn__body {
-  min-width: 0;
-}
-
 /* Bug: a654b69 — P4: individual nodes within a grouped turn */
 .stream-turn-node {
   margin-bottom: var(--space-2);
@@ -1577,6 +1531,12 @@
   z-index: 5;
 }
 
+/* Reveal only from the message that owns this action bar. */
+.message-block-wrapper:is(:hover, :focus-within) > .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
 .message-actions__btn {
   height: 24px;
   padding: 0 8px;
@@ -1664,11 +1624,6 @@
 .stream-turn--selected {
   border-left: 2px solid var(--accent-fg);
   background: var(--status-info-bg-soft);
-}
-
-/* Bug: 35edd3d — Conditional sticky: short groups (<=2 nodes) use static speaker */
-.stream-turn--short .stream-turn__speaker {
-  position: static;
 }
 
 /* GroupFooter — turn-scoped aggregate actions without a reserved row. */

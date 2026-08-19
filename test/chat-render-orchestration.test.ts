@@ -21,7 +21,8 @@ function normalize(events: StreamEvent[]): Array<Record<string, unknown>> {
           if (block.type === "tool_use") {
             return { type: block.type, id: block.id, name: block.name };
           }
-          return block;
+          const { source: _source, ...content } = block;
+          return content;
         }),
         toolResults: Array.from(node.turn.toolResults.entries()).map(([id, block]) => ({
           id,
@@ -184,6 +185,30 @@ describe("chat render orchestration", () => {
 
     expect(computeLiveTail(historyEvents, memEvents)).toEqual(memEvents.slice(3));
   });
+
+  it.each(["codex", "claude", "agy/gemini"])(
+    "preserves persisted semantic events, errors, unmatched results, and timestamps for %s",
+    (provider) => {
+      const events = conversationBlocksToStreamEvents(provider, [
+        { id: "s1", type: "system", content: "Project instructions", timestamp: "2026-01-01T00:00:00Z", metadata_json: "{}" },
+        { id: "u1", type: "user_message", content: "Run it", timestamp: "2026-01-01T00:00:01Z", metadata_json: "{}" },
+        { id: "tu1", type: "tool_use", content: "{}", timestamp: "2026-01-01T00:00:02Z", metadata_json: JSON.stringify({ tool_id: "tool-1", tool_name: "Bash", tool_input: { command: "false" } }) },
+        { id: "tr1", type: "tool_result", content: "exit 1", timestamp: "2026-01-01T00:00:03Z", metadata_json: JSON.stringify({ tool_id: "tool-1", is_error: true }) },
+        { id: "e1", type: "event", content: "provider stopped", timestamp: "2026-01-01T00:00:04Z", metadata_json: JSON.stringify({ event_type: "stop", level: "error" }) },
+        { id: "tr2", type: "tool_result", content: "orphan output", timestamp: "2026-01-01T00:00:05Z", metadata_json: JSON.stringify({ tool_id: "missing" }) },
+      ]);
+      const state = buildStreamState(events);
+      const system = state.nodes.find((node) => node.kind === "semantic_event" && node.event.semantic_kind === "system");
+      const errorEvent = state.nodes.find((node) => node.kind === "semantic_event" && node.event.semantic_kind === "event");
+      const turn = state.nodes.find((node) => node.kind === "assistant_turn");
+      const unmatched = state.nodes.find((node) => node.kind === "unmatched_tool_result");
+
+      expect(system?.event.source).toMatchObject({ blockId: "s1", timestamp: "2026-01-01T00:00:00Z" });
+      expect(errorEvent?.event).toMatchObject({ content: "provider stopped", label: "stop", is_error: true });
+      expect(turn?.turn.toolResults.get("tool-1")).toMatchObject({ content: "exit 1", is_error: true });
+      expect(unmatched?.result).toMatchObject({ tool_use_id: "missing", content: "orphan output" });
+    },
+  );
 
   it("deduplicates buffered SSE and derives stopped streaming state", () => {
     const resultEvent: StreamEvent = {

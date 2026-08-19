@@ -13,8 +13,6 @@ import {
   getConversationHeaderProviderLabel,
 } from '../ui/src/views/conversations.js';
 
-const conversationsStylesheet = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
-const contextualActionStylesheet = readFileSync(resolve(process.cwd(), 'ui/src/styles/contextual-action.css'), 'utf8');
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -250,32 +248,6 @@ describe('compact detail pane shell', () => {
     expect(defaultShell?.querySelector('.detail-pane-shell__footer')).toBeNull();
   });
 
-  it('keeps block copy contextual, focusable, and neutral when the block is selected', async () => {
-    const scopedConversation = mockConversationDetail(conversation.attach_state);
-    renderConversationDetail(scopedConversation);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation actions' }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Inspect raw blocks' }));
-    const copy = await screen.findByRole('button', { name: 'Copy raw markdown' });
-    const group = copy.closest('.block-copy-action') as HTMLElement;
-    const block = copy.closest('.block') as HTMLElement;
-    expect(copy.classList.contains('contextual-action')).toBe(true);
-    expect(group.classList.contains('contextual-action-group')).toBe(true);
-    expect(block.classList.contains('contextual-action-owner')).toBe(true);
-    expect(group.nextElementSibling?.classList.contains('block-timestamp')).toBe(true);
-
-    copy.focus();
-    expect(document.activeElement).toBe(copy);
-    expect(group.contains(document.activeElement)).toBe(true);
-
-    fireEvent.click(block.querySelector('.block-checkbox') as HTMLInputElement);
-    await waitFor(() => expect(block.classList.contains('block-selected')).toBe(true));
-    expect(group.classList.contains('contextual-action-group--persistent')).toBe(false);
-    expect(conversationsStylesheet).not.toMatch(/block-selected[^}]*block-copy/);
-    expect(conversationsStylesheet).not.toMatch(/block-copy-btn:(?:hover|focus-visible)[^{]*{[^}]*background/);
-    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
-  });
-
   it('composes Chat detail through the compact shell with stable header actions and footer', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
@@ -328,7 +300,11 @@ describe('compact detail pane shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     const menu = screen.getByRole('menu');
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(8);
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(7);
+    expect(screen.queryByText('Inspect raw blocks')).toBeNull();
+    expect(document.querySelector('.conv-blocks')).toBeNull();
+    expect(document.querySelector('.block-user-message')).toBeNull();
+    expect(document.querySelector('.block-assistant-message')).toBeNull();
     fireEvent.click(screen.getByRole('menuitem', { name: 'View metadata' }));
     expect(screen.getByRole('dialog', { name: 'Conversation metadata' })).toBeTruthy();
     const projectLabel = screen.getByText('Project');
