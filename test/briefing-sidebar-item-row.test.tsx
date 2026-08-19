@@ -20,6 +20,7 @@ const secondId = '06e4aec0-cf58-4a7f-86df-415e08a4eb8e';
 const thirdId = '5d186de4-075e-4228-a070-e6c5be9dcbf8';
 const roundId = '9fe126c4-74c5-4aa5-af9e-48e4f3a637c6';
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
+const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 
 const collections: FeedbackCollection[] = [
   { id: feedbackCollectionIdentity(firstId), collectionId: firstId, label: 'First briefing', itemCount: 1, latestRoundId: 'round-1', createdAt: 1, updatedAt: 3 },
@@ -86,14 +87,21 @@ describe('Briefing sidebar row actions', () => {
       const pin = screen.getByRole('button', { name: `Unpin ${collection.label}` });
       expect(pin.getAttribute('aria-pressed')).toBe('true');
       expect(pin.closest('.feedback-collection-row')?.classList.contains('feedback-collection-row--pinned')).toBe(true);
+      expect(pin.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--persistent-pin')).toBe(true);
     }
-    expect(screen.getByRole('button', { name: 'Pin Third briefing' }).getAttribute('aria-pressed')).toBe('false');
-    expect(briefingStylesheet).toMatch(
-      /\.feedback-collection-row--pinned \.sidebar-item-row__actions \{[^}]*opacity: 1;[^}]*pointer-events: auto;/s,
-    );
-    expect(briefingStylesheet).toMatch(
-      /\.feedback-collection-row--pinned \.sidebar-item-row__overflow \{[^}]*opacity: 0;[^}]*pointer-events: none;/s,
-    );
+    const unpinnedPin = screen.getByRole('button', { name: 'Pin Third briefing' });
+    expect(unpinnedPin.getAttribute('aria-pressed')).toBe('false');
+    expect(unpinnedPin.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
+    const baseTrailingRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1] ?? '';
+    expect(baseTrailingRule).toContain('position: absolute');
+    expect(baseTrailingRule).toContain('opacity: 0');
+    const contentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__content \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(contentRule).toContain('min(12px, var(--sidebar-item-row-reveal-width))');
+    expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
+    expect(contentRule).not.toContain('var(--sidebar-item-row-reveal-width) - 12px');
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing \{[^}]*opacity: 1;/s);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin:not\([^}]*\.sidebar-item-row__overflow \{[^}]*opacity: 0;[^}]*pointer-events: none;/s);
+    expect(briefingStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|overflow)/);
   });
 
   it('keeps Pin before overflow on every row and copies the canonical short route', () => {

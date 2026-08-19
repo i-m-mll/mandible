@@ -2597,7 +2597,7 @@ function ChatEntryItem({
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
-  const providerLabel = source ? SOURCE_LABELS[source] : null;
+  const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);

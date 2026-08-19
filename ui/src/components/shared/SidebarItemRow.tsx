@@ -1,5 +1,5 @@
 import type { ComponentChildren, JSX } from 'preact';
-import { useRef, useState } from 'preact/hooks';
+import { useCallback, useRef, useState } from 'preact/hooks';
 
 export type SidebarItemRowProps = {
   label: string;
@@ -9,6 +9,7 @@ export type SidebarItemRowProps = {
   className?: string;
   provider?: SidebarItemProvider;
   selectionTone?: SidebarItemProviderTone;
+  trailingReveal?: 'interaction' | 'persistent-pin';
   leading?: ComponentChildren;
   badges?: ComponentChildren;
   actions?: ComponentChildren;
@@ -27,6 +28,7 @@ export function SidebarItemRow({
   className,
   provider,
   selectionTone,
+  trailingReveal = 'interaction',
   leading,
   badges,
   actions,
@@ -36,8 +38,21 @@ export function SidebarItemRow({
   onSelect,
   onKeyDown,
 }: SidebarItemRowProps): JSX.Element {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const syncTrailingWidth = useCallback((element: HTMLSpanElement | null) => {
+    if (!element) {
+      rowRef.current?.style.setProperty('--sidebar-item-row-trailing-width', '0px');
+      return;
+    }
+    const row = rowRef.current ?? element.closest<HTMLElement>('.sidebar-item-row');
+    row?.style.setProperty(
+      '--sidebar-item-row-trailing-width',
+      `${Math.ceil(element.getBoundingClientRect().width)}px`,
+    );
+  }, []);
+
   return (
-    <div className={`sidebar-item-row${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${className ? ` ${className}` : ''}`}>
+    <div ref={rowRef} className={`sidebar-item-row${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
       <button
         ref={selectRef}
         type="button"
@@ -50,16 +65,22 @@ export function SidebarItemRow({
         onClick={onSelect}
         onKeyDown={onKeyDown}
       >
-        {leading ? <span className="sidebar-item-row__leading">{leading}</span> : null}
-        <span className="sidebar-item-row__label">{label}</span>
-        {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
+        <span className="sidebar-item-row__content">
+          {leading ? <span className="sidebar-item-row__leading">{leading}</span> : null}
+          <span className="sidebar-item-row__label">{label}</span>
+          {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
+        </span>
       </button>
-      {provider ? (
-        <span className="sidebar-item-row__provider">
-          <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
+      {provider || actions ? (
+        <span ref={syncTrailingWidth} className="sidebar-item-row__trailing">
+          {provider ? (
+            <span className="sidebar-item-row__provider">
+              <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
+            </span>
+          ) : null}
+          {actions ? <span className="sidebar-item-row__actions">{actions}</span> : null}
         </span>
       ) : null}
-      {actions ? <span className="sidebar-item-row__actions">{actions}</span> : null}
     </div>
   );
 }

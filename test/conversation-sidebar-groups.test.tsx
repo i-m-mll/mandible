@@ -135,7 +135,7 @@ describe('conversation sidebar groups', () => {
     expect(within(projectHeading).getByLabelText('2 chats in Mandible').textContent).toBe('2');
   });
 
-  it('maps agy live sessions to the accessible Gemini provider dot', async () => {
+  it('maps agy live sessions to the accessible agy Chat provider dot', async () => {
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
@@ -149,9 +149,9 @@ describe('conversation sidebar groups', () => {
 
     renderView([agySession]);
     const row = await screen.findByRole('button', { name: 'Open session Agy review' });
-    expect(row.getAttribute('aria-description')).toBe('Provider: Gemini');
+    expect(row.getAttribute('aria-description')).toBe('Provider: agy');
     expect(row.querySelector('.sidebar-item-row__badges')).toBeNull();
-    expect(within(row.closest('.sidebar-item-row') as HTMLElement).getByRole('img', { name: 'Provider: Gemini' })
+    expect(within(row.closest('.sidebar-item-row') as HTMLElement).getByRole('img', { name: 'Provider: agy' })
       .classList.contains('sidebar-item-row__provider-dot--gemini')).toBe(true);
   });
 

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -5,6 +6,9 @@ import * as api from '../ui/src/api.js';
 import type { Conversation, ConversationSidebarGroup, InstanceInfo } from '../ui/src/api.js';
 import { CHAT_VIEW_STATE_KEY } from '../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
+
+const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
+const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -103,6 +107,35 @@ function sidebarResponse(rows: Conversation[]) {
 }
 
 describe('conversation sidebar labeled-item rows', () => {
+  it('keeps idle Chat width full and reveals the shared overlay for focus and selection without Chat-local geometry', async () => {
+    const idleConversation = {
+      ...conversation,
+      id: 'conv-idle',
+      title: 'Idle conversation with a long title',
+      session_id: 'session-idle',
+      started_at: '2026-08-16T12:00:00.000Z',
+      tags: [],
+    };
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse([conversation, idleConversation]));
+    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
+      ...(id === idleConversation.id ? idleConversation : conversation), blocks: [], children: [], parent: null,
+    }));
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
+    render(<ConversationsView consoleSessions={[]} workRepos={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewSession={() => undefined} />);
+
+    const selected = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
+    const idle = await screen.findByRole('button', { name: `Open conversation ${idleConversation.title}` });
+    await waitFor(() => expect(selected.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(true));
+    expect(idle.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(false);
+    expect(idle.nextElementSibling?.classList.contains('sidebar-item-row__trailing')).toBe(true);
+    idle.focus();
+    expect(document.activeElement).toBe(idle);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
+    expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|content|select|label|actions|provider)/);
+  });
+
   it('keeps section nodes separate while giving leaf rows direct Pin and secondary overflow actions', async () => {
     let serverRow = conversation;
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse([serverRow]));
@@ -142,6 +175,12 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(select.getAttribute('aria-description')).toBe('Provider: Codex');
     expect(within(row as HTMLElement).getByRole('img', { name: 'Provider: Codex' })
       .classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
+    const trailing = row?.querySelector('.sidebar-item-row__trailing');
+    expect(trailing?.firstElementChild?.classList.contains('sidebar-item-row__provider')).toBe(true);
+    expect(trailing?.lastElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
+    expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|provider)/);
     expect(row?.querySelector('.agent-mark')).toBeNull();
     const chatsHeading = screen.getByRole('button', { name: /^Chats/ });
     expect(chatsHeading.classList.contains('sidebar-item-row')).toBe(false);

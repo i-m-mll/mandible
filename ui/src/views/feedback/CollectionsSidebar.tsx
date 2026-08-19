@@ -162,6 +162,7 @@ export function CollectionsSidebar({
           selectionLabel={`Select briefing ${collection.label}`}
           selectionDescription={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
           selected={selectedCollectionId === collection.id}
+          trailingReveal={isPinned ? 'persistent-pin' : 'interaction'}
           ariaCurrent={navigation['aria-current']}
           onKeyDown={navigation.onKeyDown}
           onSelect={() => onSelect(collection)}

@@ -21,7 +21,10 @@ function contrastRatio(foreground: string, background: string): number {
   return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('SidebarItemRow', () => {
   it('keeps selection, passive facts, and actions in separate accessible controls', () => {
@@ -57,8 +60,11 @@ describe('SidebarItemRow', () => {
     expect(row?.querySelector('.sidebar-item-row__label')?.textContent).toBe('A title long enough to truncate');
     expect(screen.getByLabelText('12 items').textContent).toBe('12');
     const selectChildren = Array.from(select.children);
-    expect(selectChildren.at(-1)?.classList.contains('sidebar-item-row__badges')).toBe(true);
-    expect(select.nextElementSibling?.classList.contains('sidebar-item-row__actions')).toBe(true);
+    expect(selectChildren).toHaveLength(1);
+    expect(selectChildren[0].classList.contains('sidebar-item-row__content')).toBe(true);
+    expect(selectChildren[0].lastElementChild?.classList.contains('sidebar-item-row__badges')).toBe(true);
+    expect(select.nextElementSibling?.classList.contains('sidebar-item-row__trailing')).toBe(true);
+    expect(select.nextElementSibling?.querySelector('.sidebar-item-row__actions')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Pin the item' }));
     expect(onPin).toHaveBeenCalledOnce();
@@ -73,25 +79,81 @@ describe('SidebarItemRow', () => {
     expect(onSelect).toHaveBeenCalledOnce();
   });
 
-  it('reserves the action footprint before hover and only changes visibility on reveal', () => {
-    const baseRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__actions \{([^}]*)\}/)?.[1] ?? '';
+  it('overlays the measured trailing cluster without reserving width or showing an ellipsis', () => {
+    const rowRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row \{([^}]*)\}/)?.[1] ?? '';
+    const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
+    const contentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__content \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    const labelRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__label \{([^}]*)\}/)?.[1] ?? '';
+    const trailingRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1] ?? '';
     const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__actions,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__actions \{([^}]*)\}/,
+      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing,\s*\.sidebar-item-row--selected \.sidebar-item-row__trailing,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(baseRule).toContain('width: auto');
-    expect(baseRule).toContain('padding-right: 4px');
-    expect(baseRule).toContain('overflow: visible');
-    expect(baseRule).toContain('opacity: 0');
+    expect(rowRule).toContain('--sidebar-item-row-reveal-width: 0px');
+    expect(rowRule).toContain('display: block');
+    expect(selectRule).toContain('width: 100%');
+    expect(selectRule).not.toContain('mask-image');
+    expect(contentRule).toContain('width: 100%');
+    expect(contentRule).toContain('overflow: hidden');
+    expect(contentRule).toContain('mask-image: linear-gradient');
+    expect(contentRule).toContain('var(--sidebar-item-row-reveal-width)');
+    expect(contentRule).toContain('min(12px, var(--sidebar-item-row-reveal-width))');
+    expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
+    expect(labelRule).toContain('text-overflow: clip');
+    expect(labelRule).not.toContain('text-overflow: ellipsis');
+    expect(labelRule).toContain('mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent 100%)');
+    expect(trailingRule).toContain('position: absolute');
+    expect(trailingRule).toContain('right: 0');
+    expect(trailingRule).toContain('opacity: 0');
+    expect(trailingRule).not.toMatch(/flex: 0 0|margin-left|padding-left/);
     expect(revealRule).toContain('opacity: 1');
-    expect(revealRule).not.toMatch(/width|padding|overflow/);
+    expect(revealRule).not.toMatch(/width|padding|margin/);
     const actionRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__action \{([^}]*)\}/)?.[1] ?? '';
     expect(actionRule).toContain('border-radius: 999px');
   });
 
-  it('keeps actions visible and operable for touch and coarse pointers', () => {
-    const coarsePointerRule = sidebarItemRowStylesheet.match(
-      /@media \(hover: none\), \(pointer: coarse\) \{\s*\.sidebar-item-row__actions \{([^}]*)\}/,
+  it('feeds the actual overlaid cluster width into the shared fade boundary', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 68 } as DOMRect);
+    const { rerender } = render(
+      <SidebarItemRow
+        label="Measured"
+        selectionLabel="Select measured"
+        onSelect={() => undefined}
+        actions={<SidebarItemPinAction label="measured" pressed={false} onPress={() => undefined} />}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Select measured' }).closest('.sidebar-item-row') as HTMLElement;
+    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('68px');
+
+    rerender(
+      <SidebarItemRow
+        label="Measured"
+        selectionLabel="Select measured"
+        onSelect={() => undefined}
+      />,
+    );
+    expect(row.querySelector('.sidebar-item-row__trailing')).toBeNull();
+    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('0px');
+  });
+
+  it('reveals the shared cluster and shifted mask boundary for selected, persistent-pin, and coarse-pointer rows', () => {
+    render(
+      <SidebarItemRow
+        label="Pinned"
+        selectionLabel="Select pinned"
+        trailingReveal="persistent-pin"
+        onSelect={() => undefined}
+        actions={<SidebarItemPinAction label="pinned" pressed onPress={() => undefined} />}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Select pinned' }).closest('.sidebar-item-row')
+      ?.classList.contains('sidebar-item-row--persistent-pin')).toBe(true);
+    const stateRule = sidebarItemRowStylesheet.match(
+      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within,\s*\.sidebar-item-row--selected,\s*\.sidebar-item-row--persistent-pin \{([^}]*)\}/,
     )?.[1] ?? '';
+    expect(stateRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
+    const coarsePointerRule = sidebarItemRowStylesheet.match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*)\n\}/)?.[1] ?? '';
+    expect(coarsePointerRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
+    expect(coarsePointerRule).toContain('.sidebar-item-row__trailing');
     expect(coarsePointerRule).toContain('opacity: 1');
     expect(coarsePointerRule).toContain('pointer-events: auto');
   });
@@ -112,7 +174,9 @@ describe('SidebarItemRow', () => {
     const dot = screen.getByRole('img', { name: 'Provider: Codex' });
     expect(dot.classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
     expect(dot.parentElement?.classList.contains('sidebar-item-row__provider')).toBe(true);
-    expect(dot.parentElement).toBe(select.nextElementSibling);
+    const trailing = select.nextElementSibling as HTMLElement;
+    expect(trailing.classList.contains('sidebar-item-row__trailing')).toBe(true);
+    expect(dot.parentElement).toBe(trailing.firstElementChild);
     expect(dot.parentElement?.nextElementSibling?.classList.contains('sidebar-item-row__actions')).toBe(true);
     expect(select.querySelector('.sidebar-item-row__badges')).toBeNull();
 
@@ -127,7 +191,7 @@ describe('SidebarItemRow', () => {
     expect(dotRule).toContain('width: 7px');
     expect(dotRule).toContain('opacity: 0');
     const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot \{([^}]*)\}/,
+      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__provider-dot \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(revealRule).toContain('opacity: 1');
   });
