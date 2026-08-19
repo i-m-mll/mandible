@@ -1978,27 +1978,50 @@ async function syncCodexIndexedTitle(
   const indexed = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
     ?.slice(0, 100)
     .trim();
+  return indexed ? persistExactCodexTitle(db, {
+    conversationId: existing.id,
+    filePath,
+    currentTitle: existing.title,
+    blockCount: existing.block_count,
+    title: indexed,
+    stage: "codex_title_sync",
+  }) : false;
+}
+
+/** Persist one exact provider title through the derived-field masking/SSE boundary. */
+export function persistExactCodexTitle(
+  db: Db,
+  input: {
+    conversationId: string;
+    filePath: string;
+    currentTitle: string;
+    blockCount: number;
+    title: string;
+    stage?: string;
+  },
+): boolean {
+  const indexed = input.title.slice(0, 100).trim();
   // Masked before the comparison, not after: the stored title is already
   // masked, so comparing the raw index title against it would report a
   // difference on every pass and rewrite the row with the plaintext.
   const title = indexed
-    ? maskDerivedConversationText(db, indexed, { file: filePath, stage: "codex_title_sync" })
+    ? maskDerivedConversationText(db, indexed, { file: input.filePath, stage: input.stage ?? "codex_title_sync" })
     : indexed;
-  if (!title || title === existing.title) {
+  if (!title || title === input.currentTitle) {
     return false;
   }
 
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(title, existing.id);
+    .run(title, input.conversationId);
   eventPublisher("conversation:updated", {
-    id: existing.id,
+    id: input.conversationId,
     source: "codex",
     title,
-    block_count: existing.block_count,
+    block_count: input.blockCount,
   });
   logger("info", "ingestion_title_synced", {
-    file: filePath,
-    id: existing.id,
+    file: input.filePath,
+    id: input.conversationId,
     source: "codex",
   });
   return true;
