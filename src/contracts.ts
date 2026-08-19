@@ -968,12 +968,15 @@ export type ResolveRefResponse = { resolution: ResolverResult };
 
 // --- Briefings: logical identity -> immutable artifact-backed rounds ---------
 
-export type FeedbackResponseType = "verdict" | "free_text" | "single_choice" | "multi_choice";
+export type FeedbackResponseType = "verdict" | "single_choice" | "multi_choice" | "short_text" | "long_text" | "rating";
 export type FeedbackVerdictValue = { verdict: "keep" | "dismiss" };
-export type FeedbackFreeTextValue = { text: string };
+export type FeedbackShortTextValue = { text: string };
+export type FeedbackLongTextValue = { text: string };
 export type FeedbackSingleChoiceValue = { option_key: string };
 export type FeedbackMultiChoiceValue = { option_keys: string[] };
-export type FeedbackResponseValue = FeedbackVerdictValue | FeedbackFreeTextValue | FeedbackSingleChoiceValue | FeedbackMultiChoiceValue;
+export type FeedbackRatingValue = { rating: number };
+export type FeedbackResponseValue = FeedbackVerdictValue | FeedbackShortTextValue | FeedbackLongTextValue
+  | FeedbackSingleChoiceValue | FeedbackMultiChoiceValue | FeedbackRatingValue;
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 export type BriefingRunSourceHealth = {
@@ -1013,7 +1016,13 @@ export type BriefingListEntry = {
   created_at: number;
   updated_at: number;
 };
-export const BRIEFING_EVENTS = Object.freeze({ changed: "briefings.changed", submitted: "briefings.submitted" } as const);
+export const BRIEFING_EVENTS = Object.freeze({
+  created: "briefing:created",
+  roundPublished: "briefing:round-published",
+  answered: "briefing:answered",
+  annotated: "briefing:annotated",
+  submitted: "briefing:submitted",
+} as const);
 export type BriefingEvent = (typeof BRIEFING_EVENTS)[keyof typeof BRIEFING_EVENTS];
 export const BRIEFING_EVENT_VALUES: readonly BriefingEvent[] = Object.freeze(Object.values(BRIEFING_EVENTS));
 export function isBriefingEvent(value: unknown): value is BriefingEvent {
