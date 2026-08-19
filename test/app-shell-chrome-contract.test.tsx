@@ -26,18 +26,26 @@ afterEach(() => {
 });
 
 describe('shared app-shell chrome contract', () => {
-  it('aligns the brand to sidebar content and centers the current view in that segment', () => {
+  it('aligns the brand to sidebar content and centers the route after the wordmark', () => {
     const identity = ruleBody(base, '.app-header__identity');
     const text = ruleBody(base, '.app-header__text');
     const route = ruleBody(base, '.app-header__route');
 
     expect(identity).toContain('grid-template-columns: var(--app-rail-width) minmax(0, 1fr)');
-    expect(text).toContain('padding: 0 14px');
-    expect(text).toContain('grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)');
+    expect(text).toContain('padding-left: 14px');
+    expect(text).toContain('grid-template-columns: max-content minmax(0, 1fr)');
     expect(ruleBody(base, '.app-header__brand')).toContain('justify-self: start');
     expect(route).toContain('grid-column: 2');
-    expect(route).toContain('justify-self: center');
+    expect(route).toContain('justify-self: stretch');
     expect(route).toContain('text-align: center');
+  });
+
+  it('keeps the app name on AppHeader-owned theme literals', () => {
+    expect(ruleBody(base, '.app-header__brand')).toContain('color: #747474');
+    expect(ruleBody(base, ":root[data-theme='light'] .app-header__brand")).toContain('color: #A8A9A9');
+    expect(ruleBody(base, '.app-header__brand')).not.toMatch(/var\(--(?:text-subdued|text-chrome-muted)\)/);
+    expect(ruleBody(base, ":root[data-theme='light'] .app-header__brand"))
+      .not.toMatch(/var\(--(?:text-subdued|text-chrome-muted)\)/);
   });
 
   it('keeps chrome-internal hairlines on one token and below the unsubdivided header', () => {

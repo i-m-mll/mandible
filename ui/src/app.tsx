@@ -538,12 +538,10 @@ function RebuildingSplash({
 
 function MandibleHeaderLogo(): JSX.Element {
   return (
-    <img
+    <span
       className="app-header__logo"
-      src="/header-logo.svg"
-      alt=""
+      style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties}
       aria-hidden="true"
-      draggable={false}
     />
   );
 }
