@@ -5,6 +5,7 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import {
   parseUserSettingKey,
+  normalizeUserSettingValue,
   readUserSetting,
   writeUserSetting,
 } from "../user-settings.js";
@@ -49,7 +50,12 @@ export function registerUserSettingsRoutes(server: RouteRegistrar, db: Db = getD
         sendJson(res, 400, { error: "Missing or invalid value (must be string)" });
         return;
       }
-      const snapshot = writeUserSetting(db, identity.user_id, key, body.value);
+      const value = normalizeUserSettingValue(key, body.value);
+      if (value === null) {
+        sendJson(res, 400, { error: "Invalid value for user setting", code: "invalid_user_setting_value" });
+        return;
+      }
+      const snapshot = writeUserSetting(db, identity.user_id, key, value);
       broadcast(USER_SETTING_EVENTS.updated, {
         version: 1,
         key: snapshot.key,

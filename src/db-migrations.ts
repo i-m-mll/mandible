@@ -4766,11 +4766,38 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
       )`,
     ],
   },
+  {
+    version: 146,
+    name: "typography_user_settings",
+    statements: [
+      `ALTER TABLE user_settings RENAME TO user_settings_v145`,
+      `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`,
+      `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
+       SELECT user_id, key, value, revision, updated_at FROM user_settings_v145`,
+      `DROP TABLE user_settings_v145`,
+    ],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function verifyUserSettingsV145Schema(db: Db): void {
+  const sql = ((db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'",
+  ).get() as { sql: string } | undefined)?.sql ?? "").replace(/\s+/g, " ");
+  if (!sql.includes("CHECK(key = 'app_rail_order')")) {
+    throw new Error("migration 145 verification: user_settings key constraint diverges");
+  }
 }
 
 function verifyUserSettingsSchema(db: Db): void {
@@ -4792,19 +4819,19 @@ function verifyUserSettingsSchema(db: Db): void {
       || columns[index]?.type.toUpperCase() !== entry.type
       || columns[index]?.notnull !== entry.notnull
       || columns[index]?.pk !== entry.pk)) {
-    throw new Error("migration 145 verification: user_settings columns diverge");
+    throw new Error("migration 146 verification: user_settings columns diverge");
   }
   const sql = ((db.prepare(
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'",
   ).get() as { sql: string } | undefined)?.sql ?? "").replace(/\s+/g, " ");
   for (const fragment of [
     "REFERENCES users(id) ON DELETE CASCADE",
-    "CHECK(key = 'app_rail_order')",
+    "CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size'))",
     "CHECK(revision >= 1)",
     "PRIMARY KEY(user_id, key)",
   ]) {
     if (!sql.includes(fragment)) {
-      throw new Error(`migration 145 verification: missing ${fragment}`);
+      throw new Error(`migration 146 verification: missing ${fragment}`);
     }
   }
 }
@@ -5114,8 +5141,14 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         }
       }
       if (migration.name === "user_settings" && tableExists(db, "user_settings")) {
-        verifyUserSettingsSchema(db);
-        statements = [];
+        const sql = ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'")
+          .get() as { sql: string } | undefined)?.sql ?? "");
+        if (sql.includes("detail_font_size")) {
+          statements = [];
+        } else {
+          verifyUserSettingsV145Schema(db);
+          statements = [];
+        }
       }
       if (migration.name === "conversation_source_identity") {
         const v140Tables = [
@@ -5195,6 +5228,12 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         }
       }
       if (migration.version === 145) {
+        if (!((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'")
+          .get() as { sql: string } | undefined)?.sql ?? "").includes("detail_font_size")) {
+          verifyUserSettingsV145Schema(db);
+        }
+      }
+      if (migration.version === 146) {
         verifyUserSettingsSchema(db);
       }
       if (migration.name === "operational_incidents") {

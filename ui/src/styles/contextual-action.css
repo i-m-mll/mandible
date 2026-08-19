@@ -28,10 +28,23 @@
   transition: color 120ms ease;
 }
 
-.contextual-action:is(:hover, :focus-visible, [aria-expanded='true'], [aria-pressed='true']) {
+:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-scope) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-group:is(:focus-within, .contextual-action-group--persistent)) .contextual-action {
+  color: var(--chrome-icon-hover-indirect);
+}
+
+.contextual-action:is([aria-expanded='true'], [aria-pressed='true']) {
   border-color: transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--chrome-icon-hover-indirect);
+}
+
+.contextual-action:is(:hover, :focus-visible) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--chrome-icon-hover-direct);
 }
 
 .contextual-action:focus-visible {
@@ -48,6 +61,10 @@
   .contextual-action-group {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  :where(.contextual-action-group) .contextual-action {
+    color: var(--chrome-icon-hover-indirect);
   }
 }
 

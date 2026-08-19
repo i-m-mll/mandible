@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { h } from 'preact';
 import { act } from 'preact/test-utils';
+import { undo } from '@codemirror/commands';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 
@@ -554,6 +555,30 @@ async function flushEffects(): Promise<void> {
 }
 
 describe('MarkdownSourceEditor state synchronization', () => {
+  it('keeps editor undo history active', async () => {
+    render(
+      <MarkdownSourceEditor
+        blockId="b1"
+        value="before"
+        ariaLabel="Edit Markdown"
+        onChange={() => undefined}
+        onBlur={() => undefined}
+        onCaretChange={() => undefined}
+        onSelectionChange={() => undefined}
+        onItemCommand={() => undefined}
+        onOpenReference={() => undefined}
+      />,
+    );
+    await flushEffects();
+
+    setSourceText(0, 'after');
+    expect(sourceText()).toBe('after');
+    act(() => {
+      expect(undo(sourceView())).toBe(true);
+    });
+    expect(sourceText()).toBe('before');
+  });
+
   it('does not replace local editor text with a stale parent value while the draft catches up', async () => {
     const changes: Array<{ value: string; selection: { start: number; end: number } }> = [];
     const renderSource = (value: string) => (

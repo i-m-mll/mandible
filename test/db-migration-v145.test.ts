@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { migrate } from "../src/db.js";
 import { createUser } from "../src/users/store.js";
 
-describe("migration v145: authenticated user settings", () => {
+describe("migrations v145-v146: authenticated user settings", () => {
   it("adds user-owned settings without interpreting the global app rail value", () => {
     const db = new Database(":memory:");
     try {
@@ -17,7 +17,7 @@ describe("migration v145: authenticated user settings", () => {
 
       migrate(db);
 
-      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "145" });
+      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "146" });
       expect(db.prepare("SELECT COUNT(*) AS count FROM user_settings").get()).toEqual({ count: 0 });
       expect(db.prepare("SELECT value FROM settings WHERE key = 'app_rail_order'").get()).toEqual({ value: "global" });
       expect(() => db.prepare(
@@ -26,6 +26,9 @@ describe("migration v145: authenticated user settings", () => {
       expect(() => db.prepare(
         "INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'other', 'x', 1, 1)",
       ).run(user.id)).toThrow(/CHECK/);
+      expect(() => db.prepare(
+        "INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'ui_font_face', 'system-ui', 1, 1)",
+      ).run(user.id)).not.toThrow();
       expect(db.pragma("foreign_key_check")).toEqual([]);
     } finally {
       db.close();

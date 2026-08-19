@@ -300,8 +300,8 @@
 
 .tab-overflow { position: relative; align-self: center; }
 .tab-overflow__btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 8px; font-size: 16px; border-radius: 6px; font-family: var(--font-sans); }
-.tab-overflow__btn:hover { background: var(--neutral-alpha-06); color: var(--text-primary); }
 .tab-overflow__btn--active { color: var(--accent-blue); }
+.tab-overflow__btn:is(:hover, :focus-visible) { background: var(--neutral-alpha-06); color: var(--chrome-icon-hover-direct); }
 .tab-overflow__menu { position: absolute; top: calc(100% + 6px); right: 0; background: var(--bg-card); border: 1px solid var(--neutral-alpha-10); border-radius: 8px; padding: 4px; min-width: 140px; z-index: 100; display: flex; flex-direction: column; gap: 2px; }
 .tab-overflow__menu a { display: block; padding: 6px 12px; color: var(--text-muted); text-decoration: none; border-radius: 6px; font-size: 13px; }
 .tab-overflow__menu a:hover { background: var(--neutral-alpha-06); color: var(--text-primary); }
@@ -728,9 +728,9 @@
   transition: background 0.15s, color 0.15s;
 }
 
-.terminal-pane__sidebar-toggle:hover {
+.terminal-pane__sidebar-toggle:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-06);
-  color: var(--fg-default);
+  color: var(--chrome-icon-hover-direct);
 }
 
 /* Expanded sidebar panel */
@@ -798,9 +798,9 @@
   transition: background 0.15s, color 0.15s;
 }
 
-.terminal-pane__sidebar-close:hover {
+.terminal-pane__sidebar-close:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-06);
-  color: var(--fg-default);
+  color: var(--chrome-icon-hover-direct);
 }
 
 /* Bug: 60b1fd7 — MessageInfoPanel styles */
@@ -1154,9 +1154,9 @@
   cursor: pointer;
 }
 
-.usage-modal__close:hover {
+.usage-modal__close:is(:hover, :focus-visible) {
   background: var(--surface-hover);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .usage-modal__section {

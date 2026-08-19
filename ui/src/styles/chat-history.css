@@ -33,9 +33,9 @@
   line-height: 1;
 }
 
-.icon-btn:hover {
+.icon-btn:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-07);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .chat-sidebar-global-actions {

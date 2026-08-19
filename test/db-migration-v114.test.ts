@@ -39,7 +39,7 @@ describe("migration v114: auth-request finalizer state", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "145",
+value: "146",
     });
     const columns = db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{
       name: string;
@@ -70,7 +70,7 @@ value: "145",
       const columns = fresh.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_finalizer_state");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "145",
+value: "146",
       });
     } finally {
       fresh.close();
