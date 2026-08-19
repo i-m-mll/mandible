@@ -951,6 +951,7 @@ code.inbox-detail__meta-value {
 .issues-list {
   overflow-y: auto;
   flex: 1;
+  padding-top: 6px;
 }
 
 /* Small button variant for inline use */

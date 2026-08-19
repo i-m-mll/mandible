@@ -127,7 +127,11 @@ export function MessageGroup({
     const text = blockCopyText(block);
     const source = block.source;
     return (
-      <div key={`block-wrap-${index}`} className="message-block-wrapper" data-block-id={source?.blockId}>
+      <div
+        key={`block-wrap-${index}`}
+        className="message-block-wrapper contextual-action-owner"
+        data-block-id={source?.blockId}
+      >
         {inner}
         <MessageActions
           onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}

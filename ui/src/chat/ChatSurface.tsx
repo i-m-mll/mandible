@@ -377,7 +377,11 @@ export function ChatSurface({
       case 'user_message': {
         const source = node.persisted;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+          <div
+            key={node.key}
+            className="message-block-wrapper contextual-action-owner"
+            data-block-id={source?.blockId}
+          >
             <UserBubble text={node.text} />
             <MessageActions
               onCopy={() => copyText(node.text)}

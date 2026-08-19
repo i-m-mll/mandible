@@ -95,8 +95,8 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#5B5B5B');
     expect(tokenValue(tokenBlock('light'), '--app-divider-emphasis')).toBe('#CFCFD0');
-    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(0, 0, 0, 0.38)');
-    expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(15, 23, 42, 0.18)');
+    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(0, 0, 0, 0.44)');
+    expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(15, 23, 42, 0.22)');
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');

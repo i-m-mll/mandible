@@ -9,6 +9,7 @@ import type { FeedbackCollection } from '../ui/src/views/feedback/collection-mod
 import * as api from '../ui/src/api.js';
 
 const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
+const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 const sidebarItemStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
 const tokenStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
@@ -124,10 +125,10 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
     const rootColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > :is\(div, ul\) \{([^}]*)\}/,
+      /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,
     )?.[1] ?? '';
     const folderColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > :is\(div, ul\) \{([^}]*)\}/,
+      /\.sidebar-group-node--folder > \.sidebar-disclosure-region \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(rootColumn).toContain('--sidebar-title-column-inset: 7px');
     expect(folderColumn).toContain('--sidebar-title-column-inset: 29px');
@@ -152,22 +153,22 @@ describe('shared sidebar group presentation', () => {
     const heading = screen.getByRole('button', { name: 'Chats' });
     const action = screen.getByRole('button', { name: 'New chat' });
     expect(action).not.toBe(heading);
-    expect(action.parentElement?.classList.contains('sidebar-group-node__header')).toBe(true);
+    expect(action.parentElement?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
+    expect(action.parentElement?.parentElement?.classList.contains('sidebar-group-node__header')).toBe(true);
     expect(screen.getByTestId('descendant').closest('.sidebar-group-node__header')).toBeNull();
     fireEvent.click(action);
     expect(onPress).toHaveBeenCalledOnce();
-    const actionRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action \{([^}]*)\}/)?.[1] ?? '';
-    expect(actionRule).toContain('width: 24px');
-    expect(actionRule).toContain('flex: 0 0 24px');
-    expect(actionRule).toContain('opacity: 0');
+    const slotRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action-slot \{([^}]*)\}/)?.[1] ?? '';
+    expect(slotRule).toContain('width: 24px');
+    expect(slotRule).toContain('flex: 0 0 24px');
+    expect(action.parentElement?.classList.contains('contextual-action-group')).toBe(true);
     expect(action.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
-    expect(sidebarGroupStylesheet).toMatch(
-      /\.sidebar-group-node__header:hover > \.sidebar-group-node__action,\s*\.sidebar-group-node__header:focus-within > \.sidebar-group-node__action \{[^}]*opacity: 1;[^}]*pointer-events: auto;/s,
-    );
+    expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(sidebarGroupStylesheet).not.toMatch(
       /\.sidebar-group-node:(?:hover|focus-within) > \.sidebar-group-node__header > \.sidebar-group-node__action/,
     );
-    expect(sidebarGroupStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
+    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
   });
 
   it('keeps category and folder heading backgrounds transparent on hover and focus', () => {

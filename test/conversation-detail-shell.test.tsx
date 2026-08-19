@@ -13,6 +13,7 @@ import {
   getConversationHeaderProviderLabel,
 } from '../ui/src/views/conversations.js';
 
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     loadAddon(): void {}

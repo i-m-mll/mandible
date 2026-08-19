@@ -3,6 +3,7 @@
 
 import { useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { ContextualAction } from './ContextualAction';
 
 export type MessageActionsMeta = {
   tokenCount?: number;
@@ -101,7 +102,10 @@ export function MessageActions({
   }
 
   return (
-    <div className={`message-actions${selectMode || isSelected ? ' message-actions--selecting' : ''}`} data-dag-uuid={dagUuid}>
+    <div
+      className={`message-actions contextual-action-group${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
+      data-dag-uuid={dagUuid}
+    >
       {/* Metadata — subdued text on left */}
       {metaParts.length > 0 && (
         <span className="message-actions__meta">
@@ -123,8 +127,7 @@ export function MessageActions({
         </button>
       )}
       {onCopy && (
-        <button
-          type="button"
+        <ContextualAction
           className="message-actions__btn"
           onClick={handleCopy}
           title={copiedFeedback ? 'Copied' : 'Copy'}
@@ -140,15 +143,14 @@ export function MessageActions({
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           )}
-        </button>
+        </ContextualAction>
       )}
 
       {/* Overflow menu — secondary actions behind ellipsis */}
       {hasOverflow && (
         <div className="message-actions__overflow-wrap">
-          <button
+          <ContextualAction
             ref={overflowTriggerRef}
-            type="button"
             className="message-actions__btn message-actions__overflow"
             onClick={handleOverflowToggle}
             title="More actions"
@@ -157,7 +159,7 @@ export function MessageActions({
             aria-expanded={overflowOpen}
           >
             &#x2026;
-          </button>
+          </ContextualAction>
           {overflowOpen && (
             <div
               ref={overflowMenuRef}

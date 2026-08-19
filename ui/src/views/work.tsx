@@ -17,6 +17,7 @@ import {
 } from '../api';
 import { DiffView } from '../components/DiffView';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { ContextualAction } from '../components/shared/ContextualAction';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 
@@ -324,10 +325,9 @@ function BranchContextMenu({
   const visibleActions = actions.filter((a) => a.show !== false);
 
   return (
-    <span className="work-actions" ref={anchorRef as any}>
-      <button
+    <span className={`work-actions contextual-action-group${open ? ' contextual-action-group--persistent' : ''}`} ref={anchorRef as any}>
+      <ContextualAction
         ref={triggerRef}
-        type="button"
         className="work-actions__trigger"
         onClick={(e) => {
           e.stopPropagation();
@@ -339,7 +339,7 @@ function BranchContextMenu({
         aria-expanded={open}
       >
         &hellip;
-      </button>
+      </ContextualAction>
       {open ? (
         <div
           ref={menuRef}
@@ -378,7 +378,7 @@ type BranchRowProps = {
   onToggle: (repoId: string, branchName: string) => void;
 };
 
-function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }: BranchRowProps): JSX.Element {
+export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }: BranchRowProps): JSX.Element {
   const anchorRef = useRef<HTMLElement>(null);
   const branchName = getBranchName(branch);
   const status = getBranchStatus(branch);
@@ -403,7 +403,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
 
   return (
     <>
-      <tr key={expandKey} className={isPinned ? 'work-row--pinned' : ''}>
+      <tr key={expandKey} className={`contextual-action-owner${isPinned ? ' work-row--pinned' : ''}`}>
         <td className="work-col-status">
           <span className={`work-status-dot work-status-dot--${status}`} title={statusLabel} aria-label={statusLabel} />
         </td>
@@ -453,7 +453,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
             <span className="branch-timestamp">{formatRelativeTime(lastTime, { empty: '\u2014' })}</span>
           </div>
         </td>
-        <td className="work-col-actions">
+        <td className="work-col-actions contextual-action-scope">
           <BranchContextMenu branch={branch} anchorRef={anchorRef} />
         </td>
       </tr>
