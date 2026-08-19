@@ -24,7 +24,9 @@ beforeEach(() => {
       state TEXT NOT NULL,
       assigned_session_id TEXT,
       activated_at INTEGER,
-      auth_request_id TEXT
+      auth_request_id TEXT,
+      resolved_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE branches (
@@ -119,6 +121,58 @@ describe("work unit reconciler", () => {
     });
     expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-auth")).toEqual({
       state: "committed",
+    });
+  });
+
+  it("resolves a deleted branch from a successful same-project auth alias instead of abandoning it", () => {
+    db.exec(`
+      CREATE TABLE ledger_projects (
+        id TEXT PRIMARY KEY, project_key TEXT NOT NULL, display_name TEXT NOT NULL,
+        remote_identity TEXT NOT NULL, upstream_identity TEXT NOT NULL,
+        namespace_policy TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE ledger_project_checkouts (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, work_repo_id TEXT,
+        root TEXT NOT NULL, name TEXT NOT NULL, default_branch TEXT NOT NULL,
+        remote_url TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE ledger_issues (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, status TEXT NOT NULL,
+        deleted_at INTEGER
+      );
+      CREATE TABLE auth_requests (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, head_branch TEXT,
+        repo TEXT, cwd TEXT, target_repo_root TEXT, status TEXT NOT NULL,
+        exit_code INTEGER, created_at INTEGER NOT NULL, resolved_at INTEGER,
+        merge_finalized_at INTEGER
+      );
+      INSERT INTO ledger_projects VALUES (
+        'project-dotfiles', 'dotfiles', 'dotfiles', 'example/dotfiles', '',
+        'remote', 1, 1
+      );
+      INSERT INTO ledger_project_checkouts VALUES (
+        'checkout-dotfiles', 'project-dotfiles', '.dotfiles', '/registered/dotfiles',
+        '.dotfiles', 'main', '', 1, 1
+      );
+      INSERT INTO work_units (
+        id, issue_id, repo_id, branch, state, created_at
+      ) VALUES (
+        'wu-delivered', 'dot123', 'dotfiles', 'feature/dot123', 'committed', 10
+      );
+      INSERT INTO auth_requests VALUES (
+        'auth-dotfiles', 'merge', 'feature/dot123', '.dotfiles',
+        '/registered/dotfiles', '/registered/dotfiles', 'completed', 0, 20, 30, 40
+      );
+    `);
+
+    reconciler().reconcile();
+
+    expect(db.prepare(
+      "SELECT state, auth_request_id, resolved_at FROM work_units WHERE id = 'wu-delivered'",
+    ).get()).toEqual({
+      state: "resolved",
+      auth_request_id: "auth-dotfiles",
+      resolved_at: 30,
     });
   });
 

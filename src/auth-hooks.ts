@@ -116,7 +116,7 @@ export function authHookPath(db: Db | null, homeDir: string): string {
     return override.trim();
   }
   const userBins = homeDir
-    ? [`${homeDir}/.local/bin`, `${homeDir}/bin`]
+    ? [`${homeDir}/.local/bin`, `${homeDir}/.cargo/bin`, `${homeDir}/bin`]
     : [];
   return [...userBins, AUTH_HOOK_BASE_PATH].join(":");
 }
@@ -179,6 +179,11 @@ export function buildAuthHookEnv(
   env.MANDIBLE_AUTH_REPO = request.repo ?? "";
   env.MANDIBLE_AUTH_BRANCH = request.head_branch ?? "";
   env.MANDIBLE_AUTH_BASE_BRANCH = request.base_branch ?? "";
+  // These reviewed revisions stay stable after the protected checkout moves
+  // on. Post-merge hooks must use them instead of retry-time HEAD when deciding
+  // which convergence work the original merge required.
+  env.MANDIBLE_AUTH_MERGE_BASE_SHA = request.merge_preflight_base_sha ?? "";
+  env.MANDIBLE_AUTH_MERGE_HEAD_SHA = request.merge_head_sha ?? "";
   env.MANDIBLE_HOOK_ID = context.hook_id;
   env.MANDIBLE_HOOK_LABEL = context.hook_label;
   env.MANDIBLE_HOOK_ATTEMPT = String(context.attempt);

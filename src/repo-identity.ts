@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 
 import type { Db } from "./db.js";
+import { canonicalProjectRepoId } from "./ledger/project-registry.js";
 
 /**
  * Issue ded17e6 — canonical Git repo identity.
@@ -125,6 +126,13 @@ export function canonicalRepoKeysForRef(db: Db, ref: string | null | undefined):
       keys.add(key);
     }
   };
+
+  // The project registry is the durable semantic identity. Prefix it so it
+  // cannot collide with a physical common-dir path key.
+  const projectRepoId = canonicalProjectRepoId(db, ref);
+  if (projectRepoId) {
+    keys.add(`project:${projectRepoId}`);
+  }
 
   // (a) ref as a path.
   add(canonicalRepoKeyForPath(ref));
