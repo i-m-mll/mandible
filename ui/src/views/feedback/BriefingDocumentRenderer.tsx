@@ -27,6 +27,7 @@ import {
   responseValuesEqual,
   saveBriefingDraft,
   type BriefingDraft,
+  type BriefingDraftScope,
 } from './briefing-round-view-state';
 import { BriefingDocumentPanel } from './BriefingDocumentPanel';
 
@@ -58,6 +59,15 @@ function meaningful(value: BriefingResponseValue | null): boolean {
 
 function inputId(item: BriefingDirectiveItem): string {
   return `briefing-directive-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
+}
+
+function draftStorageScope(briefingId: string, round: BriefingProjection): BriefingDraftScope | null {
+  return round.document ? {
+    briefingId,
+    roundId: round.selected_round_id,
+    artifactVersionId: round.document.artifact_version_id,
+    profile: round.document.profile,
+  } : null;
 }
 
 const occurrenceDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -137,11 +147,13 @@ export function BriefingDocumentRenderer({
       setUserKind(identity.user?.kind ?? null);
       setLoad({ round, loading: false, error: null });
       onBriefingChange?.(round);
-      const roundScope = `${briefingId}:${round.selected_round_id}`;
-      const nextDraftScope = `${nextUserId ?? 'memory'}:${roundScope}`;
+      const storageScope = draftStorageScope(briefingId, round);
+      const nextDraftScope = storageScope
+        ? `${nextUserId ?? 'memory'}:${storageScope.briefingId}:${storageScope.roundId}:${storageScope.artifactVersionId}:${storageScope.profile}`
+        : null;
       setDraft((current) => {
         if (draftScope === nextDraftScope) return current;
-        const stored = loadBriefingDraft(storageOrNull(), nextUserId, roundScope, round.items);
+        const stored = storageScope ? loadBriefingDraft(storageOrNull(), nextUserId, storageScope, round.items) : {};
         return Object.keys(stored).length > 0 ? stored : effectiveDraft(round.items);
       });
       setDraftScope(nextDraftScope);
@@ -197,15 +209,18 @@ export function BriefingDocumentRenderer({
   }, [active, reload]);
 
   useEffect(() => {
-    if (!load.round || draftScope !== `${userId ?? 'memory'}:${briefingId}:${load.round.selected_round_id}`) return;
-    saveBriefingDraft(storageOrNull(), userId, `${briefingId}:${load.round.selected_round_id}`, draft);
+    if (!load.round) return;
+    const scope = draftStorageScope(briefingId, load.round);
+    const expected = scope ? `${userId ?? 'memory'}:${scope.briefingId}:${scope.roundId}:${scope.artifactVersionId}:${scope.profile}` : null;
+    if (!scope || draftScope !== expected) return;
+    saveBriefingDraft(storageOrNull(), userId, scope, draft);
   }, [briefingId, draft, draftScope, load.round, userId]);
 
   const round = load.round;
   const setValue = (itemId: string, value: BriefingResponseValue | null) => {
     setDraft((current) => ({ ...current, [itemId]: value }));
     setValidationErrors((current) => {
-      if (!current[itemId]) return current;
+      if (!current[itemId] || !meaningful(value)) return current;
       const next = { ...current };
       delete next[itemId];
       return next;
@@ -261,9 +276,9 @@ export function BriefingDocumentRenderer({
       const first = round.items.find((item) => invalid[item.id]);
       if (first) window.setTimeout(() => {
         const control = document.getElementById(inputId(first));
-        const focusTarget = control instanceof HTMLFieldSetElement
-          ? control.querySelector<HTMLInputElement>('input')
-          : control;
+        const focusTarget = control?.matches('input, textarea, button')
+          ? control as HTMLElement
+          : control?.querySelector<HTMLElement>('input, textarea, button');
         focusTarget?.focus();
       }, 0);
       return;
@@ -322,7 +337,8 @@ export function BriefingDocumentRenderer({
           annotation_event_id: annotation.annotation_event_id,
         })),
       });
-      saveBriefingDraft(storageOrNull(), userId, `${briefingId}:${submittedRoundId}`, {});
+      const submittedScope = draftStorageScope(briefingId, round);
+      if (submittedScope) saveBriefingDraft(storageOrNull(), userId, submittedScope, {});
       if (!mutationIsCurrent()) return;
       const refreshed = await reconcile();
       if (refreshed) setDraft(effectiveDraft(refreshed.items));
@@ -366,9 +382,10 @@ export function BriefingDocumentRenderer({
                 </div>
               ) : null}
               {round.document ? (
-                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={round} canMutate={canMutate && !busy && contentGate === ''} onRefresh={reconcile}
-                  draft={Object.fromEntries(Object.entries(draft).filter(([, value]) => !value || 'verdict' in value)) as Record<string, { verdict: 'keep' | 'dismiss' } | null>}
-                  onDirectiveVerdict={(itemId, verdict) => setValue(itemId, { verdict })}
+                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={round} canMutate={canMutate && !busy && contentGate === ''} draftIdentity={draftScope} onRefresh={reconcile}
+                  draft={draft}
+                  validationErrors={validationErrors}
+                  onDirectiveValue={setValue}
                   onContentGateChange={setContentGate} />
               ) : null}
               <div className="sr-only" role="status" aria-live="polite">{status}</div>
@@ -441,8 +458,12 @@ export function BriefingDocumentRenderer({
             aria-disabled={Boolean(submitReason)}
             aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
             title={submitReason ?? undefined}
-            onClick={(event) => { if (submitReason) { event.preventDefault(); return; } void submit(); }}
-            onKeyDown={(event) => { if (submitReason && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); }}
+            onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
+            onKeyDown={(event) => {
+              if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
+              event.preventDefault();
+              void submit();
+            }}
           >
             {busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}
           </button>
