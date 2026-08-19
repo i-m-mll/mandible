@@ -301,6 +301,15 @@ describe("iab-preview launcher", () => {
       sourceDb: fs.realpathSync.native(fixture.sourceDb),
       artifactRoot: path.join(fs.realpathSync.native(fixture.previewRoot), "rich-briefing-demo-artifacts"),
       briefing: { title: "Release candidate readiness review" },
+      schema: "mandible-rich-briefing-demo@2",
+      semantic_state: {
+        round_one_frozen_answer_count: 6,
+        round_one_frozen_annotation_count: 2,
+        round_two_answers: 0,
+        round_two_annotations: 0,
+        round_two_submission: null,
+        material_revision: true,
+      },
     });
     expect(firstPayload.rounds).toHaveLength(2);
     const dbAfterFirst = fs.readFileSync(fixture.db);
@@ -333,20 +342,22 @@ describe("iab-preview launcher", () => {
     }).toEqual(firstCounts);
     dbAfterSecond.close();
     expect(firstCounts).toEqual({
-      briefings: { n: 1 }, rounds: { n: 2 }, answers: { n: 3 }, annotations: { n: 2 },
+      briefings: { n: 1 }, rounds: { n: 2 }, answers: { n: 6 }, annotations: { n: 2 },
       submissions: { n: 1 }, versions: { n: 2 },
     });
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
 
     const conflicting = new Database(fixture.db);
-    conflicting.prepare("UPDATE briefings SET title = 'conflicting fixture'").run();
+    conflicting.prepare("UPDATE users SET display_name = 'conflicting fixture' WHERE slug = 'briefing-demo-reviewer'").run();
     conflicting.close();
     const beforeConflictCheck = fs.readFileSync(fixture.db);
     const conflictResult = runSeed(fixture);
     expect(conflictResult.status).toBe(1);
     expect(conflictResult.stdout).toContain("partial or conflicting");
     expect(fs.readFileSync(fixture.db)).toEqual(beforeConflictCheck);
+    expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
+    expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
   }, 30_000);
 
   it.each([
@@ -371,12 +382,16 @@ describe("iab-preview launcher", () => {
     })],
   ])("refuses %s before demo seed side effects", (_name, mutate) => {
     const fixture = createSeedFixture();
+    const sourceHash = fileHash(fixture.sourceDb);
+    const sourceInventory = inventory(fixture.sourceRoot);
     fs.writeFileSync(fixture.metadataPath, JSON.stringify(mutate(fixture)), "utf8");
     const before = fs.readFileSync(fixture.db);
     const result = runSeed(fixture);
     expect(result.status).toBe(1);
     expect(fs.readFileSync(fixture.db)).toEqual(before);
     expect(fs.existsSync(path.join(fixture.previewRoot, "rich-briefing-demo-artifacts"))).toBe(false);
+    expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
+    expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
   }, 30_000);
 
   it("refuses missing metadata, current.db drift, targets outside custody, source aliases, and arbitrary --db", () => {
@@ -409,11 +424,16 @@ describe("iab-preview launcher", () => {
     ];
     for (const arrange of cases) {
       const fixture = createSeedFixture();
+      const arrangedArgs = arrange(fixture);
+      const sourceHash = fileHash(fixture.sourceDb);
+      const sourceInventory = inventory(fixture.sourceRoot);
       const before = fs.readFileSync(fixture.db);
-      const result = runSeed(fixture, arrange(fixture));
+      const result = runSeed(fixture, arrangedArgs);
       expect(result.status).toBe(1);
       expect(fs.readFileSync(fixture.db)).toEqual(before);
       expect(fs.existsSync(path.join(fixture.previewRoot, "rich-briefing-demo-artifacts"))).toBe(false);
+      expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
+      expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
     }
   }, 30_000);
 

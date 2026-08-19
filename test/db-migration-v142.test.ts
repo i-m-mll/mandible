@@ -22,9 +22,9 @@ describe("migration v142: artifact-backed Briefing rounds", () => {
   it("keeps fresh baseline and migration head converged without obsolete feedback tables", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(142);
-    expect(CURRENT_SCHEMA_VERSION).toBe(142);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "142" });
+    expect(BASELINE_SCHEMA_VERSION).toBe(143);
+    expect(CURRENT_SCHEMA_VERSION).toBe(143);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "143" });
     expect(BRIEFING_SCHEMA_TABLES.every((table) => db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
     ).get(table))).toBe(true);
@@ -34,7 +34,7 @@ describe("migration v142: artifact-backed Briefing rounds", () => {
     db.close();
   });
 
-  it("reconstructs exact frozen submissions and seals ambiguous legacy history before dropping old schema", () => {
+  it("seals reconstructed frozen submissions into v1 custody before activating v2", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-v142-"));
     const db = new Database(":memory:");
     migrate(db);
@@ -83,8 +83,18 @@ describe("migration v142: artifact-backed Briefing rounds", () => {
     migrate(db);
     expect(db.prepare("SELECT disposition, reason FROM briefing_legacy_audit").get())
       .toMatchObject({ disposition: "sealed_ambiguous", reason: expect.stringContaining("1 exact frozen") });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submission_answers").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submission_answers").get()).toEqual({ n: 0 });
+    const custody = db.prepare(
+      "SELECT disposition, packet_json, packet_digest FROM briefing_legacy_custody",
+    ).get() as { disposition: string; packet_json: string; packet_digest: string };
+    expect(custody.disposition).toBe("sealed_verified");
+    expect(custody.packet_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(custody.packet_json)).toMatchObject({
+      source_profile: "mandible-briefing.v1",
+      row_counts: { submissions: 1, submission_answers: 1, prior_audit: 1 },
+      verification_errors: [],
+    });
     const audit = db.prepare("SELECT provenance_json FROM briefing_legacy_audit").get() as { provenance_json: string };
     expect(JSON.parse(audit.provenance_json)).toMatchObject({ comments: [{ body: "range unknown" }] });
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feedback_collections'").get())

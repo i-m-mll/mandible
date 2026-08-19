@@ -5,6 +5,8 @@ import {
   postBriefingAnnotations,
   type BriefingAnnotation,
   type BriefingAnnotationOperation,
+  type BriefingDirectiveItem,
+  type BriefingResponseValue,
   type BriefingRoundProjection,
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
@@ -15,9 +17,11 @@ export type BriefingDocumentPanelProps = {
   roundId: string;
   round: BriefingRoundProjection;
   canMutate: boolean;
+  draftIdentity?: string | null;
   onRefresh(): Promise<BriefingRoundProjection | null>;
-  draft?: Record<string, { verdict: 'keep' | 'dismiss' } | null>;
-  onDirectiveVerdict?(itemId: string, value: 'keep' | 'dismiss'): void;
+  draft?: Record<string, BriefingResponseValue | null>;
+  validationErrors?: Record<string, string>;
+  onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
   onContentGateChange?(reason: string): void;
 };
 
@@ -68,7 +72,7 @@ async function sha256(value: string): Promise<string> {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, onRefresh, draft = {}, onDirectiveVerdict, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
+export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, draftIdentity = null, onRefresh, draft = {}, validationErrors = {}, onDirectiveValue, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
@@ -79,6 +83,11 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [selectedDirectiveId, setSelectedDirectiveId] = useState<string | null>(null);
+  const [textEdits, setTextEdits] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setTextEdits({});
+  }, [briefingId, roundId, document?.artifact_version_id, draftIdentity]);
 
   useEffect(() => {
     if (!document) return undefined;
@@ -178,6 +187,96 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     ) : null;
   };
 
+  const responseControls = (item: BriefingDirectiveItem, current: BriefingResponseValue | null, promptId: string) => {
+    const type = item.revision.response_type;
+    const controlId = `briefing-directive-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
+    const errorId = `${controlId}-error`;
+    const error = validationErrors[item.id];
+    const describedBy = error ? errorId : undefined;
+    const clear = current ? (
+      <button type="button" className="briefing-directive__clear" aria-describedby={promptId} disabled={!canMutate} onClick={() => {
+        setTextEdits((edits) => ({ ...edits, [item.id]: '' }));
+        onDirectiveValue?.(item.id, null);
+      }}>Clear answer</button>
+    ) : null;
+    let control: JSX.Element | null = null;
+    if (type === 'verdict') {
+      const verdict = current && 'verdict' in current ? current.verdict : null;
+      control = (
+        <div id={controlId} className="briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
+          <button type="button" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></button>
+          <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></button>
+        </div>
+      );
+    } else if (type === 'single_choice' || type === 'multi_choice') {
+      const selected = type === 'single_choice'
+        ? new Set(current && 'option_key' in current ? [current.option_key] : [])
+        : new Set(current && 'option_keys' in current ? current.option_keys : []);
+      control = (
+        <fieldset id={controlId} className="briefing-directive__choices" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
+          <legend className="sr-only">{type === 'single_choice' ? 'Choose one answer' : 'Choose one or more answers'}</legend>
+          {item.revision.options.map((option) => (
+            <label key={option.key}>
+              <input
+                type={type === 'single_choice' ? 'radio' : 'checkbox'}
+                name={type === 'single_choice' ? `${controlId}-choice` : undefined}
+                value={option.key}
+                checked={selected.has(option.key)}
+                disabled={!canMutate}
+                onInput={() => {
+                  if (type === 'single_choice') onDirectiveValue?.(item.id, { option_key: option.key });
+                  else {
+                    const next = new Set(selected);
+                    if (next.has(option.key)) next.delete(option.key); else next.add(option.key);
+                    const optionKeys = item.revision.options.map((candidate) => candidate.key).filter((key) => next.has(key));
+                    onDirectiveValue?.(item.id, optionKeys.length > 0 ? { option_keys: optionKeys } : null);
+                  }
+                }}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </fieldset>
+      );
+    } else if (type === 'short_text' || type === 'long_text') {
+      const text = Object.prototype.hasOwnProperty.call(textEdits, item.id)
+        ? textEdits[item.id]
+        : current && 'text' in current ? current.text : '';
+      const shared = {
+        id: controlId,
+        value: text,
+        maxLength: type === 'short_text' ? 240 : 4000,
+        disabled: !canMutate,
+        'aria-labelledby': promptId,
+        'aria-invalid': Boolean(error),
+        'aria-describedby': describedBy,
+        onInput: (event: Event & { currentTarget: HTMLInputElement | HTMLTextAreaElement }) => {
+          const value = event.currentTarget.value;
+          setTextEdits((edits) => ({ ...edits, [item.id]: value }));
+          onDirectiveValue?.(item.id, value.trim() ? { text: value } : null);
+        },
+      };
+      control = type === 'short_text' ? <input className="briefing-directive__text" type="text" {...shared} /> : <textarea className="briefing-directive__text" rows={4} {...shared} />;
+    } else if (type === 'rating') {
+      const rating = current && 'rating' in current ? current.rating : null;
+      control = (
+        <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
+          <legend className="sr-only">Rating from 1 to 5</legend>
+          {[1, 2, 3, 4, 5].map((value) => (
+            <label key={value}><input type="radio" name={`${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onInput={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
+          ))}
+        </fieldset>
+      );
+    }
+    return (
+      <div className="briefing-directive__response">
+        {control}
+        {clear}
+        {error ? <span id={errorId} className="briefing-directive__error" role="alert" aria-describedby={promptId}>{error}</span> : null}
+      </div>
+    );
+  };
+
   const renderProfileDocument = () => {
     if (source === null || documentIntegrityError) return null;
     const parts: JSX.Element[] = [];
@@ -193,19 +292,20 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         </div>,
       );
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
-      const current = draft[item.id] ?? (item.effective_response?.value && 'verdict' in item.effective_response.value ? item.effective_response.value : null);
+      const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
+      const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
       parts.push(
         <section className={`briefing-directive${current || selectedDirectiveId === item.id ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
           onClick={() => setSelectedDirectiveId(item.id)}
-          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
+          onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
           <div className="briefing-directive__interaction">
             <div className="briefing-directive__passage">
-              <div className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+              <div id={promptId} className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+              {item.revision.required ? <span className="briefing-directive__required" aria-label="Required">Required</span> : null}
               {inlineAnnotations(directive.start_offset, directive.end_offset)}
+              {responseControls(item, current, promptId)}
             </div>
             <div className="briefing-directive__actions" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
-              <button type="button" aria-label="Keep" title="Keep" aria-pressed={current?.verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'keep')}><CheckIcon /></button>
-              <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={current?.verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveVerdict?.(item.id, 'dismiss')}><DismissIcon /></button>
               <button type="button" aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></button>
             </div>
           </div>

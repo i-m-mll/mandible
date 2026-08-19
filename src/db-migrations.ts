@@ -11,8 +11,11 @@ import {
 } from "./db-baseline.js";
 import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
-import { migrateLegacyFeedbackToBriefings } from "./feedback/migrate-legacy.js";
-import { BRIEFING_SCHEMA_SQL, BRIEFING_SCHEMA_TABLES } from "./feedback/schema.js";
+import { migrateLegacyFeedbackToBriefings, retireBriefingV1ToCustody } from "./feedback/migrate-legacy.js";
+import {
+  BRIEFING_SCHEMA_TABLES,
+  TRANSIENT_BRIEFING_V1_SCHEMA_SQL,
+} from "./feedback/schema.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 import { backfillProjectKeys } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
@@ -4733,7 +4736,12 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
   {
     version: 142,
     name: "artifact_backed_briefing_rounds",
-    statements: [...BRIEFING_SCHEMA_SQL],
+    statements: [...TRANSIENT_BRIEFING_V1_SCHEMA_SQL],
+  },
+  {
+    version: 143,
+    name: "typed_briefing_v2_and_v1_custody_retirement",
+    statements: [],
   },
 ];
 
@@ -5114,6 +5122,12 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           }
         }
       }
+      if (migration.version === 143) {
+        retireBriefingV1ToCustody(db);
+        for (const table of BRIEFING_SCHEMA_TABLES) {
+          if (!tableExists(db, table)) throw new Error(`migration 143 verification: ${table} is missing`);
+        }
+      }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
@@ -5149,6 +5163,7 @@ export function migrate(db: Db): void {
   const afterV105 = pending.filter((migration) => migration.version > 105 && migration.version < 126);
   const afterV126 = pending.filter((migration) => migration.version > 126 && migration.version < 142);
   const v142 = pending.filter((migration) => migration.version === 142);
+  const v143 = pending.filter((migration) => migration.version === 143);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -5426,6 +5441,15 @@ export function migrate(db: Db): void {
       [...BRIEFING_SCHEMA_TABLES, "agent_dispatch_events", "space_items"],
       "migration 142 verification",
     );
+  }
+  if (v143.length > 0) {
+    db.pragma("foreign_keys = OFF");
+    try {
+      applySchemaMigrations(db, v143);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 143 verification");
   }
 
   // v133 was exercised by development daemons before release, under its

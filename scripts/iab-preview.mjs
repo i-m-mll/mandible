@@ -627,7 +627,7 @@ function printResult(result, json) {
     return;
   }
 
-  if (result.schema === "mandible-rich-briefing-demo@1") {
+  if (result.schema === "mandible-rich-briefing-demo@2") {
     console.log(`Mandible rich Briefing demo ${result.status}`);
     console.log(`Database: ${result.db}`);
     console.log(`Source database: ${result.sourceDb}`);
