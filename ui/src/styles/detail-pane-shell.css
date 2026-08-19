@@ -173,7 +173,9 @@
 }
 
 .detail-pane-header--compact {
-  padding: 8px 18px;
+  height: var(--app-header-height);
+  min-height: var(--app-header-height);
+  padding: 0 18px;
   border-bottom: 0;
 }
 
@@ -182,7 +184,8 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px 12px;
-  min-height: 32px;
+  height: 100%;
+  min-height: 0;
 }
 
 .detail-pane-header--compact .detail-pane-header__topline {
@@ -300,6 +303,8 @@
 }
 
 .detail-pane-shell--compact .detail-pane-shell__header {
+  height: var(--app-header-height);
+  min-height: var(--app-header-height);
   border-bottom: 1px solid var(--neutral-alpha-06);
   box-shadow: none;
 }
@@ -316,6 +321,7 @@
 .detail-pane-shell--compact
   .detail-pane-shell__header-primary:has(> .detail-pane-header--compact) {
   display: block;
+  height: 100%;
   min-height: 0;
   padding: 0;
 }

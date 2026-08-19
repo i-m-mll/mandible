@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -61,6 +62,29 @@ beforeEach(() => { installStorage(); invalidateApiGetCache(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('artifact-backed Briefing rounds', () => {
+  it('composes the no-selection prompt inside the detail body without round jargon', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/briefings') {
+        return new Response(JSON.stringify({ briefings: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ incidents: [], counts: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={null} /></AppShellProvider>);
+
+    const prompt = await screen.findByText('Select a Briefing.');
+    expect(prompt.classList.contains('briefing-empty--selection')).toBe(true);
+    expect(prompt.textContent).not.toMatch(/latest|immutable|round/i);
+    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
+    expect(css).toMatch(/\.briefing-empty--selection\s*\{[^}]*flex:\s*1;[^}]*align-self:\s*stretch;[^}]*display:\s*grid;[^}]*place-items:\s*center;/s);
+  });
+
   it('normalizes stable logical rows and exact immutable selected-round bindings', () => {
     expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', round_count: 2, created_at: 1, updated_at: 2 }] })[0])
       .toMatchObject({ collectionId: 'briefing-1', latestRoundId: 'round-2', itemCount: 2 });

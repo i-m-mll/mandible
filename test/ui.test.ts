@@ -733,7 +733,7 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
-  it('centers the shared header text group independently while preserving its baseline', () => {
+  it('aligns shared header text to the sidebar column and right-aligns the route', () => {
     stubAppShellFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/briefing');
@@ -745,10 +745,11 @@ describe('app shell', () => {
 
     expect(text?.querySelector(':scope > .app-header__brand')).toBeTruthy();
     expect(text?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
-    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;/s);
-    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*baseline;/s);
+    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);[^}]*align-items:\s*center;/s);
+    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*baseline;[^}]*padding:\s*0 14px;/s);
     expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
     expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
+    expect(css).toMatch(/\.app-header__route\s*\{[^}]*text-align:\s*right;/s);
   });
 
   it('couples the Briefing and Issues header edge to the active persisted sidebar width', async () => {
