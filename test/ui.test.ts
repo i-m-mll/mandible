@@ -28,6 +28,7 @@ import {
 } from '../ui/src/deep-links';
 import {
   __resetAgentPageBindingForTests,
+  adoptAgentSessionBinding,
   getAgentPageBinding,
 } from '../ui/src/agent-page-binding';
 import {
@@ -80,6 +81,8 @@ const reactFlowMockState = vi.hoisted(() => ({
   mountCount: 0,
   unmountCount: 0,
 }));
+
+let restoreTestLocalStorage: (() => void) | null = null;
 
 vi.mock('@xyflow/react', async () => {
   const { Component, h } = await vi.importActual<typeof import('preact')>('preact');
@@ -164,6 +167,8 @@ afterEach(() => {
   invalidateApiGetCache();
   cleanup();
   window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');
+  restoreTestLocalStorage?.();
+  restoreTestLocalStorage = null;
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -225,6 +230,7 @@ function mockLeftChromeRects(
 }
 
 function installMemoryLocalStorage(initial: Record<string, string> = {}): () => void {
+  restoreTestLocalStorage?.();
   const previous = Object.getOwnPropertyDescriptor(window, 'localStorage');
   const store = new Map(Object.entries(initial));
   const storage = {
@@ -239,9 +245,14 @@ function installMemoryLocalStorage(initial: Record<string, string> = {}): () => 
     configurable: true,
     value: storage,
   });
-  return () => {
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
     if (previous) Object.defineProperty(window, 'localStorage', previous);
   };
+  restoreTestLocalStorage = restore;
+  return restore;
 }
 
 function stubFetch(): void {
@@ -366,6 +377,89 @@ function stubAppShellFetch(): void {
       }),
     );
   }));
+}
+
+function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
+  getStored: () => string | undefined;
+  putCalls: ReturnType<typeof vi.fn>;
+} {
+  let stored = initialSetting;
+  const putCalls = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/settings' && init?.method !== 'PUT') {
+      return new Response(JSON.stringify(stored ? { app_rail_order: stored } : {}), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url === '/api/settings/app_rail_order' && init?.method === 'PUT') {
+      putCalls(input, init);
+      if (failPut) return new Response('{}', { status: 500 });
+      stored = (JSON.parse(String(init.body)) as { value: string }).value;
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url === '/api/dashboard/badges') {
+      return new Response(JSON.stringify({ auth: 3, briefing: 2, inbox: 1 }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify([]), {
+      headers: { 'content-type': 'application/json' },
+    });
+  }));
+  return { getStored: () => stored, putCalls };
+}
+
+function railGroupLinks(container: HTMLElement, group: 'primary' | 'secondary'): HTMLAnchorElement[] {
+  return Array.from(container.querySelectorAll<HTMLAnchorElement>(`.app-rail__group[data-rail-group="${group}"] [data-rail-item]`));
+}
+
+function mockRailRects(links: HTMLAnchorElement[]): void {
+  links.forEach((link, index) => {
+    link.getBoundingClientRect = () => ({
+      x: 0,
+      y: index * 40,
+      left: 0,
+      top: index * 40,
+      width: 180,
+      height: 38,
+      right: 180,
+      bottom: index * 40 + 38,
+      toJSON: () => ({}),
+    });
+  });
+}
+
+function fireRailPointer(
+  target: Element,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  init: MouseEventInit & { pointerId: number },
+): void {
+  // jsdom lacks onpointer* element properties, so Preact retains JSX event
+  // casing instead of normalizing to the browser's lowercase event names.
+  const jsdomPreactType = {
+    pointerdown: 'PointerDown',
+    pointermove: 'PointerMove',
+    pointerup: 'PointerUp',
+    pointercancel: 'PointerCancel',
+  }[type];
+  const event = new PointerEvent(jsdomPreactType, { bubbles: true, cancelable: true, ...init });
+  fireEvent(target, event);
+}
+
+function installPointerEventForTest(): void {
+  class TestPointerEvent extends MouseEvent {
+    readonly pointerId: number;
+
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  vi.stubGlobal('PointerEvent', TestPointerEvent);
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: TestPointerEvent });
 }
 
 const previewInstance: InstanceInfo = {
@@ -733,7 +827,192 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
-  it('aligns shared header text to the sidebar column and right-aligns the route', () => {
+  it('hydrates durable rail order from settings while keeping groups and footer fixed', async () => {
+    installMemoryLocalStorage();
+    const stored = JSON.stringify({
+      version: 1,
+      groups: {
+        primary: ['issues', 'console', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox'],
+        secondary: ['logs', 'work', 'graph', 'tasks'],
+      },
+    });
+    stubRailSettingsFetch(stored);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const { container } = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
+
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual([
+      'issues', 'console', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox',
+    ]);
+    expect(railGroupLinks(container, 'secondary').map((link) => link.dataset.railItem)).toEqual([
+      'logs', 'work', 'graph', 'tasks',
+    ]);
+    expect(screen.getByRole('link', { name: 'Settings' }).closest('.app-rail__footer')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Settings' }).hasAttribute('data-rail-item')).toBe(false);
+    expect(screen.getByRole('link', { name: 'Spaces' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: 'Briefing' }).querySelector('.app-rail__badge')?.textContent).toBe('2');
+  });
+
+  it('fails an old settings envelope closed and inserts a returning destination canonically', async () => {
+    installMemoryLocalStorage();
+    __resetAgentPageBindingForTests();
+    const stored = JSON.stringify({
+      version: 0,
+      groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+    });
+    stubRailSettingsFetch(stored);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const { container } = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('work');
+
+    act(() => adoptAgentSessionBinding('returning-session'));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('overview'));
+    expect(railGroupLinks(container, 'primary')[1]?.dataset.railItem).toBe('console');
+    __resetAgentPageBindingForTests();
+  });
+
+  it('keeps click navigation intact below the pointer movement threshold', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const { putCalls } = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+    const chat = await screen.findByRole('link', { name: 'Chat' });
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 3, button: 2, clientX: 10, clientY: 10 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 3, button: 2, clientX: 80, clientY: 80 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 3, button: 2, clientX: 80, clientY: 80 });
+    fireEvent.contextMenu(chat);
+    let modifierClickPrevented = true;
+    document.addEventListener('click', (event) => {
+      modifierClickPrevented = event.defaultPrevented;
+      event.preventDefault();
+    }, { once: true });
+    fireEvent.click(chat, { ctrlKey: true });
+    expect(modifierClickPrevented).toBe(false);
+    expect(window.location.hash).toBe('#/spaces');
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 4, button: 0, clientX: 10, clientY: 10 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 4, clientX: 13, clientY: 12 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 4, clientX: 13, clientY: 12 });
+    fireEvent.click(chat);
+
+    expect(window.location.hash).toBe('#/console');
+    expect(putCalls).not.toHaveBeenCalled();
+  });
+
+  it('pointer-reorders inside one group, suppresses the drag click, and cancels cleanly', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const { putCalls } = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const mounted = render(h(App, {}));
+    const primary = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(primary);
+    const briefing = primary.find((link) => link.dataset.railItem === 'briefing')!;
+    const capture = vi.fn();
+    briefing.setPointerCapture = capture;
+
+    fireRailPointer(briefing, 'pointerdown', { pointerId: 8, button: 0, clientX: 12, clientY: 250 });
+    expect(capture).toHaveBeenCalledWith(8);
+    fireRailPointer(briefing, 'pointermove', { pointerId: 8, clientX: 12, clientY: 1 });
+    expect(briefing.classList.contains('app-rail__item--dragging')).toBe(true);
+    fireRailPointer(briefing, 'pointerup', { pointerId: 8, clientX: 12, clientY: 1 });
+    fireEvent.click(briefing);
+
+    await waitFor(() => expect(putCalls).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary')[0]?.dataset.railItem).toBe('briefing'));
+    expect(window.location.hash).toBe('#/spaces');
+    expect(railGroupLinks(mounted.container, 'secondary').map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks', 'logs']);
+
+    const inbox = railGroupLinks(mounted.container, 'primary').find((link) => link.dataset.railItem === 'inbox')!;
+    mockRailRects(railGroupLinks(mounted.container, 'primary'));
+    fireRailPointer(inbox, 'pointerdown', { pointerId: 9, button: 0, clientX: 12, clientY: 250 });
+    fireRailPointer(inbox, 'pointermove', { pointerId: 9, clientX: 12, clientY: 1 });
+    fireRailPointer(inbox, 'pointercancel', { pointerId: 9 });
+    expect(railGroupLinks(mounted.container, 'primary')[0]?.dataset.railItem).toBe('briefing');
+    expect(putCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it('keyboard reorder retains focus, announces, persists, and hydrates after remount', async () => {
+    installMemoryLocalStorage();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const first = render(h(App, {}));
+    const reorder = await screen.findByRole('button', { name: 'Reorder navigation' });
+    fireEvent.click(reorder);
+    const spaces = await screen.findByRole('link', { name: 'Spaces' });
+    await waitFor(() => expect(document.activeElement).toBe(spaces));
+
+    fireEvent.keyDown(spaces, { key: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
+    expect(document.activeElement).toBe(movedSpaces);
+    expect(screen.getByRole('status').textContent).toContain('Spaces moved to position');
+    fireEvent.keyDown(movedSpaces, { key: 'Enter' });
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Navigation order saved.'));
+    const persistedOrder = railGroupLinks(first.container, 'primary').map((link) => link.dataset.railItem);
+    expect(persistedOrder.indexOf('spaces')).toBeLessThan(persistedOrder.indexOf('artifacts'));
+
+    first.unmount();
+    window.history.replaceState(null, '', '#/spaces');
+    const remounted = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').map((link) => link.dataset.railItem))
+      .toEqual(persistedOrder));
+    expect(settings.getStored()).toContain('"version":1');
+  });
+
+  it('keyboard Escape cancels a preview without mutating settings and restores focused order', async () => {
+    installMemoryLocalStorage();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reorder navigation' }));
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    await waitFor(() => expect(document.activeElement).toBe(spaces));
+    fireEvent.keyDown(spaces, { key: 'ArrowUp' });
+    const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
+    fireEvent.keyDown(movedSpaces, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Navigation reorder cancelled.'));
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(original);
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    expect(settings.putCalls).not.toHaveBeenCalled();
+  });
+
+  it('restores server-authoritative order and announces a failed mutation', async () => {
+    installMemoryLocalStorage();
+    stubRailSettingsFetch(undefined, true);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reorder navigation' }));
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    await waitFor(() => expect(document.activeElement).toBe(spaces));
+    fireEvent.keyDown(spaces, { key: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    fireEvent.keyDown(screen.getByRole('link', { name: 'Spaces' }), { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByRole('status').textContent)
+      .toBe('Navigation order was not saved. The previous order has been restored.'));
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(original);
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+  });
+
+  it('aligns shared header text to the sidebar column and centers the route segment', () => {
     stubAppShellFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/briefing');
@@ -746,10 +1025,10 @@ describe('app shell', () => {
     expect(text?.querySelector(':scope > .app-header__brand')).toBeTruthy();
     expect(text?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
     expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);[^}]*align-items:\s*center;/s);
-    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*baseline;[^}]*padding:\s*0 14px;/s);
+    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto minmax\(0, 1fr\);[^}]*align-items:\s*baseline;[^}]*padding:\s*0 14px;/s);
     expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
     expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
-    expect(css).toMatch(/\.app-header__route\s*\{[^}]*text-align:\s*right;/s);
+    expect(css).toMatch(/\.app-header__route\s*\{[^}]*grid-column:\s*2;[^}]*justify-self:\s*center;[^}]*text-align:\s*center;/s);
   });
 
   it('couples the Briefing and Issues header edge to the active persisted sidebar width', async () => {
