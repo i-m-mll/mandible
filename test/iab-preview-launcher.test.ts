@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 
@@ -62,6 +63,40 @@ function inventory(root: string): string[] {
   return fs.readdirSync(root, { withFileTypes: true })
     .map((entry) => `${entry.isDirectory() ? "d" : entry.isSymbolicLink() ? "l" : "f"}:${entry.name}`)
     .sort();
+}
+
+function byteInventory(root: string): string[] {
+  if (!fs.existsSync(root)) return [];
+  const entries: string[] = [];
+  const visit = (current: string, relative: string) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      const entryRelative = path.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        entries.push(`d:${entryRelative}`);
+        visit(entryPath, entryRelative);
+      } else if (entry.isSymbolicLink()) {
+        entries.push(`l:${entryRelative}:${fs.readlinkSync(entryPath)}`);
+      } else {
+        entries.push(`f:${entryRelative}:${fileHash(entryPath)}`);
+      }
+    }
+  };
+  visit(root, "");
+  return entries.sort();
+}
+
+function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo", details: object) {
+  const source = `
+    const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
+    const result = await launcher[${JSON.stringify(name)}](${JSON.stringify(details)});
+    process.stdout.write(JSON.stringify(result));
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "--eval", source], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: process.env,
+  });
 }
 
 function createSeedFixture() {
@@ -528,6 +563,7 @@ async function createRefreshFixture(options: {
   restartFails?: boolean;
 } = {}) {
   const repo = createRepo();
+  fs.symlinkSync(path.join(process.cwd(), "dist"), path.join(repo, "dist"), "dir");
   git(["checkout", "-b", "integration/test-preview"], repo);
   fs.writeFileSync(path.join(repo, "README.md"), "new head\n", "utf8");
   git(["add", "README.md"], repo);
@@ -540,7 +576,7 @@ async function createRefreshFixture(options: {
   fs.mkdirSync(path.join(previewRoot, "agent-rpc"), { recursive: true });
   const db = path.join(previewRoot, "mandible-20260818-100000.db");
   const sourceDb = path.join(repo, "source.db");
-  fs.writeFileSync(db, "projected database", "utf8");
+  openDb(db).close();
   fs.writeFileSync(sourceDb, "source database", "utf8");
   fs.symlinkSync(db, path.join(previewRoot, "current.db"));
   for (const name of ["stdout.log", "stderr.log", "run.sh", "mandible.pid"]) {
@@ -646,6 +682,121 @@ exit 0
 }
 
 describe("iab-preview launcher", () => {
+  it("materializes the exact retired copied-preview shape before startup preparation completes", async () => {
+    const source = createSeedFixture();
+    installRetiredV1Demo(source, { historicalCompatibleUsers: true });
+    const sourceDb = new Database(source.db);
+    for (const ordinal of [2, 3]) {
+      sourceDb.prepare(
+        `INSERT INTO briefings
+          (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, 0, ?, ?)`,
+      ).run(`unrelated-briefing-${ordinal}`, `demo.unrelated.${ordinal}`, `Unrelated preview Briefing ${ordinal}`, ordinal, ordinal);
+    }
+    expect({
+      briefings: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
+      rounds: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
+      runs: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_runs").get(),
+      occurrences: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_run_occurrences").get(),
+      responses: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_response_events").get(),
+      annotations: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_annotation_events").get(),
+      submissions: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get(),
+      submissionAnswers: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_submission_answers").get(),
+      submissionAnnotations: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_submission_annotations").get(),
+    }).toEqual({
+      briefings: { n: 4 }, rounds: { n: 0 }, runs: { n: 0 }, occurrences: { n: 0 },
+      responses: { n: 0 }, annotations: { n: 0 }, submissions: { n: 0 },
+      submissionAnswers: { n: 0 }, submissionAnnotations: { n: 0 },
+    });
+    sourceDb.pragma("wal_checkpoint(TRUNCATE)");
+    sourceDb.close();
+
+    const sourceHash = fileHash(source.db);
+    const sourceArtifactRoot = path.join(source.previewRoot, "rich-briefing-demo-artifacts");
+    const sourceArtifactInventory = byteInventory(sourceArtifactRoot);
+    const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-projected-"));
+    tempRoots.push(targetRoot);
+    const targetDb = path.join(targetRoot, "mandible-20260819-120000.db");
+
+    const projectionResult = runLauncherExport("createProjectedSnapshot", {
+      sourceDb: source.db,
+      dbCopy: targetDb,
+      worktree: source.worktree,
+    });
+    expect(projectionResult.status, projectionResult.stderr).toBe(0);
+    const projection = JSON.parse(projectionResult.stdout);
+    expect(projection.briefingDemo).toMatchObject({
+      result: "upgraded",
+      schema: "mandible-rich-briefing-demo@2",
+      artifact_root: path.join(fs.realpathSync.native(targetRoot), "rich-briefing-demo-artifacts"),
+      semantic_state: {
+        round_one_frozen_answer_count: 6,
+        round_one_frozen_annotation_count: 2,
+        round_two_answers: 0,
+        round_two_annotations: 0,
+        round_two_submission: null,
+      },
+    });
+    expect(projection.briefingDemo.rounds).toHaveLength(2);
+
+    const projected = new Database(targetDb, { readonly: true });
+    expect(projected.prepare(
+      "SELECT ordinal, profile FROM briefing_rounds WHERE briefing_id = ? ORDER BY ordinal",
+    ).all(projection.briefingDemo.briefing.id)).toEqual([
+      { ordinal: 1, profile: "mandible-briefing.v2" },
+      { ordinal: 2, profile: "mandible-briefing.v2" },
+    ]);
+    expect(projected.prepare("SELECT COUNT(*) AS n FROM briefing_runs WHERE briefing_id = ?")
+      .get(projection.briefingDemo.briefing.id)).toEqual({ n: 2 });
+    projected.close();
+
+    const afterFirst = fs.readFileSync(targetDb);
+    const secondResult = runLauncherExport("materializeProjectedBriefingDemo", {
+      worktree: source.worktree,
+      previewRoot: targetRoot,
+      db: targetDb,
+      sourceDb: source.db,
+    });
+    expect(secondResult.status, secondResult.stderr).toBe(0);
+    const second = JSON.parse(secondResult.stdout);
+    expect(second.result).toBe("already-present");
+    expect(second.briefing).toEqual(projection.briefingDemo.briefing);
+    expect(second.rounds).toEqual(projection.briefingDemo.rounds);
+    expect(fs.readFileSync(targetDb)).toEqual(afterFirst);
+    expect(fileHash(source.db)).toBe(sourceHash);
+    expect(byteInventory(sourceArtifactRoot)).toEqual(sourceArtifactInventory);
+  }, 30_000);
+
+  it("fails closed during copied-preview preparation when retired custody is not verified", async () => {
+    const source = createSeedFixture();
+    const retired = installRetiredV1Demo(source);
+    const sourceDb = new Database(source.db);
+    sourceDb.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
+      .run(retired.briefingId);
+    sourceDb.pragma("wal_checkpoint(TRUNCATE)");
+    sourceDb.close();
+    const sourceHash = fileHash(source.db);
+    const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-rejected-"));
+    tempRoots.push(targetRoot);
+    const targetDb = path.join(targetRoot, "mandible-20260819-120000.db");
+
+    const result = runLauncherExport("createProjectedSnapshot", {
+      sourceDb: source.db,
+      dbCopy: targetDb,
+      worktree: source.worktree,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("partial or conflicting: retired v1 custody integrity");
+    expect(fileHash(source.db)).toBe(sourceHash);
+    expect(fs.existsSync(path.join(targetRoot, "rich-briefing-demo-artifacts"))).toBe(false);
+    const rejectedCopy = new Database(targetDb, { readonly: true });
+    expect(rejectedCopy.prepare("SELECT value FROM settings WHERE key = 'artifact_root'").get())
+      .toEqual({ value: path.join(fs.realpathSync.native(source.previewRoot), "rich-briefing-demo-artifacts") });
+    expect(rejectedCopy.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 0 });
+    expect(rejectedCopy.prepare("SELECT COUNT(*) AS n FROM briefing_runs").get()).toEqual({ n: 0 });
+    rejectedCopy.close();
+  }, 30_000);
+
   it("transactionally replaces the exact migration-143 v1 demo shell and then reseeds as a no-op", () => {
     const fixture = createSeedFixture();
     const retired = installRetiredV1Demo(fixture, { historicalCompatibleUsers: true });
