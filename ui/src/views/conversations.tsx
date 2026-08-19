@@ -27,6 +27,7 @@ import type {
   ConversationParent,
   ConversationSource,
   ConversationSidebarGroup,
+  ConversationSidebarConversation,
   CanonicalProject,
   WorkflowRun,
   WorkflowWorker,
@@ -425,6 +426,11 @@ type ChatEntry = {
   session?: ConsoleSession;
   liveSession?: ConsoleSession | null;
 };
+
+function getCanonicalConversationProjectId(conversation: Conversation): string | null {
+  const projectId = (conversation as Partial<ConversationSidebarConversation>).canonical_project_id;
+  return typeof projectId === 'string' && projectId ? projectId : null;
+}
 type ChatProjectGroup = {
   key: string;
   label: string;
@@ -2706,6 +2712,8 @@ export function ConversationsView({
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
+  const [canonicalProjectsReady, setCanonicalProjectsReady] = useState(false);
+  const [canonicalProjectsLoaded, setCanonicalProjectsLoaded] = useState(false);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -2722,9 +2730,16 @@ export function ConversationsView({
   useEffect(() => {
     let active = true;
     void listCanonicalProjects().then((projects) => {
-      if (active) setCanonicalProjects(projects);
+      if (active) {
+        setCanonicalProjects(projects);
+        setCanonicalProjectsLoaded(true);
+        setCanonicalProjectsReady(true);
+      }
     }).catch(() => {
-      if (active) setCanonicalProjects([]);
+      if (active) {
+        setCanonicalProjects([]);
+        setCanonicalProjectsReady(true);
+      }
     });
     return () => { active = false; };
   }, []);
@@ -2837,32 +2852,64 @@ export function ConversationsView({
     };
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
-  const sidebarRequestParams = useCallback((limit: number) => {
+  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
+
+  useEffect(() => {
+    if (!canonicalProjectsLoaded) return;
+    const registeredSelections = new Set(registeredProjects.map((project) => (
+      `${project.id}\0${project.checkoutId}`
+    )));
+    setChatViewState((current) => {
+      const shownProjects = current.shownProjects.filter((shown) => (
+        registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`)
+      ));
+      return shownProjects.length === current.shownProjects.length
+        ? current
+        : { ...current, shownProjects };
+    });
+  }, [canonicalProjectsLoaded, registeredProjects, setChatViewState]);
+
+  const selectedProjectIds = useMemo(() => {
+    if (!canonicalProjectsReady) return [];
+    if (!canonicalProjectsLoaded) {
+      return [...new Set(chatViewState.shownProjects.map((shown) => shown.projectId))];
+    }
+    const registeredSelections = new Set(registeredProjects.map((project) => (
+      `${project.id}\0${project.checkoutId}`
+    )));
+    return [...new Set(chatViewState.shownProjects
+      .filter((shown) => registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`))
+      .map((shown) => shown.projectId))];
+  }, [canonicalProjectsLoaded, canonicalProjectsReady, chatViewState.shownProjects, registeredProjects]);
+
+  const sidebarRequestParams = useCallback((limit: number, projectIds = selectedProjectIds) => {
     const params: Parameters<typeof getConversationSidebar>[0] = {
       limit,
       sort: sort === 'blocks' ? 'block_count' : 'started_at',
       exclude_subagents: true,
+      project_ids: projectIds,
     };
     if (sourceFilter !== 'all') params.source = sourceFilter;
     if (starredOnly) params.starred = true;
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [hideEmpty, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
-  const fetchConversationGroups = useCallback(async () => {
+  const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
+    if (!canonicalProjectsReady) return;
     const generation = ++fetchGenerationRef.current;
     setLoading(true);
     try {
-      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit));
+      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit, projectIds));
       const reconciled = await Promise.all(result.groups.map(async (initialGroup) => {
         const target = targetsRef.current.get(initialGroup.key) ?? sidebarGroupLimit;
         let group = initialGroup;
         while (group.conversations.length < target && group.next_cursor) {
           const page = await getConversationSidebar({
-            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length)),
+            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length), projectIds),
             group_key: group.key,
             cursor: group.next_cursor,
           });
@@ -2890,7 +2937,7 @@ export function ConversationsView({
     } finally {
       if (generation === fetchGenerationRef.current) setLoading(false);
     }
-  }, [sidebarGroupLimit, sidebarRequestParams]);
+  }, [canonicalProjectsReady, selectedProjectIds, sidebarGroupLimit, sidebarRequestParams]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
@@ -2916,6 +2963,12 @@ export function ConversationsView({
       const data = (
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
+      const rawData = data as ConversationAppendPayload & { updates?: unknown };
+      const membershipFields = ['starred', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
+      const membershipChanged = membershipFields.some((field) => Object.prototype.hasOwnProperty.call(rawData, field))
+        || (Array.isArray(rawData.updates) && rawData.updates.some((field) => (
+          typeof field === 'string' && membershipFields.includes(field)
+        )));
       const groupIndex = data.id
         ? groupsRef.current.findIndex((group) => group.conversations.some((conversation) => conversation.id === data.id))
         : -1;
@@ -2931,10 +2984,14 @@ export function ConversationsView({
       const result = mergeConversationSummaryIntoList(currentGroup.conversations, data);
       if (result.applied) {
         setServerGroups(groupsRef.current.map((group, index) => (
-          index === groupIndex ? { ...group, conversations: result.conversations } : group
+          index === groupIndex
+            ? { ...group, conversations: result.conversations as ConversationSidebarConversation[] }
+            : group
         )));
-        if (sortKeyChanged) scheduleListRefetch();
+        if (sortKeyChanged || membershipChanged) scheduleListRefetch();
       } else if (result.refetch) {
+        scheduleListRefetch();
+      } else if (membershipChanged) {
         scheduleListRefetch();
       }
       // stale summary (neither applied nor refetch): keep the list unchanged.
@@ -2959,6 +3016,7 @@ export function ConversationsView({
 
   // Debounced fetch on filter changes
   useEffect(() => {
+    if (!canonicalProjectsReady) return undefined;
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
       fetchConversationGroups();
@@ -2966,7 +3024,7 @@ export function ConversationsView({
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [fetchConversationGroups]);
+  }, [canonicalProjectsReady, fetchConversationGroups]);
 
   const selectedConversationSummary = selection?.type === 'conversation'
     ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
@@ -3000,68 +3058,59 @@ export function ConversationsView({
     return map;
   }, [liveSessions]);
 
-  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
-
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] | 'project' };
+    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
+    const selectedCheckoutByProject = new Map(chatViewState.shownProjects.flatMap((shown) => {
+      const registered = registeredProjects.find((project) => (
+        project.id === shown.projectId && project.checkoutId === shown.checkoutId
+      ));
+      return registered ? [[shown.projectId, registered] as const] : [];
+    }));
     const groups = displayedConversations.map((group): WorkingGroup => ({
       key: group.key,
-      label: group.kind === 'pinned' ? 'Pinned' : 'Chats',
+      label: group.label,
       total: group.total,
       nextCursor: group.next_cursor,
       kind: group.kind,
       entries: [],
+      exactRoot: group.kind === 'project' && group.project_id
+        ? selectedCheckoutByProject.get(group.project_id)?.root
+        : undefined,
+      canonicalProjectId: group.kind === 'project' ? group.project_id : undefined,
+      canonicalProjectKey: group.kind === 'project' ? group.project_key : undefined,
     }));
     const groupByKey = new Map(groups.map((group) => [group.key, group]));
-    const ensureGroup = (
-      key: string,
-      kind: WorkingGroup['kind'],
-      label: string,
-      canonicalProject?: RegisteredChatProject,
+    const ensureKindGroup = (
+      kind: 'pinned' | 'chats',
+      label: 'Pinned' | 'Chats',
     ): WorkingGroup => {
-      const existing = groupByKey.get(key);
+      const existing = groups.find((group) => group.kind === kind);
       if (existing) return existing;
       const created: WorkingGroup = {
-        key,
+        key: kind,
         kind,
         label,
         total: 0,
         nextCursor: null,
         entries: [],
-        exactRoot: canonicalProject?.root,
-        canonicalProjectId: canonicalProject?.id,
-        canonicalProjectKey: canonicalProject?.key,
       };
       groups.push(created);
-      groupByKey.set(key, created);
+      groupByKey.set(created.key, created);
       return created;
     };
-    const ensureKindGroup = (
-      kind: 'pinned' | 'chats',
-      label: 'Pinned' | 'Chats',
-    ): WorkingGroup => groups.find((group) => group.kind === kind)
-      ?? ensureGroup(kind, kind, label);
-
-    for (const shown of chatViewState.shownProjects) {
-      const registered = registeredProjects.find((project) => (
-        project.id === shown.projectId
-        && project.checkoutId === shown.checkoutId
-      ));
-      if (!registered) continue;
-      ensureGroup(
-        `shown-project:${encodeURIComponent(registered.id)}:${encodeURIComponent(registered.checkoutId)}`,
-        'project',
-        registered.label,
-        registered,
-      );
-    }
 
     for (const sourceGroup of displayedConversations) {
       const source = groupByKey.get(sourceGroup.key)!;
       for (const conversation of sourceGroup.conversations) {
+        const canonicalProjectId = getCanonicalConversationProjectId(conversation);
+        const canonicalProjectGroup = canonicalProjectId && selectedProjectIds.includes(canonicalProjectId)
+          ? groups.find((group) => (
+            group.kind === 'project' && group.canonicalProjectId === canonicalProjectId
+          ))
+          : undefined;
         const target = isConversationPinned(conversation)
           ? ensureKindGroup('pinned', 'Pinned')
-          : source.kind === 'pinned' ? ensureKindGroup('chats', 'Chats') : source;
+          : source.kind === 'pinned' ? canonicalProjectGroup ?? ensureKindGroup('chats', 'Chats') : source;
         if (source.key !== target.key) {
           source.total = Math.max(0, source.total - 1);
           target.total += 1;
@@ -3122,7 +3171,9 @@ export function ConversationsView({
         : sortEntries(group.entries);
     }
     ensureKindGroup('chats', 'Chats');
-    const visibleGroups = groups.filter((group) => group.kind === 'chats' || group.total > 0 || group.entries.length > 0 || Boolean(group.exactRoot));
+    const visibleGroups = groups.filter((group) => (
+      group.kind === 'chats' || group.kind === 'project' || group.total > 0 || group.entries.length > 0
+    ));
     return {
       pinned: visibleGroups.find((group) => group.kind === 'pinned') ?? null,
       projects: visibleGroups
@@ -3130,7 +3181,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, sort]);
+  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, sort]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3359,6 +3410,7 @@ export function ConversationsView({
       registeredProjectSelectionValue(candidate) === projectChooserSelection
     ));
     if (!project) return;
+    const isNewProject = !selectedProjectIds.includes(project.id);
     setChatViewState((current) => {
       const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
       const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
@@ -3372,6 +3424,9 @@ export function ConversationsView({
       };
     });
     setProjectChooserOpen(false);
+    if (isNewProject) {
+      void fetchConversationGroups([...selectedProjectIds, project.id]);
+    }
   };
 
   const renderEntry = (entry: ChatEntry) => (
@@ -3584,7 +3639,9 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
-                    action={{ label: `New chat in ${group.label}`, icon: 'new-chat', onPress: () => openNewSession(group.exactRoot!) }}
+                    action={group.exactRoot
+                      ? { label: `New chat in ${group.label}`, icon: 'new-chat', onPress: () => openNewSession(group.exactRoot) }
+                      : undefined}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
                     loadingMore={loadingMoreKeys.has(group.key)}
