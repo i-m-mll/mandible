@@ -39,6 +39,7 @@ import {
   parseRouteFromHash,
   shortRouteId,
 } from '../ui/src/routing';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import {
   AppShellProvider,
   BottomPanelIcon,
@@ -167,6 +168,7 @@ beforeEach(() => {
 afterEach(() => {
   invalidateApiGetCache();
   cleanup();
+  __resetSharedSseForTests();
   window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');
   restoreTestLocalStorage?.();
   restoreTestLocalStorage = null;
@@ -311,7 +313,8 @@ function stubFetch(): void {
   vi.stubGlobal('fetch', mockFetch);
 }
 
-function stubEventSource(): void {
+function stubEventSource(): { emit: (payload: unknown) => void } {
+  const messageListeners = new Set<(event: MessageEvent) => void>();
   class MockEventSource {
     readyState = 1;
     onerror: (() => void) | null = null;
@@ -319,14 +322,27 @@ function stubEventSource(): void {
 
     constructor(_url: string) {}
 
-    addEventListener(): void {}
-    removeEventListener(): void {}
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (type !== 'message' || typeof listener !== 'function') return;
+      messageListeners.add(listener as (event: MessageEvent) => void);
+    }
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (type !== 'message' || typeof listener !== 'function') return;
+      messageListeners.delete(listener as (event: MessageEvent) => void);
+    }
     close(): void {
       this.readyState = 2;
     }
   }
 
   vi.stubGlobal('EventSource', MockEventSource);
+  __resetSharedSseForTests(MockEventSource as unknown as typeof EventSource);
+  return {
+    emit: (payload) => {
+      const event = new MessageEvent('message', { data: JSON.stringify(payload) });
+      messageListeners.forEach((listener) => listener(event));
+    },
+  };
 }
 
 function stubAppShellFetch(): void {
@@ -382,22 +398,46 @@ function stubAppShellFetch(): void {
 
 function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
   getStored: () => string | undefined;
+  getCalls: ReturnType<typeof vi.fn>;
   putCalls: ReturnType<typeof vi.fn>;
+  setRemote: (value: string | undefined, nextRevision: number) => void;
 } {
+  if (!(window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__) {
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+  }
   let stored = initialSetting;
+  let revision = stored ? 1 : 0;
+  const getCalls = vi.fn();
   const putCalls = vi.fn();
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === '/api/settings' && init?.method !== 'PUT') {
-      return new Response(JSON.stringify(stored ? { app_rail_order: stored } : {}), {
+      return new Response(JSON.stringify({}), {
         headers: { 'content-type': 'application/json' },
       });
     }
-    if (url === '/api/settings/app_rail_order' && init?.method === 'PUT') {
+    if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+      getCalls(input, init);
+      return new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: stored ?? null,
+        revision,
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
       putCalls(input, init);
       if (failPut) return new Response('{}', { status: 500 });
       stored = (JSON.parse(String(init.body)) as { value: string }).value;
-      return new Response(JSON.stringify({ ok: true }), {
+      revision += 1;
+      return new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: stored,
+        revision,
+      }), {
         headers: { 'content-type': 'application/json' },
       });
     }
@@ -410,17 +450,26 @@ function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
       headers: { 'content-type': 'application/json' },
     });
   }));
-  return { getStored: () => stored, putCalls };
+  return {
+    getStored: () => stored,
+    getCalls,
+    putCalls,
+    setRemote: (value, nextRevision) => {
+      stored = value;
+      revision = nextRevision;
+    },
+  };
 }
 
 function railGroupLinks(container: HTMLElement, group: 'primary' | 'secondary'): HTMLAnchorElement[] {
   return Array.from(container.querySelectorAll<HTMLAnchorElement>(`.app-rail__group[data-rail-group="${group}"] [data-rail-item]`));
 }
 
-async function railReorderButtonReady(): Promise<HTMLButtonElement> {
-  const button = await screen.findByRole<HTMLButtonElement>('button', { name: 'Reorder navigation' });
-  await waitFor(() => expect(button.disabled).toBe(false));
-  return button;
+async function railReorderReady(): Promise<void> {
+  const chat = await screen.findByRole('link', { name: 'Chat' });
+  await waitFor(() => expect(chat.getAttribute('aria-keyshortcuts'))
+    .toBe('Control+Shift+ArrowUp Control+Shift+ArrowDown'));
+  await act(async () => Promise.resolve());
 }
 
 function mockRailRects(links: HTMLAnchorElement[]): void {
@@ -864,7 +913,128 @@ describe('app shell', () => {
     expect(screen.getByRole('link', { name: 'Settings' }).closest('.app-rail__footer')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Settings' }).hasAttribute('data-rail-item')).toBe(false);
     expect(screen.getByRole('link', { name: 'Spaces' }).getAttribute('aria-current')).toBe('page');
-    expect(screen.getByRole('link', { name: 'Briefing' }).querySelector('.app-rail__badge')?.textContent).toBe('2');
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Briefing' })
+      .querySelector('.app-rail__badge')?.textContent).toBe('2'));
+  });
+
+  it('refetches a same-user SSE revision and ignores an already-applied echo', async () => {
+    installMemoryLocalStorage();
+    const firstOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+    });
+    const secondOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing', 'console'], secondary: ['graph', 'work'] },
+    });
+    const settings = stubRailSettingsFetch(firstOrder);
+    const events = stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const { container } = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
+    expect(settings.getCalls).toHaveBeenCalledTimes(1);
+
+    settings.setRemote(secondOrder, 2);
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 2 },
+    }));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('briefing'));
+    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('graph');
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 1 },
+    }));
+    await act(async () => Promise.resolve());
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a stale SSE refetch overwrite a newer local mutation', async () => {
+    installMemoryLocalStorage();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    let userGetCount = 0;
+    let resolvePut!: (response: Response) => void;
+    let resolveStaleGet!: (response: Response) => void;
+    const putResponse = new Promise<Response>((resolve) => { resolvePut = resolve; });
+    const staleGetResponse = new Promise<Response>((resolve) => { resolveStaleGet = resolve; });
+    let localValue = '';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+        userGetCount += 1;
+        if (userGetCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            version: 1,
+            key: 'app_rail_order',
+            value: null,
+            revision: 1,
+          }), { headers: { 'content-type': 'application/json' } }));
+        }
+        return staleGetResponse;
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
+        localValue = (JSON.parse(String(init.body)) as { value: string }).value;
+        return putResponse;
+      }
+      if (url === '/api/dashboard/badges') {
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    }));
+    const events = stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    await railReorderReady();
+
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(localValue).toContain('"spaces","artifacts"'));
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 2 },
+    }));
+    await waitFor(() => expect(userGetCount).toBe(2));
+
+    await act(async () => {
+      resolvePut(new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: localValue,
+        revision: 3,
+      }), { headers: { 'content-type': 'application/json' } }));
+      await putResponse;
+    });
+    await act(async () => {
+      resolveStaleGet(new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: JSON.stringify({
+          version: 1,
+          groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+        }),
+        revision: 2,
+      }), { headers: { 'content-type': 'application/json' } }));
+      await staleGetResponse;
+    });
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    const finalOrder = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    expect(finalOrder.indexOf('spaces')).toBeLessThan(finalOrder.indexOf('artifacts'));
   });
 
   it('fails an old settings envelope closed and inserts a returning destination canonically', async () => {
@@ -919,7 +1089,7 @@ describe('app shell', () => {
     expect(putCalls).not.toHaveBeenCalled();
   });
 
-  it('fails reorder closed until durable settings hydrate and globally cancels keyboard mode', async () => {
+  it('removes the reorder toggle and fails closed until authenticated user settings hydrate', async () => {
     const browserCachedOrder = JSON.stringify({
       version: 1,
       groups: { primary: ['briefing', 'console'], secondary: ['logs', 'work'] },
@@ -931,17 +1101,30 @@ describe('app shell', () => {
       }),
     });
     installPointerEventForTest();
-    let resolveSettings!: (response: Response) => void;
-    const settingsResponse = new Promise<Response>((resolve) => {
-      resolveSettings = resolve;
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    let resolveUserSetting!: (response: Response) => void;
+    const userSettingResponse = new Promise<Response>((resolve) => {
+      resolveUserSetting = resolve;
     });
     const putCalls = vi.fn();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === '/api/settings') return settingsResponse;
-      if (url === '/api/settings/app_rail_order' && init?.method === 'PUT') {
+      if (url === '/api/settings') return Promise.resolve(new Response(JSON.stringify({
+        app_rail_order: browserCachedOrder,
+      }), { headers: { 'content-type': 'application/json' } }));
+      if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+        return userSettingResponse;
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
         putCalls(input, init);
-        return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+        return Promise.resolve(new Response(JSON.stringify({
+          version: 1,
+          key: 'app_rail_order',
+          value: (JSON.parse(String(init.body)) as { value: string }).value,
+          revision: 1,
+        }), { headers: { 'content-type': 'application/json' } }));
       }
       if (url === '/api/dashboard/badges') {
         return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 })));
@@ -952,8 +1135,7 @@ describe('app shell', () => {
     window.history.replaceState(null, '', '#/spaces');
     render(h(App, {}));
 
-    const reorder = await screen.findByRole('button', { name: 'Reorder navigation' });
-    expect((reorder as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Reorder navigation' })).toBeNull();
     expect(screen.getAllByRole('link')[0]?.getAttribute('data-rail-item')).toBe('console');
     const chat = screen.getByRole('link', { name: 'Chat' });
     fireRailPointer(chat, 'pointerdown', { pointerId: 12, button: 0, clientX: 10, clientY: 10 });
@@ -962,18 +1144,77 @@ describe('app shell', () => {
     expect(putCalls).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSettings(new Response(JSON.stringify({}), {
+      resolveUserSetting(new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: null,
+        revision: 0,
+      }), {
         headers: { 'content-type': 'application/json' },
       }));
-      await settingsResponse;
+      await userSettingResponse;
     });
-    await waitFor(() => expect((reorder as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(reorder);
-    await waitFor(() => expect(reorder.getAttribute('aria-pressed')).toBe('true'));
-    fireEvent.keyDown(window, { key: 'Escape' });
-    await waitFor(() => expect(reorder.getAttribute('aria-pressed')).toBe('false'));
-    expect(screen.getByRole('status').textContent).toBe('Navigation reorder cancelled.');
+    await railReorderReady();
     expect(putCalls).not.toHaveBeenCalled();
+  });
+
+  it('does not read or mutate user rail settings when capability is unknown', async () => {
+    installMemoryLocalStorage();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(new Response(
+      String(input) === '/api/settings' ? JSON.stringify({}) : JSON.stringify([]),
+      { headers: { 'content-type': 'application/json' } },
+    )));
+    vi.stubGlobal('fetch', fetchMock);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+
+    const spaces = await screen.findByRole('link', { name: 'Spaces' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await act(async () => Promise.resolve());
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/user-settings/'))).toBe(false);
+  });
+
+  it('retains the authoritative fallback and disables reorder when user identity is rejected', async () => {
+    installMemoryLocalStorage();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    const putCalls = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: 'Authentication required',
+          code: 'authentication_required',
+        }), { status: 401, headers: { 'content-type': 'application/json' } }));
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
+        putCalls(input, init);
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({
+          app_rail_order: JSON.stringify({
+            version: 1,
+            groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+          }),
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    }));
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await act(async () => Promise.resolve());
+    expect(putCalls).not.toHaveBeenCalled();
+    expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console');
   });
 
   it('pointer-reorders inside one group, suppresses the drag click, and cancels cleanly', async () => {
@@ -983,7 +1224,7 @@ describe('app shell', () => {
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const mounted = render(h(App, {}));
-    await railReorderButtonReady();
+    await railReorderReady();
     const primary = railGroupLinks(mounted.container, 'primary');
     mockRailRects(primary);
     const briefing = primary.find((link) => link.dataset.railItem === 'briefing')!;
@@ -1026,7 +1267,7 @@ describe('app shell', () => {
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const mounted = render(h(App, {}));
-    await railReorderButtonReady();
+    await railReorderReady();
     const primary = railGroupLinks(mounted.container, 'primary');
     expect(primary[0]?.dataset.railItem).toBe('console');
     mockRailRects(primary);
@@ -1071,7 +1312,7 @@ describe('app shell', () => {
     expect(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY)).toBe(ignoredPreviewOrder);
   });
 
-  it('ignores a malformed preview override and reconciles the server order under explicit reject', async () => {
+  it('ignores a malformed preview override and skips durable settings under explicit reject', async () => {
     installMemoryLocalStorage({
       [APP_RAIL_PREVIEW_ORDER_STORAGE_KEY]: JSON.stringify({
         version: 1,
@@ -1090,8 +1331,9 @@ describe('app shell', () => {
     window.history.replaceState(null, '', '#/spaces');
     const { container } = render(h(App, {}));
 
-    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
-    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('logs');
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('work');
+    expect(settings.getCalls).not.toHaveBeenCalled();
     expect(settings.putCalls).not.toHaveBeenCalled();
   });
 
@@ -1105,7 +1347,7 @@ describe('app shell', () => {
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const mounted = render(h(App, {}));
-    await railReorderButtonReady();
+    await railReorderReady();
     const primary = railGroupLinks(mounted.container, 'primary');
     mockRailRects(primary);
     const chat = primary.find((link) => link.dataset.railItem === 'console')!;
@@ -1138,25 +1380,22 @@ describe('app shell', () => {
       .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
   });
 
-  it('keyboard reorder retains focus, announces, persists, and hydrates after remount', async () => {
+  it('direct keyboard reorder retains focus, announces, persists, and hydrates after remount', async () => {
     installMemoryLocalStorage();
     const settings = stubRailSettingsFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const first = render(h(App, {}));
-    const reorder = await railReorderButtonReady();
-    fireEvent.click(reorder);
+    await railReorderReady();
     const spaces = await screen.findByRole('link', { name: 'Spaces' });
-    await waitFor(() => expect(document.activeElement).toBe(spaces));
+    spaces.focus();
 
-    fireEvent.keyDown(spaces, { key: 'ArrowUp' });
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
     const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
     expect(document.activeElement).toBe(movedSpaces);
     expect(screen.getByRole('status').textContent).toContain('Spaces moved to position');
-    fireEvent.keyDown(movedSpaces, { key: 'Enter' });
-    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Navigation order saved.'));
     const persistedOrder = railGroupLinks(first.container, 'primary').map((link) => link.dataset.railItem);
     expect(persistedOrder.indexOf('spaces')).toBeLessThan(persistedOrder.indexOf('artifacts'));
 
@@ -1168,23 +1407,21 @@ describe('app shell', () => {
     expect(settings.getStored()).toContain('"version":1');
   });
 
-  it('keyboard Escape cancels a preview without mutating settings and restores focused order', async () => {
+  it('does not hijack ordinary arrows or Enter activation and exposes no visual mode gate', async () => {
     installMemoryLocalStorage();
     const settings = stubRailSettingsFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
-    const { container } = render(h(App, {}));
-    const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
-    fireEvent.click(await railReorderButtonReady());
+    render(h(App, {}));
+    await railReorderReady();
     const spaces = screen.getByRole('link', { name: 'Spaces' });
-    await waitFor(() => expect(document.activeElement).toBe(spaces));
+    spaces.focus();
     fireEvent.keyDown(spaces, { key: 'ArrowUp' });
-    const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
-    fireEvent.keyDown(movedSpaces, { key: 'Escape' });
-
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Navigation reorder cancelled.'));
-    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(original);
-    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    expect(settings.putCalls).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /reorder navigation/i })).toBeNull();
+    fireEvent.keyDown(spaces, { key: 'Enter' });
+    fireEvent.click(spaces);
+    await waitFor(() => expect(window.location.hash).toBe('#/spaces'));
     expect(settings.putCalls).not.toHaveBeenCalled();
   });
 
@@ -1194,13 +1431,11 @@ describe('app shell', () => {
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const { container } = render(h(App, {}));
+    await railReorderReady();
     const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
-    fireEvent.click(await railReorderButtonReady());
     const spaces = screen.getByRole('link', { name: 'Spaces' });
-    await waitFor(() => expect(document.activeElement).toBe(spaces));
-    fireEvent.keyDown(spaces, { key: 'ArrowUp' });
-    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
-    fireEvent.keyDown(screen.getByRole('link', { name: 'Spaces' }), { key: 'Enter' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
 
     await waitFor(() => expect(screen.getByRole('status').textContent)
       .toBe('Navigation order was not saved. The previous order has been restored.'));

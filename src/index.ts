@@ -43,6 +43,7 @@ import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerUserSettingsRoutes } from "./routes/user-settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerConversationCustodyRoutes } from "./routes/conversation-custody.js";
@@ -232,6 +233,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
+  registerUserSettingsRoutes(router, db);
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
   registerBackupRoutes(router);
 

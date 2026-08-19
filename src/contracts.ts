@@ -98,6 +98,20 @@ export type SseEvent<TData = unknown> = {
   data: TData;
 };
 
+export const USER_SETTING_KEYS = Object.freeze({
+  appRailOrder: "app_rail_order",
+} as const);
+export type UserSettingKey = (typeof USER_SETTING_KEYS)[keyof typeof USER_SETTING_KEYS];
+
+export const USER_SETTING_EVENTS = Object.freeze({
+  updated: "user-setting:updated",
+} as const);
+export type UserSettingUpdatedEvent = {
+  version: 1;
+  key: UserSettingKey;
+  revision: number;
+};
+
 export type AuthRequestStatus =
   | "pending"
   | "executing"
