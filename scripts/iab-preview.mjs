@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Issue 24f0316 — the ledger database lives under the durable root now.
 // Previews stay in the disposable cache root: they are regenerable copies.
@@ -21,29 +21,35 @@ const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
 
-const command = process.argv[2] === "cleanup"
-  ? "cleanup"
-  : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo" : "preview";
-const args = parseArgs(command === "preview" ? process.argv.slice(2) : process.argv.slice(3), command);
-
-if (args.help) {
-  printUsage(command);
-  process.exit(0);
+if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url))) {
+  await runCli();
 }
 
-try {
-  const result = command === "cleanup"
-    ? await cleanupPreviewCache(args)
-    : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
-  printResult(result, args.json);
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  if (args.json) {
-    console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-  } else {
-    console.error(`iab-preview failed: ${message}`);
+async function runCli() {
+  const command = process.argv[2] === "cleanup"
+    ? "cleanup"
+    : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo" : "preview";
+  const args = parseArgs(command === "preview" ? process.argv.slice(2) : process.argv.slice(3), command);
+
+  if (args.help) {
+    printUsage(command);
+    return;
   }
-  process.exit(1);
+
+  try {
+    const result = command === "cleanup"
+      ? await cleanupPreviewCache(args)
+      : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
+    printResult(result, args.json);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (args.json) {
+      console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+    } else {
+      console.error(`iab-preview failed: ${message}`);
+    }
+    process.exitCode = 1;
+  }
 }
 
 async function main(options) {
@@ -171,7 +177,7 @@ async function main(options) {
   }
 
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
-  const projection = createProjectedSnapshot({ sourceDb, dbCopy, worktree });
+  const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree });
   replaceSymlink(dbCopy, path.join(preview.root, "current.db"));
 
   const stdoutLog = path.join(preview.root, "stdout.log");
@@ -243,6 +249,23 @@ async function seedBriefingDemo(options) {
   const custody = validateBriefingDemoCustody();
   buildServer(custody.worktree);
 
+  const manifest = await materializeProjectedBriefingDemo(custody);
+  return {
+    ...manifest,
+    ok: true,
+    status: manifest.result,
+    branch: custody.branch,
+    worktree: custody.worktree,
+    previewRoot: custody.previewRoot,
+    db: custody.db,
+    sourceDb: custody.sourceDb,
+    artifactRoot: custody.artifactRoot,
+  };
+}
+
+export async function materializeProjectedBriefingDemo(details) {
+  const custody = validateProjectedBriefingDemoCustody(details);
+
   const priorEnv = {};
   const seedEnv = {
     MANDIBLE_DB: custody.db,
@@ -260,29 +283,19 @@ async function seedBriefingDemo(options) {
   let db = null;
   try {
     const cacheBust = `?iab-preview-seed=${Date.now()}`;
-    const [{ openDb }, { seedRichBriefingDemo }] = await Promise.all([
+    const [{ openDb }, { prepareRichBriefingDemoPreviewCopy }] = await Promise.all([
       import(`${pathToFileURL(path.join(custody.worktree, "dist", "db.js")).href}${cacheBust}`),
       import(`${pathToFileURL(path.join(custody.worktree, "dist", "feedback", "rich-briefing-demo.js")).href}${cacheBust}`),
     ]);
     db = openDb(custody.db);
-    const manifest = seedRichBriefingDemo(db, {
+    const manifest = prepareRichBriefingDemoPreviewCopy(db, {
       databasePath: custody.db,
       artifactRoot: custody.artifactRoot,
     });
     db.pragma("wal_checkpoint(TRUNCATE)");
     db.close();
     db = null;
-    return {
-      ...manifest,
-      ok: true,
-      status: manifest.result,
-      branch: custody.branch,
-      worktree: custody.worktree,
-      previewRoot: custody.previewRoot,
-      db: custody.db,
-      sourceDb: custody.sourceDb,
-      artifactRoot: custody.artifactRoot,
-    };
+    return manifest;
   } finally {
     db?.close();
     for (const [key, value] of Object.entries(priorEnv)) {
@@ -290,6 +303,33 @@ async function seedBriefingDemo(options) {
       else process.env[key] = value;
     }
   }
+}
+
+function validateProjectedBriefingDemoCustody(details) {
+  if (!details.worktree || !path.isAbsolute(details.worktree) || !fs.existsSync(details.worktree)) {
+    throw new Error("Refusing demo materialization: worktree is missing or is not an absolute existing path.");
+  }
+  const worktree = canonicalPath(details.worktree);
+  const previewRoot = canonicalFuturePath(details.previewRoot ?? path.dirname(details.db ?? ""));
+  const db = canonicalPath(details.db ?? "");
+  const sourceDb = canonicalPath(details.sourceDb ?? "");
+  const artifactRoot = canonicalFuturePath(details.artifactRoot ?? path.join(previewRoot, "rich-briefing-demo-artifacts"));
+  if (!fs.statSync(worktree).isDirectory()) {
+    throw new Error("Refusing demo materialization: worktree is missing or is not a directory.");
+  }
+  if (!details.db || !path.isAbsolute(details.db) || !fs.existsSync(db) || !fs.statSync(db).isFile() ||
+      !isPathWithin(previewRoot, db)) {
+    throw new Error("Refusing demo materialization: database is missing or outside the private preview root.");
+  }
+  if (!details.sourceDb || !path.isAbsolute(details.sourceDb) || !fs.existsSync(sourceDb) ||
+      !fs.statSync(sourceDb).isFile() || isPathWithin(previewRoot, sourceDb) || sourceDb === db) {
+    throw new Error("Refusing demo materialization: source database is missing, aliases the target, or is inside preview custody.");
+  }
+  if (!isPathWithin(previewRoot, artifactRoot) || artifactRoot === previewRoot ||
+      artifactRoot === canonicalFuturePath(`${details.sourceDb}.artifacts`)) {
+    throw new Error("Refusing demo materialization: artifact custody is not isolated inside the private preview root.");
+  }
+  return { ...details, worktree, previewRoot, db, sourceDb, artifactRoot };
 }
 
 function validateBriefingDemoCustody() {
@@ -750,6 +790,13 @@ async function refreshExistingPreview(existing, details) {
   ensureDependencies(details.worktree);
   run("npm", ["run", "build"], { cwd: details.worktree });
 
+  const briefingDemo = await materializeProjectedBriefingDemo({
+    worktree: details.worktree,
+    previewRoot: preview.root,
+    db: validated.dbCopy,
+    sourceDb: validated.sourceDb,
+  });
+
   writeRunScript(validated.runScript, {
     worktree: details.worktree,
     port: validated.port,
@@ -802,6 +849,7 @@ async function refreshExistingPreview(existing, details) {
     stderrLog: validated.stderrLog,
     runScript: validated.runScript,
     instanceEnv: validated.instanceEnv,
+    briefingDemo,
     restartLifecycle,
     health,
     refreshedAt: new Date().toISOString(),
@@ -1177,7 +1225,7 @@ function ensureDependencies(worktree) {
   run("npm", ["install", "--no-package-lock", "--no-audit", "--no-fund"], { cwd: worktree });
 }
 
-function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
+export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
   const script = path.join(worktree, "scripts", "project-db-snapshot.mjs");
   if (!fs.existsSync(script)) {
     throw new Error(`Projected database extractor does not exist: ${script}`);
@@ -1188,13 +1236,21 @@ function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
     "--output", dbCopy,
     "--json",
   ], { cwd: worktree });
+  let projection;
   try {
-    return JSON.parse(result.stdout);
+    projection = JSON.parse(result.stdout);
   } catch (error) {
     throw new Error(
       `Projected database extractor returned invalid JSON: ${error instanceof Error ? error.message : error}`,
     );
   }
+  const briefingDemo = await materializeProjectedBriefingDemo({
+    worktree,
+    previewRoot: path.dirname(dbCopy),
+    db: dbCopy,
+    sourceDb,
+  });
+  return { ...projection, briefingDemo };
 }
 
 async function startPreviewProcess(details) {

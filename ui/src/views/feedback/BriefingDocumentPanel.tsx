@@ -264,7 +264,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
           <legend className="sr-only">Rating from 1 to 5</legend>
           {[1, 2, 3, 4, 5].map((value) => (
-            <label key={value}><input type="radio" name={`${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onInput={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
+            <label key={value}><input type="radio" name={`${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onChange={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
           ))}
         </fieldset>
       );
