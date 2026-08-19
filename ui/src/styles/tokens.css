@@ -84,6 +84,8 @@
   --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
   --shadow-app-subdivision: -4px 0 10px 0 rgba(0, 0, 0, 0.32);
+  --app-divider: #5A5A5A;
+  --app-divider-emphasis: #5B5B5B;
   --z-app-subdivision: 70;
   --z-anchored-menu: 200;
 
@@ -307,6 +309,8 @@
   --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
   --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
   --shadow-app-subdivision: -4px 0 10px 0 rgba(15, 23, 42, 0.14);
+  --app-divider: #D7D7D8;
+  --app-divider-emphasis: #CFCFD0;
 
   /* Exact Codex app subdivision surfaces. */
   --surface-main: #FFFFFF;

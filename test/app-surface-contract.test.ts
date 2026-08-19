@@ -89,9 +89,23 @@ describe('Codex app subdivision surface contract', () => {
     expect(edge).toContain('bottom: 0');
     expect(edge).toContain('left: var(--app-detail-edge-x)');
     expect(edge).toContain('width: 1px');
+    expect(edge).toContain('background: var(--app-divider)');
     expect(edge).toContain('box-shadow: var(--shadow-app-subdivision)');
+    expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#5A5A5A');
+    expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
+    expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#5B5B5B');
+    expect(tokenValue(tokenBlock('light'), '--app-divider-emphasis')).toBe('#CFCFD0');
     expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(0, 0, 0, 0.32)');
     expect(tokenValue(tokenBlock('light'), '--shadow-app-subdivision')).toBe('-4px 0 10px 0 rgba(15, 23, 42, 0.14)');
+
+    expect(ruleBody(base, '.app-header')).toContain('border-right: none');
+    expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
+    expect(base).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar,\s*\.app-layout--route-work \.work-sidebar\s*\{[^}]*border-right:\s*0;/s);
+    const activeResizeEdge = base.match(/\.app-layout:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\)::after\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(activeResizeEdge).toContain('background: var(--app-divider-emphasis)');
+    expect(activeResizeEdge).not.toMatch(/(?:width|box-shadow|border)\s*:/);
+    expect(base.match(/background:\s*var\(--app-divider\);/g)).toHaveLength(1);
+    expect(base).not.toContain('border-right: 1px solid var(--app-divider)');
 
     for (const selector of ['.app-rail', '.app-bottom-panel', '.view-sidebar', '.detail-pane-shell__header', '.detail-pane-shell__body', '.detail-pane-shell__footer', '.briefing-detail__footer', '.composer-host']) {
       const shadow = ruleBody(stylesheet, selector).match(/box-shadow:\s*([^;]+)/)?.[1]?.trim();
