@@ -17,7 +17,7 @@
   overflow: hidden;
 }
 
-/* Bare "+" create icon — NO border, NO background container. */
+/* Stable geometry shared by persistent top-level and contextual project create actions. */
 .spaces-tree__create {
   display: inline-flex;
   align-items: center;
@@ -25,35 +25,33 @@
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
+}
+
+.spaces-tree__create-slot {
+  display: inline-flex;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+}
+
+.spaces-tree__create--top-level {
   padding: 0;
   border: none;
+  border-radius: 4px;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
 }
 
-.spaces-tree__create:hover {
+.spaces-tree__create--top-level:hover {
   color: var(--text-primary);
   background: var(--neutral-alpha-06);
 }
 
-.spaces-tree__create:focus-visible {
+.spaces-tree__create--top-level:focus-visible {
   opacity: 1;
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
-}
-
-.spaces-tree__group-header .spaces-tree__create {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.spaces-tree__group-header:hover .spaces-tree__create,
-.spaces-tree__group-header:focus-within .spaces-tree__create {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 /* The single scroll owner is `.view-sidebar__body`; this wrapper must NOT also

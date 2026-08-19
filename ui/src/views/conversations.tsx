@@ -55,6 +55,7 @@ import {
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
+import { ContextualAction } from '../components/shared/ContextualAction';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -556,43 +557,44 @@ function CopyButton({ content }: { content: string }): JSX.Element {
   };
 
   return (
-    <button
-      type="button"
-      className="block-copy-btn"
-      onClick={handleCopy}
-      title="Copy raw markdown"
-      aria-label={copied ? 'Copied' : 'Copy raw markdown'}
-    >
-      {copied ? (
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M3 8.5 6.2 11.6 13 4.8"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <rect
-            x="5.5"
-            y="4.5"
-            width="7"
-            height="8"
-            rx="1.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.2"
-          />
-          <path
-            d="M3.5 9.5h-1V3.5A1.5 1.5 0 0 1 4 2h6v1.2H4.7a1.2 1.2 0 0 0-1.2 1.2Z"
-            fill="currentColor"
-          />
-        </svg>
-      )}
-    </button>
+    <span className="block-copy-action contextual-action-group">
+      <ContextualAction
+        className="block-copy-btn"
+        onClick={handleCopy}
+        title="Copy raw markdown"
+        aria-label={copied ? 'Copied' : 'Copy raw markdown'}
+      >
+        {copied ? (
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M3 8.5 6.2 11.6 13 4.8"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect
+              x="5.5"
+              y="4.5"
+              width="7"
+              height="8"
+              rx="1.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            />
+            <path
+              d="M3.5 9.5h-1V3.5A1.5 1.5 0 0 1 4 2h6v1.2H4.7a1.2 1.2 0 0 0-1.2 1.2Z"
+              fill="currentColor"
+            />
+          </svg>
+        )}
+      </ContextualAction>
+    </span>
   );
 }
 
@@ -707,7 +709,7 @@ function BlockRenderer({
   return (
     <div className={`${typeClass} contextual-action-owner`} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
       {showHeader && (
-        <div className="block-header">
+        <div className="block-header contextual-action-scope">
           <div className="block-header__left">
             <input
               type="checkbox"
@@ -730,7 +732,7 @@ function BlockRenderer({
             )}
             {headerLabel && <span className="block-label">{headerLabel}</span>}
           </div>
-          <div className="block-header__right">
+          <div className="block-header__right contextual-action-scope">
             <CopyButton content={block.content} />
             <span
               className="block-timestamp"
@@ -748,7 +750,7 @@ function BlockRenderer({
       )}
       {/* User message: checkbox + copy + timestamp inline above content */}
       {!showHeader && (
-        <div className="block-header block-header--user">
+        <div className="block-header block-header--user contextual-action-scope">
           <div className="block-header__left">
             <input
               type="checkbox"
@@ -758,7 +760,7 @@ function BlockRenderer({
               className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
             />
           </div>
-          <div className="block-header__right">
+          <div className="block-header__right contextual-action-scope">
             <CopyButton content={block.content} />
             <span
               className="block-timestamp"

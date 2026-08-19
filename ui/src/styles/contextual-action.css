@@ -7,6 +7,7 @@
 
 .contextual-action-owner:is(:hover, :focus-within) > .contextual-action-group,
 .contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-group,
+.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-scope > .contextual-action-group,
 .contextual-action-group:focus-within,
 .contextual-action-group--persistent {
   opacity: 1;

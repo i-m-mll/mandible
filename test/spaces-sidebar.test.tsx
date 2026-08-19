@@ -24,6 +24,7 @@ import { SpacesSidebar } from '../ui/src/views/spaces/SpacesSidebar';
 import type { Space, SpaceGroup } from '../ui/src/api';
 
 const spacesSidebarStylesheet = readFileSync('ui/src/views/spaces/SpacesSidebar.css', 'utf8');
+const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 
 function makeSpace(
   id: string,
@@ -232,16 +233,18 @@ describe('SpacesSidebar create flow', () => {
 
     const projectCreate = screen.getByTestId('create-in-proj-a');
     expect(projectCreate.getAttribute('aria-label')).toBe('Create space in Alpha');
+    expect(projectCreate.classList.contains('contextual-action')).toBe(true);
+    expect(projectCreate.parentElement?.classList.contains('contextual-action-group')).toBe(true);
+    expect(projectCreate.closest('.spaces-tree__group-header')?.classList.contains('contextual-action-owner')).toBe(true);
 
     const topLevelCreate = screen.getByTestId('create-top-level');
     expect(topLevelCreate.getAttribute('aria-label')).toBe('Create top-level space');
+    expect(topLevelCreate.classList.contains('contextual-action')).toBe(false);
 
-    expect(spacesSidebarStylesheet).toMatch(
-      /\.spaces-tree__group-header\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s,
-    );
-    expect(spacesSidebarStylesheet).toMatch(
-      /\.spaces-tree__group-header:hover\s+\.spaces-tree__create,\s*\.spaces-tree__group-header:focus-within\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s,
-    );
+    expect(spacesSidebarStylesheet).toMatch(/\.spaces-tree__create-slot\s*\{[^}]*flex:\s*0 0 22px;[^}]*width:\s*22px;[^}]*height:\s*22px;/s);
+    expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__group-header[^}]*spaces-tree__create[^}]*opacity/);
+    expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__create--project:(?:hover|focus-visible)[^{]*\{[^}]*background/);
+    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*\{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
     expect(spacesSidebarStylesheet).not.toMatch(
       /\.spaces-tree__header\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*0;/s,
     );
