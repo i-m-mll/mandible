@@ -138,7 +138,6 @@ import {
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
-import './components/shared/PreviewDisabledNotice.css';
 import './components/spaces/AddToSpace.css';
 import './views/filters/issue-predicate-filter.css';
 import './views/spaces/DocumentBlockEditor.css';
@@ -961,12 +960,16 @@ function App(): JSX.Element {
 
   const refreshTypography = useCallback(async (): Promise<void> => {
     if (instanceInfo?.operational_mutations !== 'allow') return;
-    const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
-    setTypography((current) => {
-      const reconciled = reconcileTypographySettings(current, typographyRevisionRef.current, snapshots);
-      typographyRevisionRef.current = reconciled.revisions;
-      return reconciled.settings;
-    });
+    try {
+      const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
+      setTypography((current) => {
+        const reconciled = reconcileTypographySettings(current, typographyRevisionRef.current, snapshots);
+        typographyRevisionRef.current = reconciled.revisions;
+        return reconciled.settings;
+      });
+    } catch {
+      // Keep the current/default typography when authenticated settings are unavailable.
+    }
   }, [instanceInfo?.operational_mutations]);
 
   useEffect(() => {

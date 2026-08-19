@@ -1460,10 +1460,10 @@ describe('app shell', () => {
     expect(text?.querySelector(':scope > .app-header__brand')).toBeTruthy();
     expect(text?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
     expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);[^}]*align-items:\s*center;/s);
-    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto minmax\(0, 1fr\);[^}]*align-items:\s*baseline;[^}]*padding:\s*0 14px;/s);
+    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);[^}]*align-items:\s*baseline;[^}]*padding-left:\s*14px;/s);
     expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
     expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
-    expect(css).toMatch(/\.app-header__route\s*\{[^}]*grid-column:\s*2;[^}]*justify-self:\s*center;[^}]*text-align:\s*center;/s);
+    expect(css).toMatch(/\.app-header__route\s*\{[^}]*grid-column:\s*2;[^}]*justify-self:\s*stretch;[^}]*text-align:\s*center;/s);
   });
 
   it('couples the Briefing and Issues header edge to the active persisted sidebar width', async () => {
@@ -2037,7 +2037,7 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = await screen.findByTestId('preview-disabled-notice');
+    const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
     expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });

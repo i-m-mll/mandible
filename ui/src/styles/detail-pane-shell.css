@@ -13,6 +13,7 @@
 .detail-pane-shell__header,
 .detail-pane-shell__header-primary,
 .detail-pane-shell__subheader,
+.detail-pane-shell__notice,
 .detail-pane-shell__body,
 .detail-pane-shell__footer,
 .detail-pane-header {
@@ -53,6 +54,12 @@
 .detail-pane-shell__body :where(.rendered-markdown, .spec-panel, .briefing-document__prose) {
   font-family: var(--detail-content-family);
   font-size: var(--detail-content-size);
+}
+
+.detail-pane-shell__notice {
+  flex: none;
+  width: 100%;
+  min-width: 0;
 }
 
 .detail-pane-shell__footer {

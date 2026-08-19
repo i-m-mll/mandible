@@ -12,8 +12,8 @@ import { EntityPill } from '../components/shared/EntityPill';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
-import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
@@ -2584,16 +2584,16 @@ export function AuthQueueView({
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
   const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
   const previewNotice = instanceMutationBlocked ? (
-    <PreviewDisabledNotice
+    <DetailPaneNotice
+      severity="warning"
       title={`${instanceLabel} instance`}
-      className="preview-disabled-notice--edge-to-edge"
     >
       <>
         Auth actions are disabled for this copied preview queue
         {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
         {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
       </>
-    </PreviewDisabledNotice>
+    </DetailPaneNotice>
   ) : null;
 
   const showToast = useCallback((message: string) => {
@@ -3572,7 +3572,7 @@ export function AuthQueueView({
 
       {/* RIGHT detail panel */}
       <div
-        className={`auth-detail${previewNotice ? ' auth-detail--with-preview-notice' : ''}`}
+        className="auth-detail"
         style={{ position: 'relative' }}
       >
         {previewNotice}

@@ -26,7 +26,7 @@ import {
   type SpaceFactPacket,
   type SpaceRenderer,
 } from '../../api';
-import { PreviewDisabledNotice } from '../../components/shared/PreviewDisabledNotice';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
@@ -285,9 +285,9 @@ export function SpacesViewShell({
       />
       <div className="spaces-shell__main">
         {spaceId && previewMutationsBlocked ? (
-          <PreviewDisabledNotice title={`${instance?.role ?? 'preview'} instance`}>
+          <DetailPaneNotice severity="warning" title={`${instance?.role ?? 'preview'} instance`}>
             Saving disabled in copied preview instance.
-          </PreviewDisabledNotice>
+          </DetailPaneNotice>
         ) : null}
         <header className="spaces-shell__header">
           {spaceId ? (

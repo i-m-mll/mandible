@@ -87,15 +87,6 @@
      padding interferes with FitAddon size calculations causing squashed text */
 }
 
-.terminal-pane__inbox-banner {
-  background: rgba(245,194,92,0.08);
-  border-bottom: 1px solid rgba(245,194,92,0.2);
-  color: var(--accent-yellow);
-  font-size: 12px;
-  padding: 6px 16px;
-  flex-shrink: 0;
-}
-
 .terminal-pane__reconnect-overlay {
   position: absolute;
   inset: 0;

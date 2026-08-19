@@ -44,7 +44,7 @@
   overflow: hidden;
 }
 
-.timeline-canvas--with-banner {
+.timeline-canvas--with-notice {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -261,16 +261,6 @@
   color: var(--text-primary);
   font-size: 11px;
   text-transform: uppercase;
-}
-
-.timeline-sync-banner {
-  min-height: 34px;
-  padding: 8px 16px;
-  color: var(--accent-yellow);
-  background: rgba(245, 194, 92, 0.1);
-  border-bottom: 1px solid rgba(245, 194, 92, 0.18);
-  box-shadow: none;
-  font-size: 12px;
 }
 
 .timeline-grid {

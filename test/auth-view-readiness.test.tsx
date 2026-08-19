@@ -145,7 +145,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     renderView(true, onApprove, previewInstance);
 
     const warningLabel = screen.getByText('preview instance');
-    const warning = warningLabel.closest('.preview-disabled-notice');
+    const warning = warningLabel.closest('.detail-pane-notice');
     const detail = warning?.parentElement;
     const requestPane = document.querySelector('.auth-detail-pane');
     const requestHeader = document.querySelector('.auth-detail__header');
@@ -154,9 +154,9 @@ describe('AuthQueueView daemon readiness gate', () => {
     const canonicalHeader = canonicalHeaders?.[0] as HTMLElement | undefined;
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(warning).toBeTruthy();
-    expect(warning?.getAttribute('data-testid')).toBe('preview-disabled-notice');
-    expect(warning?.classList.contains('preview-disabled-notice--edge-to-edge')).toBe(true);
-    expect(detail?.classList.contains('auth-detail--with-preview-notice')).toBe(true);
+    expect(warning?.getAttribute('data-severity')).toBe('warning');
+    expect(warning?.classList.contains('detail-pane-notice')).toBe(true);
+    expect(detail?.classList.contains('auth-detail')).toBe(true);
     expect(detail?.firstElementChild).toBe(warning);
     expect(warning?.nextElementSibling).toBe(requestPane);
     expect(requestPane?.classList.contains('detail-pane-shell')).toBe(true);
@@ -183,11 +183,11 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onApprove = vi.fn();
     renderView(true, onApprove, previewInstance, undefined, null);
 
-    const warning = screen.getByTestId('preview-disabled-notice');
+    const warning = screen.getByText(/Auth actions are disabled for this copied preview queue/).closest('.detail-pane-notice')!;
     const detail = warning.parentElement;
     const empty = screen.getByText('Select a request to view details').closest('.auth-detail__empty');
     expect(detail?.classList.contains('auth-detail')).toBe(true);
-    expect(warning.classList.contains('preview-disabled-notice--edge-to-edge')).toBe(true);
+    expect(warning.getAttribute('data-severity')).toBe('warning');
     expect(detail?.firstElementChild).toBe(warning);
     expect(warning.nextElementSibling).toBe(empty);
     expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();

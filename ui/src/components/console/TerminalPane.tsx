@@ -12,6 +12,7 @@ import { useTerminalView } from './useTerminalView';
 import { usePermissionQueue } from './usePermissionQueue';
 import { TerminalPaneHeader } from './TerminalPaneHeader';
 import { TerminalDebugOverlay } from './TerminalDebugOverlay';
+import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 import {
   cancelConsolePrompt,
   getPresetUnion,
@@ -436,11 +437,10 @@ export function TerminalPane({
         onSidebarToggle={() => setSidebarOpen((prev) => !prev)}
       />
 
-      {/* inbox_only mode: yellow banner */}
       {interactionMode === 'inbox_only' && (
-        <div className="terminal-pane__inbox-banner">
+        <DetailPaneNotice severity="warning" density="compact">
           Operator receives inbox items. Direct input is disabled.
-        </div>
+        </DetailPaneNotice>
       )}
 
       {/* Body: everything below the header. Reconnect overlay is scoped here,
