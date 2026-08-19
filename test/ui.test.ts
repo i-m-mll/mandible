@@ -14,6 +14,7 @@ import {
   MAX_AUTH_OUTPUT_CHARS,
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
+import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
   invalidateApiGetCache,
@@ -476,6 +477,11 @@ const previewInstance: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
   source_db_path: '/tmp/mandible-main.db',
   source_db_path_source: 'env',
+};
+
+const writablePreviewInstance: InstanceInfo = {
+  ...previewInstance,
+  operational_mutations: 'allow',
 };
 
 describe('App routing', () => {
@@ -1007,14 +1013,22 @@ describe('app shell', () => {
   });
 
   it('keeps repeated pointer frames over one captured target from undoing the drop', async () => {
-    installMemoryLocalStorage();
+    const ignoredPreviewOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing', 'console'], secondary: ['logs', 'work'] },
+    });
+    installMemoryLocalStorage({ [APP_RAIL_PREVIEW_ORDER_STORAGE_KEY]: ignoredPreviewOrder });
     installPointerEventForTest();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
     const settings = stubRailSettingsFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const mounted = render(h(App, {}));
     await railReorderButtonReady();
     const primary = railGroupLinks(mounted.container, 'primary');
+    expect(primary[0]?.dataset.railItem).toBe('console');
     mockRailRects(primary);
     const chat = primary.find((link) => link.dataset.railItem === 'console')!;
 
@@ -1054,6 +1068,74 @@ describe('app shell', () => {
     expect(railGroupLinks(remounted.container, 'secondary').slice(0, 2)
       .map((link) => link.dataset.railItem)).toEqual(['graph', 'work']);
     expect(settings.getStored()).toContain('"primary":["timeline","console"');
+    expect(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY)).toBe(ignoredPreviewOrder);
+  });
+
+  it('ignores a malformed preview override and reconciles the server order under explicit reject', async () => {
+    installMemoryLocalStorage({
+      [APP_RAIL_PREVIEW_ORDER_STORAGE_KEY]: JSON.stringify({
+        version: 1,
+        groups: { primary: 'issues', secondary: [] },
+      }),
+    });
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: previewInstance,
+    };
+    const serverOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+    });
+    const settings = stubRailSettingsFetch(serverOrder);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
+    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('logs');
+    expect(settings.putCalls).not.toHaveBeenCalled();
+  });
+
+  it('persists physical pointer reorder locally only for an explicit reject preview', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: previewInstance,
+    };
+    const settings = stubRailSettingsFetch(undefined, true);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const mounted = render(h(App, {}));
+    await railReorderButtonReady();
+    const primary = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(primary);
+    const chat = primary.find((link) => link.dataset.railItem === 'console')!;
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 20, button: 0, clientX: 12, clientY: 1 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 20, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 20, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 20, clientX: 12, clientY: 45 });
+
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
+    expect(settings.putCalls).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY) ?? '{}')).toEqual({
+      version: 1,
+      groups: {
+        primary: ['timeline', 'console', 'auth', 'issues', 'artifacts', 'spaces', 'briefing', 'inbox'],
+        secondary: ['work', 'graph', 'tasks', 'logs'],
+      },
+    });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/auth'));
+    expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']);
+
+    mounted.unmount();
+    window.history.replaceState(null, '', '#/spaces');
+    const remounted = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
   });
 
   it('keyboard reorder retains focus, announces, persists, and hydrates after remount', async () => {
@@ -1108,7 +1190,7 @@ describe('app shell', () => {
 
   it('restores server-authoritative order and announces a failed mutation', async () => {
     installMemoryLocalStorage();
-    stubRailSettingsFetch(undefined, true);
+    const settings = stubRailSettingsFetch(undefined, true);
     stubEventSource();
     window.history.replaceState(null, '', '#/spaces');
     const { container } = render(h(App, {}));
@@ -1124,6 +1206,8 @@ describe('app shell', () => {
       .toBe('Navigation order was not saved. The previous order has been restored.'));
     expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(original);
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    expect(settings.putCalls).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY)).toBeNull();
   });
 
   it('aligns shared header text to the sidebar column and centers the route segment', () => {

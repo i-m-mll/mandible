@@ -114,8 +114,10 @@ import {
   DEFAULT_APP_RAIL_ORDER,
   moveAppRailItem,
   parseAppRailOrderSetting,
+  readAppRailPreviewOrder,
   reconcileAppRailOrder,
   serializeAppRailOrderSetting,
+  writeAppRailPreviewOrder,
   type AppRailGroup,
   type AppRailOrderPreference,
 } from './app-rail-order';
@@ -557,6 +559,14 @@ function App(): JSX.Element {
   const [pendingRailOrder, setPendingRailOrder] = useState<AppRailPreviewOrder | null>(null);
   const [railOrderReady, setRailOrderReady] = useState(false);
   const [railOrderSetting, setRailOrderSetting] = useState<string | undefined>(undefined);
+  const [previewRailOrder, setPreviewRailOrder] = useState<AppRailOrderPreference | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return readAppRailPreviewOrder(window.localStorage);
+    } catch {
+      return null;
+    }
+  });
   const railMutationRef = useRef(0);
   const [railAnnouncement, setRailAnnouncement] = useState('');
   const railNavRef = useRef<HTMLElement | null>(null);
@@ -1895,7 +1905,10 @@ function App(): JSX.Element {
     },
   ];
 
-  const railOrderPreference = parseAppRailOrderSetting(railOrderSetting);
+  const previewMutationsRejected = instanceInfo?.operational_mutations === 'reject';
+  const railOrderPreference = previewMutationsRejected && previewRailOrder
+    ? previewRailOrder
+    : parseAppRailOrderSetting(railOrderSetting);
 
   const canonicalRailItems: Record<AppRailGroup, NavItem[]> = {
     primary: primaryNavItems,
@@ -1945,6 +1958,25 @@ function App(): JSX.Element {
     const mutation = railMutationRef.current + 1;
     railMutationRef.current = mutation;
     setPendingRailOrder(order);
+    if (previewMutationsRejected) {
+      let stored = false;
+      try {
+        stored = writeAppRailPreviewOrder(window.localStorage, preference);
+      } catch {
+        stored = false;
+      }
+      if (railMutationRef.current !== mutation) return;
+      setPendingRailOrder(null);
+      if (!stored) {
+        setRailAnnouncement('Navigation order was not saved. The previous order has been restored.');
+        if (focusItemId) focusRailItem(focusItemId);
+        return;
+      }
+      setPreviewRailOrder(preference);
+      setRailAnnouncement(successMessage);
+      if (focusItemId) focusRailItem(focusItemId);
+      return;
+    }
     try {
       await updateSetting(APP_RAIL_ORDER_SETTING_KEY, value);
       if (railMutationRef.current !== mutation) return;
