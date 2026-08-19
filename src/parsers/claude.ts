@@ -45,6 +45,7 @@ interface ClaudeRecord {
   uuid: string;
   parentUuid?: string;
   type: string;
+  aiTitle?: string;
   customTitle?: string;
   message?: ClaudeMessage;
   timestamp?: string;
@@ -186,12 +187,17 @@ export class ClaudeParser implements ConversationParser {
     let model: string | null = null;
     let startedAt = "";
     let endedAt: string | null = null;
-    let providerTitle = "";
+    let generatedProviderTitle = "";
+    let customProviderTitle = "";
 
     for (const rec of records) {
+      if (rec.type === "ai-title" && typeof rec.aiTitle === "string") {
+        const candidate = rec.aiTitle.trim();
+        if (candidate) generatedProviderTitle = candidate;
+      }
       if (rec.type === "custom-title" && typeof rec.customTitle === "string") {
         const candidate = rec.customTitle.trim();
-        if (candidate) providerTitle = candidate;
+        if (candidate) customProviderTitle = candidate;
       }
       if (rec.type === "file-history-snapshot" || rec.isSnapshotUpdate) continue;
       if (!sessionId && rec.sessionId) sessionId = rec.sessionId;
@@ -222,9 +228,16 @@ export class ClaudeParser implements ConversationParser {
       projectPath = indexEntry.projectPath || null;
     }
 
-    // Claude Code owns conversation titles. `/rename` appends custom-title
-    // records to the transcript; the latest non-empty value outranks the
-    // generated sessions-index summary/firstPrompt and prompt fallback.
+    // Claude Code owns conversation titles. Explicit `/rename` custom-title
+    // records outrank Claude's generated ai-title records, which in turn
+    // outrank the generated sessions-index summary/firstPrompt and prompt
+    // fallback. Keeping both provider record types above prompt fallback is
+    // important for continued sessions whose first user record is a synthetic
+    // context-transfer preamble rather than a useful title.
+    const providerTitle = customProviderTitle || generatedProviderTitle;
+    const providerTitleSource = customProviderTitle
+      ? "custom-title" as const
+      : generatedProviderTitle ? "ai-title" as const : undefined;
     if (providerTitle) {
       title = providerTitle;
     }
@@ -471,6 +484,7 @@ export class ClaudeParser implements ConversationParser {
       },
       blocks,
       ...(providerTitle ? { providerTitle: title } : {}),
+      ...(providerTitleSource ? { providerTitleSource } : {}),
     };
   }
 }

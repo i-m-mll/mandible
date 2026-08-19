@@ -12,7 +12,6 @@
 
 .chat-history-sidebar {
   border-right: 1px solid var(--neutral-alpha-06);
-  background: var(--bg-secondary);
   display: flex;
   flex-direction: column;
   overflow: hidden;

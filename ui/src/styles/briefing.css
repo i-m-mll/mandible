@@ -29,7 +29,6 @@
 
 .feedback-collections-sidebar {
   border-right: 1px solid var(--neutral-alpha-06);
-  background: var(--bg-secondary);
 }
 
 .feedback-collections-sidebar .view-sidebar__body {
@@ -308,7 +307,6 @@
   justify-content: flex-end;
   padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--border-faint);
-  background: var(--surface-panel);
 }
 
 .briefing-detail__footer .briefing-primary {

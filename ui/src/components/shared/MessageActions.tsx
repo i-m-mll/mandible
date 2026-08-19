@@ -1,7 +1,8 @@
 // Bug: a0963df — Unified hover-revealed action bar for messages
 // Bug: 02d701a — P3: overflow menu, metadata row, onInfo callback
 
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
 export type MessageActionsMeta = {
   tokenCount?: number;
@@ -41,6 +42,14 @@ export function MessageActions({
 }: MessageActionsProps): JSX.Element {
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
+  const overflowMenuStyle = useAnchoredMenu({
+    open: overflowOpen,
+    anchorRef: overflowTriggerRef,
+    menuRef: overflowMenuRef,
+    onDismiss: () => setOverflowOpen(false),
+  });
 
   const shouldShowResume = showResume ?? !!dagUuid;
   const shouldShowFork = showFork ?? !!dagUuid;
@@ -115,21 +124,30 @@ export function MessageActions({
       {hasOverflow && (
         <div className="message-actions__overflow-wrap">
           <button
+            ref={overflowTriggerRef}
             type="button"
             className="message-actions__btn message-actions__overflow"
             onClick={handleOverflowToggle}
             title="More actions"
             aria-label="More actions"
+            aria-haspopup="menu"
             aria-expanded={overflowOpen}
           >
             &#x2026;
           </button>
           {overflowOpen && (
-            <div className="message-actions__overflow-menu">
+            <div
+              ref={overflowMenuRef}
+              className="message-actions__overflow-menu app-anchored-menu"
+              role="menu"
+              popover="manual"
+              style={overflowMenuStyle}
+            >
               {shouldShowFork && (
                 <button
                   type="button"
                   className="message-actions__overflow-item"
+                  role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onFork)}
                 >
                   &#x2441; Fork
@@ -139,6 +157,7 @@ export function MessageActions({
                 <button
                   type="button"
                   className="message-actions__overflow-item"
+                  role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onResume)}
                 >
                   &#x21A9; Resume
@@ -148,6 +167,7 @@ export function MessageActions({
                 <button
                   type="button"
                   className="message-actions__overflow-item"
+                  role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onInfo)}
                 >
                   &#x2139; Info

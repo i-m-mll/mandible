@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -100,7 +100,7 @@ describe('SidebarItemRow', () => {
     expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
     expect(labelRule).toContain('text-overflow: clip');
     expect(labelRule).not.toContain('text-overflow: ellipsis');
-    expect(labelRule).toContain('mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent 100%)');
+    expect(labelRule).not.toContain('mask-image');
     expect(trailingRule).toContain('position: absolute');
     expect(trailingRule).toContain('right: 0');
     expect(trailingRule).toContain('opacity: 0');
@@ -346,5 +346,50 @@ describe('SidebarItemRow', () => {
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Rename' }), { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('flips and clamps overflow menus inside the viewport layer', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function mockBounds() {
+      if (this.getAttribute('role') === 'menu') {
+        return {
+          x: 0, y: 0, top: 0, right: 180, bottom: 240, left: 0,
+          width: 180, height: 240, toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.getAttribute('aria-label') === 'Viewport actions') {
+        return {
+          x: window.innerWidth - 38,
+          y: window.innerHeight - 38,
+          top: window.innerHeight - 38,
+          right: window.innerWidth - 8,
+          bottom: window.innerHeight - 8,
+          left: window.innerWidth - 38,
+          width: 30,
+          height: 30,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0,
+        width: 0, height: 0, toJSON: () => ({}),
+      } as DOMRect;
+    });
+
+    render(
+      <SidebarItemOverflowMenu
+        label="Viewport actions"
+        actions={[{ id: 'open', label: 'Open', onSelect: () => undefined }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Viewport actions' }));
+    const menu = screen.getByRole('menu');
+
+    await waitFor(() => expect(menu.style.visibility).toBe('visible'));
+    expect(menu.classList.contains('app-anchored-menu')).toBe(true);
+    expect(menu.getAttribute('popover')).toBe('manual');
+    expect(menu.style.position).toBe('fixed');
+    expect(Number.parseFloat(menu.style.left)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(menu.style.left) + 180).toBeLessThanOrEqual(window.innerWidth - 8);
+    expect(Number.parseFloat(menu.style.top)).toBe(window.innerHeight - 284);
   });
 });

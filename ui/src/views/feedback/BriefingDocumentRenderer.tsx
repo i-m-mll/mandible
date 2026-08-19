@@ -19,6 +19,7 @@ import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdenti
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { artifactDetailHref, displayResourceRef } from '../../resource-refs';
 import { shortRouteId } from '../../routing';
 import {
@@ -130,6 +131,14 @@ export function BriefingDocumentRenderer({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
   const loadSequence = useRef(0);
   const mutationSequence = useRef(0);
   const currentSelection = useRef(`${briefingId}:${roundId ?? 'latest'}`);
@@ -428,6 +437,7 @@ export function BriefingDocumentRenderer({
           actions={round ? (
             <>
               <button
+                ref={actionsTriggerRef}
                 type="button"
                 className="briefing-detail__actions-trigger"
                 aria-label="Briefing actions"
@@ -438,7 +448,13 @@ export function BriefingDocumentRenderer({
                 <HorizontalDotsIcon />
               </button>
               {actionsOpen ? (
-                <div className="briefing-detail__actions-menu" role="menu">
+                <div
+                  ref={actionsMenuRef}
+                  className="briefing-detail__actions-menu app-anchored-menu"
+                  role="menu"
+                  popover="manual"
+                  style={actionsMenuStyle}
+                >
                   <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
                   {artifactVersionRef ? (
                     <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>

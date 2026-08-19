@@ -11,7 +11,6 @@ import {
   deriveChatUsageSummary,
   useStatuslineTelemetry,
 } from '../../chat';
-import { ContextIndicator } from '../presets/ContextIndicator';
 import { PtyBanner } from './PtyBanner';
 import { SessionControls, SessionModelControl } from './SessionControls';
 import { LivePresetPills } from './LivePresetPills';
@@ -130,7 +129,7 @@ export function RichChatPane({
   return (
     <div className="terminal-pane__rich-wrapper">
       <div className="terminal-pane__rich-main">
-        <div className="chat-usage-host" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {backendType === 'pty' && <PtyBanner />}
           {(backendType === 'sdk' || backendType === 'acp') && (
             <div className="terminal-pane__policy-row">
@@ -175,8 +174,6 @@ export function RichChatPane({
             activePermissionRequest={permissionRequest}
             permissionBackendType={backendType}
             onPermissionRespond={onPermissionRespond}
-            usageSummary={usageSummary}
-            onUsageOpen={openUsage}
           />
           <ChatOverlay
             open={usageModalOpen}
@@ -190,11 +187,6 @@ export function RichChatPane({
             />
           </ChatOverlay>
         </div>
-        {backendType === 'sdk' && (
-          <div style={{ padding: '0 16px', flexShrink: 0 }}>
-            <ContextIndicator tokenCount={presetTokenCount} modelName={model} variant="bar" />
-          </div>
-        )}
         <Composer
           prompt={prompt}
           disabled={interactionMode === 'inbox_only'}

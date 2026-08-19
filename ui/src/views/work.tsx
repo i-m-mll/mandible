@@ -17,6 +17,7 @@ import {
 } from '../api';
 import { DiffView } from '../components/DiffView';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 
 export type WorkRepo = {
@@ -282,17 +283,14 @@ function BranchContextMenu({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuStyle = useAnchoredMenu({
+    open,
+    anchorRef,
+    menuRef,
+    focusRef: triggerRef,
+    onDismiss: () => setOpen(false),
+  });
 
   const branchName = getBranchName(branch);
   const wtPath = getWorktreePath(branch);
@@ -328,6 +326,7 @@ function BranchContextMenu({
   return (
     <span className="work-actions" ref={anchorRef as any}>
       <button
+        ref={triggerRef}
         type="button"
         className="work-actions__trigger"
         onClick={(e) => {
@@ -335,16 +334,26 @@ function BranchContextMenu({
           setOpen(!open);
         }}
         title="Actions"
+        aria-label="Branch actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         &hellip;
       </button>
       {open ? (
-        <div ref={menuRef} className="work-actions__menu">
+        <div
+          ref={menuRef}
+          className="work-actions__menu app-anchored-menu"
+          role="menu"
+          popover="manual"
+          style={menuStyle}
+        >
           {visibleActions.map((action) => (
             <button
               key={action.label}
               type="button"
               className="work-actions__item"
+              role="menuitem"
               onClick={(e) => {
                 e.stopPropagation();
                 action.onClick();
@@ -1315,7 +1324,7 @@ export function WorkOverviewView({
         </div>
       )}
       <div className="work-shell">
-        <aside className="work-sidebar" aria-label="Repositories">
+        <aside className="work-sidebar" data-app-surface="chrome" aria-label="Repositories">
           <SidebarSearchFilterHeader
             value={repoFilterInput}
             onValueChange={setRepoFilterInput}
@@ -1475,7 +1484,7 @@ export function WorkOverviewView({
             </div>
           </div>
         </aside>
-        <section className="work-detail" aria-label="Repository details">
+        <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
             <div className="empty-state">Select a repository to inspect branch and worktree status.</div>
           ) : (() => {

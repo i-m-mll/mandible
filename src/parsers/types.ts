@@ -86,6 +86,8 @@ export interface ParseResult {
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
   /** Provider-authored title metadata present in this parse batch. */
   providerTitle?: string;
+  /** Provider record that supplied providerTitle, when precedence matters across batches. */
+  providerTitleSource?: "custom-title" | "ai-title";
 }
 
 export interface IncrementalParseInput {
