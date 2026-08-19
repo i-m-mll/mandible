@@ -9,6 +9,7 @@ import {
   observeStableSourceAlias,
   observeStableSourceAliasExtent,
   SourceObservationError,
+  type SourceReadInstrumentation,
   type StableSourceObservation,
   type StableSourceExtentObservation,
 } from "./source-observer.js";
@@ -243,7 +244,11 @@ function sameObservation(a: StableSourceObservation, b: StableSourceObservation)
     && a.contentSha256 === b.contentSha256 && a.tailHash === b.tailHash;
 }
 
-async function observePinned(db: Db, pinned: PinnedConversationSource): Promise<StableSourceObservation> {
+async function observePinned(
+  db: Db,
+  pinned: PinnedConversationSource,
+  instrumentation?: SourceReadInstrumentation,
+): Promise<StableSourceObservation> {
   if (!pinned.sourceId) {
     throw new ConversationFreshnessError("freshness_error", "legacy conversation has no source to observe");
   }
@@ -258,7 +263,7 @@ async function observePinned(db: Db, pinned: PinnedConversationSource): Promise<
   let lastError: unknown;
   for (const alias of aliases) {
     try {
-      return await observeStableSourceAlias(alias);
+      return await observeStableSourceAlias(alias, { instrumentation });
     } catch (error) {
       lastError = error;
       if (error instanceof SourceObservationError && error.kind === "changed") {
@@ -272,7 +277,11 @@ async function observePinned(db: Db, pinned: PinnedConversationSource): Promise<
   );
 }
 
-async function observePinnedExtent(db: Db, pinned: PinnedConversationSource): Promise<StableSourceExtentObservation> {
+async function observePinnedExtent(
+  db: Db,
+  pinned: PinnedConversationSource,
+  instrumentation?: SourceReadInstrumentation,
+): Promise<StableSourceExtentObservation> {
   if (!pinned.sourceId) {
     throw new ConversationFreshnessError("freshness_error", "legacy conversation has no source to observe");
   }
@@ -287,7 +296,7 @@ async function observePinnedExtent(db: Db, pinned: PinnedConversationSource): Pr
   let lastError: unknown;
   for (const alias of aliases) {
     try {
-      return await observeStableSourceAliasExtent(alias);
+      return await observeStableSourceAliasExtent(alias, { instrumentation });
     } catch (error) {
       lastError = error;
       if (error instanceof SourceObservationError && error.kind === "changed") {
@@ -333,6 +342,7 @@ async function converge(
   db: Db,
   pinned: PinnedConversationSource,
   ingest: ExactIngest,
+  instrumentation?: SourceReadInstrumentation,
 ): Promise<FreshConversationResult> {
   if (!pinned.sourceId || !pinned.sourcePath) {
     return { conversationId: pinned.conversationId, sourceId: null, sourcePath: null, refreshed: false };
@@ -342,7 +352,7 @@ async function converge(
     if (pinned.provider === "codex") {
       let extent: StableSourceExtentObservation;
       try {
-        extent = await observePinnedExtent(db, pinned);
+        extent = await observePinnedExtent(db, pinned, instrumentation);
       } catch (error) {
         if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
         throw error;
@@ -360,7 +370,7 @@ async function converge(
     }
     let before: StableSourceObservation;
     try {
-      before = await observePinned(db, pinned);
+      before = await observePinned(db, pinned, instrumentation);
     } catch (error) {
       if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
       throw error;
@@ -382,7 +392,7 @@ async function converge(
     refreshed = true;
     let after: StableSourceObservation;
     try {
-      after = await observePinned(db, pinned);
+      after = await observePinned(db, pinned, instrumentation);
     } catch (error) {
       if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
       throw error;
@@ -409,7 +419,12 @@ async function converge(
 export async function ensureExactConversationFresh(
   db: Db,
   ref: string,
-  options: { timeoutMs?: number; ingest?: ExactIngest } = {},
+  options: {
+    timeoutMs?: number;
+    ingest?: ExactIngest;
+    /** Bounded observer instrumentation used by large-source regressions. */
+    sourceReadInstrumentation?: SourceReadInstrumentation;
+  } = {},
 ): Promise<FreshConversationResult> {
   let pinned: PinnedConversationSource;
   try {
@@ -424,7 +439,12 @@ export async function ensureExactConversationFresh(
   const sourceId = pinned.sourceId;
   let flight = flights.get(sourceId);
   if (!flight) {
-    flight = converge(db, pinned, options.ingest ?? triggerExactPathIngest)
+    flight = converge(
+      db,
+      pinned,
+      options.ingest ?? triggerExactPathIngest,
+      options.sourceReadInstrumentation,
+    )
       .catch((error: unknown) => {
         if (error instanceof ConversationFreshnessError) throw error;
         throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -336,6 +337,76 @@ describe("exact conversation freshness", () => {
       event: "conversation:updated",
       data: expect.objectContaining({ id: seeded.id, title: "Current provider title" }),
     }]);
+  });
+
+  it("refreshes and rechecks a current sparse source above INT32_MAX using tail reads only", async () => {
+    const seeded = await seed("sparse-title-authority-session");
+    const sparseSize = 2_147_483_648 + 8_192;
+    const sparseSha256 = "50ef94816ed66470c87be5e6cc3cdbc0c9d64f5706c10fde6ab8b82846aa0f4c";
+    const sparseMtime = new Date(1_900_000_010_000);
+    await fsp.truncate(seeded.file, 0);
+    await fsp.truncate(seeded.file, sparseSize);
+    await fsp.utimes(seeded.file, sparseMtime, sparseMtime);
+    const stat = await fsp.stat(seeded.file);
+    expect(stat.size).toBe(sparseSize);
+    expect(stat.size).toBeGreaterThan(0x7fffffff);
+    expect(stat.blocks * 512).toBeLessThan(stat.size);
+
+    const tailHash = crypto.createHash("sha256").update(Buffer.alloc(4096)).digest("hex");
+    db.prepare(`
+      UPDATE conversation_source_versions
+         SET content_sha256 = ?, byte_length = ?, file_mtime_ms = ?, availability = 'available'
+       WHERE id = (
+         SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
+       )
+    `).run(sparseSha256, stat.size, stat.mtimeMs, seeded.id);
+    db.prepare(`
+      UPDATE conversation_ingest_state
+         SET byte_offset = ?, tail_hash = ?, partial_line = '', empty_source_mtime = NULL,
+             empty_source_size = NULL
+       WHERE file_path = ?
+    `).run(stat.size, tailHash, seeded.file);
+    db.prepare("UPDATE conversations SET source_hash = ?, source_mtime = ? WHERE id = ?")
+      .run(sparseSha256, stat.mtimeMs, seeded.id);
+    updateThread("sparse-title-authority-session", {
+      title: "Sparse provider title",
+      rolloutPath: seeded.file,
+      updatedAtMs: Math.ceil(stat.mtimeMs),
+    });
+
+    let ingests = 0;
+    const reads: Array<{ position: number; length: number; fileSize: number }> = [];
+    const sourceReadInstrumentation = (read: { position: number; length: number; fileSize: number }) => {
+      if (read.position < read.fileSize - 4096) {
+        throw new Error(`unexpected non-tail source read at ${read.position}`);
+      }
+      reads.push(read);
+    };
+    const ingest = async () => {
+      ingests += 1;
+      throw new Error("unexpected giant-source ingest");
+    };
+
+    const first = await ensureExactConversationFresh(db, seeded.id, {
+      ingest,
+      sourceReadInstrumentation,
+    });
+    const changesAfterFirst = db.totalChanges;
+    const second = await ensureExactConversationFresh(db, seeded.id, {
+      ingest,
+      sourceReadInstrumentation,
+    });
+
+    expect(first.refreshed).toBe(true);
+    expect(second.refreshed).toBe(false);
+    expect(ingests).toBe(0);
+    expect(db.totalChanges).toBe(changesAfterFirst);
+    expect(reads).toEqual([
+      { position: sparseSize - 4096, length: 4096, fileSize: sparseSize },
+      { position: sparseSize - 4096, length: 4096, fileSize: sparseSize },
+    ]);
+    expect(db.prepare("SELECT title FROM conversations WHERE id = ?").get(seeded.id))
+      .toEqual({ title: "Sparse provider title" });
   });
 
   it("fails closed with typed evidence for missing, mismatched, stale, and unreadable exact metadata", async () => {

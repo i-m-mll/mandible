@@ -21,6 +21,14 @@ export interface StableSourceExtentObservation {
   tailHash: string;
 }
 
+export interface SourceReadObservation {
+  position: number;
+  length: number;
+  fileSize: number;
+}
+
+export type SourceReadInstrumentation = (read: SourceReadObservation) => void;
+
 export class SourceObservationError extends Error {
   constructor(
     message: string,
@@ -42,7 +50,11 @@ export function insideSourceRoot(root: string, candidate: string): boolean {
  */
 export async function observeStableSourceAlias(
   alias: ConversationSourceAlias,
-  options: { captureBytes?: boolean; maxBytes?: number } = {},
+  options: {
+    captureBytes?: boolean;
+    maxBytes?: number;
+    instrumentation?: SourceReadInstrumentation;
+  } = {},
 ): Promise<StableSourceObservation> {
   if (alias.availability !== "available") {
     throw new SourceObservationError("conversation source alias is unavailable", "unavailable");
@@ -75,6 +87,7 @@ export async function observeStableSourceAlias(
       const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, before.size)));
       while (position < before.size) {
         const requested = Math.min(chunk.length, before.size - position);
+        options.instrumentation?.({ position, length: requested, fileSize: before.size });
         const { bytesRead } = await handle.read(chunk, 0, requested, position);
         if (bytesRead === 0) break;
         const slice = chunk.subarray(0, bytesRead);
@@ -84,6 +97,11 @@ export async function observeStableSourceAlias(
       }
       const tail = Buffer.alloc(tailLength);
       if (tailLength > 0) {
+        options.instrumentation?.({
+          position: before.size - tailLength,
+          length: tailLength,
+          fileSize: before.size,
+        });
         const tailRead = await handle.read(tail, 0, tailLength, before.size - tailLength);
         if (tailRead.bytesRead !== tailLength) {
           throw new SourceObservationError("conversation source changed while reading its tail", "changed");
@@ -123,6 +141,7 @@ export async function observeStableSourceAlias(
  */
 export async function observeStableSourceAliasExtent(
   alias: ConversationSourceAlias,
+  options: { instrumentation?: SourceReadInstrumentation } = {},
 ): Promise<StableSourceExtentObservation> {
   if (alias.availability !== "available") {
     throw new SourceObservationError("conversation source alias is unavailable", "unavailable");
@@ -147,6 +166,11 @@ export async function observeStableSourceAliasExtent(
       const tailLength = Math.min(TAIL_HASH_BYTES, before.size);
       const tail = Buffer.alloc(tailLength);
       if (tailLength > 0) {
+        options.instrumentation?.({
+          position: before.size - tailLength,
+          length: tailLength,
+          fileSize: before.size,
+        });
         const tailRead = await handle.read(tail, 0, tailLength, before.size - tailLength);
         if (tailRead.bytesRead !== tailLength) {
           throw new SourceObservationError("conversation source changed while reading its tail", "changed");
