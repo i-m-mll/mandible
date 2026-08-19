@@ -1851,7 +1851,7 @@ function PreviewSection({
           />
         )}
         {showPreview && preview.kind === 'markdown' && (
-          <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />
+          <div className="artifact-preview spec-panel rendered-markdown" dangerouslySetInnerHTML={{ __html: preview.value }} />
         )}
         {showPreview && preview.kind === 'binary' && (
           <div className="artifacts-empty">

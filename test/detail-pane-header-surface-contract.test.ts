@@ -44,12 +44,26 @@ const DIRECT_DETAIL_CONSUMERS: DirectDetailConsumer[] = [
     primaryClasses: [],
   },
   {
+    name: 'Graph',
+    path: 'ui/src/views/graph.tsx',
+    variant: 'standard',
+    headerClasses: [],
+    primaryClasses: [],
+  },
+  {
     name: 'Issue',
     path: 'ui/src/components/ledger/IssueDetail.tsx',
     variant: 'standard',
     headerClasses: ['ledger-issue-detail__header'],
     primaryClasses: ['ledger-issue-detail__header-primary'],
     ancestorClass: 'issues-detail',
+  },
+  {
+    name: 'Projects',
+    path: 'ui/src/views/work.tsx',
+    variant: 'compact',
+    headerClasses: [],
+    primaryClasses: [],
   },
 ];
 

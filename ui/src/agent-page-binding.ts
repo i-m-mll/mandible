@@ -98,8 +98,9 @@ export function getAgentPageBinding(): string | null {
 }
 
 /**
- * Probe the WebMCP surface the Codex in-app browser injects. Detection gates
- * the conditional nav shortcut only and must fail silently everywhere else.
+ * Probe the WebMCP surface the Codex in-app browser injects. This is the
+ * positive host capability used for IAB-only presentation; the self-asserted
+ * agent_session binding is deliberately not part of detection. Fail closed.
  */
 export function detectCodexIab(): boolean {
   try {

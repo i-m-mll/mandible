@@ -1,17 +1,27 @@
 import type { Db } from "../db.js";
-import { triggerExactPathIngest, type TargetedIngestResult } from "../ingestion.js";
+import {
+  persistExactCodexTitle,
+  triggerExactPathIngest,
+  type TargetedIngestResult,
+} from "../ingestion.js";
 import { ConversationSourceStore } from "./source-store.js";
 import {
   observeStableSourceAlias,
+  observeStableSourceAliasExtent,
   SourceObservationError,
+  type SourceReadInstrumentation,
   type StableSourceObservation,
+  type StableSourceExtentObservation,
 } from "./source-observer.js";
 import type { ConversationSourceAlias } from "./source-types.js";
+import { readExactCodexTitleAuthority } from "./codex-title-authority.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 interface PinnedConversationSource {
   conversationId: string;
+  provider: string;
+  nativeSessionId: string;
   sourceId: string | null;
   sourcePath: string | null;
   canonicalCandidates: string[];
@@ -31,6 +41,7 @@ interface CurrentFacts {
   ingestTailHash: string | null;
   normalizedBlockCount: number;
   actualBlockCount: number;
+  title: string;
 }
 
 export type ConversationFreshnessCode =
@@ -38,6 +49,10 @@ export type ConversationFreshnessCode =
   | "ambiguous_ref"
   | "source_unavailable"
   | "source_changed"
+  | "provider_metadata_unavailable"
+  | "provider_metadata_missing"
+  | "provider_metadata_mismatched"
+  | "provider_metadata_stale"
   | "freshness_pending"
   | "freshness_error";
 
@@ -52,7 +67,11 @@ export class ConversationFreshnessError extends Error {
 
   get status(): number {
     if (this.code === "not_found") return 404;
-    if (this.code === "ambiguous_ref" || this.code === "source_unavailable" || this.code === "source_changed") return 409;
+    if (
+      this.code === "ambiguous_ref" || this.code === "source_unavailable" || this.code === "source_changed"
+      || this.code === "provider_metadata_missing" || this.code === "provider_metadata_mismatched"
+      || this.code === "provider_metadata_stale"
+    ) return 409;
     return 503;
   }
 }
@@ -79,7 +98,8 @@ function candidateIds(db: Db, ref: string): string[] {
 
 function pinnedSource(db: Db, conversationId: string, candidates: string[]): PinnedConversationSource | null {
   const row = db.prepare(`
-    SELECT c.id AS conversation_id, s.id AS source_id, alias.path AS source_path
+    SELECT c.id AS conversation_id, c.source AS provider, s.native_session_id,
+           s.id AS source_id, alias.path AS source_path
       FROM conversations c
       JOIN conversation_sources s
         ON s.conversation_id = c.id AND s.provider = c.source
@@ -95,11 +115,15 @@ function pinnedSource(db: Db, conversationId: string, candidates: string[]): Pin
        AND version.availability = 'available'
   `).get(conversationId) as {
     conversation_id: string;
+    provider: string;
+    native_session_id: string | null;
     source_id: string;
     source_path: string;
   } | undefined;
   return row ? {
     conversationId: row.conversation_id,
+    provider: row.provider,
+    nativeSessionId: row.native_session_id ?? "",
     sourceId: row.source_id,
     sourcePath: row.source_path,
     canonicalCandidates: candidates,
@@ -111,7 +135,14 @@ function hasOwnedSource(db: Db, conversationId: string): boolean {
 }
 
 function legacyConversation(conversationId: string, candidates: string[]): PinnedConversationSource {
-  return { conversationId, sourceId: null, sourcePath: null, canonicalCandidates: candidates };
+  return {
+    conversationId,
+    provider: "legacy",
+    nativeSessionId: "",
+    sourceId: null,
+    sourcePath: null,
+    canonicalCandidates: candidates,
+  };
 }
 
 export function resolveExactConversation(db: Db, ref: string): PinnedConversationSource {
@@ -146,7 +177,7 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
     throw new ConversationFreshnessError("freshness_error", "legacy conversation has no source freshness facts");
   }
   const row = db.prepare(`
-    SELECT c.id AS conversation_id, c.block_count AS normalized_block_count,
+    SELECT c.id AS conversation_id, c.title, c.block_count AS normalized_block_count,
            s.id AS source_id, s.availability AS source_availability,
            s.current_version_id, v.availability AS version_availability,
            v.byte_length AS version_byte_length, v.file_mtime_ms AS version_mtime_ms,
@@ -174,7 +205,26 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
     ingestTailHash: row.ingest_tail_hash == null ? null : String(row.ingest_tail_hash),
     normalizedBlockCount: Number(row.normalized_block_count),
     actualBlockCount: Number(row.actual_block_count),
+    title: String(row.title),
   };
+}
+
+function matchesIndexedExtent(facts: CurrentFacts, observed: StableSourceExtentObservation): boolean {
+  // This bounded shortcut trusts the previously indexed full content hash only
+  // while every immutable-version, extent, tail, and normalized-row fact still
+  // matches. It deliberately does not re-hash unchanged multi-gigabyte bytes;
+  // a same-size/same-mtime middle rewrite is therefore left to the ingestion
+  // observer, while ConversationSourceReader keeps its independent full
+  // immutable-version validation unchanged.
+  return facts.sourceAvailability === "available"
+    && facts.versionAvailability === "available"
+    && facts.currentVersionId !== null
+    && facts.versionHash !== null
+    && facts.versionByteLength === observed.byteLength
+    && facts.versionMtimeMs === observed.fileMtimeMs
+    && facts.ingestByteOffset === observed.byteLength
+    && facts.ingestTailHash === observed.tailHash
+    && facts.normalizedBlockCount === facts.actualBlockCount;
 }
 
 function matchesIndexed(facts: CurrentFacts, observed: StableSourceObservation): boolean {
@@ -194,7 +244,11 @@ function sameObservation(a: StableSourceObservation, b: StableSourceObservation)
     && a.contentSha256 === b.contentSha256 && a.tailHash === b.tailHash;
 }
 
-async function observePinned(db: Db, pinned: PinnedConversationSource): Promise<StableSourceObservation> {
+async function observePinned(
+  db: Db,
+  pinned: PinnedConversationSource,
+  instrumentation?: SourceReadInstrumentation,
+): Promise<StableSourceObservation> {
   if (!pinned.sourceId) {
     throw new ConversationFreshnessError("freshness_error", "legacy conversation has no source to observe");
   }
@@ -209,7 +263,7 @@ async function observePinned(db: Db, pinned: PinnedConversationSource): Promise<
   let lastError: unknown;
   for (const alias of aliases) {
     try {
-      return await observeStableSourceAlias(alias);
+      return await observeStableSourceAlias(alias, { instrumentation });
     } catch (error) {
       lastError = error;
       if (error instanceof SourceObservationError && error.kind === "changed") {
@@ -223,25 +277,113 @@ async function observePinned(db: Db, pinned: PinnedConversationSource): Promise<
   );
 }
 
+async function observePinnedExtent(
+  db: Db,
+  pinned: PinnedConversationSource,
+  instrumentation?: SourceReadInstrumentation,
+): Promise<StableSourceExtentObservation> {
+  if (!pinned.sourceId) {
+    throw new ConversationFreshnessError("freshness_error", "legacy conversation has no source to observe");
+  }
+  const store = new ConversationSourceStore(db);
+  const source = db.prepare(`
+    SELECT availability FROM conversation_sources WHERE id = ? AND conversation_id = ?
+  `).get(pinned.sourceId, pinned.conversationId) as { availability: string } | undefined;
+  if (!source || source.availability !== "available") {
+    throw new ConversationFreshnessError("source_unavailable", "pinned conversation source is unavailable");
+  }
+  const aliases = store.listAliases(pinned.sourceId).filter((alias) => alias.availability === "available");
+  let lastError: unknown;
+  for (const alias of aliases) {
+    try {
+      return await observeStableSourceAliasExtent(alias, { instrumentation });
+    } catch (error) {
+      lastError = error;
+      if (error instanceof SourceObservationError && error.kind === "changed") {
+        throw new ConversationFreshnessError("source_changed", error.message);
+      }
+    }
+  }
+  throw new ConversationFreshnessError(
+    "source_unavailable",
+    lastError instanceof Error ? lastError.message : "conversation source is unavailable",
+  );
+}
+
+function convergeProviderMetadata(
+  db: Db,
+  pinned: PinnedConversationSource,
+  facts: CurrentFacts,
+  observedSourceMtimeMs: number,
+): boolean {
+  if (pinned.provider !== "codex") return false;
+  const authority = readExactCodexTitleAuthority({
+    sourcePath: facts.sourcePath,
+    nativeSessionId: pinned.nativeSessionId,
+    sourceMtimeMs: observedSourceMtimeMs,
+  });
+  if (authority.status !== "current") {
+    throw new ConversationFreshnessError(
+      `provider_metadata_${authority.status}` as ConversationFreshnessCode,
+      authority.message,
+    );
+  }
+  return persistExactCodexTitle(db, {
+    conversationId: pinned.conversationId,
+    filePath: facts.sourcePath,
+    currentTitle: facts.title,
+    blockCount: facts.normalizedBlockCount,
+    title: authority.title,
+    stage: "codex_exact_title_authority",
+  });
+}
+
 async function converge(
   db: Db,
   pinned: PinnedConversationSource,
   ingest: ExactIngest,
+  instrumentation?: SourceReadInstrumentation,
 ): Promise<FreshConversationResult> {
   if (!pinned.sourceId || !pinned.sourcePath) {
     return { conversationId: pinned.conversationId, sourceId: null, sourcePath: null, refreshed: false };
   }
   let refreshed = false;
   for (let pass = 0; pass < 2; pass += 1) {
+    if (pinned.provider === "codex") {
+      let extent: StableSourceExtentObservation;
+      try {
+        extent = await observePinnedExtent(db, pinned, instrumentation);
+      } catch (error) {
+        if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
+        throw error;
+      }
+      const extentFacts = currentFacts(db, pinned, extent.path);
+      if (matchesIndexedExtent(extentFacts, extent)) {
+        const titleChanged = convergeProviderMetadata(db, pinned, extentFacts, extent.fileMtimeMs);
+        return {
+          conversationId: pinned.conversationId,
+          sourceId: pinned.sourceId,
+          sourcePath: extent.path,
+          refreshed: refreshed || titleChanged,
+        };
+      }
+    }
     let before: StableSourceObservation;
     try {
-      before = await observePinned(db, pinned);
+      before = await observePinned(db, pinned, instrumentation);
     } catch (error) {
       if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
       throw error;
     }
-    if (matchesIndexed(currentFacts(db, pinned, before.path), before)) {
-      return { conversationId: pinned.conversationId, sourceId: pinned.sourceId, sourcePath: before.path, refreshed };
+    const beforeFacts = currentFacts(db, pinned, before.path);
+    if (matchesIndexed(beforeFacts, before)) {
+      const titleChanged = convergeProviderMetadata(db, pinned, beforeFacts, before.fileMtimeMs);
+      return {
+        conversationId: pinned.conversationId,
+        sourceId: pinned.sourceId,
+        sourcePath: before.path,
+        refreshed: refreshed || titleChanged,
+      };
     }
     const result = await ingest(before.path);
     if (result.status === "unsupported" || result.status === "no_target") {
@@ -250,13 +392,20 @@ async function converge(
     refreshed = true;
     let after: StableSourceObservation;
     try {
-      after = await observePinned(db, pinned);
+      after = await observePinned(db, pinned, instrumentation);
     } catch (error) {
       if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
       throw error;
     }
-    if (matchesIndexed(currentFacts(db, pinned, after.path), after)) {
-      return { conversationId: pinned.conversationId, sourceId: pinned.sourceId, sourcePath: after.path, refreshed };
+    const afterFacts = currentFacts(db, pinned, after.path);
+    if (matchesIndexed(afterFacts, after)) {
+      const titleChanged = convergeProviderMetadata(db, pinned, afterFacts, after.fileMtimeMs);
+      return {
+        conversationId: pinned.conversationId,
+        sourceId: pinned.sourceId,
+        sourcePath: after.path,
+        refreshed: refreshed || titleChanged,
+      };
     }
     if (!sameObservation(before, after)) {
       if (pass === 0) continue;
@@ -270,7 +419,12 @@ async function converge(
 export async function ensureExactConversationFresh(
   db: Db,
   ref: string,
-  options: { timeoutMs?: number; ingest?: ExactIngest } = {},
+  options: {
+    timeoutMs?: number;
+    ingest?: ExactIngest;
+    /** Bounded observer instrumentation used by large-source regressions. */
+    sourceReadInstrumentation?: SourceReadInstrumentation;
+  } = {},
 ): Promise<FreshConversationResult> {
   let pinned: PinnedConversationSource;
   try {
@@ -285,7 +439,12 @@ export async function ensureExactConversationFresh(
   const sourceId = pinned.sourceId;
   let flight = flights.get(sourceId);
   if (!flight) {
-    flight = converge(db, pinned, options.ingest ?? triggerExactPathIngest)
+    flight = converge(
+      db,
+      pinned,
+      options.ingest ?? triggerExactPathIngest,
+      options.sourceReadInstrumentation,
+    )
       .catch((error: unknown) => {
         if (error instanceof ConversationFreshnessError) throw error;
         throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));

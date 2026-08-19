@@ -2311,7 +2311,7 @@ function App(): JSX.Element {
 
   return (
     <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}`}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${codexIabDetected ? ' app-shell--codex-iab' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
       } as JSX.CSSProperties}

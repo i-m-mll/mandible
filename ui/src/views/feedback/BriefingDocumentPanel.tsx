@@ -264,7 +264,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
           <legend className="sr-only">Rating from 1 to 5</legend>
           {[1, 2, 3, 4, 5].map((value) => (
-            <label key={value}><input type="radio" name={`${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onChange={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
+            <label key={value}><input type="radio" name={`${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
           ))}
         </fieldset>
       );
@@ -288,7 +288,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const prose = cursor === 0 ? suppressRepeatedLeadingHeading(authoritativeProse, briefingTitle) : authoritativeProse;
       if (prose.trim() || annotations.some((annotation) => annotation.start_offset < directive.start_offset && annotation.end_offset > cursor)) parts.push(
         <div key={`prose-${parts.length}`} className="briefing-document__passage">
-          <div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />
+          <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />
           {inlineAnnotations(cursor, directive.start_offset)}
         </div>,
       );
@@ -301,7 +301,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
           <div className="briefing-directive__interaction contextual-action-owner">
             <div className="briefing-directive__passage">
-              <div id={promptId} className="briefing-directive__body" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+              <div id={promptId} className="briefing-directive__body rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
               {item.revision.required ? <span className="briefing-directive__required" aria-label="Required">Required</span> : null}
               {inlineAnnotations(directive.start_offset, directive.end_offset)}
               {responseControls(item, current, promptId)}
@@ -317,7 +317,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     const tail = source.slice(cursor);
     if (tail.trim() || annotations.some((annotation) => annotation.start_offset < source.length && annotation.end_offset > cursor)) parts.push(
       <div key={`prose-${parts.length}`} className="briefing-document__passage">
-        <div className="briefing-document__prose" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />
+        <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />
         {inlineAnnotations(cursor, source.length)}
       </div>,
     );

@@ -79,6 +79,36 @@ a {
   width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
 }
 
+/*
+ * The Codex host edge is an absolutely positioned visual layer: it does not
+ * participate in header or rail layout, so every existing child coordinate
+ * stays unchanged. The matching pieces cover the full chrome height while the
+ * header remains the top stacking surface.
+ */
+.app-shell--codex-iab .app-header::before,
+.app-shell--codex-iab .app-rail::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--codex-iab-edge-width);
+  background: var(--surface-chrome);
+  box-shadow: var(--shadow-codex-iab-edge);
+  pointer-events: none;
+}
+
+.app-shell--codex-iab .app-rail,
+.app-shell--codex-iab .app-header__identity,
+.app-shell--codex-iab .app-rail__nav,
+.app-shell--codex-iab .app-rail__footer {
+  position: relative;
+}
+
+.app-shell--codex-iab .app-header__identity,
+.app-shell--codex-iab .app-rail__nav,
+.app-shell--codex-iab .app-rail__footer {
+  z-index: 1;
+}
+
 .app-header__identity {
   min-width: 0;
   width: 100%;

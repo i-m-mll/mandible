@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import {
@@ -13,6 +15,7 @@ import {
   INGEST_RANGE_READ_CHUNK_BYTES,
   triggerExactPathIngest,
   triggerTargetedIngest,
+  configureIngestionWorker,
 } from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
@@ -61,11 +64,51 @@ async function appendAt(file: string, body: string, tick: number): Promise<void>
   await fsp.utimes(file, time, time);
 }
 
+function stateDbPath(): string {
+  return path.join(tempDir, "home", ".codex", "state_5.sqlite");
+}
+
+function updateThread(
+  sessionId: string,
+  values: { title?: string; rolloutPath?: string; updatedAtMs?: number } = {},
+): void {
+  const state = new Database(stateDbPath());
+  try {
+    state.prepare(`
+      INSERT INTO threads (id, title, rollout_path, updated_at, updated_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        rollout_path = excluded.rollout_path,
+        updated_at = excluded.updated_at,
+        updated_at_ms = excluded.updated_at_ms
+    `).run(
+      sessionId,
+      values.title ?? "hello",
+      values.rolloutPath ?? path.join(tempDir, "home", ".codex", "sessions", "2026", "08", "19", `rollout-2026-08-19T00-00-00-${sessionId}.jsonl`),
+      Math.floor((values.updatedAtMs ?? 2_100_000_000_000) / 1000),
+      values.updatedAtMs ?? 2_100_000_000_000,
+    );
+  } finally {
+    state.close();
+  }
+}
+
+function deleteThread(sessionId: string): void {
+  const state = new Database(stateDbPath());
+  try {
+    state.prepare("DELETE FROM threads WHERE id = ?").run(sessionId);
+  } finally {
+    state.close();
+  }
+}
+
 async function seed(sessionId = "fresh-session"): Promise<{ file: string; id: string }> {
   const file = await sourcePath(sessionId);
   await writeAt(file, transcript(sessionId), 1);
   await triggerTargetedIngest({ transcriptPath: file, now: 1_000 });
   const row = db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(file) as { id: string };
+  updateThread(sessionId, { rolloutPath: file });
   return { file, id: row.id };
 }
 
@@ -73,9 +116,22 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-freshness-"));
   previousHome = process.env.HOME;
   process.env.HOME = path.join(tempDir, "home");
+  fs.mkdirSync(path.join(tempDir, "home", ".codex"), { recursive: true });
+  const state = new Database(stateDbPath());
+  state.exec(`
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      rollout_path TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_at_ms INTEGER
+    )
+  `);
+  state.close();
   db = openDb(path.join(tempDir, "mandible.db"));
   migrate(db);
   setDb(db);
+  configureIngestionWorker(() => {}, () => {});
 });
 
 afterEach(() => {
@@ -251,5 +307,124 @@ describe("exact conversation freshness", () => {
     await expect(ensureExactConversationFresh(db, seeded.id, { timeoutMs: 5, ingest: slowIngest })).rejects.toMatchObject({ code: "freshness_pending" });
     await expect(ensureExactConversationFresh(db, seeded.id, { timeoutMs: 500, ingest: slowIngest })).resolves.toMatchObject({ conversationId: seeded.id });
     expect(ingests).toBe(1);
+  });
+
+  it("refreshes one exact provider title, broadcasts once, and leaves an unchanged transcript bounded", async () => {
+    const seeded = await seed("title-authority-session");
+    updateThread("title-authority-session", { title: "Current provider title", rolloutPath: seeded.file });
+    let ingests = 0;
+    const events: Array<{ event: string; data: unknown }> = [];
+    configureIngestionWorker(() => {}, (event, data) => events.push({ event, data }));
+    const ingest = async (file: string) => {
+      ingests += 1;
+      return triggerExactPathIngest(file);
+    };
+
+    const [first, joined] = await Promise.all([
+      ensureExactConversationFresh(db, seeded.id, { ingest }),
+      ensureExactConversationFresh(db, "title-authority-session", { ingest }),
+    ]);
+    const changesAfterFirst = db.totalChanges;
+    const second = await ensureExactConversationFresh(db, seeded.id, { ingest });
+
+    expect(first.refreshed).toBe(true);
+    expect(joined).toEqual(first);
+    expect(second.refreshed).toBe(false);
+    expect(ingests).toBe(0);
+    expect(db.totalChanges).toBe(changesAfterFirst);
+    expect(db.prepare("SELECT title FROM conversations WHERE id = ?").get(seeded.id)).toEqual({ title: "Current provider title" });
+    expect(events).toEqual([{
+      event: "conversation:updated",
+      data: expect.objectContaining({ id: seeded.id, title: "Current provider title" }),
+    }]);
+  });
+
+  it("refreshes and rechecks a current sparse source above INT32_MAX using tail reads only", async () => {
+    const seeded = await seed("sparse-title-authority-session");
+    const sparseSize = 2_147_483_648 + 8_192;
+    const sparseSha256 = "50ef94816ed66470c87be5e6cc3cdbc0c9d64f5706c10fde6ab8b82846aa0f4c";
+    const sparseMtime = new Date(1_900_000_010_000);
+    await fsp.truncate(seeded.file, 0);
+    await fsp.truncate(seeded.file, sparseSize);
+    await fsp.utimes(seeded.file, sparseMtime, sparseMtime);
+    const stat = await fsp.stat(seeded.file);
+    expect(stat.size).toBe(sparseSize);
+    expect(stat.size).toBeGreaterThan(0x7fffffff);
+    expect(stat.blocks * 512).toBeLessThan(stat.size);
+
+    const tailHash = crypto.createHash("sha256").update(Buffer.alloc(4096)).digest("hex");
+    db.prepare(`
+      UPDATE conversation_source_versions
+         SET content_sha256 = ?, byte_length = ?, file_mtime_ms = ?, availability = 'available'
+       WHERE id = (
+         SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
+       )
+    `).run(sparseSha256, stat.size, stat.mtimeMs, seeded.id);
+    db.prepare(`
+      UPDATE conversation_ingest_state
+         SET byte_offset = ?, tail_hash = ?, partial_line = '', empty_source_mtime = NULL,
+             empty_source_size = NULL
+       WHERE file_path = ?
+    `).run(stat.size, tailHash, seeded.file);
+    db.prepare("UPDATE conversations SET source_hash = ?, source_mtime = ? WHERE id = ?")
+      .run(sparseSha256, stat.mtimeMs, seeded.id);
+    updateThread("sparse-title-authority-session", {
+      title: "Sparse provider title",
+      rolloutPath: seeded.file,
+      updatedAtMs: Math.ceil(stat.mtimeMs),
+    });
+
+    let ingests = 0;
+    const reads: Array<{ position: number; length: number; fileSize: number }> = [];
+    const sourceReadInstrumentation = (read: { position: number; length: number; fileSize: number }) => {
+      if (read.position < read.fileSize - 4096) {
+        throw new Error(`unexpected non-tail source read at ${read.position}`);
+      }
+      reads.push(read);
+    };
+    const ingest = async () => {
+      ingests += 1;
+      throw new Error("unexpected giant-source ingest");
+    };
+
+    const first = await ensureExactConversationFresh(db, seeded.id, {
+      ingest,
+      sourceReadInstrumentation,
+    });
+    const changesAfterFirst = db.totalChanges;
+    const second = await ensureExactConversationFresh(db, seeded.id, {
+      ingest,
+      sourceReadInstrumentation,
+    });
+
+    expect(first.refreshed).toBe(true);
+    expect(second.refreshed).toBe(false);
+    expect(ingests).toBe(0);
+    expect(db.totalChanges).toBe(changesAfterFirst);
+    expect(reads).toEqual([
+      { position: sparseSize - 4096, length: 4096, fileSize: sparseSize },
+      { position: sparseSize - 4096, length: 4096, fileSize: sparseSize },
+    ]);
+    expect(db.prepare("SELECT title FROM conversations WHERE id = ?").get(seeded.id))
+      .toEqual({ title: "Sparse provider title" });
+  });
+
+  it("fails closed with typed evidence for missing, mismatched, stale, and unreadable exact metadata", async () => {
+    const missing = await seed("missing-metadata-session");
+    deleteThread("missing-metadata-session");
+    await expect(ensureExactConversationFresh(db, missing.id)).rejects.toMatchObject({ code: "provider_metadata_missing" });
+
+    const mismatched = await seed("mismatched-metadata-session");
+    updateThread("mismatched-metadata-session", { rolloutPath: path.join(tempDir, "elsewhere", "other.jsonl") });
+    await expect(ensureExactConversationFresh(db, mismatched.id)).rejects.toMatchObject({ code: "provider_metadata_mismatched" });
+
+    const stale = await seed("stale-metadata-session");
+    updateThread("stale-metadata-session", { rolloutPath: stale.file, updatedAtMs: 1 });
+    await expect(ensureExactConversationFresh(db, stale.id)).rejects.toMatchObject({ code: "provider_metadata_stale" });
+
+    const unreadable = await seed("unreadable-metadata-session");
+    fs.rmSync(stateDbPath());
+    fs.writeFileSync(stateDbPath(), "not sqlite");
+    await expect(ensureExactConversationFresh(db, unreadable.id)).rejects.toMatchObject({ code: "provider_metadata_unavailable" });
   });
 });

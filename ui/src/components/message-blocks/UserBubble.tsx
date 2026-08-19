@@ -40,7 +40,7 @@ export function UserBubble({ text }: UserBubbleProps): JSX.Element {
           <span className="instruction-message-block__label">{instruction.scope} {instruction.filename}</span>
           <span className="instruction-message-block__path">{instruction.path}</span>
         </summary>
-        <div className="instruction-message-block__body user-bubble__text" dangerouslySetInnerHTML={{ __html: html }} />
+        <div className="instruction-message-block__body user-bubble__text rendered-markdown" dangerouslySetInnerHTML={{ __html: html }} />
       </details>
     );
   }
@@ -48,7 +48,7 @@ export function UserBubble({ text }: UserBubbleProps): JSX.Element {
   return (
     <div className="user-bubble">
       <div
-        className="user-bubble__text"
+        className="user-bubble__text rendered-markdown"
         dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>

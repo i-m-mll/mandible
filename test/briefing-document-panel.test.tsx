@@ -84,6 +84,37 @@ afterEach(() => {
 });
 
 describe('Briefing document panel', () => {
+  it('marks real fenced and inline code as shared rendered Markdown', async () => {
+    const fencedSource = 'Intro\n\n```ts\nconst answer = 42;\n```\n\nInline `answer`.\n\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
+    const [directive] = parseBriefingDirectives(fencedSource);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
+      ...content().content,
+      size_bytes: new TextEncoder().encode(fencedSource).byteLength,
+      preview: { encoding: 'utf-8', text: fencedSource, raw_text: fencedSource, truncated: false },
+    } })));
+
+    render(<BriefingDocumentPanel
+      briefingId="briefing-1"
+      briefingTitle="Code review"
+      roundId="round-1"
+      round={round({
+        items: [{
+          id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
+          revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: 'verdict', required: true, position: 1, options: [] },
+          effective_response: null, responseVisible: true, directive,
+        }],
+      })}
+      canMutate
+      onRefresh={async () => null}
+    />);
+
+    const document = await screen.findByLabelText('Pinned briefing document');
+    const prose = document.querySelector('.briefing-document__prose.rendered-markdown');
+    expect(prose).toBeTruthy();
+    expect(prose?.querySelector('pre code')?.textContent).toBe('const answer = 42;\n');
+    expect(prose?.querySelector('p code')?.textContent).toBe('answer');
+  });
+
   it('renders all six v2 controls with native semantics, prompt names, ordered options, bounds, and canonical clear drafts', async () => {
     const typedSource = [
       '# Typed review',
@@ -133,7 +164,9 @@ describe('Briefing document panel', () => {
     fireEvent.input(short, { target: { value: '  exact  ' } });
     fireEvent.input(long, { target: { value: 'Detailed' } });
     const rating = screen.getByRole('group', { name: 'Rate confidence' });
-    fireEvent.click(within(rating).getByRole('radio', { name: '5' }));
+    const ratingFive = within(rating).getByRole('radio', { name: '5' }) as HTMLInputElement;
+    fireEvent.click(ratingFive);
+    expect(ratingFive.checked).toBe(true);
     expect(changes).toEqual(expect.arrayContaining([
       { id: 'single', value: { option_key: 'b' } },
       { id: 'multi', value: { option_keys: ['first', 'third'] } },

@@ -18,7 +18,7 @@ export function TextBlock({ content }: TextBlockProps): JSX.Element {
 
   return (
     <div
-      className="msg-text-block"
+      className="msg-text-block rendered-markdown"
       // eslint-disable-next-line react/no-danger
       dangerouslySetInnerHTML={{ __html: html }}
     />

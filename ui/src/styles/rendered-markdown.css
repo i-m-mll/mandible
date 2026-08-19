@@ -1,0 +1,32 @@
+/* Shared presentation contract for sanitized, rendered Markdown. Keep this
+ * stylesheet last so feature-local prose rules cannot accidentally turn a
+ * fenced block back into an edge-to-edge band. Raw data/code previews do not
+ * opt into this class. */
+.rendered-markdown code:not(pre code) {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+.rendered-markdown pre {
+  box-sizing: border-box;
+  inline-size: fit-content;
+  min-inline-size: min(20rem, 100%);
+  max-inline-size: 100%;
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--surface-code);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.rendered-markdown pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font: inherit;
+}
