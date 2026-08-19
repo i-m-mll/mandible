@@ -113,6 +113,15 @@ describe('typed anchored detail and main notice contract', () => {
   });
 
   it('keeps the explicit structural inventory on the one shared road', () => {
+    const sourceRoot = resolve(process.cwd(), 'ui/src');
+    const discoveredAnchored = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.tsx'))
+      .map((entry) => resolve(entry.parentPath, entry.name))
+      .filter((path) => /<DetailPaneNotice(?:\s|>)/.test(readFileSync(path, 'utf8')))
+      .map((path) => path.slice(process.cwd().length + 1))
+      .sort();
+    expect(discoveredAnchored).toEqual([...inventory.anchored].sort());
+
     for (const path of inventory.anchored) {
       expect(readFileSync(resolve(process.cwd(), path), 'utf8'), path).toContain('<DetailPaneNotice');
     }
@@ -120,11 +129,10 @@ describe('typed anchored detail and main notice contract', () => {
       expect(readFileSync(resolve(process.cwd(), path), 'utf8'), path).not.toContain('<DetailPaneNotice');
     }
 
-    const sourceRoot = resolve(process.cwd(), 'ui/src');
     const pavedRoads = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
       .filter((entry) => entry.isFile() && /\.(tsx|css)$/.test(entry.name))
       .map((entry) => resolve(entry.parentPath, entry.name))
-      .filter((path) => /PreviewDisabledNotice|preview-disabled-notice|conv-load-error/.test(readFileSync(path, 'utf8')));
+      .filter((path) => /PreviewDisabledNotice|preview-disabled-notice|conv-load-error|timeline-sync-banner|terminal-pane__inbox-banner|auth-detail--with-preview-notice/.test(readFileSync(path, 'utf8')));
     expect(pavedRoads).toEqual([]);
   });
 
