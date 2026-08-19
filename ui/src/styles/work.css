@@ -234,29 +234,16 @@
   position: relative;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
-  padding: 24px 32px;
+  overflow: hidden;
 }
 
 .work-detail-panel {
-  min-height: 100%;
-}
-
-.work-detail__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 0 18px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.work-detail__header h3 {
-  margin: 0;
+  height: 100%;
+  min-height: 0;
 }
 
 .work-detail__body {
-  padding-top: 14px;
+  padding: 14px 32px 24px;
 }
 
 .work-audit {

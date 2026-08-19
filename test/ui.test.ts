@@ -2365,6 +2365,15 @@ describe('WorkOverviewView', () => {
     expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
     expect(screen.getAllByText('feature/work').length).toBeGreaterThan(0);
     expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
+    const projectDetail = document.querySelector('.work-detail-panel.detail-pane-shell--compact') as HTMLElement;
+    const projectHeader = projectDetail.querySelector('.detail-pane-header--compact') as HTMLElement;
+    expect(projectDetail).toBeTruthy();
+    expect(projectHeader.getAttribute('data-detail-pane-header-variant')).toBe('compact');
+    expect(within(projectHeader).getByRole('heading', { name: 'Alpha Repo' })).toBeTruthy();
+    expect(within(projectHeader).getByRole('group', { name: 'Repository settings' })).toBeTruthy();
+    expect(within(projectHeader).getByRole('button', { name: 'Repo settings' })).toBeTruthy();
+    expect(projectHeader.querySelector('.detail-pane-header__compact-metadata .work-repo-push-btn')).toBeTruthy();
+    expect(projectDetail.querySelector(':scope > .detail-pane-shell__body.work-detail__body')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('Advanced filters'));
     expect(screen.getByText('Show excluded')).toBeTruthy();

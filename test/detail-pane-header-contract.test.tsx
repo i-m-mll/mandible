@@ -106,7 +106,7 @@ describe('canonical detail pane header', () => {
       <DetailPaneHeader
         variant="compact"
         title="Identity-free compact title"
-        actions={<button type="button">More</button>}
+        menu={<button type="button">More</button>}
       />,
     );
 
@@ -116,6 +116,36 @@ describe('canonical detail pane header', () => {
     expect(header.querySelector('.ledger-copy-ref-button')).toBeNull();
     expect(within(header).getByRole('heading', { name: 'Identity-free compact title' })).toBeTruthy();
     expect(within(header).getByRole('button', { name: 'More' })).toBeTruthy();
+  });
+
+  it('keeps a long compact title, its menu, and fixed metadata in semantic DOM order', () => {
+    const longTitle = 'A very long compact detail title that must truncate before displacing fixed metadata';
+    render(
+      <DetailPaneHeader
+        variant="compact"
+        title={longTitle}
+        titleTooltip={longTitle}
+        menuLabel="Conversation detail actions"
+        menu={<button type="button" aria-label="Conversation actions">...</button>}
+        metadata={<span data-testid="compact-metadata">Codex · Resumable</span>}
+      />,
+    );
+
+    const header = document.querySelector('.detail-pane-header--compact') as HTMLElement;
+    const main = header.querySelector(':scope > .detail-pane-header__main') as HTMLElement;
+    const titleRow = main.firstElementChild as HTMLElement;
+    const title = within(header).getByRole('heading', { name: longTitle });
+    const menu = within(header).getByRole('group', { name: 'Conversation detail actions' });
+    const metadata = within(header).getByTestId('compact-metadata');
+    expect(titleRow.classList.contains('detail-pane-header__title-row')).toBe(true);
+    expect(title.nextElementSibling).toBe(menu);
+    expect(titleRow.nextElementSibling?.classList.contains('detail-pane-header__compact-metadata')).toBe(true);
+    expect(titleRow.nextElementSibling?.contains(metadata)).toBe(true);
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+    expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__main\s*\{[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__title-row\s*\{[^}]*flex:\s*0 1 auto;[^}]*min-width:\s*0;/s);
+    expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__compact-metadata\s*\{[^}]*flex:\s*none;[^}]*margin-left:\s*auto;/s);
   });
 
   it('renders exact two-row versioned geometry with optional entity label and typed copy authority', async () => {
