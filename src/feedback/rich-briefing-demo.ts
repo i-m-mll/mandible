@@ -154,10 +154,14 @@ const DIRECTIVE_TYPES = [
   "verdict", "single_choice", "multi_choice", "short_text", "long_text", "rating",
 ] as const;
 
-const RETIRED_V1_DOCUMENTS = [
-  { ordinal: 1, byte_length: 1168, content_hash: "744bf3caa29cb8450210da1d2c2bca3c6f0f33dd18f6dcb3ec143e9ad863da09" },
-  { ordinal: 2, byte_length: 1283, content_hash: "efbdb374bea7212d55000395aca9d2550737df4ec519250c3dd72f52d2d18480" },
-] as const;
+const RETIRED_V1_DOCUMENT_VARIANTS = [{
+  id: "trimmed-verdict-demo-v1",
+  provenance_commits: ["82c6d761", "588b676b"],
+  documents: [
+    { ordinal: 1, byte_length: 1167, content_hash: "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8" },
+    { ordinal: 2, byte_length: 1282, content_hash: "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801" },
+  ],
+}] as const;
 const RETIRED_V1_DIRECTIVE_KEYS = ["scope.approval", "rollback.plan", "observability", "operator.runbook"];
 
 const ROUND_ONE_ANSWERS = [
@@ -402,7 +406,14 @@ function retireExactV1DemoShell(db: Db, options: { artifactRoot?: string }): boo
   const artifactVersions = records(components.artifact_versions);
   const rounds = records(components.rounds).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
   if (artifactVersions.length !== 2 || rounds.length !== 2) conflict("round or artifact count");
-  for (const expected of RETIRED_V1_DOCUMENTS) {
+  const documentVariant = RETIRED_V1_DOCUMENT_VARIANTS.find((variant) => variant.documents.every((expected) => {
+    const round = rounds[expected.ordinal - 1];
+    const artifact = artifactVersions.find((entry) => entry.id === round?.artifact_version_id);
+    return artifact?.content_hash === expected.content_hash && artifact.source_sha256 === expected.content_hash &&
+      artifact.byte_length === expected.byte_length;
+  }));
+  if (!documentVariant) return conflict("immutable document variant");
+  for (const expected of documentVariant.documents) {
     const round = rounds[expected.ordinal - 1];
     const artifact = artifactVersions.find((entry) => entry.id === round?.artifact_version_id);
     if (!round) return conflict(`round ${expected.ordinal} immutable document`);
