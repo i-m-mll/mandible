@@ -1,9 +1,14 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { openDb, resetDb, setDb, type Db } from "../src/db.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { Router } from "../src/server.js";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "project-db-snapshot.mjs");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -11,10 +16,24 @@ const CUTOFF_MS = 2_000_000_000_000;
 
 let tempRoots: string[] = [];
 
+beforeAll(() => {
+  const entrypoint = path.join(process.cwd(), "dist", "cli", "projected-conversation-convergence.js");
+  if (!fs.existsSync(entrypoint)) {
+    execFileSync(process.execPath, [path.join(process.cwd(), "scripts", "run-tsc.js")], {
+      cwd: process.cwd(),
+      stdio: "inherit",
+    });
+  }
+});
+
 afterEach(() => {
+  resetDb({ poison: false });
+  delete process.env.MANDIBLE_CONVERSATION_CACHE_DB;
   for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
   tempRoots = [];
 });
+
+afterAll(() => resetDb({ poison: false }));
 
 function createFixture(): { root: string; source: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-projected-db-test-"));
@@ -72,6 +91,16 @@ function createFixture(): { root: string; source: string } {
       compressed INTEGER NOT NULL DEFAULT 0,
       timestamp_ms INTEGER,
       UNIQUE(conversation_id, position)
+    );
+    CREATE TABLE conversation_ingest_state (
+      file_path TEXT PRIMARY KEY,
+      byte_offset INTEGER NOT NULL DEFAULT 0,
+      line_count INTEGER NOT NULL DEFAULT 0,
+      tail_hash TEXT NOT NULL DEFAULT '',
+      partial_line TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL,
+      empty_source_mtime REAL,
+      empty_source_size INTEGER
     );
     CREATE TABLE daemon_log (
       id TEXT PRIMARY KEY,
@@ -157,6 +186,89 @@ function createFixture(): { root: string; source: string } {
   return { root, source };
 }
 
+function createLegacyTitleFixture(options: { malformed?: boolean } = {}): {
+  root: string;
+  source: string;
+  transcript: string;
+  conversationId: string;
+  sourceHash: string;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-projected-title-test-"));
+  tempRoots.push(root);
+  const source = path.join(root, "source.db");
+  const transcriptDir = path.join(root, "home", ".claude", "projects", "-tmp-project");
+  fs.mkdirSync(transcriptDir, { recursive: true });
+  const sessionId = "8f8cf5a4-46a2-4016-88eb-398866cdea7b";
+  const conversationId = "32f0ca71-76ed-4298-b389-433156f47ba2";
+  const transcript = path.join(transcriptDir, `${sessionId}.jsonl`);
+  const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+  const validTranscript = [
+    line({
+      uuid: "legacy-user",
+      type: "user",
+      timestamp: "2026-08-16T00:00:00.000Z",
+      sessionId,
+      cwd: "/tmp/project",
+      message: {
+        role: "user",
+        content: "This session is being continued from a previous conversation that ran out of context. The summary begins here.",
+      },
+    }),
+    line({
+      uuid: "legacy-assistant",
+      parentUuid: "legacy-user",
+      type: "assistant",
+      timestamp: "2026-08-16T00:00:01.000Z",
+      sessionId,
+      message: { role: "assistant", model: "claude-opus", content: "Ready." },
+    }),
+    line({ type: "ai-title", aiTitle: "Review and take over QA successor briefing task", sessionId }),
+  ].join("");
+  fs.writeFileSync(transcript, options.malformed ? "{not-json}\n" : validTranscript, "utf8");
+  const sourceTime = new Date(1_800_000_005_000);
+  fs.utimesSync(transcript, sourceTime, sourceTime);
+  const transcriptBytes = fs.readFileSync(transcript);
+  const tailHash = crypto.createHash("sha256")
+    .update(transcriptBytes.subarray(Math.max(0, transcriptBytes.length - 4096)))
+    .digest("hex");
+
+  const db = openDb(source);
+  db.prepare(`
+    INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title, started_at,
+      block_count, session_id, starred, created_at, updated_at
+    ) VALUES (?, 'claude_code', ?, ?, ?, ?, '2026-08-16T00:00:00.000Z',
+      2, ?, 1, '2026-08-17', '2026-08-17')
+  `).run(
+    conversationId,
+    transcript,
+    "append:12411948:legacy-title-parser",
+    sourceTime.getTime() - 5_000,
+    "This session is being continued from a previous conversation that ran out of context. The summary be",
+    sessionId,
+  );
+  const insertBlock = db.prepare(`
+    INSERT INTO conversation_blocks (
+      id, conversation_id, type, role, content, position, metadata_json, compressed
+    ) VALUES (?, ?, ?, ?, ?, ?, '{}', 0)
+  `);
+  insertBlock.run("legacy-block-user", conversationId, "user_message", "user", "continued", 0);
+  insertBlock.run("legacy-block-assistant", conversationId, "assistant_message", "assistant", "Ready.", 1);
+  db.prepare(`
+    INSERT INTO conversation_ingest_state (
+      file_path, byte_offset, line_count, tail_hash, partial_line, updated_at
+    ) VALUES (?, ?, ?, ?, '', ?)
+  `).run(transcript, transcriptBytes.length, options.malformed ? 1 : 3, tailHash, sourceTime.getTime());
+  db.close();
+  return {
+    root,
+    source,
+    transcript,
+    conversationId,
+    sourceHash: crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex"),
+  };
+}
+
 function runSnapshot(source: string, output: string, extraArgs: string[] = []) {
   return spawnSync(process.execPath, [
     SCRIPT,
@@ -235,6 +347,110 @@ describe("project-db-snapshot", () => {
       .toEqual(["canonical-1", "canonical-2", "canonical-3"]);
     projected.close();
     expect(fs.readdirSync(root).some((name) => name.includes(".partial-"))).toBe(false);
+  });
+
+  it("converges an EOF-checkpointed Claude title only in the projected copy", async () => {
+    const fixture = createLegacyTitleFixture();
+    const output = path.join(fixture.root, "preview.db");
+    const result = runSnapshot(fixture.source, output);
+
+    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.projection.conversations.title_convergence).toEqual({
+      scanned: 1,
+      eligible: 1,
+      updated: 1,
+      skipped_missing_source: 0,
+      skipped_not_at_indexed_extent: 0,
+      rows: [{
+        id: fixture.conversationId,
+        title_before: "This session is being continued from a previous conversation that ran out of context. The summary be",
+        title_after: "Review and take over QA successor briefing task",
+        source_mtime_before: 1_800_000_000_000,
+        source_mtime_after: 1_800_000_005_000,
+        block_count_before: 2,
+        block_count_after: 2,
+      }],
+    });
+    expect(crypto.createHash("sha256").update(fs.readFileSync(fixture.source)).digest("hex"))
+      .toBe(fixture.sourceHash);
+
+    const canonical = new Database(fixture.source, { readonly: true });
+    expect(canonical.prepare("SELECT title, block_count FROM conversations WHERE id = ?")
+      .get(fixture.conversationId)).toEqual({
+      title: "This session is being continued from a previous conversation that ran out of context. The summary be",
+      block_count: 2,
+    });
+    const canonicalBlocks = canonical.prepare(`
+      SELECT id, type, role, content, position, metadata_json, compressed
+      FROM conversation_blocks
+      WHERE conversation_id = ?
+      ORDER BY position
+    `).all(fixture.conversationId);
+    canonical.close();
+
+    const projected = new Database(output) as Db;
+    setDb(projected);
+    process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(fixture.root, "search-cache.db");
+    expect(projected.prepare("SELECT title, source_hash, source_mtime, block_count FROM conversations WHERE id = ?")
+      .get(fixture.conversationId)).toEqual({
+      title: "Review and take over QA successor briefing task",
+      source_hash: crypto.createHash("sha256").update(fs.readFileSync(fixture.transcript)).digest("hex"),
+      source_mtime: 1_800_000_005_000,
+      block_count: 2,
+    });
+    expect(projected.prepare(`
+      SELECT id, type, role, content, position, metadata_json, compressed
+      FROM conversation_blocks
+      WHERE conversation_id = ?
+      ORDER BY position
+    `).all(fixture.conversationId)).toEqual(canonicalBlocks);
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const sidebar = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?limit=10" });
+    expect(sidebar.body).toEqual(expect.objectContaining({
+      groups: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "pinned",
+          conversations: expect.arrayContaining([
+            expect.objectContaining({
+              id: fixture.conversationId,
+              title: "Review and take over QA successor briefing task",
+            }),
+          ]),
+        }),
+      ]),
+    }));
+    const detail = await router.invoke({
+      method: "GET",
+      url: `/api/conversations/${fixture.conversationId}`,
+    });
+    expect(detail.body).toEqual(expect.objectContaining({
+      conversation: expect.objectContaining({
+        id: fixture.conversationId,
+        title: "Review and take over QA successor briefing task",
+      }),
+    }));
+    projected.close();
+    resetDb({ poison: false });
+  });
+
+  it("does not replace a good projection when title convergence fails", () => {
+    const good = createLegacyTitleFixture();
+    const output = path.join(good.root, "preview.db");
+    expect(runSnapshot(good.source, output).status).toBe(0);
+    const manifestPath = `${output}.manifest.json`;
+    const acceptedDb = fs.readFileSync(output);
+    const acceptedManifest = fs.readFileSync(manifestPath);
+
+    const malformed = createLegacyTitleFixture({ malformed: true });
+    const replacement = runSnapshot(malformed.source, output, ["--replace"]);
+    expect(replacement.status).toBe(1);
+    expect(replacement.stderr).toContain("did not reach source metadata");
+    expect(fs.readFileSync(output)).toEqual(acceptedDb);
+    expect(fs.readFileSync(manifestPath)).toEqual(acceptedManifest);
+    expect(fs.readdirSync(good.root).some((name) => name.includes(".partial-"))).toBe(false);
   });
 
   it("removes partial output when projection fails", () => {
