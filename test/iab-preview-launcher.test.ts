@@ -898,6 +898,7 @@ describe("iab-preview launcher", () => {
     expect(payload.projection).toMatchObject({
       logs: expect.stringContaining("24h"),
       conversations: expect.stringContaining("whole"),
+      conversationTitleConvergence: expect.stringContaining("before daemon start"),
     });
   });
 

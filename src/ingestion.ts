@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
-import { getDb } from "./db.js";
+import { getDb, type Db } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
@@ -1149,6 +1149,131 @@ export async function ingestBatchForWorker(paths: readonly string[], forceFull =
   for (const filePath of paths) {
     await ingestFile(filePath, { forceFull });
   }
+}
+
+export interface ProjectedConversationTitleConvergenceRow {
+  id: string;
+  title_before: string;
+  title_after: string;
+  source_mtime_before: number;
+  source_mtime_after: number;
+  block_count_before: number;
+  block_count_after: number;
+}
+
+export interface ProjectedConversationTitleConvergenceResult {
+  scanned: number;
+  eligible: number;
+  updated: number;
+  skipped_missing_source: number;
+  skipped_not_at_indexed_extent: number;
+  rows: ProjectedConversationTitleConvergenceRow[];
+}
+
+/**
+ * Converge provider-owned Claude titles in a newly projected database copy.
+ *
+ * Reject-mode previews deliberately do not start background ingestion. The
+ * projection step therefore calls this against its still-private copy before
+ * accepting that copy or its manifest. Eligibility is narrow: the source must
+ * exist, its append checkpoint must cover the exact complete file, and the
+ * persisted conversation mtime must be stale. `ingestFile` remains the single
+ * parser, precedence, masking, durable-source, and metadata persistence path.
+ */
+export async function convergeProjectedConversationTitlesForWorker(
+  db: Db = getDb(),
+): Promise<ProjectedConversationTitleConvergenceResult> {
+  const candidates = db.prepare(`
+    SELECT
+      c.id,
+      c.source_path,
+      c.title,
+      c.source_mtime,
+      c.block_count,
+      state.byte_offset,
+      state.partial_line
+    FROM conversations c
+    LEFT JOIN conversation_ingest_state state ON state.file_path = c.source_path
+    WHERE c.source = 'claude_code'
+    ORDER BY c.id
+  `).all() as Array<{
+    id: string;
+    source_path: string;
+    title: string;
+    source_mtime: number;
+    block_count: number;
+    byte_offset: number | null;
+    partial_line: string | null;
+  }>;
+  const result: ProjectedConversationTitleConvergenceResult = {
+    scanned: candidates.length,
+    eligible: 0,
+    updated: 0,
+    skipped_missing_source: 0,
+    skipped_not_at_indexed_extent: 0,
+    rows: [],
+  };
+
+  for (const candidate of candidates) {
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(candidate.source_path);
+    } catch {
+      result.skipped_missing_source += 1;
+      continue;
+    }
+    if (
+      candidate.byte_offset !== stat.size
+      || (candidate.partial_line ?? "") !== ""
+      || Math.abs(candidate.source_mtime - stat.mtimeMs) < 100
+    ) {
+      result.skipped_not_at_indexed_extent += 1;
+      continue;
+    }
+
+    result.eligible += 1;
+    await ingestFile(candidate.source_path);
+    const after = db.prepare(`
+      SELECT title, source_mtime, block_count
+      FROM conversations
+      WHERE id = ?
+    `).get(candidate.id) as {
+      title: string;
+      source_mtime: number;
+      block_count: number;
+    } | undefined;
+    if (!after) {
+      throw new Error(`Projected conversation disappeared during title convergence: ${candidate.id}`);
+    }
+    if (Math.abs(after.source_mtime - stat.mtimeMs) >= 100) {
+      throw new Error(
+        `Projected conversation title convergence did not reach source metadata: ${candidate.id}`,
+      );
+    }
+    if (after.block_count !== candidate.block_count) {
+      throw new Error(
+        `Projected conversation title convergence changed block count: ${candidate.id}`,
+      );
+    }
+    if (
+      after.title === candidate.title
+      && after.source_mtime === candidate.source_mtime
+      && after.block_count === candidate.block_count
+    ) {
+      continue;
+    }
+    result.updated += 1;
+    result.rows.push({
+      id: candidate.id,
+      title_before: candidate.title,
+      title_after: after.title,
+      source_mtime_before: candidate.source_mtime,
+      source_mtime_after: after.source_mtime,
+      block_count_before: candidate.block_count,
+      block_count_after: after.block_count,
+    });
+  }
+  return result;
 }
 
 export function configureIngestionWorker(
