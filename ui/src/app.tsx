@@ -18,6 +18,7 @@ import {
   getRepoBranches,
   getSettings,
   getUserAppRailOrderSetting,
+  getUserTypographySetting,
   getWorkRepos,
   invalidateApiGetCache,
   invalidateDashboardApiCacheForEvent,
@@ -29,9 +30,19 @@ import {
   updateAuthRequestField,
   updateSetting,
   updateUserAppRailOrderSetting,
+  updateUserTypographySetting,
+  type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
 } from './api';
+import {
+  DEFAULT_TYPOGRAPHY_SETTINGS,
+  TYPOGRAPHY_SETTING_KEYS,
+  typographyCssVariables,
+  typographySettingValue,
+  reconcileTypographySettings,
+  withTypographySetting,
+} from './typography-settings';
 import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
@@ -560,6 +571,13 @@ function App(): JSX.Element {
   const railMutationPendingRef = useRef(false);
   const railRequestRef = useRef(0);
   const railRevisionRef = useRef(0);
+  const [typography, setTypography] = useState(DEFAULT_TYPOGRAPHY_SETTINGS);
+  const typographyRevisionRef = useRef<Record<UserTypographySettingKey, number>>({
+    ui_font_face: 0,
+    ui_font_size: 0,
+    detail_font_face: 0,
+    detail_font_size: 0,
+  });
   const [railAnnouncement, setRailAnnouncement] = useState('');
   const railNavRef = useRef<HTMLElement | null>(null);
   const railRouteRef = useRef(route.tab);
@@ -943,6 +961,47 @@ function App(): JSX.Element {
     }
   }, [instanceInfo?.operational_mutations]);
 
+  const refreshTypography = useCallback(async (): Promise<void> => {
+    if (instanceInfo?.operational_mutations !== 'allow') return;
+    const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
+    setTypography((current) => {
+      const reconciled = reconcileTypographySettings(current, typographyRevisionRef.current, snapshots);
+      typographyRevisionRef.current = reconciled.revisions;
+      return reconciled.settings;
+    });
+  }, [instanceInfo?.operational_mutations]);
+
+  useEffect(() => {
+    if (instanceInfo?.operational_mutations === 'allow') void refreshTypography();
+    if (instanceInfo?.operational_mutations === 'reject') {
+      setTypography(DEFAULT_TYPOGRAPHY_SETTINGS);
+    }
+  }, [instanceInfo?.operational_mutations, refreshTypography]);
+
+  const handleTypographySave = useCallback(async (
+    key: UserTypographySettingKey,
+    value: string,
+  ): Promise<void> => {
+    if (instanceInfo?.operational_mutations !== 'allow') {
+      throw new Error('Typography settings are unavailable in this instance');
+    }
+    const previousValue = typographySettingValue(typography, key);
+    const revisionAtStart = typographyRevisionRef.current[key];
+    setTypography((current) => withTypographySetting(current, key, value));
+    try {
+      const snapshot = await updateUserTypographySetting(key, value);
+      if (snapshot.revision >= typographyRevisionRef.current[key]) {
+        typographyRevisionRef.current[key] = snapshot.revision;
+        setTypography((current) => withTypographySetting(current, key, snapshot.value));
+      }
+    } catch (error) {
+      if (typographyRevisionRef.current[key] === revisionAtStart) {
+        setTypography((current) => withTypographySetting(current, key, previousValue));
+      }
+      throw error;
+    }
+  }, [instanceInfo?.operational_mutations, typography]);
+
   useEffect(() => {
     if (instanceInfo?.operational_mutations === 'reject') {
       railRequestRef.current += 1;
@@ -1112,13 +1171,15 @@ function App(): JSX.Element {
       const data = typeof payload.data === 'object' && payload.data !== null
         ? payload.data as Record<string, unknown>
         : null;
+      if (data?.version !== 1 || !Number.isSafeInteger(data.revision)) return;
+      if (data.key === APP_RAIL_ORDER_SETTING_KEY) {
+        if ((data.revision as number) > railRevisionRef.current) void refreshRailOrder();
+        return;
+      }
       if (
-        data?.version !== 1
-        || data.key !== APP_RAIL_ORDER_SETTING_KEY
-        || !Number.isSafeInteger(data.revision)
-        || (data.revision as number) <= railRevisionRef.current
-      ) return;
-      void refreshRailOrder();
+        TYPOGRAPHY_SETTING_KEYS.includes(data.key as UserTypographySettingKey)
+        && (data.revision as number) > typographyRevisionRef.current[data.key as UserTypographySettingKey]
+      ) void refreshTypography();
     };
     const daemonHandler = (payload: SSEPayload) => {
       const data = payload.data && typeof payload.data === 'object' ? payload.data : null;
@@ -1339,7 +1400,7 @@ function App(): JSX.Element {
       outputCoalescer.dispose();
       client.close();
     };
-  }, [loadDashboardBadges, refreshRailOrder]);
+  }, [loadDashboardBadges, refreshRailOrder, refreshTypography]);
 
   // Graph-activation flush: when the graph tab becomes active (or becomes
   // visible again while active) and a graph-affecting event was buffered while
@@ -2314,6 +2375,7 @@ function App(): JSX.Element {
       className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${codexIabDetected ? ' app-shell--codex-iab' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
+        ...typographyCssVariables(typography),
       } as JSX.CSSProperties}
     >
       {!daemonWarm && (
@@ -2549,6 +2611,8 @@ function App(): JSX.Element {
           <LazySettingsView
             settings={state.settings}
             onSave={handleSettingsSave}
+            typography={typography}
+            onTypographySave={handleTypographySave}
             onClose={handleSettingsClose}
             instance={instanceInfo}
           />

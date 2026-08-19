@@ -167,14 +167,14 @@ describe("authenticated user settings routes", () => {
     const user = createUser(db, { slug: "restart-user", kind: "human", display_name: "Restart User" });
     let routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), "persisted"));
+    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), "space-grotesk", "detail_font_face"));
     db.close();
 
     db = openDb(dbPath);
     routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug))))
-      .toMatchObject({ statusCode: 200, payload: { version: 1, value: "persisted", revision: 1 } });
+    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "detail_font_face")))
+      .toMatchObject({ statusCode: 200, payload: { version: 1, value: "space-grotesk", revision: 1 } });
     db.close();
   });
 
@@ -194,6 +194,17 @@ describe("authenticated user settings routes", () => {
         .toMatchObject({ statusCode: 404, payload: { code: "user_setting_not_found" } });
       expect(await call(routes, "PUT", request("PUT", identity(user.id, user.slug), 7)))
         .toMatchObject({ statusCode: 400 });
+      for (const [key, valid, invalid] of [
+        ["ui_font_face", "space-grotesk", "comic-sans"],
+        ["detail_font_face", "system-ui", "serif"],
+        ["ui_font_size", "14", "21"],
+        ["detail_font_size", "12", "9"],
+      ] as const) {
+        expect(await call(routes, "PUT", request("PUT", identity(user.id, user.slug), valid, key)))
+          .toMatchObject({ statusCode: 200, payload: { key, value: valid, revision: 1 } });
+        expect(await call(routes, "PUT", request("PUT", identity(user.id, user.slug), invalid, key)))
+          .toMatchObject({ statusCode: 400, payload: { code: "invalid_user_setting_value" } });
+      }
     } finally {
       db.close();
     }

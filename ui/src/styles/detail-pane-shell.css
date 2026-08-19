@@ -38,6 +38,21 @@
   min-width: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
+  --detail-content-family: var(--font-detail);
+  --detail-content-size: var(--font-detail-size);
+  font-family: var(--detail-content-family);
+  font-size: var(--detail-content-size);
+}
+
+.app-layout--route-timeline .detail-pane-shell__body {
+  --detail-content-family: var(--font-ui);
+  --detail-content-size: var(--font-ui-size);
+}
+
+.detail-pane-shell__body :where(p, li, blockquote, dd),
+.detail-pane-shell__body :where(.rendered-markdown, .spec-panel, .briefing-document__prose) {
+  font-family: var(--detail-content-family);
+  font-size: var(--detail-content-size);
 }
 
 .detail-pane-shell__footer {
