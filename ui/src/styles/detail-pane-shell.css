@@ -135,6 +135,13 @@
   gap: 10px;
 }
 
+.detail-pane-header__title-block {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+
 .detail-pane-header__title {
   flex: 1;
   min-width: 0;
@@ -152,6 +159,13 @@
 }
 
 .detail-pane-header__metadata {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.detail-pane-header__supporting-metadata {
   min-width: 0;
   color: var(--text-muted);
   font-size: 12px;

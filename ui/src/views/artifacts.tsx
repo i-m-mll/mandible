@@ -1308,6 +1308,7 @@ export function ArtifactDetail({
       headerClassName="artifact-detail__header"
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
       headerRef={headerRef}
+      ariaBusy={contentLoading}
       header={(
         <DetailPaneHeader
           variant="versioned"
@@ -1317,6 +1318,17 @@ export function ArtifactDetail({
             copyLabel: headerCopyLabel,
           }}
           title={artifactTitle(artifact)}
+          supportingMetadata={(
+            <div className="artifact-detail__header-context">
+              <span className="artifact-detail__subline">
+                {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
+              </span>
+              <span className="artifact-detail__dates">
+                <span>Created: {formatTime(createdUpdated.created)}</span>
+                <span>Updated: {formatTime(createdUpdated.updated)}</span>
+              </span>
+            </div>
+          )}
           state={selectedVersionNo === null ? 'Latest' : undefined}
           selector={{
             label: 'Artifact version',
@@ -1444,22 +1456,12 @@ export function ArtifactDetail({
       )}
       overlays={overlays}
     >
-        <div className="artifact-detail__context">
-          <div className="artifact-detail__subline">
-            {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
-          </div>
-          <div className="artifact-detail__dates">
-            <span>Created: {formatTime(createdUpdated.created)}</span>
-            <span>Updated: {formatTime(createdUpdated.updated)}</span>
-          </div>
-        </div>
         {detailError && <div className="artifacts-error">{detailError}</div>}
         {openError && <div className="artifacts-error" role="alert">Could not open artifact: {openError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
-        <div className="artifact-detail__body">
-          {editMode && draft ? (
+        {editMode && draft ? (
             <ArtifactEditorSection
               draft={draft}
               value={draftValue}
@@ -1557,8 +1559,7 @@ export function ArtifactDetail({
                 </div>
             )}
           </section>
-        )}
-      </div>
+          )}
     </DetailPaneShell>
   );
 }
@@ -1797,8 +1798,7 @@ function PreviewSection({
     setAutoFormatJson(true);
   }, [content?.artifact_id]);
   return (
-    <section className="artifact-detail__section" aria-label="Preview">
-      <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
+    <>
         {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
         {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
         {showPreview && content?.warnings?.map((warning) => (
@@ -1874,8 +1874,7 @@ function PreviewSection({
         {showPreview && content?.preview?.truncated && (!preview || preview.kind === 'markdown' || preview.kind === 'html') && (
           <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
         )}
-      </div>
-    </section>
+    </>
   );
 }
 

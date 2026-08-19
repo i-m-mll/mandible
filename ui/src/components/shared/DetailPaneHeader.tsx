@@ -27,6 +27,8 @@ type DetailPaneHeaderBaseProps = {
   title: ComponentChildren;
   titleId?: string;
   titleTooltip?: string;
+  /** Supporting context rendered with the title without adding another header row. */
+  supportingMetadata?: ComponentChildren;
   actions?: ComponentChildren;
   actionsLabel?: string;
   selector?: DetailPaneHeaderSelector;
@@ -78,6 +80,7 @@ export function DetailPaneHeader({
   title,
   titleId,
   titleTooltip,
+  supportingMetadata,
   status,
   state,
   actions,
@@ -149,9 +152,18 @@ export function DetailPaneHeader({
           </div>
         )}
         <div className="detail-pane-header__title-row">
-          <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
-            {title}
-          </h2>
+          {supportingMetadata !== undefined && supportingMetadata !== null ? (
+            <div className="detail-pane-header__title-block">
+              <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
+                {title}
+              </h2>
+              <div className="detail-pane-header__supporting-metadata">{supportingMetadata}</div>
+            </div>
+          ) : (
+            <h2 id={titleId} className="detail-pane-header__title" title={titleTooltip}>
+              {title}
+            </h2>
+          )}
           {actions !== undefined && actions !== null && (
             <div
               className="detail-pane-header__actions"
