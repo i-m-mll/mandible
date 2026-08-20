@@ -2148,7 +2148,7 @@ describe('SettingsView', () => {
     expect(screen.getByLabelText('Toggle project restriction').getAttribute('aria-checked')).toBe('true');
   });
 
-  it('renders a close button when an onClose handler is supplied', () => {
+  it('keeps onClose API compatibility while rendering sourced section navigation without redundant chrome', () => {
     const onClose = vi.fn();
     render(
       h(SettingsView, {
@@ -2158,8 +2158,23 @@ describe('SettingsView', () => {
       }),
     );
 
-    fireEvent.click(screen.getByLabelText('Close settings'));
-    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText('Close settings')).toBeNull();
+    expect(screen.queryByText('Mandible configuration.')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    const navigation = screen.getByRole('navigation', { name: 'Settings sections' });
+    const links = within(navigation).getAllByRole('link');
+    expect(links).toHaveLength(15);
+    expect(links.filter((link) => link.getAttribute('aria-current') === 'location')).toHaveLength(1);
+    for (const link of links) {
+      const target = link.getAttribute('href');
+      expect(target?.startsWith('#')).toBe(true);
+      expect(document.querySelector(target!)).toBeTruthy();
+    }
+
+    const appearanceLink = within(navigation).getByRole('link', { name: 'Appearance' });
+    fireEvent.click(appearanceLink);
+    expect(appearanceLink.getAttribute('aria-current')).toBe('location');
   });
 
   it('does not show deprecated Reaper controls', () => {
@@ -2229,7 +2244,7 @@ describe('SettingsView', () => {
       }),
     );
 
-    expect(screen.getByText('Instruction Delivery')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Instruction Delivery' })).toBeTruthy();
     expect(await screen.findByDisplayValue('/Users/mll/.claude/CLAUDE.md')).toBeTruthy();
     expect(screen.getByDisplayValue('/Users/mll/.codex/AGENTS.md')).toBeTruthy();
     expect(screen.queryByPlaceholderText('/path/to/50-mandible.generated.md')).toBeNull();
