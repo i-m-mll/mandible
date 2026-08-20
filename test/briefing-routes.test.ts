@@ -52,7 +52,9 @@ function payload(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.mocked(broadcast).mockClear();
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefing-routes-"));
-  db = new Database(":memory:");
+  fs.writeFileSync(path.join(root, "source.db"), "");
+  fs.copyFileSync(path.join(root, "source.db"), path.join(root, "preview.db"));
+  db = new Database(path.join(root, "preview.db"));
   migrate(db);
   setSetting(db, "artifact_root", root);
   createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Publisher" });
