@@ -52,6 +52,9 @@ export interface ConversationSourceVersion extends ConversationSourceEpochs {
   contentSha256: string;
   byteLength: number;
   fileMtimeMs: number | null;
+  filesystemDevice: string | null;
+  filesystemInode: string | null;
+  filesystemCtimeNs: string | null;
   availability: ConversationSourceAvailability;
   custodyState: ConversationSourceCustodyState;
   generation: "sealed_sha256" | "legacy_hash";

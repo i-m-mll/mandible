@@ -44,7 +44,11 @@ async function handle(request: IngestionWorkerRequest): Promise<void> {
   try {
     const value = await withBusyRetry(async () => {
       if (request.kind === "ingest") {
-        await ingestBatchForWorker(request.paths, request.forceFull === true);
+        await ingestBatchForWorker(
+          request.paths,
+          request.forceFull === true,
+          request.bypassSameMtimeUnchanged === true,
+        );
         return undefined;
       }
       if (request.kind === "reconcile") {
