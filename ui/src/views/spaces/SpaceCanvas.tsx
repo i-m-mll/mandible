@@ -79,6 +79,7 @@ import {
 } from './edgeModel';
 import { promoteEdgeToLedger, type PromoteEdgeDeps } from './edgePromote';
 import './SpaceCanvas.css';
+import { shortRouteId } from '../../routing';
 
 // ---------------------------------------------------------------------------
 // Pure model helpers (exported for unit tests). These carry the load-bearing
@@ -217,7 +218,7 @@ function linkedSpaceData(item: SpaceItem | null): SpaceFlowNodeData['linkedSpace
     primaryType,
     primaryLabel,
     projectLabel,
-    href: `#/spaces?space=${encodeURIComponent(item.ref_id)}`,
+    href: `#/spaces?space=${encodeURIComponent(shortRouteId(item.ref_id))}`,
   };
 }
 

@@ -29,6 +29,7 @@ import {
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
+import type { SpacesRouteTarget } from '../../routing';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -94,7 +95,7 @@ export type SpacesViewShellProps = {
    * Navigate the URL hash to open a space or a legacy renderer override. The
    * host (app.tsx) rebuilds `#/spaces?...`, preserving `?sidebar=`.
    */
-  onNavigate?: (target: { projectId?: string | null; spaceId?: string | null; renderer?: string | null }) => void;
+  onNavigate?: (target: SpacesRouteTarget) => void;
   /** Injected selected-Space loader for tests; defaults to the real API client. */
   loadSpace?: typeof getSpace;
   /** Injected selected-Space fact packet loader for tests; defaults to the real API client. */
@@ -236,7 +237,7 @@ export function SpacesViewShell({
   }, [spaceId, resolvedLoadSpaceFactPacket]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
-    if (space.id !== spaceId) return;
+    if (!spaceId || (space.id !== spaceId && !space.id.startsWith(spaceId))) return;
     const snapshot = snapshotFromSpace(space);
     setSelectedSnapshot(snapshot);
     persistCachedSelection(snapshot);
@@ -255,6 +256,10 @@ export function SpacesViewShell({
     : selectedSnapshot
       ? (selectedSnapshot.project_id ?? '')
       : projectId;
+  const canonicalSpaceId = selectedSpace?.id
+    ?? selectedFactPacket?.space.id
+    ?? selectedSnapshot?.id
+    ?? spaceId;
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
   const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
@@ -277,10 +282,15 @@ export function SpacesViewShell({
           persistence (`sidebar-width:spaces`). The shell just threads hidden. */}
       <SpacesSidebar
         hidden={sidebarHidden}
-        selectedSpaceId={spaceId}
+        selectedSpaceId={canonicalSpaceId}
         onSelectedSpaceResolved={handleSidebarSpaceResolved}
         onSelectSpace={(args) =>
-          onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
+          onNavigate?.({
+            projectId: args.projectId,
+            projectKey: args.projectKey,
+            spaceId: args.spaceId,
+            renderer: args.renderer,
+          })
         }
       />
       <div className="spaces-shell__main">
@@ -342,7 +352,7 @@ export function SpacesViewShell({
           ) : MountPoint ? (
             <MountPoint
               projectId={effectiveProjectId}
-              spaceId={spaceId}
+              spaceId={canonicalSpaceId}
               renderer={activeRenderer}
               instance={instance}
               initialFactPacket={selectedFactPacket}

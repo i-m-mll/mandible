@@ -95,6 +95,19 @@ afterEach(() => {
 });
 
 describe('SpacesSidebar render + grouping', () => {
+  it('supplies the canonical project key when opening a project Space', async () => {
+    const onSelectSpace = vi.fn();
+    render(<SpacesSidebar onSelectSpace={onSelectSpace} loadGroups={vi.fn().mockResolvedValue(sampleGroups())} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Roadmap (Document)' }));
+    expect(onSelectSpace).toHaveBeenCalledWith({
+      projectId: 'proj-a',
+      projectKey: 'alpha',
+      spaceId: 'a1',
+      renderer: null,
+    });
+  });
+
   it('renders the top-level group above the project headers with compact type indicators', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
@@ -518,6 +531,7 @@ describe('SpacesSidebar selection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Beta board (Board)' }));
     expect(onSelectSpace).toHaveBeenCalledWith({
       projectId: 'proj-b',
+      projectKey: 'beta',
       spaceId: 'b1',
       renderer: null,
     });

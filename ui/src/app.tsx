@@ -72,6 +72,8 @@ import {
   parseArtifactVersionParam,
   parseRouteFromHash,
   shortRouteId,
+  spacesRouteFromHash,
+  type SpacesRouteTarget,
   type Route,
 } from './routing';
 import {
@@ -726,21 +728,9 @@ function App(): JSX.Element {
   // The existing `?sidebar=` param is preserved so opening a space never toggles
   // the sidebar.
   const navigateToSpace = useCallback(
-    (target: { projectId?: string | null; spaceId?: string | null; renderer?: string | null }) => {
+    (target: SpacesRouteTarget) => {
       if (typeof window === 'undefined') return;
-      const hash = window.location.hash || '#/spaces';
-      const queryPart = hash.replace(/^#/, '').split('?')[1] ?? '';
-      const params = new URLSearchParams(queryPart);
-      const setOrDelete = (key: string, value: string | null | undefined) => {
-        if (value === undefined) return; // leave untouched
-        if (value === null || value === '') params.delete(key);
-        else params.set(key, value);
-      };
-      setOrDelete('project', target.projectId);
-      setOrDelete('space', target.spaceId);
-      setOrDelete('renderer', target.renderer);
-      const query = params.toString();
-      navigateToHash(`#/spaces${query ? `?${query}` : ''}`);
+      navigateToHash(spacesRouteFromHash(window.location.hash || '#/spaces', target));
     },
     [navigateToHash],
   );

@@ -39,6 +39,7 @@ import {
   isViewSidebarHidden,
   parseRouteFromHash,
   shortRouteId,
+  spacesRouteFromHash,
 } from '../ui/src/routing';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import {
@@ -702,11 +703,24 @@ describe('App routing', () => {
     expect(shortRouteId('e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe('e4c52737');
     expect(shortRouteId(`briefing:${'a'.repeat(64)}`)).toBe('briefing:aaaaaaa');
     expect(shortRouteId(`briefing-round:${'b'.repeat(64)}`)).toBe('briefing-round:bbbbbbb');
+    expect(shortRouteId('prj_00mpmto02f_ec55d4e21bfe5ce116fb')).toBe('prj_00mp');
     expect(shortRouteId('e4c52737')).toBe('e4c52737');
     expect(shortRouteId('req-active-1')).toBe('req-active-1');
     expect(shortRouteId('codex-e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe(
       'codex-e4c52737-40e4-472a-8367-fbdbe97801a2',
     );
+  });
+
+  it('generates a short canonical Spaces route without dropping unrelated state', () => {
+    expect(spacesRouteFromHash(
+      '#/spaces?sidebar=hidden&agent_session=01a02175&filter=open',
+      {
+        projectId: 'prj_00mpmto02f_ec55d4e21bfe5ce116fb',
+        projectKey: 'rlrmp',
+        spaceId: '7038d21f-b494-47fb-b9b8-d5fb93b3309a',
+        renderer: null,
+      },
+    )).toBe('#/spaces?sidebar=hidden&agent_session=01a02175&filter=open&project=rlrmp&space=7038d21f');
   });
 
   it('navigates only for supported mandible deep links', () => {

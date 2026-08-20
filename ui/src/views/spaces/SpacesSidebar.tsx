@@ -62,7 +62,12 @@ export type SpacesSidebarProps = {
    * selected Space's primary type resolves in the shell; explicit legacy
    * renderer links are owned by the route, not sidebar row clicks.
    */
-  onSelectSpace: (args: { projectId: string | null; spaceId: string; renderer?: string | null }) => void;
+  onSelectSpace: (args: {
+    projectId: string | null;
+    projectKey?: string | null;
+    spaceId: string;
+    renderer?: string | null;
+  }) => void;
   /**
    * Injected loader (defaults to the real grouped read). Lets tests supply a
    * deterministic grouping without a daemon.
@@ -304,13 +309,15 @@ export function SpacesSidebar({
 
   useEffect(() => {
     if (!selectedSpaceId || !onSelectedSpaceResolved) return;
+    const matches: Space[] = [];
     for (const group of groups) {
-      const match = group.spaces.find((space) => space.id === selectedSpaceId);
-      if (match) {
-        onSelectedSpaceResolved(match);
-        return;
+      for (const space of group.spaces) {
+        if (space.id === selectedSpaceId || space.id.startsWith(selectedSpaceId)) {
+          matches.push(space);
+        }
       }
     }
+    if (matches.length === 1) onSelectedSpaceResolved(matches[0]);
   }, [groups, selectedSpaceId, onSelectedSpaceResolved]);
 
   // --- close create popover on outside pointer / Escape ---
@@ -501,7 +508,7 @@ export function SpacesSidebar({
     refresh();
   }, [refresh]);
 
-  const renderSpaceRow = (space: Space): JSX.Element => {
+  const renderSpaceRow = (space: Space, projectKey: string | null = null): JSX.Element => {
     const active = selectedSpaceId === space.id;
     const title = space.title || 'Untitled space';
     return (
@@ -522,6 +529,7 @@ export function SpacesSidebar({
         onSelect={() =>
           onSelectSpace({
             projectId: space.project_id,
+            projectKey,
             spaceId: space.id,
             renderer: null,
           })
@@ -741,7 +749,7 @@ export function SpacesSidebar({
           <div className="spaces-tree__group spaces-tree__group--top" data-testid="spaces-group-top-level">
             <div className="spaces-tree__group-label">Top level</div>
             <div className="spaces-tree__group-spaces">
-              {filteredTopLevel.map(renderSpaceRow)}
+              {filteredTopLevel.map((space) => renderSpaceRow(space))}
             </div>
           </div>
         ) : null}
@@ -784,7 +792,7 @@ export function SpacesSidebar({
                 onEnd: endDrag,
               }}
             >
-              {kg.group.spaces.map(renderSpaceRow)}
+              {kg.group.spaces.map((space) => renderSpaceRow(space, kg.group.project_key))}
             </SidebarGroupNode>
           );
         })}

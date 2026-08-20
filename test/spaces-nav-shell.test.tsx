@@ -131,6 +131,32 @@ describe('SpacesViewShell', () => {
     expect(seen[0].initialFactPacket).toBe(packet);
   });
 
+  it('passes the full canonical Space id to renderers after resolving a short route ref', async () => {
+    const fullId = '7038d21f-b494-47fb-b9b8-d5fb93b3309a';
+    const seen: SpaceRendererMountProps[] = [];
+    function CanvasMount(props: SpaceRendererMountProps): JSX.Element {
+      seen.push(props);
+      return <div data-testid="canvas-mount">canvas mount</div>;
+    }
+    render(
+      <SpacesViewShell
+        projectId="rlrmp"
+        spaceId="7038d21f"
+        renderers={{ canvas: CanvasMount }}
+        loadSpaceFactPacket={vi.fn().mockResolvedValue(makePacket(makeSpace({
+          id: fullId,
+          project_id: 'prj_00mpmto02f_ec55d4e21bfe5ce116fb',
+        })))}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('canvas-mount')).toBeTruthy());
+    expect(seen.at(-1)).toMatchObject({
+      projectId: 'prj_00mpmto02f_ec55d4e21bfe5ce116fb',
+      spaceId: fullId,
+    });
+  });
+
   it('uses the cached primary renderer while waiting for the fact packet', () => {
     localStorage.setItem(
       'spaces:selected-space:v1',
