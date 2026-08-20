@@ -462,8 +462,8 @@ function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
   };
 }
 
-function railGroupLinks(container: HTMLElement, group: 'primary' | 'secondary'): HTMLAnchorElement[] {
-  return Array.from(container.querySelectorAll<HTMLAnchorElement>(`.app-rail__group[data-rail-group="${group}"] [data-rail-item]`));
+function railGroupLinks(container: HTMLElement, _legacyGroup: 'primary' | 'secondary'): HTMLAnchorElement[] {
+  return Array.from(container.querySelectorAll<HTMLAnchorElement>('.app-rail__group[data-rail-group="upper"] [data-rail-item]'));
 }
 
 async function railReorderReady(): Promise<void> {
@@ -890,13 +890,13 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
-  it('hydrates durable rail order from settings while keeping groups and footer fixed', async () => {
+  it('reconciles legacy groups into one upper order and keeps Logs adjacent to Settings', async () => {
     installMemoryLocalStorage();
     const stored = JSON.stringify({
       version: 1,
       groups: {
-        primary: ['issues', 'console', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox'],
-        secondary: ['logs', 'work', 'graph', 'tasks'],
+        primary: ['issues', 'settings', 'console', 'issues', 'unknown', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox'],
+        secondary: ['logs', 'work', 'graph'],
       },
     });
     stubRailSettingsFetch(stored);
@@ -908,12 +908,24 @@ describe('app shell', () => {
 
     expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual([
       'issues', 'console', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox',
+      'work', 'graph', 'tasks',
     ]);
-    expect(railGroupLinks(container, 'secondary').map((link) => link.dataset.railItem)).toEqual([
-      'logs', 'work', 'graph', 'tasks',
-    ]);
-    expect(screen.getByRole('link', { name: 'Settings' }).closest('.app-rail__footer')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Settings' }).hasAttribute('data-rail-item')).toBe(false);
+    expect(container.querySelectorAll('.app-rail__group[data-rail-group="upper"]')).toHaveLength(1);
+    expect(container.querySelector('[data-rail-group="secondary"]')).toBeNull();
+    const footer = screen.getByRole('link', { name: 'Settings' }).closest('.app-rail__footer');
+    expect(footer).toBeTruthy();
+    const fixedLinks = Array.from(footer?.querySelectorAll('a') ?? []);
+    expect(fixedLinks.slice(-2).map((link) => link.getAttribute('aria-label'))).toEqual(['Logs', 'Settings']);
+    for (const fixed of fixedLinks) {
+      expect(fixed.hasAttribute('data-rail-item')).toBe(false);
+      expect(fixed.hasAttribute('data-rail-group')).toBe(false);
+      expect(fixed.hasAttribute('draggable')).toBe(false);
+      expect(fixed.hasAttribute('aria-keyshortcuts')).toBe(false);
+      expect(fixed.hasAttribute('aria-describedby')).toBe(false);
+    }
+    const css = readResolvedStylesheet();
+    expect(css).not.toContain('.app-rail__group--secondary');
+    expect(css).toContain('.app-rail__group {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;');
     expect(screen.getByRole('link', { name: 'Spaces' }).getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(screen.getByRole('link', { name: 'Briefing' })
       .querySelector('.app-rail__badge')?.textContent).toBe('2'));
@@ -943,7 +955,8 @@ describe('app shell', () => {
       data: { version: 1, key: 'app_rail_order', revision: 2 },
     }));
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('briefing'));
-    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('graph');
+    expect(railGroupLinks(container, 'primary').slice(0, 4).map((link) => link.dataset.railItem))
+      .toEqual(['briefing', 'console', 'graph', 'work']);
     expect(settings.getCalls).toHaveBeenCalledTimes(2);
 
     act(() => events.emit({
@@ -1052,7 +1065,8 @@ describe('app shell', () => {
 
     const { container } = render(h(App, {}));
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
-    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('work');
+    expect(railGroupLinks(container, 'primary').slice(-3).map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks']);
 
     act(() => adoptAgentSessionBinding('returning-session'));
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('overview'));
@@ -1178,7 +1192,7 @@ describe('app shell', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/user-settings/'))).toBe(false);
   });
 
-  it('retains the authoritative fallback and disables reorder when user identity is rejected', async () => {
+  it('does not infer reject-mode fallback from an authenticated-settings 403', async () => {
     installMemoryLocalStorage();
     (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
       instance: writablePreviewInstance,
@@ -1188,9 +1202,9 @@ describe('app shell', () => {
       const url = String(input);
       if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
         return Promise.resolve(new Response(JSON.stringify({
-          error: 'Authentication required',
-          code: 'authentication_required',
-        }), { status: 401, headers: { 'content-type': 'application/json' } }));
+          error: 'Forbidden',
+          code: 'forbidden',
+        }), { status: 403, headers: { 'content-type': 'application/json' } }));
       }
       if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
         putCalls(input, init);
@@ -1243,8 +1257,9 @@ describe('app shell', () => {
     await waitFor(() => expect(putCalls).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(railGroupLinks(mounted.container, 'primary')[0]?.dataset.railItem).toBe('briefing'));
     expect(window.location.hash).toBe('#/spaces');
-    expect(railGroupLinks(mounted.container, 'secondary').map((link) => link.dataset.railItem))
-      .toEqual(['work', 'graph', 'tasks', 'logs']);
+    expect(railGroupLinks(mounted.container, 'primary').slice(-3).map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks']);
+    expect(screen.getByRole('link', { name: 'Logs' }).hasAttribute('data-rail-item')).toBe(false);
 
     const inbox = railGroupLinks(mounted.container, 'primary').find((link) => link.dataset.railItem === 'inbox')!;
     mockRailRects(railGroupLinks(mounted.container, 'primary'));
@@ -1253,6 +1268,38 @@ describe('app shell', () => {
     fireRailPointer(inbox, 'pointercancel', { pointerId: 9 });
     expect(railGroupLinks(mounted.container, 'primary')[0]?.dataset.railItem).toBe('briefing');
     expect(putCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Logs and every footer utility outside pointer and keyboard reorder contracts', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    await railReorderReady();
+    const before = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    const footer = container.querySelector<HTMLElement>('.app-rail__footer')!;
+    const fixedControls = Array.from(footer.querySelectorAll<HTMLElement>('a, button'));
+
+    for (const control of fixedControls) {
+      expect(control.hasAttribute('data-rail-item')).toBe(false);
+      expect(control.hasAttribute('data-rail-group')).toBe(false);
+      expect(control.hasAttribute('draggable')).toBe(false);
+      expect(control.hasAttribute('aria-keyshortcuts')).toBe(false);
+      expect(control.hasAttribute('aria-describedby')).toBe(false);
+    }
+
+    const logs = screen.getByRole('link', { name: 'Logs' });
+    fireRailPointer(logs, 'pointerdown', { pointerId: 31, button: 0, clientX: 12, clientY: 100 });
+    fireRailPointer(logs, 'pointermove', { pointerId: 31, clientX: 12, clientY: 1 });
+    fireRailPointer(logs, 'pointerup', { pointerId: 31, clientX: 12, clientY: 1 });
+    fireEvent.keyDown(logs, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await act(async () => Promise.resolve());
+
+    expect(settings.putCalls).not.toHaveBeenCalled();
+    expect(logs.classList.contains('app-rail__item--dragging')).toBe(false);
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(before);
   });
 
   it('keeps repeated pointer frames over one captured target from undoing the drop', async () => {
@@ -1286,31 +1333,31 @@ describe('app shell', () => {
     await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
       .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
 
-    const secondary = railGroupLinks(mounted.container, 'secondary');
-    mockRailRects(secondary);
-    const projects = secondary.find((link) => link.dataset.railItem === 'work')!;
-    fireRailPointer(projects, 'pointerdown', { pointerId: 19, button: 0, clientX: 12, clientY: 1 });
-    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 45 });
-    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 45 });
-    fireRailPointer(projects, 'pointerup', { pointerId: 19, clientX: 12, clientY: 45 });
+    const unifiedUpper = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(unifiedUpper);
+    const projects = unifiedUpper.find((link) => link.dataset.railItem === 'work')!;
+    fireRailPointer(projects, 'pointerdown', { pointerId: 19, button: 0, clientX: 12, clientY: 250 });
+    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 1 });
+    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 1 });
+    fireRailPointer(projects, 'pointerup', { pointerId: 19, clientX: 12, clientY: 1 });
 
     await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(railGroupLinks(mounted.container, 'secondary').slice(0, 2)
-      .map((link) => link.dataset.railItem)).toEqual(['graph', 'work']));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
+      .map((link) => link.dataset.railItem)).toEqual(['work', 'timeline', 'console']));
 
     fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
     await waitFor(() => expect(window.location.hash).toBe('#/auth'));
-    expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
-      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']);
+    expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
+      .map((link) => link.dataset.railItem)).toEqual(['work', 'timeline', 'console']);
 
     mounted.unmount();
     window.history.replaceState(null, '', '#/spaces');
     const remounted = render(h(App, {}));
-    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 2)
-      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
-    expect(railGroupLinks(remounted.container, 'secondary').slice(0, 2)
-      .map((link) => link.dataset.railItem)).toEqual(['graph', 'work']);
-    expect(settings.getStored()).toContain('"primary":["timeline","console"');
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 3)
+      .map((link) => link.dataset.railItem)).toEqual(['work', 'timeline', 'console']));
+    expect(settings.getStored()).toContain('"primary":["work","timeline","console"');
+    expect(settings.getStored()).toContain('"secondary":[]');
+    expect(settings.getStored()).not.toContain('"logs"');
     expect(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY)).toBe(ignoredPreviewOrder);
   });
 
@@ -1334,7 +1381,8 @@ describe('app shell', () => {
     const { container } = render(h(App, {}));
 
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
-    expect(railGroupLinks(container, 'secondary')[0]?.dataset.railItem).toBe('work');
+    expect(railGroupLinks(container, 'primary').slice(-3).map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks']);
     expect(settings.getCalls).not.toHaveBeenCalled();
     expect(settings.putCalls).not.toHaveBeenCalled();
   });
@@ -1365,8 +1413,8 @@ describe('app shell', () => {
     expect(JSON.parse(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY) ?? '{}')).toEqual({
       version: 1,
       groups: {
-        primary: ['timeline', 'console', 'auth', 'issues', 'artifacts', 'spaces', 'briefing', 'inbox'],
-        secondary: ['work', 'graph', 'tasks', 'logs'],
+        primary: ['timeline', 'console', 'auth', 'issues', 'artifacts', 'spaces', 'briefing', 'inbox', 'work', 'graph', 'tasks'],
+        secondary: [],
       },
     });
 

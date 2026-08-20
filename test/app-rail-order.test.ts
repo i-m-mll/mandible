@@ -66,18 +66,25 @@ describe('app rail order preference', () => {
     expect(readAppRailPreviewOrder({ getItem: () => value })).toBeNull();
   });
 
-  it('preserves saved relative order in canonical slots and ignores unknown or duplicate IDs', () => {
+  it('preserves surviving saved order, filters invalid duplicates, and appends missing IDs', () => {
     expect(reconcileAppRailOrder(
       ['console', 'timeline', 'auth', 'issues', 'briefing'],
       ['retired', 'issues', 'console', 'issues'],
-    )).toEqual(['issues', 'timeline', 'auth', 'console', 'briefing']);
+    )).toEqual(['issues', 'console', 'timeline', 'auth', 'briefing']);
   });
 
-  it('places a newly added or conditionally returning item in its canonical fallback slot', () => {
+  it('appends newly added or conditionally returning items in canonical order', () => {
     expect(reconcileAppRailOrder(
       ['session', 'console', 'timeline', 'issues'],
       ['issues', 'console', 'unknown'],
-    )).toEqual(['session', 'issues', 'timeline', 'console']);
+    )).toEqual(['issues', 'console', 'session', 'timeline']);
+  });
+
+  it('filters legacy fixed and unknown IDs without resetting surviving upper order', () => {
+    expect(reconcileAppRailOrder(
+      ['console', 'timeline', 'work', 'graph', 'tasks'],
+      ['logs', 'graph', 'settings', 'console', 'graph', 'unknown'],
+    )).toEqual(['graph', 'console', 'timeline', 'work', 'tasks']);
   });
 
   it('moves only the requested item and leaves missing targets unchanged', () => {
