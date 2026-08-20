@@ -22,6 +22,7 @@ import { Router } from "../src/server.js";
 import { decompressContent } from "../src/compression.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { sourceFilesystemIdentity } from "../src/conversations/source-observer.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
 
 let tempDir = "";
 let db: Db;
@@ -188,6 +189,26 @@ describe("exact conversation freshness", () => {
     expect(JSON.stringify(detail.body)).toContain("new exact tail");
     expect(JSON.stringify(blocks.body)).toContain("new exact tail");
     expect(JSON.stringify(exported.body)).toContain("new exact tail");
+
+    expect(router.resolveFileRpcPolicy("POST", "/api/conversations/concurrent-session/export")).toBe(true);
+    expect(router.resolveFileRpcPolicy("POST", "/api/conversations/ingest")).toBe(false);
+    expect(router.resolveFileRpcPolicy("POST", "/api/conversations/export/transform")).toBe(false);
+    expect(router.resolveFileRpcPolicy("POST", "/api/conversations/concurrent-session/fork")).toBe(false);
+    expect(router.resolveFileRpcPolicy("POST", "/api/conversations/concurrent-session/resume")).toBe(false);
+
+    const rpcDir = path.join(tempDir, "file-rpc");
+    const transport = new FileRpcTransport({ router, dir: rpcDir, responseTtlMs: 60_000 });
+    fs.mkdirSync(rpcDir, { recursive: true });
+    fs.writeFileSync(path.join(rpcDir, "export.request.json"), JSON.stringify({
+      id: "export",
+      method: "POST",
+      path: "/api/conversations/concurrent-session/export",
+      body: { format: "json" },
+    }));
+    await transport.processOnce();
+    const rpcResponse = JSON.parse(fs.readFileSync(path.join(rpcDir, "export.response.json"), "utf8"));
+    expect(rpcResponse.status).toBe(200);
+    expect(JSON.stringify(rpcResponse.body)).toContain("new exact tail");
   });
 
   it("runs authoritative exact catch-up across bounded read and UTF-8 chunk boundaries", async () => {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import Database from "better-sqlite3";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -21,6 +22,44 @@ let tempDir: string;
 let db: Db;
 const revokedCanary = `mandible_pat_${"R".repeat(43)}`;
 const unverifiedCanary = `mandible_pat_${"U".repeat(43)}`;
+
+function upsertCodexThreadMetadata(input: {
+  sourcePath: string;
+  nativeSessionId: string;
+  title: string;
+}): void {
+  const codexRoot = input.sourcePath.slice(0, input.sourcePath.indexOf(`${path.sep}sessions${path.sep}`));
+  const sourceMtimeMs = Math.ceil(fs.statSync(input.sourcePath).mtimeMs);
+  const state = new Database(path.join(codexRoot, "state_5.sqlite"));
+  try {
+    state.exec(`
+      CREATE TABLE IF NOT EXISTS threads (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        rollout_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_at_ms INTEGER
+      )
+    `);
+    state.prepare(`
+      INSERT INTO threads (id, title, rollout_path, updated_at, updated_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        rollout_path = excluded.rollout_path,
+        updated_at = excluded.updated_at,
+        updated_at_ms = excluded.updated_at_ms
+    `).run(
+      input.nativeSessionId,
+      input.title,
+      input.sourcePath,
+      Math.floor(sourceMtimeMs / 1000),
+      sourceMtimeMs,
+    );
+  } finally {
+    state.close();
+  }
+}
 
 beforeEach(() => {
   resetCredentialLeakScanCache();
@@ -67,6 +106,11 @@ async function insertSourceBackedConversation(
   fs.writeFileSync(sourcePath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
   const parsed = await new CodexParser().parse(sourcePath);
   if (!parsed) throw new Error("source-backed route fixture did not parse");
+  upsertCodexThreadMetadata({
+    sourcePath,
+    nativeSessionId: parsed.conversation.session_id,
+    title: `Provider title for ${conversationId}`,
+  });
   db.prepare(`INSERT INTO conversations
     (id, source, source_path, source_hash, source_mtime, title, summary, started_at,
      session_id, block_count, tags, notes, created_at, updated_at)
@@ -216,8 +260,9 @@ describe("conversation full-text API parity", () => {
       body: { format: "json", source_backed: true },
     });
 
-    for (const response of [detail, blocks, exported]) {
-      expect(response.status).toBe(200);
+    const responses = [["detail", detail], ["blocks", blocks], ["export", exported]] as const;
+    for (const [consumer, response] of responses) {
+      expect(response.status, `${consumer} source-backed response: ${JSON.stringify(response.body)}`).toBe(200);
       const serialized = JSON.stringify(response.body);
       expect(serialized).not.toContain(revoked.token);
       expect(serialized).not.toContain(unverifiedCanary);
