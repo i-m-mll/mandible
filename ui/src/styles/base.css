@@ -89,9 +89,8 @@ a {
   width: calc(var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }
 
-/* Keep the route's centering interval coupled to the physical header edge,
- * then mask only the measured falloff strip. This preserves its midpoint while
- * preventing visible text or controls from entering the blank gutter. */
+/* Paint the measured falloff strip through the physical header edge without
+ * allowing that additive layer to participate in identity layout. */
 .app-header::after {
   --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
   --app-boundary-shadow-direction: to right;
@@ -167,6 +166,10 @@ a {
   display: grid;
   grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
   align-items: center;
+}
+
+.app-shell--view-sidebar-open .app-header__identity {
+  width: calc(100% - var(--app-shadow-gutter-width));
 }
 
 .app-header--sidebar-hidden {
@@ -411,7 +414,7 @@ a {
 
 @media (max-width: 700px) {
   .app-shell {
-    --app-view-sidebar-width: calc(100vw - var(--app-rail-width) - var(--app-shadow-gutter-width));
+    --app-view-sidebar-width: calc(100vw - var(--app-rail-width));
   }
 }
 

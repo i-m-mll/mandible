@@ -99,6 +99,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
     expect(tokens).toMatch(/--app-boundary-shadow-gradient-stops:/);
     expect(base).toMatch(/--app-view-sidebar-width:\s*var\(--app-view-sidebar-persisted-width\);/);
     expect(base).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/);
+    expect(base).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-rail-width\)\);/s);
     expect(ruleBody(base, '.app-layout--view-sidebar-open .view-sidebar')).toContain('margin-right: var(--app-shadow-gutter-width)');
     expect(ruleBody(base, '.app-layout--view-sidebar-open .view-sidebar')).not.toContain('padding-right');
   });
@@ -127,6 +128,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
         expect(geometry.separator).toMatchObject({ left: oldEdge, right: oldEdge + 17, width: 17 });
         expect(geometry.main.left).toBe(oldEdge + 17);
         expect(geometry.header.right).toBe(oldEdge + 17);
+        expect(geometry.identity.right).toBe(oldEdge);
         expect(geometry.edge.right).toBe(oldEdge + 18);
       } else {
         const physicalEdge = railWidth + 17;
