@@ -312,6 +312,8 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body.conv-detail__body');
     const footer = shell?.querySelector(':scope > .detail-pane-shell__footer.conv-detail__footer');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
+    expect(getComputedStyle(shell!).overflow).toBe('clip');
+    expect(getComputedStyle(body!).position).toBe('relative');
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
     expect(canonicalHeader?.textContent).not.toContain('Conversation');
     expect(canonicalHeader?.textContent).not.toContain('01a01639');
