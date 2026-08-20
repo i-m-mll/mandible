@@ -108,10 +108,11 @@ describe('shared app-shell chrome contract', () => {
     expect(ruleBody(detailPaneShell, '.detail-pane-header--versioned')).not.toContain('height: var(--app-header-height)');
   });
 
-  it('types bottom-panel confinement while preserving Timeline full-content geometry', () => {
+  it('confines Graph and Timeline bottom panels to the shared detail boundary', () => {
     expect(appShellSource).toContain("layout: 'full-content' | 'anchored-detail'");
     expect(graphSource).toContain("layout: 'anchored-detail'");
-    expect(timelineSource).toContain("layout: 'full-content'");
+    expect(timelineSource).toContain("layout: 'anchored-detail'");
+    expect(timelineSource).not.toContain("layout: 'full-content'");
     expect(appSource).toContain('app-bottom-panel--${bottomPanel.layout}');
 
     expect(ruleBody(base, '.app-bottom-panel')).toContain('grid-column: 2');
