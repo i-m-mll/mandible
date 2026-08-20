@@ -184,6 +184,38 @@ describe("plural Briefing routes", () => {
     })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
   });
 
+  it("keeps operator response authority aligned with the exact selected copied-preview round", async () => {
+    const published = await router.invoke({
+      method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule",
+    });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
+    setSetting(db, "user.operator_id", operator.id);
+    const preview = new Router({
+      clientAuth: new SlugGate(() => db),
+      instance: resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+        dbPath: path.join(root, "preview.db"),
+        sourceDbPath: path.join(root, "source.db"),
+      }),
+    });
+    registerBriefingRoutes(preview, db);
+
+    const selected = await preview.invoke({
+      method: "GET", url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`, credential: "operator",
+    });
+    expect(selected).toMatchObject({
+      status: 200,
+      body: { briefing: { id: ids.briefing_id }, selected_round: { id: ids.round_id } },
+    });
+    const annotation = await preview.invoke({
+      method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/annotations`, credential: "operator",
+      body: { annotations: [{ operation: "set", kind: "comment", start_offset: 2, end_offset: 7,
+        quote: "Daily", body: "Final IAB acceptance annotation.", replacement_text: null }] },
+    });
+    expect(annotation).toMatchObject({ status: 200, body: { annotation_event_ids: [expect.any(String)] } });
+  });
+
   it("keeps isolated-copy response authority bound to an authenticated active human", async () => {
     const published = await router.invoke({
       method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule",
