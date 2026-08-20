@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type {
   InstanceInfo,
@@ -10,7 +11,7 @@ import type {
 // mutation classification. Both gates (the per-request gate in
 // `evaluateInstanceMutation` and the per-route gate behind
 // `Router.listRoutePolicies` in server.ts) import these tables; they must never
-// be copied. Keep this module dependency-light (node:path + type-only imports)
+// be copied. Keep this module dependency-light (node:fs + node:path + type-only imports)
 // so server.ts can import it without creating a cycle.
 export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "POST",
@@ -143,7 +144,19 @@ export function isActorScopedBriefingResponseMutation(method: string, pathname: 
 }
 
 function hasIsolatedDatabaseCopy(dbPath: string | null, sourceDbPath: string | null): boolean {
-  return dbPath !== null && sourceDbPath !== null && dbPath !== sourceDbPath;
+  if (dbPath === null || sourceDbPath === null) return false;
+  try {
+    const canonicalDbPath = fs.realpathSync.native(dbPath);
+    const canonicalSourceDbPath = fs.realpathSync.native(sourceDbPath);
+    if (canonicalDbPath === canonicalSourceDbPath) return false;
+
+    const dbIdentity = fs.statSync(canonicalDbPath, { bigint: true });
+    const sourceIdentity = fs.statSync(canonicalSourceDbPath, { bigint: true });
+    if (!dbIdentity.isFile() || !sourceIdentity.isFile()) return false;
+    return dbIdentity.dev !== sourceIdentity.dev || dbIdentity.ino !== sourceIdentity.ino;
+  } catch {
+    return false;
+  }
 }
 
 /**

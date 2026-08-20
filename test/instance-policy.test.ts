@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import type http from "node:http";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   allowsOperationalMutations,
@@ -12,6 +13,13 @@ import {
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { Db } from "../src/db.js";
+
+const temporaryDatabaseRoots = new Set<string>();
+
+afterEach(() => {
+  for (const root of temporaryDatabaseRoots) fs.rmSync(root, { recursive: true, force: true });
+  temporaryDatabaseRoots.clear();
+});
 
 describe("instance mutation policy", () => {
   it("uses the same policy decision for route and background mutations", () => {
@@ -25,6 +33,14 @@ describe("instance mutation policy", () => {
         MANDIBLE_OPERATIONAL_MUTATIONS: "allow",
       },
     }))).toBe(true);
+    expect(resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "main",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "allow",
+      },
+      dbPath: "/missing/mandible.db",
+      sourceDbPath: "/missing/mandible.db",
+    }).briefing_response_mutations).toBe("allow");
   });
 
   it("defaults to a main instance that accepts operational mutations", async () => {
@@ -180,10 +196,11 @@ describe("instance mutation policy", () => {
   });
 
   it("admits only actor-scoped Briefing responses for a reject-mode isolated copy", async () => {
+    const fixture = createDatabaseIdentityFixture();
     const instance = resolveInstanceInfo({
       env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
-      dbPath: "/tmp/mandible-preview.db",
-      sourceDbPath: "/tmp/mandible-main.db",
+      dbPath: fixture.previewDbPath,
+      sourceDbPath: fixture.sourceDbPath,
     });
     expect(instance.briefing_response_mutations).toBe("allow");
     const router = new Router({ instance });
@@ -224,16 +241,58 @@ describe("instance mutation policy", () => {
     )).toBe(false);
   });
 
-  it("fails closed for same-path and unknown copied-database provenance", async () => {
+  it.each(["symlink", "hard link"] as const)(
+    "rejects a %s alias of the source database before a Briefing response handler runs",
+    async (aliasKind) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instance-alias-"));
+      temporaryDatabaseRoots.add(root);
+      const sourceDbPath = path.join(root, "source.db");
+      const previewDbPath = path.join(root, "preview.db");
+      fs.writeFileSync(sourceDbPath, "source database");
+      if (aliasKind === "symlink") fs.symlinkSync(sourceDbPath, previewDbPath);
+      else fs.linkSync(sourceDbPath, previewDbPath);
+      const instance = resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+        dbPath: previewDbPath,
+        sourceDbPath,
+      });
+      expect(instance.briefing_response_mutations).toBe("reject");
+      const router = new Router({ instance });
+      let invoked = false;
+      router.post("/api/briefings/:briefingId/rounds/:roundId/answers", (_req, res) => {
+        invoked = true;
+        res.json({ ok: true });
+      }, { fileRpc: "deny" });
+      expect(await router.invoke({
+        method: "POST",
+        url: "/api/briefings/briefing-1/rounds/round-1/answers",
+        body: {},
+      })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
+      expect(invoked).toBe(false);
+    },
+  );
+
+  it("fails closed for same-path, missing-path, and unknown copied-database provenance", async () => {
+    const fixture = createDatabaseIdentityFixture();
     const cases = [
       resolveInstanceInfo({
         env: { MANDIBLE_INSTANCE_ROLE: "preview" },
-        dbPath: "/tmp/mandible.db",
-        sourceDbPath: "/tmp/./mandible.db",
+        dbPath: fixture.sourceDbPath,
+        sourceDbPath: path.join(fixture.root, ".", "source.db"),
       }),
-      resolveInstanceInfo({ env: { MANDIBLE_INSTANCE_ROLE: "preview" }, dbPath: "/tmp/preview.db" }),
       resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_INSTANCE_SOURCE_DB: "/tmp/source.db" },
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: path.join(fixture.root, "missing-preview.db"),
+        sourceDbPath: fixture.sourceDbPath,
+      }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: fixture.previewDbPath,
+        sourceDbPath: path.join(fixture.root, "missing-source.db"),
+      }),
+      resolveInstanceInfo({ env: { MANDIBLE_INSTANCE_ROLE: "preview" }, dbPath: fixture.previewDbPath }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_INSTANCE_SOURCE_DB: fixture.sourceDbPath },
       }),
     ];
     for (const instance of cases) {
@@ -289,13 +348,14 @@ describe("instance mutation policy", () => {
   });
 
   it("exposes instance metadata through health and instance routes", async () => {
+    const fixture = createDatabaseIdentityFixture();
     const instance = resolveInstanceInfo({
       env: {
         MANDIBLE_INSTANCE_ROLE: "preview",
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
-        MANDIBLE_INSTANCE_SOURCE_DB: "/tmp/mandible-main.db",
+        MANDIBLE_INSTANCE_SOURCE_DB: fixture.sourceDbPath,
       },
-      dbPath: "/tmp/mandible-preview.db",
+      dbPath: fixture.previewDbPath,
     });
     const router = new Router({ instance });
     createServer({
@@ -317,9 +377,9 @@ describe("instance mutation policy", () => {
         role: "preview",
         operational_mutations: "reject",
         briefing_response_mutations: "allow",
-        db_path: "/tmp/mandible-preview.db",
+        db_path: fixture.previewDbPath,
         db_path_source: "iab-preview-copy",
-        source_db_path: "/tmp/mandible-main.db",
+        source_db_path: fixture.sourceDbPath,
         source_db_path_source: "env",
       },
       file_rpc_dir: "/tmp/mandible-preview-agent-rpc",
@@ -548,6 +608,24 @@ function closeServer(server: http.Server): Promise<void> {
       resolve();
     });
   });
+}
+
+function createDatabaseIdentityFixture(): {
+  root: string;
+  sourceDbPath: string;
+  previewDbPath: string;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instance-policy-"));
+  temporaryDatabaseRoots.add(root);
+  const sourceDbPath = path.join(root, "source.db");
+  const previewDbPath = path.join(root, "preview.db");
+  fs.writeFileSync(sourceDbPath, "source database");
+  fs.copyFileSync(sourceDbPath, previewDbPath);
+  return {
+    root,
+    sourceDbPath,
+    previewDbPath,
+  };
 }
 
 function previewRouter(): Router {
