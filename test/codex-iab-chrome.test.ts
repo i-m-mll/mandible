@@ -14,6 +14,7 @@ describe('Codex IAB chrome edge contract', () => {
     expect(appSource).not.toContain(
       "${agentPageBinding !== null ? ' app-shell--codex-iab' : ''}",
     );
+    expect(appSource.match(/app-shell--codex-iab/g)).toHaveLength(1);
   });
 
   it('adds a 15px absolute visual layer without changing internal layout coordinates', () => {
@@ -24,16 +25,16 @@ describe('Codex IAB chrome edge contract', () => {
     expect(stylesheet).not.toMatch(/\.app-shell--codex-iab[^,{]*\{[^}]*(?:padding|margin|transform|grid-template-columns):/s);
   });
 
-  it('derives the leftward subdivision and rightward edge shadows from one mirrored primitive', () => {
-    expect(stylesheet).toMatch(/--app-subdivision-shadow-offset:\s*4px;/);
-    expect(stylesheet).toMatch(/--app-subdivision-shadow-blur:\s*10px;/);
+  it('derives both edges from one profile with a sign-only direction change', () => {
+    expect(stylesheet).toMatch(/--app-boundary-shadow-offset:\s*8px;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-blur:\s*36px;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-spread:\s*0px;/);
     expect(stylesheet).toMatch(
-      /--shadow-app-subdivision:\s*calc\(-1 \* var\(--app-subdivision-shadow-offset\)\) 0 var\(--app-subdivision-shadow-blur\) 0 var\(--app-subdivision-shadow-color\);/,
+      /--shadow-app-subdivision:\s*calc\(var\(--app-boundary-direction\) \* var\(--app-boundary-shadow-offset\)\) 0 var\(--app-boundary-shadow-blur\) var\(--app-boundary-shadow-spread\) var\(--app-boundary-shadow-color\);/,
     );
-    expect(stylesheet).toMatch(
-      /--shadow-codex-iab-edge:\s*var\(--app-subdivision-shadow-offset\) 0 var\(--app-subdivision-shadow-blur\) 0 var\(--app-subdivision-shadow-color\);/,
-    );
-    expect(stylesheet).toMatch(/\.app-layout::after\s*\{[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
-    expect(stylesheet).toMatch(/\.app-shell--codex-iab \.app-header::before,[^{]*\{[^}]*box-shadow:\s*var\(--shadow-codex-iab-edge\);/s);
+    expect(stylesheet).toMatch(/\.app-layout::after\s*\{[^}]*--app-boundary-direction:\s*-1;[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
+    expect(stylesheet).toMatch(/\.app-shell--codex-iab \.app-header::before,[^{]*\{[^}]*--app-boundary-direction:\s*1;[^}]*--app-boundary-accent:\s*var\(--app-divider\);[^}]*border-inline-end:\s*1px solid var\(--app-boundary-accent\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
+    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(2);
+    expect(stylesheet).not.toMatch(/--shadow-codex-iab-edge:/);
   });
 });
