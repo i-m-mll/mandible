@@ -35,6 +35,16 @@ type HeaderGeometry = {
 
 type HeaderMode = 'open' | 'hidden' | 'collapsed';
 
+type HeaderFixture = {
+  width: number;
+  route: string;
+  theme: 'dark' | 'light';
+  leftShadow: boolean;
+  scale: number;
+  gutterWidth: number;
+  mode: HeaderMode;
+};
+
 type DOMRectSnapshot = Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom' | 'width' | 'height'>;
 
 const CHROME_CANDIDATES = [
@@ -49,7 +59,7 @@ const chrome = CHROME_CANDIDATES.find(existsSync);
 const tokens = readFileSync(resolve('ui/src/styles/tokens.css'), 'utf8');
 const base = readFileSync(resolve('ui/src/styles/base.css'), 'utf8');
 
-function renderHeader({
+function normalizeFixture({
   width,
   route,
   theme,
@@ -65,90 +75,147 @@ function renderHeader({
   scale?: number;
   gutterWidth?: number;
   mode?: HeaderMode;
-}): HeaderGeometry {
-  if (!chrome) throw new Error('A Chromium browser is required for the AppHeader geometry regression.');
+}): HeaderFixture {
+  return { width, route, theme, leftShadow, scale, gutterWidth, mode };
+}
 
+function fixtureKey(fixture: HeaderFixture): string {
+  return JSON.stringify(fixture);
+}
+
+function fixtureMarkup({ width, route, theme, leftShadow, gutterWidth, mode }: HeaderFixture): string {
   const open = mode === 'open';
 
-  const html = `<!doctype html>
-    <html data-theme="${theme}">
-      <head><style>${tokens}\n${base}</style></head>
-      <body>
-        <div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${mode === 'collapsed' ? ' app-shell--rail-icons' : ''}${leftShadow ? ' app-shell--left-shadow' : ''}"
-          style="--app-shadow-gutter-width: ${gutterWidth}px; --app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208)}px">
-          <header class="app-header${open ? '' : ' app-header--sidebar-hidden'}" data-app-surface="chrome">
-            <div class="app-header__identity">
-              <span class="app-header__mark" aria-hidden="true">
-                <span class="app-header__logo" style="--app-header-logo-image: url('/header-logo.svg')" aria-hidden="true"></span>
-              </span>
-              ${open ? `<div class="app-header__text">
-                <div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div>
-                <div class="app-header__route" aria-live="polite">${route}</div>
-              </div>` : ''}
-            </div>
-          </header>
-          <aside class="app-rail">
-            <a class="app-rail__item"><span class="app-rail__icon">N</span></a>
-          </aside>
-        </div>
-        <script>
-          const snapshot = (selector) => {
-            const node = document.querySelector(selector);
-            if (!node) return null;
-            const bounds = node.getBoundingClientRect();
-            return Object.fromEntries(['left', 'top', 'right', 'bottom', 'width', 'height'].map((key) => [key, bounds[key]]));
-          };
-          const route = document.querySelector('.app-header__route');
-          const logoStyle = getComputedStyle(document.querySelector('.app-header__logo'));
-          const header = document.querySelector('.app-header');
-          const shell = document.querySelector('.app-shell');
-          const edgeStyle = getComputedStyle(shell, '::before');
-          const gutterStyle = getComputedStyle(shell, '::after');
-          document.title = btoa(JSON.stringify({
-            devicePixelRatio,
-            header: snapshot('.app-header'),
-            identity: snapshot('.app-header__identity'),
-            mark: snapshot('.app-header__mark'),
-            logo: snapshot('.app-header__logo'),
-            brand: snapshot('.app-header__brand-text'),
-            route: snapshot('.app-header__route'),
-            routeText: route?.textContent ?? null,
-            routeOverflow: route ? getComputedStyle(route).overflow : null,
-            routeTextOverflow: route ? getComputedStyle(route).textOverflow : null,
-            routeWhiteSpace: route ? getComputedStyle(route).whiteSpace : null,
-            routeScrollWidth: route?.scrollWidth ?? null,
-            routeClientWidth: route?.clientWidth ?? null,
-            routeAriaLive: route?.getAttribute('aria-live') ?? null,
-            logoColor: logoStyle.color,
-            navIconColor: getComputedStyle(document.querySelector('.app-rail__icon')).color,
-            brandColor: document.querySelector('.app-header__brand') ? getComputedStyle(document.querySelector('.app-header__brand')).color : null,
-            logoMaskImage: logoStyle.webkitMaskImage,
-            logoMaskPosition: logoStyle.webkitMaskPosition,
-            logoMaskRepeat: logoStyle.webkitMaskRepeat,
-            logoMaskSize: logoStyle.webkitMaskSize,
-            shadowGutterWidth: getComputedStyle(document.querySelector('.app-shell')).getPropertyValue('--app-shadow-gutter-width').trim(),
-            headerGutterWidth: gutterStyle.width,
-            headerGutterRight: gutterStyle.right,
-            headerGutterZIndex: gutterStyle.zIndex,
-            identityZIndex: getComputedStyle(document.querySelector('.app-header__identity')).zIndex,
-            leftShadowEdgeWidth: edgeStyle.width,
-          }));
-        </script>
-      </body>
-    </html>`;
-  const rendered = spawnSync(chrome, [
-    '--headless=new',
-    '--disable-gpu',
-    '--no-sandbox',
-    `--force-device-scale-factor=${scale}`,
-    '--dump-dom',
-    `--window-size=${width},240`,
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-  ], { encoding: 'utf8', maxBuffer: 10_000_000 });
-  if (rendered.status !== 0) throw new Error(`Chromium AppHeader fixture failed: ${rendered.stderr}`);
-  const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
-  if (!encoded) throw new Error('Chromium AppHeader fixture did not return measurements.');
-  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as HeaderGeometry;
+  return `<div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${mode === 'collapsed' ? ' app-shell--rail-icons' : ''}${leftShadow ? ' app-shell--left-shadow' : ''}"
+    style="--app-shadow-gutter-width: ${gutterWidth}px; --app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208)}px">
+    <header class="app-header${open ? '' : ' app-header--sidebar-hidden'}" data-app-surface="chrome">
+      <div class="app-header__identity">
+        <span class="app-header__mark" aria-hidden="true">
+          <span class="app-header__logo" style="--app-header-logo-image: url('/header-logo.svg')" aria-hidden="true"></span>
+        </span>
+        ${open ? `<div class="app-header__text">
+          <div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div>
+          <div class="app-header__route" aria-live="polite">${route}</div>
+        </div>` : ''}
+      </div>
+    </header>
+    <aside class="app-rail">
+      <a class="app-rail__item"><span class="app-rail__icon">N</span></a>
+    </aside>
+  </div>`;
+}
+
+function renderHeaderSuite(fixtures: HeaderFixture[]): { geometries: Map<string, HeaderGeometry>; launchCount: number } {
+  if (!chrome) throw new Error('A Chromium browser is required for the AppHeader geometry regression.');
+
+  const uniqueFixtures = [...new Map(fixtures.map((fixture) => [fixtureKey(fixture), fixture])).values()];
+  const geometries = new Map<string, HeaderGeometry>();
+  const scales = [...new Set(uniqueFixtures.map(({ scale }) => scale))];
+
+  for (const scale of scales) {
+    const cases = uniqueFixtures
+      .filter((fixture) => fixture.scale === scale)
+      .map((fixture) => ({
+        key: fixtureKey(fixture),
+        width: fixture.width,
+        theme: fixture.theme,
+        markup: fixtureMarkup(fixture),
+      }));
+    const payload = JSON.stringify({ cases, styles: `${tokens}\n${base}` }).replaceAll('<', '\\u003c');
+    const html = `<!doctype html><html><body><script>
+      const { cases, styles } = ${payload};
+      const results = [];
+      const snapshot = (doc, selector) => {
+        const node = doc.querySelector(selector);
+        if (!node) return null;
+        const bounds = node.getBoundingClientRect();
+        return Object.fromEntries(['left', 'top', 'right', 'bottom', 'width', 'height'].map((key) => [key, bounds[key]]));
+      };
+      const measure = (entry, frame) => {
+        const doc = frame.contentDocument;
+        const route = doc.querySelector('.app-header__route');
+        const logoStyle = getComputedStyle(doc.querySelector('.app-header__logo'));
+        const shell = doc.querySelector('.app-shell');
+        const edgeStyle = getComputedStyle(shell, '::before');
+        const gutterStyle = getComputedStyle(shell, '::after');
+        results.push([entry.key, {
+          devicePixelRatio: frame.contentWindow.devicePixelRatio,
+          header: snapshot(doc, '.app-header'),
+          identity: snapshot(doc, '.app-header__identity'),
+          mark: snapshot(doc, '.app-header__mark'),
+          logo: snapshot(doc, '.app-header__logo'),
+          brand: snapshot(doc, '.app-header__brand-text'),
+          route: snapshot(doc, '.app-header__route'),
+          routeText: route?.textContent ?? null,
+          routeOverflow: route ? getComputedStyle(route).overflow : null,
+          routeTextOverflow: route ? getComputedStyle(route).textOverflow : null,
+          routeWhiteSpace: route ? getComputedStyle(route).whiteSpace : null,
+          routeScrollWidth: route?.scrollWidth ?? null,
+          routeClientWidth: route?.clientWidth ?? null,
+          routeAriaLive: route?.getAttribute('aria-live') ?? null,
+          logoColor: logoStyle.color,
+          navIconColor: getComputedStyle(doc.querySelector('.app-rail__icon')).color,
+          brandColor: doc.querySelector('.app-header__brand') ? getComputedStyle(doc.querySelector('.app-header__brand')).color : null,
+          logoMaskImage: logoStyle.webkitMaskImage,
+          logoMaskPosition: logoStyle.webkitMaskPosition,
+          logoMaskRepeat: logoStyle.webkitMaskRepeat,
+          logoMaskSize: logoStyle.webkitMaskSize,
+          shadowGutterWidth: getComputedStyle(shell).getPropertyValue('--app-shadow-gutter-width').trim(),
+          headerGutterWidth: gutterStyle.width,
+          headerGutterRight: gutterStyle.right,
+          headerGutterZIndex: gutterStyle.zIndex,
+          identityZIndex: getComputedStyle(doc.querySelector('.app-header__identity')).zIndex,
+          leftShadowEdgeWidth: edgeStyle.width,
+        }]);
+        if (results.length === cases.length) document.title = btoa(JSON.stringify(results));
+      };
+      for (const entry of cases) {
+        const frame = document.createElement('iframe');
+        frame.style.cssText = 'display:block;border:0;width:' + entry.width + 'px;height:240px';
+        frame.addEventListener('load', () => measure(entry, frame), { once: true });
+        frame.srcdoc = '<!doctype html><html data-theme="' + entry.theme + '"><head><style>' + styles + '</style></head><body>' + entry.markup + '</body></html>';
+        document.body.append(frame);
+      }
+    </script></body></html>`;
+    const rendered = spawnSync(chrome, [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-sandbox',
+      `--force-device-scale-factor=${scale}`,
+      '--dump-dom',
+      '--window-size=1200,800',
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+    ], { encoding: 'utf8', maxBuffer: 10_000_000 });
+    if (rendered.status !== 0) throw new Error(`Chromium AppHeader fixture failed: ${rendered.stderr}`);
+    const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
+    if (!encoded) throw new Error('Chromium AppHeader fixture did not return measurements.');
+    for (const [key, geometry] of JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as [string, HeaderGeometry][]) {
+      geometries.set(key, geometry);
+    }
+  }
+
+  return { geometries, launchCount: scales.length };
+}
+
+const fixtures = [
+  ...([1100, 700] as const).flatMap((width) => (['dark', 'light'] as const).map((theme) =>
+    normalizeFixture({ width, route: 'Timeline', theme }),
+  )),
+  ...(['hidden', 'collapsed'] as const).flatMap((mode) => (['dark', 'light'] as const).map((theme) =>
+    normalizeFixture({ width: 700, route: 'Timeline', theme, mode }),
+  )),
+  normalizeFixture({ width: 700, route: 'Issues', theme: 'light' }),
+  normalizeFixture({ width: 360, route: 'Operational incidents requiring immediate attention', theme: 'dark' }),
+  ...(['dark', 'light'] as const).map((theme) => normalizeFixture({ width: 700, route: 'Spaces', theme })),
+  normalizeFixture({ width: 700, route: 'Conversations', theme: 'dark', leftShadow: true, scale: 2 }),
+];
+const renderedHeaderSuite = renderHeaderSuite(fixtures);
+
+function renderHeader(input: Parameters<typeof normalizeFixture>[0]): HeaderGeometry {
+  const fixture = normalizeFixture(input);
+  const geometry = renderedHeaderSuite.geometries.get(fixtureKey(fixture));
+  if (!geometry) throw new Error(`Missing batched AppHeader fixture: ${fixtureKey(fixture)}`);
+  return geometry;
 }
 
 function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiveInset: number): void {
@@ -165,6 +232,11 @@ function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiv
 }
 
 describe('shared AppHeader rendered geometry', () => {
+  it('batches every unique fixture into one Chromium launch per device scale', () => {
+    expect(renderedHeaderSuite.launchCount).toBe(2);
+    expect(renderedHeaderSuite.geometries.size).toBe(13);
+  });
+
   it.each([
     { width: 1100, theme: 'dark' as const },
     { width: 1100, theme: 'light' as const },
