@@ -56,7 +56,7 @@ describe('shared app-shell chrome contract', () => {
     expect(header).toContain('border-bottom: 1px solid var(--neutral-alpha-06)');
     expect(header).toContain('border-right: none');
     expect(railSidebarDivider).toContain('top: var(--app-header-height)');
-    expect(railSidebarDivider).toContain('left: var(--app-rail-width)');
+    expect(railSidebarDivider).toContain('left: calc(var(--app-left-boundary-width) + var(--app-rail-width))');
     expect(railSidebarDivider).toContain('width: 1px');
     expect(railSidebarDivider).toContain('background: var(--border-muted)');
     expect(footer).toContain('border-top: 1px solid var(--neutral-alpha-06)');

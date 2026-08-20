@@ -64,6 +64,14 @@ import {
 } from '../ui/src/views/issues';
 import { readResolvedStylesheet } from './helpers/css-manifest';
 
+function ruleBody(css: string, selector: string): string {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (match[1]!.split(',').map((entry) => entry.trim()).includes(selector)) return match[2]!;
+  }
+  return '';
+}
+
 type ReactFlowMockNode = {
   id: string
   data?: {
@@ -5908,7 +5916,21 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-shell::after\s*\{[^}]*inset:\s*0 auto 0 calc\(var\(--app-detail-edge-x\) - var\(--app-boundary-shadow-paint-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-boundary-shadow-paint-width\) \+ 1px\);[^}]*background-color:\s*transparent;[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-boundary-shadow-paint-width\) 100%;/s);
+    const rightEdge = ruleBody(css, '.app-shell::after');
+    const leftEdge = ruleBody(css, '.app-shell--left-shadow::before');
+
+    expect(rightEdge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');
+    expect(rightEdge).toContain('z-index: var(--z-app-subdivision)');
+    expect(rightEdge).toContain('width: calc(var(--app-boundary-shadow-paint-width) + 1px)');
+    expect(rightEdge).toContain('background-color: transparent');
+    expect(rightEdge).toContain('--app-boundary-divider-paint: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent))');
+    expect(rightEdge).toMatch(/background-image:\s*var\(--app-boundary-divider-paint\),\s*var\(--shadow-app-subdivision-paint\);/s);
+    expect(rightEdge).toContain('background-position: right, left');
+    expect(rightEdge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%');
+    expect(css.match(/--app-boundary-divider-paint:/g)).toHaveLength(1);
+    expect(leftEdge).toContain('width: var(--app-boundary-shadow-paint-width)');
+    expect(leftEdge).toContain('background-image: var(--shadow-app-subdivision-paint)');
+    expect(leftEdge).not.toMatch(/divider|1px|box-shadow/);
     expect(css).not.toMatch(/\.(?:app-header|app-layout|view-sidebar)::after\s*\{[^}]*shadow-app-subdivision-paint/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
