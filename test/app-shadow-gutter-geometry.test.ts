@@ -19,6 +19,15 @@ type Geometry = {
 };
 type Pixel = { red: number; green: number; blue: number };
 
+function expectEquivalentProfiles(actual: Pixel[], expected: Pixel[], label: string): void {
+  expect(actual).toHaveLength(expected.length);
+  for (const [index, pixel] of actual.entries()) {
+    for (const channel of ['red', 'green', 'blue'] as const) {
+      expect(Math.abs(pixel[channel] - expected[index]![channel]), `${label} pixel ${index} ${channel}`).toBeLessThanOrEqual(1);
+    }
+  }
+}
+
 const chrome = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -60,7 +69,7 @@ function renderNativeSuite(): NonNullable<typeof cache> {
     html,body{margin:0;width:1000px}.fixture{--border-muted:var(--neutral-alpha-08);position:relative;width:1000px;height:140px;overflow:hidden}.fixture .app-shell{height:140px}.fixture-split{display:flex;height:100%}.fixture-split.work-shell{display:grid}.fixture .view-sidebar{width:var(--app-view-sidebar-width);flex-shrink:0}.fixture-main{position:relative;flex:1;min-width:0;background:var(--surface-main)}.fixture-main-layer{position:absolute;inset:0;z-index:9}
     </style></head><body>${markup}<script>
     const rect=(node,pseudo)=>{if(!node)return null;if(pseudo){const style=getComputedStyle(node,pseudo);if(style.content==='none')return null;const own=node.getBoundingClientRect();const left=own.left+parseFloat(style.left||'0');const width=parseFloat(style.width||'0');return{left,right:left+width,width}}const value=node.getBoundingClientRect();return Object.fromEntries(['left','right','width'].map(key=>[key,value[key]]))};
-    const rows=[...document.querySelectorAll('.fixture')].map((fixture)=>{const shell=fixture.querySelector('.app-shell');const footer=fixture.querySelector('.app-rail__footer');const header=fixture.querySelector('.app-header');const sidebar=fixture.querySelector('.view-sidebar');const handle=fixture.querySelector('.view-sidebar__resize-handle');const search=fixture.querySelector('.sidebar-search-filter');const main=fixture.querySelector('.fixture-main');const boundary=main.getBoundingClientRect().left;const handleRect=handle?.getBoundingClientRect();const hitY=handleRect?(handleRect.top+handleRect.bottom)/2:fixture.getBoundingClientRect().top+80;return{theme:fixture.dataset.theme,mode:fixture.dataset.mode,rowTop:fixture.getBoundingClientRect().top,gutter:parseFloat(getComputedStyle(shell).getPropertyValue('--app-shadow-gutter-width')),paintWidth:parseFloat(getComputedStyle(shell).getPropertyValue('--app-boundary-shadow-paint-width')),persistedWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-persisted-width').trim(),contentWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-width').trim(),outerWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-outer-width').trim(),rail:rect(fixture.querySelector('.app-rail')),nav:rect(fixture.querySelector('.app-rail__nav')),footer:rect(footer),footerDivider:rect(footer,'::before'),header:rect(header),identity:rect(fixture.querySelector('.app-header__identity')),mark:rect(fixture.querySelector('.app-header__mark')),sidebar:rect(sidebar),sidebarHeader:rect(fixture.querySelector('.view-sidebar__header')),sidebarBody:rect(fixture.querySelector('.view-sidebar__body')),sidebarFooter:rect(fixture.querySelector('.view-sidebar__footer')),sidebarStrip:null,search:rect(search),searchBottom:search?search.getBoundingClientRect().bottom:null,separator:rect(search,'::after'),handle:rect(handle),handleHit:rect(handle,'::before'),handleHitOffsets:[-16,-9,-1,0,1,9].map(offset=>String(document.elementFromPoint(boundary+offset,hitY)?.className||'')),headerBottom:header.getBoundingClientRect().bottom,footerTop:footer.getBoundingClientRect().top,main:rect(main),edge:rect(shell,'::after'),edgeShadow:getComputedStyle(shell,'::after').boxShadow}});document.title=btoa(JSON.stringify(rows));
+    const rows=[...document.querySelectorAll('.fixture')].map((fixture)=>{const shell=fixture.querySelector('.app-shell');const footer=fixture.querySelector('.app-rail__footer');const header=fixture.querySelector('.app-header');const sidebar=fixture.querySelector('.view-sidebar');const handle=fixture.querySelector('.view-sidebar__resize-handle');const search=fixture.querySelector('.sidebar-search-filter');const main=fixture.querySelector('.fixture-main');const boundary=main.getBoundingClientRect().left;const handleRect=handle?.getBoundingClientRect();const hitY=handleRect?(handleRect.top+handleRect.bottom)/2:fixture.getBoundingClientRect().top+80;return{theme:fixture.dataset.theme,mode:fixture.dataset.mode,rowTop:fixture.getBoundingClientRect().top,gutter:parseFloat(getComputedStyle(shell).getPropertyValue('--app-shadow-gutter-width')),paintWidth:parseFloat(getComputedStyle(shell).getPropertyValue('--app-boundary-shadow-paint-width')),persistedWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-persisted-width').trim(),contentWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-width').trim(),outerWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-outer-width').trim(),rail:rect(fixture.querySelector('.app-rail')),nav:rect(fixture.querySelector('.app-rail__nav')),footer:rect(footer),footerDivider:rect(footer,'::before'),header:rect(header),identity:rect(fixture.querySelector('.app-header__identity')),mark:rect(fixture.querySelector('.app-header__mark')),sidebar:rect(sidebar),sidebarHeader:rect(fixture.querySelector('.view-sidebar__header')),sidebarBody:rect(fixture.querySelector('.view-sidebar__body')),sidebarFooter:rect(fixture.querySelector('.view-sidebar__footer')),sidebarStrip:null,search:rect(search),searchBottom:search?search.getBoundingClientRect().bottom:null,separator:rect(search,'::after'),handle:rect(handle),handleHit:rect(handle,'::before'),handleHitOffsets:[-6,-5,-4,0,4,5].map(offset=>String(document.elementFromPoint(boundary+offset,hitY)?.className||'')),headerBottom:header.getBoundingClientRect().bottom,footerTop:footer.getBoundingClientRect().top,main:rect(main),edge:rect(shell,'::after'),edgeShadow:getComputedStyle(shell,'::after').boxShadow}});document.title=btoa(JSON.stringify(rows));
     </script></body></html>`;
   const directory = mkdtempSync(join(tmpdir(), 'mandible-chrome-edge-'));
   const screenshot = join(directory, 'chrome-edge.png');
@@ -152,9 +161,11 @@ async function renderNativePointerDrag(): Promise<{
   boundary: number;
   shadowHits: string[];
   dividerHits: string[];
-  hover: boolean;
+  hoverLeft: boolean;
+  hoverRight: boolean;
   widthBefore: number;
-  widthAfter: number;
+  widthAfterLeft: number;
+  widthAfterRight: number;
 }> {
   if (!chrome) throw new Error('Chromium is required for the native resize pointer gate.');
   const directory = mkdtempSync(join(tmpdir(), 'mandible-resize-pointer-'));
@@ -213,15 +224,22 @@ async function renderNativePointerDrag(): Promise<{
     const widthBefore = await evaluate("document.querySelector('.view-sidebar').getBoundingClientRect().width");
     const boundary = await evaluate("document.querySelector('.timeline-canvas').getBoundingClientRect().left");
     const hitNames = async (xs: number[]): Promise<string[]> => evaluate(`(${JSON.stringify(xs)}).map(x=>String(document.elementFromPoint(x,200)?.className||''))`);
-    const shadowHits = await hitNames([boundary - 17, boundary - 9, boundary - 1]);
-    const dividerHits = await hitNames([boundary, boundary + 1, boundary + 9]);
-    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: boundary + 5, y: 200 });
-    const hover = await evaluate("document.querySelector('.view-sidebar__resize-handle').matches(':hover')");
-    await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: boundary + 5, y: 200, button: 'left', buttons: 1, clickCount: 1 });
-    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: boundary + 25, y: 200, button: 'left', buttons: 1 });
-    await client.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: boundary + 25, y: 200, button: 'left', buttons: 0, clickCount: 1 });
-    const widthAfter = await evaluate("document.querySelector('.view-sidebar').getBoundingClientRect().width");
-    return { boundary, shadowHits, dividerHits, hover, widthBefore, widthAfter };
+    const shadowHits = await hitNames([boundary - 17, boundary - 9, boundary - 6, boundary + 6]);
+    const dividerHits = await hitNames([boundary - 4, boundary, boundary + 4]);
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: boundary - 4, y: 200 });
+    const hoverLeft = await evaluate("document.querySelector('.view-sidebar__resize-handle').matches(':hover')");
+    await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: boundary - 4, y: 200, button: 'left', buttons: 1, clickCount: 1 });
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: boundary + 16, y: 200, button: 'left', buttons: 1 });
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: boundary + 16, y: 200, button: 'left', buttons: 0, clickCount: 1 });
+    const widthAfterLeft = await evaluate("document.querySelector('.view-sidebar').getBoundingClientRect().width");
+    const movedBoundary = await evaluate("document.querySelector('.timeline-canvas').getBoundingClientRect().left");
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: movedBoundary + 4, y: 200 });
+    const hoverRight = await evaluate("document.querySelector('.view-sidebar__resize-handle').matches(':hover')");
+    await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: movedBoundary + 4, y: 200, button: 'left', buttons: 1, clickCount: 1 });
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: movedBoundary + 24, y: 200, button: 'left', buttons: 1 });
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: movedBoundary + 24, y: 200, button: 'left', buttons: 0, clickCount: 1 });
+    const widthAfterRight = await evaluate("document.querySelector('.view-sidebar').getBoundingClientRect().width");
+    return { boundary, shadowHits, dividerHits, hoverLeft, hoverRight, widthBefore, widthAfterLeft, widthAfterRight };
   } finally {
     client?.close();
     const exited = new Promise<void>((resolveExit) => browser.once('exit', () => resolveExit()));
@@ -263,9 +281,9 @@ describe('additive app chrome-edge geometry and pixels', () => {
         expect(geometry.sidebarFooter!.right).toBe(oldEdge);
         expect(geometry.search!.right).toBe(oldEdge);
         expect(geometry.handle).toMatchObject({ left: oldEdge, right: oldEdge, width: 0 });
-        expect(geometry.handleHit).toMatchObject({ left: oldEdge, right: oldEdge + 10, width: 10 });
-        expect(geometry.handleHitOffsets.slice(0, 3).every((name) => !name.includes('view-sidebar__resize-handle')), `${geometry.theme}/${geometry.mode}: ${geometry.handleHitOffsets.join(' | ')}`).toBe(true);
-        expect(geometry.handleHitOffsets.slice(3).every((name) => name.includes('view-sidebar__resize-handle')), `${geometry.theme}/${geometry.mode}: ${geometry.handleHitOffsets.join(' | ')}`).toBe(true);
+        expect(geometry.handleHit).toMatchObject({ left: oldEdge - 5, right: oldEdge + 5, width: 10 });
+        expect(geometry.handleHitOffsets.filter((_, index) => index === 0 || index === 5).every((name) => !name.includes('view-sidebar__resize-handle')), `${geometry.theme}/${geometry.mode}: ${geometry.handleHitOffsets.join(' | ')}`).toBe(true);
+        expect(geometry.handleHitOffsets.slice(1, 5).every((name) => name.includes('view-sidebar__resize-handle')), `${geometry.theme}/${geometry.mode}: ${geometry.handleHitOffsets.join(' | ')}`).toBe(true);
         expect(geometry.sidebarStrip).toBeNull();
         expect(geometry.separator).toBeNull();
         expect(geometry.main.left).toBe(oldEdge);
@@ -291,14 +309,16 @@ describe('additive app chrome-edge geometry and pixels', () => {
     }
   }, 20_000);
 
-  it('reaches the divider-side handle with native Chromium input and performs a real drag', async () => {
+  it('reaches both halves of the divider hit zone with native Chromium input and performs real drags', async () => {
     const evidence = await renderNativePointerDrag();
     expect(evidence.boundary).toBe(316);
     expect(evidence.shadowHits.every((name) => !name.includes('view-sidebar__resize-handle')), evidence.shadowHits.join(' | ')).toBe(true);
     expect(evidence.dividerHits.every((name) => name.includes('view-sidebar__resize-handle')), evidence.dividerHits.join(' | ')).toBe(true);
-    expect(evidence.hover).toBe(true);
+    expect(evidence.hoverLeft).toBe(true);
+    expect(evidence.hoverRight).toBe(true);
     expect(evidence.widthBefore).toBe(260);
-    expect(evidence.widthAfter).toBe(280);
+    expect(evidence.widthAfterLeft).toBe(280);
+    expect(evidence.widthAfterRight).toBe(300);
   }, 30_000);
 
   it('carries shared horizontal lines through the shadow without widening their semantic extents', () => {
@@ -318,9 +338,21 @@ describe('additive app chrome-edge geometry and pixels', () => {
       }
       if (geometry.searchBottom !== null) {
         assertLineThroughShadow('search-header', Math.round(geometry.searchBottom) - 1);
+        expectEquivalentProfiles(
+          pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.headerBottom) - 1, 17),
+          pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.searchBottom) - 1, 17),
+          `${geometry.theme}/${geometry.mode} header/search equivalence`,
+        );
         const railFooterLine = pixelsAt(suite.screenshot, 208 - 2, Math.round(geometry.footerTop), boundary - 208 + 3);
         const railFooterBackground = pixelsAt(suite.screenshot, 208 - 2, Math.round(geometry.footerTop) + 2, boundary - 208 + 3);
         expect(railFooterLine.slice(3).every((pixel, index) => JSON.stringify(pixel) === JSON.stringify(railFooterBackground[index + 3])), `${geometry.theme}/${geometry.mode} rail-only footer extent`).toBe(true);
+      }
+      if (geometry.mode === 'collapsed' || geometry.mode === 'hidden') {
+        expectEquivalentProfiles(
+          pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.headerBottom) - 1, 17),
+          pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.footerTop), 17),
+          `${geometry.theme}/${geometry.mode} header/footer equivalence`,
+        );
       }
     }
   }, 20_000);
@@ -369,6 +401,9 @@ describe('additive app chrome-edge geometry and pixels', () => {
     }
     expect(mirrors).toContain('box-shadow: var(--shadow-app-subdivision)');
     expect(mirrors).toContain('--app-boundary-shadow-direction: to left');
+    expect(ruleBody(base, '.app-header')).toContain('border-bottom: 1px solid var(--neutral-alpha-06)');
+    expect(ruleBody(base, '.app-rail__footer')).toContain('border-top: 1px solid var(--neutral-alpha-06)');
+    expect(active).not.toContain('var(--border-muted)');
     expect(base).not.toMatch(/agent_session|19422|user-agent|location\.search/);
     expect(base).not.toMatch(/(?:app-header|app-layout|view-sidebar)::after\s*\{[^}]*shadow-app-subdivision-paint/s);
   });

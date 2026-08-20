@@ -164,12 +164,6 @@ function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiv
     .toBeLessThanOrEqual(0.5);
 }
 
-function expectRectInvariant(before: DOMRectSnapshot, after: DOMRectSnapshot): void {
-  for (const coordinate of ['left', 'top', 'right', 'bottom', 'width', 'height'] as const) {
-    expect(Math.abs(after[coordinate] - before[coordinate]), coordinate).toBeLessThanOrEqual(0.01);
-  }
-}
-
 describe('shared AppHeader rendered geometry', () => {
   it.each([
     { width: 1100, theme: 'dark' as const },
@@ -177,15 +171,14 @@ describe('shared AppHeader rendered geometry', () => {
     { width: 700, theme: 'dark' as const },
     { width: 700, theme: 'light' as const },
   ])('keeps the physical edge and content coordinates unshifted at $width px in $theme', ({ width, theme }) => {
-    const baseline = renderHeader({ width, route: 'Timeline', theme, gutterWidth: 0 });
-    const additive = renderHeader({ width, route: 'Timeline', theme });
+    const geometry = renderHeader({ width, route: 'Timeline', theme });
 
-    expect(additive.header.right - baseline.header.right).toBe(0);
-    expect(additive.header.width - baseline.header.width).toBe(0);
-    expectRectInvariant(baseline.header, additive.header);
-    for (const rect of ['identity', 'mark', 'logo', 'brand', 'route'] as const) {
-      expectRectInvariant(baseline[rect]!, additive[rect]!);
-    }
+    expect(geometry.shadowGutterWidth).toBe('0px');
+    expect(geometry.header).toMatchObject({ left: 0, right: width, width });
+    expect(geometry.identity).toMatchObject({ left: 0, right: width, width });
+    expect(geometry.mark.width).toBe(28);
+    expect(geometry.logo).toMatchObject(geometry.mark);
+    expect(geometry.brand!.left).toBe(208 + (width <= 800 ? 10 : 14));
   });
 
   it.each([
@@ -194,15 +187,14 @@ describe('shared AppHeader rendered geometry', () => {
     { mode: 'collapsed' as const, theme: 'dark' as const },
     { mode: 'collapsed' as const, theme: 'light' as const },
   ])('keeps $mode header and identity coordinates fixed with zero reservation in $theme', ({ mode, theme }) => {
-    const baseline = renderHeader({ width: 700, route: 'Timeline', theme, gutterWidth: 0, mode });
-    const additive = renderHeader({ width: 700, route: 'Timeline', theme, mode });
+    const geometry = renderHeader({ width: 700, route: 'Timeline', theme, mode });
+    const railWidth = mode === 'collapsed' ? 56 : 208;
 
-    expect(additive.header.right - baseline.header.right).toBe(0);
-    expect(additive.header.width - baseline.header.width).toBe(0);
-    expectRectInvariant(baseline.header, additive.header);
-    for (const rect of ['identity', 'mark', 'logo'] as const) {
-      expectRectInvariant(baseline[rect], additive[rect]);
-    }
+    expect(geometry.shadowGutterWidth).toBe('0px');
+    expect(geometry.header).toMatchObject({ left: 0, right: railWidth, width: railWidth });
+    expect(geometry.identity).toMatchObject({ left: 0, right: railWidth, width: railWidth });
+    expect(geometry.mark.width).toBe(28);
+    expect(geometry.logo).toMatchObject(geometry.mark);
   });
 
   it.each([
