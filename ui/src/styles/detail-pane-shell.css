@@ -5,7 +5,7 @@
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  overflow: clip;
   background: inherit;
   box-shadow: none;
 }
@@ -34,6 +34,7 @@
 }
 
 .detail-pane-shell__body {
+  position: relative;
   flex: 1;
   min-height: 0;
   min-width: 0;
