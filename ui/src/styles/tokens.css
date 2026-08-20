@@ -91,8 +91,10 @@
   --app-boundary-shadow-blur: 36px;
   --app-boundary-shadow-spread: 0px;
   --app-boundary-shadow-color: rgba(0, 0, 0, 0.125);
-  --shadow-app-subdivision: calc(var(--app-boundary-direction) * var(--app-boundary-shadow-offset)) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color);
-  --codex-iab-edge-width: 15px;
+  /* Light reference x=83..116 is 34 non-plateau device pixels. The captured
+     Retina profile therefore reserves 17 CSS px; crop/kernel ambiguity makes
+     the scale inference medium-confidence while the measured span is exact. */
+  --app-shadow-gutter-width: 17px;
   --app-divider: #434343;
   --app-divider-emphasis: #434343;
   --z-app-subdivision: 70;
