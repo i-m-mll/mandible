@@ -87,14 +87,14 @@
   --shadow-rail: 10px 0 30px rgba(0, 0, 0, 0.18);
   --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
-  --app-subdivision-shadow-offset: 4px;
-  --app-subdivision-shadow-blur: 10px;
-  --app-subdivision-shadow-color: rgba(0, 0, 0, 0.44);
-  --shadow-app-subdivision: calc(-1 * var(--app-subdivision-shadow-offset)) 0 var(--app-subdivision-shadow-blur) 0 var(--app-subdivision-shadow-color);
-  --shadow-codex-iab-edge: var(--app-subdivision-shadow-offset) 0 var(--app-subdivision-shadow-blur) 0 var(--app-subdivision-shadow-color);
+  --app-boundary-shadow-offset: 8px;
+  --app-boundary-shadow-blur: 36px;
+  --app-boundary-shadow-spread: 0px;
+  --app-boundary-shadow-color: rgba(0, 0, 0, 0.125);
+  --shadow-app-subdivision: calc(var(--app-boundary-direction) * var(--app-boundary-shadow-offset)) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color);
   --codex-iab-edge-width: 15px;
-  --app-divider: #5A5A5A;
-  --app-divider-emphasis: #5B5B5B;
+  --app-divider: #434343;
+  --app-divider-emphasis: #434343;
   --z-app-subdivision: 70;
   --z-anchored-menu: 200;
 
@@ -320,9 +320,8 @@
   --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
   --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
   --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
-  --app-subdivision-shadow-color: rgba(15, 23, 42, 0.22);
   --app-divider: #D7D7D8;
-  --app-divider-emphasis: #CFCFD0;
+  --app-divider-emphasis: #C6C6C7;
 
   /* Exact Codex app subdivision surfaces. */
   --surface-main: #FFFFFF;
