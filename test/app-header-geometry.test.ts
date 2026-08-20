@@ -55,7 +55,7 @@ function renderHeader({
   theme,
   codexIab = false,
   scale = 1,
-  gutterWidth = 17,
+  gutterWidth = 9,
   mode = 'open',
 }: {
   width: number;
@@ -101,8 +101,9 @@ function renderHeader({
           const route = document.querySelector('.app-header__route');
           const logoStyle = getComputedStyle(document.querySelector('.app-header__logo'));
           const header = document.querySelector('.app-header');
-          const edgeStyle = getComputedStyle(header, '::before');
-          const gutterStyle = getComputedStyle(header, '::after');
+          const shell = document.querySelector('.app-shell');
+          const edgeStyle = getComputedStyle(shell, '::before');
+          const gutterStyle = getComputedStyle(shell, '::after');
           document.title = btoa(JSON.stringify({
             devicePixelRatio,
             header: snapshot('.app-header'),
@@ -151,14 +152,13 @@ function renderHeader({
 }
 
 function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiveInset: number): void {
-  const physicalWidth = width + 17;
+  const physicalWidth = width + 9;
   expect(geometry.header).toMatchObject({ left: 0, top: 0, right: physicalWidth, width: physicalWidth, height: 48 });
   expect(geometry.identity).toMatchObject({ left: 0, right: width, width, height: 28 });
   expect(geometry.mark).toMatchObject({ left: responsiveInset, top: 9.5, width: 28, height: 28 });
   expect(geometry.logo).toMatchObject(geometry.mark);
   expect(geometry.brand!.left).toBe(208 + responsiveInset);
-  expect(geometry.headerGutterWidth).toBe('18px');
-  expect(geometry.headerGutterRight).toBe('-1px');
+  expect(geometry.headerGutterWidth).toBe('10px');
   expect(Number(geometry.headerGutterZIndex)).toBeGreaterThan(Number(geometry.identityZIndex));
   expect(Math.abs((geometry.route!.left + geometry.route!.right) / 2 - (geometry.brand!.right + width) / 2))
     .toBeLessThanOrEqual(0.5);
@@ -176,12 +176,12 @@ describe('shared AppHeader rendered geometry', () => {
     { width: 1100, theme: 'light' as const },
     { width: 700, theme: 'dark' as const },
     { width: 700, theme: 'light' as const },
-  ])('moves only the physical right edge when adding the 17px strip at $width px in $theme', ({ width, theme }) => {
+  ])('moves only the physical right edge when adding the 9px strip at $width px in $theme', ({ width, theme }) => {
     const baseline = renderHeader({ width, route: 'Timeline', theme, gutterWidth: 0 });
     const additive = renderHeader({ width, route: 'Timeline', theme });
 
-    expect(additive.header.right - baseline.header.right).toBe(17);
-    expect(additive.header.width - baseline.header.width).toBe(17);
+    expect(additive.header.right - baseline.header.right).toBe(9);
+    expect(additive.header.width - baseline.header.width).toBe(9);
     expectRectInvariant(
       { ...baseline.header, right: additive.header.right, width: additive.header.width },
       additive.header,
@@ -200,8 +200,8 @@ describe('shared AppHeader rendered geometry', () => {
     const baseline = renderHeader({ width: 700, route: 'Timeline', theme, gutterWidth: 0, mode });
     const additive = renderHeader({ width: 700, route: 'Timeline', theme, mode });
 
-    expect(additive.header.right - baseline.header.right).toBe(17);
-    expect(additive.header.width - baseline.header.width).toBe(17);
+    expect(additive.header.right - baseline.header.right).toBe(9);
+    expect(additive.header.width - baseline.header.width).toBe(9);
     expectRectInvariant(
       { ...baseline.header, right: additive.header.right, width: additive.header.width },
       additive.header,
@@ -260,9 +260,9 @@ describe('shared AppHeader rendered geometry', () => {
 
     expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
-    expect(geometry.shadowGutterWidth).toBe('17px');
-    expect(geometry.headerGutterWidth).toBe('18px');
-    expect(geometry.iabEdgeWidth).toBe('17px');
+    expect(geometry.shadowGutterWidth).toBe('9px');
+    expect(geometry.headerGutterWidth).toBe('10px');
+    expect(geometry.iabEdgeWidth).toBe('9px');
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
   });
 });
