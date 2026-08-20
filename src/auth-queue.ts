@@ -2660,8 +2660,6 @@ export class AuthQueue {
         );
       request = this.requireRequest(id);
     }
-    request = this.ensureOriginalMergeRangeForApproval(request);
-
     // Manual approval is always the direct interactive signing path. Automated
     // callers pass their delegated approval context explicitly.
     const effectiveApproval = approval;
@@ -2713,6 +2711,7 @@ export class AuthQueue {
         );
       }
     }
+    request = this.ensureOriginalMergeRangeForApproval(request);
     // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
     // already refused every non-canonical (including hierarchical-shaped)
     // merge command earlier in this same synchronous approval.
@@ -2871,10 +2870,16 @@ export class AuthQueue {
     if (request.commit_message_digest) {
       env.MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST = request.commit_message_digest;
     }
-    if (this.canReuseSubmitPreflight(request)) {
-      env.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT = "1";
+    if (
+      request.execution_mode !== "remote" &&
+      isAuthMergeCommand(request) &&
+      request.merge_preflight_base_sha
+    ) {
       env.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA = request.merge_preflight_base_sha!;
-      env.MANDIBLE_AUTH_PREFLIGHT_QUEUE_FINGERPRINT = request.merge_preflight_queue_fingerprint ?? "";
+      if (this.canReuseSubmitPreflight(request)) {
+        env.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT = "1";
+        env.MANDIBLE_AUTH_PREFLIGHT_QUEUE_FINGERPRINT = request.merge_preflight_queue_fingerprint ?? "";
+      }
     }
     return env;
   }
@@ -2890,11 +2895,21 @@ export class AuthQueue {
    * errors all fail closed; no later merge-parent inference is permitted.
    */
   private ensureOriginalMergeRangeForApproval(request: AuthRequest): AuthRequest {
-    if (
-      request.execution_mode === "remote" ||
-      !isAuthMergeCommand(request) ||
-      request.merge_preflight_base_sha
-    ) {
+    if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) {
+      return request;
+    }
+    if (request.merge_preflight_base_sha) {
+      const currentBase = request.cwd && request.base_branch
+        ? this.resolveBranchHeadForCheck(request.cwd, request.base_branch)
+        : null;
+      if (currentBase !== request.merge_preflight_base_sha) {
+        throw new AuthQueueError(
+          "merge_check_failed",
+          `Target ${request.base_branch ?? "branch"} moved from reviewed base ` +
+            `${request.merge_preflight_base_sha} to ${currentBase ?? "unknown"}; ` +
+            "requeue and reapprove before merging.",
+        );
+      }
       return request;
     }
     if (!request.merge_head_sha) {

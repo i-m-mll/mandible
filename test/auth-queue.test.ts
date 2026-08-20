@@ -2366,6 +2366,114 @@ describe("auth queue", () => {
     }
   });
 
+  it("refuses a native-hook merge when its persisted reviewed base moved before approval", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/stale-reviewed-base", { "feature.txt": "feature\n" });
+      registerWorkRepo(db, repo);
+      const nativeHook = path.join(repo, ".git", "hooks", "post-merge");
+      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(nativeHook, 0o755);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return { exit_code: 0, output: "must not execute\n" };
+        },
+        hookManager: createNoopHookManager(),
+      });
+      // Omitting merge_head_sha reproduces a legitimate unpinned request: the
+      // submit-time base is persisted, while approval later resolves the
+      // strictly reviewed head from the live branch.
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/stale-reviewed-base --into main",
+        title: "Merge feature/stale-reviewed-base",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/stale-reviewed-base",
+        cwd: repo,
+      });
+      const reviewedBase = request.merge_preflight_base_sha!;
+      expect(request.merge_candidate_pin_sha).toBeNull();
+
+      writeFile(repo, "main-advance.txt", "advanced\n");
+      git(repo, ["add", "main-advance.txt"]);
+      git(repo, ["commit", "-m", "advance main before approval"]);
+      const advancedBase = git(repo, ["rev-parse", "main"]);
+      expect(advancedBase).not.toBe(reviewedBase);
+
+      expect(() => queue.approve(request.id)).toThrow(/moved from reviewed base/);
+      expect(calls).toHaveLength(0);
+      expect(git(repo, ["rev-parse", "main"])).toBe(advancedBase);
+      expect(queue.getRequest(request.id)).toMatchObject({
+        status: "pending",
+        merge_preflight_base_sha: reviewedBase,
+      });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("binds the reviewed base while rerunning preflight after queue fingerprint drift", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/fingerprint-first", { "first.txt": "first\n" });
+      commitOnBranch(repo, "feature/fingerprint-second", { "second.txt": "second\n" });
+      registerWorkRepo(db, repo);
+      const nativeHook = path.join(repo, ".git", "hooks", "post-merge");
+      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(nativeHook, 0o755);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return { exit_code: 1, output: "fixture stop\n" };
+        },
+        hookManager: createNoopHookManager(),
+      });
+      const first = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/fingerprint-first --into main",
+        title: "Merge feature/fingerprint-first",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/fingerprint-first",
+        cwd: repo,
+      });
+      const reviewedBase = first.merge_preflight_base_sha!;
+      queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/fingerprint-second --into main",
+        title: "Merge feature/fingerprint-second",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/fingerprint-second",
+        cwd: repo,
+      });
+
+      queue.approve(first.id);
+      await waitForStatus(queue, first.id, "completed");
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(reviewedBase);
+      expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBeUndefined();
+      expect(git(repo, ["rev-parse", "main"])).toBe(reviewedBase);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   // Issue 08a5f04 — pure base drift no longer blocks approval when the base
   // transition is fully accounted for by an authorized queue merge: the stale
   // candidate is recomputed against the current base within the same approval
