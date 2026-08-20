@@ -1731,7 +1731,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
       <div className="settings-view__layout">
         <nav className="settings-view__toc" aria-label="Settings sections">
-          <div className="settings-view__toc-title">On this page</div>
           {SETTINGS_SECTION_LIST.map((section) => {
             if (section.desktopOnly && !desktopShell) return null;
             const isActive = activeSection === section.id;

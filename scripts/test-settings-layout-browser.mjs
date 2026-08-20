@@ -38,7 +38,6 @@ const html = `<!doctype html>
               </div>
               <div class="settings-view__layout">
                 <nav class="settings-view__toc" aria-label="Settings sections">
-                  <div class="settings-view__toc-title">On this page</div>
                   <button type="button" class="settings-view__toc-link settings-view__toc-link--active" aria-current="location" aria-controls="settings-notifications">Notifications</button>
                   <button type="button" class="settings-view__toc-link" aria-controls="settings-appearance">Appearance</button>
                   <button type="button" class="settings-view__toc-link" aria-controls="settings-scrollable">Scrollable content</button>
@@ -106,6 +105,8 @@ function assert(condition, message, observed) {
 assert(!settingsSource.includes('Mandible configuration.'), 'Settings subtitle remains in production source');
 assert(!settingsSource.includes('settings-view__close'), 'Settings close control remains in production source');
 assert(settingsSource.includes('aria-label="Settings sections"'), 'Settings section navigation is not labelled');
+assert(!settingsSource.includes('settings-view__toc-title'), 'Settings navigation still renders the obsolete visible title');
+assert(!settingsStyles.includes('.settings-view__toc-title'), 'Settings navigation retains obsolete title-only styles');
 assert(settingsSource.includes('aria-current={isActive ? \'location\' : undefined}'), 'Settings navigation does not expose the current section');
 assert(settingsSource.includes('aria-controls={section.id}'), 'Settings navigation does not identify its controlled section');
 assert(settingsSource.includes("scrollIntoView({ behavior: 'smooth', block: 'start' })"), 'Settings navigation does not scroll the selected section');
@@ -239,6 +240,7 @@ try {
             closeCount: document.querySelectorAll('.settings-view__close').length,
             subtitleCount: [...document.querySelectorAll('*')].filter((node) => node.textContent?.trim() === 'Mandible configuration.').length,
             controls: document.querySelectorAll('.settings-view__section button, .settings-view__section input, .settings-view__section select').length,
+            visibleTitleCount: [...toc.children].filter((node) => node.textContent?.trim().toLowerCase() === 'on this page').length,
           },
         };
       })()`,
@@ -256,6 +258,7 @@ try {
     assert(scenario.theme !== 'light' || observed.view.background === 'rgb(255, 255, 255)', `${scenario.name} inter-card surface is not pure white`, observed);
     assert(Math.abs(viewCenter - mainCenter) <= 0.5, `${scenario.name} readable column is not centered on the actual main area`, { mainCenter, viewCenter, observed });
     assert(observed.semantics.closeCount === 0 && observed.semantics.subtitleCount === 0, `${scenario.name} redundant header chrome remains`, observed);
+    assert(observed.semantics.visibleTitleCount === 0, `${scenario.name} visible navigation title remains`, observed);
     assert(observed.semantics.navLabel === 'Settings sections' && observed.semantics.current === 1 && observed.semantics.targetsMatch, `${scenario.name} navigation semantics drifted`, observed);
     assert(observed.semantics.controls >= 2, `${scenario.name} representative Settings controls disappeared`, observed);
     assert(observed.section.background === observed.view.background && observed.section.borderRadius === '0px' && observed.section.borderStyle === 'none' && observed.section.boxShadow === 'none', `${scenario.name} section surface is not flat`, observed);
