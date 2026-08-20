@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
 import { formatRelativeTime } from '../lib/format';
 import {
   bootstrapRuntime,
@@ -96,6 +97,66 @@ const AUTO_RESUME_LABELS: Record<string, string> = {
 const MARKDOWN_BODY_ESCAPE_POLICIES = ['warn', 'reject', 'allow'];
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 const INSTRUCTION_TARGET_MODES = ['managed-block', 'standalone'] as const;
+
+type SettingsSectionDefinition = {
+  id: string;
+  title: string;
+  desktopOnly?: boolean;
+};
+
+const SETTINGS_SECTIONS = {
+  notifications: { id: 'settings-notifications', title: 'Notifications' },
+  daemon: { id: 'settings-daemon', title: 'Mandible Daemon', desktopOnly: true },
+  agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
+  instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
+  projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
+  conversations: { id: 'settings-conversations', title: 'Conversations' },
+  conversationBranching: { id: 'settings-conversation-branching', title: 'Conversation Branching' },
+  workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
+  issues: { id: 'settings-issues', title: 'Issues' },
+  appearance: { id: 'settings-appearance', title: 'Appearance' },
+  auth: { id: 'auth-settings', title: 'Auth' },
+  authHooks: { id: 'settings-auth-hooks', title: 'Auth Hooks' },
+  versionControl: { id: 'settings-version-control', title: 'Version Control' },
+  maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
+  backup: { id: 'settings-backup', title: 'Backup' },
+  runtime: { id: 'settings-runtime', title: 'Runtime' },
+} as const;
+
+const SETTINGS_SECTION_LIST: readonly SettingsSectionDefinition[] = Object.values(SETTINGS_SECTIONS);
+
+function SettingsSectionShell(props: {
+  section: SettingsSectionDefinition;
+  children: ComponentChildren;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <section
+      className="settings-view__section"
+      id={props.section.id}
+      aria-labelledby={`${props.section.id}-title`}
+      data-testid={props.testId}
+    >
+      {props.children}
+    </section>
+  );
+}
+
+function SettingsSectionHeader(props: {
+  section: SettingsSectionDefinition;
+  description: string;
+  action?: ComponentChildren;
+}): JSX.Element {
+  return (
+    <div className={`settings-view__section-header${props.action ? ' settings-view__section-header--action' : ''}`}>
+      <div>
+        <h3 className="settings-view__section-title" id={`${props.section.id}-title`}>{props.section.title}</h3>
+        <p className="settings-view__section-desc">{props.description}</p>
+      </div>
+      {props.action}
+    </div>
+  );
+}
 
 function isInstructionTargetMode(value: string): value is InstructionTargetMode {
   return (INSTRUCTION_TARGET_MODES as readonly string[]).includes(value);
@@ -337,6 +398,7 @@ function SelectInput(props: {
 }
 
 function InstructionsDeliverySection(props: {
+  section: SettingsSectionDefinition;
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
 }): JSX.Element {
@@ -499,23 +561,19 @@ function InstructionsDeliverySection(props: {
   }, [applyInstructionDelivery]);
 
   return (
-    <div className="settings-view__section">
-      <div className="settings-view__section-header settings-view__section-header--action">
-        <div>
-          <h3 className="settings-view__section-title">Instruction Delivery</h3>
-          <p className="settings-view__section-desc">
-            Where Mandible writes its generated instruction fragment after rebuilds.
-          </p>
-        </div>
-        <button
+    <SettingsSectionShell section={props.section}>
+      <SettingsSectionHeader
+        section={props.section}
+        description="Where Mandible writes its generated instruction fragment after rebuilds."
+        action={<button
           type="button"
           className="btn btn--sm"
           onClick={resetToDefaults}
           disabled={saving === 'instructions.delivery'}
         >
           Reset
-        </button>
-      </div>
+        </button>}
+      />
 
       <div className="settings-view__section-body">
         <div className="settings-view__instruction-targets">
@@ -657,7 +715,7 @@ function InstructionsDeliverySection(props: {
           </div>
         </div>
       )}
-    </div>
+    </SettingsSectionShell>
   );
 }
 
@@ -804,7 +862,7 @@ function formatDaemonState(state: DesktopDaemonStatus['state']): string {
   }
 }
 
-function DesktopDaemonSection(): JSX.Element | null {
+function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JSX.Element | null {
   const desktopShell = isDesktopShell();
   const [status, setStatus] = useState<DesktopDaemonStatus | null>(null);
   const [loading, setLoading] = useState(desktopShell);
@@ -915,13 +973,11 @@ function DesktopDaemonSection(): JSX.Element | null {
   }
 
   return (
-    <div className="settings-view__section">
-      <div className="settings-view__section-header">
-        <h3 className="settings-view__section-title">Mandible Daemon</h3>
-        <p className="settings-view__section-desc">
-          Desktop shell lifecycle controls for the local Mandible daemon.
-        </p>
-      </div>
+    <SettingsSectionShell section={props.section}>
+      <SettingsSectionHeader
+        section={props.section}
+        description="Desktop shell lifecycle controls for the local Mandible daemon."
+      />
 
       <div className="settings-view__section-body">
         <div className="settings-view__select-row">
@@ -1013,11 +1069,11 @@ function DesktopDaemonSection(): JSX.Element | null {
           </button>
         </div>
       </div>
-    </div>
+    </SettingsSectionShell>
   );
 }
 
-function BackupSection(): JSX.Element {
+function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Element {
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1102,13 +1158,11 @@ function BackupSection(): JSX.Element {
   const enabled = status?.enabled ?? true;
 
   return (
-    <div className="settings-view__section">
-      <div className="settings-view__section-header">
-        <h3 className="settings-view__section-title">Backup</h3>
-        <p className="settings-view__section-desc">
-          Automatic metadata dump to a configured Mandible backup file.
-        </p>
-      </div>
+    <SettingsSectionShell section={props.section}>
+      <SettingsSectionHeader
+        section={props.section}
+        description="Automatic metadata dump to a configured Mandible backup file."
+      />
 
       <div className="settings-view__section-body">
         {/* Toggle row */}
@@ -1219,12 +1273,12 @@ function BackupSection(): JSX.Element {
           </div>
         </div>
       </div>
-    </div>
+    </SettingsSectionShell>
   );
 }
 
 // Bug: cc4688b — Zone 2 mutable runtime section
-function RuntimeSection(): JSX.Element {
+function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Element {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<string | null>(null);
@@ -1325,13 +1379,11 @@ function RuntimeSection(): JSX.Element {
   }, [refreshStatus]);
 
   return (
-    <div className="settings-view__section">
-      <div className="settings-view__section-header">
-        <h3 className="settings-view__section-title">Runtime</h3>
-        <p className="settings-view__section-desc">
-          Zone 2 mutable runtime for self-modification and patching.
-        </p>
-      </div>
+    <SettingsSectionShell section={props.section}>
+      <SettingsSectionHeader
+        section={props.section}
+        description="Zone 2 mutable runtime for self-modification and patching."
+      />
 
       <div className="settings-view__section-body">
         {/* Install mode */}
@@ -1464,11 +1516,11 @@ function RuntimeSection(): JSX.Element {
           </div>
         )}
       </div>
-    </div>
+    </SettingsSectionShell>
   );
 }
 
-function ProjectPermissionsSection(): JSX.Element {
+function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }): JSX.Element {
   const [projects, setProjects] = useState<ProjectPickerItem[]>([]);
   const [selected, setSelected] = useState('');
   const [access, setAccess] = useState<ProjectAccessSettings | null>(null);
@@ -1507,13 +1559,11 @@ function ProjectPermissionsSection(): JSX.Element {
   }, [selected, access]);
 
   return (
-    <div className="settings-view__section" data-testid="project-permissions-settings">
-      <div className="settings-view__section-header">
-        <h3 className="settings-view__section-title">Project permissions</h3>
-        <p className="settings-view__section-desc">
-          Projects remain unrestricted until this toggle is enabled. Grants are managed with the user CLI.
-        </p>
-      </div>
+    <SettingsSectionShell section={props.section} testId="project-permissions-settings">
+      <SettingsSectionHeader
+        section={props.section}
+        description="Projects remain unrestricted until this toggle is enabled. Grants are managed with the user CLI."
+      />
       <div className="settings-view__section-body">
         <div className="settings-view__select-row">
           <div className="settings-view__select-info">
@@ -1554,7 +1604,7 @@ function ProjectPermissionsSection(): JSX.Element {
         )}
         {error && <span className="settings-view__feedback settings-view__feedback--error">{error}</span>}
       </div>
-    </div>
+    </SettingsSectionShell>
   );
 }
 
@@ -1562,7 +1612,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const {
     settings,
     onSave,
-    onClose,
     instance = null,
     typography = DEFAULT_TYPOGRAPHY_SETTINGS,
     onTypographySave = async () => undefined,
@@ -1576,6 +1625,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const feedbackTimer = useRef<number | null>(null);
   const initialized = useRef(false);
   const quietInitialized = useRef(false);
+  const viewRef = useRef<HTMLDivElement | null>(null);
+  const [activeSection, setActiveSection] = useState(SETTINGS_SECTIONS.notifications.id);
+  const desktopShell = isDesktopShell();
+  const visibleSections = SETTINGS_SECTION_LIST.filter((section) => !section.desktopOnly || desktopShell);
 
   useEffect(() => {
     if (typeof settings.protected_branches === 'string' && !initialized.current) {
@@ -1637,34 +1690,74 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     [handleSaveField],
   );
 
+  const handleSectionNavigation = useCallback((sectionId: string) => {
+    setActiveSection(sectionId);
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  useEffect(() => {
+    const root = viewRef.current;
+    if (!root) return;
+    let frame = 0;
+    const updateActiveSection = () => {
+      frame = 0;
+      const rootTop = root.getBoundingClientRect().top;
+      let current = visibleSections[0]?.id ?? SETTINGS_SECTIONS.notifications.id;
+      for (const section of visibleSections) {
+        const element = document.getElementById(section.id);
+        if (element && element.getBoundingClientRect().top - rootTop <= 112) current = section.id;
+        else break;
+      }
+      setActiveSection(current);
+    };
+    const scheduleUpdate = () => {
+      if (!frame) frame = window.requestAnimationFrame(updateActiveSection);
+    };
+    updateActiveSection();
+    root.addEventListener('scroll', scheduleUpdate, { passive: true });
+    window.addEventListener('resize', scheduleUpdate);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      root.removeEventListener('scroll', scheduleUpdate);
+      window.removeEventListener('resize', scheduleUpdate);
+    };
+  }, [desktopShell]);
+
   return (
-    <div className="settings-view">
+    <div className="settings-view" ref={viewRef}>
       <div className="view-header">
-        <div>
-          <h2>Settings</h2>
-          <div className="text-muted">Mandible configuration.</div>
-        </div>
-        {onClose && (
-          <button
-            type="button"
-            className="settings-view__close"
-            aria-label="Close settings"
-            title="Close settings"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        )}
+        <h2>Settings</h2>
       </div>
 
+      <div className="settings-view__layout">
+        <nav className="settings-view__toc" aria-label="Settings sections">
+          <div className="settings-view__toc-title">On this page</div>
+          {SETTINGS_SECTION_LIST.map((section) => {
+            if (section.desktopOnly && !desktopShell) return null;
+            const isActive = activeSection === section.id;
+            return (
+              <button
+                type="button"
+                className={`settings-view__toc-link${isActive ? ' settings-view__toc-link--active' : ''}`}
+                aria-controls={section.id}
+                aria-current={isActive ? 'location' : undefined}
+                onClick={() => handleSectionNavigation(section.id)}
+                key={section.id}
+              >
+                {section.title}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="settings-view__content">
+
       {/* ── Section 1: Notifications ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Notifications</h3>
-          <p className="settings-view__section-desc">
-            Desktop alerts when AI tools finish and are waiting for input.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.notifications}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.notifications}
+          description="Desktop alerts when AI tools finish and are waiting for input."
+        />
 
         <div className="settings-view__section-body">
           <ToggleRow
@@ -1715,18 +1808,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </div>
           </div>
         </div>
-      </div>
+      </SettingsSectionShell>
 
-      <DesktopDaemonSection />
+      <DesktopDaemonSection section={SETTINGS_SECTIONS.daemon} />
 
       {/* ── Agent Hooks ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Agent Hooks</h3>
-          <p className="settings-view__section-desc">
-            PreToolUse safety hooks and subagent behavior.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.agentHooks}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.agentHooks}
+          description="PreToolUse safety hooks and subagent behavior."
+        />
 
         <div className="settings-view__section-body">
           <ToggleRow
@@ -1745,19 +1836,17 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={onSave}
           />
         </div>
-      </div>
+      </SettingsSectionShell>
 
-      <InstructionsDeliverySection settings={settings} onSave={onSave} />
+      <InstructionsDeliverySection section={SETTINGS_SECTIONS.instructionDelivery} settings={settings} onSave={onSave} />
 
-      <ProjectPermissionsSection />
+      <ProjectPermissionsSection section={SETTINGS_SECTIONS.projectPermissions} />
 
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Conversations</h3>
-          <p className="settings-view__section-desc">
-            Disclosure defaults for the Chat sidebar.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.conversations}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.conversations}
+          description="Disclosure defaults for the Chat sidebar."
+        />
         <div className="settings-view__section-body">
           <NumberInput
             label="Chats per group"
@@ -1771,16 +1860,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             normalize={normalizeSidebarGroupLimit}
           />
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section: Conversation Branching ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Conversation Branching</h3>
-          <p className="settings-view__section-desc">
-            How to handle resume when the conversation is already active in Console.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.conversationBranching}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.conversationBranching}
+          description="How to handle resume when the conversation is already active in Console."
+        />
 
         <div className="settings-view__section-body">
           <div className="settings-view__select-row">
@@ -1805,16 +1892,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </select>
           </div>
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section: Work Queue ── Bug: cbbb3d9 */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Work Queue</h3>
-          <p className="settings-view__section-desc">
-            How to handle work-unit continuations (handoff notes from ended sessions).
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.workQueue}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.workQueue}
+          description="How to handle work-unit continuations (handoff notes from ended sessions)."
+        />
 
         <div className="settings-view__section-body">
           <div className="settings-view__select-row">
@@ -1839,16 +1924,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </select>
           </div>
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section: Issues ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Issues</h3>
-          <p className="settings-view__section-desc">
-            Defaults for the issue ledger browser.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.issues}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.issues}
+          description="Defaults for the issue ledger browser."
+        />
 
         <div className="settings-view__section-body">
           <SelectInput
@@ -1887,16 +1970,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </div>
           </div>
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section 4: Appearance ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Appearance</h3>
-          <p className="settings-view__section-desc">
-            App display and shell launch defaults.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.appearance}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.appearance}
+          description="App display and shell launch defaults."
+        />
 
         <div className="settings-view__section-body">
           {([
@@ -2039,15 +2120,13 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             requiresRestart
           />
         </div>
-      </div>
+      </SettingsSectionShell>
 
-      <div className="settings-view__section" id="auth-settings">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Auth</h3>
-          <p className="settings-view__section-desc">
-            Temporary approval windows for protected operations.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.auth}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.auth}
+          description="Temporary approval windows for protected operations."
+        />
         <div className="settings-view__section-body">
           <NumberInput
             label="Auto-approve lease"
@@ -2061,29 +2140,24 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           />
           <DelegatedSigningSection />
         </div>
-      </div>
+      </SettingsSectionShell>
 
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Auth Hooks</h3>
-          <p className="settings-view__section-desc">
-            Repo-specific post-auth hook configuration.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.authHooks}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.authHooks}
+          description="Repo-specific post-auth hook configuration."
+        />
         <div className="settings-view__section-body">
           <AuthHooksPanel mutationsAllowed={operationalMutationsAllowed} />
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section 5: Version Control ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Version Control</h3>
-          <p className="settings-view__section-desc">
-            Comma-separated branch names that are pinned in the Work tab and used as the baseline
-            for ahead/behind counts.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.versionControl}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.versionControl}
+          description="Comma-separated branch names that are pinned in the Work tab and used as the baseline for ahead/behind counts."
+        />
         <div className="settings-view__field">
           <input
             type="text"
@@ -2116,16 +2190,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             )}
           </div>
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section 6: Maintenance ── */}
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Maintenance</h3>
-          <p className="settings-view__section-desc">
-            Log retention and housekeeping.
-          </p>
-        </div>
+      <SettingsSectionShell section={SETTINGS_SECTIONS.maintenance}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.maintenance}
+          description="Log retention and housekeeping."
+        />
 
         <div className="settings-view__section-body">
           <NumberInput
@@ -2139,13 +2211,15 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             suffix="days"
           />
         </div>
-      </div>
+      </SettingsSectionShell>
 
       {/* ── Section 7: Backup ── */}
-      <BackupSection />
+      <BackupSection section={SETTINGS_SECTIONS.backup} />
 
       {/* ── Section 8: Runtime ── Bug: cc4688b */}
-      <RuntimeSection />
+      <RuntimeSection section={SETTINGS_SECTIONS.runtime} />
+        </div>
+      </div>
     </div>
   );
 }
