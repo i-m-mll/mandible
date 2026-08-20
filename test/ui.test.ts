@@ -5774,7 +5774,37 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.detail-pane-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--detail-pane-modal-top\);[^}]*right:\s*var\(--detail-pane-modal-right\);[^}]*bottom:\s*var\(--detail-pane-modal-bottom\);[^}]*left:\s*var\(--detail-pane-modal-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*overflow:\s*auto;/s);
-    expect(css).not.toMatch(/\.artifact-preview\s*\{[^}]*(?:border|background|padding):/s);
+    const styleRules = Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g)).map((match) => ({
+      selectors: match[1].split(',').map((selector) => selector.trim()),
+      body: match[2],
+    }));
+    const baseArtifactPreviewRules = styleRules.filter((rule) =>
+      rule.selectors.includes('.artifact-preview'),
+    );
+    expect(baseArtifactPreviewRules.length).toBeGreaterThan(0);
+    for (const rule of baseArtifactPreviewRules) {
+      expect(rule.body).not.toMatch(/\bborder(?:-(?!radius\b)[\w-]+)?\s*:/);
+      expect(rule.body).not.toMatch(/\bpadding(?:-[\w-]+)?\s*:/);
+    }
+
+    const lightArtifactPreviewRules = styleRules.filter((rule) =>
+      rule.selectors.some(
+        (selector) =>
+          /\[data-theme=(['"])light\1\]/.test(selector) &&
+          /\.artifact-preview(?![\w-])/.test(selector),
+      ),
+    );
+    const canonicalLightArtifactPreviewRules = lightArtifactPreviewRules.filter((rule) =>
+      rule.selectors.includes("[data-theme='light'] .artifact-preview"),
+    );
+    expect(canonicalLightArtifactPreviewRules.some((rule) =>
+      /background:\s*var\(--bg-card\)/.test(rule.body),
+    )).toBe(true);
+    for (const rule of lightArtifactPreviewRules) {
+      expect(rule.body).not.toMatch(
+        /background(?:-color)?:\s*(?:#[\da-f]{3,8}\b|(?:rgb|hsl)a?\(|(?:white|gray|grey|lightgray|lightgrey|gainsboro)\b)/i,
+      );
+    }
     expect(css).not.toMatch(/\.artifact-preview-frame/);
     expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
