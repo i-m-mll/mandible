@@ -929,9 +929,9 @@ a {
   padding-top: var(--app-header-height);
 }
 
-/* Headerless variant (issues/graph/timeline): the frame is the single scroll
-   owner. The per-view content class provides overflow-y:auto (e.g.
-   `.issues-tree { overflow-y:auto }`). */
+/* Headerless direct-content variant (issues/graph): the frame is the single
+   scroll owner. Headerless views may instead opt into `.view-sidebar__body`
+   when the resize rail must stay outside their vertical scroll container. */
 
 /* Header variant (spaces, later stage): fixed header, body is the single
    scroll owner. */

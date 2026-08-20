@@ -164,6 +164,29 @@ describe('ViewSidebar', () => {
     expect(body!.contains(screen.getByTestId('scroll'))).toBe(true);
   });
 
+  it('can keep a headerless resize rail outside the shared body scroll owner', () => {
+    const { container } = render(
+      <ViewSidebar
+        storageKey="sidebar-width:t-scroll"
+        defaultWidth={320}
+        minWidth={260}
+        ariaLabel="Timeline controls"
+        scrollBody
+      >
+        <div data-testid="scroll">scroll body</div>
+      </ViewSidebar>,
+    );
+    const frame = container.querySelector('.view-sidebar')!;
+    const body = container.querySelector('.view-sidebar__body')!;
+    const handle = container.querySelector('.view-sidebar__resize-handle')!;
+
+    expect(container.querySelector('.view-sidebar__header')).toBeNull();
+    expect(body.contains(screen.getByTestId('scroll'))).toBe(true);
+    expect(frame.contains(body)).toBe(true);
+    expect(body.contains(handle)).toBe(false);
+    expect(frame.contains(handle)).toBe(true);
+  });
+
   it('applies body and footer slots while keeping the body as the scroll owner', () => {
     const { container } = render(
       <ViewSidebar

@@ -29,9 +29,6 @@
   min-height: 0;
   min-width: 0;
   width: 320px;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
   border-right: 1px solid var(--neutral-alpha-08);
 }
 

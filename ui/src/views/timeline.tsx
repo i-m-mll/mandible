@@ -1760,7 +1760,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         },
       });
     },
-    layout: 'full-content' as const,
+    layout: 'anchored-detail' as const,
     content: inspectorContent,
   }), [inspectorContent, updateState, viewState.panes]);
 
@@ -1774,6 +1774,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
           {...VIEW_SIDEBAR_GEOMETRY.timeline}
           ariaLabel="Timeline controls"
           className="timeline-sidebar"
+          scrollBody
         >
             <div className="timeline-toolbar">
               <label className="timeline-control">
