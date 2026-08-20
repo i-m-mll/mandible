@@ -31,11 +31,11 @@ describe('Codex IAB chrome edge contract', () => {
     expect(stylesheet).toMatch(/--app-boundary-shadow-blur:\s*36px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-spread:\s*0px;/);
     expect(stylesheet).toMatch(
-      /:where\(\.app-layout\)::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:\s*var\(--app-boundary-shadow-x\) 0 var\(--app-boundary-shadow-blur\) var\(--app-boundary-shadow-spread\) var\(--app-boundary-shadow-color\);/s,
+      /:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s,
     );
-    expect(stylesheet).toMatch(/\.app-layout::after\s*\{[^}]*--app-boundary-shadow-x:\s*calc\(0px - var\(--app-boundary-shadow-offset\)\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
-    expect(stylesheet).toMatch(/\.app-shell--codex-iab \.app-header::before,[^{]*\{[^}]*--app-boundary-shadow-x:\s*var\(--app-boundary-shadow-offset\);[^}]*--app-boundary-accent:\s*var\(--app-divider\);[^}]*border-inline-end:\s*1px solid var\(--app-boundary-accent\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
-    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(2);
+    expect(stylesheet).toMatch(/\.app-layout::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*none;/s);
+    expect(stylesheet).toMatch(/\.app-shell--codex-iab \.app-header::before,[^{]*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
+    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
     expect(stylesheet).not.toMatch(/--shadow-codex-iab-edge:/);
   });
 });

@@ -52,7 +52,7 @@
 
 .work-shell {
   display: grid;
-  grid-template-columns: var(--app-view-sidebar-width) minmax(0, 1fr);
+  grid-template-columns: var(--app-view-sidebar-outer-width) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   height: 100%;
