@@ -21,6 +21,7 @@ import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { decompressContent } from "../src/compression.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { sourceFilesystemIdentity } from "../src/conversations/source-observer.js";
 
 let tempDir = "";
 let db: Db;
@@ -263,6 +264,110 @@ describe("exact conversation freshness", () => {
       .get(seeded.id)).toMatchObject({ count: 2 });
   });
 
+  it("rejects the bounded extent match after a middle rewrite restores size, mtime, and tail", async () => {
+    const sessionId = "middle-rewrite-session";
+    const file = await sourcePath(sessionId);
+    const staleMarker = "stale marker";
+    const freshMarker = "fresh marker";
+    await writeAt(file, transcript(sessionId, `${"x".repeat(8192)}${staleMarker}${"y".repeat(8192)}`), 1);
+    await triggerTargetedIngest({ transcriptPath: file, now: 1_000 });
+    const seeded = db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(file) as { id: string };
+    updateThread(sessionId, { rolloutPath: file });
+
+    const original = await fsp.stat(file, { bigint: true });
+    const originalTail = (await fsp.readFile(file)).subarray(-4096);
+    const bytes = await fsp.readFile(file);
+    const markerOffset = bytes.indexOf(staleMarker);
+    expect(markerOffset).toBeGreaterThan(0);
+    expect(markerOffset).toBeLessThan(bytes.length - 4096);
+    const handle = await fsp.open(file, "r+");
+    try {
+      await handle.write(Buffer.from(freshMarker), 0, Buffer.byteLength(freshMarker), markerOffset);
+    } finally {
+      await handle.close();
+    }
+    await fsp.utimes(file, Number(original.atimeNs) / 1_000_000_000, Number(original.mtimeNs) / 1_000_000_000);
+    const rewritten = await fsp.stat(file, { bigint: true });
+    expect(rewritten.size).toBe(original.size);
+    expect(rewritten.mtimeNs).toBe(original.mtimeNs);
+    expect(rewritten.dev).toBe(original.dev);
+    expect(rewritten.ino).toBe(original.ino);
+    expect(rewritten.ctimeNs).not.toBe(original.ctimeNs);
+    expect((await fsp.readFile(file)).subarray(-4096)).toEqual(originalTail);
+
+    let ingests = 0;
+    const result = await ensureExactConversationFresh(db, seeded.id, {
+      ingest: async (source) => {
+        ingests += 1;
+        return triggerExactPathIngest(source);
+      },
+    });
+    const normalized = (db.prepare(
+      "SELECT content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(seeded.id) as Array<{ content: Buffer | string; compressed: number }>)
+      .map((row) => decompressContent(row.content, row.compressed === 1)).join("\n");
+    expect(result.refreshed).toBe(true);
+    expect(ingests).toBe(1);
+    expect(normalized).toContain(freshMarker);
+    expect(normalized).not.toContain(staleMarker);
+  });
+
+  it("rehashes and refreshes identity after same-byte inode replacement", async () => {
+    const seeded = await seed("inode-replacement-session");
+    const original = await fsp.stat(seeded.file, { bigint: true });
+    const replacement = `${seeded.file}.replacement`;
+    await fsp.copyFile(seeded.file, replacement);
+    await fsp.utimes(replacement, Number(original.atimeNs) / 1_000_000_000, Number(original.mtimeNs) / 1_000_000_000);
+    await fsp.rename(replacement, seeded.file);
+    const replaced = await fsp.stat(seeded.file, { bigint: true });
+    expect(replaced.ino).not.toBe(original.ino);
+    expect(replaced.size).toBe(original.size);
+    expect(replaced.mtimeNs).toBe(original.mtimeNs);
+
+    let ingests = 0;
+    await expect(ensureExactConversationFresh(db, seeded.id, {
+      ingest: async (source) => {
+        ingests += 1;
+        return triggerExactPathIngest(source);
+      },
+    })).resolves.toMatchObject({ refreshed: true });
+    expect(ingests).toBe(1);
+    const identity = sourceFilesystemIdentity(replaced);
+    expect(db.prepare(`
+      SELECT filesystem_device, filesystem_inode, filesystem_ctime_ns
+        FROM conversation_source_versions
+       WHERE id = (SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?)
+    `).get(seeded.id)).toEqual({
+      filesystem_device: identity.device,
+      filesystem_inode: identity.inode,
+      filesystem_ctime_ns: identity.ctimeNs,
+    });
+  });
+
+  it("does not trust a legacy current version without filesystem identity", async () => {
+    const seeded = await seed("legacy-identity-session");
+    db.prepare(`
+      UPDATE conversation_source_versions
+         SET filesystem_device = NULL, filesystem_inode = NULL, filesystem_ctime_ns = NULL
+       WHERE id = (SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?)
+    `).run(seeded.id);
+    let ingests = 0;
+    await expect(ensureExactConversationFresh(db, seeded.id, {
+      ingest: async (source) => {
+        ingests += 1;
+        return triggerExactPathIngest(source);
+      },
+    })).resolves.toMatchObject({ refreshed: true });
+    expect(ingests).toBe(1);
+    expect(db.prepare(`
+      SELECT filesystem_device IS NOT NULL AS device,
+             filesystem_inode IS NOT NULL AS inode,
+             filesystem_ctime_ns IS NOT NULL AS ctime
+        FROM conversation_source_versions
+       WHERE id = (SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?)
+    `).get(seeded.id)).toEqual({ device: 1, inode: 1, ctime: 1 });
+  });
+
   it("reports unavailable sources explicitly without deleting normalized fallback bytes", async () => {
     const seeded = await seed("missing-session");
     const before = db.prepare("SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position").all(seeded.id);
@@ -348,6 +453,8 @@ describe("exact conversation freshness", () => {
     await fsp.truncate(seeded.file, sparseSize);
     await fsp.utimes(seeded.file, sparseMtime, sparseMtime);
     const stat = await fsp.stat(seeded.file);
+    const bigintStat = await fsp.stat(seeded.file, { bigint: true });
+    const identity = sourceFilesystemIdentity(bigintStat);
     expect(stat.size).toBe(sparseSize);
     expect(stat.size).toBeGreaterThan(0x7fffffff);
     expect(stat.blocks * 512).toBeLessThan(stat.size);
@@ -355,11 +462,16 @@ describe("exact conversation freshness", () => {
     const tailHash = crypto.createHash("sha256").update(Buffer.alloc(4096)).digest("hex");
     db.prepare(`
       UPDATE conversation_source_versions
-         SET content_sha256 = ?, byte_length = ?, file_mtime_ms = ?, availability = 'available'
+         SET content_sha256 = ?, byte_length = ?, file_mtime_ms = ?,
+             filesystem_device = ?, filesystem_inode = ?, filesystem_ctime_ns = ?,
+             availability = 'available'
        WHERE id = (
          SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?
        )
-    `).run(sparseSha256, stat.size, stat.mtimeMs, seeded.id);
+    `).run(
+      sparseSha256, stat.size, stat.mtimeMs,
+      identity.device, identity.inode, identity.ctimeNs, seeded.id,
+    );
     db.prepare(`
       UPDATE conversation_ingest_state
          SET byte_offset = ?, tail_hash = ?, partial_line = '', empty_source_mtime = NULL,
