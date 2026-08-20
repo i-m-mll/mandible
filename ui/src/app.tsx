@@ -117,9 +117,9 @@ import {
   SessionOverviewIcon,
 } from './components/icons/TabIcons';
 import {
-  consumeAgentSessionFragment,
-  detectCodexIab,
+  adoptAgentSessionFragment,
   getAgentPageBinding,
+  hashWithAgentSession,
   subscribeAgentPageBinding,
 } from './agent-page-binding';
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
@@ -616,13 +616,11 @@ function App(): JSX.Element {
     window.location.reload();
   }, []);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
-  // Issue 037fa85 — page-local Codex IAB detection and agent session binding.
-  // The binding was consumed from the hash fragment at boot (or adopted from a
-  // later Tauri deep-link handoff — review R1, replace semantics) and lives
-  // only in this tab's memory (never localStorage): concurrent tabs from
-  // different agent sessions must never share a binding. Display-only.
-  const [codexIabDetected] = useState<boolean>(() => detectCodexIab());
+  // The self-asserted binding gates explicit page controls. It lives only for
+  // this page lifetime (never localStorage), so concurrent tabs cannot share
+  // either identity or optional chrome state.
   const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
+  const [leftShadowEnabled, setLeftShadowEnabled] = useState(false);
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
@@ -687,10 +685,11 @@ function App(): JSX.Element {
     if (typeof window === 'undefined') {
       return;
     }
-    if (window.location.hash !== hash) {
-      window.history.pushState(null, '', hash);
+    const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
+    if (window.location.hash !== boundHash) {
+      window.history.pushState(null, '', boundHash);
     }
-    setRoute(parseRouteFromHash(hash));
+    setRoute(parseRouteFromHash(boundHash));
   }, []);
 
   const navigateToSettings = useCallback(() => {
@@ -764,7 +763,14 @@ function App(): JSX.Element {
   }, [route, navigateToSpace]);
 
   useEffect(() => {
-    const handleChange = () => setRoute(parseHashRoute());
+    const handleChange = () => {
+      const hash = window.location.hash || '#/spaces';
+      const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
+      if (boundHash !== hash) {
+        window.history.replaceState(null, '', boundHash);
+      }
+      setRoute(parseRouteFromHash(boundHash));
+    };
     window.addEventListener('hashchange', handleChange);
     window.addEventListener('popstate', handleChange);
     return () => {
@@ -1891,8 +1897,7 @@ function App(): JSX.Element {
   }, [navigateToHash]);
 
   // Issue 037fa85 — first conditional nav item: the Session Overview shortcut
-  // appears only when the page runs inside a session-bound browser (Codex IAB
-  // WebMCP probe) or a page-local agent_session binding was delivered at boot.
+  // appears when a page-local agent_session binding was delivered at boot.
   // The view itself stays reachable for any session via #/overview deep links.
   const sessionOverviewNavItem: NavItem = {
     tab: 'overview',
@@ -1901,7 +1906,7 @@ function App(): JSX.Element {
     title: 'Session Overview',
     icon: SessionOverviewIcon,
   };
-  const showSessionOverviewNav = codexIabDetected || agentPageBinding !== null;
+  const showSessionOverviewNav = agentPageBinding !== null;
 
   const primaryNavItems: NavItem[] = [
     ...(showSessionOverviewNav ? [sessionOverviewNavItem] : []),
@@ -2224,7 +2229,7 @@ function App(): JSX.Element {
     return (
       <a
         key={item.tab}
-        href={item.href}
+        href={hashWithAgentSession(item.href, agentPageBinding)}
         className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
         aria-label={item.title}
@@ -2352,7 +2357,7 @@ function App(): JSX.Element {
 
   return (
     <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${codexIabDetected ? ' app-shell--codex-iab' : ''}`}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${leftShadowEnabled ? ' app-shell--left-shadow' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
         ...typographyCssVariables(typography),
@@ -2435,6 +2440,15 @@ function App(): JSX.Element {
                 <span id="app-rail-reorder-status" className="sr-only" role="status" aria-live="polite">
                   {railAnnouncement}
                 </span>
+                {agentPageBinding !== null ? (
+                  <button
+                    type="button"
+                    className="app-rail__left-shadow-toggle"
+                    aria-label="Toggle optional left shadow"
+                    aria-pressed={leftShadowEnabled}
+                    onClick={() => setLeftShadowEnabled((enabled) => !enabled)}
+                  />
+                ) : null}
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
                 {bottomPanelAvailable ? (
@@ -2625,7 +2639,6 @@ function App(): JSX.Element {
             <LazySessionOverviewView
               initialSessionId={tabRoute.params.session ?? null}
               agentBinding={agentPageBinding}
-              iabDetected={codexIabDetected}
             />
           );
         })())}
@@ -2693,10 +2706,9 @@ if (mountNode) {
   // acquire one via the handshake before first render so operator mutations
   // authenticate (in strict mode too, using a token persisted during compat).
   installClientAuthFetch();
-  // Issue 037fa85 — consume and strip the page-local agent_session fragment
-  // before the initial route parse so it never leaks into route params,
-  // history, or shared URLs.
-  consumeAgentSessionFragment();
+  // Adopt the page-local binding before the first route parse. The parameter
+  // deliberately remains in the hash and is preserved through navigation.
+  adoptAgentSessionFragment();
   const initialRoute = parseHashRoute();
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
