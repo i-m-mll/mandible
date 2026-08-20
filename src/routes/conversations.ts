@@ -1579,7 +1579,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
   }, { fileRpc: "allow" });
 
-  // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
+  // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON.
+  // File RPC is allowed only on this exact read-only projection; POST carries
+  // formatting/filter input and does not authorize adjacent conversation mutations.
   server.post("/api/conversations/:id/export", async (req, res) => {
     const requestedRef = req.params.id;
     if (!requestedRef) {
@@ -1661,6 +1663,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         : blocks.length,
       body_source: readable?.bodySource ?? "legacy",
     });
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
 }

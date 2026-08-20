@@ -455,9 +455,7 @@ file_rpc_main() {
     list) shift; file_rpc_list "$@" ;;
     show) shift; file_rpc_show "$@" ;;
     blocks) shift; file_rpc_blocks "$@" ;;
-    export)
-      echo "Error: conversations export is not supported through file-RPC. Use the main Mandible daemon or unset MANDIBLE_BASE=file://..." >&2
-      exit 2 ;;
+    export) shift; conversation_export_api "$@" ;;
     search) shift; file_rpc_search "$@" ;;
     scan-credentials) shift; scan_credentials "$@" ;;
     ""|-h|--help|help) usage; exit 0 ;;

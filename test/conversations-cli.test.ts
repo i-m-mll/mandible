@@ -155,18 +155,38 @@ describe("conversations CLI file RPC", () => {
     }
   });
 
-  it("returns a clear unsupported error for file-RPC conversation export", async () => {
+  it("exports an exact conversation through file RPC", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-export-file-rpc-"));
     tempRoots.push(spoolDir);
-
-    const result = await run(["conversations", "export", "session-1"], {
-      MANDIBLE_BASE: `file://${spoolDir}`,
-      MANDIBLE_FILE_RPC_TIMEOUT: "5",
+    const seenRequests: Array<{ method?: string; path?: string; body?: unknown }> = [];
+    const responder = startFileRpcResponder(spoolDir, (request) => {
+      seenRequests.push(request);
+      if (request.method === "POST" && request.path === "/api/conversations/session-1/export") {
+        return {
+          status: 200,
+          body: { content: "# exact file-RPC export" },
+        };
+      }
+      return { status: 404, body: { error: "not_found" } };
     });
 
-    expect(result.status).toBe(2);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("conversations export is not supported through file-RPC");
+    try {
+      const result = await run(["conversations", "export", "session-1"], {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("# exact file-RPC export\n");
+      expect(result.stderr).toBe("");
+      expect(seenRequests).toContainEqual(expect.objectContaining({
+        method: "POST",
+        path: "/api/conversations/session-1/export",
+        body: { format: "markdown" },
+      }));
+    } finally {
+      responder.stop();
+    }
   });
 
   it("forwards log parse offsets through file RPC and warns on truncation", async () => {
