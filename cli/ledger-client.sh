@@ -108,13 +108,14 @@ mandible_work_unit_claim() {
 }
 
 mandible_work_unit_activate() {
-  local issue_id="" repo_id="" branch="" assigned_session_id="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local issue_id="" repo_id="" branch="" assigned_session_id="" worker_owner=0 graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   while (( $# > 0 )); do
     case "$1" in
       --issue|--issue-id) issue_id="${2:-}"; shift 2 ;;
       --repo|--repo-id) repo_id="${2:-}"; shift 2 ;;
       --branch) branch="${2:-}"; shift 2 ;;
       --session|--assigned-session-id) assigned_session_id="${2:-}"; shift 2 ;;
+      --worker) worker_owner=1; shift ;;
       --graceful) graceful=1; shift ;;
       *) mandible_ledger_die "Unknown work-unit activate option: $1" 2; return $? ;;
     esac
@@ -130,12 +131,14 @@ mandible_work_unit_activate() {
     --arg repo_id "$repo_id" \
     --arg branch "$branch" \
     --arg assigned_session_id "$assigned_session_id" \
+    --argjson worker_owner "$worker_owner" \
     '{
       issue_id:$issue_id,
       repo_id:$repo_id
     }
     + (if $branch != "" then {branch:$branch} else {} end)
-    + (if $assigned_session_id != "" then {assigned_session_id:$assigned_session_id} else {} end)')
+    + (if $assigned_session_id != "" then {assigned_session_id:$assigned_session_id} else {} end)
+    + (if $worker_owner == 1 then {worker_owner:true} else {} end)')
   mandible_ledger_request POST "/api/work-units/activate" "$payload" "$graceful"
 }
 

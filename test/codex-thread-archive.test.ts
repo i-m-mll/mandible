@@ -47,6 +47,7 @@ function createWorkUnitsOnlyDb(): InstanceType<typeof Database> {
       assigned_session_id TEXT,
       provider TEXT,
       provider_session_id TEXT,
+      worker_provider_session_id TEXT,
       auth_request_id TEXT
     )
   `);
@@ -112,12 +113,17 @@ describe("Codex CLI thread archiver", () => {
 });
 
 describe("codex thread archive candidates", () => {
-  it("uses request-linked resolved Codex work-unit provider identity without console_sessions", () => {
+  it("uses explicitly worker-owned request-linked Codex identity without console_sessions", () => {
     const db = createWorkUnitsOnlyDb();
     try {
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, auth_request_id)
-         VALUES ('wu-direct', 'done123', 'resolved', 'codex', 'thread-direct', 'auth-1')`,
+        `INSERT INTO work_units (
+           id, issue_id, state, provider, provider_session_id,
+           worker_provider_session_id, auth_request_id
+         ) VALUES (
+           'wu-direct', 'done123', 'resolved', 'codex', 'ambient-requester',
+           'thread-direct', 'auth-1'
+         )`,
       ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([
@@ -129,6 +135,32 @@ describe("codex thread archive candidates", () => {
           work_unit_id: "wu-direct",
         },
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not archive the exact ambient-only coordinator incident before later guards exist", () => {
+    const db = createWorkUnitsOnlyDb();
+    try {
+      db.prepare(
+        `INSERT INTO work_units (
+           id, issue_id, state, assigned_session_id, provider, provider_session_id,
+           worker_provider_session_id, auth_request_id
+         ) VALUES (?, '66b3bda', 'resolved', NULL, 'codex', ?, NULL, ?)`,
+      ).run(
+        "53ac5b81-f6f2-4898-84b5-02e5b725a84b",
+        "01a01b97-bc06-7df0-ae37-2e287fdf4694",
+        "951e0926-c937-4de9-a165-3f6f381929b2",
+      );
+
+      expect(listCompletedWorkerThreadArchiveCandidates(db, {
+        id: "951e0926-c937-4de9-a165-3f6f381929b2",
+        type: "merge",
+        issues: [],
+        issue_closures: ["66b3bda"],
+        resolved_at: Date.parse("2026-08-20T13:04:55Z"),
+      } as AuthRequest)).toEqual([]);
     } finally {
       db.close();
     }
@@ -152,8 +184,13 @@ describe("codex thread archive candidates", () => {
     const db = createWorkUnitsOnlyDb();
     try {
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, auth_request_id)
-         VALUES ('wu-open', 'open123', 'resolved', 'codex', 'thread-open', 'auth-1')`,
+        `INSERT INTO work_units (
+           id, issue_id, state, provider, provider_session_id,
+           worker_provider_session_id, auth_request_id
+         ) VALUES (
+           'wu-open', 'open123', 'resolved', 'codex', 'thread-open',
+           'thread-open', 'auth-1'
+         )`,
       ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestWithoutClosures())).toEqual([
@@ -230,12 +267,14 @@ describe("codex thread archive candidates", () => {
          VALUES ('parent-role', ?, 1)`,
       ).run(JSON.stringify({ session_id: "thread-parent" }));
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id)
-         VALUES ('wu-live', 'done123', 'resolved', 'codex', 'thread-live')`,
+        `INSERT INTO work_units (
+           id, issue_id, state, provider, provider_session_id, worker_provider_session_id
+         ) VALUES ('wu-live', 'done123', 'resolved', 'codex', 'thread-live', 'thread-live')`,
       ).run();
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id)
-         VALUES ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent')`,
+        `INSERT INTO work_units (
+           id, issue_id, state, provider, provider_session_id, worker_provider_session_id
+         ) VALUES ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent', 'thread-parent')`,
       ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);
@@ -264,8 +303,13 @@ describe("codex thread archive candidates", () => {
          VALUES ('parent-role', ?, 1)`,
       ).run(JSON.stringify({ session_id: "thread-parent" }));
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, auth_request_id)
-         VALUES ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent', 'auth-1')`,
+        `INSERT INTO work_units (
+           id, issue_id, state, provider, provider_session_id,
+           worker_provider_session_id, auth_request_id
+         ) VALUES (
+           'wu-parent', 'done123', 'resolved', 'codex', 'thread-parent',
+           'thread-parent', 'auth-1'
+         )`,
       ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);

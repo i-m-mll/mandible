@@ -49,6 +49,7 @@ interface ActivateInput {
   provider?: string | null;
   provider_session_id?: string | null;
   ambient_identity?: unknown;
+  worker_owner?: boolean;
 }
 
 interface ReleaseInput {
@@ -223,6 +224,16 @@ export function registerWorkUnitRoutes(
     const now = Date.now();
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
+    if (body.worker_owner !== undefined && typeof body.worker_owner !== "boolean") {
+      sendJson(res, 400, { error: "worker_owner must be a boolean" });
+      return;
+    }
+    if (body.worker_owner === true && ambientIdentity?.provider !== "codex") {
+      sendJson(res, 400, {
+        error: "worker_owner requires an allowlisted ambient Codex provider identity",
+      });
+      return;
+    }
 
     const existing = findExistingActivateWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
 
@@ -246,6 +257,10 @@ export function registerWorkUnitRoutes(
       if (ambientIdentity) {
         updates.push("provider = ?", "provider_session_id = ?");
         params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+      }
+      if (body.worker_owner === true) {
+        updates.push("worker_provider_session_id = ?");
+        params.push(ambientIdentity!.provider_session_id);
       }
       params.push(existing.id);
 
@@ -272,8 +287,8 @@ export function registerWorkUnitRoutes(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
           provider, provider_session_id, created_at, activated_at, last_commit_at,
-          owner_user_id
-        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?)`
+          owner_user_id, worker_provider_session_id
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
@@ -286,6 +301,7 @@ export function registerWorkUnitRoutes(
         now,
         now,
         ownerUserId,
+        body.worker_owner === true ? ambientIdentity!.provider_session_id : null,
       );
 
       const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, repoId);

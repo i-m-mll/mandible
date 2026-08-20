@@ -1091,10 +1091,10 @@ describe("auth queue", () => {
       db.prepare(
         `INSERT INTO work_units (
           id, issue_id, ledger_issue_id, repo_id, branch, kind, state, provider,
-          provider_session_id, created_at
+          provider_session_id, worker_provider_session_id, created_at
         ) VALUES (
           'wu-closed-child', 'child123', ?, ?, 'feature/closed-child', 'partition',
-          'abandoned', 'codex', 'thread-closed-child', ?
+          'abandoned', 'codex', 'thread-closed-child', 'thread-closed-child', ?
         )`
       ).run(issue.id, path.basename(repo), now);
 

@@ -4789,6 +4789,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "conversation_source_filesystem_identity",
     statements: [],
   },
+  {
+    version: 148,
+    name: "explicit_work_unit_worker_ownership",
+    statements: [],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
@@ -4817,6 +4822,29 @@ function ensureConversationSourceFilesystemIdentityColumns(db: Db): void {
         || column.dflt_value !== null || column.pk !== 0) {
       throw new Error(`migration 147 verification: conversation_source_versions.${name} diverges`);
     }
+  }
+}
+
+function ensureWorkUnitWorkerOwnershipColumn(db: Db): void {
+  if (!tableExists(db, "work_units")) return;
+  const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  if (!columns.some((column) => column.name === "worker_provider_session_id")) {
+    db.exec("ALTER TABLE work_units ADD COLUMN worker_provider_session_id TEXT");
+  }
+  const column = (db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>).find((entry) => entry.name === "worker_provider_session_id");
+  if (!column || column.type.toUpperCase() !== "TEXT" || column.notnull !== 0
+      || column.dflt_value !== null) {
+    throw new Error("migration 148 verification: work_units.worker_provider_session_id diverges");
   }
 }
 
@@ -5274,6 +5302,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 147) {
         ensureConversationSourceFilesystemIdentityColumns(db);
+      }
+      if (migration.version === 148) {
+        ensureWorkUnitWorkerOwnershipColumn(db);
       }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
