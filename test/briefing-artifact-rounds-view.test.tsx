@@ -19,7 +19,7 @@ import { BriefingView } from '../ui/src/views/briefing';
 import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
-import { RICH_BRIEFING_DEMO } from '../src/feedback/rich-briefing-demo';
+import { RICH_BRIEFING_DEMO, seedRichBriefingDemo } from '../src/feedback/rich-briefing-demo';
 
 const source = 'Intro\n:::spec-item{key="decision" type="verdict" required="true"}\nReview this round\n:::\n';
 const bodyStart = source.indexOf('Review this round');
@@ -759,6 +759,160 @@ describe('artifact-backed Briefing rounds', () => {
       expect((secondDetail.body as any).selected_round).toMatchObject({
         id: secondIds.round_id, answers: [], annotations: [], latest_submission: null, latest_frozen_membership: null,
       });
+    } finally {
+      privateDb.close();
+      fs.rmSync(privateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips the selected rich-demo round for the active operator on a private copied-preview database', async () => {
+    const privateRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-briefing-selected-round-'));
+    const privateDbPath = path.join(privateRoot, 'copy.db');
+    const artifactRoot = path.join(privateRoot, 'artifacts');
+    const privateDb = new Database(privateDbPath);
+    try {
+      migrate(privateDb);
+      const operatorId = createUser(privateDb, { slug: 'active-operator', kind: 'human', display_name: 'Active operator' }).id;
+      setSetting(privateDb, 'user.operator_id', operatorId);
+      const manifest = seedRichBriefingDemo(privateDb, { databasePath: privateDbPath, artifactRoot });
+      const roundOneId = manifest.rounds[0].id;
+      const selectedRoundId = manifest.rounds[1].id;
+      const briefingId = manifest.briefing.id;
+      const previewInstance = resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
+        dbPath: privateDbPath, sourceDbPath: path.join(privateRoot, 'source.db'),
+      });
+      const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
+      registerBriefingRoutes(preview, privateDb);
+      expect(privateDb.prepare(
+        'SELECT COUNT(*) AS count FROM briefing_members WHERE briefing_id = ? AND user_id = ?',
+      ).get(briefingId, operatorId)).toEqual({ count: 0 });
+      const selectedBeforeMutation = await preview.invoke({
+        method: 'GET', url: `/api/briefings/${briefingId}?round=${selectedRoundId}`,
+        credential: 'active-operator', transport: 'http',
+      });
+      expect(selectedBeforeMutation).toMatchObject({
+        status: 200,
+        body: { briefing: { id: briefingId }, selected_round: { id: selectedRoundId, answers: [], annotations: [] } },
+      });
+      const roundOneSnapshot = () => ({
+        responses: privateDb.prepare('SELECT * FROM briefing_response_events WHERE round_id = ? ORDER BY rowid').all(roundOneId),
+        annotations: privateDb.prepare('SELECT * FROM briefing_annotation_events WHERE round_id = ? ORDER BY rowid').all(roundOneId),
+        submissions: privateDb.prepare('SELECT * FROM briefing_submissions WHERE round_id = ? ORDER BY rowid').all(roundOneId),
+        frozenAnswers: privateDb.prepare('SELECT * FROM briefing_submission_answers WHERE round_id = ? ORDER BY position').all(roundOneId),
+        frozenAnnotations: privateDb.prepare('SELECT * FROM briefing_submission_annotations WHERE round_id = ? ORDER BY position').all(roundOneId),
+      });
+      const roundOneBefore = roundOneSnapshot();
+      const mutationUrls: string[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url === '/api/client-auth/whoami') {
+          return new Response(JSON.stringify({ authenticated: true, user: {
+            id: operatorId, slug: 'active-operator', kind: 'human', display_name: 'Active operator',
+          } }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        const artifactMatch = /^\/api\/artifacts\/([^/]+)\/content$/.exec(url);
+        if (method === 'GET' && artifactMatch) {
+          const content = getArtifactContent(privateDb, decodeURIComponent(artifactMatch[1]));
+          return new Response(JSON.stringify({ content }), { status: content ? 200 : 404, headers: { 'content-type': 'application/json' } });
+        }
+        if (!url.startsWith('/api/briefings')) throw new Error(`unexpected copied-preview request ${method} ${url}`);
+        if (method !== 'GET') mutationUrls.push(url);
+        const result = await preview.invoke({
+          method, url, credential: 'active-operator', transport: 'http',
+          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+        });
+        return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
+      }));
+      const shell = () => <AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+        <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={COPIED_PREVIEW_INSTANCE} />
+      </AppShellProvider>;
+      const view = render(shell());
+
+      const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
+      await waitFor(() => expect(keep.disabled).toBe(false));
+      fireEvent.click(keep);
+      fireEvent.click(screen.getByRole('radio', { name: 'Authorize the 10% regional canary' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Integrity alarm during reconciliation' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Write latency exceeds the canary budget' }));
+      fireEvent.input(screen.getByRole('textbox', { name: 'Record the canary owner and the first expansion checkpoint.' }), {
+        target: { value: 'Avery Chen — verify the first regional checkpoint.' },
+      });
+      fireEvent.input(screen.getByRole('textbox', { name: /Summarize how the new downgrade/ }), {
+        target: { value: 'Authorize only the bounded canary; stop on integrity alarms, missed paging, or excess write latency.' },
+      });
+      const rating = screen.getByRole('radio', { name: '4' }) as HTMLInputElement;
+      fireEvent.click(rating);
+      expect(rating.checked).toBe(true);
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Comment' })[0]);
+      const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
+      fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Final IAB acceptance annotation.' } });
+      fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
+      await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
+
+      const submit = screen.getByRole('button', { name: 'Submit' });
+      await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
+      fireEvent.click(submit);
+      await screen.findByRole('button', { name: 'Submit correction' });
+      expect(mutationUrls).toEqual([
+        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`,
+        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`,
+        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/submit`,
+      ]);
+
+      const selectedDetail = await preview.invoke({
+        method: 'GET', url: `/api/briefings/${briefingId}?round=${selectedRoundId}`,
+        credential: 'active-operator', transport: 'http',
+      });
+      const selectedRound = (selectedDetail.body as any).selected_round;
+      expect(selectedRound.answers.map((answer: any) => [answer.directive_key, answer.value])).toEqual([
+        ['release.verdict', { verdict: 'keep' }],
+        ['release.posture', { option_key: 'authorize-canary' }],
+        ['release.residual_risks', { option_keys: ['integrity-alarm', 'write-latency'] }],
+        ['release.owner', { text: 'Avery Chen — verify the first regional checkpoint.' }],
+        ['release.rationale', { text: 'Authorize only the bounded canary; stop on integrity alarms, missed paging, or excess write latency.' }],
+        ['release.confidence', { rating: 4 }],
+      ]);
+      expect(selectedRound.annotations).toMatchObject([{ body: 'Final IAB acceptance annotation.' }]);
+      expect(selectedRound.latest_submission.actor_user_id).toBe(operatorId);
+      expect(selectedRound.latest_frozen_membership).toEqual({
+        answer_event_ids: selectedRound.answers.map((answer: any) => answer.response_event_id),
+        annotation_event_ids: selectedRound.annotations.map((annotation: any) => annotation.annotation_event_id),
+      });
+      expect(privateDb.prepare(
+        'SELECT COUNT(*) AS count FROM briefing_members WHERE briefing_id = ? AND user_id = ?',
+      ).get(briefingId, operatorId)).toEqual({ count: 1 });
+      expect(privateDb.prepare(
+        `SELECT DISTINCT briefing_id, round_id, actor_user_id
+           FROM briefing_response_events WHERE round_id = ? AND actor_user_id = ?`,
+      ).all(selectedRoundId, operatorId)).toEqual([{ briefing_id: briefingId, round_id: selectedRoundId, actor_user_id: operatorId }]);
+      expect(privateDb.prepare(
+        `SELECT DISTINCT briefing_id, round_id, actor_user_id
+           FROM briefing_annotation_events WHERE round_id = ? AND actor_user_id = ?`,
+      ).all(selectedRoundId, operatorId)).toEqual([{ briefing_id: briefingId, round_id: selectedRoundId, actor_user_id: operatorId }]);
+      expect(roundOneSnapshot()).toEqual(roundOneBefore);
+
+      view.unmount();
+      invalidateApiGetCache();
+      const reloadedView = render(shell());
+      await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
+      expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true);
+      expect(screen.getByRole('button', { name: 'Submit correction' })).toBeTruthy();
+      expect(roundOneSnapshot()).toEqual(roundOneBefore);
+      reloadedView.unmount();
+
+      expect(await preview.invoke({
+        method: 'POST', url: `/api/briefings/${briefingId}-stale/rounds/${selectedRoundId}/annotations`, credential: 'active-operator',
+        body: { annotations: [{ operation: 'set', kind: 'comment', start_offset: 0, end_offset: 1,
+          quote: '#', body: 'wrong round', replacement_text: null }] }, transport: 'http',
+      })).toMatchObject({ status: 404, body: { code: 'not_found' } });
+      expect(await preview.invoke({
+        method: 'POST', url: `/api/briefings/${briefingId}/rounds/00000000-0000-4000-8000-000000000000/submit`, credential: 'active-operator',
+        body: { answers: [], annotation_event_ids: [], supersedes_submission_id: null }, transport: 'http',
+      })).toMatchObject({ status: 404, body: { code: 'not_found' } });
     } finally {
       privateDb.close();
       fs.rmSync(privateRoot, { recursive: true, force: true });
