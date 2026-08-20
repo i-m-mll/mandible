@@ -67,6 +67,11 @@ const INGEST_TAIL_HASH_BYTES = 4096;
 export const INGEST_RANGE_READ_CHUNK_BYTES = 1024 * 1024;
 /** The existing incremental parser accepts one string, so bound that materialization. */
 export const MAX_BUFFERED_APPEND_BYTES = 16 * 1024 * 1024;
+// The observed production rollout contains a 49,328,891-byte JSONL record.
+// Permit that one record while keeping every incremental parse independent of
+// the total append extent; a larger unterminated record is left checkpointed
+// for a visible retry instead of falling back to an unbounded whole-file parse.
+export const MAX_BUFFERED_APPEND_RECORD_BYTES = 64 * 1024 * 1024;
 export const INGEST_COMPRESSION_CONCURRENCY = 4;
 
 /** One recursive watch root: every glob that shares a base directory. */
@@ -828,13 +833,18 @@ type AppendReadResult =
       nextPartialLine: string;
       sourceHash: string;
       tailHash: string;
+      byteOffset: number;
+      hasMore: boolean;
     }
   | {
       kind: "buffered";
       appendedBytes: number;
       nextPartialLine: string;
       tailHash: string;
+      byteOffset: number;
+      hasMore: boolean;
     }
+  | { kind: "blocked"; reason: string }
   | { kind: "fallback"; reason: string };
 
 // --- Public API ---
@@ -1785,13 +1795,14 @@ async function refreshAppendState(
   lineCount: number,
   partialLine?: string,
   tailHash?: string,
+  byteOffset = stat.size,
 ): Promise<void> {
   writeAppendState(db, {
     file_path: filePath,
-    byte_offset: stat.size,
+    byte_offset: byteOffset,
     line_count: lineCount,
-    tail_hash: tailHash ?? await hashFileTailAt(filePath, stat.size),
-    partial_line: partialLine ?? await readTrailingPartialLine(filePath, stat.size),
+    tail_hash: tailHash ?? await hashFileTailAt(filePath, byteOffset),
+    partial_line: partialLine ?? await readTrailingPartialLine(filePath, byteOffset),
     empty_source_mtime: null,
     empty_source_size: null,
   });
@@ -1814,35 +1825,62 @@ async function readAppend(
   }
   const appendedBytes = stat.size - state.byte_offset;
   if (appendedBytes <= 0) {
-    return { kind: "buffered", appendedBytes: 0, nextPartialLine: state.partial_line, tailHash: currentTailHash };
+    return {
+      kind: "buffered",
+      appendedBytes: 0,
+      nextPartialLine: state.partial_line,
+      tailHash: currentTailHash,
+      byteOffset: state.byte_offset,
+      hasMore: false,
+    };
   }
 
-  // Provider incremental parsers currently accept one raw string. Beyond this
-  // ceiling, reuse their existing whole-file streaming parser instead of
-  // materializing an unbounded append tail or calling fs.read with its length.
-  if (appendedBytes > MAX_BUFFERED_APPEND_BYTES) {
-    return { kind: "fallback", reason: "append_range_exceeds_buffer_limit" };
+  let readEnd = Math.min(stat.size, state.byte_offset + MAX_BUFFERED_APPEND_BYTES);
+  let appended = await readFileRange(filePath, state.byte_offset, readEnd);
+  if (readEnd < stat.size) {
+    let newline = appended.lastIndexOf("\n");
+    if (newline < 0) {
+      readEnd = Math.min(stat.size, state.byte_offset + MAX_BUFFERED_APPEND_RECORD_BYTES);
+      appended = await readFileRange(filePath, state.byte_offset, readEnd);
+      newline = appended.lastIndexOf("\n");
+      if (newline < 0 && readEnd < stat.size) {
+        return { kind: "blocked", reason: "append_record_exceeds_buffer_limit" };
+      }
+    }
+    if (newline >= 0) {
+      appended = appended.slice(0, newline + 1);
+      readEnd = state.byte_offset + Buffer.byteLength(appended, "utf8");
+    }
   }
 
-  const appended = await readFileRange(filePath, state.byte_offset, stat.size);
   const combined = `${state.partial_line}${appended}`;
   const endedWithLineBreak = combined.endsWith("\n") || combined.endsWith("\r");
   const parts = combined.split(/\r?\n/);
   const completeLines = endedWithLineBreak ? parts.slice(0, -1) : parts.slice(0, -1);
   const nextPartialLine = endedWithLineBreak ? "" : parts.at(-1) ?? "";
   const rawLines = completeLines.filter((line) => line.trim().length > 0);
-  const tailHash = await hashFileTailAt(filePath, stat.size);
+  const tailHash = await hashFileTailAt(filePath, readEnd);
+  const hasMore = readEnd < stat.size;
   if (rawLines.length === 0) {
-    return { kind: "buffered", appendedBytes, nextPartialLine, tailHash };
+    return {
+      kind: "buffered",
+      appendedBytes: readEnd - state.byte_offset,
+      nextPartialLine,
+      tailHash,
+      byteOffset: readEnd,
+      hasMore,
+    };
   }
   return {
     kind: "append",
     raw: `${rawLines.join("\n")}\n`,
     completeLineCount: completeLines.length,
-    appendedBytes,
+    appendedBytes: readEnd - state.byte_offset,
     nextPartialLine,
-    sourceHash: `append:${stat.size}:${tailHash}`,
+    sourceHash: `append:${readEnd}:${tailHash}`,
     tailHash,
+    byteOffset: readEnd,
+    hasMore,
   };
 }
 
@@ -1903,6 +1941,28 @@ function incrementalParseAnomaly(
     }
   }
   return null;
+}
+
+function resolveIncrementalToolParents(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  result: ParseResult,
+): void {
+  const priorToolCall = db.prepare(`
+    SELECT position
+      FROM conversation_blocks
+     WHERE conversation_id = ?
+       AND type = 'tool_use'
+       AND json_extract(metadata_json, '$.tool_id') = ?
+     ORDER BY position DESC
+     LIMIT 1
+  `);
+  for (const block of result.blocks) {
+    const toolId = block.metadata.tool_id;
+    if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
+    const parent = priorToolCall.get(conversationId, toolId) as { position: number } | undefined;
+    if (parent) block.parent_id = String(parent.position);
+  }
 }
 
 function insertedBlockPayload(
@@ -2126,14 +2186,23 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
   }
 }
 
-async function ingestFile(
+type IngestFileOptions = {
+  forceFull?: boolean;
+  fallbackReason?: string;
+  bypassSameMtimeUnchanged?: boolean;
+};
+
+async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
+  let passOptions = options;
+  while (await ingestFilePass(filePath, passOptions)) {
+    passOptions = { bypassSameMtimeUnchanged: true };
+  }
+}
+
+async function ingestFilePass(
   filePath: string,
-  options: {
-    forceFull?: boolean;
-    fallbackReason?: string;
-    bypassSameMtimeUnchanged?: boolean;
-  } = {},
-): Promise<void> {
+  options: IngestFileOptions,
+): Promise<boolean | undefined> {
   const ingestStartedAt = Date.now();
   if (isWorkflowIngestArtifactPath(filePath)) {
     await ingestWorkflowArtifact(filePath, { force: options.forceFull === true });
@@ -2238,6 +2307,8 @@ async function ingestFile(
     appendedBytes: number;
     nextPartialLine: string;
     tailHash: string;
+    byteOffset: number;
+    hasMore: boolean;
   } | null = null;
   const sameMtimeAsExisting = Boolean(
     existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100,
@@ -2297,7 +2368,8 @@ async function ingestFile(
   // Same-mtime writes are common on coarse filesystems and can still replace
   // or truncate a path. They must parse the complete provider identity before
   // any unchanged/append shortcut is considered.
-  let forceFullReingest = options.forceFull === true || sameMtimeAsExisting;
+  let forceFullReingest = options.forceFull === true
+    || (sameMtimeAsExisting && appendState?.byte_offset === stat.size);
 
   // Parse the file
   let result: ParseResult | null;
@@ -2364,13 +2436,15 @@ async function ingestFile(
             (appendState?.line_count ?? alreadyIngestedCount) + append.completeLineCount,
             append.nextPartialLine,
             append.tailHash,
+            append.byteOffset,
           );
           logger("debug", "ingestion_append_metadata_only", {
             file: filePath,
             appended_bytes: append.appendedBytes,
           });
-          return;
+          return append.hasMore;
         } else {
+          resolveIncrementalToolParents(db, existing.id, result);
           const anomaly = incrementalParseAnomaly(result, alreadyIngestedCount, result.blocks.length);
           if (anomaly) {
             logger("warn", "ingestion_append_fallback", {
@@ -2388,6 +2462,8 @@ async function ingestFile(
               appendedBytes: append.appendedBytes,
               nextPartialLine: append.nextPartialLine,
               tailHash: append.tailHash,
+              byteOffset: append.byteOffset,
+              hasMore: append.hasMore,
             };
           }
         }
@@ -2417,13 +2493,20 @@ async function ingestFile(
             appendState?.line_count ?? alreadyIngestedCount,
             append.nextPartialLine,
             append.tailHash,
+            append.byteOffset,
           );
           logger("debug", "ingestion_append_buffered", {
             file: filePath,
             appended_bytes: append.appendedBytes,
           });
-          return;
+          return append.hasMore;
         }
+      } else if (append.kind === "blocked") {
+        logger("warn", "ingestion_append_blocked", {
+          file: filePath,
+          reason: append.reason,
+        });
+        return false;
       } else {
         logger("debug", "ingestion_append_fallback", {
           file: filePath,
@@ -2722,12 +2805,15 @@ async function ingestFile(
         : await countCompleteLines(filePath),
       appendInfo?.nextPartialLine,
       appendInfo?.tailHash,
+      appendInfo?.byteOffset,
     );
-    await recordDurableConversationSource(db, conversationId, result, filePath);
+    if (!appendInfo?.hasMore) {
+      await recordDurableConversationSource(db, conversationId, result, filePath);
+    }
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
-    return;
+    return appendInfo?.hasMore ?? false;
   }
 
   // Issues 71a287e / b3e4a09 — detect leaked Mandible credentials and mask them
@@ -3155,8 +3241,11 @@ async function ingestFile(
       : await countCompleteLines(filePath),
     appendInfo?.nextPartialLine,
     appendInfo?.tailHash,
+    appendInfo?.byteOffset,
   );
-  await recordDurableConversationSource(db, conversationId, result, filePath);
+  if (!appendInfo?.hasMore) {
+    await recordDurableConversationSource(db, conversationId, result, filePath);
+  }
 
   // Bug: e01653d — update last_active on the matching session so the
   // Sessions tab shows real user activity time rather than updated_at.
@@ -3205,6 +3294,7 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+  return appendInfo?.hasMore ?? false;
 }
 
 async function recordDurableConversationSource(
