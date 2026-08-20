@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import { decompressContent } from "../src/compression.js";
+import { CodexParser } from "../src/parsers/codex.js";
+import { ConversationSourceStore } from "../src/conversations/source-store.js";
 
 let tempDir = "";
 let db: Db;
+const TEST_APPEND_BATCH_BYTES = 16 * 1024 * 1024;
+const TEST_HIGH_APPEND_OFFSET = 2_147_483_647 + 8192;
 
 function row(record: unknown): string {
   return `${JSON.stringify(record)}\n`;
@@ -131,6 +136,56 @@ describe("incremental tail ingestion", () => {
     const conversation = db.prepare("SELECT block_count FROM conversations WHERE source_path = ?")
       .get(sessionPath) as { block_count: number };
     expect(conversation.block_count).toBe(4);
+  });
+
+  it("drains an oversized startup append without invoking the whole-file parser", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows(), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    const records: string[] = [];
+    let appendedBytes = 0;
+    while (appendedBytes <= TEST_APPEND_BATCH_BYTES + 1024 * 1024) {
+      const record = assistantRow(`large-tail-${records.length}-${"x".repeat(4_000)}`, 3 + records.length);
+      records.push(record);
+      appendedBytes += Buffer.byteLength(record);
+    }
+    await fsp.truncate(sessionPath, TEST_HIGH_APPEND_OFFSET);
+    db.prepare(`
+      UPDATE conversation_ingest_state
+         SET byte_offset = ?, tail_hash = ?, partial_line = ''
+       WHERE file_path = ?
+    `).run(
+      TEST_HIGH_APPEND_OFFSET,
+      crypto.createHash("sha256").update(Buffer.alloc(4096)).digest("hex"),
+      sessionPath,
+    );
+    await appendWithMtime(sessionPath, records.join(""), 2);
+
+    const fullParse = vi.spyOn(CodexParser.prototype, "parse").mockRejectedValue(
+      new Error("unbounded whole-file reparse invoked"),
+    );
+    vi.spyOn(ConversationSourceStore.prototype, "recordConversation").mockResolvedValue("test-source");
+    const appendBatchBytes: number[] = [];
+    await triggerReconcileForTest({
+      watchConfigs: watchConfigs(),
+      log: (_level, event, fields) => {
+        if (event === "ingestion_complete" && typeof fields?.appended_bytes === "number") {
+          appendBatchBytes.push(fields.appended_bytes);
+        }
+      },
+    });
+
+    expect(fullParse).not.toHaveBeenCalled();
+    expect(appendBatchBytes.length).toBeGreaterThan(1);
+    expect(Math.max(...appendBatchBytes)).toBeLessThanOrEqual(TEST_APPEND_BATCH_BYTES);
+    expect(db.prepare("SELECT block_count FROM conversations WHERE source_path = ?")
+      .get(sessionPath)).toEqual({ block_count: 2 + records.length });
+    expect(db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?")
+      .get(sessionPath)).toEqual({
+        byte_offset: fs.statSync(sessionPath).size,
+        line_count: 3 + records.length,
+      });
   });
 
   it("falls back to full parse after truncation or rewrite", async () => {

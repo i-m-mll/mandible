@@ -28,7 +28,7 @@ afterEach(async () => {
 });
 
 describe("bounded ingestion range reads", () => {
-  it("rejects a production >INT32 append range into the existing streaming fallback", async () => {
+  it("blocks a single unterminated record beyond the bounded append-record ceiling", async () => {
     const file = await sparseFile("fallback.jsonl", INT32_MAX + 8192);
     expect(MAX_BUFFERED_APPEND_BYTES).toBeLessThan(INT32_MAX);
     await expect(readAppendForTest(file, {
@@ -36,7 +36,7 @@ describe("bounded ingestion range reads", () => {
       line_count: 0,
       tail_hash: "",
       partial_line: "",
-    })).resolves.toEqual({ kind: "fallback", reason: "append_range_exceeds_buffer_limit" });
+    })).resolves.toEqual({ kind: "blocked", reason: "append_record_exceeds_buffer_limit" });
   });
 
   it("performs real native reads on a sparse >INT32 logical range with bounded lengths", async () => {
