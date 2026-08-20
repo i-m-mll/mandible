@@ -1690,6 +1690,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     [handleSaveField],
   );
 
+  const handleSectionNavigation = useCallback((sectionId: string) => {
+    setActiveSection(sectionId);
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
   useEffect(() => {
     const root = viewRef.current;
     if (!root) return;
@@ -1731,15 +1736,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             if (section.desktopOnly && !desktopShell) return null;
             const isActive = activeSection === section.id;
             return (
-              <a
+              <button
+                type="button"
                 className={`settings-view__toc-link${isActive ? ' settings-view__toc-link--active' : ''}`}
-                href={`#${section.id}`}
+                aria-controls={section.id}
                 aria-current={isActive ? 'location' : undefined}
-                onClick={() => setActiveSection(section.id)}
+                onClick={() => handleSectionNavigation(section.id)}
                 key={section.id}
               >
                 {section.title}
-              </a>
+              </button>
             );
           })}
         </nav>

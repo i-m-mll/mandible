@@ -2150,6 +2150,9 @@ describe('SettingsView', () => {
 
   it('keeps onClose API compatibility while rendering sourced section navigation without redundant chrome', () => {
     const onClose = vi.fn();
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    window.history.replaceState(null, '', '#/settings');
     render(
       h(SettingsView, {
         settings: {},
@@ -2163,18 +2166,20 @@ describe('SettingsView', () => {
     expect(onClose).not.toHaveBeenCalled();
 
     const navigation = screen.getByRole('navigation', { name: 'Settings sections' });
-    const links = within(navigation).getAllByRole('link');
-    expect(links).toHaveLength(15);
-    expect(links.filter((link) => link.getAttribute('aria-current') === 'location')).toHaveLength(1);
-    for (const link of links) {
-      const target = link.getAttribute('href');
-      expect(target?.startsWith('#')).toBe(true);
-      expect(document.querySelector(target!)).toBeTruthy();
+    const sectionButtons = within(navigation).getAllByRole('button');
+    expect(sectionButtons).toHaveLength(15);
+    expect(sectionButtons.filter((button) => button.getAttribute('aria-current') === 'location')).toHaveLength(1);
+    for (const button of sectionButtons) {
+      const target = button.getAttribute('aria-controls');
+      expect(target).toBeTruthy();
+      expect(document.getElementById(target!)).toBeTruthy();
     }
 
-    const appearanceLink = within(navigation).getByRole('link', { name: 'Appearance' });
-    fireEvent.click(appearanceLink);
-    expect(appearanceLink.getAttribute('aria-current')).toBe('location');
+    const appearanceButton = within(navigation).getByRole('button', { name: 'Appearance' });
+    fireEvent.click(appearanceButton);
+    expect(appearanceButton.getAttribute('aria-current')).toBe('location');
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(window.location.hash).toBe('#/settings');
   });
 
   it('does not show deprecated Reaper controls', () => {

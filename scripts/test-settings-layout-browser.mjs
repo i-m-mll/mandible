@@ -39,9 +39,9 @@ const html = `<!doctype html>
               <div class="settings-view__layout">
                 <nav class="settings-view__toc" aria-label="Settings sections">
                   <div class="settings-view__toc-title">On this page</div>
-                  <a class="settings-view__toc-link settings-view__toc-link--active" aria-current="location" href="#settings-notifications">Notifications</a>
-                  <a class="settings-view__toc-link" href="#settings-appearance">Appearance</a>
-                  <a class="settings-view__toc-link" href="#settings-scrollable">Scrollable content</a>
+                  <button type="button" class="settings-view__toc-link settings-view__toc-link--active" aria-current="location" aria-controls="settings-notifications">Notifications</button>
+                  <button type="button" class="settings-view__toc-link" aria-controls="settings-appearance">Appearance</button>
+                  <button type="button" class="settings-view__toc-link" aria-controls="settings-scrollable">Scrollable content</button>
                 </nav>
                 <div class="settings-view__content">
                   <section class="settings-view__section" id="settings-notifications" aria-labelledby="settings-notifications-title">
@@ -107,6 +107,9 @@ assert(!settingsSource.includes('Mandible configuration.'), 'Settings subtitle r
 assert(!settingsSource.includes('settings-view__close'), 'Settings close control remains in production source');
 assert(settingsSource.includes('aria-label="Settings sections"'), 'Settings section navigation is not labelled');
 assert(settingsSource.includes('aria-current={isActive ? \'location\' : undefined}'), 'Settings navigation does not expose the current section');
+assert(settingsSource.includes('aria-controls={section.id}'), 'Settings navigation does not identify its controlled section');
+assert(settingsSource.includes("scrollIntoView({ behavior: 'smooth', block: 'start' })"), 'Settings navigation does not scroll the selected section');
+assert(!settingsSource.includes('href={`#${section.id}`}'), 'Settings section navigation would replace the app hash route');
 assert(settingsSource.includes('SETTINGS_SECTION_LIST.map'), 'Settings navigation is not derived from the section source');
 for (const selector of [
   '.settings-view__toc-link:hover',
@@ -232,7 +235,7 @@ try {
           semantics: {
             navLabel: toc.getAttribute('aria-label'),
             current: links.filter((link) => link.getAttribute('aria-current') === 'location').length,
-            anchorsMatch: links.every((link) => document.querySelector(link.getAttribute('href'))),
+            targetsMatch: links.every((link) => document.getElementById(link.getAttribute('aria-controls'))),
             closeCount: document.querySelectorAll('.settings-view__close').length,
             subtitleCount: [...document.querySelectorAll('*')].filter((node) => node.textContent?.trim() === 'Mandible configuration.').length,
             controls: document.querySelectorAll('.settings-view__section button, .settings-view__section input, .settings-view__section select').length,
@@ -253,7 +256,7 @@ try {
     assert(scenario.theme !== 'light' || observed.view.background === 'rgb(255, 255, 255)', `${scenario.name} inter-card surface is not pure white`, observed);
     assert(Math.abs(viewCenter - mainCenter) <= 0.5, `${scenario.name} readable column is not centered on the actual main area`, { mainCenter, viewCenter, observed });
     assert(observed.semantics.closeCount === 0 && observed.semantics.subtitleCount === 0, `${scenario.name} redundant header chrome remains`, observed);
-    assert(observed.semantics.navLabel === 'Settings sections' && observed.semantics.current === 1 && observed.semantics.anchorsMatch, `${scenario.name} navigation semantics drifted`, observed);
+    assert(observed.semantics.navLabel === 'Settings sections' && observed.semantics.current === 1 && observed.semantics.targetsMatch, `${scenario.name} navigation semantics drifted`, observed);
     assert(observed.semantics.controls >= 2, `${scenario.name} representative Settings controls disappeared`, observed);
     assert(observed.section.background === observed.view.background && observed.section.borderRadius === '0px' && observed.section.borderStyle === 'none' && observed.section.boxShadow === 'none', `${scenario.name} section surface is not flat`, observed);
     assert(observed.view.overflowY === 'auto' && observed.view.scrollHeight > observed.view.clientHeight, `${scenario.name} Settings scroll behavior drifted`, observed);
