@@ -90,7 +90,7 @@ a {
   padding: 0;
   background: var(--surface-header);
   border-right: none;
-  border-bottom: 1px solid var(--border-muted);
+  border-bottom: 1px solid var(--neutral-alpha-06);
   z-index: 60;
 }
 
@@ -114,10 +114,9 @@ a {
   background-color: transparent;
   background-image:
     linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
-    var(--shadow-app-subdivision-paint),
-    linear-gradient(var(--border-muted), var(--border-muted));
-  background-position: right, left, left calc(var(--app-header-height) - 1px);
-  background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%, var(--app-boundary-shadow-paint-width) 1px;
+    var(--shadow-app-subdivision-paint);
+  background-position: right, left;
+  background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%;
   background-repeat: no-repeat;
   pointer-events: none;
 }
@@ -126,16 +125,16 @@ a {
  * length resolves before inheritance; declaring it on :root would freeze an
  * undefined orientation into the guaranteed-invalid custom-property value. */
 :where(.app-shell)::after,
-:where(.app-shell--codex-iab)::before {
+:where(.app-shell--left-shadow)::before {
   --shadow-app-subdivision: var(--app-boundary-shadow-x) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color);
   --shadow-app-subdivision-paint: linear-gradient(var(--app-boundary-shadow-direction), var(--app-boundary-shadow-gradient-stops));
 }
 
 /*
- * The dormant Codex host edge is the same full-height shell primitive with its
- * direction reversed. Activation remains owned by the trusted capability lane.
+ * The optional user-controlled edge is the same full-height shell primitive
+ * with its direction reversed. It reserves no structural space.
  */
-.app-shell--codex-iab::before {
+.app-shell--left-shadow::before {
   --app-boundary-shadow-x: var(--app-boundary-shadow-offset);
   --app-boundary-shadow-direction: to left;
   --app-boundary-accent: var(--app-divider);
@@ -392,6 +391,31 @@ a {
   gap: 14px;
   overflow: hidden auto;
   padding-right: 2px;
+  position: relative;
+}
+
+.app-rail__left-shadow-toggle {
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
+  background: transparent;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+
+.app-rail__left-shadow-toggle[aria-pressed='true'] {
+  background: var(--text-muted);
+}
+
+.app-rail__left-shadow-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .app-rail__sidebar-controls {
@@ -425,7 +449,7 @@ a {
   padding-top: 12px;
   padding-inline: var(--app-rail-inline-padding);
   margin-inline: calc(-1 * var(--app-rail-inline-padding));
-  border-top: 1px solid var(--border-muted);
+  border-top: 1px solid var(--neutral-alpha-06);
   position: relative;
 }
 
@@ -989,8 +1013,8 @@ a {
  * when the rule moved earlier in the refactor (issue e29a8c5).
  *
  * The 0-width line sits at the effective chrome edge. Its 10px clickable/hover
- * strip extends into main only, so the visible shadow body never starts hover
- * or drag behavior.
+ * strip is centered on the physical divider; the rest of the visible shadow
+ * body remains inert.
  */
 .view-sidebar__resize-handle.sidebar-drag-handle {
   position: absolute;
@@ -1003,7 +1027,7 @@ a {
 }
 
 .view-sidebar__resize-handle.sidebar-drag-handle::before {
-  left: 0;
+  left: -5px;
   width: 10px;
 }
 
