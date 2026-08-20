@@ -34,6 +34,39 @@ describe('SidebarSearchFilterHeader', () => {
     expect(onValueChange).toHaveBeenCalledWith('canvas');
   });
 
+  it('keeps shared geometry and find focus for a custom search control beside a menu trigger', () => {
+    render(
+      <SidebarSearchFilterHeader
+        value=""
+        onValueChange={vi.fn()}
+        placeholder="Filter inbox"
+        searchAriaLabel="Filter inbox"
+        clearAriaLabel="Clear inbox filter"
+        searchSlot={<input type="text" aria-label="Inbox token filter" />}
+        filterTrigger={{
+          ariaLabel: 'Inbox menu',
+          kind: 'menu',
+          open: true,
+          onToggle: vi.fn(),
+        }}
+        panel={{
+          id: 'inbox-menu',
+          role: 'menu',
+          children: <button type="button" role="menuitem">Refresh</button>,
+        }}
+      />,
+    );
+
+    const input = screen.getByRole('textbox', { name: 'Inbox token filter' });
+    const trigger = screen.getByRole('button', { name: 'Inbox menu' });
+    expect(trigger.previousElementSibling?.contains(input)).toBe(true);
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(screen.getByRole('menu', { name: 'Inbox menu' })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+    expect(document.activeElement).toBe(input);
+  });
+
   it('clears search text and renders a popover filter trigger with count and panel content', () => {
     const onValueChange = vi.fn();
     const onToggle = vi.fn();
@@ -264,6 +297,7 @@ describe('SidebarSearchFilterHeader', () => {
       'ui/src/views/work.tsx',
       'ui/src/views/tasks.tsx',
       'ui/src/views/feedback/CollectionsSidebar.tsx',
+      'ui/src/views/inbox.tsx',
     ];
 
     for (const viewPath of migratedViews) {

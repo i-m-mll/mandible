@@ -5,6 +5,7 @@ import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 export type SidebarSearchFilterHeaderPanel = {
   id?: string;
   variant?: 'popover' | 'inline';
+  role?: 'dialog' | 'menu';
   ariaLabel?: string;
   onDismiss?: () => void;
   children: ComponentChildren;
@@ -13,6 +14,7 @@ export type SidebarSearchFilterHeaderPanel = {
 export type SidebarSearchFilterHeaderFilterTrigger = {
   ariaLabel: string;
   title?: string;
+  kind?: 'filter' | 'menu';
   open: boolean;
   active?: boolean;
   count?: number;
@@ -26,6 +28,7 @@ export type SidebarSearchFilterHeaderProps = {
   searchAriaLabel: string;
   clearAriaLabel: string;
   inputType?: 'text' | 'search';
+  searchSlot?: ComponentChildren;
   leadingAction?: ComponentChildren;
   actionSlot?: ComponentChildren;
   filterTrigger?: SidebarSearchFilterHeaderFilterTrigger;
@@ -75,7 +78,9 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       ) {
         return;
       }
-      const input = inputRef.current;
+      const input = inputRef.current
+        ?? rootRef.current?.querySelector<HTMLInputElement>('input')
+        ?? null;
       if (!input || input.disabled || isInsideInactivePanel(input)) return;
       const target = event.target;
       if (target instanceof HTMLElement && target !== input && isEditableTarget(target)) return;
@@ -94,7 +99,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
           <div className="sidebar-search-filter__leading">{props.leadingAction}</div>
         ) : null}
         <div className="sidebar-search-filter__search">
-          <input
+          {props.searchSlot !== undefined ? props.searchSlot : <input
             ref={inputRef}
             type={props.inputType ?? 'search'}
             className="sidebar-search-filter__input"
@@ -103,8 +108,8 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             value={props.value}
             data-testid={props.inputTestId}
             onInput={(event) => props.onValueChange(event.currentTarget.value)}
-          />
-          {props.value ? (
+          />}
+          {props.searchSlot === undefined && props.value ? (
             <button
               type="button"
               className="sidebar-search-filter__clear"
@@ -126,10 +131,11 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             aria-label={props.filterTrigger.ariaLabel}
             title={props.filterTrigger.title ?? props.filterTrigger.ariaLabel}
             aria-expanded={props.filterTrigger.open}
+            aria-haspopup={props.filterTrigger.kind === 'menu' ? 'menu' : undefined}
             aria-controls={props.panel?.id}
             onClick={props.filterTrigger.onToggle}
           >
-            <FilterTriggerIcon />
+            {props.filterTrigger.kind === 'menu' ? <MenuTriggerIcon /> : <FilterTriggerIcon />}
             {props.filterTrigger.count !== undefined && props.filterTrigger.count > 0 ? (
               <span className="sidebar-search-filter__badge">{props.filterTrigger.count}</span>
             ) : null}
@@ -146,7 +152,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
         <div
           ref={panelRef}
           id={props.panel.id}
-          role="dialog"
+          role={props.panel.role ?? 'dialog'}
           popover="manual"
           aria-label={props.panel.ariaLabel ?? props.filterTrigger?.ariaLabel}
           className={`sidebar-search-filter__panel sidebar-search-filter__panel--${panelVariant}${panelVariant === 'popover' ? ' app-anchored-menu' : ''}`}
@@ -182,6 +188,14 @@ function FilterTriggerIcon(): JSX.Element {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M4 6h16M7 12h10M10 18h4" />
+    </svg>
+  );
+}
+
+function MenuTriggerIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 6h16M4 12h16M4 18h16" />
     </svg>
   );
 }

@@ -2589,6 +2589,7 @@ function App(): JSX.Element {
               onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
+              mutationsAllowed={!previewMutationsRejected}
             />
           );
         })())}
