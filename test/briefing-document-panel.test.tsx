@@ -222,7 +222,7 @@ describe('Briefing document panel', () => {
     render(<Harness />);
 
     const verdict = await screen.findByRole('group', { name: 'Keep this finding?' });
-    expect(within(verdict).getByRole('button', { name: 'Keep' })).toBeTruthy();
+    fireEvent.click(within(verdict).getByRole('button', { name: 'Keep' }));
     const single = screen.getByRole('group', { name: 'Choose deployment mode' });
     expect(within(single).getAllByRole('radio').map((input) => (input as HTMLInputElement).value)).toEqual(['a', 'b']);
     expect(within(single).getAllByText(/Alpha|Beta/).map((label) => label.textContent)).toEqual(['Alpha', 'Beta']);
@@ -243,6 +243,7 @@ describe('Briefing document panel', () => {
     fireEvent.click(ratingFive);
     expect(ratingFive.checked).toBe(true);
     expect(changes).toEqual(expect.arrayContaining([
+      { id: 'verdict', value: { verdict: 'keep' } },
       { id: 'single', value: { option_key: 'b' } },
       { id: 'multi', value: { option_keys: ['first', 'third'] } },
       { id: 'short', value: { text: '  exact  ' } },
@@ -253,9 +254,10 @@ describe('Briefing document panel', () => {
     const shortSection = short.closest('.briefing-directive') as HTMLElement;
     fireEvent.click(within(shortSection).getByRole('button', { name: 'Clear answer' }));
     expect(changes.at(-1)).toEqual({ id: 'short', value: null });
+    expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
   });
 
-  it('binds directive hover to the content and control interaction region', async () => {
+  it('uses discrete content-edge segments with synchronized hover and persistent selected actions', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(content())));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
 
@@ -269,13 +271,108 @@ describe('Briefing document panel', () => {
     expect(interaction.classList.contains('contextual-action-owner')).toBe(true);
     expect(interaction.querySelector('.briefing-directive__passage')).toBeTruthy();
     expect(interaction.querySelector('.briefing-directive__actions')).toBeTruthy();
+    expect(directiveRule).toContain('margin-block: calc(var(--space-1) / 2)');
+    expect(directiveRule).toContain('margin-inline: var(--space-3) 0');
     expect(directiveRule).toContain('padding: var(--space-3)');
+    expect(directiveRule).toContain('border-left: 2px solid var(--border-faint)');
     expect(interactionRule).not.toContain('padding:');
     expect(briefingStylesheet).toMatch(/\.briefing-directive:not\(\.briefing-directive--selected\):has\(> \.briefing-directive__interaction:hover\)/);
+    expect(briefingStylesheet).toMatch(/border-left-color: var\(--border-default\)/);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive--selected \{[^}]*border-left-color: var\(--accent-border\)/s);
     expect(interaction.querySelector('.briefing-directive__actions')?.classList.contains('contextual-action-group')).toBe(true);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
-    expect(briefingStylesheet).not.toMatch(/\.briefing-directive--selected \.briefing-directive__actions/);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
     expect(briefingStylesheet).not.toMatch(/\.briefing-directive:hover(?:\s|,|\{)/);
+  });
+
+  it('selects only non-interactive directive surfaces, switches one-at-a-time, and dismisses outside', async () => {
+    const selectionSource = [
+      'Outside prose',
+      ':::spec-item{key="first" type="verdict" required="true"}', 'First prompt', ':::',
+      ':::spec-item{key="second" type="single_choice" required="true"}', 'Second prompt', '::option[Alpha]{key="a"}', '::option[Beta]{key="b"}', ':::',
+    ].join('\n');
+    const directives = parseBriefingDirectives(selectionSource);
+    const changes: Array<{ id: string; value: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Selection review" roundId="round-1" round={round({
+      document: {
+        artifact_version_id: 'artifact-version:selection',
+        content_hash: createHash('sha256').update(selectionSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: selectionSource,
+      },
+      items: directives.map((directive, index) => ({
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
+        revision: { id: directive.definition_digest, ordinal: 1, title: directive.key, prompt: directive.body, description: null, response_type: directive.type, required: true, position: index, options: directive.options },
+        effective_response: null, responseVisible: true, directive,
+      })),
+    })} canMutate onRefresh={async () => null} onDirectiveValue={(id, value) => changes.push({ id, value })} />);
+
+    const firstPrompt = await screen.findByText('First prompt');
+    const first = firstPrompt.closest('.briefing-directive') as HTMLElement;
+    const secondPrompt = screen.getByText('Second prompt');
+    const second = secondPrompt.closest('.briefing-directive') as HTMLElement;
+    const firstActions = first.querySelector('.briefing-directive__actions') as HTMLElement;
+
+    fireEvent.click(firstPrompt);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(first.getAttribute('aria-current')).toBe('true');
+    expect(firstActions.classList.contains('contextual-action-group--persistent')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    fireEvent.click(firstPrompt);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+
+    const secondComment = within(second).getByRole('button', { name: 'Comment' });
+    fireEvent.click(secondComment);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(secondComment.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Close annotation editor' }));
+    expect(first.classList.contains('briefing-directive--selected')).toBe(false);
+
+    fireEvent.click(firstPrompt);
+    const beta = within(second).getByText('Beta').closest('label') as HTMLLabelElement;
+    fireEvent.click(beta);
+    fireEvent.click(within(second).getByRole('radio', { name: 'Beta' }));
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(changes).toContainEqual({ id: 'second', value: { option_key: 'b' } });
+
+    const syntheticInteractive = [
+      document.createElement('button'),
+      document.createElement('input'),
+      document.createElement('textarea'),
+      document.createElement('select'),
+      document.createElement('label'),
+      Object.assign(document.createElement('a'), { href: '#selection-fixture' }),
+      document.createElement('div'),
+    ];
+    syntheticInteractive.at(-1)?.setAttribute('contenteditable', 'true');
+    for (const target of syntheticInteractive) {
+      second.append(target);
+      fireEvent.click(target);
+      expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+      expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    }
+
+    fireEvent.click(secondPrompt);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(true);
+    fireEvent.keyDown(within(first).getByRole('button', { name: 'Keep' }), { key: 'Enter' });
+    expect(second.classList.contains('briefing-directive--selected')).toBe(true);
+
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect(document.activeElement).toBe(first);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    fireEvent.keyDown(first, { key: ' ' });
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+
+    fireEvent.click(screen.getByText('Outside prose'));
+    expect(first.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(screen.getByLabelText('Pinned briefing document').querySelectorAll('[aria-current="true"]')).toHaveLength(0);
   });
 
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
@@ -310,7 +407,7 @@ describe('Briefing document panel', () => {
     fireEvent.click(region);
     expect(region.className).toContain('briefing-directive--selected');
     fireEvent.keyDown(region, { key: 'Enter' });
-    expect(region.className).not.toContain('briefing-directive--selected');
+    expect(region.className).toContain('briefing-directive--selected');
     const comment = screen.getByRole('button', { name: 'Comment' });
     fireEvent.click(comment);
     expect(comment.getAttribute('aria-expanded')).toBe('true');
