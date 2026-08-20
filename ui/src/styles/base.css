@@ -93,12 +93,15 @@ a {
  */
 .app-shell--codex-iab .app-header::before,
 .app-shell--codex-iab .app-rail::before {
+  --app-boundary-direction: 1;
+  --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
   inset: 0 auto 0 0;
   width: var(--codex-iab-edge-width);
   background: var(--surface-chrome);
-  box-shadow: var(--shadow-codex-iab-edge);
+  border-inline-end: 1px solid var(--app-boundary-accent);
+  box-shadow: var(--shadow-app-subdivision);
   pointer-events: none;
 }
 
@@ -221,6 +224,8 @@ a {
 }
 
 .app-layout::after {
+  --app-boundary-direction: -1;
+  --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
   top: 0;
@@ -229,7 +234,7 @@ a {
   z-index: var(--z-app-subdivision);
   width: 1px;
   pointer-events: none;
-  background: var(--app-divider);
+  background: var(--app-boundary-accent);
   box-shadow: var(--shadow-app-subdivision);
 }
 
@@ -246,7 +251,7 @@ a {
 }
 
 .app-layout:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
-  background: var(--app-divider-emphasis);
+  --app-boundary-accent: var(--app-divider-emphasis);
 }
 
 .app-layout--rail-icons {
