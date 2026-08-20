@@ -1,4 +1,4 @@
-import type { ComponentChildren } from 'preact';
+import type { ComponentChildren, JSX } from 'preact';
 import { ContextualAction } from './ContextualAction';
 import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
 
@@ -19,11 +19,19 @@ type SidebarGroupNodeCommonProps = {
     root?: string;
     heading?: string;
     action?: string;
+    dragHandle?: string;
   };
   action?: {
     label: string;
     icon: ComponentChildren;
     onPress(): void;
+  };
+  drag?: {
+    active: boolean;
+    onStart(): void;
+    onOver(event: JSX.TargetedDragEvent<HTMLDivElement>): void;
+    onDrop(event: JSX.TargetedDragEvent<HTMLDivElement>): void;
+    onEnd(): void;
   };
 };
 
@@ -64,6 +72,7 @@ export function SidebarGroupNode({
   onShowMore,
   testIds,
   action,
+  drag,
 }: SidebarGroupNodeProps): JSX.Element {
   const headingId = `${id}-heading`;
   const bodyId = `${id}-body`;
@@ -91,11 +100,19 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
       data-testid={testIds?.root}
     >
-      <div className="sidebar-group-node__header contextual-action-owner">
+      <div
+        className="sidebar-group-node__header contextual-action-owner"
+        draggable={drag ? true : undefined}
+        data-testid={testIds?.dragHandle}
+        onDragStart={drag?.onStart}
+        onDragOver={drag?.onOver}
+        onDrop={drag?.onDrop}
+        onDragEnd={drag?.onEnd}
+      >
         <button
           id={headingId}
           type="button"

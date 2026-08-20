@@ -23,10 +23,6 @@
   padding: 0.35rem 0;
 }
 
-.spaces-tree__global-actions {
-  margin: 0 0.4rem 8px;
-}
-
 .spaces-tree__status {
   padding: 0.5rem 0.75rem;
   font-size: 0.78rem;
@@ -37,20 +33,12 @@
   color: var(--status-danger);
 }
 
-.spaces-tree__group--dragging {
-  opacity: 0.6;
-}
-
 .spaces-tree__group-label {
   padding: 0.25rem 0.75rem;
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
-}
-
-.spaces-tree__group-drag-target {
-  cursor: grab;
 }
 
 .spaces-tree__space-type {
