@@ -32,14 +32,14 @@ describe('inline code background styles', () => {
       (rule) =>
         rule.selectors.some(
           (selector) =>
-            selector.includes(":root[data-theme='light']") &&
+            selector.includes("[data-theme='light']") &&
             selector.includes('.artifact-preview'),
         ) && grayBackgroundPattern.test(rule.body),
     );
 
     expect(lightArtifactPreviewGrayRules).toEqual([]);
     expect(stylesheet).toMatch(
-      /:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\)/,
+      /\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\)/,
     );
   });
 
