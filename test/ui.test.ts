@@ -1599,11 +1599,15 @@ describe('app shell', () => {
     ).toBe('428px');
 
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-width\)\);/s);
+    expect(css).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/s);
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-outer-width\)\);/s);
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header__identity\s*\{[^}]*width:\s*calc\(100% - var\(--app-shadow-gutter-width\)\);/s);
+    expect(css).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-rail-width\)\);/s);
     expect(css).toMatch(/\.view-sidebar\s*\{[^}]*position:\s*relative;/s);
     expect((await screen.findByLabelText('Briefings') as HTMLElement).style.width)
       .toBe('var(--app-view-sidebar-width)');
-    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-outer-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
 
     restoreLocalStorage();
@@ -5785,7 +5789,9 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-layout::after\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*var\(--app-detail-edge-x\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
+    expect(css).toMatch(/\.app-layout::after\s*\{[^}]*top:\s*var\(--app-header-height\);[^}]*bottom:\s*0;[^}]*left:\s*calc\(var\(--app-detail-edge-x\) - var\(--app-shadow-gutter-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-shadow-gutter-width\) \+ 1px\);[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-shadow-gutter-width\) 100%;[^}]*box-shadow:\s*none;/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open::after\s*\{[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\);[^}]*background-size:\s*1px 100%;[^}]*box-shadow:\s*none;/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar::after\s*\{[^}]*inset:\s*0 calc\(0px - var\(--app-shadow-gutter-width\)\) 0 auto;[^}]*width:\s*var\(--app-shadow-gutter-width\);[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
     expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
