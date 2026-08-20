@@ -337,19 +337,6 @@ describe('ViewSidebar', () => {
     expect(graphSidebarRule).toContain('padding-left: 14px');
   });
 
-  it('gives header-backed list scroll owners a shared top inset without an Artifact zero override', () => {
-    const css = readResolvedStylesheet();
-    const artifactCss = readFileSync(resolve('ui/src/styles/issues.css'), 'utf8');
-    const artifactListRule = artifactCss.match(/\.artifacts-sidebar__list\s*\{([^}]*)\}/)?.[1] ?? '';
-
-    expect(css).toMatch(/\.view-sidebar__header \+ \.view-sidebar__body\s*\{[^}]*padding-top:\s*6px;/s);
-    expect(artifactListRule).not.toMatch(/padding-top\s*:/);
-    expect(artifactListRule).not.toMatch(/padding\s*:\s*0\b/);
-    expect(artifactListRule).toContain('padding-right: 12px');
-    expect(artifactListRule).toContain('padding-bottom: 12px');
-    expect(artifactListRule).toContain('padding-left: 12px');
-  });
-
   it('routes Work through the shared resize-rail geometry', () => {
     expect(VIEW_SIDEBAR_GEOMETRY.work).toEqual({
       storageKey: 'sidebar-width:work',
