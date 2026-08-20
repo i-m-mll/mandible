@@ -131,9 +131,9 @@ describe('Codex app subdivision surface contract', () => {
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
     expect(edge).toContain('var(--shadow-app-subdivision-paint)');
     expect(edge).toContain('background-color: transparent');
-    expect(edge).toContain('linear-gradient(var(--border-muted), var(--border-muted))');
-    expect(edge).toContain('background-position: right, left, left calc(var(--app-header-height) - 1px)');
-    expect(edge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%, var(--app-boundary-shadow-paint-width) 1px');
+    expect(edge).not.toContain('var(--border-muted)');
+    expect(edge).toContain('background-position: right, left');
+    expect(edge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%');
     expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#434343');
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#434343');
@@ -200,7 +200,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(rail).toContain('padding: calc(var(--app-header-height) + 18px) var(--app-rail-inline-padding) 18px');
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
     expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
-    expect(footer).toContain('border-top: 1px solid var(--border-muted)');
+    expect(footer).toContain('border-top: 1px solid var(--neutral-alpha-06)');
     expect(ruleBody(base, '.app-rail__footer::before')).toBe('');
   });
 
