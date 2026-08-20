@@ -10,7 +10,7 @@ import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEM
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 146;
+export const BASELINE_SCHEMA_VERSION = 147;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -44,6 +44,7 @@ const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
     custody_state TEXT NOT NULL DEFAULT 'provider' CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
     custody_ref TEXT, capture_consistency TEXT,
     verification_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(verification_json)), created_at INTEGER NOT NULL,
+    filesystem_device TEXT, filesystem_inode TEXT, filesystem_ctime_ns TEXT,
     UNIQUE(source_id, content_sha256)
   )`,
   `CREATE INDEX idx_conversation_source_versions_source ON conversation_source_versions(source_id, created_at DESC)`,

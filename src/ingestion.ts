@@ -1025,8 +1025,8 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
     clearTimeout(pendingTimer);
     debounceTimers.delete(normalized);
   }
-  if (ingestionActor) await ingestionActor.ingest([normalized]);
-  else await ingestFile(normalized);
+  if (ingestionActor) await ingestionActor.ingest([normalized], false, true);
+  else await ingestFile(normalized, { bypassSameMtimeUnchanged: true });
   clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
 }
@@ -1167,9 +1167,13 @@ async function drainIngestQueue(runToken: number): Promise<void> {
   }
 }
 
-export async function ingestBatchForWorker(paths: readonly string[], forceFull = false): Promise<void> {
+export async function ingestBatchForWorker(
+  paths: readonly string[],
+  forceFull = false,
+  bypassSameMtimeUnchanged = false,
+): Promise<void> {
   for (const filePath of paths) {
-    await ingestFile(filePath, { forceFull });
+    await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged });
   }
 }
 
@@ -2124,7 +2128,11 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
 
 async function ingestFile(
   filePath: string,
-  options: { forceFull?: boolean; fallbackReason?: string } = {},
+  options: {
+    forceFull?: boolean;
+    fallbackReason?: string;
+    bypassSameMtimeUnchanged?: boolean;
+  } = {},
 ): Promise<void> {
   const ingestStartedAt = Date.now();
   if (isWorkflowIngestArtifactPath(filePath)) {
@@ -2241,7 +2249,9 @@ async function ingestFile(
   // of unchanged rollouts merely because their mtime is coarse.
   let sameMtimeNativeCodexSessionId: string | null | undefined;
   if (
-    sameMtimeAsExisting
+    !options.forceFull
+    && !options.bypassSameMtimeUnchanged
+    && sameMtimeAsExisting
     && parser.source === "codex"
     && appendState
     && appendState.byte_offset === stat.size
