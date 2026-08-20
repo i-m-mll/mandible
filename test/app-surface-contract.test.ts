@@ -137,7 +137,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(edge).toContain('bottom: 0');
     expect(edge).toContain('left: var(--app-detail-edge-x)');
     expect(edge).toContain('width: 1px');
-    expect(edge).toContain('--app-boundary-direction: -1');
+    expect(edge).toContain('--app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset))');
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
     expect(edge).toContain('background: var(--app-boundary-accent)');
     expect(edge).toContain('box-shadow: var(--shadow-app-subdivision)');
@@ -149,7 +149,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.125)');
-    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('calc(var(--app-boundary-direction) * var(--app-boundary-shadow-offset)) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color)');
+    expect(stylesheet).toMatch(/:where\(\.app-layout\)::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:\s*var\(--app-boundary-shadow-x\) 0 var\(--app-boundary-shadow-blur\) var\(--app-boundary-shadow-spread\) var\(--app-boundary-shadow-color\);/s);
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
