@@ -104,7 +104,9 @@ describe('typed anchored detail and main notice contract', () => {
     const boundaryStyle = getComputedStyle(boundary);
     const noticeStyle = getComputedStyle(notice);
     const bodyStyle = getComputedStyle(body);
+    expect(getComputedStyle(container.querySelector('.detail-pane-shell')!).overflow).toBe('clip');
     expect(boundaryStyle.flexShrink).toBe('0');
+    expect(bodyStyle.position).toBe('relative');
     expect(bodyStyle.overflowY).toBe('auto');
     expect(noticeStyle.borderTopWidth).toBe('0px');
     expect(noticeStyle.borderBottomWidth).toBe('1px');
