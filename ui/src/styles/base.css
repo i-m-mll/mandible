@@ -54,6 +54,7 @@ a {
   --app-view-sidebar-width: var(--app-view-sidebar-persisted-width);
   --app-view-sidebar-outer-width: calc(var(--app-view-sidebar-width) + var(--app-shadow-gutter-width));
   --app-rail-outer-width: calc(var(--app-rail-width) + var(--app-shadow-gutter-width));
+  --app-detail-edge-x: var(--app-rail-outer-width);
   height: 100vh;
   overflow: hidden;
   display: flex;
@@ -63,6 +64,14 @@ a {
 
 .app-shell--rail-icons {
   --app-rail-width: 56px;
+}
+
+.app-shell--view-sidebar-open {
+  --app-detail-edge-x: calc(var(--app-rail-width) + var(--app-view-sidebar-outer-width));
+}
+
+.app-shell:has(.app-layout--route-work) {
+  --app-detail-edge-x: calc(var(--app-rail-width) + 340px + var(--app-shadow-gutter-width));
 }
 
 .tauri-window .app-shell {
@@ -89,18 +98,19 @@ a {
   width: calc(var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }
 
-/* Paint the measured falloff strip through the physical header edge without
- * allowing that additive layer to participate in identity layout. */
-.app-header::after {
+/* One app-shell boundary owns the complete chrome/main edge. It is independent
+ * of header, ViewSidebar, detail, and bottom-panel heights, so its divider and
+ * falloff remain continuous for the entire viewport. */
+.app-shell::after {
   --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
   --app-boundary-shadow-direction: to right;
   --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
-  inset: 0 -1px 0 auto;
-  z-index: 2;
+  inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width));
+  z-index: var(--z-app-subdivision);
   width: calc(var(--app-shadow-gutter-width) + 1px);
-  background-color: var(--surface-chrome);
+  background-color: transparent;
   background-image:
     linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
     var(--shadow-app-subdivision-paint);
@@ -110,52 +120,33 @@ a {
   pointer-events: none;
 }
 
-/* Declare the composition on every consumer so the site-local signed x
+/* Declare the composition on each directional shell edge so the site-local signed x
  * length resolves before inheritance; declaring it on :root would freeze an
  * undefined orientation into the guaranteed-invalid custom-property value. */
-:where(.app-header)::after,
-:where(.app-layout)::after,
-:where(.app-layout--view-sidebar-open) .view-sidebar::after,
-:where(.app-shell--codex-iab) .app-header::before,
-:where(.app-shell--codex-iab) .app-rail::before {
+:where(.app-shell)::after,
+:where(.app-shell--codex-iab)::before {
   --shadow-app-subdivision: var(--app-boundary-shadow-x) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color);
   --shadow-app-subdivision-paint: linear-gradient(var(--app-boundary-shadow-direction), var(--app-boundary-shadow-gradient-stops));
 }
 
 /*
- * The Codex host edge is an absolutely positioned visual layer: it does not
- * participate in header or rail layout, so every existing child coordinate
- * stays unchanged. The matching pieces cover the full chrome height while the
- * header remains the top stacking surface.
+ * The dormant Codex host edge is the same full-height shell primitive with its
+ * direction reversed. Activation remains owned by the trusted capability lane.
  */
-.app-shell--codex-iab .app-header::before,
-.app-shell--codex-iab .app-rail::before {
+.app-shell--codex-iab::before {
   --app-boundary-shadow-x: var(--app-boundary-shadow-offset);
   --app-boundary-shadow-direction: to left;
   --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
   inset: 0 auto 0 0;
-  z-index: 2;
+  z-index: var(--z-app-subdivision);
   width: var(--app-shadow-gutter-width);
   background: var(--surface-chrome);
   background-image: var(--shadow-app-subdivision-paint);
   border-inline-end: 1px solid var(--app-boundary-accent);
   box-shadow: var(--shadow-app-subdivision);
   pointer-events: none;
-}
-
-.app-shell--codex-iab .app-rail,
-.app-shell--codex-iab .app-header__identity,
-.app-shell--codex-iab .app-rail__nav,
-.app-shell--codex-iab .app-rail__footer {
-  position: relative;
-}
-
-.app-shell--codex-iab .app-header__identity,
-.app-shell--codex-iab .app-rail__nav,
-.app-shell--codex-iab .app-rail__footer {
-  z-index: 1;
 }
 
 .app-header__identity {
@@ -260,41 +251,10 @@ a {
   position: relative;
   overflow: hidden;
   background: var(--surface-chrome);
-  --app-detail-edge-x: var(--app-rail-outer-width);
 }
 
 .app-layout--view-sidebar-open {
   grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
-  --app-detail-edge-x: calc(var(--app-rail-width) + var(--app-view-sidebar-outer-width));
-}
-
-.app-layout--route-work {
-  --app-detail-edge-x: calc(var(--app-rail-width) + 340px + var(--app-shadow-gutter-width));
-}
-
-.app-layout::after {
-  --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
-  --app-boundary-shadow-direction: to right;
-  --app-boundary-accent: var(--app-divider);
-  content: '';
-  position: absolute;
-  top: var(--app-header-height);
-  bottom: 0;
-  left: calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width));
-  z-index: var(--z-app-subdivision);
-  width: calc(var(--app-shadow-gutter-width) + 1px);
-  pointer-events: none;
-  background-color: transparent;
-  background-image:
-    linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
-    var(--shadow-app-subdivision-paint);
-  background-position: right, left;
-  background-size: 1px 100%, var(--app-shadow-gutter-width) 100%;
-  background-repeat: no-repeat;
-  /* The legacy box shadow computes correctly but is occluded by positioned
-   * sidebar stacking contexts and also bleeds onto the main plateau. The
-   * shared calibrated gradient below is the always-on visible paint owner. */
-  box-shadow: none;
 }
 
 .app-layout--view-sidebar-open::before {
@@ -309,21 +269,7 @@ a {
   background: var(--border-muted);
 }
 
-/* The open ViewSidebar owns the visible falloff across its additive strip.
- * Leave this shell edge responsible only for the calibrated one-pixel divider
- * so the two positioned surfaces can never double-paint the band. */
-.app-layout--view-sidebar-open::after {
-  background-image: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent));
-  background-position: right;
-  background-size: 1px 100%;
-  box-shadow: none;
-}
-
-.app-layout:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
-  --app-boundary-accent: var(--app-divider-emphasis);
-}
-
-.app-shell:has(.sidebar-drag-handle:is(:hover, :focus-visible)) .app-header::after {
+.app-shell:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
   --app-boundary-accent: var(--app-divider-emphasis);
 }
 
@@ -430,7 +376,9 @@ a {
   background: var(--surface-chrome);
   border-right: none;
   box-shadow: none;
-  overflow: hidden;
+  /* The nav remains the vertical scroll owner. Keep the rail itself visible so
+   * its shared footer hairline can cross the reserved chrome strip. */
+  overflow: visible;
   width: var(--app-rail-width);
 }
 
@@ -476,6 +424,19 @@ a {
   padding-inline: var(--app-rail-inline-padding);
   margin-inline: calc(-1 * var(--app-rail-inline-padding));
   border-top: 1px solid var(--border-muted);
+  position: relative;
+}
+
+/* Continue the shared low-chrome divider through the reserved outer strip
+ * without widening footer children or changing their coordinates. */
+.app-rail__footer::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 100%;
+  width: calc(var(--app-detail-edge-x) - var(--app-rail-width));
+  border-top: 1px solid var(--border-muted);
+  pointer-events: none;
 }
 
 .app-rail__item {
@@ -1002,19 +963,6 @@ a {
 .app-layout--view-sidebar-open .view-sidebar {
   padding-top: var(--app-header-height);
   margin-right: var(--app-shadow-gutter-width);
-}
-
-/* The frame remains exactly the configured content width. This non-interactive
- * sibling strip adds physical chrome outside it without becoming child space. */
-.app-layout--view-sidebar-open .view-sidebar::after {
-  --app-boundary-shadow-direction: to right;
-  content: '';
-  position: absolute;
-  inset: 0 calc(0px - var(--app-shadow-gutter-width)) 0 auto;
-  width: var(--app-shadow-gutter-width);
-  background: var(--surface-chrome);
-  background-image: var(--shadow-app-subdivision-paint);
-  pointer-events: none;
 }
 
 /* Headerless direct-content variant (issues/graph): the frame is the single
