@@ -31,7 +31,7 @@ const definitions = [
   { key: 'long', type: 'long_text', prompt: 'Long rationale', options: [] },
   { key: 'rating', type: 'rating', prompt: 'Confidence rating', options: [] },
 ];
-let source = '# Browser regression\n';
+let source = '# Browser regression\nVerified detail prose.\n';
 const directives = definitions.map((definition, position) => {
   const startOffset = source.length;
   const header = `:::spec-item{key="${definition.key}" type="${definition.type}" required="true"}\n`;
@@ -54,6 +54,8 @@ const directives = definitions.map((definition, position) => {
     body_end_offset: bodyStartOffset + definition.prompt.length,
   };
 });
+const contentHash = createHash('sha256').update(source).digest('hex');
+const genericArtifactSource = source.replace('Verified detail prose.', 'Generic artifact text.');
 const initialValues = {
   verdict: { verdict: 'keep' },
   single: { option_key: 'b' },
@@ -70,7 +72,10 @@ const detail = {
   selected_round: {
     id: 'round-browser', ordinal: 1, artifact_version_id: 'artifact-version:browser', previous_round_id: null,
     profile: 'mandible-briefing.v2', binding_digest: 'binding-browser', created_at: 1,
-    document: { artifact_version_id: 'artifact-version:browser', previous_round_id: null, profile: 'mandible-briefing.v2' },
+    document: {
+      artifact_version_id: 'artifact-version:browser', content_hash: contentHash, previous_round_id: null,
+      profile: 'mandible-briefing.v2', source,
+    },
     binding: { status: 'valid' }, items: directives, answers: [],
     annotations: [], latest_submission: null, latest_frozen_membership: null,
   },
@@ -87,6 +92,8 @@ const entry = `
 
   const detail = ${JSON.stringify(detail)};
   const source = ${JSON.stringify(source)};
+  const expectedContentHash = ${JSON.stringify(contentHash)};
+  const genericArtifactSource = ${JSON.stringify(genericArtifactSource)};
   const storageKey = ['human-browser', 'briefing-browser', 'round-browser', 'artifact-version:browser', 'mandible-briefing.v2']
     .map(encodeURIComponent).join(':');
   if (!localStorage.getItem('mandible.briefing.draft:v2:' + storageKey)) {
@@ -95,6 +102,13 @@ const entry = `
   const json = (value) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
   window.__briefingEvents = [];
   window.__detailReads = 0;
+  window.__artifactContentReads = 0;
+  window.__briefingContract = {
+    detailDocumentSource: detail.selected_round.document?.source ?? null,
+    detailDocumentHash: detail.selected_round.document?.content_hash ?? null,
+    expectedSource: source,
+    expectedContentHash,
+  };
   window.fetch = async (input, init = {}) => {
     const url = String(input);
     if ((init.method ?? 'GET') !== 'GET') throw new Error('The browser regression must not submit answers.');
@@ -103,12 +117,15 @@ const entry = `
       window.__detailReads += 1;
       return json(detail);
     }
-    if (url.includes('/api/artifacts/') && url.endsWith('/content')) return json({ content: {
-      artifact_id: 'artifact:browser', status: 'available', kind: 'markdown', media_type: 'text/markdown',
-      size_bytes: new TextEncoder().encode(source).byteLength, source: null,
-      preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false },
-      download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'browser.md' },
-    } });
+    if (url.includes('/api/artifacts/') && url.endsWith('/content')) {
+      window.__artifactContentReads += 1;
+      return json({ content: {
+        artifact_id: 'artifact:browser', status: 'available', kind: 'markdown', media_type: 'text/markdown',
+        size_bytes: new TextEncoder().encode(genericArtifactSource).byteLength, source: null,
+        preview: { encoding: 'utf-8', text: genericArtifactSource, raw_text: genericArtifactSource, truncated: false },
+        download: { available: true, media_type: 'text/markdown', size_bytes: genericArtifactSource.length, filename: 'browser.md' },
+      } });
+    }
     throw new Error('Unexpected browser regression request: ' + url);
   };
   for (const type of ['click', 'input', 'change']) {
@@ -195,10 +212,28 @@ const snapshotExpression = `(() => {
     singleNames: [single?.name ?? null, duplicateSingle?.name ?? null],
     events: [...window.__briefingEvents],
     detailReads: window.__detailReads,
+    artifactContentReads: window.__artifactContentReads,
+    ...window.__briefingContract,
+    renderedDocumentText: primary.querySelector('[aria-label="Pinned briefing document"]')?.textContent ?? null,
   };
 })()`;
 
+function assertVerifiedDocument(snapshot, phase) {
+  if (snapshot.detailDocumentSource !== snapshot.expectedSource
+      || snapshot.detailDocumentHash !== snapshot.expectedContentHash) {
+    throw new Error(`${phase}: harness omitted or mismatched the verified source/hash contract: ${JSON.stringify(snapshot)}`);
+  }
+  if (snapshot.artifactContentReads !== 0) {
+    throw new Error(`${phase}: renderer required generic artifact content: ${JSON.stringify(snapshot)}`);
+  }
+  if (!snapshot.renderedDocumentText?.includes('Verified detail prose.')
+      || snapshot.renderedDocumentText.includes('Generic artifact text.')) {
+    throw new Error(`${phase}: renderer did not use the authoritative detail source: ${JSON.stringify(snapshot)}`);
+  }
+}
+
 function assertSelected(snapshot, phase) {
+  assertVerifiedDocument(snapshot, phase);
   if (snapshot.rating4Checked !== true || snapshot.ratingCheckedValues.join(',') !== '4') {
     throw new Error(`${phase}: rating 4 was not the sole checked radio: ${JSON.stringify(snapshot)}`);
   }
@@ -259,11 +294,23 @@ try {
   await cdpRequest(webSocket, 'Page.enable');
   await cdpRequest(webSocket, 'Accessibility.enable');
 
-  const initial = await waitFor(async () => {
-    const snapshot = await evaluate(webSocket, snapshotExpression);
-    return snapshot.rating4Checked === false && snapshot.singleChecked === 'b'
-      && snapshot.multiChecked.join(',') === 'first,third' && snapshot.submitDisabled === 'true' ? snapshot : null;
-  }, 'renderer-owned initial draft');
+  let initial;
+  try {
+    initial = await waitFor(async () => {
+      const snapshot = await evaluate(webSocket, snapshotExpression);
+      return snapshot.rating4Checked === false && snapshot.singleChecked === 'b'
+        && snapshot.multiChecked.join(',') === 'first,third' && snapshot.submitDisabled === 'true'
+        && snapshot.detailDocumentSource === snapshot.expectedSource
+        && snapshot.detailDocumentHash === snapshot.expectedContentHash
+        && snapshot.artifactContentReads === 0
+        && snapshot.renderedDocumentText?.includes('Verified detail prose.')
+        && !snapshot.renderedDocumentText.includes('Generic artifact text.') ? snapshot : null;
+    }, 'renderer-owned initial draft');
+  } catch (error) {
+    const diagnostic = await evaluate(webSocket, snapshotExpression);
+    throw new Error(`${error.message} Last renderer snapshot: ${JSON.stringify(diagnostic)}`);
+  }
+  assertVerifiedDocument(initial, 'initial render');
   const center = await evaluate(webSocket, `(() => { const input = [...document.querySelectorAll('.briefing-directive__rating input')].find((row) => row.value === '4'); const label = input.closest('label'); label.scrollIntoView({ block: 'center' }); const rect = label.getBoundingClientRect(); const x = rect.left + rect.width / 2; const y = rect.top + rect.height / 2; const hit = document.elementFromPoint(x, y); return { x, y, labelRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }, hit: hit?.outerHTML ?? null }; })()`);
   await cdpRequest(webSocket, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: center.x, y: center.y, button: 'left', clickCount: 1 });
   await cdpRequest(webSocket, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: center.x, y: center.y, button: 'left', clickCount: 1 });

@@ -47,7 +47,13 @@ function round(overrides: Partial<BriefingRoundProjection> = {}): BriefingRoundP
     binding_digest: 'digest',
     created_at: 1,
     latest_submission_for_actor: null,
-    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
+    document: {
+      artifact_version_id: 'artifact-version:version-1',
+      content_hash: createHash('sha256').update(source).digest('hex'),
+      previous_round_id: null,
+      profile: 'mandible-briefing.v2',
+      source,
+    },
     directive_binding: { status: 'valid' },
     latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
     annotations: [],
@@ -84,6 +90,61 @@ afterEach(() => {
 });
 
 describe('Briefing document panel', () => {
+  it('renders authoritative detail prose instead of drifted generic artifact prose', async () => {
+    const authoritativeSource = source.replace('Intro', 'Truth');
+    const driftedSource = source.replace('Intro', 'Drift');
+    const fetchMock = vi.fn(async () => json({ content: {
+      ...content().content,
+      size_bytes: new TextEncoder().encode(driftedSource).byteLength,
+      preview: { encoding: 'utf-8', text: driftedSource, raw_text: driftedSource, truncated: false },
+    } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<BriefingDocumentPanel
+      briefingId="briefing-1"
+      briefingTitle="Review plan"
+      round={round({ document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(authoritativeSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: authoritativeSource,
+      } as any })}
+      roundId="round-1"
+      canMutate
+      onRefresh={async () => null}
+    />);
+
+    expect(await screen.findByText('Truth')).toBeTruthy();
+    expect(screen.queryByText('Drift')).toBeNull();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('renders and enables the authoritative detail document when generic artifact access is denied', async () => {
+    const fetchMock = vi.fn(async () => json({ error: 'forbidden' }, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<BriefingDocumentPanel
+      briefingId="briefing-1"
+      briefingTitle="Review plan"
+      round={round({ document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(source).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source,
+      } as any })}
+      roundId="round-1"
+      canMutate
+      onRefresh={async () => null}
+    />);
+
+    expect(await screen.findByText('Intro')).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('marks real fenced and inline code as shared rendered Markdown', async () => {
     const fencedSource = 'Intro\n\n```ts\nconst answer = 42;\n```\n\nInline `answer`.\n\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
     const [directive] = parseBriefingDirectives(fencedSource);
@@ -98,6 +159,13 @@ describe('Briefing document panel', () => {
       briefingTitle="Code review"
       roundId="round-1"
       round={round({
+        document: {
+          artifact_version_id: 'artifact-version:version-1',
+          content_hash: createHash('sha256').update(fencedSource).digest('hex'),
+          previous_round_id: null,
+          profile: 'mandible-briefing.v2',
+          source: fencedSource,
+        },
         items: [{
           id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
           revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: 'verdict', required: true, position: 1, options: [] },
@@ -127,6 +195,13 @@ describe('Briefing document panel', () => {
     ].join('\n');
     const directives = parseBriefingDirectives(typedSource);
     const typedRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(typedSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: typedSource,
+      },
       items: directives.map((directive, index) => ({
         id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
         revision: { id: directive.definition_digest, ordinal: 1, title: directive.key, prompt: directive.body, description: null, response_type: directive.type, required: directive.required, position: index, options: directive.options },
@@ -214,7 +289,13 @@ describe('Briefing document panel', () => {
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
     const definitionDigest = createHash('sha256').update(source.slice(start, bodyEnd + 4)).digest('hex');
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({
-      document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
+      document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(profiledSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: profiledSource,
+      },
       directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
       annotations: [annotation({ start_offset: bodyStart, end_offset: bodyEnd, quote: 'Body', body: 'Current actor note.' })] as any,
       items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: definitionDigest, start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
@@ -247,7 +328,9 @@ describe('Briefing document panel', () => {
     }));
 
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Comment' }));
+    const commentButton = await screen.findByRole('button', { name: 'Comment' }) as HTMLButtonElement;
+    await waitFor(() => expect(commentButton.disabled).toBe(false));
+    fireEvent.click(commentButton);
     expect(screen.getByRole('tab', { name: 'Comment' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.click(screen.getByRole('tab', { name: 'Suggest replacement' }));
     expect((screen.getByLabelText('Replacement') as HTMLTextAreaElement).value).toBe('Plan');
@@ -283,7 +366,9 @@ describe('Briefing document panel', () => {
     }));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    const keepButton = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
+    await waitFor(() => expect(keepButton.disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
     fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Revised note.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));

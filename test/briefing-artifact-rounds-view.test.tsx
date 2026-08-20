@@ -65,6 +65,23 @@ class UiRoundTripGate implements ClientAuthGate {
   recordUnattributedWrite() {}
 }
 
+function createCopiedPreviewDatabase(root: string): {
+  db: Db;
+  dbPath: string;
+  sourceDbPath: string;
+} {
+  const sourceDbPath = path.join(root, 'source.db');
+  const dbPath = path.join(root, 'copy.db');
+  const sourceDb = new Database(sourceDbPath);
+  try {
+    migrate(sourceDb);
+  } finally {
+    sourceDb.close();
+  }
+  fs.copyFileSync(sourceDbPath, dbPath);
+  return { db: new Database(dbPath), dbPath, sourceDbPath };
+}
+
 function typedDetail(roundId: string, annotations: unknown[] = []) {
   const artifactVersion = roundId === ROUND_ONE ? 'artifact-version:typed-one' : 'artifact-version:typed-two';
   return {
@@ -77,7 +94,13 @@ function typedDetail(roundId: string, annotations: unknown[] = []) {
       id: roundId, ordinal: roundId === ROUND_ONE ? 1 : 2, artifact_version_id: artifactVersion,
       previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2',
       binding_digest: `binding-${roundId}`, created_at: roundId === ROUND_ONE ? 1 : 2,
-      document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2' },
+      document: {
+        artifact_version_id: artifactVersion,
+        content_hash: createHash('sha256').update(TYPED_SOURCE).digest('hex'),
+        previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE,
+        profile: 'mandible-briefing.v2',
+        source: TYPED_SOURCE,
+      },
       binding: { status: 'valid' },
       items: TYPED_DIRECTIVES.map((directive, position) => ({
         id: `item-${directive.key}`, directive_key: directive.key, position,
@@ -92,11 +115,18 @@ function typedDetail(roundId: string, annotations: unknown[] = []) {
 }
 
 function selectedRound(roundId: string, artifactVersion: string, submitted = false) {
+  const exactSource = source.replace('Intro', roundId === ROUND_ONE ? 'First' : 'Later');
   return {
     id: roundId, ordinal: roundId === ROUND_ONE ? 1 : 2, artifact_version_id: artifactVersion,
     previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2',
     binding_digest: `binding-${roundId}`, created_at: roundId === ROUND_ONE ? 1 : 2,
-    document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2' },
+    document: {
+      artifact_version_id: artifactVersion,
+      content_hash: createHash('sha256').update(exactSource).digest('hex'),
+      previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE,
+      profile: 'mandible-briefing.v2',
+      source: exactSource,
+    },
     binding: { status: 'valid' },
     items: [{ id: `item-${roundId}`, directive_key: 'decision', position: 0, definition_digest: digest,
       response_type: 'verdict', required: 1, prompt: 'Review this round', options: [],
@@ -158,7 +188,17 @@ describe('artifact-backed Briefing rounds', () => {
     expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', round_count: 2, created_at: 1, updated_at: 2 }] })[0])
       .toMatchObject({ collectionId: 'briefing-1', latestRoundId: 'round-2', itemCount: 2 });
     const projection = normalizeBriefingProjection(detail(ROUND_ONE));
-    expect(projection).toMatchObject({ briefing_id: 'briefing-1', selected_round_id: ROUND_ONE, latest_round_id: ROUND_TWO, latest_submission_for_actor: { id: `submission-${ROUND_ONE}` }, document: { artifact_version_id: ARTIFACT_VERSION } });
+    expect(projection).toMatchObject({
+      briefing_id: 'briefing-1',
+      selected_round_id: ROUND_ONE,
+      latest_round_id: ROUND_TWO,
+      latest_submission_for_actor: { id: `submission-${ROUND_ONE}` },
+      document: {
+        artifact_version_id: ARTIFACT_VERSION,
+        content_hash: createHash('sha256').update(source.replace('Intro', 'First')).digest('hex'),
+        source: source.replace('Intro', 'First'),
+      },
+    });
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
@@ -400,6 +440,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(roundSelectorControl?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Round occurrence' }));
     expect(roundSelectorControl?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Copy full selected round ref' }));
     expect(screen.getByRole('combobox', { name: 'Round occurrence' }).getAttribute('value') ?? (screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ROUND_TWO);
+    expect(await screen.findByText('Later')).toBeTruthy();
     const shell = screen.getByTestId('briefing-document-renderer').closest('.detail-pane-shell') as HTMLElement;
     expect(shell.querySelector(':scope > .detail-pane-shell__header')).toBeTruthy();
     expect(shell.querySelector(':scope > .detail-pane-shell__body')).toBeTruthy();
@@ -435,9 +476,12 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.input(roundSelect);
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE }));
     await waitFor(() => expect(screen.queryByText('Latest', { selector: '.detail-pane-header__state' })).toBeNull());
+    expect(await screen.findByText('First')).toBeTruthy();
+    expect(screen.queryByText('Later')).toBeNull();
     window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'briefing:round-published' } }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect((screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement).value).toBe(ROUND_ONE);
+    expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'Dismiss' }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByRole('button', { name: 'Submit correction' }).getAttribute('aria-disabled')).toBe('true');
@@ -632,9 +676,8 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('clicks all six controls through the production API/store and freezes only the selected actor round', async () => {
     const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-typed-ui-roundtrip-'));
-    const privateDb = new Database(':memory:');
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
     try {
-      migrate(privateDb);
       setSetting(privateDb, 'artifact_root', privateRoot);
       createUser(privateDb, { slug: 'agent-schedule', kind: 'agent', display_name: 'Typed publisher' });
       const humanId = createUser(privateDb, { slug: 'typed-human', kind: 'human', display_name: 'Typed human' }).id;
@@ -642,7 +685,7 @@ describe('artifact-backed Briefing rounds', () => {
         clientAuth: new UiRoundTripGate(privateDb),
         instance: resolveInstanceInfo({
           env: { MANDIBLE_INSTANCE_ROLE: 'test', MANDIBLE_OPERATIONAL_MUTATIONS: 'allow' },
-          dbPath: path.join(privateRoot, 'production.db'),
+          dbPath: privateDbPath,
         }),
       });
       registerBriefingRoutes(production, privateDb);
@@ -668,7 +711,11 @@ describe('artifact-backed Briefing rounds', () => {
 
       const previewInstance = resolveInstanceInfo({
         env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
-        dbPath: path.join(privateRoot, 'copy.db'), sourceDbPath: path.join(privateRoot, 'source.db'),
+        dbPath: privateDbPath, sourceDbPath,
+      });
+      expect(previewInstance).toMatchObject({
+        operational_mutations: 'reject', briefing_response_mutations: 'allow',
+        db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({
         clientAuth: new UiRoundTripGate(privateDb),
@@ -683,7 +730,7 @@ describe('artifact-backed Briefing rounds', () => {
           body: { error: 'instance_mutation_forbidden' },
         });
       }
-      const mutationUrls: string[] = [];
+      const mutationResponses: Array<{ url: string; status: number }> = [];
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         const method = init?.method ?? 'GET';
@@ -696,16 +743,16 @@ describe('artifact-backed Briefing rounds', () => {
           return new Response(JSON.stringify({ content }), { status: content ? 200 : 404, headers: { 'content-type': 'application/json' } });
         }
         if (!url.startsWith('/api/briefings')) throw new Error(`unexpected production-path request ${method} ${url}`);
-        if (method !== 'GET') mutationUrls.push(url);
         const result = await preview.invoke({
           method, url, credential: 'typed-human', transport: 'http',
           ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
         });
+        if (method !== 'GET') mutationResponses.push({ url, status: result.status });
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
 
       render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
-        <BriefingDocumentRenderer briefingId={firstIds.briefing_id} roundId={firstIds.round_id} instance={COPIED_PREVIEW_INSTANCE} />
+        <BriefingDocumentRenderer briefingId={firstIds.briefing_id} roundId={firstIds.round_id} instance={previewInstance} />
       </AppShellProvider>);
       const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
       await waitFor(() => expect(keep.disabled).toBe(false));
@@ -733,10 +780,10 @@ describe('artifact-backed Briefing rounds', () => {
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       await screen.findByRole('button', { name: 'Submit correction' });
-      expect(mutationUrls).toEqual([
-        `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/annotations`,
-        `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/answers`,
-        `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/submit`,
+      expect(mutationResponses).toEqual([
+        { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/annotations`, status: 200 },
+        { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/answers`, status: 200 },
+        { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/submit`, status: 200 },
       ]);
 
       const firstDetail = await preview.invoke({ method: 'GET', url: `/api/briefings/${firstIds.briefing_id}?round=${firstIds.round_id}`, credential: 'typed-human', transport: 'http' });
@@ -767,11 +814,9 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('round-trips the selected rich-demo round for the active operator on a private copied-preview database', async () => {
     const privateRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-briefing-selected-round-'));
-    const privateDbPath = path.join(privateRoot, 'copy.db');
     const artifactRoot = path.join(privateRoot, 'artifacts');
-    const privateDb = new Database(privateDbPath);
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
     try {
-      migrate(privateDb);
       const operatorId = createUser(privateDb, { slug: 'active-operator', kind: 'human', display_name: 'Active operator' }).id;
       setSetting(privateDb, 'user.operator_id', operatorId);
       const manifest = seedRichBriefingDemo(privateDb, { databasePath: privateDbPath, artifactRoot });
@@ -780,7 +825,11 @@ describe('artifact-backed Briefing rounds', () => {
       const briefingId = manifest.briefing.id;
       const previewInstance = resolveInstanceInfo({
         env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
-        dbPath: privateDbPath, sourceDbPath: path.join(privateRoot, 'source.db'),
+        dbPath: privateDbPath, sourceDbPath,
+      });
+      expect(previewInstance).toMatchObject({
+        operational_mutations: 'reject', briefing_response_mutations: 'allow',
+        db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
       registerBriefingRoutes(preview, privateDb);
@@ -803,7 +852,7 @@ describe('artifact-backed Briefing rounds', () => {
         frozenAnnotations: privateDb.prepare('SELECT * FROM briefing_submission_annotations WHERE round_id = ? ORDER BY position').all(roundOneId),
       });
       const roundOneBefore = roundOneSnapshot();
-      const mutationUrls: string[] = [];
+      const mutationResponses: Array<{ url: string; status: number }> = [];
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         const method = init?.method ?? 'GET';
@@ -818,15 +867,15 @@ describe('artifact-backed Briefing rounds', () => {
           return new Response(JSON.stringify({ content }), { status: content ? 200 : 404, headers: { 'content-type': 'application/json' } });
         }
         if (!url.startsWith('/api/briefings')) throw new Error(`unexpected copied-preview request ${method} ${url}`);
-        if (method !== 'GET') mutationUrls.push(url);
         const result = await preview.invoke({
           method, url, credential: 'active-operator', transport: 'http',
           ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
         });
+        if (method !== 'GET') mutationResponses.push({ url, status: result.status });
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
       const shell = () => <AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
-        <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={COPIED_PREVIEW_INSTANCE} />
+        <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={previewInstance} />
       </AppShellProvider>;
       const view = render(shell());
 
@@ -857,10 +906,10 @@ describe('artifact-backed Briefing rounds', () => {
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       await screen.findByRole('button', { name: 'Submit correction' });
-      expect(mutationUrls).toEqual([
-        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`,
-        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`,
-        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/submit`,
+      expect(mutationResponses).toEqual([
+        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`, status: 200 },
+        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`, status: 200 },
+        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/submit`, status: 200 },
       ]);
 
       const selectedDetail = await preview.invoke({
@@ -950,19 +999,23 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('fails closed when materialized document bytes do not match the frozen directive binding', async () => {
+  it('fails closed when detail source bytes do not match the server-verified whole-document hash', async () => {
     const tampered = source.replace('Review this round', 'Changed after binding');
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
-      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) return new Response(JSON.stringify(detail()), { status: 200, headers: { 'content-type': 'application/json' } });
-      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(tampered).byteLength, source: null, preview: { encoding: 'utf-8', text: tampered, raw_text: tampered, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: tampered.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) {
+        const payload = detail() as any;
+        payload.selected_round.document.source = tampered;
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       throw new Error(`unexpected ${url}`);
-    }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
     render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
-    const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
-    await waitFor(() => expect(screen.getByText(/does not match its materialized prompt/)).toBeTruthy());
-    expect(keep.disabled).toBe(true);
+    await waitFor(() => expect(screen.getAllByText(/does not match its verified hash/)).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: 'Keep' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/artifacts/'))).toBe(false);
   });
 });
