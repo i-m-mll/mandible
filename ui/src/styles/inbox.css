@@ -22,24 +22,38 @@
   overflow: hidden;
 }
 
-.inbox-sidebar__chip-row {
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  flex-shrink: 0;
-}
-
-.inbox-sidebar__actions-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  flex-shrink: 0;
-}
-
-.inbox-sidebar__sort-label {
-  font-size: 11px;
+.inbox-sidebar__sort-value {
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: rgba(77, 163, 255, 0.14);
   color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.inbox-sidebar__menu-actions button {
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.inbox-sidebar__menu-actions button:is(:hover, :focus-visible) {
+  background: var(--neutral-alpha-06);
+}
+
+.inbox-sidebar__menu-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .inbox-sidebar__list {

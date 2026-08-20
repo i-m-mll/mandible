@@ -49,6 +49,9 @@ import {
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 
@@ -316,7 +319,6 @@ function CommandSection({
   available,
   busy,
   error,
-  onRequest,
   onCancel,
 }: {
   commands: TaskCommand[];
@@ -324,7 +326,6 @@ function CommandSection({
   available: boolean;
   busy: boolean;
   error: string | null;
-  onRequest: () => void;
   onCancel: (commandId: string) => void;
 }): JSX.Element {
   const disableCommands = commands.filter((command) => command.verb === 'disable');
@@ -368,16 +369,8 @@ function CommandSection({
         </p>
       ) : null}
       {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
-      <div className="tasks-command__actions">
-        <button
-          type="button"
-          className={disableExpectedNoOp ? 'btn btn--ghost' : 'btn btn--danger'}
-          disabled={busy || active !== null || !available}
-          onClick={onRequest}
-        >
-          {busy ? 'Recording…' : 'Request disable'}
-        </button>
-        {displayed?.state === 'requested' ? (
+      {displayed?.state === 'requested' ? (
+        <div className="tasks-command__actions">
           <button
             type="button"
             className="btn"
@@ -386,8 +379,8 @@ function CommandSection({
           >
             Cancel unseen request
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -399,18 +392,62 @@ function knownExecutionHash(item: ExecutorTaskInventoryItem): string | null {
   return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
 }
 
-function V2CommandSection({
-  capable,
-  executionHash,
-  busy,
+function ExecutorTaskHeaderActions({
+  item,
+  executor,
+  commands,
+  commandAvailable,
+  disableBusy,
+  v2Busy,
+  onRequestDisable,
   onDryRun,
   onEnable,
 }: {
-  capable: boolean;
-  executionHash: string | null;
-  busy: boolean;
+  item: ExecutorTaskInventoryItem;
+  executor: TaskExecutorSummary | null;
+  commands: TaskCommand[];
+  commandAvailable: boolean;
+  disableBusy: boolean;
+  v2Busy: boolean;
+  onRequestDisable: () => void;
   onDryRun: () => void;
   onEnable: () => void;
+}): JSX.Element {
+  const activeDisable = commands.find((command) => command.verb === 'disable'
+    && (command.state === 'requested' || command.state === 'accepted')) ?? null;
+  const disableExpectedNoOp = item.task.activation.locally_activated === false;
+  const executionHash = knownExecutionHash(item);
+  const supportsV2 = executor?.capabilities.includes('task-command@2') === true && executionHash !== null;
+  return (
+    <>
+      <button
+        type="button"
+        className={disableExpectedNoOp ? 'btn btn--ghost' : 'btn btn--danger'}
+        disabled={disableBusy || activeDisable !== null || !commandAvailable}
+        onClick={onRequestDisable}
+      >
+        {disableBusy ? 'Recording…' : 'Request disable'}
+      </button>
+      {supportsV2 ? (
+        <>
+          <button type="button" className="btn" disabled={v2Busy} onClick={onDryRun}>
+            Dry run
+          </button>
+          <button type="button" className="btn" disabled={v2Busy} onClick={onEnable}>
+            Enable task
+          </button>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function V2CommandSection({
+  capable,
+  executionHash,
+}: {
+  capable: boolean;
+  executionHash: string | null;
 }): JSX.Element | null {
   if (!capable || !executionHash) return null;
   return (
@@ -421,14 +458,6 @@ function V2CommandSection({
         separate operator request.
       </p>
       <p className="tasks-command__hash">Execution hash <code>{executionHash}</code></p>
-      <div className="tasks-command__actions">
-        <button type="button" className="btn" disabled={busy} onClick={onDryRun}>
-          Dry run
-        </button>
-        <button type="button" className="btn" disabled={busy} onClick={onEnable}>
-          Enable task
-        </button>
-      </div>
     </section>
   );
 }
@@ -439,41 +468,20 @@ function ExecutorTaskDetail({
   commands,
   commandAvailable,
   disableBusy,
-  v2Busy,
   commandError,
-  onRequestDisable,
   onCancelDisable,
-  onDryRun,
-  onEnable,
 }: {
   item: ExecutorTaskInventoryItem;
   executor: TaskExecutorSummary | null;
   commands: TaskCommand[];
   commandAvailable: boolean;
   disableBusy: boolean;
-  v2Busy: boolean;
   commandError: string | null;
-  onRequestDisable: () => void;
   onCancelDisable: (commandId: string) => void;
-  onDryRun: () => void;
-  onEnable: () => void;
 }): JSX.Element {
   const { task } = item;
   return (
-    <article className="tasks-detail__body">
-      <header className="tasks-detail__header">
-        <h2 className="tasks-detail__title">{task.display_name}</h2>
-        <p className="tasks-detail__subtitle">
-          <span className="tasks-detail__id">{task.task_id}</span>
-          <span className="tasks-detail__sep">·</span>
-          <span>{item.executor}</span>
-          <span className="tasks-detail__sep">·</span>
-          <span className={`tasks-freshness tasks-freshness--${item.freshness}`}>
-            {FRESHNESS_LABEL[item.freshness]}
-          </span>
-        </p>
-      </header>
-
+    <article className="tasks-detail__content">
       <section className="tasks-section">
         <h3 className="tasks-section__title">Management</h3>
         <dl className="tasks-facts">
@@ -492,16 +500,12 @@ function ExecutorTaskDetail({
         available={commandAvailable}
         busy={disableBusy}
         error={commandError}
-        onRequest={onRequestDisable}
         onCancel={onCancelDisable}
       />
 
       <V2CommandSection
         capable={executor?.capabilities.includes('task-command@2') === true}
         executionHash={knownExecutionHash(item)}
-        busy={v2Busy}
-        onDryRun={onDryRun}
-        onEnable={onEnable}
       />
 
       <section className="tasks-section">
@@ -585,17 +589,7 @@ function ReminderOccurrenceEvidence({ item }: { item: MandibleTaskInventoryItem 
 function MandibleReminderDetail({ item }: { item: MandibleTaskInventoryItem }): JSX.Element {
   const { reminder } = item;
   return (
-    <article className="tasks-detail__body">
-      <header className="tasks-detail__header">
-        <h2 className="tasks-detail__title">{reminder.revision.payload.message}</h2>
-        <p className="tasks-detail__subtitle">
-          <span className="tasks-detail__id">{reminder.id}</span>
-          <span className="tasks-detail__sep">·</span>
-          <span>{reminder.project_key}</span>
-          <span className="tasks-detail__sep">·</span>
-          <span>{reminder.lifecycle}</span>
-        </p>
-      </header>
+    <article className="tasks-detail__content">
       <section className="tasks-section">
         <h3 className="tasks-section__title">Immutable predicate</h3>
         <PredicateFacts predicate={reminder.revision.payload.predicate} />
@@ -1173,38 +1167,89 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               selected={selected?.key === item.key}
               ariaCurrent={selected?.key === item.key ? 'true' : undefined}
               onSelect={() => setSelectedKey(item.key)}
-              badges={(
+              badges={item.source_kind === 'mandible' ? (
                 <>
-                  <SidebarItemBadge title={item.source_kind === 'executor'
-                    ? item.executor
-                    : item.reminder.project_key}
-                  >
-                    {item.source_kind === 'executor' ? item.executor : item.reminder.project_key}
+                  <SidebarItemBadge title={item.reminder.project_key}>
+                    {item.reminder.project_key}
                   </SidebarItemBadge>
-                {item.source_kind === 'executor' ? (
-                  <SidebarItemBadge
-                    className={`tasks-freshness tasks-freshness--${item.freshness}`}
-                    ariaLabel={`Executor report ${FRESHNESS_LABEL[item.freshness]}`}
-                  >
-                    {FRESHNESS_LABEL[item.freshness]}
-                  </SidebarItemBadge>
-                ) : (
-                  <SidebarItemBadge className="tasks-freshness">
-                    {item.reminder.lifecycle}
-                  </SidebarItemBadge>
-                )}
+                  <SidebarItemBadge>{item.reminder.lifecycle}</SidebarItemBadge>
                 </>
-              )}
+              ) : undefined}
             />
           ))
         )}
       </ViewSidebar>
 
-      <div className="tasks-detail">
-        <p className="tasks-provenance">
-          Reported by executor: those rows remain executor testimony. Mandible reminder rows are
-          first-party ledger records; neither row type implies external execution.
-        </p>
+      <DetailPaneShell
+        className="tasks-detail"
+        bodyClassName="tasks-detail__scroll"
+        header={selected ? (
+          selected.source_kind === 'executor' ? (
+            <DetailPaneHeader
+              variant="standard"
+              identity={{
+                entityLabel: selected.executor,
+                displayRef: selected.task.task_id,
+                canonicalRef: selected.key,
+                copyLabel: `Copy task reference ${selected.key}`,
+              }}
+              title={selected.task.display_name}
+              status={(
+                <span className={`tasks-freshness tasks-freshness--${selected.freshness}`}>
+                  {FRESHNESS_LABEL[selected.freshness]}
+                </span>
+              )}
+              secondaryMetadata={`Executor ${selected.executor} · ${freshnessTitle(selected)}`}
+              actionsLabel="Task actions"
+              actions={(
+                <ExecutorTaskHeaderActions
+                  item={selected}
+                  executor={selectedExecutor}
+                  commands={selectedCommands}
+                  commandAvailable={commandAvailable}
+                  disableBusy={disableBusy}
+                  v2Busy={v2Busy}
+                  onRequestDisable={() => { void requestDisable(); }}
+                  onDryRun={() => { void requestV2('dry_run'); }}
+                  onEnable={() => { void requestV2('enable'); }}
+                />
+              )}
+            />
+          ) : (
+            <DetailPaneHeader
+              variant="standard"
+              identity={{
+                entityLabel: selected.reminder.project_key,
+                displayRef: selected.reminder.id.slice(0, 7),
+                canonicalRef: selected.key,
+                copyLabel: `Copy reminder reference ${selected.key}`,
+              }}
+              title={selected.reminder.revision.payload.message}
+              status={<span>{selected.reminder.lifecycle}</span>}
+              secondaryMetadata={`Mandible reminder · ${selected.reminder.project_key}`}
+            />
+          )
+        ) : (
+          <DetailPaneHeader variant="compact" title="Tasks" />
+        )}
+        notice={(
+          <DetailPaneNotice severity="info" density="compact" title="Execution testimony">
+            Reported by executor: those rows remain executor testimony. Mandible reminder rows are first-party
+            ledger records; neither row type implies external execution.
+          </DetailPaneNotice>
+        )}
+        overlays={activeIntent ? (
+          <TaskCommandModal
+            intent={activeIntent}
+            busy={v2Busy}
+            error={commandError}
+            onClose={() => setActiveIntent(null)}
+            onCancel={(commandId) => { void cancelIntent(commandId); }}
+            onDryRun={() => { void requestV2('dry_run', activeIntent); }}
+            onEnable={() => { void requestV2('enable', activeIntent); }}
+          />
+        ) : null}
+      >
         {error ? (
           <div className="tasks-detail__empty">
             <span className="text-muted">Could not load the inventory: {error}</span>
@@ -1234,29 +1279,14 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               commands={selectedCommands}
               commandAvailable={commandAvailable}
               disableBusy={disableBusy}
-              v2Busy={v2Busy}
               commandError={commandError}
-              onRequestDisable={() => { void requestDisable(); }}
               onCancelDisable={(commandId) => { void cancelDisable(commandId); }}
-              onDryRun={() => { void requestV2('dry_run'); }}
-              onEnable={() => { void requestV2('enable'); }}
             />
           ) : (
             <MandibleReminderDetail item={selected} />
           )
         )}
-        {activeIntent ? (
-          <TaskCommandModal
-            intent={activeIntent}
-            busy={v2Busy}
-            error={commandError}
-            onClose={() => setActiveIntent(null)}
-            onCancel={(commandId) => { void cancelIntent(commandId); }}
-            onDryRun={() => { void requestV2('dry_run', activeIntent); }}
-            onEnable={() => { void requestV2('enable', activeIntent); }}
-          />
-        ) : null}
-      </div>
+      </DetailPaneShell>
     </div>
   );
 }

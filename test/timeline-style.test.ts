@@ -11,6 +11,15 @@ function cssRuleBody(selector: string): string {
 }
 
 describe('timeline stylesheet', () => {
+  it('keeps the resize frame out of the shared body scroll contract', () => {
+    const timelineSidebar = cssRuleBody('.timeline-sidebar');
+    const sharedBody = cssRuleBody('.view-sidebar__body');
+
+    expect(timelineSidebar).not.toMatch(/overflow-[xy]\s*:/);
+    expect(sharedBody).toContain('min-height: 0');
+    expect(sharedBody).toContain('overflow-y: auto');
+  });
+
   it('keeps diagnostics panel on theme-aware sidebar surfaces', () => {
     const body = cssRuleBody('.timeline-diagnostics-panel');
 
