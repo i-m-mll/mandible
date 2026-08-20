@@ -2,16 +2,13 @@
 //
 // An agent that opens Mandible in a session-bound browser (e.g. the Codex IAB)
 // knows its own provider session id and includes it as a hash-fragment query
-// param (#/overview?agent_session=<id-or-short-prefix>). The page consumes and
-// strips it at boot — the same pattern as the mandible_auth fragment token in
-// client-auth-token.ts — and keeps it in tab-local in-memory state ONLY. It is
-// deliberately never written to localStorage: two concurrent agent sessions
-// can each have a tab open on the same daemon, and their bindings must never
-// bleed into each other.
+// param (#/overview?agent_session=<id-or-short-prefix>). The page adopts it as
+// tab-local in-memory state and preserves it through navigation. It is never
+// written to localStorage: two concurrent agent sessions can each have a tab
+// open on the same daemon, and their bindings must never bleed into each other.
 //
 // Review R1 (issue f59b5bd) — the Tauri deep-link handoff delivers /r/…
-// targets after boot, so consumption is a shared pure function
-// (consumeAgentSessionFromHash) used by both the boot path and the deep-link
+// targets after boot, so extraction is shared by the boot path and deep-link
 // handler, with replace semantics: a newer deep link's binding replaces the
 // current one. The binding is display-only, so replacement is safe.
 //
@@ -25,23 +22,24 @@ let binding: string | null = null;
 const listeners = new Set<(value: string | null) => void>();
 
 /**
- * Extract the agent_session param from a hash string ("#/route?query"),
- * returning the consumed value (null when absent) and the hash with the param
- * stripped. Pure — the single consumption function shared by boot consumption
- * and the Tauri deep-link handoff, so both paths strip identically.
+ * Extract the agent_session param from a hash string ("#/route?query").
  */
-export function consumeAgentSessionFromHash(
-  hash: string,
-): { value: string | null; hash: string } {
+export function agentSessionFromHash(hash: string): string | null {
   const queryIndex = hash.indexOf('?');
-  if (queryIndex < 0) return { value: null, hash };
-  const route = hash.slice(0, queryIndex);
+  if (queryIndex < 0) return null;
   const params = new URLSearchParams(hash.slice(queryIndex + 1));
-  const value = params.get(AGENT_SESSION_PARAM)?.trim() || null;
-  if (!value) return { value: null, hash };
-  params.delete(AGENT_SESSION_PARAM);
-  const remaining = params.toString();
-  return { value, hash: `${route}${remaining ? `?${remaining}` : ''}` };
+  return params.get(AGENT_SESSION_PARAM)?.trim() || null;
+}
+
+/** Preserve the current tab binding when constructing an internal hash route. */
+export function hashWithAgentSession(hashValue: string, value: string | null): string {
+  if (!value) return hashValue;
+  const hash = hashValue || '#/spaces';
+  const queryIndex = hash.indexOf('?');
+  const route = queryIndex < 0 ? hash : hash.slice(0, queryIndex);
+  const params = new URLSearchParams(queryIndex < 0 ? '' : hash.slice(queryIndex + 1));
+  params.set(AGENT_SESSION_PARAM, value);
+  return `${route}?${params.toString()}`;
 }
 
 /**
@@ -71,50 +69,21 @@ export function subscribeAgentPageBinding(
 }
 
 /**
- * Consume the agent_session param from the hash-fragment query at boot,
- * stripping it from the URL via history.replaceState. Safe to call again — a
- * stripped hash simply yields nothing. Fails silently: a broken URL or
- * restricted history API must never block boot.
+ * Adopt the agent_session param from the hash-fragment query at boot without
+ * removing it from the shareable route. Safe to call again and fails silently.
  */
-export function consumeAgentSessionFragment(): void {
+export function adoptAgentSessionFragment(): void {
   if (typeof window === 'undefined') return;
   try {
-    const { value, hash } = consumeAgentSessionFromHash(window.location.hash);
-    if (!value) return;
-    window.history.replaceState(
-      null,
-      '',
-      `${window.location.pathname}${window.location.search}${hash}`,
-    );
-    adoptAgentSessionBinding(value);
+    adoptAgentSessionBinding(agentSessionFromHash(window.location.hash));
   } catch {
-    // Fail silently: detection and binding are best-effort conveniences.
+    // Fail silently: binding is a best-effort display/navigation convenience.
   }
 }
 
 /** The tab-local agent session binding currently adopted, if any. */
 export function getAgentPageBinding(): string | null {
   return binding;
-}
-
-/**
- * Probe the WebMCP surface the Codex in-app browser injects. This is the
- * positive host capability used for IAB-only presentation; the self-asserted
- * agent_session binding is deliberately not part of detection. Fail closed.
- */
-export function detectCodexIab(): boolean {
-  try {
-    const doc = typeof document !== 'undefined'
-      ? (document as unknown as { modelContext?: unknown }).modelContext
-      : undefined;
-    const nav = typeof navigator !== 'undefined'
-      ? (navigator as unknown as { modelContext?: unknown }).modelContext
-      : undefined;
-    const context = (doc ?? nav) as { codexGetTools?: unknown } | undefined;
-    return typeof context?.codexGetTools === 'function';
-  } catch {
-    return false;
-  }
 }
 
 /** Test-only reset so vitest cases can exercise consumption repeatedly. */
