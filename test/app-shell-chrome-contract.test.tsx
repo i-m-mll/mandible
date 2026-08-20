@@ -63,7 +63,7 @@ describe('shared app-shell chrome contract', () => {
     expect(footer).toContain('align-self: stretch');
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
     expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
-    expect(ruleBody(base, '.app-layout::after')).toContain('var(--shadow-app-subdivision-paint)');
+    expect(ruleBody(base, '.app-shell::after')).toContain('var(--shadow-app-subdivision-paint)');
   });
 
   it('gives compact detail chrome exactly the app-header physical height', () => {

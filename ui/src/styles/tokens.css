@@ -90,12 +90,12 @@
   --app-boundary-shadow-offset: 8px;
   --app-boundary-shadow-blur: 36px;
   --app-boundary-shadow-spread: 0px;
-  --app-boundary-shadow-color: rgba(0, 0, 0, 0.125);
-  /* Light reference x=83..116 is 34 non-plateau device pixels. The captured
-     Retina profile therefore reserves 17 CSS px; crop/kernel ambiguity makes
-     the scale inference medium-confidence while the measured span is exact. */
-  --app-shadow-gutter-width: 17px;
-  --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, 0.018) 24%, rgba(0, 0, 0, 0.052) 59%, var(--app-boundary-shadow-color) 100%;
+  --app-boundary-shadow-color: rgba(0, 0, 0, 0.0375);
+  /* The post-merge Codex chrome reserves one 9px structural edge. Keep the
+     calibrated falloff positions while reducing every alpha to 30% of the
+     prior measured profile (0.018 / 0.052 / 0.125). */
+  --app-shadow-gutter-width: 9px;
+  --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, 0.0054) 24%, rgba(0, 0, 0, 0.0156) 59%, var(--app-boundary-shadow-color) 100%;
   --app-divider: #434343;
   --app-divider-emphasis: #434343;
   --z-app-subdivision: 70;

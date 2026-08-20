@@ -72,14 +72,6 @@ function hexRgb(value: string): Rgb {
   return [Number.parseInt(hex.slice(0, 2), 16), Number.parseInt(hex.slice(2, 4), 16), Number.parseInt(hex.slice(4, 6), 16)];
 }
 
-function normalCdf(value: number): number {
-  const sign = value < 0 ? -1 : 1;
-  const x = Math.abs(value) / Math.sqrt(2);
-  const t = 1 / (1 + 0.3275911 * x);
-  const erf = sign * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x));
-  return (1 + erf) / 2;
-}
-
 describe('Codex app subdivision surface contract', () => {
   it('defines the exact light and dark main/chrome values', () => {
     expect(tokenValue(tokenBlock('dark'), '--surface-main')).toBe('#181818');
@@ -132,16 +124,13 @@ describe('Codex app subdivision surface contract', () => {
   });
 
   it('owns one full-height left-casting structural falloff at the app subdivision', () => {
-    const edge = ruleBody(base, '.app-layout::after');
-    expect(edge).toContain('top: var(--app-header-height)');
-    expect(edge).toContain('bottom: 0');
-    expect(edge).toContain('left: calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width))');
+    const edge = ruleBody(base, '.app-shell::after');
+    expect(edge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width))');
     expect(edge).toContain('width: calc(var(--app-shadow-gutter-width) + 1px)');
     expect(edge).toContain('--app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset))');
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
     expect(edge).toContain('var(--shadow-app-subdivision-paint)');
     expect(edge).toContain('background-size: 1px 100%, var(--app-shadow-gutter-width) 100%');
-    expect(edge).toContain('box-shadow: none');
     expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#434343');
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#434343');
@@ -149,17 +138,16 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-offset')).toBe('8px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
-    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.125)');
-    expect(stylesheet).toMatch(/:where\(\.app-header\)::after,\s*:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s);
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.0375)');
+    expect(stylesheet).toMatch(/:where\(\.app-shell\)::after,\s*:where\(\.app-shell--codex-iab\)::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s);
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
     expect(base).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar,\s*\.app-layout--route-work \.work-sidebar\s*\{[^}]*border-right:\s*0;/s);
-    const activeResizeEdge = base.match(/\.app-layout:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\)::after\s*\{([^}]*)\}/)?.[1] ?? '';
+    const activeResizeEdge = base.match(/\.app-shell:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\)::after\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(activeResizeEdge).toContain('--app-boundary-accent: var(--app-divider-emphasis)');
     expect(activeResizeEdge).not.toMatch(/(?:width|box-shadow|border)\s*:/);
     expect(edge).toContain('linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent))');
-    expect(base).toMatch(/\.app-shell:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\) \.app-header::after\s*\{[^}]*--app-boundary-accent:\s*var\(--app-divider-emphasis\);/s);
     expect(base).not.toContain('border-right: 1px solid var(--app-divider)');
 
     for (const selector of ['.app-rail', '.app-bottom-panel', '.view-sidebar', '.detail-pane-shell__header', '.detail-pane-shell__body', '.detail-pane-shell__footer', '.briefing-detail__footer', '.composer-host']) {
@@ -171,7 +159,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
   });
 
-  it('pins the measured screenshot plateaus, accents, and closest composable falloff', () => {
+  it('retains the measured profile positions at 30% of the prior light and dark intensity', () => {
     expect(screenshotCalibration.darkNormal.size).toEqual([116, 12]);
     expect(screenshotCalibration.lightNormal.size).toEqual([140, 32]);
     expect(screenshotCalibration.darkHover.size).toEqual([62, 20]);
@@ -190,19 +178,16 @@ describe('Codex app subdivision surface contract', () => {
     expect(hexRgb(tokenValue(tokenBlock('dark'), '--app-divider-emphasis'))).toEqual(screenshotCalibration.darkHover.mainSideAccentMedian);
     expect(hexRgb(tokenValue(tokenBlock('light'), '--app-divider-emphasis'))).toEqual(screenshotCalibration.lightHover.mainSideAccentMedian);
 
-    // The fit excludes x=117 (divider) and x>=118 (main plateau). CSS blur is
-    // approximated as sigma=blur/2 because the source crop cannot identify the
-    // browser kernel or 1x/2x screenshot scale uniquely.
-    const measured = Array.from({ length: 117 }, (_, x) => {
-      if (x <= 82) return 252;
-      return screenshotCalibration.lightNormal.shadowRuns.find(([start, end]) => x >= start && x <= end)?.[2] ?? 252;
-    });
-    const predicted = measured.map((_, x) => Math.round(252 * (1 - 0.125 * normalCdf((-8 - (117 - x)) / 18))));
-    const residuals = predicted.map((value, index) => value - measured[index]!);
-    const rmse = Math.sqrt(residuals.reduce((sum, value) => sum + value * value, 0) / residuals.length);
-    expect(rmse).toBeLessThanOrEqual(0.307);
-    expect(Math.max(...residuals.map(Math.abs))).toBe(1);
-    expect(residuals.filter((value) => value === 0)).toHaveLength(106);
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-offset')).toBe('8px');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
+    const profile = tokenValue(tokenBlock('dark'), '--app-boundary-shadow-gradient-stops');
+    expect(profile).toContain('transparent 0%');
+    expect(profile).toContain('rgba(0, 0, 0, 0.0054) 24%');
+    expect(profile).toContain('rgba(0, 0, 0, 0.0156) 59%');
+    expect(0.0054 / 0.018).toBeCloseTo(0.3, 8);
+    expect(0.0156 / 0.052).toBeCloseTo(0.3, 8);
+    expect(0.0375 / 0.125).toBeCloseTo(0.3, 8);
   });
 
   it('spans the rail footer divider across the chrome gutter', () => {
@@ -213,6 +198,10 @@ describe('Codex app subdivision surface contract', () => {
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
     expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
     expect(footer).toContain('border-top: 1px solid var(--border-muted)');
+    const continuation = ruleBody(base, '.app-rail__footer::before');
+    expect(continuation).toContain('left: 100%');
+    expect(continuation).toContain('width: calc(var(--app-detail-edge-x) - var(--app-rail-width))');
+    expect(continuation).toContain('border-top: 1px solid var(--border-muted)');
   });
 
   it('preserves the single persisted settings owner and exact root theme application', () => {
