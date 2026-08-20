@@ -1,17 +1,15 @@
 // Issue 037fa85 / f59b5bd — page-level agent session binding: the
-// agent_session hash-fragment param is consumed and stripped at boot, held in
-// tab-local memory only, and never re-emitted into the URL. Review R1 — the
-// same consumption function also serves the Tauri deep-link handoff after
-// boot, with replace semantics and subscriber notification.
+// agent_session hash-fragment param is adopted at boot, held in tab-local
+// memory only, and preserved in route URLs with replace semantics.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   __resetAgentPageBindingForTests,
   adoptAgentSessionBinding,
-  consumeAgentSessionFragment,
-  consumeAgentSessionFromHash,
-  detectCodexIab,
+  adoptAgentSessionFragment,
+  agentSessionFromHash,
   getAgentPageBinding,
+  hashWithAgentSession,
   subscribeAgentPageBinding,
 } from '../ui/src/agent-page-binding';
 
@@ -26,46 +24,46 @@ describe('agent page binding', () => {
     window.history.replaceState(null, '', '/');
   });
 
-  it('consumes agent_session from the hash-fragment query and strips it', () => {
+  it('adopts agent_session from the hash-fragment query and preserves it', () => {
     window.history.replaceState(
       null,
       '',
       '/#/overview?agent_session=0198c0de-1111-2222-3333-444455556666&sidebar=hidden',
     );
 
-    consumeAgentSessionFragment();
+    adoptAgentSessionFragment();
 
     expect(getAgentPageBinding()).toBe('0198c0de-1111-2222-3333-444455556666');
-    expect(window.location.hash).toBe('#/overview?sidebar=hidden');
+    expect(window.location.hash).toBe('#/overview?agent_session=0198c0de-1111-2222-3333-444455556666&sidebar=hidden');
   });
 
   it('accepts a short-prefix binding value verbatim', () => {
     window.history.replaceState(null, '', '/#/overview?agent_session=0198c0de');
 
-    consumeAgentSessionFragment();
+    adoptAgentSessionFragment();
 
     expect(getAgentPageBinding()).toBe('0198c0de');
-    expect(window.location.hash).toBe('#/overview');
+    expect(window.location.hash).toBe('#/overview?agent_session=0198c0de');
   });
 
   // Review R1 — replace semantics: a newer deep link's binding replaces the
   // current one. The binding is display-only, so replacement is safe.
   it('adopts a later consumed binding over the boot binding', () => {
     window.history.replaceState(null, '', '/#/overview?agent_session=first-session');
-    consumeAgentSessionFragment();
+    adoptAgentSessionFragment();
     expect(getAgentPageBinding()).toBe('first-session');
 
     window.history.replaceState(null, '', '/#/overview?agent_session=second-session');
-    consumeAgentSessionFragment();
+    adoptAgentSessionFragment();
 
     expect(getAgentPageBinding()).toBe('second-session');
-    expect(window.location.hash).toBe('#/overview');
+    expect(window.location.hash).toBe('#/overview?agent_session=second-session');
   });
 
   it('does not bind from the retired codex_session param', () => {
     window.history.replaceState(null, '', '/#/overview?codex_session=some-session');
 
-    consumeAgentSessionFragment();
+    adoptAgentSessionFragment();
 
     expect(getAgentPageBinding()).toBeNull();
     // The unrecognized param is left alone — it is not ours to strip.
@@ -75,51 +73,13 @@ describe('agent page binding', () => {
   it('reports no binding when the fragment has no query', () => {
     window.history.replaceState(null, '', '/#/overview');
 
-    consumeAgentSessionFragment();
+    adoptAgentSessionFragment();
 
     expect(getAgentPageBinding()).toBeNull();
   });
 });
 
-describe('Codex IAB capability detection', () => {
-  const clearModelContexts = () => {
-    delete (document as Document & { modelContext?: unknown }).modelContext;
-    delete (navigator as Navigator & { modelContext?: unknown }).modelContext;
-  };
-
-  beforeEach(() => {
-    __resetAgentPageBindingForTests();
-    clearModelContexts();
-  });
-
-  afterEach(() => {
-    __resetAgentPageBindingForTests();
-    clearModelContexts();
-  });
-
-  it('enables only for the host-injected WebMCP capability', () => {
-    (document as Document & { modelContext?: unknown }).modelContext = {
-      codexGetTools: () => [],
-    };
-
-    expect(detectCodexIab()).toBe(true);
-  });
-
-  it('fails closed when the host capability is absent', () => {
-    expect(detectCodexIab()).toBe(false);
-  });
-
-  it('does not treat an agent_session binding as IAB capability', () => {
-    adoptAgentSessionBinding('0198c0de');
-
-    expect(getAgentPageBinding()).toBe('0198c0de');
-    expect(detectCodexIab()).toBe(false);
-  });
-});
-
-// Review R1 — the pure consumption function shared by boot and the Tauri
-// deep-link handoff, plus adoption/subscription semantics.
-describe('consumeAgentSessionFromHash / adoption', () => {
+describe('agentSessionFromHash / adoption', () => {
   beforeEach(() => {
     __resetAgentPageBindingForTests();
   });
@@ -128,22 +88,15 @@ describe('consumeAgentSessionFromHash / adoption', () => {
     __resetAgentPageBindingForTests();
   });
 
-  it('extracts and strips agent_session from a hash string', () => {
-    expect(
-      consumeAgentSessionFromHash('#/auth?request=abc&agent_session=0198c0de'),
-    ).toEqual({ value: '0198c0de', hash: '#/auth?request=abc' });
-    expect(consumeAgentSessionFromHash('#/auth?agent_session=0198c0de')).toEqual({
-      value: '0198c0de',
-      hash: '#/auth',
-    });
-    expect(consumeAgentSessionFromHash('#/auth?request=abc')).toEqual({
-      value: null,
-      hash: '#/auth?request=abc',
-    });
-    expect(consumeAgentSessionFromHash('#/auth')).toEqual({
-      value: null,
-      hash: '#/auth',
-    });
+  it('extracts and carries agent_session across routes', () => {
+    expect(agentSessionFromHash('#/auth?request=abc&agent_session=0198c0de'))
+      .toBe('0198c0de');
+    expect(agentSessionFromHash('#/auth?request=abc')).toBeNull();
+    expect(agentSessionFromHash('#/auth')).toBeNull();
+    expect(hashWithAgentSession('#/issues?issue=abc', '0198c0de'))
+      .toBe('#/issues?issue=abc&agent_session=0198c0de');
+    expect(hashWithAgentSession('#/settings', '0198c0de'))
+      .toBe('#/settings?agent_session=0198c0de');
   });
 
   it('adoption replaces the binding and notifies subscribers', () => {

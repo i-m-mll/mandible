@@ -132,7 +132,6 @@ describe('SessionOverviewView register action (review S1)', () => {
       <SessionOverviewView
         initialSessionId={null}
         agentBinding={PAGE_BINDING}
-        iabDetected={false}
       />,
     );
 
@@ -188,7 +187,6 @@ describe('SessionOverviewView truncated resolution (review C4)', () => {
       <SessionOverviewView
         initialSessionId={null}
         agentBinding={PAGE_BINDING}
-        iabDetected={false}
       />,
     );
 

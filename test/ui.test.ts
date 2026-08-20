@@ -30,6 +30,7 @@ import {
 import {
   __resetAgentPageBindingForTests,
   adoptAgentSessionBinding,
+  adoptAgentSessionFragment,
   getAgentPageBinding,
 } from '../ui/src/agent-page-binding';
 import {
@@ -710,11 +711,7 @@ describe('App routing', () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 
-  // Review R1 (issue f59b5bd) — the Tauri handoff (getCurrent()/onOpenUrl())
-  // arrives after boot consumption: navigateToMandibleDeepLink must adopt the
-  // agent_session binding (replace semantics) and strip it from the routed
-  // hash exactly like boot consumption.
-  it('adopts and strips agent_session from Tauri deep-link navigation after boot', () => {
+  it('adopts and preserves agent_session in Tauri deep-link navigation after boot', () => {
     __resetAgentPageBindingForTests();
     try {
       const navigate = vi.fn();
@@ -725,7 +722,7 @@ describe('App routing', () => {
           navigate,
         ),
       ).toBe(true);
-      expect(navigate).toHaveBeenCalledWith('#/auth?request=e4c52737');
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=e4c52737&agent_session=0198c0de');
       expect(getAgentPageBinding()).toBe('0198c0de');
 
       // A later deep link's binding replaces the current one (display-only).
@@ -735,7 +732,7 @@ describe('App routing', () => {
           navigate,
         ),
       ).toBe(true);
-      expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a');
+      expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a&agent_session=aaaabbbb');
       expect(getAgentPageBinding()).toBe('aaaabbbb');
 
       // A deep link without the param never clears the binding.
@@ -790,9 +787,8 @@ describe('App routing', () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  // Review R1 (issue f59b5bd) — agent_session adoption works on BOTH Tauri
-  // handoff paths: the cold-start getCurrent() read and the warm onOpenUrl()
-  // listener, each stripping the param from the routed hash.
+  // Agent-session adoption works on both cold and warm Tauri handoff paths,
+  // and each route retains the supplied parameter.
   it('adopts agent_session bindings from both cold and warm Tauri handoff paths', async () => {
     __resetAgentPageBindingForTests();
     try {
@@ -809,11 +805,11 @@ describe('App routing', () => {
       const navigate = vi.fn();
       await installTauriDeepLinkHandler(navigate, { getCurrent, onOpenUrl });
 
-      expect(navigate).toHaveBeenCalledWith('#/auth?request=cold-req');
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=cold-req&agent_session=cold-binding');
       expect(getAgentPageBinding()).toBe('cold-binding');
 
       warmHandler?.(['mandible:///auth?request=warm-req&agent_session=warm-binding']);
-      expect(navigate).toHaveBeenCalledWith('#/auth?request=warm-req');
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=warm-req&agent_session=warm-binding');
       expect(getAgentPageBinding()).toBe('warm-binding');
     } finally {
       __resetAgentPageBindingForTests();
@@ -875,6 +871,51 @@ describe('app shell', () => {
         : null,
     ]);
   }
+
+  it('shows page-local optional left shadow control only for agent_session routes', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    __resetAgentPageBindingForTests();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const absent = render(h(App, {}));
+    expect(screen.queryByRole('button', { name: 'Toggle optional left shadow' })).toBeNull();
+    absent.unmount();
+
+    window.history.replaceState(null, '', '#/spaces?agent_session=toggle-session');
+    adoptAgentSessionFragment();
+    const present = render(h(App, {}));
+    const toggle = screen.getByRole('button', { name: 'Toggle optional left shadow' });
+    const shell = present.container.querySelector('.app-shell');
+    const shellInlineGeometry = shell?.getAttribute('style');
+
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle.getAttribute('type')).toBe('button');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(false);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(true);
+    expect(shell?.getAttribute('style')).toBe(shellInlineGeometry);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(false);
+
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
+    expect(window.location.hash).toBe('#/settings?agent_session=toggle-session');
+    expect(Array.from({ length: window.localStorage.length }, (_, index) => (
+      window.localStorage.key(index)
+    )).filter((key) => key?.includes('left-shadow'))).toEqual([]);
+
+    present.unmount();
+    const remounted = render(h(App, {}));
+    expect(screen.getByRole('button', { name: 'Toggle optional left shadow' })
+      .getAttribute('aria-pressed')).toBe('false');
+    remounted.unmount();
+    __resetAgentPageBindingForTests();
+  });
 
   it('renders shared header identity, route title, and registered bottom panel toggle', async () => {
     render(h(ShellProbe, {}));
@@ -5867,7 +5908,7 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-shell::after\s*\{[^}]*inset:\s*0 auto 0 calc\(var\(--app-detail-edge-x\) - var\(--app-boundary-shadow-paint-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-boundary-shadow-paint-width\) \+ 1px\);[^}]*background-color:\s*transparent;[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\),\s*linear-gradient\(var\(--border-muted\), var\(--border-muted\)\);[^}]*background-size:\s*1px 100%, var\(--app-boundary-shadow-paint-width\) 100%, var\(--app-boundary-shadow-paint-width\) 1px;/s);
+    expect(css).toMatch(/\.app-shell::after\s*\{[^}]*inset:\s*0 auto 0 calc\(var\(--app-detail-edge-x\) - var\(--app-boundary-shadow-paint-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-boundary-shadow-paint-width\) \+ 1px\);[^}]*background-color:\s*transparent;[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-boundary-shadow-paint-width\) 100%;/s);
     expect(css).not.toMatch(/\.(?:app-header|app-layout|view-sidebar)::after\s*\{[^}]*shadow-app-subdivision-paint/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
