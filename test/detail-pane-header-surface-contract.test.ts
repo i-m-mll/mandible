@@ -65,6 +65,13 @@ const DIRECT_DETAIL_CONSUMERS: DirectDetailConsumer[] = [
     headerClasses: [],
     primaryClasses: [],
   },
+  {
+    name: 'Tasks',
+    path: 'ui/src/views/tasks.tsx',
+    variant: 'standard',
+    headerClasses: [],
+    primaryClasses: [],
+  },
 ];
 
 const INHERITED_DETAIL_CONSUMERS = [
