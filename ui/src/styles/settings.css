@@ -39,15 +39,6 @@
   min-width: 0;
 }
 
-.settings-view__toc-title {
-  margin: 0 10px 8px;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .settings-view__toc-link {
   display: block;
   width: 100%;
@@ -483,11 +474,6 @@
     flex-wrap: wrap;
     gap: 4px;
     margin-bottom: 32px;
-  }
-
-  .settings-view__toc-title {
-    width: 100%;
-    margin: 0 8px 4px;
   }
 
   .settings-view__toc-link,
