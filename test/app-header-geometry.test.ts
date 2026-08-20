@@ -158,7 +158,7 @@ function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiv
   expect(geometry.mark).toMatchObject({ left: responsiveInset, top: 9.5, width: 28, height: 28 });
   expect(geometry.logo).toMatchObject(geometry.mark);
   expect(geometry.brand!.left).toBe(208 + responsiveInset);
-  expect(geometry.headerGutterWidth).toBe('10px');
+  expect(geometry.headerGutterWidth).toBe('18px');
   expect(Number(geometry.headerGutterZIndex)).toBeGreaterThan(Number(geometry.identityZIndex));
   expect(Math.abs((geometry.route!.left + geometry.route!.right) / 2 - (geometry.brand!.right + width) / 2))
     .toBeLessThanOrEqual(0.5);
@@ -261,8 +261,8 @@ describe('shared AppHeader rendered geometry', () => {
     expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
     expect(geometry.shadowGutterWidth).toBe('9px');
-    expect(geometry.headerGutterWidth).toBe('10px');
-    expect(geometry.iabEdgeWidth).toBe('9px');
+    expect(geometry.headerGutterWidth).toBe('18px');
+    expect(geometry.iabEdgeWidth).toBe('17px');
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
   });
 });

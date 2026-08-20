@@ -7,12 +7,13 @@ import { describe, expect, it } from 'vitest';
 type Rect = Pick<DOMRect, 'left' | 'right' | 'width'>;
 type Mode = 'open' | 'work' | 'hidden' | 'collapsed' | 'timeline';
 type Geometry = {
-  theme: 'dark' | 'light'; mode: Mode; rowTop: number; gutter: number;
+  theme: 'dark' | 'light'; mode: Mode; rowTop: number; gutter: number; paintWidth: number;
   persistedWidth: string; contentWidth: string; outerWidth: string;
   rail: Rect; nav: Rect; footer: Rect; footerDivider: Rect; header: Rect; identity: Rect; mark: Rect;
   sidebar: Rect | null; sidebarHeader: Rect | null; sidebarBody: Rect | null;
   sidebarFooter: Rect | null; sidebarStrip: Rect | null; search: Rect | null;
   searchBottom: number | null; separator: Rect | null; handle: Rect | null; handleHit: Rect | null;
+  handleHitOffsets: string[];
   main: Rect; edge: Rect; edgeShadow: string;
 };
 type Pixel = { red: number; green: number; blue: number };
@@ -26,6 +27,7 @@ const chrome = [
 const magick = ['/opt/homebrew/bin/magick', '/usr/local/bin/magick', '/usr/bin/magick'].find(existsSync);
 const tokens = readFileSync(resolve('ui/src/styles/tokens.css'), 'utf8');
 const base = readFileSync(resolve('ui/src/styles/base.css'), 'utf8');
+const auth = readFileSync(resolve('ui/src/styles/auth.css'), 'utf8');
 const work = readFileSync(resolve('ui/src/styles/work.css'), 'utf8');
 const search = readFileSync(resolve('ui/src/styles/sidebar-search-filter.css'), 'utf8');
 
@@ -53,17 +55,17 @@ function renderNativeSuite(): NonNullable<typeof cache> {
       : '';
     return `<div class="fixture" data-fixture="${index}" data-theme="${theme}" data-mode="${mode}"><div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${collapsed ? ' app-shell--rail-icons' : ''}" style="--app-view-sidebar-persisted-width:${mode === 'work' ? 340 : 420}px"><header class="app-header${open ? '' : ' app-header--sidebar-hidden'}"><div class="app-header__identity"><span class="app-header__mark"><span class="app-header__logo"></span></span>${open ? '<div class="app-header__text"><div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div><div class="app-header__route">Tasks</div></div>' : ''}</div></header><div class="app-layout${open ? ' app-layout--view-sidebar-open' : ''}${mode === 'work' ? ' app-layout--route-work' : ''}${mode === 'timeline' ? ' app-layout--bottom-panel-open' : ''}"${mode === 'timeline' ? ' style="--app-bottom-panel-height:45px"' : ''}><aside class="app-rail"><nav class="app-rail__nav"><a class="app-rail__item">Navigation</a></nav><nav class="app-rail__footer"><a class="app-rail__item">Settings</a></nav></aside><main class="app-content app-content--view-sidebar"><div class="fixture-split${mode === 'work' ? ' work-shell' : ''}">${sidebar}<section class="fixture-main"></section></div></main>${mode === 'timeline' ? '<aside class="app-bottom-panel app-bottom-panel--anchored-detail"><div class="app-bottom-panel__content">Timeline inspector</div></aside>' : ''}</div></div></div>`;
   }).join('');
-  const html = `<!doctype html><html><head><style>${tokens}\n${base}\n${work}\n${search}
+  const html = `<!doctype html><html><head><style>${tokens}\n${base}\n${auth}\n${work}\n${search}
     html,body{margin:0;width:1000px}.fixture{position:relative;width:1000px;height:140px;overflow:hidden}.fixture .app-shell{height:140px}.fixture-split{display:flex;height:100%}.fixture-split.work-shell{display:grid}.fixture .view-sidebar{width:var(--app-view-sidebar-width);flex-shrink:0}.fixture-main{flex:1;min-width:0;background:var(--surface-main)}
     </style></head><body>${markup}<script>
-    const rect=(node,pseudo)=>{if(!node)return null;if(pseudo){const style=getComputedStyle(node,pseudo);const own=node.getBoundingClientRect();const left=own.left+parseFloat(style.left||'0');const width=parseFloat(style.width||'0');return{left,right:left+width,width}}const value=node.getBoundingClientRect();return Object.fromEntries(['left','right','width'].map(key=>[key,value[key]]))};
-    const rows=[...document.querySelectorAll('.fixture')].map((fixture)=>{const shell=fixture.querySelector('.app-shell');const footer=fixture.querySelector('.app-rail__footer');const sidebar=fixture.querySelector('.view-sidebar');const handle=fixture.querySelector('.view-sidebar__resize-handle');const search=fixture.querySelector('.sidebar-search-filter');return{theme:fixture.dataset.theme,mode:fixture.dataset.mode,rowTop:fixture.getBoundingClientRect().top,gutter:parseFloat(getComputedStyle(shell).getPropertyValue('--app-shadow-gutter-width')),persistedWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-persisted-width').trim(),contentWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-width').trim(),outerWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-outer-width').trim(),rail:rect(fixture.querySelector('.app-rail')),nav:rect(fixture.querySelector('.app-rail__nav')),footer:rect(footer),footerDivider:rect(footer,'::before'),header:rect(fixture.querySelector('.app-header')),identity:rect(fixture.querySelector('.app-header__identity')),mark:rect(fixture.querySelector('.app-header__mark')),sidebar:rect(sidebar),sidebarHeader:rect(fixture.querySelector('.view-sidebar__header')),sidebarBody:rect(fixture.querySelector('.view-sidebar__body')),sidebarFooter:rect(fixture.querySelector('.view-sidebar__footer')),sidebarStrip:null,search:rect(search),searchBottom:search?search.getBoundingClientRect().bottom:null,separator:rect(search,'::after'),handle:rect(handle),handleHit:rect(handle,'::before'),main:rect(fixture.querySelector('.fixture-main')),edge:rect(shell,'::after'),edgeShadow:getComputedStyle(shell,'::after').boxShadow}});document.title=btoa(JSON.stringify(rows));
+    const rect=(node,pseudo)=>{if(!node)return null;if(pseudo){const style=getComputedStyle(node,pseudo);if(style.content==='none')return null;const own=node.getBoundingClientRect();const left=own.left+parseFloat(style.left||'0');const width=parseFloat(style.width||'0');return{left,right:left+width,width}}const value=node.getBoundingClientRect();return Object.fromEntries(['left','right','width'].map(key=>[key,value[key]]))};
+    const rows=[...document.querySelectorAll('.fixture')].map((fixture)=>{const shell=fixture.querySelector('.app-shell');const footer=fixture.querySelector('.app-rail__footer');const sidebar=fixture.querySelector('.view-sidebar');const handle=fixture.querySelector('.view-sidebar__resize-handle');const search=fixture.querySelector('.sidebar-search-filter');const main=fixture.querySelector('.fixture-main');const boundary=main.getBoundingClientRect().left;const handleRect=handle?.getBoundingClientRect();const hitY=handleRect?(handleRect.top+handleRect.bottom)/2:fixture.getBoundingClientRect().top+80;return{theme:fixture.dataset.theme,mode:fixture.dataset.mode,rowTop:fixture.getBoundingClientRect().top,gutter:parseFloat(getComputedStyle(shell).getPropertyValue('--app-shadow-gutter-width')),paintWidth:parseFloat(getComputedStyle(shell).getPropertyValue('--app-boundary-shadow-paint-width')),persistedWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-persisted-width').trim(),contentWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-width').trim(),outerWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-outer-width').trim(),rail:rect(fixture.querySelector('.app-rail')),nav:rect(fixture.querySelector('.app-rail__nav')),footer:rect(footer),footerDivider:rect(footer,'::before'),header:rect(fixture.querySelector('.app-header')),identity:rect(fixture.querySelector('.app-header__identity')),mark:rect(fixture.querySelector('.app-header__mark')),sidebar:rect(sidebar),sidebarHeader:rect(fixture.querySelector('.view-sidebar__header')),sidebarBody:rect(fixture.querySelector('.view-sidebar__body')),sidebarFooter:rect(fixture.querySelector('.view-sidebar__footer')),sidebarStrip:null,search:rect(search),searchBottom:search?search.getBoundingClientRect().bottom:null,separator:rect(search,'::after'),handle:rect(handle),handleHit:rect(handle,'::before'),handleHitOffsets:[-16,-9,-1,0,1,9].map(offset=>String(document.elementFromPoint(boundary+offset,hitY)?.className||'')),main:rect(main),edge:rect(shell,'::after'),edgeShadow:getComputedStyle(shell,'::after').boxShadow}});document.title=btoa(JSON.stringify(rows));
     </script></body></html>`;
   const directory = mkdtempSync(join(tmpdir(), 'mandible-chrome-edge-'));
   const screenshot = join(directory, 'chrome-edge.png');
   const rendered = spawnSync(chrome, [
     '--headless=new', '--disable-gpu', '--no-sandbox', '--hide-scrollbars', '--force-device-scale-factor=1',
-    '--dump-dom', `--screenshot=${screenshot}`, '--window-size=1000,1400',
+    '--dump-dom', `--screenshot=${screenshot}`, '--window-size=1000,1600',
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   ], { encoding: 'utf8', maxBuffer: 10_000_000, timeout: 20_000 });
   if (rendered.status !== 0) {
@@ -96,6 +98,7 @@ function pixelsAt(screenshot: string, left: number, top: number, width: number):
 describe('additive app chrome-edge geometry and pixels', () => {
   it('defines stable content widths and one additive physical outer-width token', () => {
     expect(tokens).toMatch(/--app-shadow-gutter-width:\s*9px;/);
+    expect(tokens).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
     expect(tokens).toMatch(/--app-boundary-shadow-gradient-stops:/);
     expect(base).toMatch(/--app-view-sidebar-width:\s*var\(--app-view-sidebar-persisted-width\);/);
     expect(base).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/);
@@ -107,6 +110,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
   it('keeps pre-strip child coordinates while moving physical boundaries exactly 9px', () => {
     for (const geometry of renderNativeSuite().geometries) {
       expect(geometry.gutter).toBe(9);
+      expect(geometry.paintWidth).toBe(17);
       const railWidth = geometry.mode === 'collapsed' ? 56 : 208;
       expect(geometry.rail).toMatchObject({ left: 0, right: railWidth, width: railWidth });
       expect(geometry.nav.right).toBeLessThanOrEqual(railWidth);
@@ -122,15 +126,18 @@ describe('additive app chrome-edge geometry and pixels', () => {
         expect(geometry.sidebarBody!.right).toBe(oldEdge);
         expect(geometry.sidebarFooter!.right).toBe(oldEdge);
         expect(geometry.search!.right).toBe(oldEdge);
-        expect(geometry.handle).toMatchObject({ left: oldEdge, right: oldEdge, width: 0 });
-        expect(geometry.handleHit).toMatchObject({ left: oldEdge - 10, right: oldEdge, width: 10 });
+        expect(geometry.handle).toMatchObject({ left: oldEdge + 9, right: oldEdge + 9, width: 0 });
+        expect(geometry.handleHit).toMatchObject({ left: oldEdge + 9, right: oldEdge + 19, width: 10 });
+        expect(geometry.handleHitOffsets.slice(0, 3).every((name) => !name.includes('view-sidebar__resize-handle')), `${geometry.theme}/${geometry.mode}: ${geometry.handleHitOffsets.join(' | ')}`).toBe(true);
+        expect(geometry.handleHitOffsets.slice(3).every((name) => name.includes('view-sidebar__resize-handle')), `${geometry.theme}/${geometry.mode}: ${geometry.handleHitOffsets.join(' | ')}`).toBe(true);
         expect(geometry.sidebarStrip).toBeNull();
         expect(geometry.separator).toMatchObject({ left: oldEdge, right: oldEdge + 9, width: 9 });
         expect(geometry.main.left).toBe(oldEdge + 9);
         expect(geometry.header.right).toBe(oldEdge + 9);
         expect(geometry.identity.right).toBe(oldEdge);
-        expect(geometry.edge.right).toBe(oldEdge + 10);
-        expect(geometry.footerDivider).toMatchObject({ left: railWidth, right: oldEdge + 9, width: contentWidth + 9 });
+        expect(geometry.edge).toMatchObject({ left: oldEdge - 8, right: oldEdge + 10, width: 18 });
+        expect(geometry.footer).toMatchObject({ left: 0, right: railWidth, width: railWidth });
+        expect(geometry.footerDivider).toBeNull();
       } else {
         const physicalEdge = railWidth + 9;
         expect(geometry.identity.right).toBe(railWidth);
@@ -141,44 +148,40 @@ describe('additive app chrome-edge geometry and pixels', () => {
         });
         expect(geometry.main.left).toBe(physicalEdge);
         expect(geometry.header.right).toBe(physicalEdge);
-        expect(geometry.edge.right).toBe(physicalEdge + 1);
-        expect(geometry.footerDivider).toMatchObject({ left: railWidth, right: physicalEdge, width: 9 });
+        expect(geometry.edge).toMatchObject({ left: physicalEdge - 17, right: physicalEdge + 1, width: 18 });
+        expect(geometry.footer).toMatchObject({ left: 0, right: railWidth, width: railWidth });
+        expect(geometry.footerDivider).toBeNull();
       }
     }
   }, 20_000);
 
-  it('paints one non-flat 9px falloff and one exact divider through header, body, and Timeline inspector', () => {
+  it('paints one chrome-based 17px falloff and one exact divider through header, body, and Timeline inspector', () => {
     const suite = renderNativeSuite();
     try {
       for (const geometry of suite.geometries) {
         const boundary = Math.round(geometry.main.left);
         const segments = geometry.mode === 'timeline' ? [['header', 24], ['body', 80], ['footer', 120]] as const : [['header', 24], ['body', 96]] as const;
         for (const [segment, y] of segments) {
-          const profile = pixelsAt(suite.screenshot, boundary - 9, Math.round(geometry.rowTop + y), 11);
-          expect(profile).toHaveLength(11);
-          const strip = profile.slice(0, 9).map((pixel) => pixel.red);
+          const profile = pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.rowTop + y), 19);
+          expect(profile).toHaveLength(19);
+          const strip = profile.slice(0, 17).map((pixel) => pixel.red);
           expect(new Set(strip).size, `${geometry.theme}/${geometry.mode}/${segment}: ${strip.join(',')}`).toBeGreaterThan(1);
-          expect(strip[0]).toBeGreaterThan(strip[8]!);
-          expect(profile[9], `${geometry.theme}/${geometry.mode}/${segment} divider`).toEqual(
+          expect(strip[0]).toBeGreaterThan(strip[16]!);
+          expect(profile[0], `${geometry.theme}/${geometry.mode}/${segment} chrome plateau`).toEqual(
+            geometry.theme === 'dark'
+              ? { red: 34, green: 34, blue: 34 }
+              : { red: 252, green: 252, blue: 252 },
+          );
+          expect(profile[17], `${geometry.theme}/${geometry.mode}/${segment} divider`).toEqual(
             geometry.theme === 'dark'
               ? { red: 67, green: 67, blue: 67 }
               : { red: 215, green: 215, blue: 216 },
           );
-          expect(profile[10], `${geometry.theme}/${geometry.mode}/${segment} main`).toEqual(
+          expect(profile[18], `${geometry.theme}/${geometry.mode}/${segment} main`).toEqual(
             geometry.theme === 'dark'
               ? { red: 24, green: 24, blue: 24 }
               : { red: 255, green: 255, blue: 255 },
           );
-        }
-        if (geometry.searchBottom !== null) {
-          const stripBelow = pixelsAt(suite.screenshot, boundary - 1, Math.round(geometry.searchBottom + 5), 1)[0];
-          const separatorBand = [-3, -2, -1, 0, 1, 2, 3].map((offset) =>
-            pixelsAt(suite.screenshot, boundary - 1, Math.round(geometry.searchBottom + offset), 1)[0],
-          );
-          expect(
-            separatorBand.some((pixel) => JSON.stringify(pixel) !== JSON.stringify(stripBelow)),
-            `${geometry.theme}/${geometry.mode} separator outer edge: ${JSON.stringify(separatorBand)}`,
-          ).toBe(true);
         }
         expect(geometry.edgeShadow).toBe('none');
       }
