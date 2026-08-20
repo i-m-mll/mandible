@@ -55,7 +55,7 @@ function renderHeader({
   theme,
   codexIab = false,
   scale = 1,
-  gutterWidth = 9,
+  gutterWidth = 0,
   mode = 'open',
 }: {
   width: number;
@@ -152,7 +152,7 @@ function renderHeader({
 }
 
 function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiveInset: number): void {
-  const physicalWidth = width + 9;
+  const physicalWidth = width;
   expect(geometry.header).toMatchObject({ left: 0, top: 0, right: physicalWidth, width: physicalWidth, height: 48 });
   expect(geometry.identity).toMatchObject({ left: 0, right: width, width, height: 28 });
   expect(geometry.mark).toMatchObject({ left: responsiveInset, top: 9.5, width: 28, height: 28 });
@@ -176,16 +176,13 @@ describe('shared AppHeader rendered geometry', () => {
     { width: 1100, theme: 'light' as const },
     { width: 700, theme: 'dark' as const },
     { width: 700, theme: 'light' as const },
-  ])('moves only the physical right edge when adding the 9px strip at $width px in $theme', ({ width, theme }) => {
+  ])('keeps the physical edge and content coordinates unshifted at $width px in $theme', ({ width, theme }) => {
     const baseline = renderHeader({ width, route: 'Timeline', theme, gutterWidth: 0 });
     const additive = renderHeader({ width, route: 'Timeline', theme });
 
-    expect(additive.header.right - baseline.header.right).toBe(9);
-    expect(additive.header.width - baseline.header.width).toBe(9);
-    expectRectInvariant(
-      { ...baseline.header, right: additive.header.right, width: additive.header.width },
-      additive.header,
-    );
+    expect(additive.header.right - baseline.header.right).toBe(0);
+    expect(additive.header.width - baseline.header.width).toBe(0);
+    expectRectInvariant(baseline.header, additive.header);
     for (const rect of ['identity', 'mark', 'logo', 'brand', 'route'] as const) {
       expectRectInvariant(baseline[rect]!, additive[rect]!);
     }
@@ -196,16 +193,13 @@ describe('shared AppHeader rendered geometry', () => {
     { mode: 'hidden' as const, theme: 'light' as const },
     { mode: 'collapsed' as const, theme: 'dark' as const },
     { mode: 'collapsed' as const, theme: 'light' as const },
-  ])('keeps $mode identity coordinates fixed when adding the strip in $theme', ({ mode, theme }) => {
+  ])('keeps $mode header and identity coordinates fixed with zero reservation in $theme', ({ mode, theme }) => {
     const baseline = renderHeader({ width: 700, route: 'Timeline', theme, gutterWidth: 0, mode });
     const additive = renderHeader({ width: 700, route: 'Timeline', theme, mode });
 
-    expect(additive.header.right - baseline.header.right).toBe(9);
-    expect(additive.header.width - baseline.header.width).toBe(9);
-    expectRectInvariant(
-      { ...baseline.header, right: additive.header.right, width: additive.header.width },
-      additive.header,
-    );
+    expect(additive.header.right - baseline.header.right).toBe(0);
+    expect(additive.header.width - baseline.header.width).toBe(0);
+    expectRectInvariant(baseline.header, additive.header);
     for (const rect of ['identity', 'mark', 'logo'] as const) {
       expectRectInvariant(baseline[rect], additive[rect]);
     }
@@ -260,7 +254,7 @@ describe('shared AppHeader rendered geometry', () => {
 
     expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
-    expect(geometry.shadowGutterWidth).toBe('9px');
+    expect(geometry.shadowGutterWidth).toBe('0px');
     expect(geometry.headerGutterWidth).toBe('18px');
     expect(geometry.iabEdgeWidth).toBe('17px');
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });

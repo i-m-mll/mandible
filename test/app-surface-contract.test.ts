@@ -130,8 +130,10 @@ describe('Codex app subdivision surface contract', () => {
     expect(edge).toContain('--app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset))');
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
     expect(edge).toContain('var(--shadow-app-subdivision-paint)');
-    expect(edge).toContain('background-color: var(--surface-chrome)');
-    expect(edge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%');
+    expect(edge).toContain('background-color: transparent');
+    expect(edge).toContain('linear-gradient(var(--border-muted), var(--border-muted))');
+    expect(edge).toContain('background-position: right, left, left calc(var(--app-header-height) - 1px)');
+    expect(edge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%, var(--app-boundary-shadow-paint-width) 1px');
     expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#434343');
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#434343');

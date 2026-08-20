@@ -91,10 +91,10 @@
   --app-boundary-shadow-blur: 36px;
   --app-boundary-shadow-spread: 0px;
   --app-boundary-shadow-color: rgba(0, 0, 0, 0.0375);
-  /* Layout reserves only 9px, while the measured falloff still paints across
-     its full 17px profile by overpainting 8px of chrome. Keep every alpha at
-     30% of the prior measured profile (0.018 / 0.052 / 0.125). */
-  --app-shadow-gutter-width: 9px;
+  /* The measured falloff is fully additive: layout reserves no width while
+     paint retains its independent 17px profile. Keep every alpha at 30% of
+     the prior measured profile (0.018 / 0.052 / 0.125). */
+  --app-shadow-gutter-width: 0px;
   --app-boundary-shadow-paint-width: 17px;
   --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, 0.0054) 24%, rgba(0, 0, 0, 0.0156) 59%, var(--app-boundary-shadow-color) 100%;
   --app-divider: #434343;

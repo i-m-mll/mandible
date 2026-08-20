@@ -17,8 +17,8 @@ describe('Codex IAB chrome edge contract', () => {
     expect(appSource.match(/app-shell--codex-iab/g)).toHaveLength(1);
   });
 
-  it('uses the measured gutter for the absolute visual layer without changing internal layout coordinates', () => {
-    expect(stylesheet).toMatch(/--app-shadow-gutter-width:\s*9px;/);
+  it('uses zero structural reservation for the absolute visual layer without changing internal layout coordinates', () => {
+    expect(stylesheet).toMatch(/--app-shadow-gutter-width:\s*0px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
     expect(stylesheet).not.toMatch(/--codex-iab-edge-width:/);
     expect(stylesheet).toMatch(
@@ -34,7 +34,7 @@ describe('Codex IAB chrome edge contract', () => {
     expect(stylesheet).toMatch(
       /:where\(\.app-shell\)::after,\s*:where\(\.app-shell--codex-iab\)::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s,
     );
-    expect(stylesheet).toMatch(/\.app-shell::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*var\(--shadow-app-subdivision-paint\);/s);
+    expect(stylesheet).toMatch(/\.app-shell::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*var\(--shadow-app-subdivision-paint\),/s);
     expect(stylesheet).toMatch(/\.app-shell--codex-iab::before\s*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
     expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
     expect(stylesheet).not.toMatch(/--shadow-codex-iab-edge:/);
