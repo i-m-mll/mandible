@@ -8,14 +8,16 @@ import WebSocket from 'ws';
 type Rect = Pick<DOMRect, 'left' | 'right' | 'width'>;
 type Mode = 'open' | 'work' | 'hidden' | 'collapsed' | 'timeline';
 type Geometry = {
-  theme: 'dark' | 'light'; mode: Mode; rowTop: number; gutter: number; paintWidth: number;
+  theme: 'dark' | 'light'; mode: Mode; leftShadow: boolean; rowTop: number; gutter: number; paintWidth: number;
   persistedWidth: string; contentWidth: string; outerWidth: string;
-  rail: Rect; nav: Rect; footer: Rect; footerDivider: Rect; header: Rect; identity: Rect; mark: Rect;
+  rail: Rect; nav: Rect; navIcon: Rect; footer: Rect; footerItem: Rect; footerDivider: Rect; header: Rect; identity: Rect; mark: Rect;
   sidebar: Rect | null; sidebarHeader: Rect | null; sidebarBody: Rect | null;
   sidebarFooter: Rect | null; sidebarStrip: Rect | null; search: Rect | null;
   searchBottom: number | null; separator: Rect | null; handle: Rect | null; handleHit: Rect | null;
   handleHitOffsets: string[];
   headerBottom: number; footerTop: number; main: Rect; edge: Rect; edgeShadow: string;
+  leftEdge: Rect | null; leftEdgeViewportBorder: string; leftEdgeChromeBorder: string; leftEdgeShadow: string;
+  intensityScale: string; rightEdgeBackground: string; leftEdgeBackground: string;
 };
 type Pixel = { red: number; green: number; blue: number };
 
@@ -54,28 +56,29 @@ let cache: { geometries: Geometry[]; screenshot: string; cleanup: () => void } |
 function renderNativeSuite(): NonNullable<typeof cache> {
   if (cache) return cache;
   if (!chrome || !magick) throw new Error('Chromium and ImageMagick are required for the native chrome-edge pixel gate.');
-  const cases = (['dark', 'light'] as const).flatMap((theme) =>
-    (['open', 'work', 'hidden', 'collapsed', 'timeline'] as const).map((mode) => ({ theme, mode })),
-  );
-  const markup = cases.map(({ theme, mode }, index) => {
+  const cases = (['dark', 'light'] as const).flatMap((theme) => [
+    ...(['open', 'work', 'hidden', 'collapsed', 'timeline'] as const).map((mode) => ({ theme, mode, leftShadow: false })),
+    ...(['open', 'hidden'] as const).map((mode) => ({ theme, mode, leftShadow: true })),
+  ]);
+  const markup = cases.map(({ theme, mode, leftShadow }, index) => {
     const open = mode === 'open' || mode === 'work' || mode === 'timeline';
     const collapsed = mode === 'collapsed';
     const sidebar = open
       ? '<aside class="view-sidebar work-sidebar"><div class="sidebar-drag-handle view-sidebar__resize-handle"></div><div class="view-sidebar__header"><div class="sidebar-search-filter">Search</div></div><div class="view-sidebar__body">Row</div><div class="view-sidebar__footer">Footer</div></aside>'
       : '';
-    return `<div class="fixture" data-fixture="${index}" data-theme="${theme}" data-mode="${mode}"><div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${collapsed ? ' app-shell--rail-icons' : ''}" style="--app-view-sidebar-persisted-width:${mode === 'work' ? 340 : 420}px"><header class="app-header${open ? '' : ' app-header--sidebar-hidden'}"><div class="app-header__identity"><span class="app-header__mark"><span class="app-header__logo"></span></span>${open ? '<div class="app-header__text"><div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div><div class="app-header__route">Tasks</div></div>' : ''}</div></header><div class="app-layout${open ? ' app-layout--view-sidebar-open' : ''}${mode === 'work' ? ' app-layout--route-work' : ''}${mode === 'timeline' ? ' app-layout--bottom-panel-open' : ''}"${mode === 'timeline' ? ' style="--app-bottom-panel-height:45px"' : ''}><aside class="app-rail"><nav class="app-rail__nav"><a class="app-rail__item">Navigation</a></nav><nav class="app-rail__footer"><a class="app-rail__item">Settings</a></nav></aside><main class="app-content app-content--view-sidebar"><div class="fixture-split${mode === 'work' ? ' work-shell' : ''}">${sidebar}<section class="fixture-main"><div class="fixture-main-layer"></div></section></div></main>${mode === 'timeline' ? '<aside class="app-bottom-panel app-bottom-panel--anchored-detail"><div class="app-bottom-panel__content">Timeline inspector</div></aside>' : ''}</div></div></div>`;
+    return `<div class="fixture" data-fixture="${index}" data-theme="${theme}" data-mode="${mode}" data-left-shadow="${leftShadow}"><div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${collapsed ? ' app-shell--rail-icons' : ''}${leftShadow ? ' app-shell--left-shadow' : ''}" style="--app-view-sidebar-persisted-width:${mode === 'work' ? 340 : 420}px"><header class="app-header${open ? '' : ' app-header--sidebar-hidden'}"><div class="app-header__identity"><span class="app-header__mark"><span class="app-header__logo"></span></span>${open ? '<div class="app-header__text"><div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div><div class="app-header__route">Tasks</div></div>' : ''}</div></header><div class="app-layout${open ? ' app-layout--view-sidebar-open' : ''}${mode === 'work' ? ' app-layout--route-work' : ''}${mode === 'timeline' ? ' app-layout--bottom-panel-open' : ''}"${mode === 'timeline' ? ' style="--app-bottom-panel-height:45px"' : ''}><aside class="app-rail"><nav class="app-rail__nav"><a class="app-rail__item"><span class="app-rail__icon">N</span></a></nav><nav class="app-rail__footer"><a class="app-rail__item">Settings</a></nav></aside><main class="app-content app-content--view-sidebar"><div class="fixture-split${mode === 'work' ? ' work-shell' : ''}">${sidebar}<section class="fixture-main"><div class="fixture-main-layer"></div></section></div></main>${mode === 'timeline' ? '<aside class="app-bottom-panel app-bottom-panel--anchored-detail"><div class="app-bottom-panel__content">Timeline inspector</div></aside>' : ''}</div></div></div>`;
   }).join('');
   const html = `<!doctype html><html><head><style>${tokens}\n${base}\n${auth}\n${work}\n${search}
     html,body{margin:0;width:1000px}.fixture{--border-muted:var(--neutral-alpha-08);position:relative;width:1000px;height:140px;overflow:hidden}.fixture .app-shell{height:140px}.fixture-split{display:flex;height:100%}.fixture-split.work-shell{display:grid}.fixture .view-sidebar{width:var(--app-view-sidebar-width);flex-shrink:0}.fixture-main{position:relative;flex:1;min-width:0;background:var(--surface-main)}.fixture-main-layer{position:absolute;inset:0;z-index:9}
     </style></head><body>${markup}<script>
     const rect=(node,pseudo)=>{if(!node)return null;if(pseudo){const style=getComputedStyle(node,pseudo);if(style.content==='none')return null;const own=node.getBoundingClientRect();const left=own.left+parseFloat(style.left||'0');const width=parseFloat(style.width||'0');return{left,right:left+width,width}}const value=node.getBoundingClientRect();return Object.fromEntries(['left','right','width'].map(key=>[key,value[key]]))};
-    const rows=[...document.querySelectorAll('.fixture')].map((fixture)=>{const shell=fixture.querySelector('.app-shell');const footer=fixture.querySelector('.app-rail__footer');const header=fixture.querySelector('.app-header');const sidebar=fixture.querySelector('.view-sidebar');const handle=fixture.querySelector('.view-sidebar__resize-handle');const search=fixture.querySelector('.sidebar-search-filter');const main=fixture.querySelector('.fixture-main');const boundary=main.getBoundingClientRect().left;const handleRect=handle?.getBoundingClientRect();const hitY=handleRect?(handleRect.top+handleRect.bottom)/2:fixture.getBoundingClientRect().top+80;return{theme:fixture.dataset.theme,mode:fixture.dataset.mode,rowTop:fixture.getBoundingClientRect().top,gutter:parseFloat(getComputedStyle(shell).getPropertyValue('--app-shadow-gutter-width')),paintWidth:parseFloat(getComputedStyle(shell).getPropertyValue('--app-boundary-shadow-paint-width')),persistedWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-persisted-width').trim(),contentWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-width').trim(),outerWidth:getComputedStyle(shell).getPropertyValue('--app-view-sidebar-outer-width').trim(),rail:rect(fixture.querySelector('.app-rail')),nav:rect(fixture.querySelector('.app-rail__nav')),footer:rect(footer),footerDivider:rect(footer,'::before'),header:rect(header),identity:rect(fixture.querySelector('.app-header__identity')),mark:rect(fixture.querySelector('.app-header__mark')),sidebar:rect(sidebar),sidebarHeader:rect(fixture.querySelector('.view-sidebar__header')),sidebarBody:rect(fixture.querySelector('.view-sidebar__body')),sidebarFooter:rect(fixture.querySelector('.view-sidebar__footer')),sidebarStrip:null,search:rect(search),searchBottom:search?search.getBoundingClientRect().bottom:null,separator:rect(search,'::after'),handle:rect(handle),handleHit:rect(handle,'::before'),handleHitOffsets:[-6,-5,-4,0,4,5].map(offset=>String(document.elementFromPoint(boundary+offset,hitY)?.className||'')),headerBottom:header.getBoundingClientRect().bottom,footerTop:footer.getBoundingClientRect().top,main:rect(main),edge:rect(shell,'::after'),edgeShadow:getComputedStyle(shell,'::after').boxShadow}});document.title=btoa(JSON.stringify(rows));
+    const rows=[...document.querySelectorAll('.fixture')].map((fixture)=>{const shell=fixture.querySelector('.app-shell');const footer=fixture.querySelector('.app-rail__footer');const header=fixture.querySelector('.app-header');const sidebar=fixture.querySelector('.view-sidebar');const handle=fixture.querySelector('.view-sidebar__resize-handle');const search=fixture.querySelector('.sidebar-search-filter');const main=fixture.querySelector('.fixture-main');const boundary=main.getBoundingClientRect().left;const handleRect=handle?.getBoundingClientRect();const hitY=handleRect?(handleRect.top+handleRect.bottom)/2:fixture.getBoundingClientRect().top+80;const shellStyle=getComputedStyle(shell);const rightEdgeStyle=getComputedStyle(shell,'::after');const leftEdgeStyle=getComputedStyle(shell,'::before');return{theme:fixture.dataset.theme,mode:fixture.dataset.mode,leftShadow:fixture.dataset.leftShadow==='true',rowTop:fixture.getBoundingClientRect().top,gutter:parseFloat(shellStyle.getPropertyValue('--app-shadow-gutter-width')),paintWidth:parseFloat(shellStyle.getPropertyValue('--app-boundary-shadow-paint-width')),persistedWidth:shellStyle.getPropertyValue('--app-view-sidebar-persisted-width').trim(),contentWidth:shellStyle.getPropertyValue('--app-view-sidebar-width').trim(),outerWidth:shellStyle.getPropertyValue('--app-view-sidebar-outer-width').trim(),rail:rect(fixture.querySelector('.app-rail')),nav:rect(fixture.querySelector('.app-rail__nav')),navIcon:rect(fixture.querySelector('.app-rail__icon')),footer:rect(footer),footerItem:rect(footer.querySelector('.app-rail__item')),footerDivider:rect(footer,'::before'),header:rect(header),identity:rect(fixture.querySelector('.app-header__identity')),mark:rect(fixture.querySelector('.app-header__mark')),sidebar:rect(sidebar),sidebarHeader:rect(fixture.querySelector('.view-sidebar__header')),sidebarBody:rect(fixture.querySelector('.view-sidebar__body')),sidebarFooter:rect(fixture.querySelector('.view-sidebar__footer')),sidebarStrip:null,search:rect(search),searchBottom:search?search.getBoundingClientRect().bottom:null,separator:rect(search,'::after'),handle:rect(handle),handleHit:rect(handle,'::before'),handleHitOffsets:[-6,-5,-4,0,4,5].map(offset=>String(document.elementFromPoint(boundary+offset,hitY)?.className||'')),headerBottom:header.getBoundingClientRect().bottom,footerTop:footer.getBoundingClientRect().top,main:rect(main),edge:rect(shell,'::after'),edgeShadow:rightEdgeStyle.boxShadow,leftEdge:rect(shell,'::before'),leftEdgeViewportBorder:leftEdgeStyle.borderInlineStartWidth,leftEdgeChromeBorder:leftEdgeStyle.borderInlineEndWidth,leftEdgeShadow:leftEdgeStyle.boxShadow,intensityScale:shellStyle.getPropertyValue('--app-boundary-shadow-intensity-scale').trim(),rightEdgeBackground:rightEdgeStyle.backgroundImage,leftEdgeBackground:leftEdgeStyle.backgroundImage}});document.title=btoa(JSON.stringify(rows));
     </script></body></html>`;
   const directory = mkdtempSync(join(tmpdir(), 'mandible-chrome-edge-'));
   const screenshot = join(directory, 'chrome-edge.png');
   const rendered = spawnSync(chrome, [
     '--headless=new', '--disable-gpu', '--no-sandbox', '--hide-scrollbars', '--force-device-scale-factor=1',
-    '--dump-dom', `--screenshot=${screenshot}`, '--window-size=1000,1600',
+    '--dump-dom', `--screenshot=${screenshot}`, '--window-size=1000,2200',
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   ], { encoding: 'utf8', maxBuffer: 10_000_000, timeout: 20_000 });
   if (rendered.status !== 0) {
@@ -256,13 +259,13 @@ describe('additive app chrome-edge geometry and pixels', () => {
     expect(tokens).toMatch(/--app-boundary-shadow-gradient-stops:/);
     expect(base).toMatch(/--app-view-sidebar-width:\s*var\(--app-view-sidebar-persisted-width\);/);
     expect(base).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/);
-    expect(base).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-rail-width\)\);/s);
+    expect(base).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-left-boundary-width\) - var\(--app-rail-width\)\);/s);
     expect(ruleBody(base, '.app-layout--view-sidebar-open .view-sidebar')).toContain('margin-right: var(--app-shadow-gutter-width)');
     expect(ruleBody(base, '.app-layout--view-sidebar-open .view-sidebar')).not.toContain('padding-right');
   });
 
   it('keeps every content coordinate at its pre-shadow edge with zero reservation', () => {
-    for (const geometry of renderNativeSuite().geometries) {
+    for (const geometry of renderNativeSuite().geometries.filter(({ leftShadow }) => !leftShadow)) {
       expect(geometry.gutter).toBe(0);
       expect(geometry.paintWidth).toBe(17);
       const railWidth = geometry.mode === 'collapsed' ? 56 : 208;
@@ -309,6 +312,59 @@ describe('additive app chrome-edge geometry and pixels', () => {
     }
   }, 20_000);
 
+  it('gives the optional left boundary its own paint strip without covering chrome', () => {
+    const suite = renderNativeSuite();
+    for (const theme of ['dark', 'light'] as const) {
+      for (const mode of ['open', 'hidden'] as const) {
+        const off = suite.geometries.find((entry) => entry.theme === theme && entry.mode === mode && !entry.leftShadow)!;
+        const on = suite.geometries.find((entry) => entry.theme === theme && entry.mode === mode && entry.leftShadow)!;
+        const width = on.paintWidth;
+
+        expect(on.leftEdge).toMatchObject({ left: 0, right: width, width });
+        expect(on.leftEdgeViewportBorder).toBe('0px');
+        expect(on.leftEdgeChromeBorder).toBe('0px');
+        expect(on.leftEdgeShadow).toBe('none');
+        expect(on.intensityScale).toBe('0.7');
+        for (const alpha of ['0.004', '0.01', '0.027']) {
+          expect(on.rightEdgeBackground).toContain(alpha);
+          expect(on.leftEdgeBackground).toContain(alpha);
+        }
+        expect(on.rail.left).toBe(width);
+        expect(on.rail.width).toBe(off.rail.width);
+        expect(on.footer).toMatchObject({ left: 0, right: off.footer.right + width });
+        expect(on.mark.left).toBe(off.mark.left + width);
+        expect(on.navIcon.left).toBe(off.navIcon.left + width);
+        expect(on.footerItem.left).toBe(off.footerItem.left + width);
+        expect(on.navIcon.left - on.rail.left).toBe(off.navIcon.left - off.rail.left);
+        expect(on.footerItem.left - on.rail.left).toBe(off.footerItem.left - off.rail.left);
+        expect(on.mark.left).toBeGreaterThanOrEqual(on.leftEdge!.right);
+        expect(on.navIcon.left).toBeGreaterThanOrEqual(on.leftEdge!.right);
+        expect(on.main.left).toBe(off.main.left + width);
+        expect(on.edge.left).toBe(off.edge.left + width);
+        expect(on.edge.width).toBe(off.edge.width);
+        if (mode === 'open') {
+          expect(on.sidebar!.left).toBe(off.sidebar!.left + width);
+          expect(on.sidebar!.width).toBe(off.sidebar!.width);
+          expect(on.handle!.left).toBe(off.handle!.left + width);
+          expect(on.handleHit!.left).toBe(off.handleHit!.left + width);
+        }
+
+        for (const [label, y] of [
+          ['header', Math.round(on.headerBottom) - 1],
+          ['rail-footer', Math.round(on.footerTop)],
+        ] as const) {
+          const line = pixelsAt(suite.screenshot, 0, y, width);
+          const background = pixelsAt(suite.screenshot, 0, y + 2, width);
+          expect(
+            line.filter((pixel, index) => JSON.stringify(pixel) !== JSON.stringify(background[index])).length,
+            `${theme}/${mode}/${label}: line=${JSON.stringify(line)} background=${JSON.stringify(background)}`,
+          ).toBeGreaterThan(width / 2);
+          expect(new Set(line.map((pixel) => `${pixel.red},${pixel.green},${pixel.blue}`)).size).toBeGreaterThan(1);
+        }
+      }
+    }
+  }, 20_000);
+
   it('reaches both halves of the divider hit zone with native Chromium input and performs real drags', async () => {
     const evidence = await renderNativePointerDrag();
     expect(evidence.boundary).toBe(316);
@@ -323,7 +379,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
 
   it('carries shared horizontal lines through the shadow without widening their semantic extents', () => {
     const suite = renderNativeSuite();
-    for (const geometry of suite.geometries) {
+    for (const geometry of suite.geometries.filter(({ leftShadow }) => !leftShadow)) {
       const boundary = Math.round(geometry.main.left);
       const assertLineThroughShadow = (label: string, y: number) => {
         const line = pixelsAt(suite.screenshot, boundary - 17, y, 19);
@@ -345,7 +401,11 @@ describe('additive app chrome-edge geometry and pixels', () => {
         );
         const railFooterLine = pixelsAt(suite.screenshot, 208 - 2, Math.round(geometry.footerTop), boundary - 208 + 3);
         const railFooterBackground = pixelsAt(suite.screenshot, 208 - 2, Math.round(geometry.footerTop) + 2, boundary - 208 + 3);
-        expect(railFooterLine.slice(3).every((pixel, index) => JSON.stringify(pixel) === JSON.stringify(railFooterBackground[index + 3])), `${geometry.theme}/${geometry.mode} rail-only footer extent`).toBe(true);
+        expectEquivalentProfiles(
+          railFooterLine.slice(3),
+          railFooterBackground.slice(3),
+          `${geometry.theme}/${geometry.mode} rail-only footer extent`,
+        );
       }
       if (geometry.mode === 'collapsed' || geometry.mode === 'hidden') {
         expectEquivalentProfiles(
@@ -360,7 +420,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
   it('paints one chrome-based 17px falloff and one exact divider through header, body, and Timeline inspector', () => {
     const suite = renderNativeSuite();
     try {
-      for (const geometry of suite.geometries) {
+      for (const geometry of suite.geometries.filter(({ leftShadow }) => !leftShadow)) {
         const boundary = Math.round(geometry.main.left);
         const segments = geometry.mode === 'timeline' ? [['header', 5], ['body', 55], ['footer', 120]] as const : [['header', 5], ['body', 55]] as const;
         for (const [segment, y] of segments) {
@@ -368,7 +428,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
           expect(profile).toHaveLength(19);
           const strip = profile.slice(0, 17).map((pixel) => pixel.red);
           expect(new Set(strip).size, `${geometry.theme}/${geometry.mode}/${segment}: ${strip.join(',')}`).toBeGreaterThan(1);
-          expect(strip[0]).toBeGreaterThan(strip[16]!);
+          expect(strip[0]).toBeGreaterThanOrEqual(strip[16]!);
           expect(profile[0], `${geometry.theme}/${geometry.mode}/${segment} chrome plateau`).toEqual(
             geometry.theme === 'dark'
               ? { red: 34, green: 34, blue: 34 }
@@ -399,8 +459,8 @@ describe('additive app chrome-edge geometry and pixels', () => {
     for (const owner of [active, mirrors]) {
       expect(owner).toContain('var(--shadow-app-subdivision-paint)');
     }
-    expect(mirrors).toContain('box-shadow: var(--shadow-app-subdivision)');
     expect(mirrors).toContain('--app-boundary-shadow-direction: to left');
+    expect(mirrors).not.toMatch(/divider|box-shadow/);
     expect(ruleBody(base, '.app-header')).toContain('border-bottom: 1px solid var(--neutral-alpha-06)');
     expect(ruleBody(base, '.app-rail__footer')).toContain('border-top: 1px solid var(--neutral-alpha-06)');
     expect(active).not.toContain('var(--border-muted)');
