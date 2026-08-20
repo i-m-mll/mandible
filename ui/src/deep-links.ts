@@ -5,7 +5,7 @@ import {
 
 import {
   adoptAgentSessionBinding,
-  consumeAgentSessionFromHash,
+  agentSessionFromHash,
 } from './agent-page-binding';
 import { normalizeArtifactRouteParams } from './routing';
 
@@ -120,14 +120,10 @@ export function navigateToMandibleDeepLink(
 ): boolean {
   const hash = routeHashFromMandibleDeepLink(rawUrl);
   if (!hash) return false;
-  // Review R1 (issue f59b5bd) — the Tauri handoff (getCurrent()/onOpenUrl())
-  // delivers deep links after boot consumption already ran. Adopt the
-  // agent_session binding here with replace semantics and strip it from the
-  // routed hash exactly like boot consumption, so /r/…?agent_session= links
-  // bind in the desktop shell both cold and warm.
-  const consumed = consumeAgentSessionFromHash(hash);
-  if (consumed.value) adoptAgentSessionBinding(consumed.value);
-  navigateToHash(consumed.hash);
+  // The Tauri handoff arrives after boot adoption. A supplied binding replaces
+  // the current page-local value and remains present in the routed hash.
+  adoptAgentSessionBinding(agentSessionFromHash(hash));
+  navigateToHash(hash);
   return true;
 }
 

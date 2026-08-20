@@ -110,13 +110,11 @@ describe('shared chrome icon cascade', () => {
         <button class="ledger-issue-actions-menu__trigger ledger-issue-actions-menu__trigger--active test-hover">L</button>
         <button class="tab-overflow__btn tab-overflow__btn--active test-focus-visible">O</button>
         <button class="daemon-toast__dismiss test-hover">D</button>
-        <button class="settings-view__close test-focus-visible">S</button>
         <button class="terminal-pane__sidebar-toggle test-hover">P</button>
         <button class="terminal-pane__sidebar-close test-focus-visible">X</button>
         <button class="usage-modal__close test-hover">U</button>
         <button class="repo-card__gear repo-card__gear--active test-hover">G</button>
         <button class="work-settings-modal__close test-focus-visible">W</button>
-        <button class="spaces-tree__create--top-level test-hover">A</button>
         <button class="space-canvas__icon-btn test-focus-visible">V</button>
         <button class="space-item-picker__close test-hover">I</button>
       </div>
@@ -131,13 +129,11 @@ describe('shared chrome icon cascade', () => {
       '.ledger-issue-actions-menu__trigger',
       '.tab-overflow__btn',
       '.daemon-toast__dismiss',
-      '.settings-view__close',
       '.terminal-pane__sidebar-toggle',
       '.terminal-pane__sidebar-close',
       '.usage-modal__close',
       '.repo-card__gear',
       '.work-settings-modal__close',
-      '.spaces-tree__create--top-level',
       '.space-canvas__icon-btn',
       '.space-item-picker__close',
     ]) {

@@ -22,6 +22,14 @@
   min-width: 0;
 }
 
+.sidebar-group-node--draggable > .sidebar-group-node__header {
+  cursor: grab;
+}
+
+.sidebar-group-node--dragging {
+  opacity: 0.6;
+}
+
 .sidebar-group-node__heading {
   width: 100%;
   min-width: 0;

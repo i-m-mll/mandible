@@ -30,6 +30,7 @@ import {
 import {
   __resetAgentPageBindingForTests,
   adoptAgentSessionBinding,
+  adoptAgentSessionFragment,
   getAgentPageBinding,
 } from '../ui/src/agent-page-binding';
 import {
@@ -62,6 +63,14 @@ import {
   type IssueRepoSummary,
 } from '../ui/src/views/issues';
 import { readResolvedStylesheet } from './helpers/css-manifest';
+
+function ruleBody(css: string, selector: string): string {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (match[1]!.split(',').map((entry) => entry.trim()).includes(selector)) return match[2]!;
+  }
+  return '';
+}
 
 type ReactFlowMockNode = {
   id: string
@@ -710,11 +719,7 @@ describe('App routing', () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 
-  // Review R1 (issue f59b5bd) — the Tauri handoff (getCurrent()/onOpenUrl())
-  // arrives after boot consumption: navigateToMandibleDeepLink must adopt the
-  // agent_session binding (replace semantics) and strip it from the routed
-  // hash exactly like boot consumption.
-  it('adopts and strips agent_session from Tauri deep-link navigation after boot', () => {
+  it('adopts and preserves agent_session in Tauri deep-link navigation after boot', () => {
     __resetAgentPageBindingForTests();
     try {
       const navigate = vi.fn();
@@ -725,7 +730,7 @@ describe('App routing', () => {
           navigate,
         ),
       ).toBe(true);
-      expect(navigate).toHaveBeenCalledWith('#/auth?request=e4c52737');
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=e4c52737&agent_session=0198c0de');
       expect(getAgentPageBinding()).toBe('0198c0de');
 
       // A later deep link's binding replaces the current one (display-only).
@@ -735,7 +740,7 @@ describe('App routing', () => {
           navigate,
         ),
       ).toBe(true);
-      expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a');
+      expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a&agent_session=aaaabbbb');
       expect(getAgentPageBinding()).toBe('aaaabbbb');
 
       // A deep link without the param never clears the binding.
@@ -790,9 +795,8 @@ describe('App routing', () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  // Review R1 (issue f59b5bd) — agent_session adoption works on BOTH Tauri
-  // handoff paths: the cold-start getCurrent() read and the warm onOpenUrl()
-  // listener, each stripping the param from the routed hash.
+  // Agent-session adoption works on both cold and warm Tauri handoff paths,
+  // and each route retains the supplied parameter.
   it('adopts agent_session bindings from both cold and warm Tauri handoff paths', async () => {
     __resetAgentPageBindingForTests();
     try {
@@ -809,11 +813,11 @@ describe('App routing', () => {
       const navigate = vi.fn();
       await installTauriDeepLinkHandler(navigate, { getCurrent, onOpenUrl });
 
-      expect(navigate).toHaveBeenCalledWith('#/auth?request=cold-req');
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=cold-req&agent_session=cold-binding');
       expect(getAgentPageBinding()).toBe('cold-binding');
 
       warmHandler?.(['mandible:///auth?request=warm-req&agent_session=warm-binding']);
-      expect(navigate).toHaveBeenCalledWith('#/auth?request=warm-req');
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=warm-req&agent_session=warm-binding');
       expect(getAgentPageBinding()).toBe('warm-binding');
     } finally {
       __resetAgentPageBindingForTests();
@@ -875,6 +879,51 @@ describe('app shell', () => {
         : null,
     ]);
   }
+
+  it('shows page-local optional left shadow control only for agent_session routes', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    __resetAgentPageBindingForTests();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const absent = render(h(App, {}));
+    expect(screen.queryByRole('button', { name: 'Toggle optional left shadow' })).toBeNull();
+    absent.unmount();
+
+    window.history.replaceState(null, '', '#/spaces?agent_session=toggle-session');
+    adoptAgentSessionFragment();
+    const present = render(h(App, {}));
+    const toggle = screen.getByRole('button', { name: 'Toggle optional left shadow' });
+    const shell = present.container.querySelector('.app-shell');
+    const shellInlineGeometry = shell?.getAttribute('style');
+
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle.getAttribute('type')).toBe('button');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(false);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(true);
+    expect(shell?.getAttribute('style')).toBe(shellInlineGeometry);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(false);
+
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
+    expect(window.location.hash).toBe('#/settings?agent_session=toggle-session');
+    expect(Array.from({ length: window.localStorage.length }, (_, index) => (
+      window.localStorage.key(index)
+    )).filter((key) => key?.includes('left-shadow'))).toEqual([]);
+
+    present.unmount();
+    const remounted = render(h(App, {}));
+    expect(screen.getByRole('button', { name: 'Toggle optional left shadow' })
+      .getAttribute('aria-pressed')).toBe('false');
+    remounted.unmount();
+    __resetAgentPageBindingForTests();
+  });
 
   it('renders shared header identity, route title, and registered bottom panel toggle', async () => {
     render(h(ShellProbe, {}));
@@ -1600,14 +1649,14 @@ describe('app shell', () => {
 
     const css = readResolvedStylesheet();
     expect(css).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/s);
-    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-outer-width\)\);/s);
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-width\) \+ var\(--app-view-sidebar-outer-width\)\);/s);
     expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header__identity\s*\{[^}]*width:\s*calc\(100% - var\(--app-shadow-gutter-width\)\);/s);
-    expect(css).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-rail-width\)\);/s);
+    expect(css).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-left-boundary-width\) - var\(--app-rail-width\)\);/s);
     expect(css).toMatch(/\.view-sidebar\s*\{[^}]*position:\s*relative;/s);
     expect((await screen.findByLabelText('Briefings') as HTMLElement).style.width)
       .toBe('var(--app-view-sidebar-width)');
-    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-outer-width\) minmax\(0, 1fr\);/s);
-    expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-outer-width\)\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-width\)\) minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
 
     restoreLocalStorage();
@@ -2148,8 +2197,11 @@ describe('SettingsView', () => {
     expect(screen.getByLabelText('Toggle project restriction').getAttribute('aria-checked')).toBe('true');
   });
 
-  it('renders a close button when an onClose handler is supplied', () => {
+  it('keeps onClose API compatibility while rendering sourced section navigation without redundant chrome', () => {
     const onClose = vi.fn();
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    window.history.replaceState(null, '', '#/settings');
     render(
       h(SettingsView, {
         settings: {},
@@ -2158,8 +2210,25 @@ describe('SettingsView', () => {
       }),
     );
 
-    fireEvent.click(screen.getByLabelText('Close settings'));
-    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText('Close settings')).toBeNull();
+    expect(screen.queryByText('Mandible configuration.')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    const navigation = screen.getByRole('navigation', { name: 'Settings sections' });
+    const sectionButtons = within(navigation).getAllByRole('button');
+    expect(sectionButtons).toHaveLength(15);
+    expect(sectionButtons.filter((button) => button.getAttribute('aria-current') === 'location')).toHaveLength(1);
+    for (const button of sectionButtons) {
+      const target = button.getAttribute('aria-controls');
+      expect(target).toBeTruthy();
+      expect(document.getElementById(target!)).toBeTruthy();
+    }
+
+    const appearanceButton = within(navigation).getByRole('button', { name: 'Appearance' });
+    fireEvent.click(appearanceButton);
+    expect(appearanceButton.getAttribute('aria-current')).toBe('location');
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(window.location.hash).toBe('#/settings');
   });
 
   it('does not show deprecated Reaper controls', () => {
@@ -2229,7 +2298,7 @@ describe('SettingsView', () => {
       }),
     );
 
-    expect(screen.getByText('Instruction Delivery')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Instruction Delivery' })).toBeTruthy();
     expect(await screen.findByDisplayValue('/Users/mll/.claude/CLAUDE.md')).toBeTruthy();
     expect(screen.getByDisplayValue('/Users/mll/.codex/AGENTS.md')).toBeTruthy();
     expect(screen.queryByPlaceholderText('/path/to/50-mandible.generated.md')).toBeNull();
@@ -4638,6 +4707,34 @@ describe('LedgerIssueDetail', () => {
     Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
   });
 
+  it('keeps embedded graph issue headers and bodies on one shared content-width contract', () => {
+    const detail = issueDetailProjection({
+      displayId: 'embed-width',
+      title: 'Embedded width contract',
+    });
+
+    render(h('aside', { class: 'graph-detail-pane graph-detail-pane--ledger' }, h(LedgerIssueDetail, {
+      compact: true,
+      detail,
+      onAddComment: () => undefined,
+    })));
+
+    const pane = document.querySelector('.graph-detail-pane--ledger');
+    const header = pane?.querySelector('.detail-pane-header');
+    const body = pane?.querySelector('.ledger-issue-detail__body');
+    expect(pane?.querySelector('.ledger-issue-detail--compact')).toBeTruthy();
+    expect(pane?.closest('.issues-detail')).toBeNull();
+    expect(header).toBeTruthy();
+    expect(body?.querySelector('.ledger-comment-composer')).toBeTruthy();
+
+    const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*--detail-content-inline-inset:\s*24px;/s);
+    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--detail-content-inline-inset\);/s);
+    expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail > \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
+    expect(css).toMatch(/\.app-bottom-panel \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
+    expect(css).toMatch(/\.graph-detail-pane--ledger \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
+  });
+
   it('keeps issue actions in the header overflow menu while preserving the comment composer button', () => {
     const detail = {
       id: 'issue_1',
@@ -5819,9 +5916,22 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-layout::after\s*\{[^}]*top:\s*var\(--app-header-height\);[^}]*bottom:\s*0;[^}]*left:\s*calc\(var\(--app-detail-edge-x\) - var\(--app-shadow-gutter-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-shadow-gutter-width\) \+ 1px\);[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-shadow-gutter-width\) 100%;[^}]*box-shadow:\s*none;/s);
-    expect(css).toMatch(/\.app-layout--view-sidebar-open::after\s*\{[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\);[^}]*background-size:\s*1px 100%;[^}]*box-shadow:\s*none;/s);
-    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar::after\s*\{[^}]*inset:\s*0 calc\(0px - var\(--app-shadow-gutter-width\)\) 0 auto;[^}]*width:\s*var\(--app-shadow-gutter-width\);[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);/s);
+    const rightEdge = ruleBody(css, '.app-shell::after');
+    const leftEdge = ruleBody(css, '.app-shell--left-shadow::before');
+
+    expect(rightEdge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');
+    expect(rightEdge).toContain('z-index: var(--z-app-subdivision)');
+    expect(rightEdge).toContain('width: calc(var(--app-boundary-shadow-paint-width) + 1px)');
+    expect(rightEdge).toContain('background-color: transparent');
+    expect(rightEdge).toContain('--app-boundary-divider-paint: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent))');
+    expect(rightEdge).toMatch(/background-image:\s*var\(--app-boundary-divider-paint\),\s*var\(--shadow-app-subdivision-paint\);/s);
+    expect(rightEdge).toContain('background-position: right, left');
+    expect(rightEdge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%');
+    expect(css.match(/--app-boundary-divider-paint:/g)).toHaveLength(1);
+    expect(leftEdge).toContain('width: var(--app-boundary-shadow-paint-width)');
+    expect(leftEdge).toContain('background-image: var(--shadow-app-subdivision-paint)');
+    expect(leftEdge).not.toMatch(/divider|1px|box-shadow/);
+    expect(css).not.toMatch(/\.(?:app-header|app-layout|view-sidebar)::after\s*\{[^}]*shadow-app-subdivision-paint/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
     expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);

@@ -43,7 +43,6 @@ type BindingState =
 export type SessionOverviewViewProps = {
   initialSessionId: string | null;
   agentBinding: string | null;
-  iabDetected: boolean;
 };
 
 function formatTimestamp(value: unknown): string {
@@ -276,7 +275,6 @@ function SessionPicker({
 export function SessionOverviewView({
   initialSessionId,
   agentBinding,
-  iabDetected,
 }: SessionOverviewViewProps): JSX.Element {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
   const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
@@ -542,12 +540,6 @@ export function SessionOverviewView({
           {binding.kind === 'error' && (
             <span>Agent session resolution failed: {binding.message}</span>
           )}
-        </div>
-      ) : iabDetected && !selectedSessionId ? (
-        <div className="session-overview__binding" role="status">
-          <span>
-            Codex in-app browser detected, but no session binding arrived — pick a session below.
-          </span>
         </div>
       ) : null}
 

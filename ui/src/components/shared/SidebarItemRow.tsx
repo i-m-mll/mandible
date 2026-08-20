@@ -22,6 +22,32 @@ export type SidebarItemRowProps = {
   onKeyDown?: JSX.KeyboardEventHandler<HTMLButtonElement>;
 };
 
+export type SidebarLeadingActionRowProps = {
+  label: string;
+  icon: ComponentChildren;
+  onPress(): void;
+  testId?: string;
+};
+
+export function SidebarLeadingActionRow({
+  label,
+  icon,
+  onPress,
+  testId,
+}: SidebarLeadingActionRowProps): JSX.Element {
+  return (
+    <button
+      type="button"
+      className="sidebar-leading-action-row"
+      data-testid={testId}
+      onClick={onPress}
+    >
+      <span className="sidebar-leading-action-row__icon" aria-hidden="true">{icon}</span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
 export function SidebarItemRow({
   label,
   selectionLabel,

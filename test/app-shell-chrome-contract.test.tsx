@@ -48,22 +48,22 @@ describe('shared app-shell chrome contract', () => {
       .not.toMatch(/var\(--(?:text-subdued|text-chrome-muted)\)/);
   });
 
-  it('keeps chrome-internal hairlines on one token and below the unsubdivided header', () => {
+  it('keeps shared horizontal chrome hairlines equivalent and below the unsubdivided header', () => {
     const header = ruleBody(base, '.app-header');
     const railSidebarDivider = ruleBody(base, '.app-layout--view-sidebar-open::before');
     const footer = ruleBody(base, '.app-rail__footer');
 
-    expect(header).toContain('border-bottom: 1px solid var(--border-muted)');
+    expect(header).toContain('border-bottom: 1px solid var(--neutral-alpha-06)');
     expect(header).toContain('border-right: none');
     expect(railSidebarDivider).toContain('top: var(--app-header-height)');
-    expect(railSidebarDivider).toContain('left: var(--app-rail-width)');
+    expect(railSidebarDivider).toContain('left: calc(var(--app-left-boundary-width) + var(--app-rail-width))');
     expect(railSidebarDivider).toContain('width: 1px');
     expect(railSidebarDivider).toContain('background: var(--border-muted)');
-    expect(footer).toContain('border-top: 1px solid var(--border-muted)');
+    expect(footer).toContain('border-top: 1px solid var(--neutral-alpha-06)');
     expect(footer).toContain('align-self: stretch');
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
     expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
-    expect(ruleBody(base, '.app-layout::after')).toContain('var(--shadow-app-subdivision-paint)');
+    expect(ruleBody(base, '.app-shell::after')).toContain('var(--shadow-app-subdivision-paint)');
   });
 
   it('gives compact detail chrome exactly the app-header physical height', () => {

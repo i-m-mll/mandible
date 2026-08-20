@@ -7,6 +7,8 @@ import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const settingsSource = await readFile(path.join(repoRoot, 'ui/src/views/settings.tsx'), 'utf8');
+const settingsStyles = await readFile(path.join(repoRoot, 'ui/src/styles/settings.css'), 'utf8');
 
 if (!existsSync(chrome)) throw new Error(`Chrome is unavailable at ${chrome}`);
 
@@ -32,19 +34,27 @@ const html = `<!doctype html>
           <section class="app-tab-panel app-tab-panel--settings" data-tab="settings">
             <div class="settings-view">
               <div class="view-header">
-                <div><h2>Settings</h2><div class="text-muted">Mandible configuration.</div></div>
-                <button type="button" class="settings-view__close" aria-label="Close settings">×</button>
+                <h2>Settings</h2>
               </div>
-              <div class="settings-view__section">
-                <div class="settings-view__section-header"><h3 class="settings-view__section-title">Notifications</h3></div>
-                <div class="settings-view__section-body">First card</div>
-              </div>
-              <div class="settings-view__section">
-                <div class="settings-view__section-header"><h3 class="settings-view__section-title">Appearance</h3></div>
-                <div class="settings-view__section-body">Second card</div>
-              </div>
-              <div class="settings-view__section" style="height: 700px">
-                <div class="settings-view__section-header"><h3 class="settings-view__section-title">Scrollable content</h3></div>
+              <div class="settings-view__layout">
+                <nav class="settings-view__toc" aria-label="Settings sections">
+                  <button type="button" class="settings-view__toc-link settings-view__toc-link--active" aria-current="location" aria-controls="settings-notifications">Notifications</button>
+                  <button type="button" class="settings-view__toc-link" aria-controls="settings-appearance">Appearance</button>
+                  <button type="button" class="settings-view__toc-link" aria-controls="settings-scrollable">Scrollable content</button>
+                </nav>
+                <div class="settings-view__content">
+                  <section class="settings-view__section" id="settings-notifications" aria-labelledby="settings-notifications-title">
+                    <div class="settings-view__section-header"><h3 id="settings-notifications-title" class="settings-view__section-title">Notifications</h3></div>
+                    <div class="settings-view__section-body"><button type="button">Toggle notifications</button></div>
+                  </section>
+                  <section class="settings-view__section" id="settings-appearance" aria-labelledby="settings-appearance-title">
+                    <div class="settings-view__section-header"><h3 id="settings-appearance-title" class="settings-view__section-title">Appearance</h3></div>
+                    <div class="settings-view__section-body"><select aria-label="App theme"><option>System</option></select></div>
+                  </section>
+                  <section class="settings-view__section" id="settings-scrollable" aria-labelledby="settings-scrollable-title" style="min-height: 700px">
+                    <div class="settings-view__section-header"><h3 id="settings-scrollable-title" class="settings-view__section-title">Scrollable content</h3></div>
+                  </section>
+                </div>
               </div>
             </div>
           </section>
@@ -91,6 +101,30 @@ function assert(condition, message, observed) {
     throw new Error(`${message}: ${JSON.stringify(observed)}`);
   }
 }
+
+assert(!settingsSource.includes('Mandible configuration.'), 'Settings subtitle remains in production source');
+assert(!settingsSource.includes('settings-view__close'), 'Settings close control remains in production source');
+assert(settingsSource.includes('aria-label="Settings sections"'), 'Settings section navigation is not labelled');
+assert(!settingsSource.includes('settings-view__toc-title'), 'Settings navigation still renders the obsolete visible title');
+assert(!settingsStyles.includes('.settings-view__toc-title'), 'Settings navigation retains obsolete title-only styles');
+assert(settingsSource.includes('aria-current={isActive ? \'location\' : undefined}'), 'Settings navigation does not expose the current section');
+assert(settingsSource.includes('aria-controls={section.id}'), 'Settings navigation does not identify its controlled section');
+assert(settingsSource.includes("scrollIntoView({ behavior: 'smooth', block: 'start' })"), 'Settings navigation does not scroll the selected section');
+assert(!settingsSource.includes('href={`#${section.id}`}'), 'Settings section navigation would replace the app hash route');
+assert(settingsSource.includes('SETTINGS_SECTION_LIST.map'), 'Settings navigation is not derived from the section source');
+for (const selector of [
+  '.settings-view__toc-link:hover',
+  '.settings-view__toc-link:focus-visible',
+  '.settings-view__toc-link:active',
+  '.settings-view__toc-link--active',
+]) {
+  assert(settingsStyles.includes(selector), `Settings navigation state is missing ${selector}`);
+}
+const sectionRegistry = settingsSource.match(/const SETTINGS_SECTIONS = \{([\s\S]*?)\} as const;/)?.[1] ?? '';
+const sectionKeys = [...sectionRegistry.matchAll(/^\s{2}([a-zA-Z]+): \{/gm)].map((match) => match[1]);
+const renderedSectionKeys = [...settingsSource.matchAll(/section=\{SETTINGS_SECTIONS\.([a-zA-Z]+)\}/g)].map((match) => match[1]);
+assert(sectionKeys.length >= 12, 'Settings section registry is unexpectedly incomplete', sectionKeys);
+assert(new Set(renderedSectionKeys).size === sectionKeys.length && sectionKeys.every((key) => renderedSectionKeys.includes(key)), 'Rendered Settings sections do not match the navigation source', { sectionKeys, renderedSectionKeys });
 
 try {
   await writeFile(path.join(temporaryRoot, 'index.html'), html);
@@ -173,22 +207,41 @@ try {
         const main = document.querySelector('.app-content');
         const view = document.querySelector('.settings-view');
         const header = document.querySelector('.view-header');
-        const close = document.querySelector('.settings-view__close');
-        const cards = [...document.querySelectorAll('.settings-view__section')];
+        const layoutComposition = document.querySelector('.settings-view__layout');
+        const toc = document.querySelector('.settings-view__toc');
+        const links = [...document.querySelectorAll('.settings-view__toc-link')];
+        const sections = [...document.querySelectorAll('.settings-view__section')];
+        const content = document.querySelector('.settings-view__content');
         const mainRect = main.getBoundingClientRect();
         const viewRect = view.getBoundingClientRect();
         const headerRect = header.getBoundingClientRect();
-        const closeRect = close.getBoundingClientRect();
-        const cardRect = cards[0].getBoundingClientRect();
+        const layoutRect = layoutComposition.getBoundingClientRect();
+        const tocRect = toc.getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
         const mainStyle = getComputedStyle(main);
         const viewStyle = getComputedStyle(view);
-        const cardStyle = getComputedStyle(cards[0]);
+        const layoutStyle = getComputedStyle(layoutComposition);
+        const tocStyle = getComputedStyle(toc);
+        const linkStyle = getComputedStyle(links[0]);
+        const sectionStyle = getComputedStyle(sections[0]);
         return {
           main: { left: mainRect.left, right: mainRect.right, width: mainRect.width, background: mainStyle.backgroundColor },
           view: { left: viewRect.left, right: viewRect.right, width: viewRect.width, background: viewStyle.backgroundColor, overflowY: viewStyle.overflowY, clientHeight: view.clientHeight, scrollHeight: view.scrollHeight },
           header: { left: headerRect.left, right: headerRect.right },
-          close: { left: closeRect.left, right: closeRect.right },
-          card: { left: cardRect.left, right: cardRect.right, background: cardStyle.backgroundColor, borderRadius: cardStyle.borderRadius, borderStyle: cardStyle.borderTopStyle },
+          layout: { left: layoutRect.left, right: layoutRect.right, width: layoutRect.width, display: layoutStyle.display, columns: layoutStyle.gridTemplateColumns },
+          toc: { left: tocRect.left, right: tocRect.right, position: tocStyle.position },
+          content: { left: contentRect.left, right: contentRect.right, width: contentRect.width },
+          link: { color: linkStyle.color, background: linkStyle.backgroundColor, outlineStyle: linkStyle.outlineStyle },
+          section: { background: sectionStyle.backgroundColor, borderRadius: sectionStyle.borderRadius, borderStyle: sectionStyle.borderTopStyle, boxShadow: sectionStyle.boxShadow },
+          semantics: {
+            navLabel: toc.getAttribute('aria-label'),
+            current: links.filter((link) => link.getAttribute('aria-current') === 'location').length,
+            targetsMatch: links.every((link) => document.getElementById(link.getAttribute('aria-controls'))),
+            closeCount: document.querySelectorAll('.settings-view__close').length,
+            subtitleCount: [...document.querySelectorAll('*')].filter((node) => node.textContent?.trim() === 'Mandible configuration.').length,
+            controls: document.querySelectorAll('.settings-view__section button, .settings-view__section input, .settings-view__section select').length,
+            visibleTitleCount: [...toc.children].filter((node) => node.textContent?.trim().toLowerCase() === 'on this page').length,
+          },
         };
       })()`,
       awaitPromise: true,
@@ -197,24 +250,26 @@ try {
     const observed = result.result.value;
     const mainCenter = (observed.main.left + observed.main.right) / 2;
     const viewCenter = (observed.view.left + observed.view.right) / 2;
-    const leftGutter = observed.view.left - observed.main.left;
-    const rightGutter = observed.main.right - observed.view.right;
+    const leftGutter = observed.layout.left - observed.main.left;
+    const rightGutter = observed.main.right - observed.layout.right;
 
     assert(observed.main.background === scenario.expectedSurface, `${scenario.name} main surface color drifted`, observed);
     assert(observed.view.background === observed.main.background, `${scenario.name} inter-card surface does not match main`, observed);
     assert(scenario.theme !== 'light' || observed.view.background === 'rgb(255, 255, 255)', `${scenario.name} inter-card surface is not pure white`, observed);
     assert(Math.abs(viewCenter - mainCenter) <= 0.5, `${scenario.name} readable column is not centered on the actual main area`, { mainCenter, viewCenter, observed });
-    assert(Math.abs(observed.header.left - observed.view.left) <= 0.5 && Math.abs(observed.header.right - observed.view.right) <= 0.5, `${scenario.name} header no longer aligns with the readable column`, observed);
-    assert(Math.abs(observed.close.right - observed.view.right) <= 0.5, `${scenario.name} close button no longer aligns with the header edge`, observed);
-    assert(observed.card.left === observed.view.left && observed.card.right === observed.view.right, `${scenario.name} card boundaries no longer follow the readable column`, observed);
-    assert(observed.card.background !== 'rgba(0, 0, 0, 0)' && observed.card.borderRadius === '16px' && observed.card.borderStyle === 'solid', `${scenario.name} card appearance contract drifted`, observed);
+    assert(observed.semantics.closeCount === 0 && observed.semantics.subtitleCount === 0, `${scenario.name} redundant header chrome remains`, observed);
+    assert(observed.semantics.visibleTitleCount === 0, `${scenario.name} visible navigation title remains`, observed);
+    assert(observed.semantics.navLabel === 'Settings sections' && observed.semantics.current === 1 && observed.semantics.targetsMatch, `${scenario.name} navigation semantics drifted`, observed);
+    assert(observed.semantics.controls >= 2, `${scenario.name} representative Settings controls disappeared`, observed);
+    assert(observed.section.background === observed.view.background && observed.section.borderRadius === '0px' && observed.section.borderStyle === 'none' && observed.section.boxShadow === 'none', `${scenario.name} section surface is not flat`, observed);
     assert(observed.view.overflowY === 'auto' && observed.view.scrollHeight > observed.view.clientHeight, `${scenario.name} Settings scroll behavior drifted`, observed);
     if (scenario.width >= 1000) {
-      assert(Math.abs(observed.view.width - 640) <= 0.5, `${scenario.name} readable max width drifted`, observed);
+      assert(observed.layout.display === 'grid' && observed.content.width <= 640 && observed.toc.right < observed.content.left, `${scenario.name} wide TOC/content composition drifted`, observed);
+      assert(Math.abs((observed.layout.left + observed.layout.right) / 2 - mainCenter) <= 0.5, `${scenario.name} composition is not centered on the main area`, observed);
     } else {
-      assert(observed.view.width < 640 && leftGutter >= 31 && rightGutter >= 31 && Math.abs(leftGutter - rightGutter) <= 0.5, `${scenario.name} responsive fill or safe gutters drifted`, { leftGutter, rightGutter, observed });
+      assert(observed.layout.display === 'block' && observed.content.width === observed.layout.width && leftGutter >= 15 && rightGutter >= 15, `${scenario.name} responsive stacking or safe gutters drifted`, { leftGutter, rightGutter, observed });
     }
-    observations.push({ scenario: scenario.name, mainCenter, viewCenter, leftGutter, rightGutter, surface: observed.view.background });
+    observations.push({ scenario: scenario.name, mainCenter, viewCenter, leftGutter, rightGutter, surface: observed.view.background, columns: observed.layout.columns });
   }
 
   webSocket.close();

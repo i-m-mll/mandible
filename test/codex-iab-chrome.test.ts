@@ -5,37 +5,51 @@ import { readResolvedStylesheet } from './helpers/css-manifest';
 
 const stylesheet = readResolvedStylesheet();
 const appSource = readFileSync('ui/src/app.tsx', 'utf8');
+const bindingSource = readFileSync('ui/src/agent-page-binding.ts', 'utf8');
 
-describe('Codex IAB chrome edge contract', () => {
-  it('applies the modifier only from the positive host capability result', () => {
-    expect(appSource).toContain(
-      "${codexIabDetected ? ' app-shell--codex-iab' : ''}",
-    );
-    expect(appSource).not.toContain(
-      "${agentPageBinding !== null ? ' app-shell--codex-iab' : ''}",
-    );
-    expect(appSource.match(/app-shell--codex-iab/g)).toHaveLength(1);
+describe('optional left chrome edge contract', () => {
+  it('is explicit user control with no host-detection path', () => {
+    expect(appSource).toContain("${leftShadowEnabled ? ' app-shell--left-shadow' : ''}");
+    expect(appSource).toContain('agentPageBinding !== null ? (');
+    expect(appSource).toContain('aria-pressed={leftShadowEnabled}');
+    expect(appSource).toContain('setLeftShadowEnabled((enabled) => !enabled)');
+    expect(`${appSource}\n${bindingSource}`).not.toMatch(/modelContext|codexGetTools|detectCodexIab/);
   });
 
-  it('uses the measured gutter for the absolute visual layer without changing internal layout coordinates', () => {
-    expect(stylesheet).toMatch(/--app-shadow-gutter-width:\s*17px;/);
-    expect(stylesheet).not.toMatch(/--codex-iab-edge-width:/);
+  it('derives a paint-width boundary column without a second gutter or width literal', () => {
+    expect(stylesheet).toMatch(/--app-shadow-gutter-width:\s*0px;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
+    expect(stylesheet).not.toMatch(/--(?:codex-iab|left-shadow)-edge-width:/);
+    expect(stylesheet).toMatch(/\.app-shell\s*\{[^}]*--app-left-boundary-width:\s*0px;/s);
+    expect(stylesheet).toMatch(/\.app-shell--left-shadow\s*\{[^}]*--app-left-boundary-width:\s*var\(--app-boundary-shadow-paint-width\);/s);
+    expect(stylesheet).not.toMatch(/--app-left-boundary-width:\s*17px;/);
     expect(stylesheet).toMatch(
-      /\.app-shell--codex-iab \.app-header::before,\s*\.app-shell--codex-iab \.app-rail::before\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 auto 0 0;[^}]*width:\s*var\(--app-shadow-gutter-width\);/s,
+      /\.app-shell--left-shadow::before\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 auto 0 0;[^}]*width:\s*var\(--app-boundary-shadow-paint-width\);/s,
     );
-    expect(stylesheet).not.toMatch(/\.app-shell--codex-iab[^,{]*\{[^}]*(?:padding|margin|transform|grid-template-columns):/s);
+    expect(stylesheet).toMatch(/\.app-rail\s*\{[^}]*margin-left:\s*var\(--app-left-boundary-width\);/s);
+    expect(stylesheet).not.toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*border-inline-(?:start|end):/s);
   });
 
-  it('derives both edges from one profile with a sign-only direction change', () => {
+  it('mirrors one scaled shadow profile while keeping divider paint right-only', () => {
     expect(stylesheet).toMatch(/--app-boundary-shadow-offset:\s*8px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-blur:\s*36px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-spread:\s*0px;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-intensity-scale:\s*0\.7;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
+    expect(stylesheet).toMatch(/transparent 0%,[^;]*24%,[^;]*59%,[^;]*100%/s);
     expect(stylesheet).toMatch(
-      /:where\(\.app-header\)::after,\s*:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s,
+      /:where\(\.app-shell\)::after,\s*:where\(\.app-shell--left-shadow\)::before\s*\{[^}]*--shadow-app-subdivision-paint:/s,
     );
-    expect(stylesheet).toMatch(/\.app-layout::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*none;/s);
-    expect(stylesheet).toMatch(/\.app-shell--codex-iab \.app-header::before,[^{]*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
-    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
+    expect(stylesheet).toMatch(/\.app-shell::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*--app-boundary-divider-paint:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\);[^}]*background-image:\s*var\(--app-boundary-divider-paint\),\s*var\(--shadow-app-subdivision-paint\);/s);
+    expect(stylesheet).toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);/s);
+    expect(stylesheet.match(/--app-boundary-divider-paint:/g)).toHaveLength(1);
+    expect(stylesheet).not.toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*(?:divider|box-shadow)/s);
     expect(stylesheet).not.toMatch(/--shadow-codex-iab-edge:/);
+  });
+
+  it('centers a partially concealed toggle without changing nav geometry', () => {
+    expect(stylesheet).toMatch(/\.app-rail__nav\s*\{[^}]*position:\s*relative;/s);
+    expect(stylesheet).toMatch(/\.app-rail__left-shadow-toggle\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*bottom:\s*-4px;[^}]*width:\s*10px;[^}]*height:\s*10px;[^}]*transform:\s*translateX\(-50%\);/s);
+    expect(stylesheet).toMatch(/\.app-rail__left-shadow-toggle:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\);[^}]*outline-offset:\s*-2px;/s);
   });
 });

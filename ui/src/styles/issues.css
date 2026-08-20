@@ -81,7 +81,9 @@
   gap: 6px;
   overflow-y: auto;
   min-height: 0;
-  padding: 0 12px 12px;
+  padding-right: 12px;
+  padding-bottom: 12px;
+  padding-left: 12px;
 }
 
 .artifacts-sidebar__item {
@@ -1072,6 +1074,10 @@ code.inbox-detail__meta-value {
   min-height: 0;
   gap: 0;
   overflow: hidden;
+}
+
+.issues-detail__content .ledger-issue-detail > .ledger-issue-detail__body {
+  padding-inline: var(--detail-content-inline-inset);
 }
 
 .issues-detail__title {

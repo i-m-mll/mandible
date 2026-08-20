@@ -17,36 +17,6 @@
   overflow: hidden;
 }
 
-/* Stable geometry shared by persistent top-level and contextual project create actions. */
-.spaces-tree__create {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-}
-
-.spaces-tree__create--top-level {
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.spaces-tree__create--top-level:is(:hover, :focus-visible) {
-  color: var(--chrome-icon-hover-direct);
-  background: var(--neutral-alpha-06);
-}
-
-.spaces-tree__create--top-level:focus-visible {
-  opacity: 1;
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 2px;
-}
-
 /* The single scroll owner is `.view-sidebar__body`; this wrapper must NOT also
    scroll (no double scrollbar). It only carries the content padding. */
 .spaces-tree__scroll {
@@ -63,20 +33,12 @@
   color: var(--status-danger);
 }
 
-.spaces-tree__group--dragging {
-  opacity: 0.6;
-}
-
 .spaces-tree__group-label {
   padding: 0.25rem 0.75rem;
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
-}
-
-.spaces-tree__group-drag-target {
-  cursor: grab;
 }
 
 .spaces-tree__space-type {
