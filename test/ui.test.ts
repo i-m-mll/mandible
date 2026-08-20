@@ -5819,7 +5819,7 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-shell::after\s*\{[^}]*inset:\s*0 auto 0 calc\(var\(--app-detail-edge-x\) - var\(--app-shadow-gutter-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-shadow-gutter-width\) \+ 1px\);[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-shadow-gutter-width\) 100%;/s);
+    expect(css).toMatch(/\.app-shell::after\s*\{[^}]*inset:\s*0 auto 0 calc\(var\(--app-detail-edge-x\) - var\(--app-boundary-shadow-paint-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-boundary-shadow-paint-width\) \+ 1px\);[^}]*background-color:\s*var\(--surface-chrome\);[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-boundary-shadow-paint-width\) 100%;/s);
     expect(css).not.toMatch(/\.(?:app-header|app-layout|view-sidebar)::after\s*\{[^}]*shadow-app-subdivision-paint/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);

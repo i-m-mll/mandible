@@ -125,12 +125,13 @@ describe('Codex app subdivision surface contract', () => {
 
   it('owns one full-height left-casting structural falloff at the app subdivision', () => {
     const edge = ruleBody(base, '.app-shell::after');
-    expect(edge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width))');
-    expect(edge).toContain('width: calc(var(--app-shadow-gutter-width) + 1px)');
+    expect(edge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');
+    expect(edge).toContain('width: calc(var(--app-boundary-shadow-paint-width) + 1px)');
     expect(edge).toContain('--app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset))');
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
     expect(edge).toContain('var(--shadow-app-subdivision-paint)');
-    expect(edge).toContain('background-size: 1px 100%, var(--app-shadow-gutter-width) 100%');
+    expect(edge).toContain('background-color: var(--surface-chrome)');
+    expect(edge).toContain('background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%');
     expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#434343');
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#434343');
@@ -190,7 +191,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(0.0375 / 0.125).toBeCloseTo(0.3, 8);
   });
 
-  it('spans the rail footer divider across the chrome gutter', () => {
+  it('keeps the footer divider exactly rail-wide', () => {
     const rail = ruleBody(base, '.app-rail');
     const footer = ruleBody(base, '.app-rail__footer');
     expect(rail).toContain('--app-rail-inline-padding: 12px');
@@ -198,10 +199,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
     expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
     expect(footer).toContain('border-top: 1px solid var(--border-muted)');
-    const continuation = ruleBody(base, '.app-rail__footer::before');
-    expect(continuation).toContain('left: 100%');
-    expect(continuation).toContain('width: calc(var(--app-detail-edge-x) - var(--app-rail-width))');
-    expect(continuation).toContain('border-top: 1px solid var(--border-muted)');
+    expect(ruleBody(base, '.app-rail__footer::before')).toBe('');
   });
 
   it('preserves the single persisted settings owner and exact root theme application', () => {
