@@ -685,9 +685,14 @@
 }
 
 .app-bottom-panel .graph-detail-pane--ledger {
+  --detail-content-inline-inset: 0;
   display: flex;
   flex-direction: column;
   padding: 14px;
+}
+
+.graph-detail-pane--ledger .ledger-issue-detail__body {
+  padding-inline: var(--detail-content-inline-inset);
 }
 
 .graph-detail-pane__body {

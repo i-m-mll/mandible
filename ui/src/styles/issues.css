@@ -1076,6 +1076,10 @@ code.inbox-detail__meta-value {
   overflow: hidden;
 }
 
+.issues-detail__content .ledger-issue-detail > .ledger-issue-detail__body {
+  padding-inline: var(--detail-content-inline-inset);
+}
+
 .issues-detail__title {
   margin: 0 0 12px;
   font-size: 22px;
