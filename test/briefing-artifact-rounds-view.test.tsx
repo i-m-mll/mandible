@@ -65,6 +65,23 @@ class UiRoundTripGate implements ClientAuthGate {
   recordUnattributedWrite() {}
 }
 
+function createCopiedPreviewDatabase(root: string): {
+  db: Db;
+  dbPath: string;
+  sourceDbPath: string;
+} {
+  const sourceDbPath = path.join(root, 'source.db');
+  const dbPath = path.join(root, 'copy.db');
+  const sourceDb = new Database(sourceDbPath);
+  try {
+    migrate(sourceDb);
+  } finally {
+    sourceDb.close();
+  }
+  fs.copyFileSync(sourceDbPath, dbPath);
+  return { db: new Database(dbPath), dbPath, sourceDbPath };
+}
+
 function typedDetail(roundId: string, annotations: unknown[] = []) {
   const artifactVersion = roundId === ROUND_ONE ? 'artifact-version:typed-one' : 'artifact-version:typed-two';
   return {
@@ -659,9 +676,8 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('clicks all six controls through the production API/store and freezes only the selected actor round', async () => {
     const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-typed-ui-roundtrip-'));
-    const privateDb = new Database(':memory:');
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
     try {
-      migrate(privateDb);
       setSetting(privateDb, 'artifact_root', privateRoot);
       createUser(privateDb, { slug: 'agent-schedule', kind: 'agent', display_name: 'Typed publisher' });
       const humanId = createUser(privateDb, { slug: 'typed-human', kind: 'human', display_name: 'Typed human' }).id;
@@ -669,7 +685,7 @@ describe('artifact-backed Briefing rounds', () => {
         clientAuth: new UiRoundTripGate(privateDb),
         instance: resolveInstanceInfo({
           env: { MANDIBLE_INSTANCE_ROLE: 'test', MANDIBLE_OPERATIONAL_MUTATIONS: 'allow' },
-          dbPath: path.join(privateRoot, 'production.db'),
+          dbPath: privateDbPath,
         }),
       });
       registerBriefingRoutes(production, privateDb);
@@ -695,7 +711,11 @@ describe('artifact-backed Briefing rounds', () => {
 
       const previewInstance = resolveInstanceInfo({
         env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
-        dbPath: path.join(privateRoot, 'copy.db'), sourceDbPath: path.join(privateRoot, 'source.db'),
+        dbPath: privateDbPath, sourceDbPath,
+      });
+      expect(previewInstance).toMatchObject({
+        operational_mutations: 'reject', briefing_response_mutations: 'allow',
+        db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({
         clientAuth: new UiRoundTripGate(privateDb),
@@ -710,7 +730,7 @@ describe('artifact-backed Briefing rounds', () => {
           body: { error: 'instance_mutation_forbidden' },
         });
       }
-      const mutationUrls: string[] = [];
+      const mutationResponses: Array<{ url: string; status: number }> = [];
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         const method = init?.method ?? 'GET';
@@ -723,16 +743,16 @@ describe('artifact-backed Briefing rounds', () => {
           return new Response(JSON.stringify({ content }), { status: content ? 200 : 404, headers: { 'content-type': 'application/json' } });
         }
         if (!url.startsWith('/api/briefings')) throw new Error(`unexpected production-path request ${method} ${url}`);
-        if (method !== 'GET') mutationUrls.push(url);
         const result = await preview.invoke({
           method, url, credential: 'typed-human', transport: 'http',
           ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
         });
+        if (method !== 'GET') mutationResponses.push({ url, status: result.status });
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
 
       render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
-        <BriefingDocumentRenderer briefingId={firstIds.briefing_id} roundId={firstIds.round_id} instance={COPIED_PREVIEW_INSTANCE} />
+        <BriefingDocumentRenderer briefingId={firstIds.briefing_id} roundId={firstIds.round_id} instance={previewInstance} />
       </AppShellProvider>);
       const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
       await waitFor(() => expect(keep.disabled).toBe(false));
@@ -760,10 +780,10 @@ describe('artifact-backed Briefing rounds', () => {
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       await screen.findByRole('button', { name: 'Submit correction' });
-      expect(mutationUrls).toEqual([
-        `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/annotations`,
-        `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/answers`,
-        `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/submit`,
+      expect(mutationResponses).toEqual([
+        { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/annotations`, status: 200 },
+        { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/answers`, status: 200 },
+        { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/submit`, status: 200 },
       ]);
 
       const firstDetail = await preview.invoke({ method: 'GET', url: `/api/briefings/${firstIds.briefing_id}?round=${firstIds.round_id}`, credential: 'typed-human', transport: 'http' });
@@ -794,11 +814,9 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('round-trips the selected rich-demo round for the active operator on a private copied-preview database', async () => {
     const privateRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-briefing-selected-round-'));
-    const privateDbPath = path.join(privateRoot, 'copy.db');
     const artifactRoot = path.join(privateRoot, 'artifacts');
-    const privateDb = new Database(privateDbPath);
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
     try {
-      migrate(privateDb);
       const operatorId = createUser(privateDb, { slug: 'active-operator', kind: 'human', display_name: 'Active operator' }).id;
       setSetting(privateDb, 'user.operator_id', operatorId);
       const manifest = seedRichBriefingDemo(privateDb, { databasePath: privateDbPath, artifactRoot });
@@ -807,7 +825,11 @@ describe('artifact-backed Briefing rounds', () => {
       const briefingId = manifest.briefing.id;
       const previewInstance = resolveInstanceInfo({
         env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
-        dbPath: privateDbPath, sourceDbPath: path.join(privateRoot, 'source.db'),
+        dbPath: privateDbPath, sourceDbPath,
+      });
+      expect(previewInstance).toMatchObject({
+        operational_mutations: 'reject', briefing_response_mutations: 'allow',
+        db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
       registerBriefingRoutes(preview, privateDb);
@@ -830,7 +852,7 @@ describe('artifact-backed Briefing rounds', () => {
         frozenAnnotations: privateDb.prepare('SELECT * FROM briefing_submission_annotations WHERE round_id = ? ORDER BY position').all(roundOneId),
       });
       const roundOneBefore = roundOneSnapshot();
-      const mutationUrls: string[] = [];
+      const mutationResponses: Array<{ url: string; status: number }> = [];
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         const method = init?.method ?? 'GET';
@@ -845,15 +867,15 @@ describe('artifact-backed Briefing rounds', () => {
           return new Response(JSON.stringify({ content }), { status: content ? 200 : 404, headers: { 'content-type': 'application/json' } });
         }
         if (!url.startsWith('/api/briefings')) throw new Error(`unexpected copied-preview request ${method} ${url}`);
-        if (method !== 'GET') mutationUrls.push(url);
         const result = await preview.invoke({
           method, url, credential: 'active-operator', transport: 'http',
           ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
         });
+        if (method !== 'GET') mutationResponses.push({ url, status: result.status });
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
       const shell = () => <AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
-        <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={COPIED_PREVIEW_INSTANCE} />
+        <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={previewInstance} />
       </AppShellProvider>;
       const view = render(shell());
 
@@ -884,10 +906,10 @@ describe('artifact-backed Briefing rounds', () => {
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       await screen.findByRole('button', { name: 'Submit correction' });
-      expect(mutationUrls).toEqual([
-        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`,
-        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`,
-        `/api/briefings/${briefingId}/rounds/${selectedRoundId}/submit`,
+      expect(mutationResponses).toEqual([
+        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`, status: 200 },
+        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`, status: 200 },
+        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/submit`, status: 200 },
       ]);
 
       const selectedDetail = await preview.invoke({
