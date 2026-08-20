@@ -132,7 +132,6 @@ import {
   reconcileAppRailOrder,
   serializeAppRailOrderSetting,
   writeAppRailPreviewOrder,
-  type AppRailGroup,
   type AppRailOrderPreference,
 } from './app-rail-order';
 
@@ -398,10 +397,9 @@ type NavItem = {
   icon: (props: { size?: number }) => JSX.Element;
 };
 
-type AppRailPreviewOrder = Record<AppRailGroup, string[]>;
+type AppRailPreviewOrder = string[];
 
 type AppRailDrag = {
-  group: AppRailGroup;
   itemId: string;
   pointerId: number;
   startX: number;
@@ -1981,7 +1979,7 @@ function App(): JSX.Element {
     },
   ];
 
-  const secondaryNavItems: NavItem[] = [
+  const remainingUpperNavItems: NavItem[] = [
     {
       tab: 'work',
       href: '#/work',
@@ -2004,40 +2002,31 @@ function App(): JSX.Element {
       title: 'Tasks',
       icon: TasksIcon,
     },
-    {
-      tab: 'logs',
-      href: '#/logs',
-      label: 'Logs',
-      title: 'Logs',
-      icon: LogsIcon,
-    },
   ];
+  const logsNavItem: NavItem = {
+    tab: 'logs',
+    href: '#/logs',
+    label: 'Logs',
+    title: 'Logs',
+    icon: LogsIcon,
+  };
 
   const previewMutationsRejected = instanceInfo?.operational_mutations === 'reject';
   const railOrderPreference = previewMutationsRejected && previewRailOrder
     ? previewRailOrder
     : parseAppRailOrderSetting(railOrderSetting);
 
-  const canonicalRailItems: Record<AppRailGroup, NavItem[]> = {
-    primary: primaryNavItems,
-    secondary: secondaryNavItems,
-  };
-  const persistedRailOrder: AppRailPreviewOrder = {
-    primary: reconcileAppRailOrder(
-      primaryNavItems.map((item) => item.tab),
-      railOrderPreference.groups.primary,
-    ),
-    secondary: reconcileAppRailOrder(
-      secondaryNavItems.map((item) => item.tab),
-      railOrderPreference.groups.secondary,
-    ),
-  };
+  const canonicalRailItems = [...primaryNavItems, ...remainingUpperNavItems];
+  const persistedRailOrder: AppRailPreviewOrder = reconcileAppRailOrder(
+    canonicalRailItems.map((item) => item.tab),
+    [...railOrderPreference.groups.primary, ...railOrderPreference.groups.secondary],
+  );
   // Pointer movement previews only the insertion marker. Keeping DOM order
   // stable until pointerup preserves native pointer capture and link identity.
   const visibleRailOrder = pendingRailOrder ?? persistedRailOrder;
-  const orderedRailItems = (group: AppRailGroup): NavItem[] => {
-    const byId = new Map(canonicalRailItems[group].map((item) => [item.tab, item]));
-    return visibleRailOrder[group]
+  const orderedRailItems = (): NavItem[] => {
+    const byId = new Map(canonicalRailItems.map((item) => [item.tab, item]));
+    return visibleRailOrder
       .map((id) => byId.get(id as Route['tab']))
       .filter((item): item is NavItem => Boolean(item));
   };
@@ -2064,8 +2053,8 @@ function App(): JSX.Element {
     const preference: AppRailOrderPreference = {
       version: DEFAULT_APP_RAIL_ORDER.version,
       groups: {
-        primary: [...order.primary],
-        secondary: [...order.secondary],
+        primary: [...order],
+        secondary: [],
       },
     };
     const value = serializeAppRailOrderSetting(preference);
@@ -2118,7 +2107,6 @@ function App(): JSX.Element {
 
   const beginRailPointer = (
     event: JSX.TargetedPointerEvent<HTMLAnchorElement>,
-    group: AppRailGroup,
     itemId: string,
   ) => {
     if (
@@ -2131,12 +2119,8 @@ function App(): JSX.Element {
       || event.altKey
     ) return;
 
-    const originOrder: AppRailPreviewOrder = {
-      primary: [...visibleRailOrder.primary],
-      secondary: [...visibleRailOrder.secondary],
-    };
+    const originOrder: AppRailPreviewOrder = [...visibleRailOrder];
     const candidate: AppRailDrag = {
-      group,
       itemId,
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -2166,8 +2150,8 @@ function App(): JSX.Element {
     // the DOM remains in its persisted order. Derive every preview from the
     // immutable pointerdown snapshot so repeated or revisited targets are
     // idempotent instead of toggling the already-moved preview.
-    const nextGroupOrder = moveAppRailItem(
-      current.originOrder[current.group],
+    const nextOrder = moveAppRailItem(
+      current.originOrder,
       current.itemId,
       targetId,
     );
@@ -2175,10 +2159,7 @@ function App(): JSX.Element {
       ...current,
       active: true,
       overId: targetId,
-      order: {
-        ...current.order,
-        [current.group]: nextGroupOrder,
-      },
+      order: nextOrder,
     };
     railDragRef.current = next;
     setRailDrag(next);
@@ -2194,7 +2175,7 @@ function App(): JSX.Element {
 
     void persistRailOrder(
       current.order,
-      `${event.currentTarget.getAttribute('aria-label') ?? current.itemId} moved to position ${current.order[current.group].indexOf(current.itemId) + 1} of ${current.order[current.group].length}.`,
+      `${event.currentTarget.getAttribute('aria-label') ?? current.itemId} moved to position ${current.order.indexOf(current.itemId) + 1} of ${current.order.length}.`,
     );
     suppressedRailClickRef.current = { itemId: current.itemId, until: Date.now() + 500 };
   };
@@ -2208,7 +2189,6 @@ function App(): JSX.Element {
 
   const handleRailItemKeyDown = (
     event: JSX.TargetedKeyboardEvent<HTMLAnchorElement>,
-    group: AppRailGroup,
     item: NavItem,
   ) => {
     const directCommand = (
@@ -2221,7 +2201,7 @@ function App(): JSX.Element {
     if (!directCommand || !railOrderReady || railMutationPendingRef.current) return;
 
     event.preventDefault();
-    const ids = visibleRailOrder[group];
+    const ids = visibleRailOrder;
     const index = ids.indexOf(item.tab);
     const targetIndex = Math.max(0, Math.min(ids.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
     if (index === targetIndex) {
@@ -2229,15 +2209,14 @@ function App(): JSX.Element {
       return;
     }
     const nextIds = moveAppRailItem(ids, item.tab, ids[targetIndex]);
-    const next = { ...visibleRailOrder, [group]: nextIds };
     void persistRailOrder(
-      next,
+      nextIds,
       `${item.title} moved to position ${targetIndex + 1} of ${ids.length}.`,
       item.tab,
     );
   };
 
-  const renderRailItem = (item: NavItem, group?: AppRailGroup): JSX.Element => {
+  const renderRailItem = (item: NavItem, reorderable = false): JSX.Element => {
     const Icon = item.icon;
     const active = route.tab === item.tab;
     const dragging = railDrag?.active && railDrag.itemId === item.tab;
@@ -2249,17 +2228,17 @@ function App(): JSX.Element {
         className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
         aria-label={item.title}
-        aria-describedby={group ? 'app-rail-reorder-instructions app-rail-reorder-status' : undefined}
-        aria-keyshortcuts={group ? 'Control+Shift+ArrowUp Control+Shift+ArrowDown' : undefined}
-        data-rail-item={group ? item.tab : undefined}
-        data-rail-group={group}
-        draggable={false}
-        onPointerDown={group ? (event) => beginRailPointer(event, group, item.tab) : undefined}
-        onPointerMove={group ? moveRailPointer : undefined}
-        onPointerUp={group ? finishRailPointer : undefined}
-        onPointerCancel={group ? cancelRailPointer : undefined}
-        onLostPointerCapture={group ? cancelRailPointer : undefined}
-        onKeyDown={group ? (event) => handleRailItemKeyDown(event, group, item) : undefined}
+        aria-describedby={reorderable ? 'app-rail-reorder-instructions app-rail-reorder-status' : undefined}
+        aria-keyshortcuts={reorderable ? 'Control+Shift+ArrowUp Control+Shift+ArrowDown' : undefined}
+        data-rail-item={reorderable ? item.tab : undefined}
+        data-rail-group={reorderable ? 'upper' : undefined}
+        draggable={reorderable ? false : undefined}
+        onPointerDown={reorderable ? (event) => beginRailPointer(event, item.tab) : undefined}
+        onPointerMove={reorderable ? moveRailPointer : undefined}
+        onPointerUp={reorderable ? finishRailPointer : undefined}
+        onPointerCancel={reorderable ? cancelRailPointer : undefined}
+        onLostPointerCapture={reorderable ? cancelRailPointer : undefined}
+        onKeyDown={reorderable ? (event) => handleRailItemKeyDown(event, item) : undefined}
         onClick={(event) => {
           const suppressed = suppressedRailClickRef.current;
           if (suppressed?.itemId === item.tab && Date.now() <= suppressed.until) {
@@ -2300,7 +2279,7 @@ function App(): JSX.Element {
   };
 
   const currentRouteTitle = (
-    [...primaryNavItems, ...secondaryNavItems, sessionOverviewNavItem, {
+    [...primaryNavItems, ...remainingUpperNavItems, logsNavItem, sessionOverviewNavItem, {
       tab: 'settings' as const,
       href: '#/settings',
       label: 'Settings',
@@ -2447,11 +2426,8 @@ function App(): JSX.Element {
                 className="app-rail__nav"
                 aria-label="Main navigation"
               >
-                <div className="app-rail__group" data-rail-group="primary">
-                  {orderedRailItems('primary').map((item) => renderRailItem(item, 'primary'))}
-                </div>
-                <div className="app-rail__group app-rail__group--secondary" data-rail-group="secondary">
-                  {orderedRailItems('secondary').map((item) => renderRailItem(item, 'secondary'))}
+                <div className="app-rail__group" data-rail-group="upper">
+                  {orderedRailItems().map((item) => renderRailItem(item, true))}
                 </div>
                 <span id="app-rail-reorder-instructions" className="sr-only">
                   To reorder, press Control Shift Up Arrow or Control Shift Down Arrow. Enter opens the destination normally.
@@ -2499,6 +2475,7 @@ function App(): JSX.Element {
                   placement="rail"
                   showRailLabel={railDisplayMode === 'both'}
                 />
+                {renderRailItem(logsNavItem)}
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',

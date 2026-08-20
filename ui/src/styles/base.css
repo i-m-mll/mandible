@@ -392,11 +392,6 @@ a {
   gap: 4px;
 }
 
-.app-rail__group--secondary {
-  padding-top: 14px;
-  border-top: 1px solid var(--neutral-alpha-06);
-}
-
 .app-rail__footer {
   flex: 0 0 auto;
   align-self: stretch;
