@@ -680,6 +680,10 @@ code.inbox-detail__meta-value {
   overflow: auto;
 }
 
+[data-theme='light'] .artifact-preview {
+  background: var(--bg-card);
+}
+
 .artifact-preview--code,
 .artifact-preview--code-sizing {
   color: #24292f;
