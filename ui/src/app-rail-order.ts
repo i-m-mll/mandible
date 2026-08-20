@@ -103,9 +103,9 @@ export function writeAppRailPreviewOrder(
 }
 
 /**
- * Fill the canonical slots occupied by saved IDs in saved order. This retains
- * the user's relative order while leaving new/returning IDs in their canonical
- * fallback slots. Unknown, retired, and duplicate saved IDs are ignored.
+ * Keep every recognized saved ID in user order, then append missing current
+ * IDs in canonical order. Unknown, fixed, retired, and duplicate saved IDs are
+ * ignored because callers provide only the current reorderable ID set.
  */
 export function reconcileAppRailOrder(
   canonicalIds: readonly string[],
@@ -118,12 +118,10 @@ export function reconcileAppRailOrder(
     seen.add(id);
     return true;
   });
-  const recognizedSet = new Set(recognized);
-  let savedIndex = 0;
-
-  return canonicalIds.map((id) => (
-    recognizedSet.has(id) ? recognized[savedIndex++] : id
-  ));
+  return [
+    ...recognized,
+    ...canonicalIds.filter((id) => !seen.has(id)),
+  ];
 }
 
 export function moveAppRailItem(

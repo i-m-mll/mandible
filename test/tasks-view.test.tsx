@@ -12,6 +12,7 @@
 //   - a stale executor report is visibly stale in the list.
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TASK_INVENTORY_SCHEMA, type TaskInventoryResponse } from '../src/contracts.js';
@@ -322,6 +323,15 @@ describe('TasksView', () => {
     expect(within(detail).getByText('develop')).toBeTruthy();
     expect(within(detail).getByText(created.reminder.revision.payload_digest)).toBeTruthy();
     expect(within(detail).getByText(created.reminder.created_by_user_id)).toBeTruthy();
+    expect(detail.querySelector('[data-detail-pane-header-variant="standard"]')).toBeTruthy();
+    expect(within(detail).getByText('Mandible reminder · tasks-view-reminder-project')).toBeTruthy();
+    expect(within(detail).getByRole('button', {
+      name: `Copy reminder reference mandible-reminder:${created.reminder.id}`,
+    })).toBeTruthy();
+    const reminderRow = within(document.querySelector('.tasks-sidebar') as HTMLElement)
+      .getByText('Review the twentieth canonical merge').closest('.tasks-row') as HTMLElement;
+    expect(within(reminderRow).getByText('tasks-view-reminder-project')).toBeTruthy();
+    expect(within(reminderRow).getByText('armed')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /request disable|new|create|edit|\+/i })).toBeNull();
   });
 
@@ -357,6 +367,13 @@ describe('TasksView', () => {
     const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
     const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
     await within(sidebar).findByRole('button', { name: 'Select Daily digest' });
+    const executorRow = within(sidebar).getByText('Daily digest').closest('.tasks-row') as HTMLElement;
+    const reminderRow = within(sidebar).getByText('Review reminder filters').closest('.tasks-row') as HTMLElement;
+    expect(executorRow.querySelector('.sidebar-item-row__badges')).toBeNull();
+    expect(within(executorRow).queryByText('agent-schedule')).toBeNull();
+    expect(executorRow.querySelector('.tasks-freshness')).toBeNull();
+    expect(within(reminderRow).getByText('tasks-view-reminder-project')).toBeTruthy();
+    expect(within(reminderRow).getByText('armed')).toBeTruthy();
     fireEvent.input(search, { target: { value: 'daily-digest' } });
     expect(within(sidebar).getByRole('button', { name: 'Select Daily digest' })).toBeTruthy();
     expect(within(sidebar).queryByRole('button', { name: 'Select Review reminder filters' })).toBeNull();
@@ -715,7 +732,7 @@ describe('TasksView', () => {
       .toBe(true);
   });
 
-  it('marks a stale executor report in the sidebar list', async () => {
+  it('removes provider and freshness badges from rows while retaining them in typed detail', async () => {
     post([knownTask()], Date.now() - TASK_INVENTORY_STALE_AFTER_MS - HOUR);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
     render(<TasksView />);
@@ -724,8 +741,19 @@ describe('TasksView', () => {
     const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
     const row = within(sidebar).getByText('Daily digest').closest('.tasks-row') as HTMLElement;
     expect(row.classList.contains('sidebar-item-row')).toBe(true);
-    expect(within(row).getByText('agent-schedule')).toBeTruthy();
-    expect(row.querySelector('.tasks-freshness--stale')).toBeTruthy();
+    expect(row.querySelector('.sidebar-item-row__badges')).toBeNull();
+    expect(within(row).queryByText('agent-schedule')).toBeNull();
+    expect(row.querySelector('.tasks-freshness')).toBeNull();
+
+    const detail = document.querySelector('.tasks-detail') as HTMLElement;
+    expect(detail.querySelector('[data-detail-pane-header-variant="standard"]')).toBeTruthy();
+    expect(within(detail).getAllByText('agent-schedule').length).toBeGreaterThan(0);
+    expect(detail.querySelector('.detail-pane-header .tasks-freshness--stale')?.textContent).toBe('stale');
+    expect(within(detail).getByRole('button', {
+      name: 'Copy task reference agent-schedule/daily-digest',
+    })).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: 'Request disable' })
+      .closest('.detail-pane-header__actions')).toBeTruthy();
   });
 
   it('keeps every explicit unknown visible, including unknown freshness', async () => {
@@ -770,7 +798,8 @@ describe('TasksView', () => {
     expect(within(detail).getAllByText(/unknown — the executor could not say/i)).toHaveLength(2);
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
       .getByText('Unknown task').closest('.tasks-row') as HTMLElement;
-    expect(row.querySelector('.tasks-freshness--unknown')).toBeTruthy();
+    expect(row.querySelector('.tasks-freshness--unknown')).toBeNull();
+    expect(detail.querySelector('.detail-pane-header .tasks-freshness--unknown')?.textContent).toBe('unknown');
   });
 
   it('labels a report exactly at the staleness horizon as current', async () => {
@@ -785,7 +814,46 @@ describe('TasksView', () => {
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
       .getByText('Daily digest').closest('.tasks-row') as HTMLElement;
-    expect(row.querySelector('.tasks-freshness--current')).toBeTruthy();
+    expect(row.querySelector('.tasks-freshness--current')).toBeNull();
+    expect(document.querySelector('.detail-pane-header .tasks-freshness--current')?.textContent).toBe('current');
+  });
+
+  it('uses Chat-equal native row geometry and one typed detail scroll owner', async () => {
+    post([knownTask()]);
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView />);
+
+    await screen.findByRole('button', { name: 'Select Daily digest' });
+    const tasksCss = readFileSync('ui/src/views/tasks.css', 'utf8');
+    const chatCss = readFileSync('ui/src/styles/chat-history.css', 'utf8');
+    const rowCss = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
+    expect(tasksCss).toMatch(/\.tasks-sidebar__list\s*\{[^}]*padding:\s*4px 6px;/s);
+    expect(chatCss).toMatch(/\.chat-history-list\s*\{[^}]*padding:\s*8px 6px 14px;/s);
+    expect(rowCss).toMatch(/\.sidebar-item-row__select\s*\{[^}]*padding:\s*5px 7px 5px var\(--sidebar-title-column-inset, 7px\);/s);
+
+    const probe = document.createElement('div');
+    probe.innerHTML = '<div class="tasks-list"><button class="select"></button></div><div class="chat-list"><button class="select"></button></div>';
+    const style = document.createElement('style');
+    style.textContent = '.tasks-list{padding:4px 6px}.chat-list{padding:8px 6px 14px}.select{padding:5px 7px 5px 7px}';
+    document.head.append(style);
+    document.body.append(probe);
+    const nativeInset = (list: Element) => Number.parseFloat(getComputedStyle(list).paddingLeft)
+      + Number.parseFloat(getComputedStyle(list.querySelector('.select')!).paddingLeft);
+    expect(nativeInset(probe.querySelector('.tasks-list')!)).toBe(13);
+    expect(nativeInset(probe.querySelector('.chat-list')!)).toBe(13);
+    probe.remove();
+    style.remove();
+
+    const detail = document.querySelector('.tasks-detail') as HTMLElement;
+    expect(detail.classList.contains('detail-pane-shell')).toBe(true);
+    expect(detail.querySelectorAll('[data-detail-pane-slot="header"]')).toHaveLength(1);
+    expect(detail.querySelectorAll('[data-detail-pane-slot="notice"]')).toHaveLength(1);
+    expect(detail.querySelector('[data-detail-pane-slot="notice"] .detail-pane-notice')).toBeTruthy();
+    expect(detail.querySelectorAll('[data-detail-pane-slot="body"]')).toHaveLength(1);
+    expect(detail.querySelector('.tasks-detail__content header')).toBeNull();
+    expect(tasksCss).not.toMatch(/\.tasks-detail\s*\{[^}]*overflow(?:-y)?:/s);
+    expect(readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8'))
+      .toMatch(/\.detail-pane-shell__body\s*\{[^}]*overflow-y:\s*auto;/s);
   });
 });
 

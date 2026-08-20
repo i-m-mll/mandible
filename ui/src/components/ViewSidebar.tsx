@@ -53,13 +53,20 @@ export type ViewSidebarProps = {
    * Optional fixed (non-scrolling) header slot. When provided, the container
    * renders it as `.view-sidebar__header` (flex:0 0 auto) above a
    * `.view-sidebar__body` (flex:1; min-height:0; overflow-y:auto) wrapping
-   * `children`. When omitted, `children` fill the frame directly and the frame
-   * itself is the single scroll owner.
+   * `children`. When omitted, `children` fill the frame directly unless
+   * `scrollBody` opts a headerless sidebar into the shared body scroll owner.
    */
   header?: ComponentChildren;
 
   /** Optional class added to the shared scroll-owner body wrapper. */
   bodyClassName?: string;
+
+  /**
+   * Wrap headerless content in the shared scroll-owner body. Use this when the
+   * resize rail must remain outside the vertical scroll container but the view
+   * has no fixed header slot.
+   */
+  scrollBody?: boolean;
 
   /** Optional fixed footer slot rendered below the scroll-owner body. */
   footer?: ComponentChildren;
@@ -67,7 +74,7 @@ export type ViewSidebarProps = {
   /** Optional class added to the shared fixed footer wrapper. */
   footerClassName?: string;
 
-  /** Scrollable body content (or the whole frame content when `header` omitted). */
+  /** Scrollable body content, or direct frame content without a body wrapper. */
   children: ComponentChildren;
 };
 
@@ -124,9 +131,11 @@ export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
         onMouseDown={handleMouseDown}
         onKeyDown={handleKeyDown}
       />
-      {props.header !== undefined ? (
+      {props.header !== undefined || props.scrollBody ? (
         <>
-          <div className="view-sidebar__header">{props.header}</div>
+          {props.header !== undefined ? (
+            <div className="view-sidebar__header">{props.header}</div>
+          ) : null}
           <div className={bodyCls}>{props.children}</div>
           {props.footer !== undefined ? (
             <div className={footerCls}>{props.footer}</div>

@@ -423,11 +423,6 @@ a {
   gap: 4px;
 }
 
-.app-rail__group--secondary {
-  padding-top: 14px;
-  border-top: 1px solid var(--neutral-alpha-06);
-}
-
 .app-rail__footer {
   flex: 0 0 auto;
   align-self: stretch;
@@ -970,9 +965,9 @@ a {
   padding-right: var(--app-shadow-gutter-width);
 }
 
-/* Headerless variant (issues/graph/timeline): the frame is the single scroll
-   owner. The per-view content class provides overflow-y:auto (e.g.
-   `.issues-tree { overflow-y:auto }`). */
+/* Headerless direct-content variant (issues/graph): the frame is the single
+   scroll owner. Headerless views may instead opt into `.view-sidebar__body`
+   when the resize rail must stay outside their vertical scroll container. */
 
 /* Header variant (spaces, later stage): fixed header, body is the single
    scroll owner. */
