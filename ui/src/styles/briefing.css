@@ -363,6 +363,8 @@
 }
 
 .briefing-directive {
+  margin-block: calc(var(--space-1) / 2);
+  margin-inline: var(--space-3) 0;
   padding: var(--space-3);
   border-left: 2px solid var(--border-faint);
   border-radius: 0;
@@ -538,10 +540,14 @@ textarea.briefing-directive__text {
   font-size: var(--text-sm);
 }
 
-.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover),
-.briefing-directive:not(.briefing-directive--selected):focus-within {
+.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover) {
   border-left-color: var(--border-default);
   background: var(--surface-card);
+}
+
+.briefing-directive:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
 }
 
 .briefing-directive--selected {
