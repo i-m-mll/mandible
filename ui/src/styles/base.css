@@ -100,22 +100,23 @@ a {
 
 /* One app-shell boundary owns the complete chrome/main edge. It is independent
  * of header, ViewSidebar, detail, and bottom-panel heights, so its divider and
- * falloff remain continuous for the entire viewport. */
+ * falloff remain continuous for the entire viewport. The paint span is wider
+ * than the reserved gutter and overpaints chrome without affecting layout. */
 .app-shell::after {
   --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
   --app-boundary-shadow-direction: to right;
   --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
-  inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width));
+  inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width));
   z-index: var(--z-app-subdivision);
-  width: calc(var(--app-shadow-gutter-width) + 1px);
-  background-color: transparent;
+  width: calc(var(--app-boundary-shadow-paint-width) + 1px);
+  background-color: var(--surface-chrome);
   background-image:
     linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
     var(--shadow-app-subdivision-paint);
   background-position: right, left;
-  background-size: 1px 100%, var(--app-shadow-gutter-width) 100%;
+  background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%;
   background-repeat: no-repeat;
   pointer-events: none;
 }
@@ -141,7 +142,7 @@ a {
   position: absolute;
   inset: 0 auto 0 0;
   z-index: var(--z-app-subdivision);
-  width: var(--app-shadow-gutter-width);
+  width: var(--app-boundary-shadow-paint-width);
   background: var(--surface-chrome);
   background-image: var(--shadow-app-subdivision-paint);
   border-inline-end: 1px solid var(--app-boundary-accent);
@@ -425,18 +426,6 @@ a {
   margin-inline: calc(-1 * var(--app-rail-inline-padding));
   border-top: 1px solid var(--border-muted);
   position: relative;
-}
-
-/* Continue the shared low-chrome divider through the reserved outer strip
- * without widening footer children or changing their coordinates. */
-.app-rail__footer::before {
-  content: '';
-  position: absolute;
-  top: -1px;
-  left: 100%;
-  width: calc(var(--app-detail-edge-x) - var(--app-rail-width));
-  border-top: 1px solid var(--border-muted);
-  pointer-events: none;
 }
 
 .app-rail__item {
@@ -998,14 +987,14 @@ a {
  * `.issues-tree__resize-handle` only won by being defined later, which broke
  * when the rule moved earlier in the refactor (issue e29a8c5).
  *
- * The 0-width line remains pinned to the frame's original content edge. Its
- * 10px clickable/hover strip extends inward only; the additive strip begins
- * outside this frame and never changes drag or persisted-width semantics.
+ * The 0-width line is translated across the reserved gutter to the physical
+ * divider. Its 10px clickable/hover strip extends into main only, so the
+ * visible shadow body never starts hover or drag behavior.
  */
 .view-sidebar__resize-handle.sidebar-drag-handle {
   position: absolute;
   top: 0;
-  right: 0;
+  right: calc(-1 * var(--app-shadow-gutter-width));
   bottom: 0;
   width: 0;
   cursor: col-resize;
@@ -1013,7 +1002,7 @@ a {
 }
 
 .view-sidebar__resize-handle.sidebar-drag-handle::before {
-  left: -10px;
+  left: 0;
   width: 10px;
 }
 

@@ -19,9 +19,10 @@ describe('Codex IAB chrome edge contract', () => {
 
   it('uses the measured gutter for the absolute visual layer without changing internal layout coordinates', () => {
     expect(stylesheet).toMatch(/--app-shadow-gutter-width:\s*9px;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
     expect(stylesheet).not.toMatch(/--codex-iab-edge-width:/);
     expect(stylesheet).toMatch(
-      /\.app-shell--codex-iab::before\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 auto 0 0;[^}]*width:\s*var\(--app-shadow-gutter-width\);/s,
+      /\.app-shell--codex-iab::before\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 auto 0 0;[^}]*width:\s*var\(--app-boundary-shadow-paint-width\);/s,
     );
     expect(stylesheet).not.toMatch(/\.app-shell--codex-iab[^,{]*\{[^}]*(?:padding|margin|transform|grid-template-columns):/s);
   });
