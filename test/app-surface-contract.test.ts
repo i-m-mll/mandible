@@ -133,7 +133,7 @@ describe('Codex app subdivision surface contract', () => {
 
   it('owns one full-height left-casting structural falloff at the app subdivision', () => {
     const edge = ruleBody(base, '.app-layout::after');
-    expect(edge).toContain('top: 0');
+    expect(edge).toContain('top: var(--app-header-height)');
     expect(edge).toContain('bottom: 0');
     expect(edge).toContain('left: calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width))');
     expect(edge).toContain('width: calc(var(--app-shadow-gutter-width) + 1px)');
@@ -150,7 +150,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.125)');
-    expect(stylesheet).toMatch(/:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s);
+    expect(stylesheet).toMatch(/:where\(\.app-header\)::after,\s*:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s);
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
@@ -159,6 +159,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(activeResizeEdge).toContain('--app-boundary-accent: var(--app-divider-emphasis)');
     expect(activeResizeEdge).not.toMatch(/(?:width|box-shadow|border)\s*:/);
     expect(edge).toContain('linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent))');
+    expect(base).toMatch(/\.app-shell:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\) \.app-header::after\s*\{[^}]*--app-boundary-accent:\s*var\(--app-divider-emphasis\);/s);
     expect(base).not.toContain('border-right: 1px solid var(--app-divider)');
 
     for (const selector of ['.app-rail', '.app-bottom-panel', '.view-sidebar', '.detail-pane-shell__header', '.detail-pane-shell__body', '.detail-pane-shell__footer', '.briefing-detail__footer', '.composer-host']) {

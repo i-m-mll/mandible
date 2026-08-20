@@ -93,18 +93,28 @@ a {
  * then mask only the measured falloff strip. This preserves its midpoint while
  * preventing visible text or controls from entering the blank gutter. */
 .app-header::after {
+  --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
+  --app-boundary-shadow-direction: to right;
+  --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
-  inset: 0 0 0 auto;
+  inset: 0 -1px 0 auto;
   z-index: 2;
-  width: var(--app-shadow-gutter-width);
-  background: var(--surface-chrome);
+  width: calc(var(--app-shadow-gutter-width) + 1px);
+  background-color: var(--surface-chrome);
+  background-image:
+    linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
+    var(--shadow-app-subdivision-paint);
+  background-position: right, left;
+  background-size: 1px 100%, var(--app-shadow-gutter-width) 100%;
+  background-repeat: no-repeat;
   pointer-events: none;
 }
 
-/* Declare the composition on its three consumers so the site-local signed x
+/* Declare the composition on every consumer so the site-local signed x
  * length resolves before inheritance; declaring it on :root would freeze an
  * undefined orientation into the guaranteed-invalid custom-property value. */
+:where(.app-header)::after,
 :where(.app-layout)::after,
 :where(.app-layout--view-sidebar-open) .view-sidebar::after,
 :where(.app-shell--codex-iab) .app-header::before,
@@ -265,7 +275,7 @@ a {
   --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
-  top: 0;
+  top: var(--app-header-height);
   bottom: 0;
   left: calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width));
   z-index: var(--z-app-subdivision);
@@ -307,6 +317,10 @@ a {
 }
 
 .app-layout:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
+  --app-boundary-accent: var(--app-divider-emphasis);
+}
+
+.app-shell:has(.sidebar-drag-handle:is(:hover, :focus-visible)) .app-header::after {
   --app-boundary-accent: var(--app-divider-emphasis);
 }
 

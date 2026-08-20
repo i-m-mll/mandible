@@ -31,7 +31,7 @@ describe('Codex IAB chrome edge contract', () => {
     expect(stylesheet).toMatch(/--app-boundary-shadow-blur:\s*36px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-spread:\s*0px;/);
     expect(stylesheet).toMatch(
-      /:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s,
+      /:where\(\.app-header\)::after,\s*:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s,
     );
     expect(stylesheet).toMatch(/\.app-layout::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*none;/s);
     expect(stylesheet).toMatch(/\.app-shell--codex-iab \.app-header::before,[^{]*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);

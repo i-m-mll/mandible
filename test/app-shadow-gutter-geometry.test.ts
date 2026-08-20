@@ -148,21 +148,23 @@ describe('additive app chrome-edge geometry and pixels', () => {
     try {
       for (const geometry of suite.geometries) {
         const boundary = Math.round(geometry.main.left);
-        const profile = pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.rowTop + 96), 19);
-        expect(profile).toHaveLength(19);
-        const strip = profile.slice(0, 17).map((pixel) => pixel.red);
-        expect(new Set(strip).size, `${geometry.theme}/${geometry.mode}: ${strip.join(',')}`).toBeGreaterThan(2);
-        expect(strip[0]).toBeGreaterThan(strip[16]!);
-        expect(profile[17], `${geometry.theme}/${geometry.mode} divider`).toEqual(
-          geometry.theme === 'dark'
-            ? { red: 67, green: 67, blue: 67 }
-            : { red: 215, green: 215, blue: 216 },
-        );
-        expect(profile[18], `${geometry.theme}/${geometry.mode} main`).toEqual(
-          geometry.theme === 'dark'
-            ? { red: 24, green: 24, blue: 24 }
-            : { red: 255, green: 255, blue: 255 },
-        );
+        for (const [segment, y] of [['header', 24], ['body', 96]] as const) {
+          const profile = pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.rowTop + y), 19);
+          expect(profile).toHaveLength(19);
+          const strip = profile.slice(0, 17).map((pixel) => pixel.red);
+          expect(new Set(strip).size, `${geometry.theme}/${geometry.mode}/${segment}: ${strip.join(',')}`).toBeGreaterThan(2);
+          expect(strip[0]).toBeGreaterThan(strip[16]!);
+          expect(profile[17], `${geometry.theme}/${geometry.mode}/${segment} divider`).toEqual(
+            geometry.theme === 'dark'
+              ? { red: 67, green: 67, blue: 67 }
+              : { red: 215, green: 215, blue: 216 },
+          );
+          expect(profile[18], `${geometry.theme}/${geometry.mode}/${segment} main`).toEqual(
+            geometry.theme === 'dark'
+              ? { red: 24, green: 24, blue: 24 }
+              : { red: 255, green: 255, blue: 255 },
+          );
+        }
         if (geometry.searchBottom !== null) {
           const stripBelow = pixelsAt(suite.screenshot, boundary - 1, Math.round(geometry.searchBottom + 5), 1)[0];
           const separatorBand = [-3, -2, -1, 0, 1, 2, 3].map((offset) =>
