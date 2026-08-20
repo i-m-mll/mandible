@@ -998,7 +998,7 @@ a {
   bottom: 0;
   width: 0;
   cursor: col-resize;
-  z-index: 3;
+  z-index: calc(var(--z-app-subdivision) + 1);
 }
 
 .view-sidebar__resize-handle.sidebar-drag-handle::before {
@@ -1020,6 +1020,14 @@ a {
   z-index: 2;
   border-right: 0;
   box-shadow: none;
+}
+
+/* The shared frame must not trap its outboard resize handle below positioned
+ * main-view descendants (Timeline reaches z-index 9). The frame stays below
+ * the app-shell paint owner while the handle participates in the surrounding
+ * content stacking context at its own divider-only z-index. */
+.app-layout--view-sidebar-open .view-sidebar {
+  z-index: auto;
 }
 
 .app-layout--view-sidebar-open .view-sidebar.spaces-tree {
