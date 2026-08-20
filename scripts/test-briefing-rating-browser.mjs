@@ -308,7 +308,12 @@ try {
   await evaluate(webSocket, `window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'briefing:answer-set', data: { briefing_id: 'briefing-browser' } } }));`);
   const reconciled = await waitFor(async () => {
     const snapshot = await evaluate(webSocket, snapshotExpression);
-    return snapshot.detailReads > readsBeforeReconcile ? snapshot : null;
+    return snapshot.detailReads > readsBeforeReconcile
+      && snapshot.rating4Checked === true
+      && snapshot.duplicateRating4Checked === true
+      && snapshot.submitDisabled === 'false'
+      ? snapshot
+      : null;
   }, 'SSE reconciliation');
   assertSelected(reconciled, 'persistence reconciliation');
 
@@ -319,7 +324,12 @@ try {
   await cdpRequest(webSocket, 'Page.reload', { ignoreCache: true });
   const reloaded = await waitFor(async () => {
     const snapshot = await evaluate(webSocket, snapshotExpression);
-    return snapshot.detailReads >= 1 && snapshot.storedRating === 4 ? snapshot : null;
+    return snapshot.detailReads >= 1
+      && snapshot.storedRating === 4
+      && snapshot.rating4Checked === true
+      && snapshot.submitDisabled === 'false'
+      ? snapshot
+      : null;
   }, 'full harness reload');
   assertSelected(reloaded, 'full harness reload');
   webSocket.close();
