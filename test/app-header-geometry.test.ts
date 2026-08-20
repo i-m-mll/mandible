@@ -9,18 +9,18 @@ type HeaderGeometry = {
   identity: DOMRectSnapshot;
   mark: DOMRectSnapshot;
   logo: DOMRectSnapshot;
-  brand: DOMRectSnapshot;
-  route: DOMRectSnapshot;
-  routeText: string;
-  routeOverflow: string;
-  routeTextOverflow: string;
-  routeWhiteSpace: string;
-  routeScrollWidth: number;
-  routeClientWidth: number;
+  brand: DOMRectSnapshot | null;
+  route: DOMRectSnapshot | null;
+  routeText: string | null;
+  routeOverflow: string | null;
+  routeTextOverflow: string | null;
+  routeWhiteSpace: string | null;
+  routeScrollWidth: number | null;
+  routeClientWidth: number | null;
   routeAriaLive: string | null;
   logoColor: string;
   navIconColor: string;
-  brandColor: string;
+  brandColor: string | null;
   logoMaskImage: string;
   logoMaskPosition: string;
   logoMaskRepeat: string;
@@ -32,6 +32,8 @@ type HeaderGeometry = {
   identityZIndex: string;
   iabEdgeWidth: string;
 };
+
+type HeaderMode = 'open' | 'hidden' | 'collapsed';
 
 type DOMRectSnapshot = Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom' | 'width' | 'height'>;
 
@@ -53,30 +55,36 @@ function renderHeader({
   theme,
   codexIab = false,
   scale = 1,
+  gutterWidth = 17,
+  mode = 'open',
 }: {
   width: number;
   route: string;
   theme: 'dark' | 'light';
   codexIab?: boolean;
   scale?: number;
+  gutterWidth?: number;
+  mode?: HeaderMode;
 }): HeaderGeometry {
   if (!chrome) throw new Error('A Chromium browser is required for the AppHeader geometry regression.');
+
+  const open = mode === 'open';
 
   const html = `<!doctype html>
     <html data-theme="${theme}">
       <head><style>${tokens}\n${base}</style></head>
       <body>
-        <div class="app-shell app-shell--view-sidebar-open${codexIab ? ' app-shell--codex-iab' : ''}"
-          style="--app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208 - (width <= 700 ? 17 : 0))}px">
-          <header class="app-header" data-app-surface="chrome">
+        <div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${mode === 'collapsed' ? ' app-shell--rail-icons' : ''}${codexIab ? ' app-shell--codex-iab' : ''}"
+          style="--app-shadow-gutter-width: ${gutterWidth}px; --app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208)}px">
+          <header class="app-header${open ? '' : ' app-header--sidebar-hidden'}" data-app-surface="chrome">
             <div class="app-header__identity">
               <span class="app-header__mark" aria-hidden="true">
                 <span class="app-header__logo" style="--app-header-logo-image: url('/header-logo.svg')" aria-hidden="true"></span>
               </span>
-              <div class="app-header__text">
+              ${open ? `<div class="app-header__text">
                 <div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div>
                 <div class="app-header__route" aria-live="polite">${route}</div>
-              </div>
+              </div>` : ''}
             </div>
           </header>
           <aside class="app-rail">
@@ -85,7 +93,9 @@ function renderHeader({
         </div>
         <script>
           const snapshot = (selector) => {
-            const bounds = document.querySelector(selector).getBoundingClientRect();
+            const node = document.querySelector(selector);
+            if (!node) return null;
+            const bounds = node.getBoundingClientRect();
             return Object.fromEntries(['left', 'top', 'right', 'bottom', 'width', 'height'].map((key) => [key, bounds[key]]));
           };
           const route = document.querySelector('.app-header__route');
@@ -101,16 +111,16 @@ function renderHeader({
             logo: snapshot('.app-header__logo'),
             brand: snapshot('.app-header__brand-text'),
             route: snapshot('.app-header__route'),
-            routeText: route.textContent,
-            routeOverflow: getComputedStyle(route).overflow,
-            routeTextOverflow: getComputedStyle(route).textOverflow,
-            routeWhiteSpace: getComputedStyle(route).whiteSpace,
-            routeScrollWidth: route.scrollWidth,
-            routeClientWidth: route.clientWidth,
-            routeAriaLive: route.getAttribute('aria-live'),
+            routeText: route?.textContent ?? null,
+            routeOverflow: route ? getComputedStyle(route).overflow : null,
+            routeTextOverflow: route ? getComputedStyle(route).textOverflow : null,
+            routeWhiteSpace: route ? getComputedStyle(route).whiteSpace : null,
+            routeScrollWidth: route?.scrollWidth ?? null,
+            routeClientWidth: route?.clientWidth ?? null,
+            routeAriaLive: route?.getAttribute('aria-live') ?? null,
             logoColor: logoStyle.color,
             navIconColor: getComputedStyle(document.querySelector('.app-rail__icon')).color,
-            brandColor: getComputedStyle(document.querySelector('.app-header__brand')).color,
+            brandColor: document.querySelector('.app-header__brand') ? getComputedStyle(document.querySelector('.app-header__brand')).color : null,
             logoMaskImage: logoStyle.webkitMaskImage,
             logoMaskPosition: logoStyle.webkitMaskPosition,
             logoMaskRepeat: logoStyle.webkitMaskRepeat,
@@ -141,20 +151,66 @@ function renderHeader({
 }
 
 function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiveInset: number): void {
-  const physicalWidth = width > 700 ? width + 17 : width;
+  const physicalWidth = width + 17;
   expect(geometry.header).toMatchObject({ left: 0, top: 0, right: physicalWidth, width: physicalWidth, height: 48 });
-  expect(geometry.identity).toMatchObject({ left: 0, right: physicalWidth, width: physicalWidth, height: 28 });
+  expect(geometry.identity).toMatchObject({ left: 0, right: width, width, height: 28 });
   expect(geometry.mark).toMatchObject({ left: responsiveInset, top: 9.5, width: 28, height: 28 });
   expect(geometry.logo).toMatchObject(geometry.mark);
-  expect(geometry.brand.left).toBe(208 + responsiveInset);
+  expect(geometry.brand!.left).toBe(208 + responsiveInset);
   expect(geometry.headerGutterWidth).toBe('18px');
   expect(geometry.headerGutterRight).toBe('-1px');
   expect(Number(geometry.headerGutterZIndex)).toBeGreaterThan(Number(geometry.identityZIndex));
-  expect(Math.abs((geometry.route.left + geometry.route.right) / 2 - (geometry.brand.right + physicalWidth) / 2))
+  expect(Math.abs((geometry.route!.left + geometry.route!.right) / 2 - (geometry.brand!.right + width) / 2))
     .toBeLessThanOrEqual(0.5);
 }
 
+function expectRectInvariant(before: DOMRectSnapshot, after: DOMRectSnapshot): void {
+  for (const coordinate of ['left', 'top', 'right', 'bottom', 'width', 'height'] as const) {
+    expect(Math.abs(after[coordinate] - before[coordinate]), coordinate).toBeLessThanOrEqual(0.01);
+  }
+}
+
 describe('shared AppHeader rendered geometry', () => {
+  it.each([
+    { width: 1100, theme: 'dark' as const },
+    { width: 1100, theme: 'light' as const },
+    { width: 700, theme: 'dark' as const },
+    { width: 700, theme: 'light' as const },
+  ])('moves only the physical right edge when adding the 17px strip at $width px in $theme', ({ width, theme }) => {
+    const baseline = renderHeader({ width, route: 'Timeline', theme, gutterWidth: 0 });
+    const additive = renderHeader({ width, route: 'Timeline', theme });
+
+    expect(additive.header.right - baseline.header.right).toBe(17);
+    expect(additive.header.width - baseline.header.width).toBe(17);
+    expectRectInvariant(
+      { ...baseline.header, right: additive.header.right, width: additive.header.width },
+      additive.header,
+    );
+    for (const rect of ['identity', 'mark', 'logo', 'brand', 'route'] as const) {
+      expectRectInvariant(baseline[rect]!, additive[rect]!);
+    }
+  });
+
+  it.each([
+    { mode: 'hidden' as const, theme: 'dark' as const },
+    { mode: 'hidden' as const, theme: 'light' as const },
+    { mode: 'collapsed' as const, theme: 'dark' as const },
+    { mode: 'collapsed' as const, theme: 'light' as const },
+  ])('keeps $mode identity coordinates fixed when adding the strip in $theme', ({ mode, theme }) => {
+    const baseline = renderHeader({ width: 700, route: 'Timeline', theme, gutterWidth: 0, mode });
+    const additive = renderHeader({ width: 700, route: 'Timeline', theme, mode });
+
+    expect(additive.header.right - baseline.header.right).toBe(17);
+    expect(additive.header.width - baseline.header.width).toBe(17);
+    expectRectInvariant(
+      { ...baseline.header, right: additive.header.right, width: additive.header.width },
+      additive.header,
+    );
+    for (const rect of ['identity', 'mark', 'logo'] as const) {
+      expectRectInvariant(baseline[rect], additive[rect]);
+    }
+  });
+
   it.each([
     { width: 1100, route: 'Timeline', theme: 'dark' as const, inset: 14 },
     { width: 700, route: 'Issues', theme: 'light' as const, inset: 10 },
