@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +11,19 @@ afterEach(() => {
 });
 
 describe('SidebarSearchFilterHeader', () => {
+  it('gives header-backed list scroll owners a shared top inset without an Artifact zero override', () => {
+    const css = readResolvedStylesheet();
+    const artifactCss = readFileSync(resolve('ui/src/styles/issues.css'), 'utf8');
+    const artifactListRule = artifactCss.match(/\.artifacts-sidebar__list\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    expect(css).toMatch(/\.view-sidebar__header \+ \.view-sidebar__body\s*\{[^}]*padding-top:\s*6px;/s);
+    expect(artifactListRule).not.toMatch(/padding-top\s*:/);
+    expect(artifactListRule).not.toMatch(/padding\s*:\s*0\b/);
+    expect(artifactListRule).toContain('padding-right: 12px');
+    expect(artifactListRule).toContain('padding-bottom: 12px');
+    expect(artifactListRule).toContain('padding-left: 12px');
+  });
+
   it('renders search-only headers with an action slot and stable input test id', () => {
     const onValueChange = vi.fn();
     render(

@@ -2,7 +2,7 @@
 //
 // Covers the cohesive Spaces-home interaction the sidebar owns: grouped tree
 // render (top-level group above project headers, typed space lines), live
-// filter, foldable headers, drag-reorder persistence, the bare "+" typed create
+// filter/sort menu, foldable headers, drag-reorder persistence, the shared leading action typed create
 // flow (including optional post-create seeding), selection navigation, and the
 // sidebarHidden contract.
 import { readFileSync } from 'node:fs';
@@ -115,9 +115,13 @@ describe('SpacesSidebar render + grouping', () => {
     expect(screen.getByRole('button', { name: 'Global notes (Canvas)' }).closest('.sidebar-item-row')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Roadmap (Document)' }).closest('.sidebar-item-row')).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Alpha/ }).closest('.sidebar-group-node--folder')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Space filter and sort options' }).getAttribute('aria-haspopup')).toBe('menu');
 
-    // Top-level group sits above the first project group in DOM order.
+    // The global creation row leads all data content, then the top-level group
+    // sits above the first project group in DOM order.
     const scroll = screen.getByTestId('spaces-tree-scroll');
+    const newSpace = screen.getByRole('button', { name: 'New space' });
+    expect(scroll.firstElementChild).toBe(newSpace.closest('[role="region"]'));
     const topLevelGroup = screen.getByTestId('spaces-group-top-level');
     const alphaGroup = screen.getByTestId('spaces-group-proj-a');
     expect(scroll.contains(topLevelGroup)).toBe(true);
@@ -182,6 +186,40 @@ describe('SpacesSidebar live filter', () => {
     fireEvent.input(input, { target: { value: 'beta' } });
     expect(screen.getByText('Beta')).toBeTruthy();
     expect(screen.getByText('Beta board')).toBeTruthy();
+  });
+
+  it('keeps search state while sorting from the standard menu and persists sort through reconciliation and remount', async () => {
+    const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
+    const { rerender, unmount } = render(
+      <SpacesSidebar refreshToken={0} onSelectSpace={vi.fn()} loadGroups={loadGroups} />,
+    );
+    await screen.findByText('Roadmap');
+
+    const input = screen.getByTestId('spaces-filter-input') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'a' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Space filter and sort options' }));
+    const menu = screen.getByRole('menu', { name: 'Space filter and sort options' });
+    expect(menu).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Name' }));
+    expect(input.value).toBe('a');
+
+    const alpha = screen.getByTestId('spaces-group-proj-a');
+    expect(Array.from(alpha.querySelectorAll('.sidebar-item-row__label')).map((node) => node.textContent))
+      .toEqual(['Backlog', 'Roadmap']);
+
+    rerender(<SpacesSidebar refreshToken={1} onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    await waitFor(() => expect(loadGroups).toHaveBeenCalledTimes(2));
+    expect((screen.getByTestId('spaces-filter-input') as HTMLInputElement).value).toBe('a');
+    expect(Array.from(screen.getByTestId('spaces-group-proj-a').querySelectorAll('.sidebar-item-row__label')).map((node) => node.textContent))
+      .toEqual(['Backlog', 'Roadmap']);
+
+    unmount();
+    render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    await screen.findByText('Roadmap');
+    expect(Array.from(screen.getByTestId('spaces-group-proj-a').querySelectorAll('.sidebar-item-row__label')).map((node) => node.textContent))
+      .toEqual(['Backlog', 'Roadmap']);
+    fireEvent.click(screen.getByRole('button', { name: 'Space filter and sort options' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Name' }).getAttribute('aria-checked')).toBe('true');
   });
 });
 
@@ -267,9 +305,10 @@ describe('SpacesSidebar create flow', () => {
     expect(projectCreate.parentElement?.classList.contains('contextual-action-group')).toBe(true);
     expect(projectCreate.closest('.sidebar-group-node__header')?.classList.contains('contextual-action-owner')).toBe(true);
 
-    const topLevelCreate = screen.getByTestId('create-top-level');
-    expect(topLevelCreate.getAttribute('aria-label')).toBe('Create top-level space');
-    expect(topLevelCreate.classList.contains('contextual-action')).toBe(false);
+    const topLevelCreate = screen.getByRole('button', { name: 'New space' });
+    expect(topLevelCreate).toBe(screen.getByTestId('create-top-level'));
+    expect(topLevelCreate.classList.contains('sidebar-leading-action-row')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Create top-level space' })).toBeNull();
 
     expect(projectCreate.parentElement?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
     expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*\{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
@@ -316,7 +355,7 @@ describe('SpacesSidebar create flow', () => {
     );
   });
 
-  it('creates a top-level canvas space from the search-bar + (project_id null)', async () => {
+  it('creates a top-level canvas space from the leading New space row (project_id null)', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('top9', 'Topper', null));
     const onSelectSpace = vi.fn();
@@ -325,7 +364,10 @@ describe('SpacesSidebar create flow', () => {
     );
     await screen.findByText('Roadmap');
 
-    fireEvent.click(screen.getByTestId('create-top-level'));
+    const newSpace = screen.getByRole('button', { name: 'New space' });
+    newSpace.focus();
+    expect(document.activeElement).toBe(newSpace);
+    fireEvent.click(newSpace);
     fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'Topper' } });
     fireEvent.click(screen.getByTestId('space-create-submit'));
 
@@ -420,7 +462,9 @@ describe('SpacesSidebar empty projects (compact, Stage 3)', () => {
   it('still shows the overall empty state when there are zero projects/spaces', async () => {
     const loadGroups = vi.fn().mockResolvedValue([] as SpaceGroup[]);
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
-    expect(await screen.findByTestId('spaces-tree-empty')).toBeTruthy();
+    const empty = await screen.findByTestId('spaces-tree-empty');
+    expect(empty.textContent).toBe('No spaces yet. Create one to get started.');
+    expect(empty.textContent).not.toContain('Use +');
   });
 });
 
@@ -430,7 +474,7 @@ describe('SpacesSidebar create popover outside-click (containerRef)', () => {
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
 
-    fireEvent.click(screen.getByTestId('create-top-level'));
+    fireEvent.click(screen.getByRole('button', { name: 'New space' }));
     expect(screen.getByTestId('space-create-chooser')).toBeTruthy();
 
     // The outside-click handler listens on `document` for capture-phase

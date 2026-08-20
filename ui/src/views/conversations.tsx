@@ -3,6 +3,7 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { SidebarAddProjectIcon, SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
+import { SidebarLeadingActionRow } from '../components/shared/SidebarItemRow';
 import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
 import {
   SidebarItemBadge,
@@ -3281,10 +3282,11 @@ export function ConversationsView({
       >
 
             <div className="chat-sidebar-global-actions" role="region" aria-label="Chat actions">
-              <button type="button" className="chat-sidebar-global-action" onClick={() => openNewSession()}>
-                <SidebarNewChatIcon size={16} />
-                <span>New chat</span>
-              </button>
+              <SidebarLeadingActionRow
+                label="New chat"
+                icon={<SidebarNewChatIcon size={16} />}
+                onPress={() => openNewSession()}
+              />
             </div>
 
             {chatSections.pinned ? (() => {
