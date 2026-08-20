@@ -21,6 +21,7 @@ import { getConversationSearchCache } from "../conversations/search-cache.js";
 import {
   ConversationSidebarCursorError,
   buildConversationSidebar,
+  type ConversationSidebarProject,
   type ConversationSidebarSort,
 } from "../conversations/sidebar-projection.js";
 import type { SessionManager } from "../session-manager.js";
@@ -28,6 +29,11 @@ import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import type { SourceBackedConversationBlock } from "../conversations/source-types.js";
+import {
+  ConversationFreshnessError,
+  ensureExactConversationFresh,
+} from "../conversations/freshness.js";
+import type { ResponseLike } from "../server.js";
 
 // --- Row mapping helpers ---
 
@@ -125,6 +131,65 @@ function mapSearchConversation(row: ConversationRow, sessionManager?: SessionMan
   return mapConversation(maskSourceBackedConversationRow(row), sessionManager);
 }
 
+type ProjectedConversationRow = ConversationRow & {
+  canonical_project_id?: string | null;
+  canonical_project_key?: string | null;
+};
+
+function mapSidebarConversation(
+  row: ProjectedConversationRow,
+  fullTextSearch: boolean,
+  sessionManager?: SessionManager,
+) {
+  return {
+    ...(fullTextSearch
+      ? mapSearchConversation(row, sessionManager)
+      : mapConversation(row, sessionManager)),
+    canonical_project_id: row.canonical_project_id ?? null,
+    canonical_project_key: row.canonical_project_key ?? null,
+  };
+}
+
+const MAX_SIDEBAR_PROJECTS = 500;
+const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
+
+function parseSidebarProjectIds(raw: string | undefined): string[] {
+  if (raw === undefined || raw === "") return [];
+  if (raw.length > MAX_SIDEBAR_PROJECT_IDS_LENGTH) {
+    throw new Error(`project_ids exceeds ${MAX_SIDEBAR_PROJECT_IDS_LENGTH} characters`);
+  }
+  const values = raw.split(",").map((value) => value.trim());
+  if (values.some((value) => !value)) throw new Error("project_ids contains an empty id");
+  const ids = [...new Set(values)];
+  if (ids.length > MAX_SIDEBAR_PROJECTS) {
+    throw new Error(`project_ids accepts at most ${MAX_SIDEBAR_PROJECTS} ids`);
+  }
+  return ids;
+}
+
+function loadSidebarProjects(db: ReturnType<typeof getDb>): ConversationSidebarProject[] {
+  const projects = db.prepare(
+    `SELECT id, project_key, display_name
+     FROM ledger_projects
+     ORDER BY id`,
+  ).all() as Array<{ id: string; project_key: string; display_name: string }>;
+  const roots = db.prepare(
+    `SELECT project_id, root
+     FROM ledger_project_checkouts
+     ORDER BY project_id, root`,
+  ).all() as Array<{ project_id: string; root: string }>;
+  const rootsByProject = new Map<string, string[]>();
+  for (const checkout of roots) {
+    const existing = rootsByProject.get(checkout.project_id) ?? [];
+    existing.push(checkout.root);
+    rootsByProject.set(checkout.project_id, existing);
+  }
+  return projects.map((project) => ({
+    ...project,
+    checkout_roots: rootsByProject.get(project.id) ?? [],
+  }));
+}
+
 function canonicalizeTags(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.some((tag) => typeof tag !== "string")) {
     throw new Error(`${field} must be an array of strings`);
@@ -165,15 +230,79 @@ function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
   return "compressed" in row ? mapBlock(row) : row;
 }
 
+type PositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
+
+function turnIdForBlock(db: ReturnType<typeof getDb>, block: Pick<BlockRow, "id" | "conversation_id" | "position" | "type">): string {
+  if (block.type === "user_message") return block.id;
+  const first = db.prepare(
+    `SELECT id
+       FROM conversation_blocks
+      WHERE conversation_id = ?
+        AND position <= ?
+        AND position > COALESCE((
+          SELECT MAX(position)
+            FROM conversation_blocks
+           WHERE conversation_id = ? AND position <= ? AND type = 'user_message'
+        ), -1)
+        AND type != 'user_message'
+      ORDER BY position ASC
+      LIMIT 1`,
+  ).get(block.conversation_id, block.position, block.conversation_id, block.position) as { id: string } | undefined;
+  return first?.id ?? block.id;
+}
+
+function resolvePositionTarget(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  kind: PositionTargetKind,
+  requestedValue: string | number | null,
+): { block: BlockRow | null; turnId: string | null } | null {
+  let block: BlockRow | undefined;
+  if (kind === "initial" || kind === "latest") {
+    block = db.prepare(
+      "SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position DESC LIMIT 1",
+    ).get(conversationId) as BlockRow | undefined;
+  } else if (kind === "position") {
+    block = db.prepare(
+      "SELECT * FROM conversation_blocks WHERE conversation_id = ? AND position = ?",
+    ).get(conversationId, requestedValue) as BlockRow | undefined;
+  } else {
+    block = db.prepare(
+      "SELECT * FROM conversation_blocks WHERE conversation_id = ? AND id = ?",
+    ).get(conversationId, requestedValue) as BlockRow | undefined;
+  }
+  if (!block) return kind === "initial" || kind === "latest" ? { block: null, turnId: null } : null;
+  const turnId = turnIdForBlock(db, block);
+  if (kind === "turn" && turnId !== requestedValue) return null;
+  return { block, turnId };
+}
+
 async function readAllBlocks(
   reader: ConversationSourceReader,
   conversationId: string,
 ): Promise<{ blocks: SourceBackedConversationBlock[]; bodySource: "source" | "legacy" }> {
   const result = await reader.readAll(conversationId);
   if (result.status !== "source" && result.status !== "legacy") {
-    return { blocks: [], bodySource: "legacy" };
+    throw new ConversationFreshnessError("source_unavailable", result.reason);
   }
   return { blocks: result.value, bodySource: result.status };
+}
+
+function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
+  if (!(error instanceof ConversationFreshnessError)) return false;
+  if (error.code === "freshness_pending") {
+    res.header?.("Retry-After", "1");
+    res.status(error.status);
+    if (res.empty) res.empty();
+    else res.json(null);
+    return true;
+  }
+  sendJson(res, error.status, {
+    error: error.code,
+    message: error.message,
+    ...(error.candidates.length > 0 ? { candidates: error.candidates } : {}),
+  });
+  return true;
 }
 
 function parseSinceQuery(value: string | undefined): string | null {
@@ -433,6 +562,20 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   // GET /api/conversations/sidebar — bounded, independently paged sidebar groups.
   server.get("/api/conversations/sidebar", async (req, res) => {
     const query = req.query ?? {};
+    let requestedProjectIds: string[];
+    try {
+      requestedProjectIds = parseSidebarProjectIds(query.project_ids);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    const projects = loadSidebarProjects(db);
+    const knownProjectIds = new Set(projects.map((project) => project.id));
+    const unknownProjectIds = requestedProjectIds.filter((id) => !knownProjectIds.has(id));
+    if (unknownProjectIds.length > 0) {
+      sendJson(res, 400, { error: "Unknown canonical project id", project_ids: unknownProjectIds });
+      return;
+    }
     const parsedLimit = parseInt(query.limit || "20", 10);
     const limit = Math.min(100, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 20));
     const groupKey = query.group_key || undefined;
@@ -481,6 +624,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       full_text: fullTextSearch,
       min_blocks: Number.isFinite(minBlocks) && minBlocks > 0 ? minBlocks : null,
       exclude_subagents: excludeSubagents,
+      project_ids: [...requestedProjectIds].sort(),
       sort,
     })).digest("base64url");
 
@@ -502,6 +646,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         limit,
         groupKey,
         cursor,
+        projects,
+        requestedProjectIds,
       });
       if (groupKey && groups.length === 0) {
         sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
@@ -512,10 +658,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
           key: group.key,
           kind: group.kind,
           label: group.label,
+          ...(group.project_id ? { project_id: group.project_id } : {}),
+          ...(group.project_key ? { project_key: group.project_key } : {}),
           total: group.total,
-          conversations: group.rows.map((row) => fullTextSearch
-            ? mapSearchConversation(row, sessionManager)
-            : mapConversation(row, sessionManager)),
+          conversations: group.rows.map((row) => mapSidebarConversation(
+            row,
+            fullTextSearch,
+            sessionManager,
+          )),
           next_cursor: group.next_cursor,
         })),
         limit,
@@ -780,12 +930,20 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     });
   }, { fileRpc: "allow" });
 
-  // GET /api/conversations/:id — Full conversation with blocks + children summary
-  // Bug: 40f0298 — optional ?leaf=<dag_uuid> param for DAG path resolution
+  // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const requestedRef = req.params.id;
+    if (!requestedRef) {
       sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    let id: string;
+    try {
+      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
       return;
     }
 
@@ -798,62 +956,74 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     const query = req.query ?? {};
-    const leafDagUuid = query.leaf || null;
     const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
-
-    let blocks: Array<BlockRow | SourceBackedConversationBlock>;
-    let bodySource: "source" | "legacy" = "legacy";
-
-    if (leafDagUuid) {
-      // DAG path resolution: walk backward from leaf to root via dag_parent_uuid
-      const allBlocks = db
-        .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-        .all(id) as BlockRow[];
-
-      // Index blocks by dag_uuid for efficient lookup
-      const blocksByDagUuid = new Map<string, BlockRow[]>();
-      for (const block of allBlocks) {
-        if (block.dag_uuid) {
-          const group = blocksByDagUuid.get(block.dag_uuid);
-          if (group) {
-            group.push(block);
-          } else {
-            blocksByDagUuid.set(block.dag_uuid, [block]);
-          }
-        }
+    const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
+    const limit = Math.min(500, requestedLimit);
+    if (query.target && query.target !== "initial" && query.target !== "latest") {
+      sendJson(res, 400, { error: "target must be initial or latest" });
+      return;
+    }
+    const explicitAnchors = [query.block, query.turn, query.position].filter((value) => value !== undefined);
+    if (explicitAnchors.length > 1) {
+      sendJson(res, 400, { error: "Choose exactly one of block, turn, or position" });
+      return;
+    }
+    if (useSourceReader && explicitAnchors.length > 0) {
+      sendJson(res, 400, { error: "Exact anchors require the indexed conversation body" });
+      return;
+    }
+    let targetKind: PositionTargetKind = query.target === "latest" ? "latest" : "initial";
+    let requestedValue: string | number | null = null;
+    if (query.block) {
+      targetKind = "block";
+      requestedValue = query.block;
+    } else if (query.turn) {
+      targetKind = "turn";
+      requestedValue = query.turn;
+    } else if (query.position !== undefined) {
+      const position = Number(query.position);
+      if (!Number.isSafeInteger(position) || position < 0) {
+        sendJson(res, 400, { error: "position must be a non-negative integer" });
+        return;
       }
+      targetKind = "position";
+      requestedValue = position;
+    }
+    const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);
+    if (!resolved) {
+      sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
+      return;
+    }
 
-      // Walk backward from leaf
-      const pathGroups: BlockRow[][] = [];
-      let currentUuid: string | null = leafDagUuid;
-      const visited = new Set<string>();
-
-      while (currentUuid && !visited.has(currentUuid)) {
-        visited.add(currentUuid);
-        const group = blocksByDagUuid.get(currentUuid);
-        if (!group || group.length === 0) break;
-        pathGroups.push(group);
-        // All blocks in a dag_uuid group share the same dag_parent_uuid
-        currentUuid = group[0].dag_parent_uuid;
+    const total = (db.prepare(
+      "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ?",
+    ).get(id) as { total: number }).total;
+    let blocks: BlockRow[] = [];
+    if (resolved.block) {
+      if (targetKind === "initial" || targetKind === "latest") {
+        blocks = db.prepare(
+          `SELECT * FROM (
+             SELECT * FROM conversation_blocks
+              WHERE conversation_id = ?
+              ORDER BY position DESC LIMIT ?
+           ) ORDER BY position ASC`,
+        ).all(id, limit) as BlockRow[];
+      } else {
+        const before = Math.floor((limit - 1) / 2);
+        const start = db.prepare(
+          `SELECT position FROM conversation_blocks
+            WHERE conversation_id = ? AND position <= ?
+            ORDER BY position DESC LIMIT 1 OFFSET ?`,
+        ).get(id, resolved.block.position, before) as { position: number } | undefined;
+        const first = start ?? db.prepare(
+          "SELECT MIN(position) AS position FROM conversation_blocks WHERE conversation_id = ?",
+        ).get(id) as { position: number };
+        blocks = db.prepare(
+          `SELECT * FROM conversation_blocks
+            WHERE conversation_id = ? AND position >= ?
+            ORDER BY position ASC LIMIT ?`,
+        ).all(id, first.position, limit) as BlockRow[];
       }
-
-      // Reverse to get root-first order, then flatten
-      pathGroups.reverse();
-      blocks = pathGroups.flat();
-
-      // Fallback: if the leaf dag_uuid didn't match any block (e.g., old conversation
-      // without dag_uuid data), return all blocks ordered by position.
-      if (blocks.length === 0) {
-        blocks = allBlocks;
-      }
-    } else if (useSourceReader) {
-      const sourceBlocks = await readAllBlocks(sourceReader, id);
-      blocks = sourceBlocks.blocks;
-      bodySource = sourceBlocks.bodySource;
-    } else {
-      blocks = db
-        .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-        .all(id) as BlockRow[];
     }
 
     // Fetch sub-agent (child) conversations — Bug: d0759d1
@@ -911,17 +1081,59 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
       : undefined;
 
+    const startPosition = blocks[0]?.position ?? null;
+    const endPosition = blocks[blocks.length - 1]?.position ?? null;
+    let readableBlocks: Array<BlockRow | SourceBackedConversationBlock> = blocks;
+    let bodySource: "source" | "legacy" = "legacy";
+    if (useSourceReader) {
+      const offset = startPosition === null ? 0 : (db.prepare(
+        "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ? AND position < ?",
+      ).get(id, startPosition) as { total: number }).total;
+      const sourcePage = await sourceReader.readPage(id, { offset, limit });
+      if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
+        sendJson(res, sourcePage.status === "not_found" ? 404 : 409, {
+          error: sourcePage.reason,
+          status: sourcePage.status,
+        });
+        return;
+      }
+      readableBlocks = sourcePage.value.blocks;
+      bodySource = sourcePage.status;
+    }
     const mapped = useSourceReader
       ? mapConversation(maskSourceBackedConversationRow(conv), sessionManager)
       : mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
+    const hasBefore = startPosition !== null && Boolean(db.prepare(
+      "SELECT 1 FROM conversation_blocks WHERE conversation_id = ? AND position < ? LIMIT 1",
+    ).get(id, startPosition));
+    const afterCount = endPosition === null ? 0 : (db.prepare(
+      "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ? AND position > ?",
+    ).get(id, endPosition) as { total: number }).total;
 
     sendJson(res, 200, {
       conversation: mapped,
-      blocks: blocks.map(mapReadableBlock),
       body_source: bodySource,
       children: childrenWithDuration,
       parent: parent ?? null,
+      revision: conv.block_count,
+      total,
+      target: {
+        kind: targetKind,
+        requested_value: requestedValue,
+        position: resolved.block?.position ?? null,
+        block_id: resolved.block?.id ?? null,
+        turn_id: resolved.turnId,
+      },
+      window: {
+        start_position: startPosition,
+        end_position: endPosition,
+        has_before: hasBefore,
+        has_after: afterCount > 0,
+        after_count: afterCount,
+        limit,
+      },
+      blocks: readableBlocks.map(mapReadableBlock),
     });
   }, { fileRpc: "allow" });
 
@@ -1207,9 +1419,18 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
   server.get("/api/conversations/:id/blocks", async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const requestedRef = req.params.id;
+    if (!requestedRef) {
       sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    let id: string;
+    try {
+      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
       return;
     }
 
@@ -1358,11 +1579,22 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
   }, { fileRpc: "allow" });
 
-  // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
+  // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON.
+  // File RPC is allowed only on this exact read-only projection; POST carries
+  // formatting/filter input and does not authorize adjacent conversation mutations.
   server.post("/api/conversations/:id/export", async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const requestedRef = req.params.id;
+    if (!requestedRef) {
       sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    let id: string;
+    try {
+      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
       return;
     }
 
@@ -1386,9 +1618,16 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return;
     }
 
-    const readable = body.source_backed
-      ? await readAllBlocks(sourceReader, id)
-      : null;
+    let readable: Awaited<ReturnType<typeof readAllBlocks>> | null = null;
+    if (body.source_backed) {
+      try {
+        readable = await readAllBlocks(sourceReader, id);
+      } catch (error) {
+        if (sendFreshnessError(res, error)) return;
+        sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+    }
     const blocks = readable
       ? readable.blocks.map((block) => ({ ...block, compressed: 0 })) as DecompressedBlock[]
       : decompressBlocks(db.prepare(
@@ -1424,6 +1663,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         : blocks.length,
       body_source: readable?.bodySource ?? "legacy",
     });
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
 }

@@ -19,6 +19,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { shortRouteId } from '../routing';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
   deleteArtifactDraft,
@@ -691,11 +692,6 @@ export function ArtifactsView({
   const activeFilterCount = Object.values(filters).filter(Boolean).length
     + Number(sortField !== DEFAULT_ARTIFACT_LIST_STATE.sortField)
     + Number(sortDirection !== DEFAULT_ARTIFACT_LIST_STATE.sortDirection);
-  const activeFilterSummary = [
-    ...Object.entries(filters).filter(([, value]) => Boolean(value)).map(([key, value]) => `${key}: ${value}`),
-    `sort: ${sortField} ${sortDirection}`,
-  ].join(' · ');
-
   return (
     <div className="artifacts-view">
       <ViewSidebar
@@ -718,7 +714,6 @@ export function ArtifactsView({
               count: activeFilterCount,
               onToggle: () => setAdvancedOpen((open) => !open),
             }}
-            summarySlot={<span>{activeFilterSummary}</span>}
             panel={advancedOpen ? {
               id: 'artifact-filter-panel',
               variant: 'popover',
@@ -915,8 +910,14 @@ export function ArtifactDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
-  const [actionsMenuStyle, setActionsMenuStyle] = useState<{ top: number; left: number } | null>(null);
-  const actionsRef = useRef<HTMLDivElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
   const headerRef = useRef<HTMLElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   // Resolve a project scope for the Add-to-Space picker. Artifacts are not
@@ -983,43 +984,6 @@ export function ArtifactDetail({
   const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
   const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
   latestDraftRef.current = draft;
-
-  const updateActionsMenuPosition = useCallback(() => {
-    const node = actionsRef.current;
-    if (!node) return;
-    const rect = node.getBoundingClientRect();
-    const menuWidth = 190;
-    const margin = 8;
-    const maxLeft = Math.max(margin, window.innerWidth - menuWidth - margin);
-    setActionsMenuStyle({
-      top: Math.round(rect.bottom + 6),
-      left: Math.round(Math.min(Math.max(margin, rect.right - menuWidth), maxLeft)),
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-    updateActionsMenuPosition();
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = actionsRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActionsOpen(false);
-    };
-    const updatePosition = () => updateActionsMenuPosition();
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [actionsOpen, updateActionsMenuPosition]);
 
   useEffect(() => {
     if (!versionHistoryOpen) return undefined;
@@ -1338,6 +1302,7 @@ export function ArtifactDetail({
       headerClassName="artifact-detail__header"
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
       headerRef={headerRef}
+      ariaBusy={contentLoading}
       header={(
         <DetailPaneHeader
           variant="versioned"
@@ -1347,6 +1312,17 @@ export function ArtifactDetail({
             copyLabel: headerCopyLabel,
           }}
           title={artifactTitle(artifact)}
+          supportingMetadata={(
+            <div className="artifact-detail__header-context">
+              <span className="artifact-detail__subline">
+                {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
+              </span>
+              <span className="artifact-detail__dates">
+                <span>Created: {formatTime(createdUpdated.created)}</span>
+                <span>Updated: {formatTime(createdUpdated.updated)}</span>
+              </span>
+            </div>
+          )}
           state={selectedVersionNo === null ? 'Latest' : undefined}
           selector={{
             label: 'Artifact version',
@@ -1368,8 +1344,9 @@ export function ArtifactDetail({
             copyLabel: 'Copy selected artifact-version reference',
           }}
           actions={(
-          <div className="artifact-detail__actions" ref={actionsRef}>
+          <div className="artifact-detail__actions">
             <button
+              ref={actionsTriggerRef}
               type="button"
               className={`artifact-detail__actions-trigger${actionsOpen ? ' artifact-detail__actions-trigger--active' : ''}`}
               aria-label="Artifact actions"
@@ -1377,7 +1354,6 @@ export function ArtifactDetail({
               aria-expanded={actionsOpen}
               title="Artifact actions"
               onClick={() => {
-                updateActionsMenuPosition();
                 setActionsOpen((open) => !open);
               }}
             >
@@ -1385,9 +1361,11 @@ export function ArtifactDetail({
             </button>
             {actionsOpen && (
               <div
-                className="artifact-detail__actions-menu"
+                ref={actionsMenuRef}
+                className="artifact-detail__actions-menu app-anchored-menu"
                 role="menu"
-                style={actionsMenuStyle ? { top: `${actionsMenuStyle.top}px`, left: `${actionsMenuStyle.left}px` } : undefined}
+                popover="manual"
+                style={actionsMenuStyle}
               >
                 <button
                   type="button"
@@ -1457,6 +1435,7 @@ export function ArtifactDetail({
               </div>
             )}
             <AddToSpace
+              anchorRef={actionsTriggerRef}
               projectId={spaceProjectId}
               targets={spaceTargets}
               label="Add to Space"
@@ -1471,22 +1450,12 @@ export function ArtifactDetail({
       )}
       overlays={overlays}
     >
-        <div className="artifact-detail__context">
-          <div className="artifact-detail__subline">
-            {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
-          </div>
-          <div className="artifact-detail__dates">
-            <span>Created: {formatTime(createdUpdated.created)}</span>
-            <span>Updated: {formatTime(createdUpdated.updated)}</span>
-          </div>
-        </div>
         {detailError && <div className="artifacts-error">{detailError}</div>}
         {openError && <div className="artifacts-error" role="alert">Could not open artifact: {openError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
-        <div className="artifact-detail__body">
-          {editMode && draft ? (
+        {editMode && draft ? (
             <ArtifactEditorSection
               draft={draft}
               value={draftValue}
@@ -1584,8 +1553,7 @@ export function ArtifactDetail({
                 </div>
             )}
           </section>
-        )}
-      </div>
+          )}
     </DetailPaneShell>
   );
 }
@@ -1824,8 +1792,7 @@ function PreviewSection({
     setAutoFormatJson(true);
   }, [content?.artifact_id]);
   return (
-    <section className="artifact-detail__section" aria-label="Preview">
-      <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
+    <>
         {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
         {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
         {showPreview && content?.warnings?.map((warning) => (
@@ -1884,7 +1851,7 @@ function PreviewSection({
           />
         )}
         {showPreview && preview.kind === 'markdown' && (
-          <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />
+          <div className="artifact-preview spec-panel rendered-markdown" dangerouslySetInnerHTML={{ __html: preview.value }} />
         )}
         {showPreview && preview.kind === 'binary' && (
           <div className="artifacts-empty">
@@ -1901,8 +1868,7 @@ function PreviewSection({
         {showPreview && content?.preview?.truncated && (!preview || preview.kind === 'markdown' || preview.kind === 'html') && (
           <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
         )}
-      </div>
-    </section>
+    </>
   );
 }
 

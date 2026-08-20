@@ -4,6 +4,7 @@ import { readArtifactBytesFull } from "../artifact-content.js";
 import type { FeedbackResponseType, FeedbackResponseValue } from "../contracts.js";
 import type { Db } from "../db.js";
 import { getCanonicalArtifactVersion, recordArtifactVersion } from "../provider-artifacts.js";
+import { getOperatorId } from "../users/store.js";
 import {
   BRIEFING_PROFILE,
   BriefingDirectiveError,
@@ -587,14 +588,24 @@ export function readBriefing(
   };
 }
 
-function requireRoundMember(db: Db, briefingId: string, roundId: string, actorUserId: string) {
+function requireRoundResponder(db: Db, briefingId: string, roundId: string, actorUserId: string, now: number) {
   const row = db.prepare(
     `SELECT r.id FROM briefing_rounds r JOIN briefings b ON b.id = r.briefing_id
       WHERE b.id = ? AND r.id = ?`,
   ).get(briefingId, roundId);
-  if (!row || !briefingMemberAllows(db, briefingId, actorUserId)) {
+  if (!row) {
     throw new BriefingStoreError("briefing round not found", 404, "not_found");
   }
+  if (briefingMemberAllows(db, briefingId, actorUserId)) return;
+  if (getOperatorId(db) !== actorUserId) {
+    throw new BriefingStoreError("briefing round not found", 404, "not_found");
+  }
+  // Operator detail projection is authoritative for the same exact pair. Bind
+  // the active operator as a responder in this response transaction so the
+  // schema's actor-membership foreign keys remain the durable authority.
+  db.prepare(
+    "INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)",
+  ).run(briefingId, actorUserId, now);
 }
 
 function validateValue(responseType: FeedbackResponseType, value: unknown, optionsJson: string): FeedbackResponseValue {
@@ -652,7 +663,7 @@ export function applyBriefingAnswers(
 ) {
   if (!Array.isArray(answers)) throw new BriefingStoreError("answers must be an array");
   return db.transaction(() => {
-    requireRoundMember(db, briefingId, roundId, actorUserId);
+    requireRoundResponder(db, briefingId, roundId, actorUserId, now);
     requireValidBriefingRoundBinding(db, roundId);
     const answerEventIds: string[] = [];
     for (const [index, raw] of answers.entries()) {
@@ -736,7 +747,7 @@ export function applyBriefingAnnotations(
 ) {
   if (!Array.isArray(annotations)) throw new BriefingStoreError("annotations must be an array");
   return db.transaction(() => {
-    requireRoundMember(db, briefingId, roundId, actorUserId);
+    requireRoundResponder(db, briefingId, roundId, actorUserId, now);
     const source = requireValidBriefingRoundBinding(db, roundId).source;
     const ids: string[] = [];
     for (const [index, raw] of annotations.entries()) {
@@ -821,7 +832,7 @@ export function submitBriefingRound(
     throw new BriefingStoreError("annotation_event_ids must contain nonblank strings");
   }
   return db.transaction(() => {
-    requireRoundMember(db, briefingId, roundId, actorUserId);
+    requireRoundResponder(db, briefingId, roundId, actorUserId, now);
     requireValidBriefingRoundBinding(db, roundId);
     const current = validatedEffectiveAnswers(db, roundId, actorUserId);
     const currentKeys = current.map((answer) => `${answer.directive_key}\0${answer.response_event_id}`).sort();

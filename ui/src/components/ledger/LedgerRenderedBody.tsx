@@ -47,7 +47,7 @@ export function LedgerRenderedBody({
   if (!html) {
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;
   }
-  return <div ref={containerRef} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={containerRef} className={`${className} rendered-markdown`} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function normalizeMarkdownSource(source: string): string {

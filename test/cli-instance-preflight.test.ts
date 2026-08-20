@@ -251,6 +251,7 @@ const CATEGORY_PROBE_INSTANCE: InstanceInfo = {
   role: "preview",
   operational_mutations: "reject",
   operational_mutations_overridden: false,
+  briefing_response_mutations: "reject",
   db_path: null,
   db_path_source: "default",
 };

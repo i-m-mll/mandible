@@ -3,7 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { Conversation, ConversationSidebarGroup, InstanceInfo } from '../ui/src/api.js';
+import type {
+  ConversationSidebarConversation,
+  ConversationSidebarGroup,
+  InstanceInfo,
+} from '../ui/src/api.js';
 import { CHAT_VIEW_STATE_KEY } from '../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
 
@@ -45,7 +49,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const conversation: Conversation = {
+const conversation: ConversationSidebarConversation = {
   id: 'conv-row',
   source: 'codex',
   source_path: '/tmp/conversation.jsonl',
@@ -67,6 +71,8 @@ const conversation: Conversation = {
   notes: null,
   parent_conversation_id: null,
   children_count: 0,
+  canonical_project_id: null,
+  canonical_project_key: null,
   attach_state: {
     kind: 'historical',
     reason: 'no-session',
@@ -77,7 +83,7 @@ const conversation: Conversation = {
   },
 };
 
-const existingPinnedConversation: Conversation = {
+const existingPinnedConversation: ConversationSidebarConversation = {
   ...conversation,
   id: 'conv-existing-pin',
   title: 'Existing pinned conversation',
@@ -94,7 +100,7 @@ const rejectModePreview: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
 };
 
-function sidebarResponse(rows: Conversation[]) {
+function sidebarResponse(rows: ConversationSidebarConversation[]) {
   const groups: ConversationSidebarGroup[] = [];
   const pinned = rows.filter((row) => row.starred);
   const chats = rows.filter((row) => !row.starred);
@@ -105,6 +111,20 @@ function sidebarResponse(rows: Conversation[]) {
     groups.push({ key: 'chats', kind: 'chats', label: 'Chats', total: chats.length, conversations: chats, next_cursor: null });
   }
   return { groups, limit: 5 };
+}
+
+function positionWindow(row: Conversation) {
+  return {
+    conversation: row,
+    body_source: 'legacy' as const,
+    blocks: [],
+    children: [],
+    parent: null,
+    revision: row.block_count,
+    total: row.block_count,
+    target: { kind: 'initial' as const, requested_value: null, position: null, block_id: null, turn_id: null },
+    window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 },
+  };
 }
 
 describe('conversation sidebar labeled-item rows', () => {
@@ -118,9 +138,9 @@ describe('conversation sidebar labeled-item rows', () => {
       tags: [],
     };
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse([conversation, idleConversation]));
-    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
-      ...(id === idleConversation.id ? idleConversation : conversation), blocks: [], children: [], parent: null,
-    }));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(id === idleConversation.id ? idleConversation : conversation)
+    ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
@@ -143,12 +163,7 @@ describe('conversation sidebar labeled-item rows', () => {
   it('keeps section nodes separate while giving leaf rows direct Pin and secondary overflow actions', async () => {
     let serverRow = conversation;
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse([serverRow]));
-    vi.spyOn(api, 'getConversation').mockResolvedValue({
-      ...conversation,
-      blocks: [],
-      children: [],
-      parent: null,
-    });
+    vi.spyOn(api, 'getConversationWindow').mockResolvedValue(positionWindow(conversation));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
@@ -206,12 +221,9 @@ describe('conversation sidebar labeled-item rows', () => {
   it('reconciles Pin and Unpin into visible sections while preserving order, selection, focus, and reload state', async () => {
     let serverRows = [conversation, existingPinnedConversation];
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse(serverRows));
-    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
-      ...(serverRows.find((row) => row.id === id) ?? conversation),
-      blocks: [],
-      children: [],
-      parent: null,
-    }));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(serverRows.find((row) => row.id === id) ?? conversation)
+    ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
@@ -284,12 +296,9 @@ describe('conversation sidebar labeled-item rows', () => {
   it('uses persisted browser pin membership without PATCH in explicit reject-mode previews', async () => {
     const serverRows = [conversation, existingPinnedConversation];
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse(serverRows));
-    vi.spyOn(api, 'getConversation').mockImplementation(async (id) => ({
-      ...(serverRows.find((row) => row.id === id) ?? conversation),
-      blocks: [],
-      children: [],
-      parent: null,
-    }));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(serverRows.find((row) => row.id === id) ?? conversation)
+    ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);

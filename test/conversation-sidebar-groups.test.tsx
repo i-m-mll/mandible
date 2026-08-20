@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../ui/src/api.js';
-import type { CanonicalProject, Conversation, ConversationSidebarGroup } from '../ui/src/api.js';
+import type {
+  CanonicalProject,
+  ConversationSidebarConversation,
+  ConversationSidebarGroup,
+  InstanceInfo,
+} from '../ui/src/api.js';
 import { ConversationsView } from '../ui/src/views/conversations.js';
 import { normalizeSidebarGroupLimit } from '../ui/src/components/shared/sidebar-group-settings.js';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared.js';
@@ -52,13 +57,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function conversation(id: string, title: string, starred = false): Conversation {
+function conversation(id: string, title: string, starred = false): ConversationSidebarConversation {
   return {
     id, source: 'codex', source_path: `/tmp/${id}.jsonl`, title, summary: null,
     started_at: '2026-08-18T12:00:00.000Z', ended_at: null, block_count: 2,
     session_id: `session-${id}`, project_path: null, cwd: null, branch: null,
     model: null, cli_version: null, is_sidechain: false, agent_id: null, starred,
     tags: [], notes: null, parent_conversation_id: null, children_count: 0,
+    canonical_project_id: null, canonical_project_key: null,
     attach_state: { kind: 'historical', reason: 'no-session', resumable: false, can_fork: false, provider_session_id: null, checked_at: 1 },
   };
 }
@@ -82,22 +88,56 @@ const canonicalProjects: CanonicalProject[] = [
   },
 ];
 
+const rejectModePreview: InstanceInfo = {
+  role: 'preview',
+  operational_mutations: 'reject',
+  operational_mutations_overridden: true,
+  db_path: '/tmp/mandible-preview.db',
+  db_path_source: 'iab-preview-copy',
+};
+
 function group(overrides: Partial<ConversationSidebarGroup> & Pick<ConversationSidebarGroup, 'key' | 'kind' | 'label'>): ConversationSidebarGroup {
   return { total: 0, conversations: [], next_cursor: null, ...overrides };
 }
 
-function renderView(consoleSessions: ConsoleSession[] = [], onNewSession = vi.fn()): void {
+function renderView(
+  consoleSessions: ConsoleSession[] = [],
+  onNewSession = vi.fn(),
+  instance: InstanceInfo | null = null,
+  sidebarGroupLimit = 1,
+): void {
   render(<ConversationsView
     consoleSessions={consoleSessions}
     initialConversationId={null}
     initialSessionId={null}
-    sidebarGroupLimit={1}
+    sidebarGroupLimit={sidebarGroupLimit}
+    instance={instance}
     onSelectSession={() => undefined}
     onNewSession={onNewSession}
   />);
 }
 
 describe('conversation sidebar groups', () => {
+  it('sends bounded deduplicated full canonical project ids on the wire', async () => {
+    const projectIds = Array.from({ length: 502 }, (_, index) => `prj-full-${index}`);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ limit: 1, groups: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.getConversationSidebar({
+      limit: 1,
+      project_ids: [` ${projectIds[0]} `, projectIds[0], ...projectIds.slice(1)],
+    });
+
+    const requestUrl = new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost');
+    const sentProjectIds = requestUrl.searchParams.get('project_ids')?.split(',') ?? [];
+    expect(sentProjectIds).toHaveLength(500);
+    expect(sentProjectIds.slice(0, 2)).toEqual(['prj-full-0', 'prj-full-1']);
+    expect(sentProjectIds.at(-1)).toBe('prj-full-499');
+  });
+
   it('normalizes canonical shown-project selections as bounded browser-local additive intent', () => {
     expect(normalizeChatViewState({ shownProjects: [
       { projectId: ' p1 ', checkoutId: ' c1 ' },
@@ -115,7 +155,30 @@ describe('conversation sidebar groups', () => {
     });
   });
 
+  it('drops removed registry selections without requesting or manufacturing their groups', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      shownProjects: [{ projectId: 'prj-removed', checkoutId: 'checkout-removed' }],
+    }));
+    const requests: Array<Parameters<typeof api.getConversationSidebar>[0]> = [];
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
+      requests.push(params);
+      return { limit: 1, groups: [] };
+    });
+    renderView();
+
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
+      .toEqual([]));
+    await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    expect(requests.every((request) => !request.project_ids?.includes('prj-removed'))).toBe(true);
+    expect(screen.queryByRole('button', { name: /^Removed/ })).toBeNull();
+  });
+
   it('advances only the requested pinned cursor and leaves the generic Chats cursor independent', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
+    }));
     const requests: Array<Parameters<typeof api.getConversationSidebar>[0]> = [];
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
       requests.push(params);
@@ -132,6 +195,10 @@ describe('conversation sidebar groups', () => {
     });
     renderView();
 
+    await waitFor(() => expect(requests).toContainEqual(expect.objectContaining({
+      project_ids: ['prj-mandible'],
+    })));
+
     const pinnedHeading = await screen.findByRole('button', { name: /^Pinned/ });
     expect(pinnedHeading.querySelector('.sidebar-group-node__count')).toBeNull();
     expect(pinnedHeading.getAttribute('aria-description')).toBe('2 pinned chats');
@@ -141,17 +208,23 @@ describe('conversation sidebar groups', () => {
     expect(showMore.tabIndex).toBe(0);
     showMore.focus();
     expect(document.activeElement).toBe(showMore);
-    expect(pinnedSection.lastElementChild?.lastElementChild).toBe(showMore.parentElement);
+    const pinnedBody = document.getElementById(pinnedHeading.getAttribute('aria-controls') ?? '');
+    expect(pinnedBody).not.toBeNull();
+    expect(within(pinnedBody as HTMLElement).getByRole('button', { name: 'Show more' })).toBe(showMore);
+    expect(pinnedBody?.querySelector('.sidebar-group-node__show-more-row')).toBe(showMore.parentElement);
 
     fireEvent.click(showMore);
     await screen.findByRole('button', { name: 'Open conversation Pinned two' });
     expect(requests.filter((request) => request.group_key)).toEqual([
-      expect.objectContaining({ group_key: 'opaque:pinned', cursor: 'pin-cursor', limit: 1 }),
+      expect.objectContaining({
+        group_key: 'opaque:pinned', cursor: 'pin-cursor', limit: 1,
+        project_ids: ['prj-mandible'],
+      }),
     ]);
     expect(screen.getByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
     expect(within(screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement)
       .getByRole('button', { name: 'Show more' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Projects' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Projects' })).toBeTruthy();
   });
 
   it('maps agy live sessions to the accessible agy Chat provider dot', async () => {
@@ -176,95 +249,157 @@ describe('conversation sidebar groups', () => {
       .classList.contains('sidebar-item-row__provider-dot--agy')).toBe(true);
   });
 
-  it('creates unscoped and exact-root chats and persists added empty project groups', async () => {
-    const scopedProject = { ...projectOne, cwd: '/repos/mandible/packages/ui' };
+  it('adds a canonical project and immediately consumes its pre-existing multi-provider server group', async () => {
+    const codex = { ...projectOne, title: 'Existing Codex', canonical_project_id: 'prj-mandible', canonical_project_key: 'mandible' };
+    const claude = { ...conversation('claude-existing', 'Existing Claude'), source: 'claude_code' as const, canonical_project_id: 'prj-mandible', canonical_project_key: 'mandible' };
+    const agy = { ...conversation('agy-existing', 'Existing agy'), source: 'gemini' as const, canonical_project_id: 'prj-mandible', canonical_project_key: 'mandible' };
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
-    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
-      limit: 1,
-      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [scopedProject] })],
+    const requests: Array<Parameters<typeof api.getConversationSidebar>[0]> = [];
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
+      requests.push(params);
+      if (params.project_ids?.includes('prj-mandible')) {
+        return {
+          limit: 1,
+          groups: [group({
+            key: 'opaque:project:mandible', kind: 'project', label: 'Mandible',
+            project_id: 'prj-mandible', project_key: 'mandible', total: 3,
+            conversations: [codex, claude, agy],
+          })],
+        };
+      }
+      return { limit: 1, groups: [] };
     });
-    vi.spyOn(api, 'getConversation').mockResolvedValue({ ...scopedProject, blocks: [], children: [], parent: null });
-    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const onNewSession = vi.fn();
-    renderView([], onNewSession);
+    renderView([], onNewSession, null, 5);
 
-    const conversationRow = await screen.findByRole('button', { name: 'Open conversation Project one' });
-    const chats = screen.getByRole('button', { name: /^Chats/ });
-    expect(chats.closest('section')?.contains(conversationRow)).toBe(true);
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
-    expect(screen.getByRole('textbox', { name: 'Search chats' }).closest('.sidebar-search-filter')
-      ?.querySelector('.sidebar-search-filter__leading-action')).toBeNull();
-    const globalActions = screen.getByRole('region', { name: 'Chat actions' });
-    const globalNewChat = within(globalActions).getByRole('button', { name: 'New chat' });
-    const newChatGlyph = Array.from(globalNewChat.querySelectorAll('path')).map((path) => path.getAttribute('d'));
-    expect(globalNewChat.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
-    const chatsHeading = screen.getByRole('button', { name: /^Chats/ });
-    const chatsNewChat = within(chatsHeading.parentElement as HTMLElement).getByRole('button', { name: 'New chat' });
-    expect(Array.from(chatsNewChat.querySelectorAll('path')).map((path) => path.getAttribute('d'))).toEqual(newChatGlyph);
-    fireEvent.click(globalNewChat);
-    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Global chat' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Global chat', cwd: undefined }));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
-    expect(screen.queryByRole('combobox', { name: 'Registered project' })).toBeNull();
-    const addProject = screen.getByRole('button', { name: 'Add project' });
-    expect(addProject.querySelector('[data-sidebar-action-icon="add-project"]')).toBeTruthy();
-    expect(Array.from(addProject.querySelectorAll('path')).map((path) => path.getAttribute('d'))).not.toEqual(newChatGlyph);
-    fireEvent.click(addProject);
-    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Mandible — Primary (/repos/mandible)' })).toBeTruthy();
-    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Mandible — Alternate (/repos/mandible-alt)' })).toBeTruthy();
-    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getByRole('option', { name: 'Feedbax' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Add project' }));
     fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
-    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Scoped chat' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Scoped chat', cwd: '/repos/mandible' }));
+
+    const projectHeading = await screen.findByRole('button', { name: /^Mandible/ });
+    const projectSection = projectHeading.closest('section') as HTMLElement;
+    expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing Codex' })).toBeTruthy();
+    expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing Claude' })).toBeTruthy();
+    expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing agy' })).toBeTruthy();
+    expect(requests).toContainEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
+    expect(onNewSession).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
     fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible-alt' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    expect(screen.getAllByRole('button', { name: 'New chat in Mandible' })).toHaveLength(1);
-    expect(Array.from(screen.getByRole('button', { name: 'New chat in Mandible' }).querySelectorAll('path'))
-      .map((path) => path.getAttribute('d'))).toEqual(newChatGlyph);
-    fireEvent.click(screen.getByRole('button', { name: 'New chat in Mandible' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ label: 'Alternate scoped chat', cwd: '/repos/mandible-alt' }));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
-    fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-feedbax:checkout-feedbax' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    expect(await screen.findByRole('button', { name: 'New chat in Feedbax' })).toBeTruthy();
+    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible-alt' }));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
-      .toEqual([
-        { projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' },
-        { projectId: 'prj-feedbax', checkoutId: 'checkout-feedbax' },
-      ]));
-    expect(screen.getAllByRole('button', { name: /^New chat in / }).map((button) => button.getAttribute('aria-label')).sort())
-      .toEqual(['New chat in Feedbax', 'New chat in Mandible']);
+      .toEqual([{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' }]));
   });
 
-  it('keeps conversation paths unscoped under Chats without a scanner-repo input surface', async () => {
+  it('cannot manufacture a project group from a legacy directory label or path', async () => {
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
-    const unresolved = { ...projectOne, cwd: '/repos/mandible/packages/ui', project_path: '/repos/mandible' };
+    const unresolved = {
+      ...projectOne,
+      title: '-Users-mll-Main-10-Projects-05-Utils-mandible',
+      cwd: '/repos/mandible/packages/ui',
+      project_path: '/repos/mandible',
+      source_path: '/provider/-Users-mll-Main-10-Projects-05-Utils-mandible/project-1.jsonl',
+    };
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
       limit: 1,
       groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 1, conversations: [unresolved] })],
     });
     renderView();
-    const conversationRow = await screen.findByRole('button', { name: 'Open conversation Project one' });
+    const conversationRow = await screen.findByRole('button', {
+      name: 'Open conversation Users-mll-Main-10-Projects-05-Utils-mandible',
+    });
     const chats = screen.getByRole('button', { name: /^Chats/ });
     expect(chats.closest('section')?.contains(conversationRow)).toBe(true);
     expect(screen.queryByRole('button', { name: /^Mandible/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
   });
 
+  it('keeps preview pin overrides local and rehomes unpinned rows to their selected canonical server group', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
+    }));
+    const projectConversation = {
+      ...projectOne,
+      canonical_project_id: 'prj-mandible',
+      canonical_project_key: 'mandible',
+    };
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 1,
+      groups: [group({
+        key: 'opaque:project:mandible', kind: 'project', label: 'Mandible',
+        project_id: 'prj-mandible', project_key: 'mandible', total: 1,
+        conversations: [projectConversation],
+      })],
+    });
+    const updateConversation = vi.spyOn(api, 'updateConversation');
+    renderView([], vi.fn(), rejectModePreview);
+
+    const projectHeading = await screen.findByRole('button', { name: /^Mandible/ });
+    const projectSection = projectHeading.closest('section') as HTMLElement;
+    fireEvent.click(within(projectSection).getByRole('button', { name: 'Pin Project one' }));
+    const pinnedSection = (await screen.findByRole('button', { name: /^Pinned/ })).closest('section') as HTMLElement;
+    expect(within(pinnedSection).getByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
+
+    fireEvent.click(within(pinnedSection).getByRole('button', { name: 'Unpin Project one' }));
+    expect(await within(projectSection).findByRole('button', { name: 'Open conversation Project one' })).toBeTruthy();
+    expect(updateConversation).not.toHaveBeenCalled();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}')).toMatchObject({
+      previewPinOverrides: { [projectConversation.id]: false },
+    }));
+  });
+
+  it('refetches membership-changing SSE updates with the selected canonical project ids intact', async () => {
+    FakeEventSource.instances = [];
+    __resetSharedSseForTests(FakeEventSource as unknown as typeof EventSource);
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
+    }));
+    const canonicalRow = {
+      ...projectOne,
+      canonical_project_id: 'prj-mandible',
+      canonical_project_key: 'mandible',
+    };
+    const requests: Array<Parameters<typeof api.getConversationSidebar>[0]> = [];
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
+      requests.push(params);
+      return {
+        limit: 1,
+        groups: [group({
+          key: 'opaque:project:mandible', kind: 'project', label: 'Mandible',
+          project_id: 'prj-mandible', project_key: 'mandible', total: 1,
+          conversations: [canonicalRow],
+        })],
+      };
+    });
+    renderView();
+    await screen.findByRole('button', { name: 'Open conversation Project one' });
+    await waitFor(() => expect(requests).toContainEqual(expect.objectContaining({
+      project_ids: ['prj-mandible'],
+    })));
+    const priorRequestCount = requests.length;
+
+    FakeEventSource.instances[0].emit({
+      type: 'conversation:updated',
+      data: { id: canonicalRow.id, block_count: canonicalRow.block_count, canonical_project_id: null },
+    });
+    await waitFor(() => expect(requests.length).toBeGreaterThan(priorRequestCount), { timeout: 1600 });
+    expect(requests.at(-1)).toEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
+  });
+
   it('replays each current per-key target during filter reconciliation without losing selection', async () => {
     vi.useFakeTimers();
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
+    }));
     const request = vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
       if (params.group_key === 'opaque:pinned') {
         return { limit: 1, groups: [group({ key: 'opaque:pinned', kind: 'pinned', label: 'Pinned', total: 2, conversations: [pinnedTwo], next_cursor: null })] };
@@ -284,6 +419,7 @@ describe('conversation sidebar groups', () => {
     await vi.advanceTimersByTimeAsync(350);
     await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
       group_key: 'opaque:pinned', cursor: 'pin-cursor', search: 'Pinned', limit: 1,
+      project_ids: ['prj-mandible'],
     })));
     expect(heading.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(heading);

@@ -10,8 +10,9 @@
 //   - the never-registered empty state says so in those words and offers no
 //     way to create anything.
 //   - a stale executor report is visibly stale in the list.
-import { cleanup, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TASK_INVENTORY_SCHEMA, type TaskInventoryResponse } from '../src/contracts.js';
@@ -286,6 +287,11 @@ describe('taskFact', () => {
 
 describe('TasksView', () => {
   it('renders a Mandible reminder as a read-only first-party row with exact provenance', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     const created = createManagedReminder(
       db,
       parseManagedReminderCreateRequest({
@@ -322,7 +328,83 @@ describe('TasksView', () => {
     expect(within(detail).getByText('develop')).toBeTruthy();
     expect(within(detail).getByText(created.reminder.revision.payload_digest)).toBeTruthy();
     expect(within(detail).getByText(created.reminder.created_by_user_id)).toBeTruthy();
+    expect(detail.querySelector('[data-detail-pane-header-variant="standard"]')).toBeTruthy();
+    expect(within(detail).getByText('Mandible reminder · tasks-view-reminder-project')).toBeTruthy();
+    const copyReminderReference = within(detail).getByRole('button', {
+      name: `Copy reminder reference ${created.reminder.id}`,
+    });
+    fireEvent.click(copyReminderReference);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(created.reminder.id));
+    const reminderRow = within(document.querySelector('.tasks-sidebar') as HTMLElement)
+      .getByText('Review the twentieth canonical merge').closest('.tasks-row') as HTMLElement;
+    expect(within(reminderRow).getByText('tasks-view-reminder-project')).toBeTruthy();
+    expect(within(reminderRow).getByText('armed')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /request disable|new|create|edit|\+/i })).toBeNull();
+  });
+
+  it('uses shared search and filters without resetting search, selection, or filters on reconciliation', async () => {
+    const created = createManagedReminder(
+      db,
+      parseManagedReminderCreateRequest({
+        schema: 'mandible-reminder@1',
+        idempotency_key: 'tasks-sidebar-filter-reminder',
+        project: 'tasks-view-reminder-project',
+        message: 'Review reminder filters',
+        predicate: {
+          kind: 'auth_merge_count_gte',
+          project: 'tasks-view-reminder-project',
+          base_branch: 'develop',
+          canonical_message: true,
+          threshold: 3,
+        },
+      }),
+      { userId: publisherId, evidenceMethod: 'api_token' },
+      { projectId },
+    );
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    inventory.tasks.push({
+      source_kind: 'mandible',
+      key: `mandible-reminder:${created.reminder.id}`,
+      reminder: created.reminder,
+    });
+    stubInventory(inventory);
+    render(<TasksView initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
+
+    const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
+    const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
+    await within(sidebar).findByRole('button', { name: 'Select Daily digest' });
+    const executorRow = within(sidebar).getByText('Daily digest').closest('.tasks-row') as HTMLElement;
+    const reminderRow = within(sidebar).getByText('Review reminder filters').closest('.tasks-row') as HTMLElement;
+    expect(executorRow.querySelector('.sidebar-item-row__badges')).toBeNull();
+    expect(within(executorRow).queryByText('agent-schedule')).toBeNull();
+    expect(executorRow.querySelector('.tasks-freshness')).toBeNull();
+    expect(within(reminderRow).getByText('tasks-view-reminder-project')).toBeTruthy();
+    expect(within(reminderRow).getByText('armed')).toBeTruthy();
+    fireEvent.input(search, { target: { value: 'daily-digest' } });
+    expect(within(sidebar).getByRole('button', { name: 'Select Daily digest' })).toBeTruthy();
+    expect(within(sidebar).queryByRole('button', { name: 'Select Review reminder filters' })).toBeNull();
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Select Daily digest' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Task filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reminders' }));
+    expect(screen.getByRole('button', { name: 'Reminders' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(sidebar).getByText(/No tasks match your search and filters/i)).toBeTruthy();
+
+    const inventoryReadsBeforeSse = vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input) === '/api/tasks').length;
+    window.dispatchEvent(new CustomEvent('managed-reminder:sse'));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input) === '/api/tasks').length).toBeGreaterThan(inventoryReadsBeforeSse));
+    expect((search as HTMLInputElement).value).toBe('daily-digest');
+    expect(screen.getByRole('button', { name: 'Reminders' }).getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.input(search, { target: { value: '' } });
+    expect(within(sidebar).getByRole('button', { name: 'Select Review reminder filters' })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('group', { name: 'Task source' }))
+      .getByRole('button', { name: 'all' }));
+    expect(within(sidebar).getByRole('button', { name: 'Select Daily digest' }).getAttribute('aria-current'))
+      .toBe('true');
   });
 
   it('says plainly that no executor has registered an inventory', async () => {
@@ -347,7 +429,7 @@ describe('TasksView', () => {
         .toHaveLength(2);
     });
     expect(screen.queryByText(/No executor has registered an inventory/i)).toBeNull();
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('searchbox', { name: 'Search tasks' })).toBeTruthy();
     expect(document.querySelector('form')).toBeNull();
     expect(screen.queryByRole('button', { name: /new|create|run|enable|edit|delete|\+/i })).toBeNull();
   });
@@ -657,7 +739,7 @@ describe('TasksView', () => {
       .toBe(true);
   });
 
-  it('marks a stale executor report in the sidebar list', async () => {
+  it('removes provider and freshness badges from rows while retaining them in typed detail', async () => {
     post([knownTask()], Date.now() - TASK_INVENTORY_STALE_AFTER_MS - HOUR);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
     render(<TasksView />);
@@ -665,8 +747,20 @@ describe('TasksView', () => {
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
     const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
     const row = within(sidebar).getByText('Daily digest').closest('.tasks-row') as HTMLElement;
-    expect(within(row).getByText('agent-schedule')).toBeTruthy();
-    expect(row.querySelector('.tasks-freshness--stale')).toBeTruthy();
+    expect(row.classList.contains('sidebar-item-row')).toBe(true);
+    expect(row.querySelector('.sidebar-item-row__badges')).toBeNull();
+    expect(within(row).queryByText('agent-schedule')).toBeNull();
+    expect(row.querySelector('.tasks-freshness')).toBeNull();
+
+    const detail = document.querySelector('.tasks-detail') as HTMLElement;
+    expect(detail.querySelector('[data-detail-pane-header-variant="standard"]')).toBeTruthy();
+    expect(within(detail).getAllByText('agent-schedule').length).toBeGreaterThan(0);
+    expect(detail.querySelector('.detail-pane-header .tasks-freshness--stale')?.textContent).toBe('stale');
+    expect(within(detail).getByRole('button', {
+      name: 'Copy task reference agent-schedule/daily-digest',
+    })).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: 'Request disable' })
+      .closest('.detail-pane-header__actions')).toBeTruthy();
   });
 
   it('keeps every explicit unknown visible, including unknown freshness', async () => {
@@ -711,7 +805,8 @@ describe('TasksView', () => {
     expect(within(detail).getAllByText(/unknown — the executor could not say/i)).toHaveLength(2);
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
       .getByText('Unknown task').closest('.tasks-row') as HTMLElement;
-    expect(row.querySelector('.tasks-freshness--unknown')).toBeTruthy();
+    expect(row.querySelector('.tasks-freshness--unknown')).toBeNull();
+    expect(detail.querySelector('.detail-pane-header .tasks-freshness--unknown')?.textContent).toBe('unknown');
   });
 
   it('labels a report exactly at the staleness horizon as current', async () => {
@@ -726,7 +821,46 @@ describe('TasksView', () => {
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
       .getByText('Daily digest').closest('.tasks-row') as HTMLElement;
-    expect(row.querySelector('.tasks-freshness--current')).toBeTruthy();
+    expect(row.querySelector('.tasks-freshness--current')).toBeNull();
+    expect(document.querySelector('.detail-pane-header .tasks-freshness--current')?.textContent).toBe('current');
+  });
+
+  it('uses Chat-equal native row geometry and one typed detail scroll owner', async () => {
+    post([knownTask()]);
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView />);
+
+    await screen.findByRole('button', { name: 'Select Daily digest' });
+    const tasksCss = readFileSync('ui/src/views/tasks.css', 'utf8');
+    const chatCss = readFileSync('ui/src/styles/chat-history.css', 'utf8');
+    const rowCss = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
+    expect(tasksCss).toMatch(/\.tasks-sidebar__list\s*\{[^}]*padding:\s*4px 6px;/s);
+    expect(chatCss).toMatch(/\.chat-history-list\s*\{[^}]*padding:\s*8px 6px 14px;/s);
+    expect(rowCss).toMatch(/\.sidebar-item-row__select\s*\{[^}]*padding:\s*5px 7px 5px var\(--sidebar-title-column-inset, 7px\);/s);
+
+    const probe = document.createElement('div');
+    probe.innerHTML = '<div class="tasks-list"><button class="select"></button></div><div class="chat-list"><button class="select"></button></div>';
+    const style = document.createElement('style');
+    style.textContent = '.tasks-list{padding:4px 6px}.chat-list{padding:8px 6px 14px}.select{padding:5px 7px 5px 7px}';
+    document.head.append(style);
+    document.body.append(probe);
+    const nativeInset = (list: Element) => Number.parseFloat(getComputedStyle(list).paddingLeft)
+      + Number.parseFloat(getComputedStyle(list.querySelector('.select')!).paddingLeft);
+    expect(nativeInset(probe.querySelector('.tasks-list')!)).toBe(13);
+    expect(nativeInset(probe.querySelector('.chat-list')!)).toBe(13);
+    probe.remove();
+    style.remove();
+
+    const detail = document.querySelector('.tasks-detail') as HTMLElement;
+    expect(detail.classList.contains('detail-pane-shell')).toBe(true);
+    expect(detail.querySelectorAll('[data-detail-pane-slot="header"]')).toHaveLength(1);
+    expect(detail.querySelectorAll('[data-detail-pane-slot="notice"]')).toHaveLength(1);
+    expect(detail.querySelector('[data-detail-pane-slot="notice"] .detail-pane-notice')).toBeTruthy();
+    expect(detail.querySelectorAll('[data-detail-pane-slot="body"]')).toHaveLength(1);
+    expect(detail.querySelector('.tasks-detail__content header')).toBeNull();
+    expect(tasksCss).not.toMatch(/\.tasks-detail\s*\{[^}]*overflow(?:-y)?:/s);
+    expect(readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8'))
+      .toMatch(/\.detail-pane-shell__body\s*\{[^}]*overflow-y:\s*auto;/s);
   });
 });
 
@@ -840,6 +974,10 @@ describe('TasksView task-command v2', () => {
       }),
     });
     render(<TasksView />);
+    const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
+    fireEvent.input(search, { target: { value: 'daily' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Task filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'current' }));
     (await screen.findByRole('button', { name: 'Enable task' })).click();
     const before = stub.inventoryReads();
     await waitFor(() => expect(intervalSpy.mock.calls
@@ -849,6 +987,10 @@ describe('TasksView task-command v2', () => {
     }));
     await waitFor(() => expect(stub.inventoryReads()).toBeGreaterThan(before));
     expect(screen.getByText('Rejected: stale_target.')).toBeTruthy();
+    expect((search as HTMLInputElement).value).toBe('daily');
+    expect(screen.getByRole('button', { name: 'current' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Select Daily digest' }).getAttribute('aria-current'))
+      .toBe('true');
   });
 
   it('sse_reconciles_with_polling_fallback', async () => {

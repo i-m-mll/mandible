@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { getProjectTimeline } from '../api';
 import { useAppShell, useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -1759,6 +1760,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         },
       });
     },
+    layout: 'anchored-detail' as const,
     content: inspectorContent,
   }), [inspectorContent, updateState, viewState.panes]);
 
@@ -1772,6 +1774,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
           {...VIEW_SIDEBAR_GEOMETRY.timeline}
           ariaLabel="Timeline controls"
           className="timeline-sidebar"
+          scrollBody
         >
             <div className="timeline-toolbar">
               <label className="timeline-control">
@@ -1891,8 +1894,12 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
             ) : null}
         </ViewSidebar>
 
-        <div className={`timeline-canvas${error ? ' timeline-canvas--with-banner' : ''}`}>
-          {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
+        <div className={`timeline-canvas${error ? ' timeline-canvas--with-notice' : ''}`}>
+          {error ? (
+            <DetailPaneNotice severity="error" density="compact">
+              Timeline refresh failed. Showing the last loaded timeline. {error}
+            </DetailPaneNotice>
+          ) : null}
 
           <div
             className={`timeline-grid timeline-grid--${viewState.density}`}

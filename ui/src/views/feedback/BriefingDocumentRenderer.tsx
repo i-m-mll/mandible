@@ -19,6 +19,7 @@ import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdenti
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { artifactDetailHref, displayResourceRef } from '../../resource-refs';
 import { shortRouteId } from '../../routing';
 import {
@@ -130,6 +131,14 @@ export function BriefingDocumentRenderer({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
   const loadSequence = useRef(0);
   const mutationSequence = useRef(0);
   const currentSelection = useRef(`${briefingId}:${roundId ?? 'latest'}`);
@@ -137,7 +146,7 @@ export function BriefingDocumentRenderer({
 
   const reconcile = useCallback(async () => {
     const sequence = ++loadSequence.current;
-    setLoad((current) => ({ ...current, loading: current.round === null, error: null }));
+    setLoad((current) => ({ ...current, loading: true, error: null }));
     try {
       const [identity, round] = await Promise.all([getClientAuthWhoami(), getBriefing(briefingId, roundId)]);
       if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
@@ -161,7 +170,9 @@ export function BriefingDocumentRenderer({
     } catch (error) {
       if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
       const message = error instanceof Error ? error.message : String(error);
-      setLoad((current) => ({ ...current, loading: false, error: message }));
+      setUserId(null);
+      setUserKind(null);
+      setLoad({ round: null, loading: false, error: message });
       onBriefingChange?.(null);
       return null;
     }
@@ -190,6 +201,9 @@ export function BriefingDocumentRenderer({
       const type = detail?.type;
       if (type !== 'reconnected' && !type?.startsWith('briefing:')) return;
       if (detail?.data?.briefing_id && detail.data.briefing_id !== briefingId) return;
+      if (type === 'reconnected' || type === 'briefing:round-published') {
+        setLoad((current) => ({ ...current, loading: true, error: null }));
+      }
       if (timer !== null) return;
       timer = window.setTimeout(() => {
         timer = null;
@@ -229,14 +243,18 @@ export function BriefingDocumentRenderer({
   };
 
   const canMutate = Boolean(
-    round?.valid
+    !load.loading
+    && load.error === null
+    && round?.valid
     && round.briefing_id === briefingId
+    && round.selected_round_id === round.round_id
+    && (roundId ? round.selected_round_id.startsWith(roundId) : round.selected_round_id === round.latest_round_id)
     && userId
     && userKind === 'human'
     && round.items.every((item) => item.responseVisible)
     && (round.state === 'open' || round.state === 'submitted')
     && round.directive_binding?.status === 'valid'
-    && (!instance || instance.operational_mutations === 'allow'),
+    && instance?.briefing_response_mutations === 'allow',
   );
   const requiredIncomplete = Boolean(round?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
   const draftDiffers = Boolean(round?.items.some((item) => item.item_kind === 'item'
@@ -428,6 +446,7 @@ export function BriefingDocumentRenderer({
           actions={round ? (
             <>
               <button
+                ref={actionsTriggerRef}
                 type="button"
                 className="briefing-detail__actions-trigger"
                 aria-label="Briefing actions"
@@ -438,7 +457,13 @@ export function BriefingDocumentRenderer({
                 <HorizontalDotsIcon />
               </button>
               {actionsOpen ? (
-                <div className="briefing-detail__actions-menu" role="menu">
+                <div
+                  ref={actionsMenuRef}
+                  className="briefing-detail__actions-menu app-anchored-menu"
+                  role="menu"
+                  popover="manual"
+                  style={actionsMenuStyle}
+                >
                   <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
                   {artifactVersionRef ? (
                     <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
@@ -450,26 +475,28 @@ export function BriefingDocumentRenderer({
           actionsLabel="Briefing actions"
         />
       )}
-      footer={round?.valid ? (
-        <>
-          <button
-            type="button"
-            className="briefing-primary"
-            aria-disabled={Boolean(submitReason)}
-            aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
-            title={submitReason ?? undefined}
-            onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
-            onKeyDown={(event) => {
-              if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
-              event.preventDefault();
-              void submit();
-            }}
-          >
-            {busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}
-          </button>
-          {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
-        </>
-      ) : undefined}
+      footer={round?.valid ? {
+        content: (
+          <>
+            <button
+              type="button"
+              className="briefing-primary"
+              aria-disabled={Boolean(submitReason)}
+              aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
+              title={submitReason ?? undefined}
+              onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
+              onKeyDown={(event) => {
+                if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
+                event.preventDefault();
+                void submit();
+              }}
+            >
+              {busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}
+            </button>
+            {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
+          </>
+        ),
+      } : undefined}
       overlays={(
         <DetailPaneModal
           open={metadataOpen}

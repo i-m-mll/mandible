@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
+import { SidebarAddProjectIcon, SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
 import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
 import {
   SidebarItemBadge,
@@ -25,8 +25,10 @@ import type {
   ConversationChild,
   InstanceInfo,
   ConversationParent,
+  ConversationPositionWindow,
   ConversationSource,
   ConversationSidebarGroup,
+  ConversationSidebarConversation,
   CanonicalProject,
   WorkflowRun,
   WorkflowWorker,
@@ -36,7 +38,7 @@ import {
   forkConversation,
   getConsoleSessionUsage,
   getConsoleSessionOptions,
-  getConversation,
+  getConversationWindow,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
@@ -52,8 +54,9 @@ import {
   type SessionPreset,
   type SessionRunOptionsSnapshot,
 } from '../api.js';
-import { MessageActions } from '../components/shared/MessageActions';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
@@ -66,7 +69,9 @@ import {
   Shelf,
   UsageModal,
   conversationBlocksToStreamEvents,
+  buildStreamState,
   deriveChatUsageSummary,
+  serializeConversationToMarkdown,
   useStatuslineTelemetry,
   type ShelfItem,
 } from '../chat';
@@ -75,19 +80,14 @@ import {
   mergeConversationSummaryIntoList,
   type ConversationAppendPayload,
 } from '../chat/conversationAppend';
-import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
-import { shortRouteId } from '../routing';
+import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
-// Bug: bce7370 — Shared message-block components
-import {
-  TextBlock,
-  ThinkingBlock,
-  ToolUseBlock,
-} from '../components/message-blocks';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { openMarkdownDocument } from '../chat/markdownActions';
 
 // ── Toast notification ──
 
@@ -95,23 +95,14 @@ type ToastState = { message: string; type: 'info' | 'error' } | null;
 
 type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
 
-function defaultCollapsedConversationBlocks(conversation: ConversationWithDetails): Set<string> {
-  return new Set(
-    conversation.blocks
-      .filter((block) => block.type === 'system')
-      .map((block) => block.id),
-  );
-}
-
 export function getConversationAttachPresentation(
   state: ConversationAttachState,
-): { label: string; title: string; composer: AttachComposerMode; hint: string | null } {
+): { label: string; title: string; composer: AttachComposerMode } {
   if (state.kind === 'live-owned') {
     return {
       label: 'Live',
       title: 'Mandible owns the live process for this conversation.',
       composer: 'enabled',
-      hint: null,
     };
   }
   if (state.kind === 'live-external') {
@@ -119,7 +110,6 @@ export function getConversationAttachPresentation(
       label: 'External',
       title: 'This conversation appears live outside Mandible.',
       composer: 'disabled',
-      hint: 'Live in your terminal.',
     };
   }
   if (state.kind === 'resumable') {
@@ -127,14 +117,12 @@ export function getConversationAttachPresentation(
       label: 'Resumable',
       title: 'Sending a message will resume this conversation.',
       composer: 'enabled',
-      hint: 'Sending will resume this session.',
     };
   }
   return {
     label: 'History',
     title: 'This conversation is read-only.',
     composer: 'hidden',
-    hint: null,
   };
 }
 
@@ -219,9 +207,6 @@ const AGENT_LABELS: Record<string, string> = {
   gemini: 'Gemini',
   shell: 'Shell',
 };
-
-const VIRTUAL_BUFFER = 10;
-const ESTIMATED_BLOCK_HEIGHT = 120;
 
 // ── Helpers ──
 
@@ -368,50 +353,6 @@ function parseMetadata(json: string): Record<string, unknown> {
   }
 }
 
-function isCollapsibleBlock(type: BlockType): boolean {
-  return (
-    type === 'thinking' ||
-    type === 'tool_use' ||
-    type === 'tool_result' ||
-    type === 'system' ||
-    type === 'event'
-  );
-}
-
-function getBlockHeaderLabel(
-  block: ConversationBlock,
-  metadata: Record<string, unknown>,
-): string | null {
-  switch (block.type) {
-    case 'user_message':
-      return null;
-    case 'assistant_message': {
-      const model = metadata.model as string | undefined;
-      return model ? `Assistant (${model})` : 'Assistant';
-    }
-    case 'thinking': {
-      const duration = metadata.duration_ms as number | undefined;
-      return duration ? `Thinking (${(duration / 1000).toFixed(1)}s)` : 'Thinking';
-    }
-    case 'tool_use': {
-      const toolName = metadata.tool_name as string | undefined;
-      return toolName ? `Tool: ${toolName}` : 'Tool Use';
-    }
-    case 'tool_result':
-      return 'Tool Result';
-    case 'system':
-      return 'System';
-    case 'event': {
-      const eventType = metadata.event_type as string | undefined;
-      const isError = metadata.is_error === true || metadata.level === 'error';
-      const prefix = isError ? 'Error' : 'Event';
-      return eventType ? `${prefix}: ${eventType}` : prefix;
-    }
-    default:
-      return block.type;
-  }
-}
-
 type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
@@ -425,6 +366,11 @@ type ChatEntry = {
   session?: ConsoleSession;
   liveSession?: ConsoleSession | null;
 };
+
+function getCanonicalConversationProjectId(conversation: Conversation): string | null {
+  const projectId = (conversation as Partial<ConversationSidebarConversation>).canonical_project_id;
+  return typeof projectId === 'string' && projectId ? projectId : null;
+}
 type ChatProjectGroup = {
   key: string;
   label: string;
@@ -445,13 +391,67 @@ type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
   children: ConversationChild[];
   parent: ConversationParent | null;
+  position_window: Pick<ConversationPositionWindow, 'revision' | 'total' | 'target' | 'window'>;
 };
 type ConversationAppendSseDetail = {
   type: string;
   data?: ConversationAppendPayload;
 };
 function conversationShell(conversation: Conversation): ConversationWithDetails {
-  return { ...conversation, blocks: [], children: [], parent: null };
+  return {
+    ...conversation,
+    blocks: [],
+    children: [],
+    parent: null,
+    position_window: {
+      revision: conversation.block_count,
+      total: conversation.block_count,
+      target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
+      window: {
+        start_position: null,
+        end_position: null,
+        has_before: false,
+        has_after: conversation.block_count > 0,
+        after_count: conversation.block_count,
+        limit: 160,
+      },
+    },
+  };
+}
+
+function flattenConversationWindow(payload: ConversationPositionWindow): ConversationWithDetails {
+  return {
+    ...payload.conversation,
+    blocks: payload.blocks,
+    children: payload.children,
+    parent: payload.parent,
+    position_window: {
+      revision: payload.revision,
+      total: payload.total,
+      target: payload.target,
+      window: payload.window,
+    },
+  };
+}
+
+export function conversationAnchorFromHash(hash: string): { block: string } | { turn: string } | null {
+  const query = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : '';
+  const params = new URLSearchParams(query);
+  const block = params.get('block');
+  const turn = params.get('turn');
+  if (block) return { block };
+  if (turn) return { turn };
+  return null;
+}
+
+export function conversationAnchorHref(
+  conversationId: string,
+  anchor: { block: string } | { turn: string },
+): string {
+  const params = new URLSearchParams({ conversation: conversationId });
+  if ('block' in anchor) params.set('block', anchor.block);
+  else params.set('turn', anchor.turn);
+  return `#/console?${params.toString()}`;
 }
 
 // ── Props ──
@@ -477,323 +477,6 @@ export type ConversationsViewProps = {
     cwd?: string;
   }) => void;
 };
-
-// ── Copy-markdown button ──
-
-function CopyButton({ content }: { content: string }): JSX.Element {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async (e: MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      className="block-copy-btn"
-      onClick={handleCopy}
-      title="Copy raw markdown"
-      aria-label={copied ? 'Copied' : 'Copy raw markdown'}
-    >
-      {copied ? (
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M3 8.5 6.2 11.6 13 4.8"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <rect
-            x="5.5"
-            y="4.5"
-            width="7"
-            height="8"
-            rx="1.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.2"
-          />
-          <path
-            d="M3.5 9.5h-1V3.5A1.5 1.5 0 0 1 4 2h6v1.2H4.7a1.2 1.2 0 0 0-1.2 1.2Z"
-            fill="currentColor"
-          />
-        </svg>
-      )}
-    </button>
-  );
-}
-
-// ── Tool use card ──
-// Bug: bce7370 — ToolUseCard replaced by shared ToolUseBlock (compact mode) from message-blocks.
-
-function renderConversationBlockBody(
-  block: ConversationBlock,
-  collapsed: boolean,
-): JSX.Element | null {
-  if (collapsed) return null;
-  const metadata = parseMetadata(block.metadata_json);
-  const instructionMeta = block.type === 'user_message' ? getInstructionMessageMeta(block.content) : null;
-
-  // Bug: bce7370 — Use shared components for text and tool blocks
-  if (block.type === 'assistant_message' || block.type === 'user_message') {
-    return (
-      <div className="block-content">
-        {instructionMeta ? (
-          <InstructionMessageBlock content={block.content} meta={instructionMeta} />
-        ) : (
-          <TextBlock content={block.content} />
-        )}
-      </div>
-    );
-  }
-
-  if (block.type === 'thinking') {
-    return (
-      <div className="block-content">
-        <ThinkingBlock content={block.content} defaultCollapsed={false} />
-      </div>
-    );
-  }
-
-  if (block.type === 'tool_use') {
-    const toolName = (metadata.tool_name as string | undefined) ?? 'Tool';
-    const toolInput = (metadata.tool_input ?? block.content) as Record<string, unknown> | string;
-    return (
-      <div className="block-content block-content--mono">
-        <ToolUseBlock toolName={toolName} input={toolInput} compact />
-      </div>
-    );
-  }
-
-  const showExpandButton = isCollapsibleBlock(block.type) && block.content.length > 200;
-  return (
-    <div className={`block-content${block.type === 'tool_result' ? ' block-content--mono' : ''}`}>
-      {showExpandButton ? (
-        <ContentWithExpand content={block.content} />
-      ) : (
-        <pre className="block-pre">{block.content}</pre>
-      )}
-    </div>
-  );
-}
-
-// ── Block Renderer ──
-
-function BlockRenderer({
-  block,
-  isSelected,
-  selectMode,
-  onToggleSelect,
-  onShiftSelect,
-  onToggleCollapse,
-  collapsed,
-  onFork,
-  onResume,
-}: {
-  block: ConversationBlock;
-  isSelected: boolean;
-  selectMode: boolean;
-  onToggleSelect: () => void;
-  onShiftSelect: () => void;
-  onToggleCollapse: () => void;
-  collapsed: boolean;
-  onFork?: (dagUuid: string) => void;
-  onResume?: (dagUuid: string) => void;
-}): JSX.Element {
-  const metadata = parseMetadata(block.metadata_json);
-  const isCollapsible = isCollapsibleBlock(block.type);
-
-  // User message: no header label (the box style is sufficient to distinguish it)
-  // Bug: 372edcb — remove redundant "User" header from user message blocks
-  const showHeader = block.type !== 'user_message';
-
-  const isErrorEvent = block.type === 'event' && (metadata.is_error === true || metadata.level === 'error');
-  const typeClass = [
-    'block',
-    `block-${block.type.replace('_', '-')}`,
-    isSelected ? 'block-selected' : '',
-    collapsed ? 'block-collapsed' : '',
-    isErrorEvent ? 'block-event--error' : '',
-    selectMode ? 'block--selectable' : '',
-  ].filter(Boolean).join(' ');
-
-  const handleClick = (e: MouseEvent) => {
-    if (selectMode) {
-      if (e.shiftKey) {
-        onShiftSelect();
-      } else {
-        onToggleSelect();
-      }
-    }
-  };
-
-  const headerLabel = getBlockHeaderLabel(block, metadata);
-
-  const blockDagUuid = block.dag_uuid ?? undefined;
-
-  return (
-    <div className={typeClass} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
-      {showHeader && (
-        <div className="block-header">
-          <div className="block-header__left">
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={onToggleSelect}
-              onClick={(e) => e.stopPropagation()}
-              className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
-            />
-            {isCollapsible && (
-              <button
-                type="button"
-                className="block-collapse-toggle"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleCollapse();
-                }}
-              >
-                {collapsed ? '\u25B8' : '\u25BE'}
-              </button>
-            )}
-            {headerLabel && <span className="block-label">{headerLabel}</span>}
-          </div>
-          <div className="block-header__right">
-            <CopyButton content={block.content} />
-            <span
-              className="block-timestamp"
-              title={formatAbsoluteTime(block.timestamp, { invalid: '' })}
-            >
-              {formatRelativeTime(block.timestamp, {
-                style: 'recent',
-                empty: '\u2014',
-                invalid: '\u2014',
-                absoluteAfterDays: 30,
-              })}
-            </span>
-          </div>
-        </div>
-      )}
-      {/* User message: checkbox + copy + timestamp inline above content */}
-      {!showHeader && (
-        <div className="block-header block-header--user">
-          <div className="block-header__left">
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={onToggleSelect}
-              onClick={(e) => e.stopPropagation()}
-              className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
-            />
-          </div>
-          <div className="block-header__right">
-            <CopyButton content={block.content} />
-            <span
-              className="block-timestamp"
-              title={formatAbsoluteTime(block.timestamp, { invalid: '' })}
-            >
-              {formatRelativeTime(block.timestamp, {
-                style: 'recent',
-                empty: '\u2014',
-                invalid: '\u2014',
-                absoluteAfterDays: 30,
-              })}
-            </span>
-          </div>
-        </div>
-      )}
-      {renderConversationBlockBody(block, collapsed)}
-      <MessageActions
-        onCopy={() => { navigator.clipboard.writeText(block.content).catch(() => {}); }}
-        onResume={blockDagUuid && onResume ? () => onResume(blockDagUuid) : undefined}
-        onFork={blockDagUuid && onFork ? () => onFork(blockDagUuid) : undefined}
-        dagUuid={blockDagUuid}
-        showResume={!!blockDagUuid}
-        showFork={!!blockDagUuid}
-      />
-    </div>
-  );
-}
-
-function ContentWithExpand({ content }: { content: string }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const displayContent = expanded ? content : truncate(content, 500);
-
-  return (
-    <div>
-      <pre className="block-pre">{displayContent}</pre>
-      {content.length > 500 && (
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm block-expand-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            setExpanded((prev) => !prev);
-          }}
-        >
-          {expanded ? 'Show less' : `Show more (${content.length.toLocaleString()} chars)`}
-        </button>
-      )}
-    </div>
-  );
-}
-
-type InstructionMessageMeta = {
-  filename: 'AGENTS.md' | 'CLAUDE.md';
-  scope: 'Project' | 'Global';
-  path: string;
-};
-
-export function getInstructionMessageMeta(content: string): InstructionMessageMeta | null {
-  const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? '';
-  const match = firstLine.match(/^#?\s*(AGENTS\.md|CLAUDE\.md) instructions for (.+)$/i);
-  if (!match) return null;
-  const filename = match[1].toUpperCase().startsWith('AGENTS') ? 'AGENTS.md' : 'CLAUDE.md';
-  const path = match[2].trim();
-  const scope = /\/(\.claude|\.dotfiles)(\/|$)|^~\/\.claude\//.test(path) ? 'Global' : 'Project';
-  return { filename, scope, path };
-}
-
-function InstructionMessageBlock({
-  content,
-  meta,
-}: {
-  content: string;
-  meta: InstructionMessageMeta;
-}): JSX.Element {
-  return (
-    <details className="instruction-message-block">
-      <summary className="instruction-message-block__summary">
-        <span className="instruction-message-block__label">{meta.scope} {meta.filename}</span>
-        <span className="instruction-message-block__path">{meta.path}</span>
-      </summary>
-      <div className="instruction-message-block__body">
-        <TextBlock content={content} />
-      </div>
-    </details>
-  );
-}
-
-function InfoCircleIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 17v-5" />
-      <path d="M12 8h.01" />
-    </svg>
-  );
-}
 
 function HorizontalDotsIcon(): JSX.Element {
   return (
@@ -1192,29 +875,37 @@ function WorkflowRunDialog({
   );
 }
 
-function ConversationInfoDialog({
+function ConversationMetadataModal({
+  open,
   conversation,
   linkedConsoleSession,
   issueLinks,
   presets,
+  headerRef,
   onClose,
 }: {
+  open: boolean;
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   presets: SessionPreset[];
+  headerRef: { current: HTMLElement | null };
   onClose: () => void;
 }): JSX.Element {
   return (
-    <div className="conv-modal-overlay" onClick={onClose}>
-      <div className="conv-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="conv-modal__header">
-          <h3 className="conv-modal__title">Conversation Info</h3>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close info">
-            &times;
-          </button>
-        </div>
-        <div className="conv-info-grid">
+    <DetailPaneModal
+      open={open}
+      onClose={onClose}
+      titleId="conversation-metadata-title"
+      title="Conversation metadata"
+      closeLabel="Close conversation metadata"
+      excludeAboveRef={headerRef}
+      scrollOwnerSelector=".conv-detail"
+      scrollLockClassName="conv-detail--metadata-open"
+      className="conv-detail__metadata-modal"
+      panelClassName="conv-detail__metadata-panel"
+    >
+      <div className="conv-info-grid">
           <div>
             <span className="conv-info-grid__label">Agent</span>
             <span>{SOURCE_LABELS[conversation.source] ?? conversation.source}</span>
@@ -1251,9 +942,9 @@ function ConversationInfoDialog({
             <span className="conv-info-grid__label">Session</span>
             <span className="conv-info-grid__mono">{conversation.session_id || linkedConsoleSession?.id || 'none'}</span>
           </div>
-        </div>
-        {(issueLinks.length > 0 || presets.length > 0) && (
-          <div className="conv-modal__section">
+      </div>
+      {(issueLinks.length > 0 || presets.length > 0) && (
+        <div className="conv-modal__section">
             {issueLinks.length > 0 && (
               <div className="conv-modal__chips">
                 {issueLinks.map((link) => (
@@ -1281,22 +972,23 @@ function ConversationInfoDialog({
                 ))}
               </div>
             )}
-          </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </DetailPaneModal>
   );
 }
 
 function ConversationDetail({
   conversationId,
   initialConversation,
+  anchor,
   onNavigate,
   consoleSessions,
   sidebarCollapsed,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
+  anchor: { block: string } | { turn: string } | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
@@ -1307,19 +999,29 @@ function ConversationDetail({
   const [loadedConversationKey, setLoadedConversationKey] = useState(
     () => detailRequestKey('conversation', { conversationId, leaf: null }),
   );
-  const collapsedBlocksKeyRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadNonce, setLoadNonce] = useState(0);
+  const requestGenerationRef = useRef(0);
+  const requestAbortRef = useRef<AbortController | null>(null);
+  const retryingLoadRef = useRef(false);
+  const skipNextWindowLoadRef = useRef(false);
+  const latestRevisionRef = useRef(initialConversation?.block_count ?? 0);
+  const [jumpingToLatest, setJumpingToLatest] = useState(false);
+  const [navigationTarget, setNavigationTarget] = useState<{
+    key: string;
+    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
+    turnId: string | null;
+    blockId: string | null;
+    smooth: boolean;
+  } | null>(null);
 
   // Selection state
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
   const [visibleTypes, setVisibleTypes] = useState<Set<BlockType>>(new Set(ALL_BLOCK_TYPES));
-  const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(new Set());
   const [showExport, setShowExport] = useState(false);
-  const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
@@ -1342,47 +1044,66 @@ function ConversationDetail({
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
-  const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
-  const conversationRequestKey = detailRequestKey('conversation', { conversationId, leaf: selectedLeaf });
+  const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
+  const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
+  const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
+  const conversationRequestKey = detailRequestKey('conversation', { conversationId, anchor: anchorKey });
   const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
 
-  // Virtual scroll state
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [containerHeight, setContainerHeight] = useState(800);
+  useEffect(() => {
+    setEffectiveAnchor(anchor);
+  }, [incomingAnchorKey]);
+
+  const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
 
   useLayoutEffect(() => {
-    if (selectedLeaf) return undefined;
-    let active = true;
-    const requestKey = detailRequestKey('conversation', { conversationId, leaf: null });
+    if (skipNextWindowLoadRef.current) {
+      skipNextWindowLoadRef.current = false;
+      return undefined;
+    }
+    const controller = new AbortController();
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = controller;
+    const generation = ++requestGenerationRef.current;
+    const requestKey = conversationRequestKey;
     const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
+    const preserveErrorWhileRetrying = retryingLoadRef.current;
+    retryingLoadRef.current = false;
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
-    if (cached && collapsedBlocksKeyRef.current !== requestKey) {
-      collapsedBlocksKeyRef.current = requestKey;
-      setCollapsedBlocks(defaultCollapsedConversationBlocks(cached));
-    }
     setLoading(true);
-    setError(null);
-    getConversation(conversationId)
-      .then((conv) => {
-        if (!active) return;
+    if (!preserveErrorWhileRetrying) setError(null);
+    getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
+      .then((payload) => {
+        if (generation !== requestGenerationRef.current) return;
+        const conv = flattenConversationWindow(payload);
+        latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
         setConversation(conv);
-        // Bug: bce7370 — Fix 1: Don't add thinking blocks to the outer collapsed set.
-        // ThinkingBlock now manages its own collapse state internally.
-        if (collapsedBlocksKeyRef.current !== requestKey) {
-          collapsedBlocksKeyRef.current = requestKey;
-          setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
-        }
+        setNavigationTarget({
+          key: `${generation}:${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
+          kind: payload.target.kind,
+          turnId: payload.target.turn_id,
+          blockId: payload.target.block_id,
+          smooth: false,
+        });
+        setError(null);
         setLoading(false);
       })
       .catch((err) => {
-        if (!active) return;
+        if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
-    return () => { active = false; };
-  }, [conversationId, initialConversation, loadNonce, selectedLeaf]);
+    return () => controller.abort();
+  }, [anchorKey, conversationId, conversationRequestKey, effectiveAnchor, initialConversation, loadNonce]);
 
   useEffect(() => {
     if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
@@ -1486,67 +1207,123 @@ function ConversationDetail({
     return () => { active = false; };
   }, [conversation?.session_id]);
 
-  // Reload conversation when a leaf branch is selected
-  useLayoutEffect(() => {
-    if (!selectedLeaf) return;
-    let active = true;
-    const requestKey = detailRequestKey('conversation', { conversationId, leaf: selectedLeaf });
-    const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
-    setLoadedConversationKey(requestKey);
-    setConversation(cached);
-    if (cached && collapsedBlocksKeyRef.current !== requestKey) {
-      collapsedBlocksKeyRef.current = requestKey;
-      setCollapsedBlocks(defaultCollapsedConversationBlocks(cached));
-    }
-    setLoading(true);
-    getConversation(conversationId, selectedLeaf)
-      .then((conv) => {
-        if (!active) return;
-        if (collapsedBlocksKeyRef.current !== requestKey) {
-          collapsedBlocksKeyRef.current = requestKey;
-          setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
-        }
-        setConversation(conv);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-    return () => { active = false; };
-  }, [conversationId, loadNonce, selectedLeaf]);
-
   useEffect(() => {
     const handleConversationSse = (event: Event) => {
       const detail = (event as CustomEvent<ConversationAppendSseDetail>).detail;
       const data = detail?.data;
       if (!data || data.id !== conversationId) return;
-
-      if (selectedLeaf) {
-        setLoadNonce((prev) => prev + 1);
-        return;
+      if (typeof data.block_count === 'number') {
+        latestRevisionRef.current = Math.max(latestRevisionRef.current, data.block_count);
       }
 
       const appendBlocks = data.append?.blocks ?? [];
       if (appendBlocks.length === 0) {
-        setConversation((prev) => prev ? applyConversationAppendPayload(prev, data) ?? prev : prev);
+        setConversation((prev) => {
+          if (!prev) return prev;
+          const nextTotal = Math.max(prev.position_window.total, data.block_count ?? 0);
+          const appendedAfterWindow = prev.position_window.window.has_after
+            ? Math.max(0, nextTotal - prev.position_window.total)
+            : 0;
+          return {
+            ...(applyConversationAppendPayload(prev, data) ?? prev),
+            position_window: {
+              ...prev.position_window,
+              revision: Math.max(prev.position_window.revision, data.block_count ?? 0),
+              total: nextTotal,
+              window: {
+                ...prev.position_window.window,
+                after_count: prev.position_window.window.after_count + appendedAfterWindow,
+              },
+            },
+          };
+        });
         return;
       }
 
       setConversation((prev) => {
         if (!prev) return prev;
+        if (prev.position_window.window.has_after) {
+          const nextTotal = Math.max(prev.position_window.total, data.block_count ?? prev.position_window.total);
+          return {
+            ...prev,
+            block_count: Math.max(prev.block_count, data.block_count ?? prev.block_count),
+            position_window: {
+              ...prev.position_window,
+              revision: Math.max(prev.position_window.revision, data.block_count ?? 0),
+              total: nextTotal,
+              window: {
+                ...prev.position_window.window,
+                after_count: prev.position_window.window.after_count
+                  + Math.max(0, nextTotal - prev.position_window.total),
+              },
+            },
+          };
+        }
         const next = applyConversationAppendPayload(prev, data);
         if (!next) {
           window.setTimeout(() => setLoadNonce((nonce) => nonce + 1), 0);
           return prev;
         }
-        return next;
+        return {
+          ...next,
+          position_window: {
+            ...prev.position_window,
+            revision: Math.max(prev.position_window.revision, data.block_count ?? next.block_count),
+            total: Math.max(prev.position_window.total, data.block_count ?? next.block_count),
+            window: {
+              ...prev.position_window.window,
+              end_position: next.blocks[next.blocks.length - 1]?.position ?? prev.position_window.window.end_position,
+            },
+          },
+        };
       });
     };
 
     window.addEventListener('conversation:sse', handleConversationSse);
     return () => window.removeEventListener('conversation:sse', handleConversationSse);
-  }, [conversationId, selectedLeaf]);
+  }, [conversationId]);
+
+  const handleJumpToLatest = useCallback(async () => {
+    const controller = new AbortController();
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = controller;
+    const generation = ++requestGenerationRef.current;
+    setJumpingToLatest(true);
+    setError(null);
+    try {
+      let payload = await getConversationWindow(conversationId, { target: 'latest', signal: controller.signal });
+      // Appends can land after the indexed end was read but before each response
+      // reaches the browser. Re-resolve until it covers the newest observed revision.
+      while (payload.revision < latestRevisionRef.current) {
+        if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
+        payload = await getConversationWindow(conversationId, { target: 'latest', signal: controller.signal });
+      }
+      if (generation !== requestGenerationRef.current) return;
+      latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
+      setConversation(flattenConversationWindow(payload));
+      const latestRequestKey = detailRequestKey('conversation', { conversationId, anchor: 'initial' });
+      if (effectiveAnchor) {
+        skipNextWindowLoadRef.current = true;
+        setEffectiveAnchor(null);
+      }
+      setLoadedConversationKey(latestRequestKey);
+      const params = new URLSearchParams({ conversation: conversationId });
+      window.history.replaceState(null, '', `#/console?${params.toString()}`);
+      setNavigationTarget({
+        key: `${generation}:${payload.revision}:latest`,
+        kind: 'latest',
+        turnId: payload.target.turn_id,
+        blockId: payload.target.block_id,
+        smooth: true,
+      });
+    } catch (err) {
+      if (generation === requestGenerationRef.current && !controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (generation === requestGenerationRef.current) setJumpingToLatest(false);
+    }
+  }, [conversationId, effectiveAnchor]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1590,19 +1367,6 @@ function ConversationDetail({
     }
   }, [conversationId]);
 
-  // Observe container resize
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerHeight(entry.contentRect.height);
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
   const blocks = conversation?.blocks || [];
 
   const visibleBlocks = useMemo(
@@ -1610,8 +1374,21 @@ function ConversationDetail({
     [blocks, visibleTypes],
   );
   const chatEvents = useMemo(
-    () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
-    [conversation?.session_id, conversationId, visibleBlocks],
+    () => {
+      const targetTurnId = conversation?.position_window.target.turn_id ?? null;
+      const leadingAssistantTurnId = targetTurnId
+        && visibleBlocks.length > 0
+        && visibleBlocks[0].type !== 'user_message'
+        && !visibleBlocks.some((block) => block.id === targetTurnId)
+        ? targetTurnId
+        : null;
+      return conversationBlocksToStreamEvents(
+        conversation?.session_id ?? conversationId,
+        visibleBlocks,
+        { leadingAssistantTurnId },
+      );
+    },
+    [conversation?.position_window.target.turn_id, conversation?.session_id, conversationId, visibleBlocks],
   );
   const shelfItems = useMemo(
     () => [
@@ -1667,21 +1444,6 @@ function ConversationDetail({
     () => ALL_BLOCK_TYPES.filter((t) => (typeCounts[t] || 0) > 0),
     [typeCounts],
   );
-
-  // Virtual scrolling
-  const handleScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (el) setScrollTop(el.scrollTop);
-  }, []);
-
-  const totalHeight = visibleBlocks.length * ESTIMATED_BLOCK_HEIGHT;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ESTIMATED_BLOCK_HEIGHT) - VIRTUAL_BUFFER);
-  const endIndex = Math.min(
-    visibleBlocks.length,
-    Math.ceil((scrollTop + containerHeight) / ESTIMATED_BLOCK_HEIGHT) + VIRTUAL_BUFFER,
-  );
-  const shouldVirtualize = visibleBlocks.length > 200;
-  const renderedBlocks = shouldVirtualize ? visibleBlocks.slice(startIndex, endIndex) : visibleBlocks;
 
   // Selection handlers
   const toggleSelect = (blockId: string) => {
@@ -1742,18 +1504,6 @@ function ConversationDetail({
         next.delete(type);
       } else {
         next.add(type);
-      }
-      return next;
-    });
-  };
-
-  const toggleCollapse = (blockId: string) => {
-    setCollapsedBlocks((prev) => {
-      const next = new Set(prev);
-      if (next.has(blockId)) {
-        next.delete(blockId);
-      } else {
-        next.add(blockId);
       }
       return next;
     });
@@ -1820,6 +1570,10 @@ function ConversationDetail({
     blocks,
     usageRows,
   }), [blocks, chatEvents, telemetry, usageRows]);
+  const conversationMarkdown = useMemo(
+    () => serializeConversationToMarkdown(buildStreamState(chatEvents).nodes),
+    [chatEvents],
+  );
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
@@ -2012,24 +1766,48 @@ function ConversationDetail({
     window.location.hash = `#/graph?${params.toString()}`;
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
-  if (loading && !conversation) {
+  const retryLoad = useCallback(() => {
+    retryingLoadRef.current = true;
+    setLoading(true);
+    setLoadNonce((prev) => prev + 1);
+  }, []);
+
+  const loadErrorNotice = error ? (
+    <DetailPaneNotice
+      severity="error"
+      density="compact"
+      actions={(
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          disabled={loading}
+          onClick={retryLoad}
+        >
+          Retry
+        </button>
+      )}
+    >
+      {error}
+    </DetailPaneNotice>
+  ) : undefined;
+
+  if (loading && !conversation && !error) {
     return <LoadingSkeleton variant="detail" label="Loading conversation" />;
   }
 
   if (error && !conversation) {
     return (
-      <div className="conv-detail">
-        <div className="empty-state">
-          <div>{error || 'Conversation not found.'}</div>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setLoadNonce((prev) => prev + 1)}
-          >
-            Retry
-          </button>
-        </div>
-      </div>
+      <DetailPaneShell
+        as="div"
+        variant="compact"
+        className="conv-detail"
+        bodyClassName="conv-detail__body"
+        header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
+        notice={loadErrorNotice}
+        ariaBusy={loading}
+      >
+        <div className="empty-state">Conversation content unavailable.</div>
+      </DetailPaneShell>
     );
   }
 
@@ -2056,12 +1834,6 @@ function ConversationDetail({
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
-      identity={{
-        entityLabel: 'Conversation',
-        displayRef: shortRouteId(conversation.id),
-        canonicalRef: conversation.id,
-        copyLabel: 'Copy full conversation ID',
-      }}
       title={(
         <>
           {conversation.parent_conversation_id && (
@@ -2071,8 +1843,69 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
-      status={(
-        <>
+      menuLabel="Conversation detail actions"
+      menu={(
+        <div className="conv-actions">
+          <button
+              ref={actionsTriggerRef}
+              type="button"
+              className="conv-actions__trigger"
+              onClick={() => setActionsOpen((prev) => !prev)}
+              title="Conversation actions"
+              aria-label="Conversation actions"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+            >
+              <HorizontalDotsIcon />
+          </button>
+          {actionsOpen && (
+            <div
+                ref={actionsMenuRef}
+                className="conv-actions__menu app-anchored-menu"
+                role="menu"
+                popover="manual"
+                style={actionsMenuStyle}
+              >
+                <button type="button" role="menuitem" onClick={() => { setInfoOpen(true); setActionsOpen(false); }}>
+                  View metadata
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!conversationMarkdown}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(conversationMarkdown).catch(() => {});
+                    setActionsOpen(false);
+                  }}
+                >
+                  Copy markdown
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!conversationMarkdown}
+                  onClick={() => { openMarkdownDocument(conversationMarkdown); setActionsOpen(false); }}
+                >
+                  Open markdown
+                </button>
+                <button type="button" role="menuitem" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+                  {conversation.starred ? 'Unstar' : 'Star'}
+                </button>
+                <button type="button" role="menuitem" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                  Show in graph
+                </button>
+                <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
+                </button>
+                <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                  Select messages
+                </button>
+            </div>
+          )}
+        </div>
+      )}
+      metadata={(
+        <span className="conv-detail__status">
           <span className="conv-detail__provider">
             {getConversationHeaderProviderLabel(conversation.source)}
           </span>
@@ -2084,54 +1917,7 @@ function ConversationDetail({
               {attachPresentation.label}
             </span>
           )}
-        </>
-      )}
-      actionsLabel="Conversation detail actions"
-      actions={(
-        <>
-          <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
-          <button
-            type="button"
-            className="conv-info-button"
-            onClick={() => setInfoOpen(true)}
-            title="Conversation info"
-            aria-label="Conversation info"
-          >
-            <InfoCircleIcon />
-          </button>
-          <div className="conv-actions">
-            <button
-              type="button"
-              className="conv-actions__trigger"
-              onClick={() => setActionsOpen((prev) => !prev)}
-              title="Conversation actions"
-              aria-label="Conversation actions"
-              aria-haspopup="menu"
-              aria-expanded={actionsOpen}
-            >
-              <HorizontalDotsIcon />
-            </button>
-            {actionsOpen && (
-              <div className="conv-actions__menu">
-                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
-                  {conversation.starred ? 'Unstar' : 'Star'}
-                </button>
-                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
-                  Show in graph
-                </button>
-                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                </button>
-                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
-                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
-                </button>
-                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                  Select messages
-                </button>
-              </div>
-            )}
-          </div>
-        </>
+        </span>
       )}
     />
   );
@@ -2151,16 +1937,13 @@ function ConversationDetail({
         </div>
       ) : attachPresentation?.composer !== 'hidden' ? (
       <div className="conv-compose">
-        {attachPresentation?.hint && (
-          <div className="conv-compose__hint">{attachPresentation.hint}</div>
-        )}
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
+            placeholder="Message..."
             disabled={continueBusy || attachPresentation?.composer === 'disabled'}
             rows={3}
           />
@@ -2216,16 +1999,19 @@ function ConversationDetail({
                   <option key={model} value={model}>{model}</option>
                 ))}
             </select>
+            <span className="conv-compose__runtime-actions">
+              {canShowSessionControls && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => setComposerControlsOpen((prev) => !prev)}
+                >
+                  Controls
+                </button>
+              )}
+              <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
+            </span>
           </div>
-          {canShowSessionControls && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setComposerControlsOpen((prev) => !prev)}
-            >
-              Controls
-            </button>
-          )}
         </div>
         {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
           <div className="conv-compose__controls">
@@ -2279,15 +2065,15 @@ function ConversationDetail({
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-      {infoOpen && (
-        <ConversationInfoDialog
-          conversation={conversation}
-          linkedConsoleSession={linkedConsoleSession}
-          issueLinks={sessionIssueLinks}
-          presets={sessionPresets}
-          onClose={() => setInfoOpen(false)}
-        />
-      )}
+      <ConversationMetadataModal
+        open={infoOpen}
+        conversation={conversation}
+        linkedConsoleSession={linkedConsoleSession}
+        issueLinks={sessionIssueLinks}
+        presets={sessionPresets}
+        headerRef={headerRef}
+        onClose={() => setInfoOpen(false)}
+      />
     </>
   );
 
@@ -2295,30 +2081,19 @@ function ConversationDetail({
     <DetailPaneShell
       as="div"
       variant="compact"
-      className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
+      className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
       headerClassName="conv-detail__shell-header"
+      headerRef={headerRef}
       subheaderClassName="conv-detail__parent"
       bodyClassName="conv-detail__body"
       footerClassName="conv-detail__footer"
       header={detailHeader}
       subheader={parentLink}
-      footer={shouldRenderDetailFooter ? detailFooter : undefined}
+      footer={shouldRenderDetailFooter ? { content: detailFooter } : undefined}
       overlays={detailOverlays}
       ariaBusy={loading}
+      notice={loadErrorNotice}
     >
-      {error && (
-        <div className="conv-load-error">
-          <span>{error}</span>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setLoadNonce((prev) => prev + 1)}
-          >
-            Retry
-          </button>
-        </div>
-      )}
-
       {showMessageFilters && (
         <div className="conv-filter-bar">
           <div className="conv-filter-bar__types">
@@ -2398,69 +2173,31 @@ function ConversationDetail({
         />
       )}
 
-      {renderMode === 'transcript' ? (
-        <div className="conv-transcript">
-          <ChatSurface
-            events={chatEvents}
-            streaming={false}
-            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-            sessionInfo={{
-              sessionId: conversation.session_id,
-              backend: conversation.source,
-              model: conversation.model ?? undefined,
-            }}
-            usageSummary={usageSummary}
-            onUsageOpen={openUsage}
-          />
-        </div>
-      ) : (
-        <div
-          className="conv-blocks"
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-        >
-          {shouldVirtualize ? (
-            <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
-              <div style={{ position: 'absolute', top: `${startIndex * ESTIMATED_BLOCK_HEIGHT}px`, left: 0, right: 0 }}>
-                {renderedBlocks.map((block) => (
-                  <BlockRenderer
-                    key={block.id}
-                    block={block}
-                    isSelected={selected.has(block.id)}
-                    selectMode={selectMode}
-                    onToggleSelect={() => toggleSelect(block.id)}
-                    onShiftSelect={() => handleShiftSelect(block.id)}
-                    onToggleCollapse={() => toggleCollapse(block.id)}
-                    collapsed={collapsedBlocks.has(block.id)}
-                    onFork={handleFork}
-                    onResume={handleResume}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            renderedBlocks.map((block) => (
-              <BlockRenderer
-                key={block.id}
-                block={block}
-                isSelected={selected.has(block.id)}
-                selectMode={selectMode}
-                onToggleSelect={() => toggleSelect(block.id)}
-                onShiftSelect={() => handleShiftSelect(block.id)}
-                onToggleCollapse={() => toggleCollapse(block.id)}
-                collapsed={collapsedBlocks.has(block.id)}
-                onFork={handleFork}
-                onResume={handleResume}
-              />
-            ))
-          )}
-          {visibleBlocks.length === 0 && (
-            <div className="empty-state">
-              {loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="conv-transcript">
+        <ChatSurface
+          events={chatEvents}
+          streaming={false}
+          emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+          unmaterializedAfterCount={conversation.position_window.window.after_count}
+          onJumpToLatest={handleJumpToLatest}
+          jumpingToLatest={jumpingToLatest}
+          navigationTarget={navigationTarget}
+          selectedMessageId={conversation.position_window.target.turn_id}
+          selectedBlockIds={selected}
+          selectMode={selectMode}
+          onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
+          onFork={handleFork}
+          onResume={handleResume}
+          onSelectMessageInfo={(turnId) => {
+            window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
+          }}
+          sessionInfo={{
+            sessionId: conversation.session_id,
+            backend: conversation.source,
+            model: conversation.model ?? undefined,
+          }}
+        />
+      </div>
     </DetailPaneShell>
   );
 }
@@ -2646,7 +2383,6 @@ function LiveSessionDetail({
           isVisible
           viewMode={viewMode}
           onViewModeChange={setViewMode}
-          resumeAtMessage={session.resume_at_message}
           channelEnabled={!!session.channel_enabled}
           workspaceMode
         />
@@ -2686,6 +2422,8 @@ export function ConversationsView({
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
+  const [canonicalProjectsReady, setCanonicalProjectsReady] = useState(false);
+  const [canonicalProjectsLoaded, setCanonicalProjectsLoaded] = useState(false);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -2702,9 +2440,16 @@ export function ConversationsView({
   useEffect(() => {
     let active = true;
     void listCanonicalProjects().then((projects) => {
-      if (active) setCanonicalProjects(projects);
+      if (active) {
+        setCanonicalProjects(projects);
+        setCanonicalProjectsLoaded(true);
+        setCanonicalProjectsReady(true);
+      }
     }).catch(() => {
-      if (active) setCanonicalProjects([]);
+      if (active) {
+        setCanonicalProjects([]);
+        setCanonicalProjectsReady(true);
+      }
     });
     return () => { active = false; };
   }, []);
@@ -2817,32 +2562,64 @@ export function ConversationsView({
     };
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
-  const sidebarRequestParams = useCallback((limit: number) => {
+  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
+
+  useEffect(() => {
+    if (!canonicalProjectsLoaded) return;
+    const registeredSelections = new Set(registeredProjects.map((project) => (
+      `${project.id}\0${project.checkoutId}`
+    )));
+    setChatViewState((current) => {
+      const shownProjects = current.shownProjects.filter((shown) => (
+        registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`)
+      ));
+      return shownProjects.length === current.shownProjects.length
+        ? current
+        : { ...current, shownProjects };
+    });
+  }, [canonicalProjectsLoaded, registeredProjects, setChatViewState]);
+
+  const selectedProjectIds = useMemo(() => {
+    if (!canonicalProjectsReady) return [];
+    if (!canonicalProjectsLoaded) {
+      return [...new Set(chatViewState.shownProjects.map((shown) => shown.projectId))];
+    }
+    const registeredSelections = new Set(registeredProjects.map((project) => (
+      `${project.id}\0${project.checkoutId}`
+    )));
+    return [...new Set(chatViewState.shownProjects
+      .filter((shown) => registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`))
+      .map((shown) => shown.projectId))];
+  }, [canonicalProjectsLoaded, canonicalProjectsReady, chatViewState.shownProjects, registeredProjects]);
+
+  const sidebarRequestParams = useCallback((limit: number, projectIds = selectedProjectIds) => {
     const params: Parameters<typeof getConversationSidebar>[0] = {
       limit,
       sort: sort === 'blocks' ? 'block_count' : 'started_at',
       exclude_subagents: true,
+      project_ids: projectIds,
     };
     if (sourceFilter !== 'all') params.source = sourceFilter;
     if (starredOnly) params.starred = true;
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [hideEmpty, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [hideEmpty, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
-  const fetchConversationGroups = useCallback(async () => {
+  const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
+    if (!canonicalProjectsReady) return;
     const generation = ++fetchGenerationRef.current;
     setLoading(true);
     try {
-      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit));
+      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit, projectIds));
       const reconciled = await Promise.all(result.groups.map(async (initialGroup) => {
         const target = targetsRef.current.get(initialGroup.key) ?? sidebarGroupLimit;
         let group = initialGroup;
         while (group.conversations.length < target && group.next_cursor) {
           const page = await getConversationSidebar({
-            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length)),
+            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length), projectIds),
             group_key: group.key,
             cursor: group.next_cursor,
           });
@@ -2870,7 +2647,7 @@ export function ConversationsView({
     } finally {
       if (generation === fetchGenerationRef.current) setLoading(false);
     }
-  }, [sidebarGroupLimit, sidebarRequestParams]);
+  }, [canonicalProjectsReady, selectedProjectIds, sidebarGroupLimit, sidebarRequestParams]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
@@ -2896,6 +2673,12 @@ export function ConversationsView({
       const data = (
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
+      const rawData = data as ConversationAppendPayload & { updates?: unknown };
+      const membershipFields = ['starred', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
+      const membershipChanged = membershipFields.some((field) => Object.prototype.hasOwnProperty.call(rawData, field))
+        || (Array.isArray(rawData.updates) && rawData.updates.some((field) => (
+          typeof field === 'string' && membershipFields.includes(field)
+        )));
       const groupIndex = data.id
         ? groupsRef.current.findIndex((group) => group.conversations.some((conversation) => conversation.id === data.id))
         : -1;
@@ -2911,10 +2694,14 @@ export function ConversationsView({
       const result = mergeConversationSummaryIntoList(currentGroup.conversations, data);
       if (result.applied) {
         setServerGroups(groupsRef.current.map((group, index) => (
-          index === groupIndex ? { ...group, conversations: result.conversations } : group
+          index === groupIndex
+            ? { ...group, conversations: result.conversations as ConversationSidebarConversation[] }
+            : group
         )));
-        if (sortKeyChanged) scheduleListRefetch();
+        if (sortKeyChanged || membershipChanged) scheduleListRefetch();
       } else if (result.refetch) {
+        scheduleListRefetch();
+      } else if (membershipChanged) {
         scheduleListRefetch();
       }
       // stale summary (neither applied nor refetch): keep the list unchanged.
@@ -2939,6 +2726,7 @@ export function ConversationsView({
 
   // Debounced fetch on filter changes
   useEffect(() => {
+    if (!canonicalProjectsReady) return undefined;
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
       fetchConversationGroups();
@@ -2946,7 +2734,7 @@ export function ConversationsView({
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [fetchConversationGroups]);
+  }, [canonicalProjectsReady, fetchConversationGroups]);
 
   const selectedConversationSummary = selection?.type === 'conversation'
     ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
@@ -2980,68 +2768,59 @@ export function ConversationsView({
     return map;
   }, [liveSessions]);
 
-  const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
-
   const chatSections = useMemo<ChatSidebarSections>(() => {
-    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] | 'project' };
+    type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
+    const selectedCheckoutByProject = new Map(chatViewState.shownProjects.flatMap((shown) => {
+      const registered = registeredProjects.find((project) => (
+        project.id === shown.projectId && project.checkoutId === shown.checkoutId
+      ));
+      return registered ? [[shown.projectId, registered] as const] : [];
+    }));
     const groups = displayedConversations.map((group): WorkingGroup => ({
       key: group.key,
-      label: group.kind === 'pinned' ? 'Pinned' : 'Chats',
+      label: group.label,
       total: group.total,
       nextCursor: group.next_cursor,
       kind: group.kind,
       entries: [],
+      exactRoot: group.kind === 'project' && group.project_id
+        ? selectedCheckoutByProject.get(group.project_id)?.root
+        : undefined,
+      canonicalProjectId: group.kind === 'project' ? group.project_id : undefined,
+      canonicalProjectKey: group.kind === 'project' ? group.project_key : undefined,
     }));
     const groupByKey = new Map(groups.map((group) => [group.key, group]));
-    const ensureGroup = (
-      key: string,
-      kind: WorkingGroup['kind'],
-      label: string,
-      canonicalProject?: RegisteredChatProject,
+    const ensureKindGroup = (
+      kind: 'pinned' | 'chats',
+      label: 'Pinned' | 'Chats',
     ): WorkingGroup => {
-      const existing = groupByKey.get(key);
+      const existing = groups.find((group) => group.kind === kind);
       if (existing) return existing;
       const created: WorkingGroup = {
-        key,
+        key: kind,
         kind,
         label,
         total: 0,
         nextCursor: null,
         entries: [],
-        exactRoot: canonicalProject?.root,
-        canonicalProjectId: canonicalProject?.id,
-        canonicalProjectKey: canonicalProject?.key,
       };
       groups.push(created);
-      groupByKey.set(key, created);
+      groupByKey.set(created.key, created);
       return created;
     };
-    const ensureKindGroup = (
-      kind: 'pinned' | 'chats',
-      label: 'Pinned' | 'Chats',
-    ): WorkingGroup => groups.find((group) => group.kind === kind)
-      ?? ensureGroup(kind, kind, label);
-
-    for (const shown of chatViewState.shownProjects) {
-      const registered = registeredProjects.find((project) => (
-        project.id === shown.projectId
-        && project.checkoutId === shown.checkoutId
-      ));
-      if (!registered) continue;
-      ensureGroup(
-        `shown-project:${encodeURIComponent(registered.id)}:${encodeURIComponent(registered.checkoutId)}`,
-        'project',
-        registered.label,
-        registered,
-      );
-    }
 
     for (const sourceGroup of displayedConversations) {
       const source = groupByKey.get(sourceGroup.key)!;
       for (const conversation of sourceGroup.conversations) {
+        const canonicalProjectId = getCanonicalConversationProjectId(conversation);
+        const canonicalProjectGroup = canonicalProjectId && selectedProjectIds.includes(canonicalProjectId)
+          ? groups.find((group) => (
+            group.kind === 'project' && group.canonicalProjectId === canonicalProjectId
+          ))
+          : undefined;
         const target = isConversationPinned(conversation)
           ? ensureKindGroup('pinned', 'Pinned')
-          : source.kind === 'pinned' ? ensureKindGroup('chats', 'Chats') : source;
+          : source.kind === 'pinned' ? canonicalProjectGroup ?? ensureKindGroup('chats', 'Chats') : source;
         if (source.key !== target.key) {
           source.total = Math.max(0, source.total - 1);
           target.total += 1;
@@ -3102,7 +2881,9 @@ export function ConversationsView({
         : sortEntries(group.entries);
     }
     ensureKindGroup('chats', 'Chats');
-    const visibleGroups = groups.filter((group) => group.kind === 'chats' || group.total > 0 || group.entries.length > 0 || Boolean(group.exactRoot));
+    const visibleGroups = groups.filter((group) => (
+      group.kind === 'chats' || group.kind === 'project' || group.total > 0 || group.entries.length > 0
+    ));
     return {
       pinned: visibleGroups.find((group) => group.kind === 'pinned') ?? null,
       projects: visibleGroups
@@ -3110,7 +2891,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, sort]);
+  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, sort]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3339,6 +3120,7 @@ export function ConversationsView({
       registeredProjectSelectionValue(candidate) === projectChooserSelection
     ));
     if (!project) return;
+    const isNewProject = !selectedProjectIds.includes(project.id);
     setChatViewState((current) => {
       const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
       const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
@@ -3352,6 +3134,9 @@ export function ConversationsView({
       };
     });
     setProjectChooserOpen(false);
+    if (isNewProject) {
+      void fetchConversationGroups([...selectedProjectIds, project.id]);
+    }
   };
 
   const renderEntry = (entry: ChatEntry) => (
@@ -3529,7 +3314,7 @@ export function ConversationsView({
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
-                action={{ label: 'Add project', icon: 'add-project', onPress: openProjectChooser }}
+                action={{ label: 'Add project', icon: <SidebarAddProjectIcon />, onPress: openProjectChooser }}
               >
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
@@ -3564,7 +3349,9 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
-                    action={{ label: `New chat in ${group.label}`, icon: 'new-chat', onPress: () => openNewSession(group.exactRoot!) }}
+                    action={group.exactRoot
+                      ? { label: `New chat in ${group.label}`, icon: <SidebarNewChatIcon />, onPress: () => openNewSession(group.exactRoot) }
+                      : undefined}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
                     loadingMore={loadingMoreKeys.has(group.key)}
@@ -3588,7 +3375,7 @@ export function ConversationsView({
                   headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
-                  action={{ label: 'New chat', icon: 'new-chat', onPress: () => openNewSession() }}
+                  action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress: () => openNewSession() }}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
@@ -3612,6 +3399,7 @@ export function ConversationsView({
           <ConversationDetail
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
+            anchor={conversationAnchorFromHash(window.location.hash)}
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}

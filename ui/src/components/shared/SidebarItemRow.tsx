@@ -1,5 +1,7 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { ContextualAction } from './ContextualAction';
 
 export type SidebarItemRowProps = {
   label: string;
@@ -64,7 +66,7 @@ export function SidebarItemRow({
   }, [actions, provider, syncTrailingWidth, trailingReveal]);
 
   return (
-    <div ref={rowRef} className={`sidebar-item-row${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
+    <div ref={rowRef} className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
       <button
         ref={selectRef}
         type="button"
@@ -89,14 +91,14 @@ export function SidebarItemRow({
             trailingRef.current = element;
             syncTrailingWidth(element);
           }}
-          className="sidebar-item-row__trailing"
+          className="sidebar-item-row__trailing contextual-action-scope"
         >
           {provider ? (
             <span className="sidebar-item-row__provider">
               <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
             </span>
           ) : null}
-          {actions ? <span className="sidebar-item-row__actions">{actions}</span> : null}
+          {actions ? <span className={`sidebar-item-row__actions contextual-action-group${trailingReveal === 'persistent-pin' ? ' contextual-action-group--persistent' : ''}`}>{actions}</span> : null}
         </span>
       ) : null}
     </div>
@@ -185,9 +187,8 @@ export function SidebarItemPinAction({
 }): JSX.Element {
   const actionLabel = `${pressed ? 'Unpin' : 'Pin'} ${label}`;
   return (
-    <button
+    <ContextualAction
       ref={actionRef}
-      type="button"
       className={`sidebar-item-row__action sidebar-item-row__pin${pressed ? ' sidebar-item-row__pin--active' : ''}`}
       aria-label={actionLabel}
       aria-pressed={pressed}
@@ -199,7 +200,7 @@ export function SidebarItemPinAction({
       }}
     >
       <PinIcon />
-    </button>
+    </ContextualAction>
   );
 }
 
@@ -220,6 +221,13 @@ export function SidebarItemOverflowMenu({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLSpanElement>(null);
+  const menuStyle = useAnchoredMenu({
+    open,
+    anchorRef: triggerRef,
+    menuRef,
+    onDismiss: () => setOpen(false),
+  });
   if (actions.length === 0) return null;
 
   return (
@@ -230,17 +238,9 @@ export function SidebarItemOverflowMenu({
           setOpen(false);
         }
       }}
-      onKeyDown={(event) => {
-        if (event.key !== 'Escape') return;
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }}
     >
-      <button
+      <ContextualAction
         ref={triggerRef}
-        type="button"
         className="sidebar-item-row__action sidebar-item-row__overflow-trigger"
         aria-label={label}
         aria-haspopup="menu"
@@ -262,9 +262,16 @@ export function SidebarItemOverflowMenu({
           <circle cx="12" cy="12" r="1.75" />
           <circle cx="19" cy="12" r="1.75" />
         </svg>
-      </button>
+      </ContextualAction>
       {open ? (
-        <span className="sidebar-item-row__menu" role="menu" aria-label={label}>
+        <span
+          ref={menuRef}
+          className="sidebar-item-row__menu app-anchored-menu"
+          role="menu"
+          popover="manual"
+          aria-label={label}
+          style={menuStyle}
+        >
           {actions.map((action) => (
             <button
               key={action.id}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
-  getConversation,
+  getConversationWindow,
   getConversations,
   getConsoleStreamEvents,
 } from '../../api';
@@ -26,12 +26,10 @@ export type ConsoleStreamState = {
 export function useConsoleStream({
   sessionId,
   providerSessionId,
-  resumeAtMessage,
   sessionStatus,
 }: {
   sessionId: string;
   providerSessionId: string | null;
-  resumeAtMessage?: string | null;
   sessionStatus: string;
 }): ConsoleStreamState {
   const hydratingRef = useRef(false);
@@ -79,7 +77,7 @@ export function useConsoleStream({
       .then(async ({ conversations }) => {
         const conversation = conversations[0];
         if (!conversation) return null;
-        const detail = await getConversation(conversation.id, resumeAtMessage || undefined);
+        const detail = await getConversationWindow(conversation.id, { target: 'latest', limit: 500 });
         return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
       })
       .catch(() => null);
@@ -118,7 +116,7 @@ export function useConsoleStream({
       });
 
     return () => { cancelled = true; };
-  }, [providerSessionId, sessionId, resumeAtMessage]);
+  }, [providerSessionId, sessionId]);
 
   useEffect(() => {
     if (streaming && (sessionStatus === 'stopped' || sessionStatus === 'crashed')) {

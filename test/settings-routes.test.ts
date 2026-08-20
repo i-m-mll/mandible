@@ -88,6 +88,56 @@ describe("settings routes", () => {
     }
   });
 
+  it("persists versioned app rail order across a route-layer restart", async () => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-rail-order-"));
+    const dbPath = path.join(tempHome, "settings.db");
+    let db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    const { setDb } = await import("../src/db.js");
+    const { registerSettingsRoutes } = await import("../src/routes/settings.js");
+    setDb(db);
+
+    const value = JSON.stringify({
+      version: 1,
+      groups: { primary: ["issues", "console"], secondary: ["graph", "work"] },
+    });
+    const firstRoutes = new TestRoutes();
+    registerSettingsRoutes(firstRoutes);
+    const put = createResponse();
+    await firstRoutes.handler("PUT", "/api/settings/:key")({
+      method: "PUT",
+      url: "/api/settings/app_rail_order",
+      params: { key: "app_rail_order" },
+      query: {},
+      body: { value },
+    }, put);
+    expect(put.statusCode).toBe(200);
+    db.close();
+
+    db = new Database(dbPath);
+    setDb(db);
+    const restartedRoutes = new TestRoutes();
+    registerSettingsRoutes(restartedRoutes);
+    const get = createResponse();
+    await restartedRoutes.handler("GET", "/api/settings")({
+      method: "GET",
+      url: "/api/settings",
+      params: {},
+      query: {},
+      body: undefined,
+    }, get);
+
+    expect(get.statusCode).toBe(200);
+    expect(get.payload).toMatchObject({ app_rail_order: value });
+    db.close();
+  });
+
   it("keeps deprecated reaper settings writable without creating the legacy config", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
     process.env.HOME = tempHome;

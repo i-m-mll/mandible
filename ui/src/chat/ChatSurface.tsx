@@ -14,16 +14,16 @@ import { MessageActions } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
+import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
-import { ContextUsageRing } from './ContextUsageRing';
-import type { ChatUsageSummary } from './contextUsage';
+import { openMarkdownDocument } from './markdownActions';
 import {
   deriveLiveLabel,
   deriveTokenCount,
   extractTurns,
+  extractToolResultText,
   formatElapsed,
   groupMessagesForDisplay,
-  serializeConversationToMarkdown,
   serializeDisplayGroupToMarkdown,
   useStreamState,
 } from './renderModel';
@@ -32,13 +32,37 @@ export type ChatSurfaceProps = StreamRendererProps & {
   activePermissionRequest?: ConsolePermissionRequest | null;
   permissionBackendType?: ConsoleBackendType;
   onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
-  usageSummary?: ChatUsageSummary;
-  onUsageOpen?: () => void;
+  unmaterializedAfterCount?: number;
+  onJumpToLatest?: () => void | Promise<void>;
+  jumpingToLatest?: boolean;
+  navigationTarget?: {
+    key: string;
+    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
+    turnId: string | null;
+    blockId?: string | null;
+    smooth: boolean;
+  } | null;
+  selectedBlockIds?: ReadonlySet<string>;
+  selectMode?: boolean;
+  onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
+  onFork?: (dagUuid: string) => void;
+  onResume?: (dagUuid: string) => void;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
 const VIRTUAL_OVERSCAN = 6;
 const FOLLOW_THRESHOLD_PX = 80;
+const JUMP_RETURN_SECONDS = 2;
+const MANUAL_RETURN_PX_PER_SECOND = 600;
+
+/**
+ * The follow threshold answers whether appends should stick to the tail. This
+ * separate visibility threshold hides the button for a one-page displacement
+ * and shows it only when returning manually would take roughly two seconds.
+ */
+export function shouldShowJumpToLatest(distancePx: number, viewportHeight: number): boolean {
+  return distancePx > Math.max(viewportHeight * 1.25, JUMP_RETURN_SECONDS * MANUAL_RETURN_PX_PER_SECOND);
+}
 
 type VirtualItem =
   | { kind: 'group'; id: string; group: DisplayGroup }
@@ -49,6 +73,13 @@ type VirtualLayout = {
   offsets: number[];
   start: number;
   end: number;
+};
+
+type LayoutSnapshot = {
+  ids: string[];
+  offsets: number[];
+  heights: number[];
+  scrollTop: number;
 };
 
 function storageGet(key: string): string | null {
@@ -162,13 +193,6 @@ function VirtualRow({
   );
 }
 
-function openMarkdownDocument(markdown: string): void {
-  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener,noreferrer');
-  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
-
 export function ChatSurface({
   events,
   streaming,
@@ -180,8 +204,15 @@ export function ChatSurface({
   activePermissionRequest,
   permissionBackendType = 'sdk',
   onPermissionRespond,
-  usageSummary,
-  onUsageOpen,
+  unmaterializedAfterCount = 0,
+  onJumpToLatest,
+  jumpingToLatest = false,
+  navigationTarget = null,
+  selectedBlockIds,
+  selectMode = false,
+  onToggleBlockSelect,
+  onFork,
+  onResume,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -192,10 +223,18 @@ export function ChatSurface({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
   const [isFollowing, setIsFollowing] = useState(true);
+  const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => (
     readExpandState(expandStorageKey)
   ));
+  const scrollTopRef = useRef(0);
+  const isFollowingRef = useRef(true);
+  const rowHeightsRef = useRef<Record<string, number>>({});
+  const handledNavigationKeyRef = useRef<string | null>(null);
+  const pendingExactBlockRef = useRef<string | null>(null);
+  const previousLayoutRef = useRef<LayoutSnapshot | null>(null);
+  const skipAnchorReconciliationRef = useRef(false);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
@@ -217,6 +256,11 @@ export function ChatSurface({
   }, [groups, streaming]);
 
   const layout = useVirtualLayout(items, rowHeights, scrollTop, viewportHeight);
+  const estimatedUnmaterializedDistance = Math.max(0, unmaterializedAfterCount) * ESTIMATED_ROW_HEIGHT;
+  const showJumpToLatest = shouldShowJumpToLatest(
+    Math.max(distanceFromBottom, estimatedUnmaterializedDistance),
+    viewportHeight,
+  );
 
   useEffect(() => {
     setExpandedBlocks(readExpandState(expandStorageKey));
@@ -230,23 +274,143 @@ export function ChatSurface({
     const storedTop = Number(storageGet(scrollStorageKey) ?? 0);
     if (Number.isFinite(storedTop) && storedTop > 0) {
       el.scrollTop = storedTop;
+      scrollTopRef.current = storedTop;
       setScrollTop(storedTop);
       const atBottom = storedTop + el.clientHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
+      isFollowingRef.current = atBottom;
       setIsFollowing(atBottom);
+      setDistanceFromBottom(Math.max(0, el.scrollHeight - storedTop - el.clientHeight));
     }
     setViewportHeight(el.clientHeight || 720);
   }, [scrollStorageKey]);
 
   useEffect(() => {
-    if (!streaming || !isFollowing) {
+    if (!streaming || !isFollowingRef.current) {
       return;
     }
     const el = scrollRef.current;
     if (el) {
       el.scrollTop = layout.totalHeight;
+      scrollTopRef.current = el.scrollTop;
       setScrollTop(el.scrollTop);
+      setDistanceFromBottom(0);
+      storageSet(scrollStorageKey, String(el.scrollTop));
     }
-  }, [items.length, layout.totalHeight, streaming, isFollowing]);
+  }, [items.length, layout.totalHeight, scrollStorageKey, streaming, isFollowing]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!navigationTarget) {
+      handledNavigationKeyRef.current = null;
+      pendingExactBlockRef.current = null;
+      return;
+    }
+    if (!el || handledNavigationKeyRef.current === navigationTarget.key) return;
+    let destination = layout.totalHeight;
+    let targetFound = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
+    if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
+      let itemIndex = navigationTarget.turnId ? items.findIndex((item) => (
+        item.kind === 'group' && item.group.nodes.some((node) => node.key === navigationTarget.turnId)
+      )) : -1;
+      if (itemIndex < 0 && navigationTarget.blockId) {
+        itemIndex = items.findIndex((item) => (
+          item.kind === 'group' && item.group.nodes.some((node) => {
+            if (node.key === navigationTarget.blockId) return true;
+            if (node.kind === 'user_message') return node.persisted?.blockId === navigationTarget.blockId;
+            if (node.kind === 'semantic_event') return node.event.source.blockId === navigationTarget.blockId;
+            if (node.kind === 'unmatched_tool_result') return node.result.source?.blockId === navigationTarget.blockId;
+            if (node.kind === 'assistant_turn') {
+              return node.turn.assistantEvent.message.content.some((block) => block.source?.blockId === navigationTarget.blockId)
+                || Array.from(node.turn.toolResults.values())
+                  .some((result) => result.source?.blockId === navigationTarget.blockId);
+            }
+            return false;
+          })
+        ));
+      }
+      if (itemIndex >= 0) {
+        destination = layout.offsets[itemIndex] ?? 0;
+        targetFound = true;
+      }
+    }
+    if (!targetFound) return;
+
+    // Virtual navigation is a controlled two-stage anchor. Keep both the
+    // coarse row materialization and exact-block centering instantaneous so a
+    // browser animation cannot compete with measurement corrections.
+    const behavior: ScrollBehavior = 'auto';
+    handledNavigationKeyRef.current = navigationTarget.key;
+    skipAnchorReconciliationRef.current = true;
+    pendingExactBlockRef.current = navigationTarget.blockId ?? null;
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destination, behavior });
+    else el.scrollTop = destination;
+    scrollTopRef.current = el.scrollTop;
+    setScrollTop(el.scrollTop);
+    const followsTail = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
+    isFollowingRef.current = followsTail;
+    setIsFollowing(followsTail);
+    setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' ? 0 : Math.max(0, layout.totalHeight - destination - viewportHeight));
+    storageSet(scrollStorageKey, String(el.scrollTop));
+  }, [items, layout.offsets, layout.totalHeight, navigationTarget, scrollStorageKey, viewportHeight]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const blockId = pendingExactBlockRef.current;
+    if (!el || !blockId) return;
+    const exactBlock = Array.from(el.querySelectorAll<HTMLElement>('[data-block-id]'))
+      .find((candidate) => candidate.dataset.blockId === blockId);
+    if (!exactBlock) return;
+    if (typeof exactBlock.scrollIntoView === 'function') {
+      exactBlock.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+    pendingExactBlockRef.current = null;
+    scrollTopRef.current = el.scrollTop;
+    setScrollTop(el.scrollTop);
+    storageSet(scrollStorageKey, String(el.scrollTop));
+  }, [layout.end, layout.start, scrollStorageKey]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const previous = previousLayoutRef.current;
+    const ids = items.map((item) => item.id);
+    let nextScrollTop = scrollTopRef.current;
+    const skipReconciliation = skipAnchorReconciliationRef.current;
+    skipAnchorReconciliationRef.current = false;
+
+    if (
+      el
+      && previous
+      && !skipReconciliation
+      && !isFollowingRef.current
+      && (!navigationTarget || handledNavigationKeyRef.current === navigationTarget.key)
+      && (previous.ids.length !== ids.length || previous.ids.some((id, index) => ids[index] !== id))
+    ) {
+      const anchorIndex = previous.ids.findIndex((_, index) => (
+        previous.offsets[index] + previous.heights[index] > previous.scrollTop
+      ));
+      if (anchorIndex >= 0) {
+        const newAnchorIndex = ids.indexOf(previous.ids[anchorIndex]);
+        if (newAnchorIndex >= 0) {
+          const anchorInset = previous.scrollTop - previous.offsets[anchorIndex];
+          nextScrollTop = (layout.offsets[newAnchorIndex] ?? 0) + anchorInset;
+          if (Math.abs(nextScrollTop - el.scrollTop) > 0.5) {
+            el.scrollTop = nextScrollTop;
+            scrollTopRef.current = nextScrollTop;
+            setScrollTop(nextScrollTop);
+            setDistanceFromBottom(Math.max(0, layout.totalHeight - nextScrollTop - (el.clientHeight || viewportHeight)));
+            storageSet(scrollStorageKey, String(nextScrollTop));
+          }
+        }
+      }
+    }
+
+    previousLayoutRef.current = {
+      ids,
+      offsets: layout.offsets,
+      heights: items.map((item) => rowHeights[item.id] ?? ESTIMATED_ROW_HEIGHT),
+      scrollTop: nextScrollTop,
+    };
+  }, [items, layout.offsets, layout.totalHeight, navigationTarget, rowHeights, scrollStorageKey, viewportHeight]);
 
   function handleScroll(): void {
     const el = scrollRef.current;
@@ -256,20 +420,52 @@ export function ChatSurface({
     const nextScrollTop = el.scrollTop;
     const nextViewportHeight = el.clientHeight || viewportHeight;
     const atBottom = nextScrollTop + nextViewportHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
+    const movedUp = nextScrollTop < scrollTopRef.current - 0.5;
+    const nextFollowing = movedUp ? false : atBottom;
+    scrollTopRef.current = nextScrollTop;
+    isFollowingRef.current = nextFollowing;
     setScrollTop(nextScrollTop);
     setViewportHeight(nextViewportHeight);
-    setIsFollowing(atBottom);
+    setIsFollowing(nextFollowing);
+    setDistanceFromBottom(Math.max(0, el.scrollHeight - nextScrollTop - nextViewportHeight));
     storageSet(scrollStorageKey, String(nextScrollTop));
   }
 
   function handleJumpToBottom(): void {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = layout.totalHeight;
-      setScrollTop(el.scrollTop);
-      storageSet(scrollStorageKey, String(el.scrollTop));
+    if (onJumpToLatest) {
+      void onJumpToLatest();
+      return;
     }
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = layout.totalHeight;
+    scrollTopRef.current = el.scrollTop;
+    isFollowingRef.current = true;
+    setScrollTop(el.scrollTop);
+    setDistanceFromBottom(0);
+    storageSet(scrollStorageKey, String(el.scrollTop));
     setIsFollowing(true);
+  }
+
+  function handleRowMeasure(itemIndex: number, itemId: string, height: number): void {
+    const previousHeight = rowHeightsRef.current[itemId] ?? ESTIMATED_ROW_HEIGHT;
+    if (previousHeight === height) return;
+    const nextHeights = { ...rowHeightsRef.current, [itemId]: height };
+    rowHeightsRef.current = nextHeights;
+    setRowHeights(nextHeights);
+
+    const el = scrollRef.current;
+    const itemTop = layout.offsets[itemIndex] ?? 0;
+    if (!el || isFollowingRef.current || itemTop + previousHeight > scrollTopRef.current) return;
+    const adjustedScrollTop = scrollTopRef.current + height - previousHeight;
+    el.scrollTop = adjustedScrollTop;
+    scrollTopRef.current = adjustedScrollTop;
+    setScrollTop(adjustedScrollTop);
+    setDistanceFromBottom(Math.max(
+      0,
+      layout.totalHeight + height - previousHeight - adjustedScrollTop - (el.clientHeight || viewportHeight),
+    ));
+    storageSet(scrollStorageKey, String(adjustedScrollTop));
   }
 
   function setBlockExpanded(id: string, expanded: boolean): void {
@@ -294,13 +490,28 @@ export function ChatSurface({
 
   function renderNodeBody(node: RenderNode): JSX.Element | null {
     switch (node.kind) {
-      case 'user_message':
+      case 'user_message': {
+        const source = node.persisted;
         return (
-          <div key={node.key} className="message-block-wrapper">
+          <div
+            key={node.key}
+            className="message-block-wrapper contextual-action-owner"
+            data-block-id={source?.blockId}
+          >
             <UserBubble text={node.text} />
-            <MessageActions onCopy={() => copyText(node.text)} />
+            <MessageActions
+              onCopy={() => copyText(node.text)}
+              onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
+              selectMode={selectMode}
+              onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
+              onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
+              dagUuid={source?.dagUuid}
+              metadata={{ timestamp: source?.timestamp }}
+            />
           </div>
         );
+      }
 
       case 'violation':
         return (
@@ -311,6 +522,43 @@ export function ChatSurface({
             subagentSessionId={node.event.subagent_session_id}
           />
         );
+
+      case 'semantic_event': {
+        const source = node.event.source;
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={source.blockId}>
+            <SemanticEventBlock
+              kind={node.event.semantic_kind}
+              content={node.event.content}
+              label={node.event.label}
+              isError={node.event.is_error}
+            />
+            <MessageActions
+              onCopy={() => copyText(node.event.content)}
+              onSelect={onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={selectedBlockIds?.has(source.blockId)}
+              selectMode={selectMode}
+              metadata={{ timestamp: source.timestamp }}
+            />
+          </div>
+        );
+      }
+
+      case 'unmatched_tool_result': {
+        const source = node.result.source;
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+            <UnmatchedToolResultBlock result={node.result} />
+            <MessageActions
+              onCopy={() => copyText(node.result.fullText ?? extractToolResultText(node.result.content))}
+              onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
+              selectMode={selectMode}
+              metadata={{ timestamp: source?.timestamp }}
+            />
+          </div>
+        );
+      }
 
       case 'assistant_turn': {
         const { turn } = node;
@@ -335,6 +583,11 @@ export function ChatSurface({
               onBlockExpandedChange={(contentBlock, index, expanded) => (
                 setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
               )}
+              selectedBlockIds={selectedBlockIds}
+              selectMode={selectMode}
+              onToggleBlockSelect={onToggleBlockSelect}
+              onFork={onFork}
+              onResume={onResume}
             />
           </div>
         );
@@ -364,7 +617,6 @@ export function ChatSurface({
       <TurnGroup
         key={group.id}
         speaker={group.speaker}
-        isShort={group.nodes.length <= 2}
         footer={footer}
       >
         {group.nodes.map(renderNodeBody)}
@@ -402,27 +654,8 @@ export function ChatSurface({
   }
 
   const visibleItems = items.slice(layout.start, layout.end);
-  const conversationMarkdown = serializeConversationToMarkdown(nodes);
-
   return (
     <div className="stream-renderer">
-      <div className="stream-renderer__toolbar" aria-label="Conversation export actions">
-        <ContextUsageRing usage={usageSummary} size="sm" onClick={onUsageOpen} />
-        <button
-          type="button"
-          className="stream-renderer__toolbar-btn"
-          onClick={() => copyText(conversationMarkdown)}
-        >
-          Copy markdown
-        </button>
-        <button
-          type="button"
-          className="stream-renderer__toolbar-btn"
-          onClick={() => openMarkdownDocument(conversationMarkdown)}
-        >
-          Open markdown
-        </button>
-      </div>
       <div
         ref={scrollRef}
         className="stream-renderer__scroll"
@@ -435,11 +668,7 @@ export function ChatSurface({
               <VirtualRow
                 key={item.id}
                 top={layout.offsets[itemIndex] ?? 0}
-                onMeasure={(height) => {
-                  setRowHeights((current) => (
-                    current[item.id] === height ? current : { ...current, [item.id]: height }
-                  ));
-                }}
+                onMeasure={(height) => handleRowMeasure(itemIndex, item.id, height)}
               >
                 {item.kind === 'group' ? renderGroup(item.group) : renderLiveIndicator()}
               </VirtualRow>
@@ -447,7 +676,7 @@ export function ChatSurface({
           })}
         </div>
         {activePermissionRequest && onPermissionRespond && (
-          <TurnGroup speaker="system" isShort>
+          <TurnGroup speaker="system">
             <PermissionApprovalCard
               request={activePermissionRequest}
               backendType={permissionBackendType}
@@ -456,13 +685,14 @@ export function ChatSurface({
           </TurnGroup>
         )}
       </div>
-      {!isFollowing && (
+      {showJumpToLatest && (
         <button
           type="button"
           className="stream-renderer__scroll-btn"
           onClick={handleJumpToBottom}
+          disabled={jumpingToLatest}
         >
-          Jump to latest
+          {jumpingToLatest ? 'Loading latest…' : 'Jump to latest'}
         </button>
       )}
     </div>

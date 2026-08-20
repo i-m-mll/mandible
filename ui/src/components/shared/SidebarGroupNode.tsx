@@ -1,4 +1,6 @@
 import type { ComponentChildren } from 'preact';
+import { ContextualAction } from './ContextualAction';
+import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
 
 type SidebarGroupNodeCommonProps = {
   id: string;
@@ -13,9 +15,14 @@ type SidebarGroupNodeCommonProps = {
   canShowMore?: boolean;
   loadingMore?: boolean;
   onShowMore?(): void;
+  testIds?: {
+    root?: string;
+    heading?: string;
+    action?: string;
+  };
   action?: {
     label: string;
-    icon: 'new-chat' | 'add-project';
+    icon: ComponentChildren;
     onPress(): void;
   };
 };
@@ -55,6 +62,7 @@ export function SidebarGroupNode({
   canShowMore = false,
   loadingMore = false,
   onShowMore,
+  testIds,
   action,
 }: SidebarGroupNodeProps): JSX.Element {
   const headingId = `${id}-heading`;
@@ -70,23 +78,24 @@ export function SidebarGroupNode({
     </button>
   ) : null;
   const body = bodyAs === 'ul' ? (
-    <ul id={bodyId} className={bodyClassName}>
+    <>
       {children}
       {showMore ? <li className="sidebar-group-node__show-more-row">{showMore}</li> : null}
-    </ul>
+    </>
   ) : (
-    <div id={bodyId} className={bodyClassName}>
+    <>
       {children}
       {showMore ? <div className="sidebar-group-node__show-more-row">{showMore}</div> : null}
-    </div>
+    </>
   );
 
   return (
     <section
       className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
+      data-testid={testIds?.root}
     >
-      <div className="sidebar-group-node__header">
+      <div className="sidebar-group-node__header contextual-action-owner">
         <button
           id={headingId}
           type="button"
@@ -94,6 +103,7 @@ export function SidebarGroupNode({
           aria-expanded={expanded}
           aria-controls={bodyId}
           aria-description={headingDescription}
+          data-testid={testIds?.heading}
           onClick={onToggle}
         >
           {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
@@ -101,18 +111,28 @@ export function SidebarGroupNode({
           {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
         </button>
         {action ? (
-          <button
-            type="button"
-            className="sidebar-group-node__action"
-            aria-label={action.label}
-            title={action.label}
-            onClick={action.onPress}
-          >
-            {action.icon === 'new-chat' ? <SidebarNewChatIcon /> : <SidebarAddProjectIcon />}
-          </button>
+          <span className="sidebar-group-node__action-slot contextual-action-group">
+            <ContextualAction
+              className="sidebar-group-node__action"
+              aria-label={action.label}
+              title={action.label}
+              data-testid={testIds?.action}
+              onClick={action.onPress}
+            >
+              {action.icon}
+            </ContextualAction>
+          </span>
         ) : null}
       </div>
-      {expanded ? body : null}
+      <SidebarDisclosureRegion
+        id={bodyId}
+        controllerId={headingId}
+        expanded={expanded}
+        contentAs={bodyAs}
+        contentClassName={bodyClassName}
+      >
+        {body}
+      </SidebarDisclosureRegion>
     </section>
   );
 }
@@ -138,7 +158,7 @@ export function SidebarNewChatIcon({ size = 14 }: { size?: number }): JSX.Elemen
   );
 }
 
-function SidebarAddProjectIcon(): JSX.Element {
+export function SidebarAddProjectIcon(): JSX.Element {
   return (
     <svg
       width="14"

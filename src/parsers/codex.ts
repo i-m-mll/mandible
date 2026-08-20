@@ -138,7 +138,7 @@ const CODEX_ROLLOUT_ROOT_NAMES: readonly string[] = [
   CODEX_ARCHIVED_SESSIONS_DIR_NAME,
 ];
 
-interface CodexRolloutLocation {
+export interface CodexRolloutLocation {
   /** The `~/.codex` directory that owns the rollout file. */
   codexRoot: string;
   /** Either `sessions` or `archived_sessions`. */
@@ -155,7 +155,7 @@ interface CodexRolloutLocation {
  * `~/.codex/sessions/YYYY/MM/DD/` and the flat `~/.codex/archived_sessions/`,
  * so both roots describe the same conversation identity.
  */
-function locateCodexRollout(filePath: string): CodexRolloutLocation | null {
+export function locateCodexRollout(filePath: string): CodexRolloutLocation | null {
   let dir = path.dirname(filePath);
   while (dir && dir !== path.dirname(dir)) {
     const name = path.basename(dir);
@@ -223,6 +223,18 @@ export function codexRelocationCandidates(filePath: string): string[] {
 export function getCodexSessionIndexPath(filePath: string): string | null {
   const location = locateCodexRollout(filePath);
   return location ? path.join(location.codexRoot, "session_index.jsonl") : null;
+}
+
+/** True when two paths name the same rollout before/after Codex archive relocation. */
+export function codexRolloutPathsEquivalent(left: string, right: string): boolean {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  if (normalizedLeft === normalizedRight) return true;
+  const leftLocation = locateCodexRollout(normalizedLeft);
+  const rightLocation = locateCodexRollout(normalizedRight);
+  if (!leftLocation || !rightLocation || leftLocation.codexRoot !== rightLocation.codexRoot) return false;
+  return codexRelocationCandidates(normalizedLeft).map((candidate) => path.resolve(candidate)).includes(normalizedRight)
+    || codexRelocationCandidates(normalizedRight).map((candidate) => path.resolve(candidate)).includes(normalizedLeft);
 }
 
 export async function loadCodexSessionIndexTitle(filePath: string, sessionId: string): Promise<string | null> {

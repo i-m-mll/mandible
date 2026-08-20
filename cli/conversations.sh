@@ -257,7 +257,7 @@ conversation_metadata_command() {
 }
 
 file_rpc_show() {
-  local ident="${1:-}" json=0 blocks=0 conv_id response
+  local ident="${1:-}" json=0 blocks=0 response
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
   while (( $# > 0 )); do
@@ -268,8 +268,7 @@ file_rpc_show() {
       *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
   done
-  conv_id=$(conversation_resolve_id "$ident")
-  response=$(api_get "/api/conversations/$(urlencode "$conv_id")")
+  response=$(api_get "/api/conversations/$(urlencode "$ident")?target=latest")
   if (( json )); then
     if (( blocks )); then
       printf '%s\n' "$response" | jq .
@@ -292,7 +291,7 @@ file_rpc_show() {
 }
 
 file_rpc_blocks() {
-  local ident="${1:-}" type_filter="" role_filter="" content_filter="" limit=100 offset=0 json=0 conv_id request response
+  local ident="${1:-}" type_filter="" role_filter="" content_filter="" limit=100 offset=0 json=0 request response
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
   while (( $# > 0 )); do
@@ -310,8 +309,7 @@ file_rpc_blocks() {
       *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
   done
-  conv_id=$(conversation_resolve_id "$ident")
-  request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
+  request="/api/conversations/$(urlencode "$ident")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
   if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
   response=$(api_get "$request")
   file_rpc_warn_truncated_blocks "$response"
@@ -326,6 +324,26 @@ file_rpc_blocks() {
       --arg content "$content_filter" \
       '.blocks[] | select($role == "" or .role == $role) | select($content == "" or (.content | contains($content))) | "\(.position)\t\(.type)\t\(.role)\t\((.content | gsub("\\s+"; " ")) | if length > 220 then .[0:217] + "..." else . end)"'
   fi
+}
+
+conversation_export_api() {
+  local ident="${1:-}" format="markdown" payload response
+  if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; return 2; fi
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --format) format="${2:?--format requires a value}"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; return 1 ;;
+    esac
+  done
+  [[ "$format" == "json" || "$format" == "markdown" ]] || {
+    echo "Error: format must be json or markdown." >&2
+    return 2
+  }
+  payload=$(jq -nc --arg format "$format" '{format:$format}')
+  response=$(api_send POST "/api/conversations/$(urlencode "$ident")/export" "$payload") || return $?
+  printf '%s\n' "$response" | jq -r '.content'
 }
 
 file_rpc_warn_truncated_blocks() {
@@ -437,9 +455,7 @@ file_rpc_main() {
     list) shift; file_rpc_list "$@" ;;
     show) shift; file_rpc_show "$@" ;;
     blocks) shift; file_rpc_blocks "$@" ;;
-    export)
-      echo "Error: conversations export is not supported through file-RPC. Use the main Mandible daemon or unset MANDIBLE_BASE=file://..." >&2
-      exit 2 ;;
+    export) shift; conversation_export_api "$@" ;;
     search) shift; file_rpc_search "$@" ;;
     scan-credentials) shift; scan_credentials "$@" ;;
     ""|-h|--help|help) usage; exit 0 ;;
@@ -468,6 +484,15 @@ if [[ "${1:-}" == "scan-credentials" ]]; then
   scan_credentials "$@"
   exit $?
 fi
+
+# Exact reads always traverse the daemon's shared resolver/freshness barrier,
+# including the normal local transport. The Python/SQLite code below remains
+# list-only compatibility machinery and cannot bypass catch-up.
+case "${1:-}" in
+  show) shift; file_rpc_show "$@"; exit $? ;;
+  blocks) shift; file_rpc_blocks "$@"; exit $? ;;
+  export) shift; conversation_export_api "$@"; exit $? ;;
+esac
 
 if [[ ! -f "$MANDIBLE_DB" ]]; then
   echo "Error: Mandible database not found at $MANDIBLE_DB" >&2

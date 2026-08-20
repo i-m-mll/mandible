@@ -12,7 +12,6 @@
 
 .chat-history-sidebar {
   border-right: 1px solid var(--neutral-alpha-06);
-  background: var(--bg-secondary);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -34,9 +33,9 @@
   line-height: 1;
 }
 
-.icon-btn:hover {
+.icon-btn:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-07);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .chat-sidebar-global-actions {
@@ -201,18 +200,6 @@
   overflow: hidden;
   padding: 0;
   display: flex;
-}
-
-.conv-load-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 18px;
-  border-bottom: 1px solid rgba(255, 91, 91, 0.18);
-  background: rgba(255, 91, 91, 0.07);
-  color: var(--accent-red);
-  font-size: 12px;
 }
 
 .chat-history-detail__empty {

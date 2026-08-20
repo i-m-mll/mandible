@@ -6,8 +6,9 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
-import { getDb } from "./db.js";
+import { getDb, type Db } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
@@ -62,6 +63,15 @@ export const RECONCILE_INTERVAL_MS = 60 * 60_000;
 export const DIRTY_INGEST_BATCH_SIZE = 16;
 export const MAX_DIRTY_INGEST_PATHS = 4096;
 const INGEST_TAIL_HASH_BYTES = 4096;
+/** Keep every native fs.read length well below Node's signed-32-bit boundary. */
+export const INGEST_RANGE_READ_CHUNK_BYTES = 1024 * 1024;
+/** The existing incremental parser accepts one string, so bound that materialization. */
+export const MAX_BUFFERED_APPEND_BYTES = 16 * 1024 * 1024;
+// The observed production rollout contains a 49,328,891-byte JSONL record.
+// Permit that one record while keeping every incremental parse independent of
+// the total append extent; a larger unterminated record is left checkpointed
+// for a visible retry instead of falling back to an unbounded whole-file parse.
+export const MAX_BUFFERED_APPEND_RECORD_BYTES = 64 * 1024 * 1024;
 export const INGEST_COMPRESSION_CONCURRENCY = 4;
 
 /** One recursive watch root: every glob that shares a base directory. */
@@ -823,13 +833,18 @@ type AppendReadResult =
       nextPartialLine: string;
       sourceHash: string;
       tailHash: string;
+      byteOffset: number;
+      hasMore: boolean;
     }
   | {
       kind: "buffered";
       appendedBytes: number;
       nextPartialLine: string;
       tailHash: string;
+      byteOffset: number;
+      hasMore: boolean;
     }
+  | { kind: "blocked"; reason: string }
   | { kind: "fallback"; reason: string };
 
 // --- Public API ---
@@ -1009,6 +1024,23 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
   return { ok: true, status: "ingested", transcript_path: transcriptPath, session_ref: sessionRef };
 }
 
+/** Authoritative exact-path ingestion for bounded read freshness barriers. */
+export async function triggerExactPathIngest(transcriptPath: string): Promise<TargetedIngestResult> {
+  const normalized = normalizeTargetPath(transcriptPath);
+  if (!normalized || isWorkflowIngestArtifactPath(normalized) || !getParserForFile(normalized)) {
+    return { ok: true, status: "unsupported", transcript_path: normalized, session_ref: null };
+  }
+  const pendingTimer = debounceTimers.get(normalized);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    debounceTimers.delete(normalized);
+  }
+  if (ingestionActor) await ingestionActor.ingest([normalized], false, true);
+  else await ingestFile(normalized, { bypassSameMtimeUnchanged: true });
+  clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
+  return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
+}
+
 export function suppressAcpIngestForSession(source: string, sessionId: string): void {
   if (!source.trim() || !sessionId.trim()) {
     return;
@@ -1145,10 +1177,139 @@ async function drainIngestQueue(runToken: number): Promise<void> {
   }
 }
 
-export async function ingestBatchForWorker(paths: readonly string[], forceFull = false): Promise<void> {
+export async function ingestBatchForWorker(
+  paths: readonly string[],
+  forceFull = false,
+  bypassSameMtimeUnchanged = false,
+): Promise<void> {
   for (const filePath of paths) {
-    await ingestFile(filePath, { forceFull });
+    await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged });
   }
+}
+
+export interface ProjectedConversationTitleConvergenceRow {
+  id: string;
+  title_before: string;
+  title_after: string;
+  source_mtime_before: number;
+  source_mtime_after: number;
+  block_count_before: number;
+  block_count_after: number;
+}
+
+export interface ProjectedConversationTitleConvergenceResult {
+  scanned: number;
+  eligible: number;
+  updated: number;
+  skipped_missing_source: number;
+  skipped_not_at_indexed_extent: number;
+  rows: ProjectedConversationTitleConvergenceRow[];
+}
+
+/**
+ * Converge provider-owned Claude titles in a newly projected database copy.
+ *
+ * Reject-mode previews deliberately do not start background ingestion. The
+ * projection step therefore calls this against its still-private copy before
+ * accepting that copy or its manifest. Eligibility is narrow: the source must
+ * exist, its append checkpoint must cover the exact complete file, and the
+ * persisted conversation mtime must be stale. `ingestFile` remains the single
+ * parser, precedence, masking, durable-source, and metadata persistence path.
+ */
+export async function convergeProjectedConversationTitlesForWorker(
+  db: Db = getDb(),
+): Promise<ProjectedConversationTitleConvergenceResult> {
+  const candidates = db.prepare(`
+    SELECT
+      c.id,
+      c.source_path,
+      c.title,
+      c.source_mtime,
+      c.block_count,
+      state.byte_offset,
+      state.partial_line
+    FROM conversations c
+    LEFT JOIN conversation_ingest_state state ON state.file_path = c.source_path
+    WHERE c.source = 'claude_code'
+    ORDER BY c.id
+  `).all() as Array<{
+    id: string;
+    source_path: string;
+    title: string;
+    source_mtime: number;
+    block_count: number;
+    byte_offset: number | null;
+    partial_line: string | null;
+  }>;
+  const result: ProjectedConversationTitleConvergenceResult = {
+    scanned: candidates.length,
+    eligible: 0,
+    updated: 0,
+    skipped_missing_source: 0,
+    skipped_not_at_indexed_extent: 0,
+    rows: [],
+  };
+
+  for (const candidate of candidates) {
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(candidate.source_path);
+    } catch {
+      result.skipped_missing_source += 1;
+      continue;
+    }
+    if (
+      candidate.byte_offset !== stat.size
+      || (candidate.partial_line ?? "") !== ""
+      || Math.abs(candidate.source_mtime - stat.mtimeMs) < 100
+    ) {
+      result.skipped_not_at_indexed_extent += 1;
+      continue;
+    }
+
+    result.eligible += 1;
+    await ingestFile(candidate.source_path);
+    const after = db.prepare(`
+      SELECT title, source_mtime, block_count
+      FROM conversations
+      WHERE id = ?
+    `).get(candidate.id) as {
+      title: string;
+      source_mtime: number;
+      block_count: number;
+    } | undefined;
+    if (!after) {
+      throw new Error(`Projected conversation disappeared during title convergence: ${candidate.id}`);
+    }
+    if (Math.abs(after.source_mtime - stat.mtimeMs) >= 100) {
+      throw new Error(
+        `Projected conversation title convergence did not reach source metadata: ${candidate.id}`,
+      );
+    }
+    if (after.block_count !== candidate.block_count) {
+      throw new Error(
+        `Projected conversation title convergence changed block count: ${candidate.id}`,
+      );
+    }
+    if (
+      after.title === candidate.title
+      && after.source_mtime === candidate.source_mtime
+      && after.block_count === candidate.block_count
+    ) {
+      continue;
+    }
+    result.updated += 1;
+    result.rows.push({
+      id: candidate.id,
+      title_before: candidate.title,
+      title_after: after.title,
+      source_mtime_before: candidate.source_mtime,
+      source_mtime_after: after.source_mtime,
+      block_count_before: candidate.block_count,
+      block_count_after: after.block_count,
+    });
+  }
+  return result;
 }
 
 export function configureIngestionWorker(
@@ -1234,19 +1395,75 @@ async function hashFileTailAt(filePath: string, offset: number): Promise<string>
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
-async function readFileRange(filePath: string, start: number, end: number): Promise<string> {
-  if (end <= start) {
-    return "";
+type RangeReadHandle = Pick<fs.promises.FileHandle, "read" | "close">;
+
+interface RangeReadOptions {
+  chunkBytes?: number;
+  openFile?: (filePath: string) => Promise<RangeReadHandle>;
+}
+
+/**
+ * Consume an exact byte range without making a native read or allocation the
+ * size of the logical range. The explicit-position loop advances by bytesRead,
+ * including after short reads; only a zero-byte read is EOF.
+ *
+ * Exported as a narrow test seam so sparse ranges beyond INT32_MAX can exercise
+ * real FileHandle reads without scanning gigabytes.
+ */
+export async function consumeFileRangeForTest(
+  filePath: string,
+  start: number,
+  end: number,
+  consume: (chunk: Buffer, position: number) => void | Promise<void>,
+  options: RangeReadOptions = {},
+): Promise<number> {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < 0) {
+    throw new RangeError("file range offsets must be non-negative safe integers");
   }
-  const length = end - start;
-  const buffer = Buffer.alloc(length);
-  const handle = await fs.promises.open(filePath, "r");
+  if (end <= start) return 0;
+  const chunkBytes = options.chunkBytes ?? INGEST_RANGE_READ_CHUNK_BYTES;
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes > INGEST_RANGE_READ_CHUNK_BYTES) {
+    throw new RangeError(`file read chunks must be between 1 and ${INGEST_RANGE_READ_CHUNK_BYTES} bytes`);
+  }
+  const handle = await (options.openFile ?? ((target) => fs.promises.open(target, "r")))(filePath);
+  const buffer = Buffer.allocUnsafe(Math.min(chunkBytes, end - start));
+  let position = start;
   try {
-    await handle.read(buffer, 0, length, start);
+    while (position < end) {
+      const length = Math.min(buffer.length, end - position);
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      if (bytesRead === 0) break;
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > length) {
+        throw new Error(`invalid bytesRead ${bytesRead} for requested length ${length}`);
+      }
+      await consume(buffer.subarray(0, bytesRead), position);
+      position += bytesRead;
+    }
+    return position - start;
   } finally {
     await handle.close();
   }
-  return buffer.toString("utf8");
+}
+
+export async function readUtf8FileRangeForTest(
+  filePath: string,
+  start: number,
+  end: number,
+  options: RangeReadOptions = {},
+): Promise<string> {
+  const decoder = new StringDecoder("utf8");
+  const decoded: string[] = [];
+  await consumeFileRangeForTest(filePath, start, end, (chunk) => {
+    const text = decoder.write(chunk);
+    if (text) decoded.push(text);
+  }, options);
+  const final = decoder.end();
+  if (final) decoded.push(final);
+  return decoded.join("");
+}
+
+async function readFileRange(filePath: string, start: number, end: number): Promise<string> {
+  return readUtf8FileRangeForTest(filePath, start, end);
 }
 
 async function readTrailingPartialLine(filePath: string, size: number): Promise<string> {
@@ -1578,13 +1795,14 @@ async function refreshAppendState(
   lineCount: number,
   partialLine?: string,
   tailHash?: string,
+  byteOffset = stat.size,
 ): Promise<void> {
   writeAppendState(db, {
     file_path: filePath,
-    byte_offset: stat.size,
+    byte_offset: byteOffset,
     line_count: lineCount,
-    tail_hash: tailHash ?? await hashFileTailAt(filePath, stat.size),
-    partial_line: partialLine ?? await readTrailingPartialLine(filePath, stat.size),
+    tail_hash: tailHash ?? await hashFileTailAt(filePath, byteOffset),
+    partial_line: partialLine ?? await readTrailingPartialLine(filePath, byteOffset),
     empty_source_mtime: null,
     empty_source_size: null,
   });
@@ -1607,29 +1825,76 @@ async function readAppend(
   }
   const appendedBytes = stat.size - state.byte_offset;
   if (appendedBytes <= 0) {
-    return { kind: "buffered", appendedBytes: 0, nextPartialLine: state.partial_line, tailHash: currentTailHash };
+    return {
+      kind: "buffered",
+      appendedBytes: 0,
+      nextPartialLine: state.partial_line,
+      tailHash: currentTailHash,
+      byteOffset: state.byte_offset,
+      hasMore: false,
+    };
   }
 
-  const appended = await readFileRange(filePath, state.byte_offset, stat.size);
+  let readEnd = Math.min(stat.size, state.byte_offset + MAX_BUFFERED_APPEND_BYTES);
+  let appended = await readFileRange(filePath, state.byte_offset, readEnd);
+  if (readEnd < stat.size) {
+    let newline = appended.lastIndexOf("\n");
+    if (newline < 0) {
+      readEnd = Math.min(stat.size, state.byte_offset + MAX_BUFFERED_APPEND_RECORD_BYTES);
+      appended = await readFileRange(filePath, state.byte_offset, readEnd);
+      newline = appended.lastIndexOf("\n");
+      if (newline < 0 && readEnd < stat.size) {
+        return { kind: "blocked", reason: "append_record_exceeds_buffer_limit" };
+      }
+    }
+    if (newline >= 0) {
+      appended = appended.slice(0, newline + 1);
+      readEnd = state.byte_offset + Buffer.byteLength(appended, "utf8");
+    }
+  }
+
   const combined = `${state.partial_line}${appended}`;
   const endedWithLineBreak = combined.endsWith("\n") || combined.endsWith("\r");
   const parts = combined.split(/\r?\n/);
   const completeLines = endedWithLineBreak ? parts.slice(0, -1) : parts.slice(0, -1);
   const nextPartialLine = endedWithLineBreak ? "" : parts.at(-1) ?? "";
   const rawLines = completeLines.filter((line) => line.trim().length > 0);
-  const tailHash = await hashFileTailAt(filePath, stat.size);
+  const tailHash = await hashFileTailAt(filePath, readEnd);
+  const hasMore = readEnd < stat.size;
   if (rawLines.length === 0) {
-    return { kind: "buffered", appendedBytes, nextPartialLine, tailHash };
+    return {
+      kind: "buffered",
+      appendedBytes: readEnd - state.byte_offset,
+      nextPartialLine,
+      tailHash,
+      byteOffset: readEnd,
+      hasMore,
+    };
   }
   return {
     kind: "append",
     raw: `${rawLines.join("\n")}\n`,
     completeLineCount: completeLines.length,
-    appendedBytes,
+    appendedBytes: readEnd - state.byte_offset,
     nextPartialLine,
-    sourceHash: `append:${stat.size}:${tailHash}`,
+    sourceHash: `append:${readEnd}:${tailHash}`,
     tailHash,
+    byteOffset: readEnd,
+    hasMore,
   };
+}
+
+/** Exercise the production append-range decision without constructing ledger state. */
+export async function readAppendForTest(
+  filePath: string,
+  state: Pick<IngestAppendState, "byte_offset" | "line_count" | "tail_hash" | "partial_line">,
+): Promise<AppendReadResult> {
+  return readAppend(filePath, await fs.promises.stat(filePath), {
+    file_path: filePath,
+    empty_source_mtime: null,
+    empty_source_size: null,
+    ...state,
+  });
 }
 
 function mergeAppendConversationMetadata(
@@ -1653,6 +1918,7 @@ function mergeAppendConversationMetadata(
     },
     blocks: result.blocks,
     ...(result.providerTitle ? { providerTitle: result.providerTitle } : {}),
+    ...(result.providerTitleSource ? { providerTitleSource: result.providerTitleSource } : {}),
   };
 }
 
@@ -1675,6 +1941,28 @@ function incrementalParseAnomaly(
     }
   }
   return null;
+}
+
+function resolveIncrementalToolParents(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  result: ParseResult,
+): void {
+  const priorToolCall = db.prepare(`
+    SELECT position
+      FROM conversation_blocks
+     WHERE conversation_id = ?
+       AND type = 'tool_use'
+       AND json_extract(metadata_json, '$.tool_id') = ?
+     ORDER BY position DESC
+     LIMIT 1
+  `);
+  for (const block of result.blocks) {
+    const toolId = block.metadata.tool_id;
+    if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
+    const parent = priorToolCall.get(conversationId, toolId) as { position: number } | undefined;
+    if (parent) block.parent_id = String(parent.position);
+  }
 }
 
 function insertedBlockPayload(
@@ -1754,27 +2042,50 @@ async function syncCodexIndexedTitle(
   const indexed = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
     ?.slice(0, 100)
     .trim();
+  return indexed ? persistExactCodexTitle(db, {
+    conversationId: existing.id,
+    filePath,
+    currentTitle: existing.title,
+    blockCount: existing.block_count,
+    title: indexed,
+    stage: "codex_title_sync",
+  }) : false;
+}
+
+/** Persist one exact provider title through the derived-field masking/SSE boundary. */
+export function persistExactCodexTitle(
+  db: Db,
+  input: {
+    conversationId: string;
+    filePath: string;
+    currentTitle: string;
+    blockCount: number;
+    title: string;
+    stage?: string;
+  },
+): boolean {
+  const indexed = input.title.slice(0, 100).trim();
   // Masked before the comparison, not after: the stored title is already
   // masked, so comparing the raw index title against it would report a
   // difference on every pass and rewrite the row with the plaintext.
   const title = indexed
-    ? maskDerivedConversationText(db, indexed, { file: filePath, stage: "codex_title_sync" })
+    ? maskDerivedConversationText(db, indexed, { file: input.filePath, stage: input.stage ?? "codex_title_sync" })
     : indexed;
-  if (!title || title === existing.title) {
+  if (!title || title === input.currentTitle) {
     return false;
   }
 
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(title, existing.id);
+    .run(title, input.conversationId);
   eventPublisher("conversation:updated", {
-    id: existing.id,
+    id: input.conversationId,
     source: "codex",
     title,
-    block_count: existing.block_count,
+    block_count: input.blockCount,
   });
   logger("info", "ingestion_title_synced", {
-    file: filePath,
-    id: existing.id,
+    file: input.filePath,
+    id: input.conversationId,
     source: "codex",
   });
   return true;
@@ -1875,10 +2186,23 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
   }
 }
 
-async function ingestFile(
+type IngestFileOptions = {
+  forceFull?: boolean;
+  fallbackReason?: string;
+  bypassSameMtimeUnchanged?: boolean;
+};
+
+async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
+  let passOptions = options;
+  while (await ingestFilePass(filePath, passOptions)) {
+    passOptions = { bypassSameMtimeUnchanged: true };
+  }
+}
+
+async function ingestFilePass(
   filePath: string,
-  options: { forceFull?: boolean; fallbackReason?: string } = {},
-): Promise<void> {
+  options: IngestFileOptions,
+): Promise<boolean | undefined> {
   const ingestStartedAt = Date.now();
   if (isWorkflowIngestArtifactPath(filePath)) {
     await ingestWorkflowArtifact(filePath, { force: options.forceFull === true });
@@ -1983,6 +2307,8 @@ async function ingestFile(
     appendedBytes: number;
     nextPartialLine: string;
     tailHash: string;
+    byteOffset: number;
+    hasMore: boolean;
   } | null = null;
   const sameMtimeAsExisting = Boolean(
     existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100,
@@ -1994,7 +2320,9 @@ async function ingestFile(
   // of unchanged rollouts merely because their mtime is coarse.
   let sameMtimeNativeCodexSessionId: string | null | undefined;
   if (
-    sameMtimeAsExisting
+    !options.forceFull
+    && !options.bypassSameMtimeUnchanged
+    && sameMtimeAsExisting
     && parser.source === "codex"
     && appendState
     && appendState.byte_offset === stat.size
@@ -2040,7 +2368,8 @@ async function ingestFile(
   // Same-mtime writes are common on coarse filesystems and can still replace
   // or truncate a path. They must parse the complete provider identity before
   // any unchanged/append shortcut is considered.
-  let forceFullReingest = options.forceFull === true || sameMtimeAsExisting;
+  let forceFullReingest = options.forceFull === true
+    || (sameMtimeAsExisting && appendState?.byte_offset === stat.size);
 
   // Parse the file
   let result: ParseResult | null;
@@ -2069,6 +2398,36 @@ async function ingestFile(
           sourceHash: append.sourceHash,
           sourceMtime: stat.mtimeMs,
         });
+        // A generated ai-title in the tail cannot prove that no stronger
+        // custom-title appeared earlier in the transcript. Only cross that
+        // provenance boundary when the generated value would change storage:
+        // consult one full parse for title authority, then retain the bounded
+        // tail parse for block ingestion.
+        if (
+          result?.providerTitleSource === "ai-title"
+          && result.providerTitle !== existing.title
+        ) {
+          const fullTitleResult = await parser.parse(filePath);
+          if (!fullTitleResult?.providerTitle) {
+            logger("warn", "ingestion_append_fallback", {
+              file: filePath,
+              reason: "provider_title_history_unavailable",
+              appended_bytes: append.appendedBytes,
+            });
+            forceFullReingest = true;
+            result = fullTitleResult;
+          } else {
+            result = {
+              ...result,
+              conversation: {
+                ...result.conversation,
+                title: fullTitleResult.providerTitle,
+              },
+              providerTitle: fullTitleResult.providerTitle,
+              providerTitleSource: fullTitleResult.providerTitleSource,
+            };
+          }
+        }
         if (!result) {
           await refreshAppendState(
             db,
@@ -2077,13 +2436,15 @@ async function ingestFile(
             (appendState?.line_count ?? alreadyIngestedCount) + append.completeLineCount,
             append.nextPartialLine,
             append.tailHash,
+            append.byteOffset,
           );
           logger("debug", "ingestion_append_metadata_only", {
             file: filePath,
             appended_bytes: append.appendedBytes,
           });
-          return;
+          return append.hasMore;
         } else {
+          resolveIncrementalToolParents(db, existing.id, result);
           const anomaly = incrementalParseAnomaly(result, alreadyIngestedCount, result.blocks.length);
           if (anomaly) {
             logger("warn", "ingestion_append_fallback", {
@@ -2101,23 +2462,51 @@ async function ingestFile(
               appendedBytes: append.appendedBytes,
               nextPartialLine: append.nextPartialLine,
               tailHash: append.tailHash,
+              byteOffset: append.byteOffset,
+              hasMore: append.hasMore,
             };
           }
         }
       } else if (append.kind === "buffered") {
-        await refreshAppendState(
-          db,
-          filePath,
-          stat,
-          appendState?.line_count ?? alreadyIngestedCount,
-          append.nextPartialLine,
-          append.tailHash,
-        );
-        logger("debug", "ingestion_append_buffered", {
+        // An append checkpoint can already cover the whole file even though the
+        // conversation row still carries metadata derived by an older parser.
+        // This happens when a previous ingestion version consumed provider
+        // metadata it did not understand: the checkpoint advances, but the
+        // persisted title and source mtime do not. A later reconcile observes
+        // the stale mtime, reaches EOF, and used to return here forever without
+        // invoking the repaired parser.
+        //
+        // No newly buffered bytes means there is no partial append to preserve.
+        // Parse the complete source once so provider-owned metadata can converge;
+        // the normal metadata-only update below retains the existing blocks.
+        if (append.appendedBytes === 0 && existing.source_mtime !== stat.mtimeMs) {
+          logger("debug", "ingestion_append_fallback", {
+            file: filePath,
+            reason: "stale_metadata_at_indexed_extent",
+          });
+          result = await parser.parse(filePath);
+        } else {
+          await refreshAppendState(
+            db,
+            filePath,
+            stat,
+            appendState?.line_count ?? alreadyIngestedCount,
+            append.nextPartialLine,
+            append.tailHash,
+            append.byteOffset,
+          );
+          logger("debug", "ingestion_append_buffered", {
+            file: filePath,
+            appended_bytes: append.appendedBytes,
+          });
+          return append.hasMore;
+        }
+      } else if (append.kind === "blocked") {
+        logger("warn", "ingestion_append_blocked", {
           file: filePath,
-          appended_bytes: append.appendedBytes,
+          reason: append.reason,
         });
-        return;
+        return false;
       } else {
         logger("debug", "ingestion_append_fallback", {
           file: filePath,
@@ -2416,12 +2805,15 @@ async function ingestFile(
         : await countCompleteLines(filePath),
       appendInfo?.nextPartialLine,
       appendInfo?.tailHash,
+      appendInfo?.byteOffset,
     );
-    await recordDurableConversationSource(db, conversationId, result, filePath);
+    if (!appendInfo?.hasMore) {
+      await recordDurableConversationSource(db, conversationId, result, filePath);
+    }
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
-    return;
+    return appendInfo?.hasMore ?? false;
   }
 
   // Issues 71a287e / b3e4a09 — detect leaked Mandible credentials and mask them
@@ -2849,8 +3241,11 @@ async function ingestFile(
       : await countCompleteLines(filePath),
     appendInfo?.nextPartialLine,
     appendInfo?.tailHash,
+    appendInfo?.byteOffset,
   );
-  await recordDurableConversationSource(db, conversationId, result, filePath);
+  if (!appendInfo?.hasMore) {
+    await recordDurableConversationSource(db, conversationId, result, filePath);
+  }
 
   // Bug: e01653d — update last_active on the matching session so the
   // Sessions tab shows real user activity time rather than updated_at.
@@ -2899,6 +3294,7 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+  return appendInfo?.hasMore ?? false;
 }
 
 async function recordDurableConversationSource(

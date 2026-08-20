@@ -106,7 +106,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
     <CollectionShell collections={briefings} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
       {error ? <p className="briefing-error" role="alert">{error}</p> : null}
-      {!selected ? <p className="briefing-empty">Select a Briefing to review its latest immutable round.</p> : (
+      {!selected ? <p className="briefing-empty briefing-empty--selection">Select a Briefing.</p> : (
         <BriefingDocumentRenderer
           key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`}
           briefingId={selected.collectionId}

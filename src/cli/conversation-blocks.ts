@@ -111,12 +111,14 @@ function runConversations(args: CliArgs): void {
   db.pragma("busy_timeout = 5000");
   db.pragma("query_only = ON");
   try {
-    const conversation = db.prepare(`
+    const conversations = db.prepare(`
       SELECT * FROM conversations
-      WHERE id = ? OR session_id = ? OR id LIKE ?
-      ORDER BY started_at DESC
-      LIMIT 1
-    `).get(ident, ident, `${ident}%`) as ConversationLike | undefined;
+      WHERE id = ? OR session_id = ?
+      ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, id
+    `).all(ident, ident, ident) as ConversationLike[];
+    const exact = conversations.find((row) => row.id === ident);
+    if (!exact && conversations.length > 1) throw new Error(`ambiguous conversation reference: ${ident}`);
+    const conversation = exact ?? conversations[0];
     if (!conversation?.id) throw new Error(`conversation not found: ${ident}`);
     const rows = db.prepare(`
       SELECT id, conversation_id, type, role, content, compressed, position, timestamp, parent_id, metadata_json

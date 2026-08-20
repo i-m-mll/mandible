@@ -27,6 +27,11 @@ export function MessageGroup({
   isThinking,
   getBlockExpanded,
   onBlockExpandedChange,
+  selectedBlockIds,
+  selectMode,
+  onToggleBlockSelect,
+  onFork,
+  onResume,
 }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
@@ -36,10 +41,9 @@ export function MessageGroup({
   const turnMeta: MessageActionsMeta | undefined = useMemo(() => {
     const msg = assistantEvent.message;
     const usage = msg.usage;
-    const model = msg.model;
-    if (!usage && !model) return undefined;
+    if (!usage) return undefined;
     const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : undefined;
-    return { tokenCount, model };
+    return { tokenCount };
   }, [assistantEvent]);
 
   function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
@@ -101,6 +105,13 @@ export function MessageGroup({
             defaultExpanded={defaultExpanded}
             expanded={expanded}
             onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+            resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
+            selectMode={selectMode}
+            onToggleResultSelect={result?.source && onToggleBlockSelect
+              ? (shiftKey) => onToggleBlockSelect(result.source!.blockId, shiftKey)
+              : undefined}
+            onForkResult={result?.source?.dagUuid && onFork ? () => onFork(result.source!.dagUuid!) : undefined}
+            onResumeResult={result?.source?.dagUuid && onResume ? () => onResume(result.source!.dagUuid!) : undefined}
           />
         );
         break;
@@ -114,12 +125,23 @@ export function MessageGroup({
 
     // Bug: 236d03b — Fix 5: Wrap each block with per-block MessageActions (copy)
     const text = blockCopyText(block);
+    const source = block.source;
     return (
-      <div key={`block-wrap-${index}`} className="message-block-wrapper">
+      <div
+        key={`block-wrap-${index}`}
+        className="message-block-wrapper contextual-action-owner"
+        data-block-id={source?.blockId}
+      >
         {inner}
         <MessageActions
           onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}
-          metadata={turnMeta}
+          onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+          isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
+          selectMode={selectMode}
+          onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
+          onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
+          dagUuid={source?.dagUuid}
+          metadata={{ ...turnMeta, timestamp: source?.timestamp }}
         />
       </div>
     );

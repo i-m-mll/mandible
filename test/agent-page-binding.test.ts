@@ -10,6 +10,7 @@ import {
   adoptAgentSessionBinding,
   consumeAgentSessionFragment,
   consumeAgentSessionFromHash,
+  detectCodexIab,
   getAgentPageBinding,
   subscribeAgentPageBinding,
 } from '../ui/src/agent-page-binding';
@@ -77,6 +78,42 @@ describe('agent page binding', () => {
     consumeAgentSessionFragment();
 
     expect(getAgentPageBinding()).toBeNull();
+  });
+});
+
+describe('Codex IAB capability detection', () => {
+  const clearModelContexts = () => {
+    delete (document as Document & { modelContext?: unknown }).modelContext;
+    delete (navigator as Navigator & { modelContext?: unknown }).modelContext;
+  };
+
+  beforeEach(() => {
+    __resetAgentPageBindingForTests();
+    clearModelContexts();
+  });
+
+  afterEach(() => {
+    __resetAgentPageBindingForTests();
+    clearModelContexts();
+  });
+
+  it('enables only for the host-injected WebMCP capability', () => {
+    (document as Document & { modelContext?: unknown }).modelContext = {
+      codexGetTools: () => [],
+    };
+
+    expect(detectCodexIab()).toBe(true);
+  });
+
+  it('fails closed when the host capability is absent', () => {
+    expect(detectCodexIab()).toBe(false);
+  });
+
+  it('does not treat an agent_session binding as IAB capability', () => {
+    adoptAgentSessionBinding('0198c0de');
+
+    expect(getAgentPageBinding()).toBe('0198c0de');
+    expect(detectCodexIab()).toBe(false);
   });
 });
 

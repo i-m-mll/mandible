@@ -1,16 +1,25 @@
 import fs from "node:fs";
 import type http from "node:http";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   allowsOperationalMutations,
+  isActorScopedBriefingResponseMutation,
   operationalMutationCategoryForPath,
   resolveInstanceInfo,
 } from "../src/instance-policy.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { Db } from "../src/db.js";
+
+const temporaryDatabaseRoots = new Set<string>();
+
+afterEach(() => {
+  for (const root of temporaryDatabaseRoots) fs.rmSync(root, { recursive: true, force: true });
+  temporaryDatabaseRoots.clear();
+});
 
 describe("instance mutation policy", () => {
   it("uses the same policy decision for route and background mutations", () => {
@@ -24,6 +33,14 @@ describe("instance mutation policy", () => {
         MANDIBLE_OPERATIONAL_MUTATIONS: "allow",
       },
     }))).toBe(true);
+    expect(resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "main",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "allow",
+      },
+      dbPath: "/missing/mandible.db",
+      sourceDbPath: "/missing/mandible.db",
+    }).briefing_response_mutations).toBe("allow");
   });
 
   it("defaults to a main instance that accepts operational mutations", async () => {
@@ -178,6 +195,120 @@ describe("instance mutation policy", () => {
     }
   });
 
+  it("admits only actor-scoped Briefing responses for a reject-mode isolated copy", async () => {
+    const fixture = createDatabaseIdentityFixture();
+    const instance = resolveInstanceInfo({
+      env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+      dbPath: fixture.previewDbPath,
+      sourceDbPath: fixture.sourceDbPath,
+    });
+    expect(instance.briefing_response_mutations).toBe("allow");
+    const router = new Router({ instance });
+    registerUnsafeRoutes(router);
+    for (const action of ["answers", "annotations", "submit"]) {
+      router.post(`/api/briefings/:briefingId/rounds/:roundId/${action}`, (_req, res) => {
+        res.json({ ok: true, action });
+      }, { fileRpc: "deny" });
+      const response = await router.invoke({
+        method: "POST",
+        url: `/api/briefings/briefing-1/rounds/round-1/${action}`,
+        body: {},
+      });
+      expect(response).toEqual({ status: 200, body: { ok: true, action } });
+    }
+    router.post("/api/briefings/:briefingId/rounds/:roundId/publish", (_req, res) => {
+      res.json({ ok: true });
+    }, { fileRpc: "deny" });
+
+    for (const route of REPRESENTATIVE_UNSAFE_ROUTES) {
+      const response = await router.invoke({ method: route.method, url: route.url, body: {} });
+      expect(response.status, route.url).toBe(403);
+    }
+    const briefingOther = await router.invoke({
+      method: "POST",
+      url: "/api/briefings/briefing-1/rounds/round-1/publish",
+      body: {},
+    });
+    expect(briefingOther).toMatchObject({
+      status: 403,
+      body: { error: "instance_mutation_forbidden", category: "briefing" },
+    });
+    expect(isActorScopedBriefingResponseMutation(
+      "PUT", "/api/briefings/briefing-1/rounds/round-1/answers",
+    )).toBe(false);
+    expect(isActorScopedBriefingResponseMutation(
+      "POST", "/api/briefings/briefing-1/rounds/round-1/answers/extra",
+    )).toBe(false);
+  });
+
+  it.each(["symlink", "hard link"] as const)(
+    "rejects a %s alias of the source database before a Briefing response handler runs",
+    async (aliasKind) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instance-alias-"));
+      temporaryDatabaseRoots.add(root);
+      const sourceDbPath = path.join(root, "source.db");
+      const previewDbPath = path.join(root, "preview.db");
+      fs.writeFileSync(sourceDbPath, "source database");
+      if (aliasKind === "symlink") fs.symlinkSync(sourceDbPath, previewDbPath);
+      else fs.linkSync(sourceDbPath, previewDbPath);
+      const instance = resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+        dbPath: previewDbPath,
+        sourceDbPath,
+      });
+      expect(instance.briefing_response_mutations).toBe("reject");
+      const router = new Router({ instance });
+      let invoked = false;
+      router.post("/api/briefings/:briefingId/rounds/:roundId/answers", (_req, res) => {
+        invoked = true;
+        res.json({ ok: true });
+      }, { fileRpc: "deny" });
+      expect(await router.invoke({
+        method: "POST",
+        url: "/api/briefings/briefing-1/rounds/round-1/answers",
+        body: {},
+      })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
+      expect(invoked).toBe(false);
+    },
+  );
+
+  it("fails closed for same-path, missing-path, and unknown copied-database provenance", async () => {
+    const fixture = createDatabaseIdentityFixture();
+    const cases = [
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: fixture.sourceDbPath,
+        sourceDbPath: path.join(fixture.root, ".", "source.db"),
+      }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: path.join(fixture.root, "missing-preview.db"),
+        sourceDbPath: fixture.sourceDbPath,
+      }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: fixture.previewDbPath,
+        sourceDbPath: path.join(fixture.root, "missing-source.db"),
+      }),
+      resolveInstanceInfo({ env: { MANDIBLE_INSTANCE_ROLE: "preview" }, dbPath: fixture.previewDbPath }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_INSTANCE_SOURCE_DB: fixture.sourceDbPath },
+      }),
+    ];
+    for (const instance of cases) {
+      expect(instance.briefing_response_mutations).toBe("reject");
+      const router = new Router({ instance });
+      router.post("/api/briefings/:briefingId/rounds/:roundId/answers", (_req, res) => {
+        res.json({ ok: true });
+      }, { fileRpc: "deny" });
+      expect(await router.invoke({
+        method: "POST",
+        url: "/api/briefings/briefing-1/rounds/round-1/answers",
+        body: {},
+      })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
+    }
+  });
+
   it("treats session registration as a control-plane mutation on preview instances", async () => {
     const router = previewRouter();
     router.post("/api/sessions/register", (_req, res) => {
@@ -217,13 +348,14 @@ describe("instance mutation policy", () => {
   });
 
   it("exposes instance metadata through health and instance routes", async () => {
+    const fixture = createDatabaseIdentityFixture();
     const instance = resolveInstanceInfo({
       env: {
         MANDIBLE_INSTANCE_ROLE: "preview",
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
-        MANDIBLE_INSTANCE_SOURCE_DB: "/tmp/mandible-main.db",
+        MANDIBLE_INSTANCE_SOURCE_DB: fixture.sourceDbPath,
       },
-      dbPath: "/tmp/mandible-preview.db",
+      dbPath: fixture.previewDbPath,
     });
     const router = new Router({ instance });
     createServer({
@@ -244,9 +376,10 @@ describe("instance mutation policy", () => {
       instance: {
         role: "preview",
         operational_mutations: "reject",
-        db_path: "/tmp/mandible-preview.db",
+        briefing_response_mutations: "allow",
+        db_path: fixture.previewDbPath,
         db_path_source: "iab-preview-copy",
-        source_db_path: "/tmp/mandible-main.db",
+        source_db_path: fixture.sourceDbPath,
         source_db_path_source: "env",
       },
       file_rpc_dir: "/tmp/mandible-preview-agent-rpc",
@@ -285,6 +418,7 @@ describe("instance mutation policy", () => {
         instance: {
           role: "preview",
           operational_mutations: "reject",
+          briefing_response_mutations: "reject",
           db_path: "/tmp/mandible-preview.db",
           db_path_source: "iab-preview-copy",
         },
@@ -381,6 +515,12 @@ describe("route mutation category table has one source", () => {
     { method: "POST", pattern: "/api/briefings/runs", url: "/api/briefings/runs", category: "briefing" },
     {
       method: "POST",
+      pattern: "/api/briefings/:briefingId/rounds/:roundId/answers",
+      url: "/api/briefings/briefing-1/rounds/round-1/answers",
+      category: "briefing",
+    },
+    {
+      method: "POST",
       pattern: "/api/knowledge-backrefs",
       url: "/api/knowledge-backrefs",
       category: "artifacts",
@@ -413,6 +553,14 @@ describe("route mutation category table has one source", () => {
         operationalMutationCategoryForPath(testCase.method, testCase.pattern),
         `shared table ${testCase.pattern}`,
       ).toBe(testCase.category);
+      expect(
+        isActorScopedBriefingResponseMutation(testCase.method, testCase.pattern),
+        `response capability pattern ${testCase.pattern}`,
+      ).toBe(testCase.pattern.endsWith("/answers"));
+      expect(
+        isActorScopedBriefingResponseMutation(testCase.method, testCase.url),
+        `response capability request ${testCase.url}`,
+      ).toBe(testCase.url.endsWith("/answers"));
 
       const response = await router.invoke({ method: testCase.method, url: testCase.url, body: {} });
       if (testCase.category === null) {
@@ -460,6 +608,24 @@ function closeServer(server: http.Server): Promise<void> {
       resolve();
     });
   });
+}
+
+function createDatabaseIdentityFixture(): {
+  root: string;
+  sourceDbPath: string;
+  previewDbPath: string;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instance-policy-"));
+  temporaryDatabaseRoots.add(root);
+  const sourceDbPath = path.join(root, "source.db");
+  const previewDbPath = path.join(root, "preview.db");
+  fs.writeFileSync(sourceDbPath, "source database");
+  fs.copyFileSync(sourceDbPath, previewDbPath);
+  return {
+    root,
+    sourceDbPath,
+    previewDbPath,
+  };
 }
 
 function previewRouter(): Router {

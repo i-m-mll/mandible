@@ -1,0 +1,76 @@
+/* Shared contract for hover/focus-revealed icon actions. Owners define the exact reveal boundary. */
+.contextual-action-group {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-group,
+.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-group,
+.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-scope > .contextual-action-group,
+.contextual-action-group:focus-within,
+.contextual-action-group--persistent {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.contextual-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-subdued);
+  cursor: pointer;
+  font: inherit;
+  transition: color 120ms ease;
+}
+
+:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-scope) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-group:is(:focus-within, .contextual-action-group--persistent)) .contextual-action {
+  color: var(--chrome-icon-hover-indirect);
+}
+
+.contextual-action:is([aria-expanded='true'], [aria-pressed='true']) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--chrome-icon-hover-indirect);
+}
+
+.contextual-action:is(:hover, :focus-visible) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--chrome-icon-hover-direct);
+}
+
+.contextual-action:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+.contextual-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .contextual-action-group {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  :where(.contextual-action-group) .contextual-action {
+    color: var(--chrome-icon-hover-indirect);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .contextual-action-group,
+  .contextual-action {
+    transition: none;
+  }
+}

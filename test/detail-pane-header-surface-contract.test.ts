@@ -44,12 +44,33 @@ const DIRECT_DETAIL_CONSUMERS: DirectDetailConsumer[] = [
     primaryClasses: [],
   },
   {
+    name: 'Graph',
+    path: 'ui/src/views/graph.tsx',
+    variant: 'standard',
+    headerClasses: [],
+    primaryClasses: [],
+  },
+  {
     name: 'Issue',
     path: 'ui/src/components/ledger/IssueDetail.tsx',
     variant: 'standard',
     headerClasses: ['ledger-issue-detail__header'],
     primaryClasses: ['ledger-issue-detail__header-primary'],
     ancestorClass: 'issues-detail',
+  },
+  {
+    name: 'Projects',
+    path: 'ui/src/views/work.tsx',
+    variant: 'compact',
+    headerClasses: [],
+    primaryClasses: [],
+  },
+  {
+    name: 'Tasks',
+    path: 'ui/src/views/tasks.tsx',
+    variant: 'standard',
+    headerClasses: [],
+    primaryClasses: [],
   },
 ];
 
@@ -65,8 +86,12 @@ const INHERITED_DETAIL_CONSUMERS = [
 ] as const;
 
 const canonicalSurfaceClasses = [
+  'detail-pane-shell',
   'detail-pane-shell__header',
   'detail-pane-shell__header-primary',
+  'detail-pane-shell__subheader',
+  'detail-pane-shell__body',
+  'detail-pane-shell__footer',
   'detail-pane-header',
 ];
 
@@ -174,7 +199,7 @@ function surfaceDeclarationsFor(css: string): Array<{ selector: string; body: st
 function expectOnlyCanonicalSurfaceDeclarations(css: string): void {
   expect(surfaceDeclarationsFor(css)).toEqual(canonicalSurfaceClasses.map((className) => ({
     selector: `.${className}`,
-    body: expect.stringMatching(/background:\s*var\(--surface-app\);/),
+    body: expect.stringMatching(/background:\s*inherit;/),
   })));
 }
 
@@ -189,11 +214,9 @@ function tokenValue(block: string, token: string): string {
   return block.match(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*:\\s*([^;]+);`))?.[1]?.trim() ?? '';
 }
 
-function resolvedSurfaceApp(theme: 'dark' | 'light'): string {
+function resolvedSurfaceMain(theme: 'dark' | 'light'): string {
   const block = tokenBlock(theme);
-  const surface = tokenValue(block, '--surface-app');
-  const referencedToken = surface.match(/^var\((--[^)]+)\)$/)?.[1];
-  return referencedToken ? tokenValue(block, referencedToken) : surface;
+  return tokenValue(block, '--surface-main');
 }
 
 function expectedRgb(hex: string): string {
@@ -203,18 +226,20 @@ function expectedRgb(hex: string): string {
 }
 
 function renderConsumerFixtures(theme: 'dark' | 'light'): Document {
-  const surface = resolvedSurfaceApp(theme);
+  const surface = resolvedSurfaceMain(theme);
   const surfaceCascade = surfaceDeclarationsFor(stylesheet)
     .map(({ selector, body }) => `${selector} {${body}}`)
     .join('\n');
   const fixtures = DIRECT_DETAIL_CONSUMERS.map((consumer) => `
-    <div class="${consumer.ancestorClass ?? ''}">
-      <article class="detail-pane-shell" data-consumer="${consumer.name}">
+    <div class="${consumer.ancestorClass ?? ''}" data-app-surface="main">
+      <article class="detail-pane-shell" data-app-surface="main" data-consumer="${consumer.name}">
         <header class="detail-pane-shell__header ${consumer.headerClasses.join(' ')}">
           <div class="detail-pane-shell__header-primary ${consumer.primaryClasses.join(' ')}">
             <div class="detail-pane-header detail-pane-header--${consumer.variant}"></div>
           </div>
         </header>
+        <div class="detail-pane-shell__body"></div>
+        <footer class="detail-pane-shell__footer"></footer>
       </article>
     </div>
   `).join('');
@@ -222,7 +247,9 @@ function renderConsumerFixtures(theme: 'dark' | 'light'): Document {
     pretendToBeVisual: true,
   });
   const style = dom.window.document.createElement('style');
-  style.textContent = surfaceCascade.replaceAll('var(--surface-app)', surface);
+  // jsdom does not resolve inherited backgrounds into computed colors, so
+  // materialize the browser cascade after separately asserting `inherit`.
+  style.textContent = `[data-app-surface='main'] { background: ${surface}; }\n${surfaceCascade.replaceAll('background: inherit', `background: ${surface}`)}`;
   dom.window.document.head.append(style);
   return dom.window.document;
 }
@@ -285,7 +312,7 @@ describe('canonical detail header surface contract', () => {
   it.each(['dark', 'light'] as const)(
     'resolves Artifact, Issue/Auth, Chat, Briefing, and inherited Spaces headers to the solid app surface in %s',
     (theme) => {
-      const surface = resolvedSurfaceApp(theme);
+      const surface = resolvedSurfaceMain(theme);
       expect(surface).toMatch(/^#[0-9a-f]{6}$/i);
       const document = renderConsumerFixtures(theme);
       const expected = expectedRgb(surface);
@@ -297,6 +324,8 @@ describe('canonical detail header surface contract', () => {
           '.detail-pane-shell__header',
           '.detail-pane-shell__header-primary',
           `.detail-pane-header--${consumer.variant}`,
+          '.detail-pane-shell__body',
+          '.detail-pane-shell__footer',
         ]) {
           const element = shell!.querySelector(selector);
           expect(element, `${consumer.name}:${selector}`).toBeTruthy();

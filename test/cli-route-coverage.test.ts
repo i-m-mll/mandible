@@ -28,8 +28,8 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
   "cli/conversations.sh:150 api_get \"$request\")",
-  "cli/conversations.sh:316 api_get \"$request\")",
-  "cli/conversations.sh:367 api_get \"$request\")",
+  "cli/conversations.sh:314 api_get \"$request\")",
+  "cli/conversations.sh:385 api_get \"$request\")",
   "cli/inbox.sh:38 api_get \"$url\")",
   "cli/inbox.sh:84 api_get \"$url\")",
   "cli/issue.sh:920 api_get \"$checkpoint_path\") \\",
@@ -53,6 +53,16 @@ describe("CLI API route coverage", () => {
     expect(formatRefs(missing)).toEqual([]);
     expect(formatRefs(denied)).toEqual([]);
     expect(formatUnresolved(unresolved)).toEqual([...EXPECTED_DYNAMIC_CLI_API_CALL_SITES].sort());
+  });
+
+  it("allows only the selected conversation export projection among adjacent POST routes", () => {
+    const policies = collectRoutePolicies();
+
+    expect(policies.get(routeKey("POST", "/api/conversations/:id/export"))).toBe("allow");
+    expect(policies.get(routeKey("POST", "/api/conversations/ingest"))).toBe("deny");
+    expect(policies.get(routeKey("POST", "/api/conversations/export/transform"))).toBe("deny");
+    expect(policies.get(routeKey("POST", "/api/conversations/:id/fork"))).toBe("deny");
+    expect(policies.get(routeKey("POST", "/api/conversations/:id/resume"))).toBe("deny");
   });
 
   it("keeps the legacy file-RPC allow fixture backed by real registered route policies", () => {

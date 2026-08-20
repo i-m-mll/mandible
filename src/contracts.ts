@@ -98,6 +98,24 @@ export type SseEvent<TData = unknown> = {
   data: TData;
 };
 
+export const USER_SETTING_KEYS = Object.freeze({
+  appRailOrder: "app_rail_order",
+  uiFontFace: "ui_font_face",
+  uiFontSize: "ui_font_size",
+  detailFontFace: "detail_font_face",
+  detailFontSize: "detail_font_size",
+} as const);
+export type UserSettingKey = (typeof USER_SETTING_KEYS)[keyof typeof USER_SETTING_KEYS];
+
+export const USER_SETTING_EVENTS = Object.freeze({
+  updated: "user-setting:updated",
+} as const);
+export type UserSettingUpdatedEvent = {
+  version: 1;
+  key: UserSettingKey;
+  revision: number;
+};
+
 export type AuthRequestStatus =
   | "pending"
   | "executing"
@@ -336,6 +354,35 @@ export type ConversationChild = {
 export type ConversationParent = {
   id: string;
   title: string;
+};
+
+export type ConversationPositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
+
+export type ConversationPositionTarget = {
+  kind: ConversationPositionTargetKind;
+  requested_value: string | number | null;
+  position: number | null;
+  block_id: string | null;
+  turn_id: string | null;
+};
+
+export type ConversationPositionWindow = {
+  conversation: Conversation;
+  body_source: "source" | "legacy";
+  children: ConversationChild[];
+  parent: ConversationParent | null;
+  revision: number;
+  total: number;
+  target: ConversationPositionTarget;
+  window: {
+    start_position: number | null;
+    end_position: number | null;
+    has_before: boolean;
+    has_after: boolean;
+    after_count: number;
+    limit: number;
+  };
+  blocks: StoredConversationBlock[];
 };
 
 export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "warning";

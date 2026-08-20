@@ -20,6 +20,9 @@ import type {
   Conversation as ContractConversation,
   ConversationChild as ContractConversationChild,
   ConversationParent as ContractConversationParent,
+  ConversationPositionTarget as ContractConversationPositionTarget,
+  ConversationPositionTargetKind as ContractConversationPositionTargetKind,
+  ConversationPositionWindow as ContractConversationPositionWindow,
   ConversationSource as ContractConversationSource,
   Role as ContractRole,
   StoredConversationBlock as ContractConversationBlock,
@@ -100,11 +103,34 @@ export type InstanceInfo = {
   role: 'main' | 'preview' | 'dev' | 'test';
   operational_mutations: 'allow' | 'reject';
   operational_mutations_overridden: boolean;
+  briefing_response_mutations: 'allow' | 'reject';
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;
   source_db_path_source?: string | null;
 };
+
+export function normalizeInstanceInfo(value: unknown): InstanceInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<InstanceInfo>;
+  if ((candidate.role !== 'main' && candidate.role !== 'preview' && candidate.role !== 'dev' && candidate.role !== 'test')
+      || (candidate.operational_mutations !== 'allow' && candidate.operational_mutations !== 'reject')
+      || typeof candidate.operational_mutations_overridden !== 'boolean'
+      || (typeof candidate.db_path !== 'string' && candidate.db_path !== null)
+      || (typeof candidate.db_path_source !== 'string' && candidate.db_path_source !== null)
+      || (candidate.source_db_path !== undefined && typeof candidate.source_db_path !== 'string' && candidate.source_db_path !== null)
+      || (candidate.source_db_path_source !== undefined && typeof candidate.source_db_path_source !== 'string' && candidate.source_db_path_source !== null)) return null;
+  return {
+    role: candidate.role,
+    operational_mutations: candidate.operational_mutations,
+    operational_mutations_overridden: candidate.operational_mutations_overridden,
+    briefing_response_mutations: candidate.briefing_response_mutations === 'allow' ? 'allow' : 'reject',
+    db_path: candidate.db_path,
+    db_path_source: candidate.db_path_source,
+    ...(candidate.source_db_path !== undefined ? { source_db_path: candidate.source_db_path } : {}),
+    ...(candidate.source_db_path_source !== undefined ? { source_db_path_source: candidate.source_db_path_source } : {}),
+  };
+}
 
 export type InstructionTargetMode = 'managed-block' | 'standalone';
 
@@ -1706,6 +1732,86 @@ export async function getSettings(): Promise<Record<string, string>> {
   return {};
 }
 
+export type UserAppRailOrderSetting = {
+  version: 1;
+  key: 'app_rail_order';
+  value: string | null;
+  revision: number;
+};
+
+function parseUserAppRailOrderSetting(payload: unknown): UserAppRailOrderSetting {
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'app_rail_order'
+    || (record.value !== null && typeof record.value !== 'string')
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) {
+    throw new Error('Invalid authenticated app rail order response');
+  }
+  return record as UserAppRailOrderSetting;
+}
+
+export async function getUserAppRailOrderSetting(): Promise<UserAppRailOrderSetting> {
+  const response = await apiGet('/api/user-settings/app_rail_order');
+  return parseUserAppRailOrderSetting(await parseMaybeJson(response));
+}
+
+export async function updateUserAppRailOrderSetting(
+  value: string,
+): Promise<UserAppRailOrderSetting> {
+  const response = await apiPut('/api/user-settings/app_rail_order', { value });
+  return parseUserAppRailOrderSetting(await parseMaybeJson(response));
+}
+
+export type UserTypographySettingKey =
+  | 'ui_font_face'
+  | 'ui_font_size'
+  | 'detail_font_face'
+  | 'detail_font_size';
+
+export type UserTypographySetting = {
+  version: 1;
+  key: UserTypographySettingKey;
+  value: string | null;
+  revision: number;
+};
+
+function parseUserTypographySetting(
+  key: UserTypographySettingKey,
+  payload: unknown,
+): UserTypographySetting {
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== key
+    || (record.value !== null && typeof record.value !== 'string')
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) throw new Error(`Invalid authenticated ${key} response`);
+  return record as UserTypographySetting;
+}
+
+export async function getUserTypographySetting(
+  key: UserTypographySettingKey,
+): Promise<UserTypographySetting> {
+  const response = await apiGet(`/api/user-settings/${key}`);
+  return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
+export async function updateUserTypographySetting(
+  key: UserTypographySettingKey,
+  value: string,
+): Promise<UserTypographySetting> {
+  const response = await apiPut(`/api/user-settings/${key}`, { value });
+  return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
 /**
  * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
  * (terminal driving) is local-only and off by default, and the gate is
@@ -2199,12 +2305,19 @@ export async function getConversations(params?: {
   );
 }
 
+export type ConversationSidebarConversation = Conversation & {
+  canonical_project_id: string | null;
+  canonical_project_key: string | null;
+};
+
 export type ConversationSidebarGroup = {
   key: string;
-  kind: 'pinned' | 'chats';
+  kind: 'pinned' | 'project' | 'chats';
   label: string;
+  project_id?: string;
+  project_key?: string;
   total: number;
-  conversations: Conversation[];
+  conversations: ConversationSidebarConversation[];
   next_cursor: string | null;
 };
 
@@ -2221,6 +2334,7 @@ export async function getConversationSidebar(params: {
   sort?: string;
   min_blocks?: number;
   exclude_subagents?: boolean;
+  project_ids?: string[];
   limit: number;
   group_key?: string;
   cursor?: string;
@@ -2233,6 +2347,8 @@ export async function getConversationSidebar(params: {
   if (params.sort) query.set('sort', params.sort);
   if (params.min_blocks) query.set('min_blocks', String(params.min_blocks));
   if (params.exclude_subagents) query.set('exclude_subagents', 'true');
+  const projectIds = [...new Set((params.project_ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 500);
+  if (projectIds.length > 0) query.set('project_ids', projectIds.join(','));
   const limit = Math.min(50, Math.max(1, Math.trunc(Number.isFinite(params.limit) ? params.limit : 5)));
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);
@@ -2240,36 +2356,27 @@ export async function getConversationSidebar(params: {
   return cachedApiGetJson<ConversationSidebarResponse>(`/api/conversations/sidebar?${query.toString()}`);
 }
 
-export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null }> {
-  const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
-  const payload = (await parseMaybeJson(resp)) as {
-    conversation?: Conversation;
-    blocks?: ConversationBlock[];
-    children?: ConversationChild[];
-    parent?: ConversationParent | null;
-  };
-  // Flatten: merge top-level conversation fields with blocks/children arrays
-  return {
-    ...(payload.conversation ?? {} as Conversation),
-    blocks: payload.blocks ?? [],
-    children: payload.children ?? [],
-    parent: payload.parent ?? null,
-  } as Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null };
-}
+export type ConversationWindowRequest =
+  | { target?: 'initial' | 'latest'; limit?: number; signal?: AbortSignal }
+  | { block: string; limit?: number; signal?: AbortSignal }
+  | { turn: string; limit?: number; signal?: AbortSignal }
+  | { position: number; limit?: number; signal?: AbortSignal };
 
-export async function getConversationBlocks(id: string, params?: {
-  types?: string;
-  offset?: number;
-  limit?: number;
-}): Promise<{ blocks: ConversationBlock[]; total: number }> {
+export async function getConversationWindow(
+  id: string,
+  request: ConversationWindowRequest = {},
+): Promise<ConversationPositionWindow> {
   const query = new URLSearchParams();
-  if (params?.types) query.set('types', params.types);
-  if (params?.offset) query.set('offset', String(params.offset));
-  if (params?.limit) query.set('limit', String(params.limit));
-  const qs = query.toString();
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/blocks${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(resp)) as { blocks: ConversationBlock[]; total: number };
+  if ('target' in request && request.target) query.set('target', request.target);
+  if ('block' in request) query.set('block', request.block);
+  if ('turn' in request) query.set('turn', request.turn);
+  if ('position' in request) query.set('position', String(request.position));
+  if (request.limit) query.set('limit', String(request.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
+    signal: request.signal,
+  });
+  return (await parseMaybeJson(resp)) as ConversationPositionWindow;
 }
 
 export async function updateConversation(id: string, data: {
@@ -2661,6 +2768,9 @@ export type Conversation = ContractConversation;
 
 export type ConversationChild = ContractConversationChild;
 export type ConversationParent = ContractConversationParent;
+export type ConversationPositionTarget = ContractConversationPositionTarget;
+export type ConversationPositionTargetKind = ContractConversationPositionTargetKind;
+export type ConversationPositionWindow = ContractConversationPositionWindow;
 export type WorkflowRun = ContractWorkflowRun;
 export type WorkflowPhase = ContractWorkflowPhase;
 export type WorkflowWorker = ContractWorkflowWorker;
@@ -3892,7 +4002,13 @@ export type BriefingRoundProjection = {
   binding_digest: string;
   created_at: number;
   latest_submission_for_actor: null | { id: string; ordinal: number };
-  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v2' };
+  document: null | {
+    artifact_version_id: string;
+    content_hash: string;
+    previous_round_id: string | null;
+    profile: 'mandible-briefing.v2';
+    source: string;
+  };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: BriefingAnnotation[];
@@ -4165,14 +4281,23 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
   const profile = rawDocument.profile;
-  const document = root.document !== null && profile === 'mandible-briefing.v2' ? {
+  const documentShapeValid = exactBriefingValueKeys(rawDocument, [
+    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source',
+  ]);
+  const documentFieldsValid = briefingString(rawDocument.artifact_version_id)
+    && /^[0-9a-f]{64}$/.test(briefingString(rawDocument.content_hash))
+    && typeof rawDocument.source === 'string'
+    && Boolean(rawDocument.source.trim())
+    && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
+  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile === 'mandible-briefing.v2' ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
+    content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
     profile,
+    source: typeof rawDocument.source === 'string' ? rawDocument.source : '',
   } : null;
   if (!document
-      || !document.artifact_version_id
-      || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string')) valid = false;
+      || !document.artifact_version_id) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
   const bindingStatus = bindingRow.status;
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
@@ -4358,12 +4483,26 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
       },
     };
   }).filter((round) => Boolean(round.id && round.ordinal > 0 && round.artifact_version_id));
+  const briefingId = briefingString(briefing.id);
+  const latestRoundId = briefingString(briefing.latest_round_id);
+  const selectedRoundId = briefingString(selected.id, projection.round_id);
+  const selectedSummary = rounds.find((round) => round.id === selectedRoundId);
+  const identityValid = Boolean(
+    briefingId
+    && latestRoundId
+    && selectedRoundId
+    && selectedRoundId === projection.round_id
+    && rounds.some((round) => round.id === latestRoundId)
+    && selectedSummary
+    && selectedSummary.artifact_version_id === projection.document?.artifact_version_id
+  );
   return {
     ...projection,
-    briefing_id: briefingString(briefing.id),
+    valid: projection.valid && identityValid,
+    briefing_id: briefingId,
     title: briefingString(briefing.title),
-    latest_round_id: briefingString(briefing.latest_round_id),
-    selected_round_id: briefingString(selected.id, projection.round_id),
+    latest_round_id: latestRoundId,
+    selected_round_id: selectedRoundId,
     rounds,
   };
 }

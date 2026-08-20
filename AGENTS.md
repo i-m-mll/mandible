@@ -27,6 +27,11 @@ creating another branch. Use `--force-new` only when the user explicitly needs
 a separate integration branch/instance. Do not restart or replace an unrelated
 running preview instance unless the user explicitly asks for that exact action.
 
+The in-development application theme is `codex`: during IAB review, theme
+feedback without another named target belongs in its shared tokens and shared
+components, not view-specific overrides. Ask which theme only after `codex` is
+declared complete or the user explicitly introduces another theme.
+
 ## Dataful UX State
 
 Mandible dataful workspaces must preserve user-visible state unless the user

@@ -14,6 +14,7 @@ import {
   MAX_AUTH_OUTPUT_CHARS,
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
+import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
   invalidateApiGetCache,
@@ -28,6 +29,7 @@ import {
 } from '../ui/src/deep-links';
 import {
   __resetAgentPageBindingForTests,
+  adoptAgentSessionBinding,
   getAgentPageBinding,
 } from '../ui/src/agent-page-binding';
 import {
@@ -37,6 +39,7 @@ import {
   parseRouteFromHash,
   shortRouteId,
 } from '../ui/src/routing';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import {
   AppShellProvider,
   BottomPanelIcon,
@@ -49,7 +52,7 @@ import { GraphView } from '../ui/src/views/graph';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
-import { getInstructionMessageMeta } from '../ui/src/views/conversations';
+import { getInstructionMessageMeta } from '../ui/src/components/message-blocks/UserBubble';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import { useSidebarResize } from '../ui/src/hooks/useSidebarResize';
 import {
@@ -80,6 +83,8 @@ const reactFlowMockState = vi.hoisted(() => ({
   mountCount: 0,
   unmountCount: 0,
 }));
+
+let restoreTestLocalStorage: (() => void) | null = null;
 
 vi.mock('@xyflow/react', async () => {
   const { Component, h } = await vi.importActual<typeof import('preact')>('preact');
@@ -163,12 +168,16 @@ beforeEach(() => {
 afterEach(() => {
   invalidateApiGetCache();
   cleanup();
+  __resetSharedSseForTests();
   window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');
+  restoreTestLocalStorage?.();
+  restoreTestLocalStorage = null;
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllGlobals();
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
   delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
+  document.head.querySelector('[data-test-compact-header-styles]')?.remove();
 });
 
 function changeSelect(select: HTMLElement, value: string): void {
@@ -225,6 +234,7 @@ function mockLeftChromeRects(
 }
 
 function installMemoryLocalStorage(initial: Record<string, string> = {}): () => void {
+  restoreTestLocalStorage?.();
   const previous = Object.getOwnPropertyDescriptor(window, 'localStorage');
   const store = new Map(Object.entries(initial));
   const storage = {
@@ -239,9 +249,14 @@ function installMemoryLocalStorage(initial: Record<string, string> = {}): () => 
     configurable: true,
     value: storage,
   });
-  return () => {
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
     if (previous) Object.defineProperty(window, 'localStorage', previous);
   };
+  restoreTestLocalStorage = restore;
+  return restore;
 }
 
 function stubFetch(): void {
@@ -299,7 +314,8 @@ function stubFetch(): void {
   vi.stubGlobal('fetch', mockFetch);
 }
 
-function stubEventSource(): void {
+function stubEventSource(): { emit: (payload: unknown) => void } {
+  const messageListeners = new Set<(event: MessageEvent) => void>();
   class MockEventSource {
     readyState = 1;
     onerror: (() => void) | null = null;
@@ -307,14 +323,27 @@ function stubEventSource(): void {
 
     constructor(_url: string) {}
 
-    addEventListener(): void {}
-    removeEventListener(): void {}
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (type !== 'message' || typeof listener !== 'function') return;
+      messageListeners.add(listener as (event: MessageEvent) => void);
+    }
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (type !== 'message' || typeof listener !== 'function') return;
+      messageListeners.delete(listener as (event: MessageEvent) => void);
+    }
     close(): void {
       this.readyState = 2;
     }
   }
 
   vi.stubGlobal('EventSource', MockEventSource);
+  __resetSharedSseForTests(MockEventSource as unknown as typeof EventSource);
+  return {
+    emit: (payload) => {
+      const event = new MessageEvent('message', { data: JSON.stringify(payload) });
+      messageListeners.forEach((listener) => listener(event));
+    },
+  };
 }
 
 function stubAppShellFetch(): void {
@@ -368,6 +397,128 @@ function stubAppShellFetch(): void {
   }));
 }
 
+function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
+  getStored: () => string | undefined;
+  getCalls: ReturnType<typeof vi.fn>;
+  putCalls: ReturnType<typeof vi.fn>;
+  setRemote: (value: string | undefined, nextRevision: number) => void;
+} {
+  if (!(window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__) {
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+  }
+  let stored = initialSetting;
+  let revision = stored ? 1 : 0;
+  const getCalls = vi.fn();
+  const putCalls = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/settings' && init?.method !== 'PUT') {
+      return new Response(JSON.stringify({}), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+      getCalls(input, init);
+      return new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: stored ?? null,
+        revision,
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
+      putCalls(input, init);
+      if (failPut) return new Response('{}', { status: 500 });
+      stored = (JSON.parse(String(init.body)) as { value: string }).value;
+      revision += 1;
+      return new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: stored,
+        revision,
+      }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url === '/api/dashboard/badges') {
+      return new Response(JSON.stringify({ auth: 3, briefing: 2, inbox: 1 }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify([]), {
+      headers: { 'content-type': 'application/json' },
+    });
+  }));
+  return {
+    getStored: () => stored,
+    getCalls,
+    putCalls,
+    setRemote: (value, nextRevision) => {
+      stored = value;
+      revision = nextRevision;
+    },
+  };
+}
+
+function railGroupLinks(container: HTMLElement, _legacyGroup: 'primary' | 'secondary'): HTMLAnchorElement[] {
+  return Array.from(container.querySelectorAll<HTMLAnchorElement>('.app-rail__group[data-rail-group="upper"] [data-rail-item]'));
+}
+
+async function railReorderReady(): Promise<void> {
+  const chat = await screen.findByRole('link', { name: 'Chat' });
+  await waitFor(() => expect(chat.getAttribute('aria-keyshortcuts'))
+    .toBe('Control+Shift+ArrowUp Control+Shift+ArrowDown'));
+  await act(async () => Promise.resolve());
+}
+
+function mockRailRects(links: HTMLAnchorElement[]): void {
+  links.forEach((link, index) => {
+    link.getBoundingClientRect = () => ({
+      x: 0,
+      y: index * 40,
+      left: 0,
+      top: index * 40,
+      width: 180,
+      height: 38,
+      right: 180,
+      bottom: index * 40 + 38,
+      toJSON: () => ({}),
+    });
+  });
+}
+
+function fireRailPointer(
+  target: Element,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  init: MouseEventInit & { pointerId: number },
+): void {
+  // jsdom lacks onpointer* element properties, so Preact retains JSX event
+  // casing instead of normalizing to the browser's lowercase event names.
+  const jsdomPreactType = {
+    pointerdown: 'PointerDown',
+    pointermove: 'PointerMove',
+    pointerup: 'PointerUp',
+    pointercancel: 'PointerCancel',
+  }[type];
+  const event = new PointerEvent(jsdomPreactType, { bubbles: true, cancelable: true, ...init });
+  fireEvent(target, event);
+}
+
+function installPointerEventForTest(): void {
+  class TestPointerEvent extends MouseEvent {
+    readonly pointerId: number;
+
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  vi.stubGlobal('PointerEvent', TestPointerEvent);
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: TestPointerEvent });
+}
+
 const previewInstance: InstanceInfo = {
   role: 'preview',
   operational_mutations: 'reject',
@@ -376,6 +527,11 @@ const previewInstance: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
   source_db_path: '/tmp/mandible-main.db',
   source_db_path_source: 'env',
+};
+
+const writablePreviewInstance: InstanceInfo = {
+  ...previewInstance,
+  operational_mutations: 'allow',
 };
 
 describe('App routing', () => {
@@ -675,6 +831,7 @@ describe('app shell', () => {
       height: 360,
       onOpenChange: () => undefined,
       onHeightChange: () => undefined,
+      layout: 'full-content',
       content: h('div', {}, 'Inspector content'),
     }), []);
 
@@ -733,7 +890,612 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
-  it('centers the shared header text group independently while preserving its baseline', () => {
+  it('reconciles legacy groups into one upper order and keeps Logs adjacent to Settings', async () => {
+    installMemoryLocalStorage();
+    const stored = JSON.stringify({
+      version: 1,
+      groups: {
+        primary: ['issues', 'settings', 'console', 'issues', 'unknown', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox'],
+        secondary: ['logs', 'work', 'graph'],
+      },
+    });
+    stubRailSettingsFetch(stored);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const { container } = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
+
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual([
+      'issues', 'console', 'timeline', 'auth', 'artifacts', 'spaces', 'briefing', 'inbox',
+      'work', 'graph', 'tasks',
+    ]);
+    expect(container.querySelectorAll('.app-rail__group[data-rail-group="upper"]')).toHaveLength(1);
+    expect(container.querySelector('[data-rail-group="secondary"]')).toBeNull();
+    const footer = screen.getByRole('link', { name: 'Settings' }).closest('.app-rail__footer');
+    expect(footer).toBeTruthy();
+    const fixedLinks = Array.from(footer?.querySelectorAll('a') ?? []);
+    expect(fixedLinks.slice(-2).map((link) => link.getAttribute('aria-label'))).toEqual(['Logs', 'Settings']);
+    for (const fixed of fixedLinks) {
+      expect(fixed.hasAttribute('data-rail-item')).toBe(false);
+      expect(fixed.hasAttribute('data-rail-group')).toBe(false);
+      expect(fixed.hasAttribute('draggable')).toBe(false);
+      expect(fixed.hasAttribute('aria-keyshortcuts')).toBe(false);
+      expect(fixed.hasAttribute('aria-describedby')).toBe(false);
+    }
+    const css = readResolvedStylesheet();
+    expect(css).not.toContain('.app-rail__group--secondary');
+    expect(css).toContain('.app-rail__group {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;');
+    expect(screen.getByRole('link', { name: 'Spaces' }).getAttribute('aria-current')).toBe('page');
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Briefing' })
+      .querySelector('.app-rail__badge')?.textContent).toBe('2'));
+  });
+
+  it('refetches a same-user SSE revision and ignores an already-applied echo', async () => {
+    installMemoryLocalStorage();
+    const firstOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+    });
+    const secondOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing', 'console'], secondary: ['graph', 'work'] },
+    });
+    const settings = stubRailSettingsFetch(firstOrder);
+    const events = stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const { container } = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
+    expect(settings.getCalls).toHaveBeenCalledTimes(1);
+
+    settings.setRemote(secondOrder, 2);
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 2 },
+    }));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('briefing'));
+    expect(railGroupLinks(container, 'primary').slice(0, 4).map((link) => link.dataset.railItem))
+      .toEqual(['briefing', 'console', 'graph', 'work']);
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 1 },
+    }));
+    await act(async () => Promise.resolve());
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a stale SSE refetch overwrite a newer local mutation', async () => {
+    installMemoryLocalStorage();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    let userGetCount = 0;
+    let resolvePut!: (response: Response) => void;
+    let resolveStaleGet!: (response: Response) => void;
+    const putResponse = new Promise<Response>((resolve) => { resolvePut = resolve; });
+    const staleGetResponse = new Promise<Response>((resolve) => { resolveStaleGet = resolve; });
+    let localValue = '';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+        userGetCount += 1;
+        if (userGetCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            version: 1,
+            key: 'app_rail_order',
+            value: null,
+            revision: 1,
+          }), { headers: { 'content-type': 'application/json' } }));
+        }
+        return staleGetResponse;
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
+        localValue = (JSON.parse(String(init.body)) as { value: string }).value;
+        return putResponse;
+      }
+      if (url === '/api/dashboard/badges') {
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    }));
+    const events = stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    await railReorderReady();
+
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(localValue).toContain('"spaces","artifacts"'));
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 2 },
+    }));
+    await waitFor(() => expect(userGetCount).toBe(2));
+
+    await act(async () => {
+      resolvePut(new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: localValue,
+        revision: 3,
+      }), { headers: { 'content-type': 'application/json' } }));
+      await putResponse;
+    });
+    await act(async () => {
+      resolveStaleGet(new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: JSON.stringify({
+          version: 1,
+          groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+        }),
+        revision: 2,
+      }), { headers: { 'content-type': 'application/json' } }));
+      await staleGetResponse;
+    });
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    const finalOrder = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    expect(finalOrder.indexOf('spaces')).toBeLessThan(finalOrder.indexOf('artifacts'));
+  });
+
+  it('fails an old settings envelope closed and inserts a returning destination canonically', async () => {
+    installMemoryLocalStorage();
+    __resetAgentPageBindingForTests();
+    const stored = JSON.stringify({
+      version: 0,
+      groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+    });
+    stubRailSettingsFetch(stored);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+
+    const { container } = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    expect(railGroupLinks(container, 'primary').slice(-3).map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks']);
+
+    act(() => adoptAgentSessionBinding('returning-session'));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('overview'));
+    expect(railGroupLinks(container, 'primary')[1]?.dataset.railItem).toBe('console');
+    __resetAgentPageBindingForTests();
+  });
+
+  it('keeps click navigation intact below the pointer movement threshold', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const { putCalls } = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+    const chat = await screen.findByRole('link', { name: 'Chat' });
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 3, button: 2, clientX: 10, clientY: 10 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 3, button: 2, clientX: 80, clientY: 80 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 3, button: 2, clientX: 80, clientY: 80 });
+    fireEvent.contextMenu(chat);
+    let modifierClickPrevented = true;
+    document.addEventListener('click', (event) => {
+      modifierClickPrevented = event.defaultPrevented;
+      event.preventDefault();
+    }, { once: true });
+    fireEvent.click(chat, { ctrlKey: true });
+    expect(modifierClickPrevented).toBe(false);
+    expect(window.location.hash).toBe('#/spaces');
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 4, button: 0, clientX: 10, clientY: 10 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 4, clientX: 13, clientY: 12 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 4, clientX: 13, clientY: 12 });
+    fireEvent.click(chat);
+
+    expect(window.location.hash).toBe('#/console');
+    expect(putCalls).not.toHaveBeenCalled();
+  });
+
+  it('removes the reorder toggle and fails closed until authenticated user settings hydrate', async () => {
+    const browserCachedOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing', 'console'], secondary: ['logs', 'work'] },
+    });
+    installMemoryLocalStorage({
+      mandible_state_cache: JSON.stringify({
+        v: 2,
+        state: { settings: { app_rail_order: browserCachedOrder } },
+      }),
+    });
+    installPointerEventForTest();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    let resolveUserSetting!: (response: Response) => void;
+    const userSettingResponse = new Promise<Response>((resolve) => {
+      resolveUserSetting = resolve;
+    });
+    const putCalls = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings') return Promise.resolve(new Response(JSON.stringify({
+        app_rail_order: browserCachedOrder,
+      }), { headers: { 'content-type': 'application/json' } }));
+      if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+        return userSettingResponse;
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
+        putCalls(input, init);
+        return Promise.resolve(new Response(JSON.stringify({
+          version: 1,
+          key: 'app_rail_order',
+          value: (JSON.parse(String(init.body)) as { value: string }).value,
+          revision: 1,
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url === '/api/dashboard/badges') {
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0 })));
+      }
+      return Promise.resolve(new Response(JSON.stringify([])));
+    }));
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+
+    expect(screen.queryByRole('button', { name: 'Reorder navigation' })).toBeNull();
+    expect(screen.getAllByRole('link')[0]?.getAttribute('data-rail-item')).toBe('console');
+    const chat = screen.getByRole('link', { name: 'Chat' });
+    fireRailPointer(chat, 'pointerdown', { pointerId: 12, button: 0, clientX: 10, clientY: 10 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 12, clientX: 80, clientY: 80 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 12, clientX: 80, clientY: 80 });
+    expect(putCalls).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveUserSetting(new Response(JSON.stringify({
+        version: 1,
+        key: 'app_rail_order',
+        value: null,
+        revision: 0,
+      }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+      await userSettingResponse;
+    });
+    await railReorderReady();
+    expect(putCalls).not.toHaveBeenCalled();
+  });
+
+  it('does not read or mutate user rail settings when capability is unknown', async () => {
+    installMemoryLocalStorage();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(new Response(
+      String(input) === '/api/settings' ? JSON.stringify({}) : JSON.stringify([]),
+      { headers: { 'content-type': 'application/json' } },
+    )));
+    vi.stubGlobal('fetch', fetchMock);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+
+    const spaces = await screen.findByRole('link', { name: 'Spaces' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await act(async () => Promise.resolve());
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/user-settings/'))).toBe(false);
+  });
+
+  it('does not infer reject-mode fallback from an authenticated-settings 403', async () => {
+    installMemoryLocalStorage();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    const putCalls = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/user-settings/app_rail_order' && init?.method !== 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: 'Forbidden',
+          code: 'forbidden',
+        }), { status: 403, headers: { 'content-type': 'application/json' } }));
+      }
+      if (url === '/api/user-settings/app_rail_order' && init?.method === 'PUT') {
+        putCalls(input, init);
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({
+          app_rail_order: JSON.stringify({
+            version: 1,
+            groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+          }),
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    }));
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await act(async () => Promise.resolve());
+    expect(putCalls).not.toHaveBeenCalled();
+    expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console');
+  });
+
+  it('pointer-reorders inside one group, suppresses the drag click, and cancels cleanly', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const { putCalls } = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const mounted = render(h(App, {}));
+    await railReorderReady();
+    const primary = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(primary);
+    const briefing = primary.find((link) => link.dataset.railItem === 'briefing')!;
+    const capture = vi.fn();
+    briefing.setPointerCapture = capture;
+
+    fireRailPointer(briefing, 'pointerdown', { pointerId: 8, button: 0, clientX: 12, clientY: 250 });
+    expect(capture).toHaveBeenCalledWith(8);
+    fireRailPointer(briefing, 'pointermove', { pointerId: 8, clientX: 12, clientY: 1 });
+    expect(briefing.classList.contains('app-rail__item--dragging')).toBe(true);
+    fireRailPointer(briefing, 'pointerup', { pointerId: 8, clientX: 12, clientY: 1 });
+    fireEvent.click(briefing);
+
+    await waitFor(() => expect(putCalls).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary')[0]?.dataset.railItem).toBe('briefing'));
+    expect(window.location.hash).toBe('#/spaces');
+    expect(railGroupLinks(mounted.container, 'primary').slice(-3).map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks']);
+    expect(screen.getByRole('link', { name: 'Logs' }).hasAttribute('data-rail-item')).toBe(false);
+
+    const inbox = railGroupLinks(mounted.container, 'primary').find((link) => link.dataset.railItem === 'inbox')!;
+    mockRailRects(railGroupLinks(mounted.container, 'primary'));
+    fireRailPointer(inbox, 'pointerdown', { pointerId: 9, button: 0, clientX: 12, clientY: 250 });
+    fireRailPointer(inbox, 'pointermove', { pointerId: 9, clientX: 12, clientY: 1 });
+    fireRailPointer(inbox, 'pointercancel', { pointerId: 9 });
+    expect(railGroupLinks(mounted.container, 'primary')[0]?.dataset.railItem).toBe('briefing');
+    expect(putCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Logs and every footer utility outside pointer and keyboard reorder contracts', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    await railReorderReady();
+    const before = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    const footer = container.querySelector<HTMLElement>('.app-rail__footer')!;
+    const fixedControls = Array.from(footer.querySelectorAll<HTMLElement>('a, button'));
+
+    for (const control of fixedControls) {
+      expect(control.hasAttribute('data-rail-item')).toBe(false);
+      expect(control.hasAttribute('data-rail-group')).toBe(false);
+      expect(control.hasAttribute('draggable')).toBe(false);
+      expect(control.hasAttribute('aria-keyshortcuts')).toBe(false);
+      expect(control.hasAttribute('aria-describedby')).toBe(false);
+    }
+
+    const logs = screen.getByRole('link', { name: 'Logs' });
+    fireRailPointer(logs, 'pointerdown', { pointerId: 31, button: 0, clientX: 12, clientY: 100 });
+    fireRailPointer(logs, 'pointermove', { pointerId: 31, clientX: 12, clientY: 1 });
+    fireRailPointer(logs, 'pointerup', { pointerId: 31, clientX: 12, clientY: 1 });
+    fireEvent.keyDown(logs, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await act(async () => Promise.resolve());
+
+    expect(settings.putCalls).not.toHaveBeenCalled();
+    expect(logs.classList.contains('app-rail__item--dragging')).toBe(false);
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(before);
+  });
+
+  it('keeps repeated pointer frames over one captured target from undoing the drop', async () => {
+    const ignoredPreviewOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing', 'console'], secondary: ['logs', 'work'] },
+    });
+    installMemoryLocalStorage({ [APP_RAIL_PREVIEW_ORDER_STORAGE_KEY]: ignoredPreviewOrder });
+    installPointerEventForTest();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: writablePreviewInstance,
+    };
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const mounted = render(h(App, {}));
+    await railReorderReady();
+    const primary = railGroupLinks(mounted.container, 'primary');
+    expect(primary[0]?.dataset.railItem).toBe('console');
+    mockRailRects(primary);
+    const chat = primary.find((link) => link.dataset.railItem === 'console')!;
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 18, button: 0, clientX: 12, clientY: 1 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 1 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 18, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 18, clientX: 12, clientY: 45 });
+
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
+
+    const unifiedUpper = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(unifiedUpper);
+    const projects = unifiedUpper.find((link) => link.dataset.railItem === 'work')!;
+    fireRailPointer(projects, 'pointerdown', { pointerId: 19, button: 0, clientX: 12, clientY: 250 });
+    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 1 });
+    fireRailPointer(projects, 'pointermove', { pointerId: 19, clientX: 12, clientY: 1 });
+    fireRailPointer(projects, 'pointerup', { pointerId: 19, clientX: 12, clientY: 1 });
+
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
+      .map((link) => link.dataset.railItem)).toEqual(['work', 'timeline', 'console']));
+
+    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/auth'));
+    expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
+      .map((link) => link.dataset.railItem)).toEqual(['work', 'timeline', 'console']);
+
+    mounted.unmount();
+    window.history.replaceState(null, '', '#/spaces');
+    const remounted = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 3)
+      .map((link) => link.dataset.railItem)).toEqual(['work', 'timeline', 'console']));
+    expect(settings.getStored()).toContain('"primary":["work","timeline","console"');
+    expect(settings.getStored()).toContain('"secondary":[]');
+    expect(settings.getStored()).not.toContain('"logs"');
+    expect(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY)).toBe(ignoredPreviewOrder);
+  });
+
+  it('ignores a malformed preview override and skips durable settings under explicit reject', async () => {
+    installMemoryLocalStorage({
+      [APP_RAIL_PREVIEW_ORDER_STORAGE_KEY]: JSON.stringify({
+        version: 1,
+        groups: { primary: 'issues', secondary: [] },
+      }),
+    });
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: previewInstance,
+    };
+    const serverOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: ['logs', 'work'] },
+    });
+    const settings = stubRailSettingsFetch(serverOrder);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
+    expect(railGroupLinks(container, 'primary').slice(-3).map((link) => link.dataset.railItem))
+      .toEqual(['work', 'graph', 'tasks']);
+    expect(settings.getCalls).not.toHaveBeenCalled();
+    expect(settings.putCalls).not.toHaveBeenCalled();
+  });
+
+  it('persists physical pointer reorder locally only for an explicit reject preview', async () => {
+    installMemoryLocalStorage();
+    installPointerEventForTest();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: previewInstance,
+    };
+    const settings = stubRailSettingsFetch(undefined, true);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const mounted = render(h(App, {}));
+    await railReorderReady();
+    const primary = railGroupLinks(mounted.container, 'primary');
+    mockRailRects(primary);
+    const chat = primary.find((link) => link.dataset.railItem === 'console')!;
+
+    fireRailPointer(chat, 'pointerdown', { pointerId: 20, button: 0, clientX: 12, clientY: 1 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 20, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointermove', { pointerId: 20, clientX: 12, clientY: 45 });
+    fireRailPointer(chat, 'pointerup', { pointerId: 20, clientX: 12, clientY: 45 });
+
+    await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
+    expect(settings.putCalls).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY) ?? '{}')).toEqual({
+      version: 1,
+      groups: {
+        primary: ['timeline', 'console', 'auth', 'issues', 'artifacts', 'spaces', 'briefing', 'inbox', 'work', 'graph', 'tasks'],
+        secondary: [],
+      },
+    });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/auth'));
+    expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']);
+
+    mounted.unmount();
+    window.history.replaceState(null, '', '#/spaces');
+    const remounted = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 2)
+      .map((link) => link.dataset.railItem)).toEqual(['timeline', 'console']));
+  });
+
+  it('direct keyboard reorder retains focus, announces, persists, and hydrates after remount', async () => {
+    installMemoryLocalStorage();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const first = render(h(App, {}));
+    await railReorderReady();
+    const spaces = await screen.findByRole('link', { name: 'Spaces' });
+    spaces.focus();
+
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(settings.putCalls).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
+    expect(document.activeElement).toBe(movedSpaces);
+    expect(screen.getByRole('status').textContent).toContain('Spaces moved to position');
+    const persistedOrder = railGroupLinks(first.container, 'primary').map((link) => link.dataset.railItem);
+    expect(persistedOrder.indexOf('spaces')).toBeLessThan(persistedOrder.indexOf('artifacts'));
+
+    first.unmount();
+    window.history.replaceState(null, '', '#/spaces');
+    const remounted = render(h(App, {}));
+    await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').map((link) => link.dataset.railItem))
+      .toEqual(persistedOrder));
+    expect(settings.getStored()).toContain('"version":1');
+  });
+
+  it('does not hijack ordinary arrows or Enter activation and exposes no visual mode gate', async () => {
+    installMemoryLocalStorage();
+    const settings = stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+    await railReorderReady();
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp' });
+    expect(settings.putCalls).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /reorder navigation/i })).toBeNull();
+    fireEvent.keyDown(spaces, { key: 'Enter' });
+    fireEvent.click(spaces);
+    await waitFor(() => expect(window.location.hash).toBe('#/spaces'));
+    expect(settings.putCalls).not.toHaveBeenCalled();
+  });
+
+  it('restores server-authoritative order and announces a failed mutation', async () => {
+    installMemoryLocalStorage();
+    const settings = stubRailSettingsFetch(undefined, true);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+    await railReorderReady();
+    const original = railGroupLinks(container, 'primary').map((link) => link.dataset.railItem);
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    spaces.focus();
+    fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => expect(screen.getByRole('status').textContent)
+      .toBe('Navigation order was not saved. The previous order has been restored.'));
+    expect(railGroupLinks(container, 'primary').map((link) => link.dataset.railItem)).toEqual(original);
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
+    expect(settings.putCalls).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY)).toBeNull();
+  });
+
+  it('aligns shared header text to the sidebar column and centers the route segment', () => {
     stubAppShellFetch();
     stubEventSource();
     window.history.replaceState(null, '', '#/briefing');
@@ -745,10 +1507,11 @@ describe('app shell', () => {
 
     expect(text?.querySelector(':scope > .app-header__brand')).toBeTruthy();
     expect(text?.querySelector(':scope > .app-header__route')?.textContent).toBe('Briefing');
-    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;/s);
-    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*baseline;/s);
+    expect(css).toMatch(/\.app-header__identity\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);[^}]*align-items:\s*center;/s);
+    expect(css).toMatch(/\.app-header__text\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);[^}]*align-items:\s*baseline;[^}]*padding-left:\s*14px;/s);
     expect(css).toMatch(/\.app-header__brand\s*\{[^}]*align-items:\s*baseline;/s);
     expect(css).toMatch(/\.app-header__mark\s*\{[^}]*align-self:\s*center;/s);
+    expect(css).toMatch(/\.app-header__route\s*\{[^}]*grid-column:\s*2;[^}]*justify-self:\s*stretch;[^}]*text-align:\s*center;/s);
   });
 
   it('couples the Briefing and Issues header edge to the active persisted sidebar width', async () => {
@@ -836,11 +1599,15 @@ describe('app shell', () => {
     ).toBe('428px');
 
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-width\)\);/s);
+    expect(css).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/s);
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-outer-width\)\);/s);
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header__identity\s*\{[^}]*width:\s*calc\(100% - var\(--app-shadow-gutter-width\)\);/s);
+    expect(css).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-rail-width\)\);/s);
     expect(css).toMatch(/\.view-sidebar\s*\{[^}]*position:\s*relative;/s);
     expect((await screen.findByLabelText('Briefings') as HTMLElement).style.width)
       .toBe('var(--app-view-sidebar-width)');
-    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-outer-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
 
     restoreLocalStorage();
@@ -1093,7 +1860,9 @@ describe('app shell', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
     expect(screen.getByLabelText('Collapse Graph detail').closest('.app-rail__footer')).toBeTruthy();
-    expect(screen.getByLabelText('Graph detail')).toBeTruthy();
+    const graphDetail = screen.getByLabelText('Graph detail');
+    expect(graphDetail.classList.contains('app-bottom-panel--anchored-detail')).toBe(true);
+    expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy();
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
       .toBeLessThan(5);
@@ -1150,6 +1919,8 @@ describe('app shell', () => {
     render(h(PendingGraphProbe, {}));
 
     await waitFor(() => expect(registrations.length).toBeGreaterThan(0));
+    expect(registrations[0]?.layout).toBe('anchored-detail');
+    expect(registrations[0]?.content).toBeNull();
 
     for (let pass = 0; pass < 5; pass += 1) {
       // eslint-disable-next-line no-await-in-loop
@@ -1207,8 +1978,16 @@ describe('app shell', () => {
     render(h(App, {}));
 
     await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
-    expect(within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'alpha' }))
+    const graphPanel = screen.getByLabelText('Graph detail');
+    expect(within(graphPanel).getByRole('heading', { name: 'alpha' }))
       .toBeTruthy();
+    const detailShell = graphPanel.querySelector('.detail-pane-shell');
+    expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
+      .toEqual(['header', 'body']);
+    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy full Repo reference' });
+    expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
+    expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
+    expect(within(graphPanel).queryByText('Actions')).toBeNull();
     expect(reactFlowMockState.mountCount).toBe(1);
 
     fireEvent.click(screen.getByLabelText('Select graph node rf_beta'));
@@ -1310,7 +2089,7 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = await screen.findByTestId('preview-disabled-notice');
+    const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
     expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });
@@ -1851,6 +2630,12 @@ describe('WorkOverviewView', () => {
   });
 
   it('uses a sidebar/detail layout with advanced work filters', async () => {
+    const style = document.createElement('style');
+    style.dataset.testCompactHeaderStyles = '';
+    style.textContent = readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8')
+      .replaceAll('var(--app-header-height)', '48px');
+    document.head.append(style);
+
     const onRescan = vi.fn();
     render(
       h(WorkOverviewView, {
@@ -1881,12 +2666,42 @@ describe('WorkOverviewView', () => {
     );
 
     expect(screen.queryByText('Rescan')).toBeNull();
-    expect(screen.getByLabelText('Repositories')).toBeTruthy();
+    expect(screen.getByLabelText('Projects')).toBeTruthy();
     expect(screen.getByLabelText('Repository details')).toBeTruthy();
-    expect(screen.getByPlaceholderText('Search repos...')).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: 'Search projects' })).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search projects...')).toBeTruthy();
+    expect(screen.getByRole('separator', { name: 'Resize Projects sidebar' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Select project Alpha Repo' }).closest('.sidebar-item-row')).toBeTruthy();
+    const footer = document.querySelector('.work-sidebar__footer');
+    expect(footer?.children).toHaveLength(2);
+    expect(screen.getByRole('button', { name: '+ Add project' }).parentElement).toBe(footer);
+    expect(screen.getByRole('button', { name: '\u2191\u2191 Push All' }).parentElement).toBe(footer);
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }));
+    expect(screen.getByRole('textbox', { name: 'Project path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
     expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
     expect(screen.getAllByText('feature/work').length).toBeGreaterThan(0);
     expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
+    const projectDetail = document.querySelector('.work-detail-panel.detail-pane-shell--compact') as HTMLElement;
+    const projectHeader = projectDetail.querySelector('.detail-pane-header--compact') as HTMLElement;
+    expect(projectDetail).toBeTruthy();
+    expect(projectHeader.getAttribute('data-detail-pane-header-variant')).toBe('compact');
+    expect(within(projectHeader).getByRole('heading', { name: 'Alpha Repo' })).toBeTruthy();
+    expect(within(projectHeader).getByRole('group', { name: 'Repository settings' })).toBeTruthy();
+    expect(within(projectHeader).getByRole('button', { name: 'Repo settings' })).toBeTruthy();
+    const projectMain = projectHeader.querySelector(':scope > .detail-pane-header__main') as HTMLElement;
+    const projectTitleRow = projectMain.firstElementChild as HTMLElement;
+    const projectMenu = projectHeader.querySelector('.detail-pane-header__menu') as HTMLElement;
+    const projectMetadata = projectHeader.querySelector('.detail-pane-header__compact-metadata') as HTMLElement;
+    expect(projectTitleRow.querySelector('.detail-pane-header__title')?.nextElementSibling).toBe(projectMenu);
+    expect(projectTitleRow.nextElementSibling).toBe(projectMetadata);
+    expect(projectMetadata.querySelector('.work-repo-push-btn')).toBeTruthy();
+    expect(getComputedStyle(projectHeader).height).toBe('48px');
+    expect(getComputedStyle(projectMain).height).toBe('100%');
+    expect(getComputedStyle(projectMain).flexDirection).toBe('row');
+    expect(getComputedStyle(projectMain).alignItems).toBe('center');
+    expect(getComputedStyle(projectMetadata).marginLeft).toBe('auto');
+    expect(projectDetail.querySelector(':scope > .detail-pane-shell__body.work-detail__body')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('Advanced filters'));
     expect(screen.getByText('Show excluded')).toBeTruthy();
@@ -1897,13 +2712,35 @@ describe('WorkOverviewView', () => {
     changeSelect(screen.getByDisplayValue('Last activity'), 'name');
     fireEvent.click(screen.getByTitle('Reverse sort direction'));
     await waitFor(() => {
-      const repoNames = Array.from(document.querySelectorAll('.work-repo-item__name'))
+      const repoNames = Array.from(document.querySelectorAll('.work-repo-list .sidebar-item-row__label'))
         .map((node) => node.textContent ?? '');
       expect(repoNames[0]).toContain('Alpha Repo');
     });
 
     fireEvent.click(screen.getByText('Zeta Repo'));
     expect(screen.getAllByText('legacy').length).toBeGreaterThan(0);
+  });
+
+  it('uses project language for empty and add-error guidance', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: 'Path is not a Git project.' }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    )));
+    render(h(WorkOverviewView, {
+      repos: [],
+      branchesByRepo: {},
+      onRescan: () => undefined,
+    }));
+
+    expect(screen.getByText('No projects found. Register a session or add a project.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }));
+    fireEvent.input(screen.getByRole('textbox', { name: 'Project path' }), {
+      target: { value: '/missing/project' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Could not add project: Path is not a Git project.',
+    );
   });
 
   it('loads commit browser and renders URL compare state through DiffView', async () => {
@@ -4169,9 +5006,10 @@ describe('ArtifactsView', () => {
     expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
     expect(detailHeader?.textContent).toContain('demo-rep');
     expect(detailHeader?.textContent).not.toContain('mandible');
-    expect(detailBody?.querySelector('.artifact-detail__context')?.textContent).toContain('managed · report');
-    expect(detailBody?.querySelector('.artifact-detail__context')?.textContent).toContain('Created:');
-    expect(detailBody?.querySelector('.artifact-detail__context')?.textContent).toContain('Updated:');
+    expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('managed · report');
+    expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Created:');
+    expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Updated:');
+    expect(detailBody?.querySelector('.artifact-detail__context')).toBeNull();
     const seriesCopyButton = screen.getByRole('button', { name: 'Copy full artifact series ref' });
     fireEvent.click(seriesCopyButton);
     fireEvent.pointerUp(seriesCopyButton);
@@ -4249,7 +5087,7 @@ describe('ArtifactsView', () => {
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('0px');
     expect(document.querySelector('.artifact-detail')?.contains(metadataDialog)).toBe(true);
     expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(false);
-    expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
+    expect(document.querySelector('.artifact-detail__body')).toBeNull();
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
@@ -4910,10 +5748,11 @@ describe('ArtifactsView', () => {
 
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*clip;/s);
     expect(css).toMatch(/\.detail-pane-shell__header\s*\{[^}]*flex:\s*none;[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.detail-pane-shell__body\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
-    expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).not.toMatch(/\.issues-detail\s*\{[^}]*background:/s);
     expect(css).toMatch(/\.issues-detail__content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*gap:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*12;/s);
@@ -4921,38 +5760,68 @@ describe('ArtifactsView', () => {
     expect(css).not.toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*sticky;/s);
     expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;/s);
     expect(css).toMatch(/\.issues-detail--metadata-open \.ledger-issue-detail__body\s*\{[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
+    expect(css).not.toMatch(/\.artifacts-detail\s*\{[^}]*background:/s);
     expect(css).not.toMatch(/\.artifacts-detail\s*\{[^}]*padding:\s*24px;/s);
     expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
+    expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;/s);
     expect(css).toMatch(/\.artifact-detail\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*8;/s);
     expect(css).not.toMatch(/\.artifact-detail__header\s*\{[^}]*padding:/s);
     expect(css).not.toMatch(/\.artifact-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
-    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;/s);
+    expect(css).not.toMatch(/\.artifact-detail__pane\s*\{[^}]*background:/s);
     expect(css).not.toMatch(/\.artifact-detail__pane\s*\{[^}]*margin:\s*0 -24px -24px;/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
-    expect(css).not.toMatch(/\.artifact-detail__body\s*\{[^}]*min-height:/s);
+    expect(css).not.toMatch(/\.artifact-detail__body\s*\{/);
     expect(css).toMatch(/\.detail-pane-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--detail-pane-modal-top\);[^}]*right:\s*var\(--detail-pane-modal-right\);[^}]*bottom:\s*var\(--detail-pane-modal-bottom\);[^}]*left:\s*var\(--detail-pane-modal-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
-    expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
-    expect(css).toMatch(/\.artifact-preview-frame\s*\{[^}]*align-content:\s*start;/s);
-    expect(css).toMatch(/\.artifact-preview-frame--loading\s*\{[^}]*min-height:\s*96px;/s);
-    expect(css).not.toMatch(/\.artifact-preview-frame__loading\s*\{/);
+    expect(css).toMatch(/\.artifact-preview\s*\{[^}]*overflow:\s*auto;/s);
+    const styleRules = Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g)).map((match) => ({
+      selectors: match[1].split(',').map((selector) => selector.trim()),
+      body: match[2],
+    }));
+    const baseArtifactPreviewRules = styleRules.filter((rule) =>
+      rule.selectors.includes('.artifact-preview'),
+    );
+    expect(baseArtifactPreviewRules.length).toBeGreaterThan(0);
+    for (const rule of baseArtifactPreviewRules) {
+      expect(rule.body).not.toMatch(/\bborder(?:-(?!radius\b)[\w-]+)?\s*:/);
+      expect(rule.body).not.toMatch(/\bpadding(?:-[\w-]+)?\s*:/);
+    }
+
+    const lightArtifactPreviewRules = styleRules.filter((rule) =>
+      rule.selectors.some(
+        (selector) =>
+          /\[data-theme=(['"])light\1\]/.test(selector) &&
+          /\.artifact-preview(?![\w-])/.test(selector),
+      ),
+    );
+    const canonicalLightArtifactPreviewRules = lightArtifactPreviewRules.filter((rule) =>
+      rule.selectors.includes("[data-theme='light'] .artifact-preview"),
+    );
+    expect(canonicalLightArtifactPreviewRules.some((rule) =>
+      /background:\s*var\(--bg-card\)/.test(rule.body),
+    )).toBe(true);
+    for (const rule of lightArtifactPreviewRules) {
+      expect(rule.body).not.toMatch(
+        /background(?:-color)?:\s*(?:#[\da-f]{3,8}\b|(?:rgb|hsl)a?\(|(?:white|gray|grey|lightgray|lightgrey|gainsboro)\b)/i,
+      );
+    }
+    expect(css).not.toMatch(/\.artifact-preview-frame/);
     expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
-    expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).not.toMatch(/\.artifact-preview\.spec-panel\s*\{/);
     expect(css).toMatch(/\.detail-pane-header :is\(button, select, a\):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     expect(css).not.toMatch(/\.artifact-detail__copy-button/);
   });
 
-  it('keeps auth light detail surfaces visually separated by CSS contract', () => {
+  it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.app-content::before\s*\{[^}]*z-index:\s*0;/s);
+    expect(css).toMatch(/\.app-layout::after\s*\{[^}]*top:\s*var\(--app-header-height\);[^}]*bottom:\s*0;[^}]*left:\s*calc\(var\(--app-detail-edge-x\) - var\(--app-shadow-gutter-width\)\);[^}]*z-index:\s*var\(--z-app-subdivision\);[^}]*width:\s*calc\(var\(--app-shadow-gutter-width\) \+ 1px\);[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\),\s*var\(--shadow-app-subdivision-paint\);[^}]*background-size:\s*1px 100%, var\(--app-shadow-gutter-width\) 100%;[^}]*box-shadow:\s*none;/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open::after\s*\{[^}]*background-image:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\);[^}]*background-size:\s*1px 100%;[^}]*box-shadow:\s*none;/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar::after\s*\{[^}]*inset:\s*0 calc\(0px - var\(--app-shadow-gutter-width\)\) 0 auto;[^}]*width:\s*var\(--app-shadow-gutter-width\);[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
     expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);

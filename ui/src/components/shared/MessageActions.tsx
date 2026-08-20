@@ -1,12 +1,15 @@
 // Bug: a0963df — Unified hover-revealed action bar for messages
 // Bug: 02d701a — P3: overflow menu, metadata row, onInfo callback
 
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { ContextualAction } from './ContextualAction';
 
 export type MessageActionsMeta = {
   tokenCount?: number;
   elapsedMs?: number;
   model?: string;
+  timestamp?: string;
 };
 
 export type MessageActionsProps = {
@@ -18,6 +21,9 @@ export type MessageActionsProps = {
   showResume?: boolean;          // show resume action (default true when dagUuid present)
   showFork?: boolean;            // show fork action (default true when dagUuid present)
   metadata?: MessageActionsMeta;
+  onSelect?: (shiftKey: boolean) => void;
+  isSelected?: boolean;
+  selectMode?: boolean;
 };
 
 /** Format elapsed milliseconds as "Xs" or "Xm Ys". */
@@ -38,9 +44,20 @@ export function MessageActions({
   showResume,
   showFork,
   metadata,
+  onSelect,
+  isSelected = false,
+  selectMode = false,
 }: MessageActionsProps): JSX.Element {
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
+  const overflowMenuStyle = useAnchoredMenu({
+    open: overflowOpen,
+    anchorRef: overflowTriggerRef,
+    menuRef: overflowMenuRef,
+    onDismiss: () => setOverflowOpen(false),
+  });
 
   const shouldShowResume = showResume ?? !!dagUuid;
   const shouldShowFork = showFork ?? !!dagUuid;
@@ -79,9 +96,16 @@ export function MessageActions({
   if (metadata?.model) {
     metaParts.push(metadata.model);
   }
+  if (metadata?.timestamp) {
+    const parsed = Date.parse(metadata.timestamp);
+    metaParts.push(Number.isNaN(parsed) ? metadata.timestamp : new Date(parsed).toLocaleString());
+  }
 
   return (
-    <div className="message-actions" data-dag-uuid={dagUuid}>
+    <div
+      className={`message-actions contextual-action-group${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
+      data-dag-uuid={dagUuid}
+    >
       {/* Metadata — subdued text on left */}
       {metaParts.length > 0 && (
         <span className="message-actions__meta">
@@ -90,9 +114,20 @@ export function MessageActions({
       )}
 
       {/* Primary actions — buttons on right */}
-      {onCopy && (
+      {onSelect && (selectMode || isSelected) && (
         <button
           type="button"
+          className={`message-actions__btn${isSelected ? ' message-actions__btn--selected' : ''}`}
+          onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }}
+          title={isSelected ? 'Deselect' : 'Select'}
+          aria-label={isSelected ? 'Deselect message' : 'Select message'}
+          aria-pressed={isSelected}
+        >
+          {isSelected ? '✓' : '□'}
+        </button>
+      )}
+      {onCopy && (
+        <ContextualAction
           className="message-actions__btn"
           onClick={handleCopy}
           title={copiedFeedback ? 'Copied' : 'Copy'}
@@ -108,28 +143,36 @@ export function MessageActions({
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           )}
-        </button>
+        </ContextualAction>
       )}
 
       {/* Overflow menu — secondary actions behind ellipsis */}
       {hasOverflow && (
         <div className="message-actions__overflow-wrap">
-          <button
-            type="button"
+          <ContextualAction
+            ref={overflowTriggerRef}
             className="message-actions__btn message-actions__overflow"
             onClick={handleOverflowToggle}
             title="More actions"
             aria-label="More actions"
+            aria-haspopup="menu"
             aria-expanded={overflowOpen}
           >
             &#x2026;
-          </button>
+          </ContextualAction>
           {overflowOpen && (
-            <div className="message-actions__overflow-menu">
+            <div
+              ref={overflowMenuRef}
+              className="message-actions__overflow-menu app-anchored-menu"
+              role="menu"
+              popover="manual"
+              style={overflowMenuStyle}
+            >
               {shouldShowFork && (
                 <button
                   type="button"
                   className="message-actions__overflow-item"
+                  role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onFork)}
                 >
                   &#x2441; Fork
@@ -139,6 +182,7 @@ export function MessageActions({
                 <button
                   type="button"
                   className="message-actions__overflow-item"
+                  role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onResume)}
                 >
                   &#x21A9; Resume
@@ -148,6 +192,7 @@ export function MessageActions({
                 <button
                   type="button"
                   className="message-actions__overflow-item"
+                  role="menuitem"
                   onClick={(e) => handleOverflowItem(e, onInfo)}
                 >
                   &#x2139; Info

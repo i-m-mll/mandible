@@ -3,6 +3,20 @@
   flex: 0 0 auto;
   padding: 12px;
   border-bottom: 1px solid var(--neutral-alpha-06);
+  background: inherit;
+}
+
+/* Continue the scrolling-region separator across the additive, non-content
+ * chrome strip while the search/filter controls stop at their original edge. */
+.app-layout--view-sidebar-open .view-sidebar__header > .sidebar-search-filter::after {
+  content: '';
+  position: absolute;
+  left: 100%;
+  bottom: 0;
+  width: var(--app-shadow-gutter-width);
+  border-bottom: 1px solid var(--neutral-alpha-06);
+  z-index: 1;
+  pointer-events: none;
 }
 
 .sidebar-search-filter__row {
@@ -77,15 +91,19 @@
   border-radius: 7px;
 }
 
-.sidebar-search-filter__clear:hover {
+.sidebar-search-filter__clear:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-08);
-  color: var(--text-primary);
+  color: var(--chrome-icon-hover-direct);
 }
 
-.sidebar-search-filter__trigger:hover,
 .sidebar-search-filter__trigger--active {
   background: rgba(77, 163, 255, 0.14);
   color: var(--accent-blue);
+}
+
+.sidebar-search-filter__trigger:is(:hover, :focus-visible) {
+  background: rgba(77, 163, 255, 0.14);
+  color: var(--chrome-icon-hover-direct);
 }
 
 .sidebar-search-filter__clear svg {
@@ -159,10 +177,7 @@
 }
 
 .sidebar-search-filter__panel--popover {
-  position: absolute;
-  top: calc(100% - 2px);
-  left: 12px;
-  right: 12px;
+  position: fixed;
   max-height: min(70vh, 620px);
   overflow-x: hidden;
   overflow-y: auto;

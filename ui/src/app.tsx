@@ -17,18 +17,32 @@ import {
   getIssueRepos,
   getRepoBranches,
   getSettings,
+  getUserAppRailOrderSetting,
+  getUserTypographySetting,
   getWorkRepos,
   invalidateApiGetCache,
   invalidateDashboardApiCacheForEvent,
+  normalizeInstanceInfo,
   triggerWorkScan,
   rejectAuthRequest,
   retryAuthRequest,
   scanIssues,
   updateAuthRequestField,
   updateSetting,
+  updateUserAppRailOrderSetting,
+  updateUserTypographySetting,
+  type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
 } from './api';
+import {
+  DEFAULT_TYPOGRAPHY_SETTINGS,
+  TYPOGRAPHY_SETTING_KEYS,
+  typographyCssVariables,
+  typographySettingValue,
+  reconcileTypographySettings,
+  withTypographySetting,
+} from './typography-settings';
 import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
@@ -108,12 +122,21 @@ import {
   getAgentPageBinding,
   subscribeAgentPageBinding,
 } from './agent-page-binding';
-import { LoadingSkeleton } from './components/LoadingSkeleton';
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
+import {
+  APP_RAIL_ORDER_SETTING_KEY,
+  DEFAULT_APP_RAIL_ORDER,
+  moveAppRailItem,
+  parseAppRailOrderSetting,
+  readAppRailPreviewOrder,
+  reconcileAppRailOrder,
+  serializeAppRailOrderSetting,
+  writeAppRailPreviewOrder,
+  type AppRailOrderPreference,
+} from './app-rail-order';
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
-import './components/shared/PreviewDisabledNotice.css';
 import './components/spaces/AddToSpace.css';
 import './views/filters/issue-predicate-filter.css';
 import './views/spaces/DocumentBlockEditor.css';
@@ -136,8 +159,8 @@ const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
 const LAST_SEEN_STARTUP_EPOCH_KEY = 'mandible-last-seen-startup-epoch';
 const SPACES_LAST_VIEW_KEY = 'mandible.spaces.lastView:v1';
 const THEME_COLOR_BY_RESOLVED_THEME = {
-  dark: '#0b0f14',
-  light: '#f5f7fb',
+  dark: '#181818',
+  light: '#FFFFFF',
 } as const;
 type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
 
@@ -244,31 +267,17 @@ declare global {
   }
 }
 
-function isInstanceInfo(value: unknown): value is InstanceInfo {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<InstanceInfo>;
-  return (
-    (candidate.role === 'main' ||
-      candidate.role === 'preview' ||
-      candidate.role === 'dev' ||
-      candidate.role === 'test') &&
-    (candidate.operational_mutations === 'allow' || candidate.operational_mutations === 'reject') &&
-    typeof candidate.operational_mutations_overridden === 'boolean' &&
-    (typeof candidate.db_path === 'string' || candidate.db_path === null) &&
-    (typeof candidate.db_path_source === 'string' || candidate.db_path_source === null)
-  );
-}
-
 function readBootInstanceInfo(): InstanceInfo | null {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   const globalInstance = window.__MANDIBLE_BOOTSTRAP__?.instance;
-  if (isInstanceInfo(globalInstance)) return globalInstance;
+  const normalizedGlobalInstance = normalizeInstanceInfo(globalInstance);
+  if (normalizedGlobalInstance) return normalizedGlobalInstance;
   const script = document.getElementById('mandible-bootstrap');
   const raw = script?.textContent?.trim();
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as MandibleBootstrapData;
-    return isInstanceInfo(parsed.instance) ? parsed.instance : null;
+    return normalizeInstanceInfo(parsed.instance);
   } catch {
     return null;
   }
@@ -388,6 +397,21 @@ type NavItem = {
   icon: (props: { size?: number }) => JSX.Element;
 };
 
+type AppRailPreviewOrder = string[];
+
+type AppRailDrag = {
+  itemId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  overId: string;
+  originOrder: AppRailPreviewOrder;
+  order: AppRailPreviewOrder;
+};
+
+const APP_RAIL_DRAG_THRESHOLD_PX = 6;
+
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
 // full-bleed content (no .app-content gutters). Issue e29a8c5.
 const RESIZE_RAIL_TABS = new Set<Route['tab']>([
@@ -401,6 +425,7 @@ const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'spaces',
   'tasks',
   'timeline',
+  'work',
 ]);
 
 function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {
@@ -460,10 +485,6 @@ function routeForTab(
   return activeRoute.tab === tab ? activeRoute : snapshots[tab] ?? { tab, params: {} };
 }
 
-function TabChunkFallback(): JSX.Element {
-  return <LoadingSkeleton variant="tab" label="Loading view" />;
-}
-
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
 // Bug: 645f8a8 — also used as a generic "daemon starting" splash for pages
 // loaded mid-startup (the daemon is alive but not yet ready for mutations).
@@ -514,12 +535,10 @@ function RebuildingSplash({
 
 function MandibleHeaderLogo(): JSX.Element {
   return (
-    <img
+    <span
       className="app-header__logo"
-      src="/header-logo.svg"
-      alt=""
+      style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties}
       aria-hidden="true"
-      draggable={false}
     />
   );
 }
@@ -530,6 +549,34 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [railDrag, setRailDrag] = useState<AppRailDrag | null>(null);
+  const railDragRef = useRef<AppRailDrag | null>(null);
+  const [pendingRailOrder, setPendingRailOrder] = useState<AppRailPreviewOrder | null>(null);
+  const [railOrderReady, setRailOrderReady] = useState(false);
+  const [railOrderSetting, setRailOrderSetting] = useState<string | undefined>(undefined);
+  const [previewRailOrder, setPreviewRailOrder] = useState<AppRailOrderPreference | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return readAppRailPreviewOrder(window.localStorage);
+    } catch {
+      return null;
+    }
+  });
+  const railMutationRef = useRef(0);
+  const railMutationPendingRef = useRef(false);
+  const railRequestRef = useRef(0);
+  const railRevisionRef = useRef(0);
+  const [typography, setTypography] = useState(DEFAULT_TYPOGRAPHY_SETTINGS);
+  const typographyRevisionRef = useRef<Record<UserTypographySettingKey, number>>({
+    ui_font_face: 0,
+    ui_font_size: 0,
+    detail_font_face: 0,
+    detail_font_size: 0,
+  });
+  const [railAnnouncement, setRailAnnouncement] = useState('');
+  const railNavRef = useRef<HTMLElement | null>(null);
+  const railRouteRef = useRef(route.tab);
+  const suppressedRailClickRef = useRef<{ itemId: string; until: number } | null>(null);
   const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
     readInitialViewSidebarWidths,
   );
@@ -726,6 +773,33 @@ function App(): JSX.Element {
     };
   }, []);
 
+  const cancelRailInteraction = useCallback((announce = false) => {
+    railDragRef.current = null;
+    suppressedRailClickRef.current = null;
+    setRailDrag(null);
+    if (announce) setRailAnnouncement('Navigation reorder cancelled.');
+  }, []);
+
+  useEffect(() => {
+    if (railRouteRef.current === route.tab) return;
+    railRouteRef.current = route.tab;
+    cancelRailInteraction(false);
+  }, [route.tab, cancelRailInteraction]);
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !railDragRef.current) return;
+      event.preventDefault();
+      cancelRailInteraction(true);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('keydown', handleEscape);
+      railDragRef.current = null;
+      suppressedRailClickRef.current = null;
+    };
+  }, [cancelRailInteraction]);
+
   useEffect(() => {
     let disposed = false;
     let removeListener: (() => void) | undefined;
@@ -861,11 +935,101 @@ function App(): JSX.Element {
   }, [loadWorkData]);
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
+  const refreshRailOrder = useCallback(async (): Promise<void> => {
+    if (instanceInfo?.operational_mutations !== 'allow') return;
+    const request = railRequestRef.current + 1;
+    railRequestRef.current = request;
+    const mutationAtStart = railMutationRef.current;
+    setRailOrderReady(false);
+    try {
+      const setting = await getUserAppRailOrderSetting();
+      if (
+        railRequestRef.current !== request
+        || railMutationRef.current !== mutationAtStart
+        || setting.revision < railRevisionRef.current
+      ) return;
+      railRevisionRef.current = setting.revision;
+      setRailOrderSetting(setting.value ?? undefined);
+      setRailOrderReady(true);
+    } catch {
+      if (railRequestRef.current === request) setRailOrderReady(false);
+    }
+  }, [instanceInfo?.operational_mutations]);
+
+  const refreshTypography = useCallback(async (): Promise<void> => {
+    if (instanceInfo?.operational_mutations !== 'allow') return;
+    try {
+      const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
+      setTypography((current) => {
+        const reconciled = reconcileTypographySettings(current, typographyRevisionRef.current, snapshots);
+        typographyRevisionRef.current = reconciled.revisions;
+        return reconciled.settings;
+      });
+    } catch {
+      // Keep the current/default typography when authenticated settings are unavailable.
+    }
+  }, [instanceInfo?.operational_mutations]);
+
+  useEffect(() => {
+    if (instanceInfo?.operational_mutations === 'allow') void refreshTypography();
+    if (instanceInfo?.operational_mutations === 'reject') {
+      setTypography(DEFAULT_TYPOGRAPHY_SETTINGS);
+    }
+  }, [instanceInfo?.operational_mutations, refreshTypography]);
+
+  const handleTypographySave = useCallback(async (
+    key: UserTypographySettingKey,
+    value: string,
+  ): Promise<void> => {
+    if (instanceInfo?.operational_mutations !== 'allow') {
+      throw new Error('Typography settings are unavailable in this instance');
+    }
+    const previousValue = typographySettingValue(typography, key);
+    const revisionAtStart = typographyRevisionRef.current[key];
+    setTypography((current) => withTypographySetting(current, key, value));
+    try {
+      const snapshot = await updateUserTypographySetting(key, value);
+      if (snapshot.revision >= typographyRevisionRef.current[key]) {
+        typographyRevisionRef.current[key] = snapshot.revision;
+        setTypography((current) => withTypographySetting(current, key, snapshot.value));
+      }
+    } catch (error) {
+      if (typographyRevisionRef.current[key] === revisionAtStart) {
+        setTypography((current) => withTypographySetting(current, key, previousValue));
+      }
+      throw error;
+    }
+  }, [instanceInfo?.operational_mutations, typography]);
+
+  useEffect(() => {
+    if (instanceInfo?.operational_mutations === 'reject') {
+      railRequestRef.current += 1;
+      railMutationRef.current += 1;
+      railMutationPendingRef.current = false;
+      railRevisionRef.current = 0;
+      setPendingRailOrder(null);
+      setRailOrderSetting(undefined);
+      setRailOrderReady(true);
+      return;
+    }
+    if (instanceInfo?.operational_mutations === 'allow') {
+      void refreshRailOrder();
+      return;
+    }
+    railRequestRef.current += 1;
+    railMutationRef.current += 1;
+    railMutationPendingRef.current = false;
+    setPendingRailOrder(null);
+    setRailOrderReady(false);
+  }, [instanceInfo?.operational_mutations, refreshRailOrder]);
+
   useEffect(() => {
     // Start the visible view request before the small global aggregate.
     void loadVisibleRouteData(route.tab);
     void getSettings()
-      .then((settings) => dispatch({ type: 'setSettings', settings }))
+      .then((settings) => {
+        dispatch({ type: 'setSettings', settings });
+      })
       .catch(() => undefined);
     void loadDashboardBadges();
   }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
@@ -1001,6 +1165,21 @@ function App(): JSX.Element {
         new CustomEvent('conversation:sse', { detail: { type: payload.type, data } }),
       );
     };
+    const userSettingHandler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
+      const data = typeof payload.data === 'object' && payload.data !== null
+        ? payload.data as Record<string, unknown>
+        : null;
+      if (data?.version !== 1 || !Number.isSafeInteger(data.revision)) return;
+      if (data.key === APP_RAIL_ORDER_SETTING_KEY) {
+        if ((data.revision as number) > railRevisionRef.current) void refreshRailOrder();
+        return;
+      }
+      if (
+        TYPOGRAPHY_SETTING_KEYS.includes(data.key as UserTypographySettingKey)
+        && (data.revision as number) > typographyRevisionRef.current[data.key as UserTypographySettingKey]
+      ) void refreshTypography();
+    };
     const daemonHandler = (payload: SSEPayload) => {
       const data = payload.data && typeof payload.data === 'object' ? payload.data : null;
       const record = data as Record<string, unknown> | null;
@@ -1117,6 +1296,7 @@ function App(): JSX.Element {
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
+      client.on('user-setting:updated', userSettingHandler),
       client.on('briefing:created', briefingHandler),
       client.on('briefing:round-published', briefingHandler),
       client.on('briefing:answered', briefingHandler),
@@ -1187,6 +1367,7 @@ function App(): JSX.Element {
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
+      void refreshRailOrder();
       window.dispatchEvent(new CustomEvent('briefing:sse', {
         detail: { type: 'reconnected' },
       }));
@@ -1218,7 +1399,7 @@ function App(): JSX.Element {
       outputCoalescer.dispose();
       client.close();
     };
-  }, [loadDashboardBadges]);
+  }, [loadDashboardBadges, refreshRailOrder, refreshTypography]);
 
   // Graph-activation flush: when the graph tab becomes active (or becomes
   // visible again while active) and a graph-affecting event was buffered while
@@ -1286,7 +1467,7 @@ function App(): JSX.Element {
       }
       if (cancelled) return;
       if (health?.instance) {
-        setInstanceInfo(health.instance);
+        setInstanceInfo(normalizeInstanceInfo(health.instance));
       }
       setDaemonWarm(daemonIsWarm(health));
       const previousEpoch = getLastSeenStartupEpoch();
@@ -1798,7 +1979,7 @@ function App(): JSX.Element {
     },
   ];
 
-  const secondaryNavItems: NavItem[] = [
+  const remainingUpperNavItems: NavItem[] = [
     {
       tab: 'work',
       href: '#/work',
@@ -1821,26 +2002,250 @@ function App(): JSX.Element {
       title: 'Tasks',
       icon: TasksIcon,
     },
-    {
-      tab: 'logs',
-      href: '#/logs',
-      label: 'Logs',
-      title: 'Logs',
-      icon: LogsIcon,
-    },
   ];
+  const logsNavItem: NavItem = {
+    tab: 'logs',
+    href: '#/logs',
+    label: 'Logs',
+    title: 'Logs',
+    icon: LogsIcon,
+  };
 
-  const renderRailItem = (item: NavItem): JSX.Element => {
+  const previewMutationsRejected = instanceInfo?.operational_mutations === 'reject';
+  const railOrderPreference = previewMutationsRejected && previewRailOrder
+    ? previewRailOrder
+    : parseAppRailOrderSetting(railOrderSetting);
+
+  const canonicalRailItems = [...primaryNavItems, ...remainingUpperNavItems];
+  const persistedRailOrder: AppRailPreviewOrder = reconcileAppRailOrder(
+    canonicalRailItems.map((item) => item.tab),
+    [...railOrderPreference.groups.primary, ...railOrderPreference.groups.secondary],
+  );
+  // Pointer movement previews only the insertion marker. Keeping DOM order
+  // stable until pointerup preserves native pointer capture and link identity.
+  const visibleRailOrder = pendingRailOrder ?? persistedRailOrder;
+  const orderedRailItems = (): NavItem[] => {
+    const byId = new Map(canonicalRailItems.map((item) => [item.tab, item]));
+    return visibleRailOrder
+      .map((id) => byId.get(id as Route['tab']))
+      .filter((item): item is NavItem => Boolean(item));
+  };
+
+  const focusRailItem = (itemId: string) => {
+    window.setTimeout(() => {
+      const target = Array.from(railNavRef.current?.querySelectorAll<HTMLAnchorElement>('[data-rail-item]') ?? [])
+        .find((item) => item.dataset.railItem === itemId);
+      target?.focus();
+    }, 0);
+  };
+
+  const persistRailOrder = async (
+    order: AppRailPreviewOrder,
+    successMessage: string,
+    focusItemId?: string,
+  ) => {
+    if (!railOrderReady || railMutationPendingRef.current) return;
+    const capability = instanceInfo?.operational_mutations;
+    if (capability !== 'allow' && capability !== 'reject') {
+      setRailAnnouncement('Navigation order is unavailable. The previous order has been retained.');
+      return;
+    }
+    const preference: AppRailOrderPreference = {
+      version: DEFAULT_APP_RAIL_ORDER.version,
+      groups: {
+        primary: [...order],
+        secondary: [],
+      },
+    };
+    const value = serializeAppRailOrderSetting(preference);
+    const mutation = railMutationRef.current + 1;
+    railMutationRef.current = mutation;
+    railMutationPendingRef.current = true;
+    setPendingRailOrder(order);
+    if (previewMutationsRejected) {
+      let stored = false;
+      try {
+        stored = writeAppRailPreviewOrder(window.localStorage, preference);
+      } catch {
+        stored = false;
+      }
+      if (railMutationRef.current !== mutation) return;
+      railMutationPendingRef.current = false;
+      setPendingRailOrder(null);
+      if (!stored) {
+        setRailAnnouncement('Navigation order was not saved. The previous order has been restored.');
+        if (focusItemId) focusRailItem(focusItemId);
+        return;
+      }
+      setPreviewRailOrder(preference);
+      setRailAnnouncement(successMessage);
+      if (focusItemId) focusRailItem(focusItemId);
+      return;
+    }
+    try {
+      const result = await updateUserAppRailOrderSetting(value);
+      if (railMutationRef.current !== mutation) return;
+      railMutationPendingRef.current = false;
+      setPendingRailOrder(null);
+      setRailOrderReady(true);
+      if (result.revision < railRevisionRef.current) {
+        setRailAnnouncement('Navigation order was updated in another instance.');
+      } else {
+        railRevisionRef.current = result.revision;
+        setRailOrderSetting(result.value ?? undefined);
+        setRailAnnouncement(successMessage);
+      }
+      if (focusItemId) focusRailItem(focusItemId);
+    } catch {
+      if (railMutationRef.current !== mutation) return;
+      railMutationPendingRef.current = false;
+      setPendingRailOrder(null);
+      setRailAnnouncement('Navigation order was not saved. The previous order has been restored.');
+      if (focusItemId) focusRailItem(focusItemId);
+    }
+  };
+
+  const beginRailPointer = (
+    event: JSX.TargetedPointerEvent<HTMLAnchorElement>,
+    itemId: string,
+  ) => {
+    if (
+      !railOrderReady
+      || railMutationPendingRef.current
+      || event.button !== 0
+      || event.metaKey
+      || event.ctrlKey
+      || event.shiftKey
+      || event.altKey
+    ) return;
+
+    const originOrder: AppRailPreviewOrder = [...visibleRailOrder];
+    const candidate: AppRailDrag = {
+      itemId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+      overId: itemId,
+      originOrder,
+      order: originOrder,
+    };
+    railDragRef.current = candidate;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveRailPointer = (event: JSX.TargetedPointerEvent<HTMLAnchorElement>) => {
+    const current = railDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+    if (!current.active && distance < APP_RAIL_DRAG_THRESHOLD_PX) return;
+
+    event.preventDefault();
+    const groupElement = event.currentTarget.closest<HTMLElement>('.app-rail__group');
+    const rows = Array.from(groupElement?.querySelectorAll<HTMLAnchorElement>('[data-rail-item]') ?? []);
+    let target = rows.find((row) => event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+    target ??= rows.at(-1);
+    const targetId = target?.dataset.railItem ?? current.overId;
+    // Pointer capture keeps dispatching move frames to the dragged link while
+    // the DOM remains in its persisted order. Derive every preview from the
+    // immutable pointerdown snapshot so repeated or revisited targets are
+    // idempotent instead of toggling the already-moved preview.
+    const nextOrder = moveAppRailItem(
+      current.originOrder,
+      current.itemId,
+      targetId,
+    );
+    const next: AppRailDrag = {
+      ...current,
+      active: true,
+      overId: targetId,
+      order: nextOrder,
+    };
+    railDragRef.current = next;
+    setRailDrag(next);
+  };
+
+  const finishRailPointer = (event: JSX.TargetedPointerEvent<HTMLAnchorElement>) => {
+    const current = railDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    railDragRef.current = null;
+    setRailDrag(null);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (!current.active) return;
+
+    void persistRailOrder(
+      current.order,
+      `${event.currentTarget.getAttribute('aria-label') ?? current.itemId} moved to position ${current.order.indexOf(current.itemId) + 1} of ${current.order.length}.`,
+    );
+    suppressedRailClickRef.current = { itemId: current.itemId, until: Date.now() + 500 };
+  };
+
+  const cancelRailPointer = (event: JSX.TargetedPointerEvent<HTMLAnchorElement>) => {
+    const current = railDragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    railDragRef.current = null;
+    setRailDrag(null);
+  };
+
+  const handleRailItemKeyDown = (
+    event: JSX.TargetedKeyboardEvent<HTMLAnchorElement>,
+    item: NavItem,
+  ) => {
+    const directCommand = (
+      event.ctrlKey
+      && event.shiftKey
+      && !event.altKey
+      && !event.metaKey
+      && (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+    );
+    if (!directCommand || !railOrderReady || railMutationPendingRef.current) return;
+
+    event.preventDefault();
+    const ids = visibleRailOrder;
+    const index = ids.indexOf(item.tab);
+    const targetIndex = Math.max(0, Math.min(ids.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
+    if (index === targetIndex) {
+      setRailAnnouncement(`${item.title} is already at position ${index + 1} of ${ids.length}.`);
+      return;
+    }
+    const nextIds = moveAppRailItem(ids, item.tab, ids[targetIndex]);
+    void persistRailOrder(
+      nextIds,
+      `${item.title} moved to position ${targetIndex + 1} of ${ids.length}.`,
+      item.tab,
+    );
+  };
+
+  const renderRailItem = (item: NavItem, reorderable = false): JSX.Element => {
     const Icon = item.icon;
     const active = route.tab === item.tab;
+    const dragging = railDrag?.active && railDrag.itemId === item.tab;
+    const dropTarget = railDrag?.active && railDrag.overId === item.tab;
     return (
       <a
         key={item.tab}
         href={item.href}
-        className={`app-rail__item${active ? ' app-rail__item--active' : ''}`}
+        className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
         aria-label={item.title}
+        aria-describedby={reorderable ? 'app-rail-reorder-instructions app-rail-reorder-status' : undefined}
+        aria-keyshortcuts={reorderable ? 'Control+Shift+ArrowUp Control+Shift+ArrowDown' : undefined}
+        data-rail-item={reorderable ? item.tab : undefined}
+        data-rail-group={reorderable ? 'upper' : undefined}
+        draggable={reorderable ? false : undefined}
+        onPointerDown={reorderable ? (event) => beginRailPointer(event, item.tab) : undefined}
+        onPointerMove={reorderable ? moveRailPointer : undefined}
+        onPointerUp={reorderable ? finishRailPointer : undefined}
+        onPointerCancel={reorderable ? cancelRailPointer : undefined}
+        onLostPointerCapture={reorderable ? cancelRailPointer : undefined}
+        onKeyDown={reorderable ? (event) => handleRailItemKeyDown(event, item) : undefined}
         onClick={(event) => {
+          const suppressed = suppressedRailClickRef.current;
+          if (suppressed?.itemId === item.tab && Date.now() <= suppressed.until) {
+            suppressedRailClickRef.current = null;
+            event.preventDefault();
+            return;
+          }
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
             return;
           }
@@ -1874,7 +2279,7 @@ function App(): JSX.Element {
   };
 
   const currentRouteTitle = (
-    [...primaryNavItems, ...secondaryNavItems, sessionOverviewNavItem, {
+    [...primaryNavItems, ...remainingUpperNavItems, logsNavItem, sessionOverviewNavItem, {
       tab: 'settings' as const,
       href: '#/settings',
       label: 'Settings',
@@ -1926,7 +2331,7 @@ function App(): JSX.Element {
           aria-hidden={active ? undefined : 'true'}
           data-tab={tab}
         >
-          <Suspense fallback={<TabChunkFallback />}>
+          <Suspense fallback={null}>
             {children}
           </Suspense>
         </section>
@@ -1947,9 +2352,10 @@ function App(): JSX.Element {
 
   return (
     <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}`}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${codexIabDetected ? ' app-shell--codex-iab' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
+        ...typographyCssVariables(typography),
       } as JSX.CSSProperties}
     >
       {!daemonWarm && (
@@ -1990,6 +2396,7 @@ function App(): JSX.Element {
       )}
       <header
         className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
+        data-app-surface="chrome"
         data-tauri-drag-region
       >
         <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
@@ -2008,19 +2415,26 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
+          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
           style={bottomPanelOpen && bottomPanel ? {
             '--app-bottom-panel-height': `${bottomPanel.height}px`,
           } as JSX.CSSProperties : undefined}
         >
-          <aside className="app-rail" data-tauri-drag-region>
-              <nav className="app-rail__nav" aria-label="Main navigation">
-                <div className="app-rail__group">
-                  {primaryNavItems.map(renderRailItem)}
+          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region>
+              <nav
+                ref={railNavRef}
+                className="app-rail__nav"
+                aria-label="Main navigation"
+              >
+                <div className="app-rail__group" data-rail-group="upper">
+                  {orderedRailItems().map((item) => renderRailItem(item, true))}
                 </div>
-                <div className="app-rail__group app-rail__group--secondary">
-                  {secondaryNavItems.map(renderRailItem)}
-                </div>
+                <span id="app-rail-reorder-instructions" className="sr-only">
+                  To reorder, press Control Shift Up Arrow or Control Shift Down Arrow. Enter opens the destination normally.
+                </span>
+                <span id="app-rail-reorder-status" className="sr-only" role="status" aria-live="polite">
+                  {railAnnouncement}
+                </span>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
                 {bottomPanelAvailable ? (
@@ -2061,6 +2475,7 @@ function App(): JSX.Element {
                   placement="rail"
                   showRailLabel={railDisplayMode === 'both'}
                 />
+                {renderRailItem(logsNavItem)}
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',
@@ -2072,6 +2487,7 @@ function App(): JSX.Element {
           </aside>
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
+          data-app-surface="main"
         >
         {renderTabPanel('auth', (() => {
           const tabRoute = routeForTab('auth', route, tabRouteSnapshots);
@@ -2150,6 +2566,7 @@ function App(): JSX.Element {
               onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
+              mutationsAllowed={!previewMutationsRejected}
             />
           );
         })())}
@@ -2173,6 +2590,8 @@ function App(): JSX.Element {
           <LazySettingsView
             settings={state.settings}
             onSave={handleSettingsSave}
+            typography={typography}
+            onTypographySave={handleTypographySave}
             onClose={handleSettingsClose}
             instance={instanceInfo}
           />
@@ -2246,7 +2665,7 @@ function App(): JSX.Element {
         </main>
           {bottomPanelOpen && bottomPanel ? (
             <aside
-              className="app-bottom-panel"
+              className={`app-bottom-panel app-bottom-panel--${bottomPanel.layout}`}
               aria-label={bottomPanel.ariaLabel}
               style={{ height: `${bottomPanel.height}px` }}
             >

@@ -360,7 +360,7 @@ function EmbedBlock({
       </figcaption>
       {block.html ? (
         <div
-          className="spaces-doc-embed__body"
+          className="spaces-doc-embed__body rendered-markdown"
           // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML only.
           dangerouslySetInnerHTML={{ __html: block.html }}
         />
@@ -444,7 +444,7 @@ function DocBlockView({
         <EmbedBlock block={block} source={node.source} />
       ) : block.html ? (
         <div
-          className="spaces-doc-block__prose"
+          className="spaces-doc-block__prose rendered-markdown"
           // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML only.
           dangerouslySetInnerHTML={{ __html: block.html }}
         />
@@ -500,7 +500,7 @@ export function DocumentBody({
       <div className="spaces-doc" data-testid="spaces-document" data-format={doc.format ?? ''}>
         {doc.html ? (
           <div
-            className="spaces-doc__prose"
+            className="spaces-doc__prose rendered-markdown"
             // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML only.
             dangerouslySetInnerHTML={{ __html: doc.html }}
           />

@@ -16,7 +16,13 @@ import {
   type WorkRepoAudit,
 } from '../api';
 import { DiffView } from '../components/DiffView';
+import { ViewSidebar } from '../components/ViewSidebar';
+import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { ContextualAction } from '../components/shared/ContextualAction';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 
 export type WorkRepo = {
@@ -282,17 +288,14 @@ function BranchContextMenu({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuStyle = useAnchoredMenu({
+    open,
+    anchorRef,
+    menuRef,
+    focusRef: triggerRef,
+    onDismiss: () => setOpen(false),
+  });
 
   const branchName = getBranchName(branch);
   const wtPath = getWorktreePath(branch);
@@ -326,25 +329,35 @@ function BranchContextMenu({
   const visibleActions = actions.filter((a) => a.show !== false);
 
   return (
-    <span className="work-actions" ref={anchorRef as any}>
-      <button
-        type="button"
+    <span className={`work-actions contextual-action-group${open ? ' contextual-action-group--persistent' : ''}`} ref={anchorRef as any}>
+      <ContextualAction
+        ref={triggerRef}
         className="work-actions__trigger"
         onClick={(e) => {
           e.stopPropagation();
           setOpen(!open);
         }}
         title="Actions"
+        aria-label="Branch actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         &hellip;
-      </button>
+      </ContextualAction>
       {open ? (
-        <div ref={menuRef} className="work-actions__menu">
+        <div
+          ref={menuRef}
+          className="work-actions__menu app-anchored-menu"
+          role="menu"
+          popover="manual"
+          style={menuStyle}
+        >
           {visibleActions.map((action) => (
             <button
               key={action.label}
               type="button"
               className="work-actions__item"
+              role="menuitem"
               onClick={(e) => {
                 e.stopPropagation();
                 action.onClick();
@@ -369,7 +382,7 @@ type BranchRowProps = {
   onToggle: (repoId: string, branchName: string) => void;
 };
 
-function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }: BranchRowProps): JSX.Element {
+export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }: BranchRowProps): JSX.Element {
   const anchorRef = useRef<HTMLElement>(null);
   const branchName = getBranchName(branch);
   const status = getBranchStatus(branch);
@@ -394,7 +407,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
 
   return (
     <>
-      <tr key={expandKey} className={isPinned ? 'work-row--pinned' : ''}>
+      <tr key={expandKey} className={`contextual-action-owner${isPinned ? ' work-row--pinned' : ''}`}>
         <td className="work-col-status">
           <span className={`work-status-dot work-status-dot--${status}`} title={statusLabel} aria-label={statusLabel} />
         </td>
@@ -444,7 +457,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
             <span className="branch-timestamp">{formatRelativeTime(lastTime, { empty: '\u2014' })}</span>
           </div>
         </td>
-        <td className="work-col-actions">
+        <td className="work-col-actions contextual-action-scope">
           <BranchContextMenu branch={branch} anchorRef={anchorRef} />
         </td>
       </tr>
@@ -1315,13 +1328,19 @@ export function WorkOverviewView({
         </div>
       )}
       <div className="work-shell">
-        <aside className="work-sidebar" aria-label="Repositories">
-          <SidebarSearchFilterHeader
+        <ViewSidebar
+          storageKey="sidebar-width:work"
+          defaultWidth={340}
+          minWidth={280}
+          ariaLabel="Projects"
+          className="work-sidebar"
+          bodyClassName="work-repo-list"
+          header={<SidebarSearchFilterHeader
             value={repoFilterInput}
             onValueChange={setRepoFilterInput}
-            placeholder="Search repos..."
-            searchAriaLabel="Search repositories"
-            clearAriaLabel="Clear repository search"
+            placeholder="Search projects..."
+            searchAriaLabel="Search projects"
+            clearAriaLabel="Clear project search"
             filterTrigger={{
               ariaLabel: 'Advanced filters',
               title: 'Advanced filters',
@@ -1377,105 +1396,120 @@ export function WorkOverviewView({
                 </>
               ),
             } : undefined}
-          />
-          <div className="work-repo-list" role="list">
+          />}
+          footer={(
+            <>
+              {addingRepo ? (
+                <div className="repo-add-form">
+                  <input
+                    type="text"
+                    className="repo-add-form__input"
+                    placeholder="Absolute path to Git project..."
+                    aria-label="Project path"
+                    value={addPath}
+                    onInput={(e) => setAddPath(e.currentTarget.value)}
+                  />
+                  <div className="repo-add-form__actions">
+                    <button type="button" className="btn btn--sm" onClick={() => void handleAddRepo()}>
+                      Add project
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--ghost"
+                      onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {addError ? (
+                    <span className="repo-add-form__error" role="alert">Could not add project: {addError}</span>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="work-sidebar__footer">
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
+                >
+                  + Add project
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+                  disabled={pushState.active || pushState.authPending}
+                  onClick={() => pushRepos('all_ahead').catch(() => {})}
+                  title="Push all ahead branches + git-bug refs + notes for all projects"
+                >
+                  {pushState.authPending
+                    ? 'Authenticating...'
+                    : pushState.active
+                      ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+                      : '\u2191\u2191 Push All'}
+                </button>
+              </div>
+            </>
+          )}
+        >
+          <div role="list">
             {repoRows.length === 0 ? (
               <div className="empty-state">
                 {hasActiveFilters
-                  ? 'No repositories match these filters.'
-                  : 'No repositories found. Register a session or add a repo.'}
+                  ? 'No projects match these filters.'
+                  : 'No projects found. Register a session or add a project.'}
               </div>
             ) : (
               repoRows.map(({ repo, repoId, repoTitle, branches, activity, totalBranches }) => {
                 const repoPath = getRepoPath(repo);
                 const isExcluded = Boolean(repo.excluded);
                 const selected = selectedRepo?.repoId === repoId;
+                const activityLabel = activity
+                  ? formatRelativeTime(new Date(activity).toISOString(), { empty: '\u2014' })
+                  : '\u2014';
+                const branchLabel = `${totalBranches} ${totalBranches === 1 ? 'branch' : 'branches'}`;
+                const selectionDescription = [repoPath, branchLabel, `Last activity ${activityLabel}`]
+                  .filter(Boolean)
+                  .join('. ');
                 return (
-                  <button
-                    key={repoId}
-                    type="button"
-                    className={`work-repo-item${selected ? ' work-repo-item--active' : ''}${isExcluded ? ' work-repo-item--excluded' : ''}`}
-                    onClick={() => {
-                      const branchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
-                      setSelectedRepoId(repoId);
-                      updateWorkHash({
-                        repo: repoId,
-                        branch: branchName && branchName !== '\u2014' ? branchName : null,
-                        commit: null,
-                        compare: null,
-                      });
-                    }}
-                  >
-                    <span className="work-repo-item__main">
-                      <span className="work-repo-item__name">
-                        {repoTitle}
-                        {isExcluded ? (
-                          <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
-                        ) : null}
-                      </span>
-                      {repoPath ? <span className="work-repo-item__path">{repoPath}</span> : null}
-                    </span>
-                    <span className="work-repo-item__meta">
-                      <span>{totalBranches} {totalBranches === 1 ? 'branch' : 'branches'}</span>
-                      <span>{activity
-                        ? formatRelativeTime(new Date(activity).toISOString(), { empty: '\u2014' })
-                        : '\u2014'}</span>
-                    </span>
-                  </button>
+                  <div key={repoId} role="listitem">
+                    <SidebarItemRow
+                      label={repoTitle}
+                      selectionLabel={`Select project ${repoTitle}`}
+                      selectionDescription={selectionDescription}
+                      selected={selected}
+                      ariaCurrent={selected ? 'true' : undefined}
+                      className={isExcluded ? 'work-project-row--excluded' : undefined}
+                      onSelect={() => {
+                        const branchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
+                        setSelectedRepoId(repoId);
+                        updateWorkHash({
+                          repo: repoId,
+                          branch: branchName && branchName !== '\u2014' ? branchName : null,
+                          commit: null,
+                          compare: null,
+                        });
+                      }}
+                      badges={(
+                        <>
+                          {isExcluded ? (
+                            <SidebarItemBadge title="Excluded from scans">excluded</SidebarItemBadge>
+                          ) : null}
+                          <SidebarItemBadge title={branchLabel} ariaLabel={branchLabel}>
+                            {totalBranches}
+                          </SidebarItemBadge>
+                          <SidebarItemBadge title={`Last activity ${activityLabel}`} ariaLabel={`Last activity ${activityLabel}`}>
+                            {activityLabel}
+                          </SidebarItemBadge>
+                        </>
+                      )}
+                    />
+                  </div>
                 );
               })
             )}
           </div>
-          {addingRepo ? (
-            <div className="repo-add-form">
-              <input
-                type="text"
-                className="repo-add-form__input"
-                placeholder="Absolute path to git repo..."
-                value={addPath}
-                onInput={(e) => setAddPath(e.currentTarget.value)}
-              />
-              <div className="repo-add-form__actions">
-                <button type="button" className="btn btn--sm" onClick={() => void handleAddRepo()}>
-                  Add
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--ghost"
-                  onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
-                >
-                  Cancel
-                </button>
-              </div>
-              {addError && <span className="repo-add-form__error">{addError}</span>}
-            </div>
-          ) : null}
-          <div className="work-sidebar__footer">
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
-            >
-              + Add repo
-            </button>
-            <div className="work-push-actions">
-              <button
-                type="button"
-                className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
-                disabled={pushState.active || pushState.authPending}
-                onClick={() => pushRepos('all_ahead').catch(() => {})}
-                title="Push all ahead branches + git-bug refs + notes for all repos"
-              >
-                {pushState.authPending
-                  ? 'Authenticating...'
-                  : pushState.active
-                    ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                    : '\u2191\u2191 Push All'}
-              </button>
-            </div>
-          </div>
-        </aside>
-        <section className="work-detail" aria-label="Repository details">
+        </ViewSidebar>
+        <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
             <div className="empty-state">Select a repository to inspect branch and worktree status.</div>
           ) : (() => {
@@ -1492,67 +1526,74 @@ export function WorkOverviewView({
             const currentEditName = editName[repoId] ?? repo.name ?? repoTitle;
 
             return (
-              <div
+              <DetailPaneShell
                 key={repoId}
+                as="div"
+                variant="compact"
                 className={`work-detail-panel${isExcluded ? ' repo-card--excluded' : ''}`}
-              >
-                <div className="work-detail__header">
-                  <div className="repo-card__title">
-                    <h3>
-                      {repoTitle}
-                      {isExcluded && (
-                        <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
-                      )}
-                    </h3>
-                    {showPath ? <span className="text-muted">{repoPath}</span> : null}
-                  </div>
-                  <div className="repo-card__header-actions">
-                    {pushState.repoProgress.get(repoId) === 'pushing' && (
-                      <span className="work-push-spinner" aria-label="Pushing" />
-                    )}
-                    {pushState.repoProgress.get(repoId) === 'done' && (
-                      <span className="work-push-done" title="Push complete">{'\u2713'}</span>
-                    )}
-                    {pushState.repoProgress.get(repoId) === 'error' && (
-                      <span className="work-push-error" title="Push failed">{'\u2717'}</span>
-                    )}
-                    <button
-                      type="button"
-                      className="work-repo-push-btn"
-                      disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing'}
-                      onClick={() => void handlePushRepo(repoId, repoTitle)}
-                      title="Push this repo"
-                    >
-                      <span className="work-repo-push-btn__label">
-                        {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
-                      </span>
-                    </button>
-                    {isExcluded && (
+                bodyClassName="work-detail__body"
+                header={(
+                  <DetailPaneHeader
+                    variant="compact"
+                    title={repoTitle}
+                    titleTooltip={repoTitle}
+                    menuLabel="Repository settings"
+                    menu={(
                       <button
                         type="button"
-                        className="btn btn--xs"
-                        onClick={(e) => {
-                          void handleUpdateRepo(repoId, { excluded: false });
+                        className={`repo-card__gear${isSettingsOpen ? ' repo-card__gear--active' : ''}`}
+                        title="Repo settings"
+                        aria-label="Repo settings"
+                        onClick={() => {
+                          setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
                         }}
-                        title="Include this repo in scans"
                       >
-                        Include
+                        &#9881;
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className={`repo-card__gear${isSettingsOpen ? ' repo-card__gear--active' : ''}`}
-                      title="Repo settings"
-                      aria-label="Repo settings"
-                      onClick={(e) => {
-                        setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
-                      }}
-                    >
-                      &#9881;
-                    </button>
-                  </div>
-                </div>
-                {isSettingsOpen && (
+                    metadata={(
+                      <div className="repo-card__header-actions">
+                        {showPath ? <span className="text-muted">{repoPath}</span> : null}
+                        {isExcluded && (
+                          <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
+                        )}
+                        {pushState.repoProgress.get(repoId) === 'pushing' && (
+                          <span className="work-push-spinner" aria-label="Pushing" />
+                        )}
+                        {pushState.repoProgress.get(repoId) === 'done' && (
+                          <span className="work-push-done" title="Push complete">{'\u2713'}</span>
+                        )}
+                        {pushState.repoProgress.get(repoId) === 'error' && (
+                          <span className="work-push-error" title="Push failed">{'\u2717'}</span>
+                        )}
+                        <button
+                          type="button"
+                          className="work-repo-push-btn"
+                          disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing'}
+                          onClick={() => void handlePushRepo(repoId, repoTitle)}
+                          title="Push this repo"
+                        >
+                          <span className="work-repo-push-btn__label">
+                            {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
+                          </span>
+                        </button>
+                        {isExcluded && (
+                          <button
+                            type="button"
+                            className="btn btn--xs"
+                            onClick={() => {
+                              void handleUpdateRepo(repoId, { excluded: false });
+                            }}
+                            title="Include this repo in scans"
+                          >
+                            Include
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  />
+                )}
+                overlays={isSettingsOpen ? (
                   <div className="work-settings-overlay" role="dialog" aria-modal="true" aria-labelledby="work-repo-settings-title">
                     <div className="work-settings-modal">
                       <div className="work-settings-modal__header">
@@ -1640,8 +1681,8 @@ export function WorkOverviewView({
                       </div>
                     </div>
                   </div>
-                )}
-                <div className="work-detail__body">
+                ) : undefined}
+              >
                   <BranchAuditPanel
                     repoTitle={repoTitle}
                     audit={audits[repoId] ?? null}
@@ -1940,8 +1981,7 @@ export function WorkOverviewView({
                       </div>
                     );
                   })()}
-                </div>
-              </div>
+              </DetailPaneShell>
             );
           })()}
         </section>

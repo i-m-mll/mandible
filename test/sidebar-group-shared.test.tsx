@@ -3,12 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar.js';
-import { SidebarGroupNode } from '../ui/src/components/shared/SidebarGroupNode.js';
+import { SidebarGroupNode, SidebarNewChatIcon } from '../ui/src/components/shared/SidebarGroupNode.js';
 import { SettingsView } from '../ui/src/views/settings.js';
 import type { FeedbackCollection } from '../ui/src/views/feedback/collection-model.js';
 import * as api from '../ui/src/api.js';
 
 const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
+const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 const sidebarItemStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
 const tokenStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
@@ -103,10 +104,10 @@ describe('shared sidebar group presentation', () => {
     const categoryHeading = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--category > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(categoryHeading).toContain('color: var(--text-subdued)');
-    expect(tokenStylesheet).toContain('--text-subdued: var(--neutral-10);');
+    expect(categoryHeading).toContain('color: var(--text-chrome-muted)');
+    expect(tokenStylesheet).toContain('--text-chrome-muted: #747474;');
     const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
-    expect(lightTheme).toContain('--text-subdued: var(--neutral-8);');
+    expect(lightTheme).toContain('--text-chrome-muted: #A8A9A9;');
     const headingTypography = sidebarGroupStylesheet.match(
       /\.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
@@ -124,10 +125,10 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
     const rootColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > :is\(div, ul\) \{([^}]*)\}/,
+      /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,
     )?.[1] ?? '';
     const folderColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > :is\(div, ul\) \{([^}]*)\}/,
+      /\.sidebar-group-node--folder > \.sidebar-disclosure-region \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(rootColumn).toContain('--sidebar-title-column-inset: 7px');
     expect(folderColumn).toContain('--sidebar-title-column-inset: 29px');
@@ -136,6 +137,7 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(showMoreRule).toContain('padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px)');
     expect(showMoreRule).toContain('font-size: var(--text-md)');
+    expect(showMoreRule).toContain('color: var(--text-chrome-muted)');
     expect(chatHistoryStylesheet).not.toMatch(/chat-project-group__items[\s\S]*padding-left/);
     expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
   });
@@ -143,31 +145,42 @@ describe('shared sidebar group presentation', () => {
   it('reveals a separate 24px group action only from its exact header line', () => {
     const onPress = vi.fn();
     render(
-      <SidebarGroupNode presentation="category" id="chats" label="Chats" expanded onToggle={() => undefined} action={{ label: 'New chat', icon: 'new-chat', onPress }}>
-        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: 'new-chat', onPress: () => undefined }}>
+      <SidebarGroupNode
+        presentation="category"
+        id="chats"
+        label="Chats"
+        expanded
+        onToggle={() => undefined}
+        action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress }}
+        testIds={{ root: 'chats-group', heading: 'chats-heading', action: 'chats-action' }}
+      >
+        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: <SidebarNewChatIcon />, onPress: () => undefined }}>
           <span data-testid="descendant">Leaf</span>
         </SidebarGroupNode>
       </SidebarGroupNode>,
     );
     const heading = screen.getByRole('button', { name: 'Chats' });
     const action = screen.getByRole('button', { name: 'New chat' });
+    expect(screen.getByTestId('chats-group').contains(heading)).toBe(true);
+    expect(screen.getByTestId('chats-heading')).toBe(heading);
+    expect(screen.getByTestId('chats-action')).toBe(action);
     expect(action).not.toBe(heading);
-    expect(action.parentElement?.classList.contains('sidebar-group-node__header')).toBe(true);
+    expect(action.parentElement?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
+    expect(action.parentElement?.parentElement?.classList.contains('sidebar-group-node__header')).toBe(true);
     expect(screen.getByTestId('descendant').closest('.sidebar-group-node__header')).toBeNull();
     fireEvent.click(action);
     expect(onPress).toHaveBeenCalledOnce();
-    const actionRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action \{([^}]*)\}/)?.[1] ?? '';
-    expect(actionRule).toContain('width: 24px');
-    expect(actionRule).toContain('flex: 0 0 24px');
-    expect(actionRule).toContain('opacity: 0');
+    const slotRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action-slot \{([^}]*)\}/)?.[1] ?? '';
+    expect(slotRule).toContain('width: 24px');
+    expect(slotRule).toContain('flex: 0 0 24px');
+    expect(action.parentElement?.classList.contains('contextual-action-group')).toBe(true);
     expect(action.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
-    expect(sidebarGroupStylesheet).toMatch(
-      /\.sidebar-group-node__header:hover > \.sidebar-group-node__action,\s*\.sidebar-group-node__header:focus-within > \.sidebar-group-node__action \{[^}]*opacity: 1;[^}]*pointer-events: auto;/s,
-    );
+    expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(sidebarGroupStylesheet).not.toMatch(
       /\.sidebar-group-node:(?:hover|focus-within) > \.sidebar-group-node__header > \.sidebar-group-node__action/,
     );
-    expect(sidebarGroupStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
+    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
   });
 
   it('keeps category and folder heading backgrounds transparent on hover and focus', () => {

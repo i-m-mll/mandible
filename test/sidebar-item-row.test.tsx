@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,6 +10,7 @@ import {
 } from '../ui/src/components/shared/SidebarItemRow';
 
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
+const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (hex: string) => {
@@ -100,7 +101,7 @@ describe('SidebarItemRow', () => {
     expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
     expect(labelRule).toContain('text-overflow: clip');
     expect(labelRule).not.toContain('text-overflow: ellipsis');
-    expect(labelRule).toContain('mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent 100%)');
+    expect(labelRule).not.toContain('mask-image');
     expect(trailingRule).toContain('position: absolute');
     expect(trailingRule).toContain('right: 0');
     expect(trailingRule).toContain('opacity: 0');
@@ -108,7 +109,8 @@ describe('SidebarItemRow', () => {
     expect(revealRule).toContain('opacity: 1');
     expect(revealRule).not.toMatch(/width|padding|margin/);
     const actionRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__action \{([^}]*)\}/)?.[1] ?? '';
-    expect(actionRule).toContain('border-radius: 999px');
+    expect(actionRule).toContain('width: 24px');
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action\s*\{[^}]*border-radius: 0;[^}]*background: transparent;/s);
   });
 
   it('feeds the actual overlaid cluster width into the shared fade boundary', () => {
@@ -286,16 +288,15 @@ describe('SidebarItemRow', () => {
     expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
     expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1]).toContain('opacity: 0');
     expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1]).toContain('opacity: 0');
-    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__actions \{([^}]*)\}/)?.[1]).toContain('pointer-events: none');
+    expect(row.querySelector('.sidebar-item-row__actions')?.classList.contains('contextual-action-group')).toBe(true);
     expect(sidebarItemRowStylesheet).not.toMatch(
       /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
     );
     expect(sidebarItemRowStylesheet).toMatch(
       /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s,
     );
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row:hover \.sidebar-item-row__actions,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__actions[^}]*\{[^}]*pointer-events: auto;/s,
-    );
+    expect(row.classList.contains('contextual-action-owner')).toBe(true);
+    expect(contextualActionStylesheet).not.toMatch(/selected[^}]*contextual-action-group/);
   });
 
   it('uses neutral shared selection and reserves provider tones for explicit consumers', () => {
@@ -346,5 +347,50 @@ describe('SidebarItemRow', () => {
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Rename' }), { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('flips and clamps overflow menus inside the viewport layer', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function mockBounds() {
+      if (this.getAttribute('role') === 'menu') {
+        return {
+          x: 0, y: 0, top: 0, right: 180, bottom: 240, left: 0,
+          width: 180, height: 240, toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.getAttribute('aria-label') === 'Viewport actions') {
+        return {
+          x: window.innerWidth - 38,
+          y: window.innerHeight - 38,
+          top: window.innerHeight - 38,
+          right: window.innerWidth - 8,
+          bottom: window.innerHeight - 8,
+          left: window.innerWidth - 38,
+          width: 30,
+          height: 30,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0,
+        width: 0, height: 0, toJSON: () => ({}),
+      } as DOMRect;
+    });
+
+    render(
+      <SidebarItemOverflowMenu
+        label="Viewport actions"
+        actions={[{ id: 'open', label: 'Open', onSelect: () => undefined }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Viewport actions' }));
+    const menu = screen.getByRole('menu');
+
+    await waitFor(() => expect(menu.style.visibility).toBe('visible'));
+    expect(menu.classList.contains('app-anchored-menu')).toBe(true);
+    expect(menu.getAttribute('popover')).toBe('manual');
+    expect(menu.style.position).toBe('fixed');
+    expect(Number.parseFloat(menu.style.left)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(menu.style.left) + 180).toBeLessThanOrEqual(window.innerWidth - 8);
+    expect(Number.parseFloat(menu.style.top)).toBe(window.innerHeight - 284);
   });
 });

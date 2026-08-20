@@ -29,7 +29,6 @@
 
 .feedback-collections-sidebar {
   border-right: 1px solid var(--neutral-alpha-06);
-  background: var(--bg-secondary);
 }
 
 .feedback-collections-sidebar .view-sidebar__body {
@@ -213,12 +212,20 @@
 
 .briefing-empty, .briefing-error { margin: 0; font-size: var(--text-sm); }
 .briefing-empty { color: var(--text-muted); }
+.briefing-empty--selection {
+  flex: 1;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  text-align: center;
+}
 .briefing-error { color: var(--status-danger-fg); }
 
 /* Common detail-pane composition. The shell owns the anchored regions; only
  * the artifact document scrolls. */
 .feedback-collection-shell__content {
-  overflow: hidden;
+  overflow: clip;
   padding: 0;
 }
 
@@ -308,7 +315,6 @@
   justify-content: flex-end;
   padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--border-faint);
-  background: var(--surface-panel);
 }
 
 .briefing-detail__footer .briefing-primary {
@@ -357,6 +363,8 @@
 }
 
 .briefing-directive {
+  margin-block: calc(var(--space-1) / 2);
+  margin-inline: var(--space-3) 0;
   padding: var(--space-3);
   border-left: 2px solid var(--border-faint);
   border-radius: 0;
@@ -532,10 +540,14 @@ textarea.briefing-directive__text {
   font-size: var(--text-sm);
 }
 
-.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover),
-.briefing-directive:not(.briefing-directive--selected):focus-within {
+.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover) {
   border-left-color: var(--border-default);
   background: var(--surface-card);
+}
+
+.briefing-directive:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
 }
 
 .briefing-directive--selected {
@@ -547,16 +559,6 @@ textarea.briefing-directive__text {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.briefing-directive__interaction:hover .briefing-directive__actions,
-.briefing-directive:focus-within .briefing-directive__actions,
-.briefing-directive--selected .briefing-directive__actions {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .briefing-directive__actions button {
@@ -565,19 +567,6 @@ textarea.briefing-directive__text {
   height: 30px;
   padding: 5px;
   place-items: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.briefing-directive__actions button:hover,
-.briefing-directive__actions button:focus-visible,
-.briefing-directive__actions button[aria-pressed='true'] {
-  border-color: var(--border-muted);
-  background: var(--surface-inset);
-  color: var(--text-primary);
 }
 
 .briefing-directive__actions button svg {
@@ -619,10 +608,6 @@ textarea.briefing-directive__text {
   white-space: nowrap;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .briefing-directive__actions { transition: none; }
-}
-
 .briefing-detail__metadata dl {
   display: grid;
   gap: var(--space-3);
@@ -646,11 +631,6 @@ textarea.briefing-directive__text {
 }
 
 @media (hover: none), (pointer: coarse) {
-  .briefing-directive__actions {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
   .briefing-directive__verdict button,
   .briefing-directive__choices label,
   .briefing-directive__rating label,

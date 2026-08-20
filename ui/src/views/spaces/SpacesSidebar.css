@@ -14,11 +14,10 @@
    Spaces visual chrome. */
 .spaces-tree {
   border-right: 1px solid var(--neutral-alpha-08);
-  background: var(--bg-secondary);
   overflow: hidden;
 }
 
-/* Bare "+" create icon — NO border, NO background container. */
+/* Stable geometry shared by persistent top-level and contextual project create actions. */
 .spaces-tree__create {
   display: inline-flex;
   align-items: center;
@@ -26,35 +25,26 @@
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
+}
+
+.spaces-tree__create--top-level {
   padding: 0;
   border: none;
+  border-radius: 4px;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
 }
 
-.spaces-tree__create:hover {
-  color: var(--text-primary);
+.spaces-tree__create--top-level:is(:hover, :focus-visible) {
+  color: var(--chrome-icon-hover-direct);
   background: var(--neutral-alpha-06);
 }
 
-.spaces-tree__create:focus-visible {
+.spaces-tree__create--top-level:focus-visible {
   opacity: 1;
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
-}
-
-.spaces-tree__group-header .spaces-tree__create {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.spaces-tree__group-header:hover .spaces-tree__create,
-.spaces-tree__group-header:focus-within .spaces-tree__create {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 /* The single scroll owner is `.view-sidebar__body`; this wrapper must NOT also
@@ -73,11 +63,6 @@
   color: var(--status-danger);
 }
 
-.spaces-tree__group {
-  display: flex;
-  flex-direction: column;
-}
-
 .spaces-tree__group--dragging {
   opacity: 0.6;
 }
@@ -90,82 +75,8 @@
   color: var(--text-muted);
 }
 
-.spaces-tree__group-header {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.25rem 0.5rem 0.25rem 0.4rem;
+.spaces-tree__group-drag-target {
   cursor: grab;
-  user-select: none;
-}
-
-.spaces-tree__group-header:hover {
-  background: var(--neutral-alpha-06);
-}
-
-.spaces-tree__group-header:focus-within {
-  background: var(--neutral-alpha-06);
-}
-
-.spaces-tree__group-caret {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.spaces-tree__group-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.spaces-tree__group-spaces {
-  display: flex;
-  flex-direction: column;
-}
-
-/* Single typed line, slightly indented under its header. */
-.spaces-tree__space {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  width: 100%;
-  text-align: left;
-  padding: 0.28rem 0.75rem 0.28rem 2rem;
-  border: none;
-  background: none;
-  font-size: 0.8rem;
-  font-weight: 400;
-  color: var(--text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.spaces-tree__space:hover {
-  background: var(--neutral-alpha-06);
-  color: var(--text-primary);
-}
-
-.spaces-tree__space--active {
-  background: var(--overlay-selected);
-  color: var(--text-primary);
-}
-
-.spaces-tree__group--top .spaces-tree__space {
-  padding-left: 1.2rem;
 }
 
 .spaces-tree__space-type {
@@ -174,17 +85,6 @@
   height: 1.1rem;
   font-size: 0.95rem;
   color: var(--text-muted);
-}
-
-.spaces-tree__space--active .spaces-tree__space-type {
-  color: var(--text-primary);
-}
-
-.spaces-tree__space-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Create chooser popover. */

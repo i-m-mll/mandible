@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type {
   InstanceInfo,
@@ -10,7 +11,7 @@ import type {
 // mutation classification. Both gates (the per-request gate in
 // `evaluateInstanceMutation` and the per-route gate behind
 // `Router.listRoutePolicies` in server.ts) import these tables; they must never
-// be copied. Keep this module dependency-light (node:path + type-only imports)
+// be copied. Keep this module dependency-light (node:fs + node:path + type-only imports)
 // so server.ts can import it without creating a cycle.
 export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "POST",
@@ -65,6 +66,9 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/work", category: "work" },
 ];
 
+const ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE =
+  /^\/api\/briefings\/[^/]+\/rounds\/[^/]+\/(?:answers|annotations|submit)$/;
+
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
   dbPath?: string | null;
@@ -83,14 +87,21 @@ export function resolveInstanceInfo(options: {
   const sourceDbPath = options.sourceDbPath ?? env.MANDIBLE_INSTANCE_SOURCE_DB ?? null;
   const sourceDbPathSource = options.sourceDbPathSource
     ?? (options.sourceDbPath ? "start_options" : env.MANDIBLE_INSTANCE_SOURCE_DB ? "env" : null);
+  const resolvedDbPath = dbPath ? path.resolve(dbPath) : null;
+  const resolvedSourceDbPath = sourceDbPath ? path.resolve(sourceDbPath) : null;
+  const briefingResponseMutations = operationalMutations === "allow"
+    || hasIsolatedDatabaseCopy(resolvedDbPath, resolvedSourceDbPath)
+    ? "allow"
+    : "reject";
 
   return {
     role,
     operational_mutations: operationalMutations,
     operational_mutations_overridden: env.MANDIBLE_OPERATIONAL_MUTATIONS !== undefined,
-    db_path: dbPath ? path.resolve(dbPath) : null,
+    briefing_response_mutations: briefingResponseMutations,
+    db_path: resolvedDbPath,
     db_path_source: dbPathSource,
-    source_db_path: sourceDbPath ? path.resolve(sourceDbPath) : null,
+    source_db_path: resolvedSourceDbPath,
     source_db_path_source: sourceDbPathSource,
   };
 }
@@ -102,6 +113,12 @@ export function evaluateInstanceMutation(
 ): InstanceMutationDecision {
   const category = operationalMutationCategoryForPath(method, pathname);
   if (!category || instance.operational_mutations === "allow") {
+    return { allowed: true };
+  }
+  if (
+    instance.briefing_response_mutations === "allow"
+    && isActorScopedBriefingResponseMutation(method, pathname)
+  ) {
     return { allowed: true };
   }
 
@@ -120,6 +137,26 @@ export function evaluateInstanceMutation(
 
 export function allowsOperationalMutations(instance: InstanceInfo): boolean {
   return instance.operational_mutations === "allow";
+}
+
+export function isActorScopedBriefingResponseMutation(method: string, pathname: string): boolean {
+  return method.toUpperCase() === "POST" && ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE.test(pathname);
+}
+
+function hasIsolatedDatabaseCopy(dbPath: string | null, sourceDbPath: string | null): boolean {
+  if (dbPath === null || sourceDbPath === null) return false;
+  try {
+    const canonicalDbPath = fs.realpathSync.native(dbPath);
+    const canonicalSourceDbPath = fs.realpathSync.native(sourceDbPath);
+    if (canonicalDbPath === canonicalSourceDbPath) return false;
+
+    const dbIdentity = fs.statSync(canonicalDbPath, { bigint: true });
+    const sourceIdentity = fs.statSync(canonicalSourceDbPath, { bigint: true });
+    if (!dbIdentity.isFile() || !sourceIdentity.isFile()) return false;
+    return dbIdentity.dev !== sourceIdentity.dev || dbIdentity.ino !== sourceIdentity.ino;
+  } catch {
+    return false;
+  }
 }
 
 /**

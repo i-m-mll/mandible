@@ -2,6 +2,20 @@
   margin-bottom: 10px;
 }
 
+.sidebar-disclosure-region {
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    height 180ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 140ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-disclosure-region {
+    transition: none;
+  }
+}
+
 .sidebar-group-node__header {
   display: flex;
   align-items: center;
@@ -25,7 +39,7 @@
 }
 
 .sidebar-group-node--category > .sidebar-group-node__header > .sidebar-group-node__heading {
-  color: var(--text-subdued);
+  color: var(--text-chrome-muted);
 }
 
 .sidebar-group-node--folder {
@@ -86,7 +100,7 @@
   outline-offset: -2px;
 }
 
-.sidebar-group-node__action {
+.sidebar-group-node__action-slot {
   width: 24px;
   height: 24px;
   flex: 0 0 24px;
@@ -94,27 +108,11 @@
   align-items: center;
   justify-content: center;
   margin-right: 4px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
 }
 
-.sidebar-group-node__header:hover > .sidebar-group-node__action,
-.sidebar-group-node__header:focus-within > .sidebar-group-node__action {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.sidebar-group-node__action:hover { background: var(--neutral-alpha-08); color: var(--text-primary); }
-.sidebar-group-node__action:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-
-@media (hover: none), (pointer: coarse) {
-  .sidebar-group-node__action { opacity: 1; pointer-events: auto; }
+.sidebar-group-node__action {
+  width: 24px;
+  height: 24px;
 }
 
 .sidebar-group-node__leading {
@@ -136,18 +134,18 @@
   padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px);
   border: 0;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-chrome-muted);
   cursor: pointer;
   font: inherit;
   font-size: var(--text-md);
   text-align: left;
 }
 
-.sidebar-group-node--category > :is(div, ul) {
+.sidebar-group-node--category > .sidebar-disclosure-region {
   --sidebar-title-column-inset: 7px;
 }
 
-.sidebar-group-node--folder > :is(div, ul) {
+.sidebar-group-node--folder > .sidebar-disclosure-region {
   --sidebar-title-column-inset: 29px;
 }
 

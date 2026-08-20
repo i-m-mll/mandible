@@ -103,13 +103,13 @@ describe("ledger comment card surfaces", () => {
     expect(codeInsidePre).toContain("background: none");
   });
 
-  it("keeps the issue detail shell off the content surface", () => {
+  it("keeps the issue detail shell on the inherited main surface", () => {
     const lightTokens = cssRuleBodyIn(tokensStylesheet, "[data-theme='light']");
     const body = cssRuleBody(".issues-detail");
 
-    expect(lightTokens).toContain("--neutral-4: #e8edf4");
-    expect(lightTokens).toContain("--issues-detail-bg: var(--neutral-4)");
-    expect(body).toContain("background: var(--issues-detail-bg)");
+    expect(lightTokens).toContain("--surface-main: #FFFFFF");
+    expect(tokensStylesheet).toContain("--issues-detail-bg: var(--surface-main)");
+    expect(body).not.toMatch(/background:/);
     expect(body).not.toContain("background: var(--surface-content)");
     expect(body).not.toContain("background: var(--bg-card)");
   });

@@ -3,7 +3,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import Database from "better-sqlite3";
 
@@ -33,7 +34,7 @@ export function projectDatabaseSnapshot(options) {
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-  removeIfExists(partialPath);
+  removeDatabaseArtifacts(partialPath);
   removeIfExists(partialManifestPath);
 
   let db = null;
@@ -44,6 +45,9 @@ export function projectDatabaseSnapshot(options) {
     db.pragma("synchronous = OFF");
     db.pragma("temp_store = MEMORY");
     db.pragma("foreign_keys = OFF");
+    // The source schema is only ever referenced by SELECT statements inside the
+    // single read transaction below. Every convergence write happens later,
+    // after DETACH, against the private partial copy.
     db.prepare("ATTACH DATABASE ? AS source").run(sourcePath);
     db.exec("BEGIN DEFERRED");
 
@@ -78,6 +82,12 @@ export function projectDatabaseSnapshot(options) {
     for (const trigger of schema.triggers) db.exec(trigger.sql);
     db.exec("COMMIT");
     db.prepare("DETACH DATABASE source").run();
+
+    db.close();
+    db = null;
+    const titleConvergence = convergeProjectedConversationTitles(partialPath);
+    db = new Database(partialPath);
+    db.pragma("foreign_keys = ON");
 
     const quickCheck = db.pragma("quick_check", { simple: true });
     if (quickCheck !== "ok") throw new Error(`Projected database quick_check failed: ${quickCheck}`);
@@ -119,6 +129,7 @@ export function projectDatabaseSnapshot(options) {
           preserve_newest_per_source_project: true,
           preserve_parent_closure: true,
           whole_conversations: true,
+          title_convergence: titleConvergence,
         },
       },
       tables: {
@@ -166,9 +177,35 @@ export function projectDatabaseSnapshot(options) {
         // Preserve the original error.
       }
     }
-    removeIfExists(partialPath);
+    removeDatabaseArtifacts(partialPath);
     removeIfExists(partialManifestPath);
     throw error;
+  }
+}
+
+function convergeProjectedConversationTitles(dbPath) {
+  const entrypoint = fileURLToPath(new URL(
+    "../dist/cli/projected-conversation-convergence.js",
+    import.meta.url,
+  ));
+  if (!fs.existsSync(entrypoint)) {
+    throw new Error(`Projected conversation convergence entrypoint does not exist: ${entrypoint}`);
+  }
+  const result = spawnSync(process.execPath, [entrypoint, "--db", dbPath, "--json"], {
+    cwd: path.dirname(fileURLToPath(import.meta.url)),
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `Projected conversation convergence failed: ${result.stderr.trim() || `exit ${result.status}`}`,
+    );
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(
+      `Projected conversation convergence returned invalid JSON: ${error instanceof Error ? error.message : error}`,
+    );
   }
 }
 
@@ -442,6 +479,12 @@ function removeIfExists(filePath) {
     fs.unlinkSync(filePath);
   } catch (error) {
     if (!error || error.code !== "ENOENT") throw error;
+  }
+}
+
+function removeDatabaseArtifacts(dbPath) {
+  for (const candidate of [dbPath, `${dbPath}-journal`, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    removeIfExists(candidate);
   }
 }
 

@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
 import { spawnIssueAgent } from '../api';
@@ -159,6 +160,7 @@ export interface InboxViewProps {
   onAckManagedReminderOccurrence: (occurrenceId: string) => Promise<void>;
   onAckAll: () => Promise<void>;
   onRefresh: () => void;
+  mutationsAllowed?: boolean;
 }
 
 // ── Types for unified item list ──
@@ -398,6 +400,7 @@ function ChipInput({
           ref={inputRef}
           type="text"
           className="inbox-chip-input__input"
+          aria-label="Filter inbox by repo or branch"
           placeholder={chips.length === 0 ? 'Filter by repo or branch…' : ''}
           value={inputValue}
           onInput={(e) => {
@@ -1018,8 +1021,10 @@ export function InboxView({
   onAckManagedReminderOccurrence,
   onAckAll,
   onRefresh,
+  mutationsAllowed = true,
 }: InboxViewProps): JSX.Element {
   const [chips, setChips] = useState<FilterChip[]>([]);
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   // Build full unified item list from data
   const allItems = useMemo(() => (data ? buildUnifiedItems(data) : []), [data]);
@@ -1065,7 +1070,12 @@ export function InboxView({
 
   const handleAckAll = async () => {
     await onAckAll();
+    setActionsOpen(false);
   };
+
+  const acknowledgeableCount = (data?.continuations.length ?? 0)
+    + (data?.auth_results.length ?? 0)
+    + (data?.managed_reminder_occurrences?.length ?? 0);
 
   if (loading && !data) {
     return (
@@ -1085,43 +1095,72 @@ export function InboxView({
         ariaLabel="Inbox"
         hidden={sidebarHidden}
         header={
-          <>
-            {/* Filter chips + autocomplete */}
-            <div className="inbox-sidebar__chip-row">
+          <SidebarSearchFilterHeader
+            value=""
+            onValueChange={() => undefined}
+            placeholder="Filter inbox by repo or branch…"
+            searchAriaLabel="Filter inbox by repo or branch"
+            clearAriaLabel="Clear inbox filter search"
+            searchSlot={
               <ChipInput
                 chips={chips}
                 suggestions={suggestions}
                 onAdd={handleAddChip}
                 onRemove={handleRemoveChip}
               />
-            </div>
-
-            {/* Sort/actions bar */}
-            <div className="inbox-sidebar__actions-bar">
-              <span className="inbox-sidebar__sort-label">Sort: Date ▾</span>
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  style={{ fontSize: '11px', padding: '3px 10px' }}
-                  onClick={() => void handleAckAll()}
-                  disabled={(data?.continuations.length ?? 0)
-                    + (data?.auth_results.length ?? 0)
-                    + (data?.managed_reminder_occurrences?.length ?? 0) === 0}
-                >
-                  Ack All
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  style={{ fontSize: '11px', padding: '3px 10px' }}
-                  onClick={onRefresh}
-                >
-                  ↻
-                </button>
-              </div>
-            </div>
-          </>
+            }
+            filterTrigger={{
+              ariaLabel: 'Inbox menu',
+              title: 'Inbox menu',
+              kind: 'menu',
+              open: actionsOpen,
+              onToggle: () => setActionsOpen((open) => !open),
+            }}
+            panel={actionsOpen ? {
+              id: 'inbox-actions-menu',
+              role: 'menu',
+              ariaLabel: 'Inbox menu',
+              onDismiss: () => setActionsOpen(false),
+              children: (
+                <>
+                  <div className="sidebar-search-filter__section" role="none">
+                    <span className="sidebar-search-filter__label">Sort</span>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked="true"
+                      className="inbox-sidebar__sort-value"
+                      disabled
+                    >
+                      Date
+                    </button>
+                  </div>
+                  <div className="sidebar-search-filter__section inbox-sidebar__menu-actions" role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => void handleAckAll()}
+                      disabled={!mutationsAllowed || acknowledgeableCount === 0}
+                      title={mutationsAllowed ? 'Acknowledge all inbox items' : 'Disabled on preview instances'}
+                    >
+                      Acknowledge All
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setActionsOpen(false);
+                        onRefresh();
+                      }}
+                      disabled={loading}
+                    >
+                      {loading ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                  </div>
+                </>
+              ),
+            } : undefined}
+          />
         }
         bodyClassName="inbox-sidebar__list"
       >

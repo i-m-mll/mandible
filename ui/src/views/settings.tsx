@@ -36,6 +36,12 @@ import {
   type ProjectPickerItem,
 } from '../api';
 import type { InstanceInfo } from '../api';
+import type { UserTypographySettingKey } from '../api';
+import {
+  DEFAULT_TYPOGRAPHY_SETTINGS,
+  typographySettingValue,
+  type TypographySettings,
+} from '../typography-settings';
 import { AuthHooksPanel } from './auth';
 import { APP_THEME_MODES, normalizeAppThemeMode } from '../theme';
 import {
@@ -50,6 +56,8 @@ export type SettingsViewProps = {
   onSave: (key: string, value: string) => Promise<void>;
   onClose?: () => void;
   instance?: InstanceInfo | null;
+  typography?: TypographySettings;
+  onTypographySave?: (key: UserTypographySettingKey, value: string) => Promise<void>;
 };
 
 type FeedbackState = {
@@ -1551,7 +1559,14 @@ function ProjectPermissionsSection(): JSX.Element {
 }
 
 export function SettingsView(props: SettingsViewProps): JSX.Element {
-  const { settings, onSave, onClose, instance = null } = props;
+  const {
+    settings,
+    onSave,
+    onClose,
+    instance = null,
+    typography = DEFAULT_TYPOGRAPHY_SETTINGS,
+    onTypographySave = async () => undefined,
+  } = props;
   const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
@@ -1602,6 +1617,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       setSaving(null);
     }
   }, [onSave, showFeedback]);
+
+  const handleTypographyField = useCallback(async (key: UserTypographySettingKey, value: string) => {
+    setSaving(key);
+    try {
+      await onTypographySave(key, value);
+      showFeedback({ type: 'success', message: 'Saved' });
+    } catch (err) {
+      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
+    } finally {
+      setSaving(null);
+    }
+  }, [onTypographySave, showFeedback]);
 
   const handleKeyDown = useCallback(
     (key: string, value: string) => (e: KeyboardEvent) => {
@@ -1872,6 +1899,77 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
 
         <div className="settings-view__section-body">
+          {([
+            ['ui_font_face', 'UI font', 'Chrome, lists, controls, and headers.', [
+              ['system-ui', 'System UI'], ['space-grotesk', 'Space Grotesk'],
+            ]],
+            ['detail_font_face', 'Detail content font', 'Ordinary entity-detail prose, excluding Timeline.', [
+              ['system-ui', 'System UI'], ['space-grotesk', 'Space Grotesk'],
+            ]],
+          ] as const).map(([key, label, desc, options]) => (
+            <div className="settings-view__select-row" key={key}>
+              <div className="settings-view__select-info">
+                <label className="settings-view__select-label" for={`settings-${key}`}>{label}</label>
+                <span className="settings-view__select-desc" id={`settings-${key}-description`}>{desc}</span>
+              </div>
+              <div className="settings-view__number-controls">
+                <select
+                  id={`settings-${key}`}
+                  className="settings-view__select"
+                  aria-describedby={`settings-${key}-description`}
+                  value={typographySettingValue(typography, key)}
+                  disabled={!operationalMutationsAllowed || saving === key}
+                  onChange={(event) => void handleTypographyField(key, (event.target as HTMLSelectElement).value)}
+                >
+                  {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
+                </select>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  aria-label={`Reset ${label}`}
+                  disabled={!operationalMutationsAllowed || saving === key}
+                  onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
+                >Reset</button>
+              </div>
+            </div>
+          ))}
+          {([
+            ['ui_font_size', 'UI size', 'Base size for chrome and controls.'],
+            ['detail_font_size', 'Detail content size', 'Base size for ordinary entity-detail prose.'],
+          ] as const).map(([key, label, desc]) => (
+            <div className="settings-view__text-row" key={key}>
+              <div className="settings-view__text-info">
+                <label className="settings-view__text-label" for={`settings-${key}`}>{label}</label>
+                <span className="settings-view__text-desc" id={`settings-${key}-description`}>{desc}</span>
+              </div>
+              <div className="settings-view__number-controls">
+                <input
+                  id={`settings-${key}`}
+                  className="settings-view__number-input"
+                  type="number"
+                  min="10"
+                  max="20"
+                  step="1"
+                  aria-describedby={`settings-${key}-description`}
+                  value={typographySettingValue(typography, key)}
+                  disabled={!operationalMutationsAllowed || saving === key}
+                  onChange={(event) => {
+                    const value = (event.target as HTMLInputElement).value;
+                    if (Number.isInteger(Number(value)) && Number(value) >= 10 && Number(value) <= 20) {
+                      void handleTypographyField(key, value);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  aria-label={`Reset ${label}`}
+                  disabled={!operationalMutationsAllowed || saving === key}
+                  onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
+                >Reset</button>
+              </div>
+            </div>
+          ))}
           <div className="settings-view__select-row">
             <div className="settings-view__select-info">
               <label className="settings-view__select-label" htmlFor="settings-app-theme">App theme</label>

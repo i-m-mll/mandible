@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeBriefingRoundProjection } from '../ui/src/api';
+import { normalizeBriefingRoundProjection, normalizeInstanceInfo } from '../ui/src/api';
 
 const definitions = [
   ['verdict', 'verdict', [], { verdict: 'keep' }],
@@ -15,7 +15,10 @@ function payload() {
   return {
     round_id: 'round-1', state: 'open', briefing_key: 'typed', binding_digest: 'binding', created_at: 1,
     latest_submission_for_actor: null,
-    document: { artifact_version_id: 'artifact-version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
+    document: {
+      artifact_version_id: 'artifact-version-1', content_hash: 'b'.repeat(64), previous_round_id: null,
+      profile: 'mandible-briefing.v2', source: 'Exact verified source',
+    },
     directive_binding: { status: 'valid' }, latest_frozen_membership: null, annotations: [],
     items: definitions.map(([key, responseType, options, value], index) => ({
       id: `item-${key}`, client_item_key: key, parent_item_id: null, item_kind: 'item',
@@ -27,10 +30,25 @@ function payload() {
 }
 
 describe('Briefing v2 UI projection', () => {
+  it('normalizes the explicit response capability and fails missing or malformed values closed', () => {
+    const base = {
+      role: 'preview', operational_mutations: 'reject', operational_mutations_overridden: true,
+      db_path: '/tmp/copy.db', db_path_source: 'start_options',
+      source_db_path: '/tmp/source.db', source_db_path_source: 'start_options',
+    };
+    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'allow' })?.briefing_response_mutations).toBe('allow');
+    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'reject' })?.briefing_response_mutations).toBe('reject');
+    expect(normalizeInstanceInfo(base)?.briefing_response_mutations).toBe('reject');
+    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'sometimes' })?.briefing_response_mutations).toBe('reject');
+    expect(normalizeInstanceInfo({ ...base, operational_mutations: 'sometimes', briefing_response_mutations: 'allow' })).toBeNull();
+  });
+
   it('accepts the active profile, all six exact values, and backend option order', () => {
     const projection = normalizeBriefingRoundProjection(payload());
     expect(projection.valid).toBe(true);
-    expect(projection.document?.profile).toBe('mandible-briefing.v2');
+    expect(projection.document).toMatchObject({
+      profile: 'mandible-briefing.v2', source: 'Exact verified source', content_hash: 'b'.repeat(64),
+    });
     expect(projection.items.map((item) => item.revision.response_type)).toEqual(definitions.map((entry) => entry[1]));
     expect(projection.items[1].revision.options).toEqual([{ key: 'a', label: 'Alpha' }, { key: 'b', label: 'Beta' }]);
     expect(projection.items.map((item) => item.effective_response?.value)).toEqual(definitions.map((entry) => entry[3]));
@@ -62,5 +80,19 @@ describe('Briefing v2 UI projection', () => {
     tooMany.items[1].revision.options = Array.from({ length: 13 }, (_, index) => ({ key: `k${index}`, label: `Option ${index}` }));
     tooMany.items[1].effective_response.value = { option_key: 'k0' };
     expect(normalizeBriefingRoundProjection(tooMany).valid).toBe(false);
+  });
+
+  it.each([
+    ['missing source', (document: any) => { delete document.source; }],
+    ['non-string source', (document: any) => { document.source = 42; }],
+    ['missing hash', (document: any) => { delete document.content_hash; }],
+    ['malformed hash', (document: any) => { document.content_hash = 'not-a-sha256'; }],
+    ['extra document field', (document: any) => { document.local_only = true; }],
+  ])('fails closed on %s', (_label, mutate) => {
+    const invalid = payload() as any;
+    mutate(invalid.document);
+    const projection = normalizeBriefingRoundProjection(invalid);
+    expect(projection.valid).toBe(false);
+    expect(projection.document).toBeNull();
   });
 });

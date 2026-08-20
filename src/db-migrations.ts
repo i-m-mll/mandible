@@ -4752,11 +4752,117 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "typed_briefing_v2_and_v1_custody_retirement",
     statements: [],
   },
+  {
+    version: 145,
+    name: "user_settings",
+    statements: [
+      `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key = 'app_rail_order'),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`,
+    ],
+  },
+  {
+    version: 146,
+    name: "typography_user_settings",
+    statements: [
+      `ALTER TABLE user_settings RENAME TO user_settings_v145`,
+      `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`,
+      `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
+       SELECT user_id, key, value, revision, updated_at FROM user_settings_v145`,
+      `DROP TABLE user_settings_v145`,
+    ],
+  },
+  {
+    version: 147,
+    name: "conversation_source_filesystem_identity",
+    statements: [],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function ensureConversationSourceFilesystemIdentityColumns(db: Db): void {
+  if (!tableExists(db, "conversation_source_versions")) return;
+  const required = ["filesystem_device", "filesystem_inode", "filesystem_ctime_ns"];
+  for (const column of required) {
+    if (!hasColumn(db, "conversation_source_versions", column)) {
+      db.exec(`ALTER TABLE conversation_source_versions ADD COLUMN ${column} TEXT`);
+    }
+  }
+  const columns = db.prepare("PRAGMA table_info(conversation_source_versions)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  for (const name of required) {
+    const column = columns.find((entry) => entry.name === name);
+    if (!column || column.type.toUpperCase() !== "TEXT" || column.notnull !== 0
+        || column.dflt_value !== null || column.pk !== 0) {
+      throw new Error(`migration 147 verification: conversation_source_versions.${name} diverges`);
+    }
+  }
+}
+
+function verifyUserSettingsV145Schema(db: Db): void {
+  const sql = ((db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'",
+  ).get() as { sql: string } | undefined)?.sql ?? "").replace(/\s+/g, " ");
+  if (!sql.includes("CHECK(key = 'app_rail_order')")) {
+    throw new Error("migration 145 verification: user_settings key constraint diverges");
+  }
+}
+
+function verifyUserSettingsSchema(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(user_settings)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const expected = [
+    { name: "user_id", type: "TEXT", notnull: 1, pk: 1 },
+    { name: "key", type: "TEXT", notnull: 1, pk: 2 },
+    { name: "value", type: "TEXT", notnull: 1, pk: 0 },
+    { name: "revision", type: "INTEGER", notnull: 1, pk: 0 },
+    { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
+  ];
+  if (columns.length !== expected.length || expected.some((entry, index) =>
+    columns[index]?.name !== entry.name
+      || columns[index]?.type.toUpperCase() !== entry.type
+      || columns[index]?.notnull !== entry.notnull
+      || columns[index]?.pk !== entry.pk)) {
+    throw new Error("migration 146 verification: user_settings columns diverge");
+  }
+  const sql = ((db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'",
+  ).get() as { sql: string } | undefined)?.sql ?? "").replace(/\s+/g, " ");
+  for (const fragment of [
+    "REFERENCES users(id) ON DELETE CASCADE",
+    "CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size'))",
+    "CHECK(revision >= 1)",
+    "PRIMARY KEY(user_id, key)",
+  ]) {
+    if (!sql.includes(fragment)) {
+      throw new Error(`migration 146 verification: missing ${fragment}`);
+    }
+  }
 }
 
 function verifyBriefingDirectiveV142Schema(db: Db): void {
@@ -4816,7 +4922,14 @@ function verifyConversationSourceV140Schema(db: Db): void {
   for (const [table, expected] of Object.entries(required)) {
     const actual = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
       .map((column) => column.name);
-    if (actual.length !== expected.length || expected.some((name) => !actual.includes(name))) {
+    const allowedV147 = table === "conversation_source_versions"
+      ? ["filesystem_device", "filesystem_inode", "filesystem_ctime_ns"]
+      : [];
+    if (
+      expected.some((name) => !actual.includes(name))
+      || actual.some((name) => !expected.includes(name) && !allowedV147.includes(name))
+      || (actual.length !== expected.length && actual.length !== expected.length + allowedV147.length)
+    ) {
       throw new Error(`migration 140 precondition: ${table} has a divergent definition`);
     }
   }
@@ -5063,6 +5176,16 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           statements = [];
         }
       }
+      if (migration.name === "user_settings" && tableExists(db, "user_settings")) {
+        const sql = ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'")
+          .get() as { sql: string } | undefined)?.sql ?? "");
+        if (sql.includes("detail_font_size")) {
+          statements = [];
+        } else {
+          verifyUserSettingsV145Schema(db);
+          statements = [];
+        }
+      }
       if (migration.name === "conversation_source_identity") {
         const v140Tables = [
           "conversation_sources",
@@ -5140,6 +5263,18 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           if (!tableExists(db, table)) throw new Error(`migration 144 verification: ${table} is missing`);
         }
       }
+      if (migration.version === 145) {
+        if (!((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'")
+          .get() as { sql: string } | undefined)?.sql ?? "").includes("detail_font_size")) {
+          verifyUserSettingsV145Schema(db);
+        }
+      }
+      if (migration.version === 146) {
+        verifyUserSettingsSchema(db);
+      }
+      if (migration.version === 147) {
+        ensureConversationSourceFilesystemIdentityColumns(db);
+      }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
@@ -5176,6 +5311,7 @@ export function migrate(db: Db): void {
   const afterV126 = pending.filter((migration) => migration.version > 126 && migration.version < 143);
   const v143 = pending.filter((migration) => migration.version === 143);
   const v144 = pending.filter((migration) => migration.version === 144);
+  const afterV144 = pending.filter((migration) => migration.version > 144);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -5463,6 +5599,7 @@ export function migrate(db: Db): void {
     }
     assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 144 verification");
   }
+  applySchemaMigrations(db, afterV144);
 
   // v133 was exercised by development daemons before release, under its
   // pre-integration number. Converge those head-version databases too: remove

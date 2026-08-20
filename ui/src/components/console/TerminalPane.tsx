@@ -12,6 +12,7 @@ import { useTerminalView } from './useTerminalView';
 import { usePermissionQueue } from './usePermissionQueue';
 import { TerminalPaneHeader } from './TerminalPaneHeader';
 import { TerminalDebugOverlay } from './TerminalDebugOverlay';
+import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 import {
   cancelConsolePrompt,
   getPresetUnion,
@@ -45,8 +46,6 @@ type TerminalPaneProps = {
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
-  // Bug: e4845f6 — DAG leaf for history-first hydration path filtering
-  resumeAtMessage?: string | null;
   // Bug: b5e1c51 — Channel-enabled PTY sessions get Terminal + Events tabs
   channelEnabled?: boolean;
   workspaceMode?: boolean;
@@ -215,7 +214,6 @@ export function TerminalPane({
   isVisible,
   viewMode,
   onViewModeChange,
-  resumeAtMessage,
   channelEnabled = false,
   workspaceMode = false,
 }: TerminalPaneProps): JSX.Element {
@@ -229,7 +227,6 @@ export function TerminalPane({
   } = useConsoleStream({
     sessionId,
     providerSessionId,
-    resumeAtMessage,
     sessionStatus,
   });
   const {
@@ -440,11 +437,10 @@ export function TerminalPane({
         onSidebarToggle={() => setSidebarOpen((prev) => !prev)}
       />
 
-      {/* inbox_only mode: yellow banner */}
       {interactionMode === 'inbox_only' && (
-        <div className="terminal-pane__inbox-banner">
+        <DetailPaneNotice severity="warning" density="compact">
           Operator receives inbox items. Direct input is disabled.
-        </div>
+        </DetailPaneNotice>
       )}
 
       {/* Body: everything below the header. Reconnect overlay is scoped here,

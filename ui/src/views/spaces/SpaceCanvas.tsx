@@ -55,6 +55,7 @@ import {
   updateSpaceEdge,
 } from '../../api';
 import { layoutGraph } from '../../graph/layout';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import type { GraphEdge, GraphNode } from '../../types/graph';
 import { type SSEPayload } from '../../sse-client';
 import { acquireSharedSse, type SseHandle } from '../../sse-shared';
@@ -634,7 +635,15 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const flowEdgesRef = useRef<FlowEdge[]>([]);
   const editingEdgeIds = useRef<Set<string>>(new Set());
   const bodyRef = useRef<HTMLDivElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsMenuOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsMenuOpen(false),
+  });
   occurrencesRef.current = occurrences;
 
   const itemsById = useMemo(() => indexItems(items), [items]);
@@ -964,7 +973,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         const edge = await updateEdge(spaceId, edgeId, body);
         setEdges((prev) => prev.map((candidate) => (candidate.id === edgeId ? edge : candidate)));
         setEdgeStatus('saved');
-        setEdgeStatusMessage('Edge label saved');
+        setEdgeStatusMessage('');
       } catch (error) {
         setEdges(previous);
         reportEdgeError(error instanceof Error ? error.message : 'Failed to update edge label');
@@ -1180,6 +1189,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         </div>
         <div className="space-canvas__overflow">
           <button
+            ref={actionsTriggerRef}
             type="button"
             className="space-canvas__icon-btn"
             aria-label="Canvas actions"
@@ -1192,7 +1202,13 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             ...
           </button>
           {actionsMenuOpen && (
-            <div className="space-canvas__overflow-menu" role="menu">
+            <div
+              ref={actionsMenuRef}
+              className="space-canvas__overflow-menu app-anchored-menu"
+              role="menu"
+              popover="manual"
+              style={actionsMenuStyle}
+            >
               <button
                 type="button"
                 role="menuitem"
@@ -1249,16 +1265,18 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
               onConnect={onConnect}
             />
           )}
-          <span
-            className="space-canvas__autosave"
-            data-status={autosave}
-            data-testid="space-canvas-autosave"
-            role="status"
-            aria-live="polite"
-          >
-            <span className="space-canvas__autosave-dot" aria-hidden="true" />
-            {autosaveLabel(autosave)}
-          </span>
+          {autosave !== 'idle' && autosave !== 'saved' ? (
+            <span
+              className="space-canvas__autosave"
+              data-status={autosave}
+              data-testid="space-canvas-autosave"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="space-canvas__autosave-dot" aria-hidden="true" />
+              {autosaveLabel(autosave)}
+            </span>
+          ) : null}
         </div>
         <CanvasSelectionInspector
           selectedNodeIds={selection}
@@ -1554,9 +1572,11 @@ function CanvasEdgeInspector({
     <div className="space-canvas__inspector-section" data-testid="space-canvas-edge-inspector">
       <header className="space-canvas__inspector-header">
         <span>Edge</span>
-        <span className="space-canvas__inspector-status" data-status={status}>
-          {statusMessage || edgeStatusLabel(status)}
-        </span>
+        {status !== 'idle' && status !== 'saved' ? (
+          <span className="space-canvas__inspector-status" data-status={status}>
+            {statusMessage || edgeStatusLabel(status)}
+          </span>
+        ) : null}
       </header>
       <div className="space-canvas__edge-endpoints">
         <strong>{resolved.source.label}</strong>
@@ -1670,33 +1690,25 @@ function OccurrenceSummary({ node }: { node: CanvasNode }): JSX.Element {
   );
 }
 
-function autosaveLabel(status: AutosaveStatus): string {
+function autosaveLabel(status: Exclude<AutosaveStatus, 'idle' | 'saved'>): string {
   switch (status) {
     case 'saving':
       return 'Saving…';
-    case 'saved':
-      return 'Saved';
     case 'error':
       return 'Save failed - will retry';
     case 'disabled':
       return 'Saving disabled';
-    default:
-      return 'Saved';
   }
 }
 
-function edgeStatusLabel(status: AutosaveStatus): string {
+function edgeStatusLabel(status: Exclude<AutosaveStatus, 'idle' | 'saved'>): string {
   switch (status) {
     case 'saving':
       return 'Saving...';
-    case 'saved':
-      return 'Saved';
     case 'error':
       return 'Error';
     case 'disabled':
       return 'Disabled';
-    default:
-      return 'Ready';
   }
 }
 

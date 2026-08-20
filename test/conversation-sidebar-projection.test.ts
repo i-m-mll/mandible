@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getConversationSearchCache } from "../src/conversations/search-cache.js";
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 
@@ -52,14 +53,27 @@ function groupsOf(response: { body: unknown }) {
   return (response.body as {
     groups: Array<{
       key: string;
-      kind: "pinned" | "chats";
+      kind: "pinned" | "project" | "chats";
       label: string;
+      project_id?: string;
+      project_key?: string;
       total: number;
-      conversations: Array<{ id: string }>;
+      conversations: Array<{
+        id: string;
+        canonical_project_id: string | null;
+        canonical_project_key: string | null;
+        [key: string]: unknown;
+      }>;
       next_cursor: string | null;
     }>;
     limit: number;
   }).groups;
+}
+
+function registerProject(key: string, label: string, root: string) {
+  const project = addProject(db, { project_key: key, display_name: label });
+  addOrUpdateCheckout(db, project.id, { root });
+  return project;
 }
 
 beforeEach(() => {
@@ -78,6 +92,124 @@ afterEach(() => {
 });
 
 describe("conversation sidebar projection", () => {
+  it("projects already-indexed provider rows into requested canonical groups without ingestion", async () => {
+    const alpha = registerProject("alpha", "Alpha Project", "/workspace/alpha");
+    const empty = registerProject("empty", "Empty Project", "/workspace/empty");
+    insertConversation({ id: "codex-alpha", source: "codex", cwd: "/workspace/alpha/packages/app" });
+    insertConversation({
+      id: "claude-alpha",
+      source: "claude_code",
+      cwd: "-workspace-alpha",
+      projectPath: "/workspace/alpha",
+    });
+    insertConversation({ id: "gemini-alpha", source: "gemini", cwd: "/workspace/alpha" });
+    insertConversation({ id: "pinned-alpha", starred: true, cwd: "/workspace/alpha" });
+    insertConversation({
+      id: "opaque-legacy",
+      source: "claude_code",
+      projectPath: "-workspace-alpha",
+      sourcePath: "/workspace/alpha/provider-custody.jsonl",
+    });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const response = await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?project_ids=${alpha.id},${empty.id}&limit=20`,
+    });
+
+    expect(response.status).toBe(200);
+    const groups = groupsOf(response);
+    expect(groups.map((group) => [group.kind, group.label, group.total])).toEqual([
+      ["pinned", "Pinned", 1],
+      ["project", "Alpha Project", 3],
+      ["project", "Empty Project", 0],
+      ["chats", "Chats", 1],
+    ]);
+    const alphaGroup = groups.find((group) => group.project_id === alpha.id)!;
+    expect(alphaGroup).toMatchObject({
+      project_key: "alpha",
+      key: expect.stringMatching(/^project-/),
+    });
+    expect(alphaGroup.conversations.map((row) => row.id).sort()).toEqual([
+      "claude-alpha",
+      "codex-alpha",
+      "gemini-alpha",
+    ]);
+    expect(alphaGroup.conversations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        canonical_project_id: alpha.id,
+        canonical_project_key: "alpha",
+      }),
+    ]));
+    expect(groups.find((group) => group.kind === "pinned")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "pinned-alpha",
+        canonical_project_id: alpha.id,
+        canonical_project_key: "alpha",
+      }),
+    ]);
+    expect(groups.find((group) => group.kind === "chats")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "opaque-legacy",
+        canonical_project_id: null,
+        canonical_project_key: null,
+      }),
+    ]);
+    expect(groups.some((group) => group.label === "-workspace-alpha")).toBe(false);
+  });
+
+  it("fails closed when equally specific stored roots resolve to different projects", async () => {
+    const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
+    registerProject("beta", "Beta", "/workspace/beta");
+    insertConversation({
+      id: "ambiguous",
+      cwd: "/workspace/alpha/package",
+      projectPath: "/workspace/beta/package",
+    });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const groups = groupsOf(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?project_ids=${alpha.id}`,
+    }));
+
+    expect(groups.find((group) => group.kind === "project")).toMatchObject({ total: 0 });
+    expect(groups.find((group) => group.kind === "chats")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "ambiguous",
+        canonical_project_id: null,
+        canonical_project_key: null,
+      }),
+    ]);
+  });
+
+  it("uses path boundaries and the most-specific registered checkout root", async () => {
+    registerProject("parent", "Parent", "/workspace/repo");
+    const nested = registerProject("nested", "Nested", "/workspace/repo/packages/nested");
+    insertConversation({ id: "nested-row", cwd: "/workspace/repo/packages/nested/src" });
+    insertConversation({ id: "prefix-only", cwd: "/workspace/repository" });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const groups = groupsOf(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?project_ids=${nested.id}`,
+    }));
+
+    expect(groups.find((group) => group.kind === "project")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "nested-row",
+        canonical_project_id: nested.id,
+        canonical_project_key: "nested",
+      }),
+    ]);
+    expect(groups.find((group) => group.kind === "chats")?.conversations).toEqual([
+      expect.objectContaining({ id: "prefix-only", canonical_project_id: null }),
+    ]);
+  });
+
   it("puts every non-pinned row in Chats and pages Pinned and Chats independently", async () => {
     insertConversation({ id: "pinned-01", starred: true, cwd: "/Users/me/Main/repo-a" });
     insertConversation({ id: "pinned-02", starred: true, projectPath: "-Users-me-Main-repo-a" });
@@ -202,6 +334,52 @@ describe("conversation sidebar projection", () => {
       .toEqual(["older-high", "date-a", "date-b"]);
   });
 
+  it("places projected conversations from their canonical star fact, not a similarly identified console session pin", async () => {
+    insertConversation({
+      id: "continued-starred",
+      source: "claude_code",
+      sourcePath: "/tmp/provider-session-starred.jsonl",
+      title: "Review and take over QA successor briefing task",
+      starred: true,
+    });
+    insertConversation({
+      id: "ordinary-unstarred",
+      source: "claude_code",
+      sourcePath: "/tmp/provider-session-unstarred.jsonl",
+      title: "Ordinary unstarred conversation",
+      starred: false,
+    });
+    db.prepare("INSERT INTO sessions (id, app, pinned, status) VALUES (?, 'claude', 0, 'dead')")
+      .run("session-continued-starred");
+    db.prepare("INSERT INTO sessions (id, app, pinned, status) VALUES (?, 'claude', 1, 'dead')")
+      .run("session-ordinary-unstarred");
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const groups = groupsOf(await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=10",
+    }));
+
+    expect(groups.find((group) => group.kind === "pinned")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "continued-starred",
+        source: "claude_code",
+        source_path: "/tmp/provider-session-starred.jsonl",
+        session_id: "session-continued-starred",
+        title: "Review and take over QA successor briefing task",
+        starred: true,
+      }),
+    ]);
+    expect(groups.find((group) => group.kind === "chats")?.conversations).toEqual([
+      expect.objectContaining({
+        id: "ordinary-unstarred",
+        session_id: "session-ordinary-unstarred",
+        starred: false,
+      }),
+    ]);
+  });
+
   it("preserves filters, exact full-text authority, subagent exclusion, and both sorts", async () => {
     insertConversation({
       id: "alpha-high",
@@ -323,6 +501,66 @@ describe("conversation sidebar projection", () => {
     expect(await router.invoke({
       method: "GET",
       url: `/api/conversations/sidebar?limit=1&group_key=chats&source=codex&cursor=${encodeURIComponent(cursor)}`,
+    })).toMatchObject({ status: 400 });
+  });
+
+  it("pages Pinned, a canonical project, and Chats independently and binds cursors to the project set", async () => {
+    const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
+    const beta = registerProject("beta", "Beta", "/workspace/beta");
+    insertConversation({ id: "pin-new", starred: true, cwd: "/workspace/alpha", startedAt: "2026-08-18T14:00:00Z" });
+    insertConversation({ id: "pin-old", starred: true, cwd: "/workspace/alpha", startedAt: "2026-08-18T13:00:00Z" });
+    insertConversation({ id: "alpha-high", cwd: "/workspace/alpha", blocks: 9 });
+    insertConversation({ id: "alpha-low", cwd: "/workspace/alpha", blocks: 3 });
+    insertConversation({ id: "beta-high", cwd: "/workspace/beta", blocks: 8 });
+    insertConversation({ id: "unscoped-low", blocks: 2 });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const baseUrl = `/api/conversations/sidebar?project_ids=${alpha.id}&sort=block_count&limit=1`;
+    const initialGroups = groupsOf(await router.invoke({ method: "GET", url: baseUrl }));
+    expect(initialGroups.map((group) => [group.kind, group.total])).toEqual([
+      ["pinned", 2],
+      ["project", 2],
+      ["chats", 2],
+    ]);
+
+    for (const group of initialGroups) {
+      expect(group.next_cursor).toEqual(expect.any(String));
+      const follow = groupsOf(await router.invoke({
+        method: "GET",
+        url: `${baseUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(group.next_cursor!)}`,
+      }));
+      expect(follow).toHaveLength(1);
+      expect(follow[0]).toMatchObject({ key: group.key, total: 2, next_cursor: null });
+      expect(follow[0].conversations[0].id).not.toBe(group.conversations[0].id);
+    }
+
+    const projectGroup = initialGroups.find((group) => group.kind === "project")!;
+    expect(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?project_ids=${alpha.id},${beta.id}&sort=block_count&limit=1`
+        + `&group_key=${encodeURIComponent(projectGroup.key)}`
+        + `&cursor=${encodeURIComponent(projectGroup.next_cursor!)}`,
+    })).toMatchObject({ status: 400 });
+  });
+
+  it("rejects unknown, non-canonical, empty, and over-bounded project id requests", async () => {
+    const alpha = registerProject("alpha", "Alpha", "/workspace/alpha");
+    const router = new Router();
+    registerConversationRoutes(router);
+
+    expect(await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?project_ids=alpha",
+    })).toMatchObject({ status: 400, body: { error: "Unknown canonical project id", project_ids: ["alpha"] } });
+    expect(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?project_ids=${alpha.id},`,
+    })).toMatchObject({ status: 400 });
+    const tooMany = Array.from({ length: 501 }, (_, index) => `${alpha.id}-${index}`).join(",");
+    expect(await router.invoke({
+      method: "GET",
+      url: `/api/conversations/sidebar?project_ids=${tooMany}`,
     })).toMatchObject({ status: 400 });
   });
 });

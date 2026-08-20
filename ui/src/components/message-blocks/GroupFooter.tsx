@@ -5,6 +5,7 @@
 // Bug: bce7370 — Aggregate stats footer for multi-block assistant groups
 
 import { useState } from 'preact/hooks';
+import { ContextualAction } from '../shared/ContextualAction';
 
 export type GroupFooterProps = {
   totalTokens?: number;
@@ -30,11 +31,9 @@ export function GroupFooter({
   };
 
   return (
-    <div className="group-footer">
-      <hr className="group-footer__separator" />
+    <div className="group-footer contextual-action-group">
       <div className="group-footer__row">
-        <button
-          type="button"
+        <ContextualAction
           className="group-footer__btn"
           onClick={handleCopy}
           title={copied ? 'Copied' : 'Copy all'}
@@ -50,11 +49,10 @@ export function GroupFooter({
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           )}
-        </button>
+        </ContextualAction>
         {/* Bug: 0a1ad82 — Select button for turn selection */}
         {onSelect && (
-          <button
-            type="button"
+          <ContextualAction
             className={`group-footer__btn${isSelected ? ' group-footer__btn--selected' : ''}`}
             onClick={onSelect}
             title={isSelected ? 'Deselect' : 'Select'}
@@ -70,11 +68,10 @@ export function GroupFooter({
                 <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
               </svg>
             )}
-          </button>
+          </ContextualAction>
         )}
         {onOpenMarkdown && (
-          <button
-            type="button"
+          <ContextualAction
             className="group-footer__btn"
             onClick={onOpenMarkdown}
             title="Open markdown"
@@ -86,7 +83,7 @@ export function GroupFooter({
               <path d="M9 15h6" />
               <path d="M9 18h3" />
             </svg>
-          </button>
+          </ContextualAction>
         )}
         {totalTokens != null && (
           <span className="group-footer__stat">

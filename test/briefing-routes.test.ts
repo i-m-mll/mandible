@@ -9,6 +9,7 @@ vi.mock("../src/sse.js", () => ({ broadcast: vi.fn() }));
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { migrate, type Db } from "../src/db.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { createUser } from "../src/users/store.js";
@@ -20,7 +21,7 @@ class SlugGate implements ClientAuthGate {
     if (!credential) return null;
     const ephemeral = credential.startsWith("session:");
     const slug = ephemeral ? credential.slice(8) : credential;
-    const user = this.db().prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
+    const user = this.db().prepare("SELECT id, slug FROM users WHERE slug = ?")
       .get(slug) as { id: string; slug: string } | undefined;
     return user ? { user_id: user.id, slug: user.slug, method: ephemeral ? "ephemeral" : "api_token",
       credential_id: null, source: "in_process" } : null;
@@ -51,7 +52,9 @@ function payload(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.mocked(broadcast).mockClear();
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefing-routes-"));
-  db = new Database(":memory:");
+  fs.writeFileSync(path.join(root, "source.db"), "");
+  fs.copyFileSync(path.join(root, "source.db"), path.join(root, "preview.db"));
+  db = new Database(path.join(root, "preview.db"));
   migrate(db);
   setSetting(db, "artifact_root", root);
   createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Publisher" });
@@ -114,6 +117,133 @@ describe("plural Briefing routes", () => {
       expect(eventPayload).not.toHaveProperty("value");
       expect(eventPayload).not.toHaveProperty("actor_user_id");
     }
+  });
+
+  it("allows an authenticated active human to freeze responses on an isolated reject-mode copy", async () => {
+    const published = await router.invoke({
+      method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule",
+    });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    const preview = new Router({
+      clientAuth: new SlugGate(() => db),
+      instance: resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+        dbPath: path.join(root, "preview.db"),
+        sourceDbPath: path.join(root, "source.db"),
+      }),
+    });
+    registerBriefingRoutes(preview, db);
+
+    const answer = await preview.invoke({
+      method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
+      credential: "human",
+      body: { actor_user_id: "payload-cannot-select-an-actor", answers: [{ directive_key: "paper", operation: "set",
+        expected_response_event_id: null, value: { verdict: "keep" } }] },
+    });
+    expect(answer.status).toBe(200);
+    const responseEventId = (answer.body as { answers: Array<{ response_event_id: string }> })
+      .answers[0].response_event_id;
+    const annotation = await preview.invoke({
+      method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/annotations`,
+      credential: "human",
+      body: { actor_user_id: "payload-cannot-select-an-actor", annotations: [{ operation: "set", kind: "comment", start_offset: 2, end_offset: 7,
+        quote: "Daily", body: "Reviewed", replacement_text: null }] },
+    });
+    expect(annotation.status).toBe(200);
+    const annotationEventId = (annotation.body as { annotation_event_ids: string[] }).annotation_event_ids[0];
+    const spoofedSubmission = await preview.invoke({
+      method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,
+      credential: "human",
+      body: { actor_user_id: "payload-cannot-select-an-actor",
+        answers: [{ directive_key: "paper", response_event_id: responseEventId }],
+        annotation_event_ids: [annotationEventId], supersedes_submission_id: null },
+    });
+    expect(spoofedSubmission).toMatchObject({
+      status: 400,
+      body: { code: "invalid_briefing", error: expect.stringContaining("actor_user_id") },
+    });
+    const submitted = await preview.invoke({
+      method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,
+      credential: "human",
+      body: { answers: [{ directive_key: "paper", response_event_id: responseEventId }],
+        annotation_event_ids: [annotationEventId], supersedes_submission_id: null },
+    });
+    expect(submitted).toMatchObject({ status: 200, body: { actor_user_id: humanId } });
+    const submissionId = (submitted.body as { submission_id: string }).submission_id;
+    expect(db.prepare(
+      `SELECT actor_user_id, response_event_id FROM briefing_submission_answers WHERE submission_id = ?`,
+    ).all(submissionId)).toEqual([{ actor_user_id: humanId, response_event_id: responseEventId }]);
+    expect(db.prepare(
+      `SELECT actor_user_id, annotation_event_id FROM briefing_submission_annotations WHERE submission_id = ?`,
+    ).all(submissionId)).toEqual([{ actor_user_id: humanId, annotation_event_id: annotationEventId }]);
+
+    expect(await preview.invoke({
+      method: "POST", url: "/api/briefings/runs", credential: "agent-schedule", body: payload({ run_key: "blocked" }),
+    })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
+  });
+
+  it("keeps operator response authority aligned with the exact selected copied-preview round", async () => {
+    const published = await router.invoke({
+      method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule",
+    });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
+    setSetting(db, "user.operator_id", operator.id);
+    const preview = new Router({
+      clientAuth: new SlugGate(() => db),
+      instance: resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+        dbPath: path.join(root, "preview.db"),
+        sourceDbPath: path.join(root, "source.db"),
+      }),
+    });
+    registerBriefingRoutes(preview, db);
+
+    const selected = await preview.invoke({
+      method: "GET", url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`, credential: "operator",
+    });
+    expect(selected).toMatchObject({
+      status: 200,
+      body: { briefing: { id: ids.briefing_id }, selected_round: { id: ids.round_id } },
+    });
+    const annotation = await preview.invoke({
+      method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/annotations`, credential: "operator",
+      body: { annotations: [{ operation: "set", kind: "comment", start_offset: 2, end_offset: 7,
+        quote: "Daily", body: "Final IAB acceptance annotation.", replacement_text: null }] },
+    });
+    expect(annotation).toMatchObject({ status: 200, body: { annotation_event_ids: [expect.any(String)] } });
+  });
+
+  it("keeps isolated-copy response authority bound to an authenticated active human", async () => {
+    const published = await router.invoke({
+      method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule",
+    });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    createUser(db, { slug: "other-agent", kind: "agent", display_name: "Other agent" });
+    const inactive = createUser(db, { slug: "inactive-human", kind: "human", display_name: "Inactive" });
+    db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(inactive.id);
+    const preview = new Router({
+      clientAuth: new SlugGate(() => db),
+      instance: resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+        dbPath: path.join(root, "preview.db"),
+        sourceDbPath: path.join(root, "source.db"),
+      }),
+    });
+    registerBriefingRoutes(preview, db);
+    const request = (credential?: string) => preview.invoke({
+      method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
+      ...(credential ? { credential } : {}),
+      body: { answers: [] },
+    });
+    expect(await request()).toMatchObject({ status: 401, body: { code: "authentication_required" } });
+    expect(await request("other-agent")).toMatchObject({ status: 403, body: { code: "human_responder_required" } });
+    expect(await request("inactive-human")).toMatchObject({ status: 403, body: { code: "human_responder_required" } });
   });
 
   it("resolves round refs only inside the authorized Briefing and rejects ambiguous prefixes", async () => {

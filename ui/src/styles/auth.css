@@ -247,10 +247,6 @@
   flex-direction: column;
 }
 
-.auth-detail--with-preview-notice .auth-detail__header {
-  margin-top: 0;
-}
-
 .auth-detail__secondary-metadata {
   min-width: 0;
   display: flex;
@@ -338,10 +334,7 @@
 }
 
 .auth-detail__actions-menu {
-  position: absolute;
-  z-index: 80;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1964,7 +1957,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg-secondary);
 }
 
 .auth-sidebar__header {
@@ -2250,14 +2242,11 @@
 .auth-detail {
   position: relative;
   z-index: 3;
-  --preview-disabled-notice-edge-inset-top: 0px;
-  --preview-disabled-notice-edge-inset-x: 0px;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: var(--issues-detail-bg);
 }
 
 .auth-detail__empty {

@@ -12,13 +12,14 @@ import { EntityPill } from '../components/shared/EntityPill';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
-import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
@@ -1114,7 +1115,7 @@ function AuthCard({
                     </div>
                   ) : commitHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
@@ -1138,7 +1139,7 @@ function AuthCard({
                 {showSpec && (
                   specHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: specHtml }}
                     />
                   ) : (
@@ -1190,7 +1191,7 @@ function AuthCard({
                     </div>
                   )
                 ) : (
-                  <div className="panel__body spec-panel">
+                  <div className="panel__body spec-panel rendered-markdown">
                     <p className="type-detail-summary">
                       <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
                       {' '}{getAuthTitle(request)}
@@ -1282,7 +1283,14 @@ function AuthRequestDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuStyle = useAnchoredMenu({
+    open: actionsOpen,
+    anchorRef: actionsTriggerRef,
+    menuRef: actionsMenuRef,
+    onDismiss: () => setActionsOpen(false),
+  });
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
   // Issue 7d64d8f — a digest means these exact bytes are the merge commit
@@ -1367,24 +1375,6 @@ function AuthRequestDetail({
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [showConsole, consoleText]);
-
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = actionsMenuRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActionsOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-    };
-  }, [actionsOpen]);
 
   const effectiveTimestampLabel = timestampLabel ?? (history
     ? getResolvedTimestampLabel(request)
@@ -1530,8 +1520,9 @@ function AuthRequestDetail({
             </>
           )}
           actions={(
-            <div className="auth-detail__header-actions" ref={actionsMenuRef}>
+            <div className="auth-detail__header-actions">
               <button
+                ref={actionsTriggerRef}
                 type="button"
                 className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
                 aria-label="Auth actions"
@@ -1543,7 +1534,13 @@ function AuthRequestDetail({
                 <HorizontalDotsIcon />
               </button>
               {actionsOpen && (
-                <div className="auth-detail__actions-menu" role="menu">
+                <div
+                  ref={actionsMenuRef}
+                  className="auth-detail__actions-menu app-anchored-menu"
+                  role="menu"
+                  popover="manual"
+                  style={actionsMenuStyle}
+                >
                   <button
                     type="button"
                     className="auth-detail__actions-item"
@@ -1748,7 +1745,7 @@ function AuthRequestDetail({
                     </div>
                   ) : commitHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
@@ -1772,7 +1769,7 @@ function AuthRequestDetail({
                 {showSpec && (
                   specHtml ? (
                     <div
-                      className="panel__body spec-panel"
+                      className="panel__body spec-panel rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: specHtml }}
                     />
                   ) : (
@@ -2587,16 +2584,16 @@ export function AuthQueueView({
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
   const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
   const previewNotice = instanceMutationBlocked ? (
-    <PreviewDisabledNotice
+    <DetailPaneNotice
+      severity="warning"
       title={`${instanceLabel} instance`}
-      className="preview-disabled-notice--edge-to-edge"
     >
       <>
         Auth actions are disabled for this copied preview queue
         {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
         {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
       </>
-    </PreviewDisabledNotice>
+    </DetailPaneNotice>
   ) : null;
 
   const showToast = useCallback((message: string) => {
@@ -3575,7 +3572,7 @@ export function AuthQueueView({
 
       {/* RIGHT detail panel */}
       <div
-        className={`auth-detail${previewNotice ? ' auth-detail--with-preview-notice' : ''}`}
+        className="auth-detail"
         style={{ position: 'relative' }}
       >
         {previewNotice}

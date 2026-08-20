@@ -10,6 +10,7 @@ import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocument
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
+const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
 const bodyStart = source.indexOf('Plan');
@@ -46,7 +47,13 @@ function round(overrides: Partial<BriefingRoundProjection> = {}): BriefingRoundP
     binding_digest: 'digest',
     created_at: 1,
     latest_submission_for_actor: null,
-    document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
+    document: {
+      artifact_version_id: 'artifact-version:version-1',
+      content_hash: createHash('sha256').update(source).digest('hex'),
+      previous_round_id: null,
+      profile: 'mandible-briefing.v2',
+      source,
+    },
     directive_binding: { status: 'valid' },
     latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
     annotations: [],
@@ -83,6 +90,99 @@ afterEach(() => {
 });
 
 describe('Briefing document panel', () => {
+  it('renders authoritative detail prose instead of drifted generic artifact prose', async () => {
+    const authoritativeSource = source.replace('Intro', 'Truth');
+    const driftedSource = source.replace('Intro', 'Drift');
+    const fetchMock = vi.fn(async () => json({ content: {
+      ...content().content,
+      size_bytes: new TextEncoder().encode(driftedSource).byteLength,
+      preview: { encoding: 'utf-8', text: driftedSource, raw_text: driftedSource, truncated: false },
+    } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<BriefingDocumentPanel
+      briefingId="briefing-1"
+      briefingTitle="Review plan"
+      round={round({ document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(authoritativeSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: authoritativeSource,
+      } as any })}
+      roundId="round-1"
+      canMutate
+      onRefresh={async () => null}
+    />);
+
+    expect(await screen.findByText('Truth')).toBeTruthy();
+    expect(screen.queryByText('Drift')).toBeNull();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('renders and enables the authoritative detail document when generic artifact access is denied', async () => {
+    const fetchMock = vi.fn(async () => json({ error: 'forbidden' }, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<BriefingDocumentPanel
+      briefingId="briefing-1"
+      briefingTitle="Review plan"
+      round={round({ document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(source).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source,
+      } as any })}
+      roundId="round-1"
+      canMutate
+      onRefresh={async () => null}
+    />);
+
+    expect(await screen.findByText('Intro')).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('marks real fenced and inline code as shared rendered Markdown', async () => {
+    const fencedSource = 'Intro\n\n```ts\nconst answer = 42;\n```\n\nInline `answer`.\n\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
+    const [directive] = parseBriefingDirectives(fencedSource);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ content: {
+      ...content().content,
+      size_bytes: new TextEncoder().encode(fencedSource).byteLength,
+      preview: { encoding: 'utf-8', text: fencedSource, raw_text: fencedSource, truncated: false },
+    } })));
+
+    render(<BriefingDocumentPanel
+      briefingId="briefing-1"
+      briefingTitle="Code review"
+      roundId="round-1"
+      round={round({
+        document: {
+          artifact_version_id: 'artifact-version:version-1',
+          content_hash: createHash('sha256').update(fencedSource).digest('hex'),
+          previous_round_id: null,
+          profile: 'mandible-briefing.v2',
+          source: fencedSource,
+        },
+        items: [{
+          id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
+          revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: 'verdict', required: true, position: 1, options: [] },
+          effective_response: null, responseVisible: true, directive,
+        }],
+      })}
+      canMutate
+      onRefresh={async () => null}
+    />);
+
+    const document = await screen.findByLabelText('Pinned briefing document');
+    const prose = document.querySelector('.briefing-document__prose.rendered-markdown');
+    expect(prose).toBeTruthy();
+    expect(prose?.querySelector('pre code')?.textContent).toBe('const answer = 42;\n');
+    expect(prose?.querySelector('p code')?.textContent).toBe('answer');
+  });
+
   it('renders all six v2 controls with native semantics, prompt names, ordered options, bounds, and canonical clear drafts', async () => {
     const typedSource = [
       '# Typed review',
@@ -95,6 +195,13 @@ describe('Briefing document panel', () => {
     ].join('\n');
     const directives = parseBriefingDirectives(typedSource);
     const typedRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(typedSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: typedSource,
+      },
       items: directives.map((directive, index) => ({
         id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
         revision: { id: directive.definition_digest, ordinal: 1, title: directive.key, prompt: directive.body, description: null, response_type: directive.type, required: directive.required, position: index, options: directive.options },
@@ -115,7 +222,7 @@ describe('Briefing document panel', () => {
     render(<Harness />);
 
     const verdict = await screen.findByRole('group', { name: 'Keep this finding?' });
-    expect(within(verdict).getByRole('button', { name: 'Keep' })).toBeTruthy();
+    fireEvent.click(within(verdict).getByRole('button', { name: 'Keep' }));
     const single = screen.getByRole('group', { name: 'Choose deployment mode' });
     expect(within(single).getAllByRole('radio').map((input) => (input as HTMLInputElement).value)).toEqual(['a', 'b']);
     expect(within(single).getAllByText(/Alpha|Beta/).map((label) => label.textContent)).toEqual(['Alpha', 'Beta']);
@@ -132,8 +239,11 @@ describe('Briefing document panel', () => {
     fireEvent.input(short, { target: { value: '  exact  ' } });
     fireEvent.input(long, { target: { value: 'Detailed' } });
     const rating = screen.getByRole('group', { name: 'Rate confidence' });
-    fireEvent.click(within(rating).getByRole('radio', { name: '5' }));
+    const ratingFive = within(rating).getByRole('radio', { name: '5' }) as HTMLInputElement;
+    fireEvent.click(ratingFive);
+    expect(ratingFive.checked).toBe(true);
     expect(changes).toEqual(expect.arrayContaining([
+      { id: 'verdict', value: { verdict: 'keep' } },
       { id: 'single', value: { option_key: 'b' } },
       { id: 'multi', value: { option_keys: ['first', 'third'] } },
       { id: 'short', value: { text: '  exact  ' } },
@@ -144,9 +254,10 @@ describe('Briefing document panel', () => {
     const shortSection = short.closest('.briefing-directive') as HTMLElement;
     fireEvent.click(within(shortSection).getByRole('button', { name: 'Clear answer' }));
     expect(changes.at(-1)).toEqual({ id: 'short', value: null });
+    expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
   });
 
-  it('binds directive hover to the content and control interaction region', async () => {
+  it('uses discrete content-edge segments with synchronized hover and persistent selected actions', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(content())));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
 
@@ -157,13 +268,111 @@ describe('Briefing document panel', () => {
     const interactionRule = briefingStylesheet.match(/\.briefing-directive__interaction \{([^}]*)\}/)?.[1] ?? '';
 
     expect(interaction.classList.contains('briefing-directive__interaction')).toBe(true);
+    expect(interaction.classList.contains('contextual-action-owner')).toBe(true);
     expect(interaction.querySelector('.briefing-directive__passage')).toBeTruthy();
     expect(interaction.querySelector('.briefing-directive__actions')).toBeTruthy();
+    expect(directiveRule).toContain('margin-block: calc(var(--space-1) / 2)');
+    expect(directiveRule).toContain('margin-inline: var(--space-3) 0');
     expect(directiveRule).toContain('padding: var(--space-3)');
+    expect(directiveRule).toContain('border-left: 2px solid var(--border-faint)');
     expect(interactionRule).not.toContain('padding:');
     expect(briefingStylesheet).toMatch(/\.briefing-directive:not\(\.briefing-directive--selected\):has\(> \.briefing-directive__interaction:hover\)/);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__interaction:hover \.briefing-directive__actions/);
+    expect(briefingStylesheet).toMatch(/border-left-color: var\(--border-default\)/);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive--selected \{[^}]*border-left-color: var\(--accent-border\)/s);
+    expect(interaction.querySelector('.briefing-directive__actions')?.classList.contains('contextual-action-group')).toBe(true);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
     expect(briefingStylesheet).not.toMatch(/\.briefing-directive:hover(?:\s|,|\{)/);
+  });
+
+  it('selects only non-interactive directive surfaces, switches one-at-a-time, and dismisses outside', async () => {
+    const selectionSource = [
+      'Outside prose',
+      ':::spec-item{key="first" type="verdict" required="true"}', 'First prompt', ':::',
+      ':::spec-item{key="second" type="single_choice" required="true"}', 'Second prompt', '::option[Alpha]{key="a"}', '::option[Beta]{key="b"}', ':::',
+    ].join('\n');
+    const directives = parseBriefingDirectives(selectionSource);
+    const changes: Array<{ id: string; value: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Selection review" roundId="round-1" round={round({
+      document: {
+        artifact_version_id: 'artifact-version:selection',
+        content_hash: createHash('sha256').update(selectionSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: selectionSource,
+      },
+      items: directives.map((directive, index) => ({
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
+        revision: { id: directive.definition_digest, ordinal: 1, title: directive.key, prompt: directive.body, description: null, response_type: directive.type, required: true, position: index, options: directive.options },
+        effective_response: null, responseVisible: true, directive,
+      })),
+    })} canMutate onRefresh={async () => null} onDirectiveValue={(id, value) => changes.push({ id, value })} />);
+
+    const firstPrompt = await screen.findByText('First prompt');
+    const first = firstPrompt.closest('.briefing-directive') as HTMLElement;
+    const secondPrompt = screen.getByText('Second prompt');
+    const second = secondPrompt.closest('.briefing-directive') as HTMLElement;
+    const firstActions = first.querySelector('.briefing-directive__actions') as HTMLElement;
+
+    fireEvent.click(firstPrompt);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(first.getAttribute('aria-current')).toBe('true');
+    expect(firstActions.classList.contains('contextual-action-group--persistent')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    fireEvent.click(firstPrompt);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+
+    const secondComment = within(second).getByRole('button', { name: 'Comment' });
+    fireEvent.click(secondComment);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(secondComment.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Close annotation editor' }));
+    expect(first.classList.contains('briefing-directive--selected')).toBe(false);
+
+    fireEvent.click(firstPrompt);
+    const beta = within(second).getByText('Beta').closest('label') as HTMLLabelElement;
+    fireEvent.click(beta);
+    fireEvent.click(within(second).getByRole('radio', { name: 'Beta' }));
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(changes).toContainEqual({ id: 'second', value: { option_key: 'b' } });
+
+    const syntheticInteractive = [
+      document.createElement('button'),
+      document.createElement('input'),
+      document.createElement('textarea'),
+      document.createElement('select'),
+      document.createElement('label'),
+      Object.assign(document.createElement('a'), { href: '#selection-fixture' }),
+      document.createElement('div'),
+    ];
+    syntheticInteractive.at(-1)?.setAttribute('contenteditable', 'true');
+    for (const target of syntheticInteractive) {
+      second.append(target);
+      fireEvent.click(target);
+      expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+      expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    }
+
+    fireEvent.click(secondPrompt);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(true);
+    fireEvent.keyDown(within(first).getByRole('button', { name: 'Keep' }), { key: 'Enter' });
+    expect(second.classList.contains('briefing-directive--selected')).toBe(true);
+
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect(document.activeElement).toBe(first);
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+    expect(second.classList.contains('briefing-directive--selected')).toBe(false);
+    fireEvent.keyDown(first, { key: ' ' });
+    expect(first.classList.contains('briefing-directive--selected')).toBe(true);
+
+    fireEvent.click(screen.getByText('Outside prose'));
+    expect(first.classList.contains('briefing-directive--selected')).toBe(false);
+    expect(screen.getByLabelText('Pinned briefing document').querySelectorAll('[aria-current="true"]')).toHaveLength(0);
   });
 
   it('renders profiled directive bodies as sanitized prose without directive fences', async () => {
@@ -177,7 +386,13 @@ describe('Briefing document panel', () => {
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
     const definitionDigest = createHash('sha256').update(source.slice(start, bodyEnd + 4)).digest('hex');
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({
-      document: { artifact_version_id: 'artifact-version:version-1', previous_round_id: null, profile: 'mandible-briefing.v2' },
+      document: {
+        artifact_version_id: 'artifact-version:version-1',
+        content_hash: createHash('sha256').update(profiledSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v2',
+        source: profiledSource,
+      },
       directive_binding: { status: 'valid', reason: null }, latest_frozen_membership: { answer_event_ids: [], annotation_event_ids: [] },
       annotations: [annotation({ start_offset: bodyStart, end_offset: bodyEnd, quote: 'Body', body: 'Current actor note.' })] as any,
       items: [{ id: 'verdict', client_item_key: 'verdict', parent_item_id: null, item_kind: 'item', revision: { id: 'rev', ordinal: 1, title: '', prompt: 'Body', description: null, response_type: 'verdict', required: true, position: 1, options: [] }, effective_response: null, responseVisible: true, directive: { key: 'verdict', definition_digest: definitionDigest, start_offset: start, end_offset: bodyEnd + 4, body_start_offset: bodyStart, body_end_offset: bodyEnd } }],
@@ -192,7 +407,7 @@ describe('Briefing document panel', () => {
     fireEvent.click(region);
     expect(region.className).toContain('briefing-directive--selected');
     fireEvent.keyDown(region, { key: 'Enter' });
-    expect(region.className).not.toContain('briefing-directive--selected');
+    expect(region.className).toContain('briefing-directive--selected');
     const comment = screen.getByRole('button', { name: 'Comment' });
     fireEvent.click(comment);
     expect(comment.getAttribute('aria-expanded')).toBe('true');
@@ -210,7 +425,9 @@ describe('Briefing document panel', () => {
     }));
 
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Comment' }));
+    const commentButton = await screen.findByRole('button', { name: 'Comment' }) as HTMLButtonElement;
+    await waitFor(() => expect(commentButton.disabled).toBe(false));
+    fireEvent.click(commentButton);
     expect(screen.getByRole('tab', { name: 'Comment' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.click(screen.getByRole('tab', { name: 'Suggest replacement' }));
     expect((screen.getByLabelText('Replacement') as HTMLTextAreaElement).value).toBe('Plan');
@@ -246,7 +463,9 @@ describe('Briefing document panel', () => {
     }));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    const keepButton = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
+    await waitFor(() => expect(keepButton.disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
     fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Revised note.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));

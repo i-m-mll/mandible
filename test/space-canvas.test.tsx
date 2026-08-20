@@ -2,7 +2,7 @@
 //
 // Covers the load-bearing acceptance criteria:
 //   - occurrences render from the model; drag persists via the batch client
-//     (optimistic + autosave indicator);
+//     (optimistic + non-success autosave feedback);
 //   - legacy unplaced occurrences (x/y NULL) are auto-placed, not shelved;
 //   - layoutGraph() runs only on explicit arrange/seed, never per render after a
 //     user move (asserted via a layout-call spy);
@@ -12,11 +12,22 @@
 // `onNodesChange` drag/select contract, and reconciliation are observable in
 // jsdom without real DOM measurement.
 
+import { readFileSync } from 'node:fs';
 import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import type { SpaceItem, SpaceOccurrence } from '../ui/src/api';
+
+const canvasCss = readFileSync('ui/src/views/spaces/SpaceCanvas.css', 'utf8');
+
+function ruleBody(css: string, selector: string): string {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (match[1]!.split(',').map((entry) => entry.trim()).includes(selector)) return match[2]!;
+  }
+  return '';
+}
 
 // --- React Flow harness mock --------------------------------------------------
 // Renders one element per node and exposes the live `onNodesChange` callback on
@@ -475,13 +486,35 @@ describe('SpaceCanvas rendering', () => {
     expect(layoutCalls.count).toBe(0);
   });
 
-  it('uses simple Saved copy for the idle autosave status', () => {
+  it('preserves the toolbar boundary without casting a shadow into the canvas', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const style = document.createElement('style');
+    style.textContent = `.space-canvas__toolbar { ${ruleBody(canvasCss, '.space-canvas__toolbar')} }`;
+    document.head.append(style);
+    try {
+      render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+      const toolbar = screen.getByRole('toolbar', { name: 'Canvas actions' });
+      const computed = getComputedStyle(toolbar);
+      expect(computed.boxShadow).toBe('none');
+      expect(ruleBody(canvasCss, '.space-canvas__toolbar'))
+        .toContain('border-bottom: 1px solid var(--border, #2a2a2a)');
+    } finally {
+      style.remove();
+    }
+  });
+
+  it('does not render or announce an idle Saved success status', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha')],
       occurrences: [occ('a', { x: 10, y: 20 })],
     };
     render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
-    expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saved');
+    expect(screen.queryByTestId('space-canvas-autosave')).toBeNull();
+    expect(screen.queryByText('Saved')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('resizes the bottom inspector from the invisible top-border handle', async () => {
@@ -724,6 +757,8 @@ describe('SpaceCanvas drag persistence + autosave', () => {
 
     expect(batchWrite).toHaveBeenCalledTimes(1);
     expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+    expect(screen.queryByTestId('space-canvas-autosave')).toBeNull();
+    expect(screen.queryByText('Saved')).toBeNull();
   });
 
   it('surfaces an error status and keeps the optimistic position on write failure', async () => {
@@ -1300,6 +1335,7 @@ describe('SpaceCanvas renders authored edges as lines', () => {
       input.blur();
     });
     expect(updateEdge).toHaveBeenCalledWith('sp1', 'e1', { label: 'blocks' });
+    expect(screen.queryByText(/saved/i)).toBeNull();
   });
 
   it('promotes and deletes a selected edge through the Canvas inspector', async () => {
