@@ -3,7 +3,10 @@
 /* ── Settings view ── */
 
 .settings-view {
+  width: 100%;
   max-width: 640px;
+  margin-inline: auto;
+  background: var(--surface-main);
 }
 
 .settings-view__close {
