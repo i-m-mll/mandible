@@ -67,7 +67,7 @@ function renderHeader({
       <head><style>${tokens}\n${base}</style></head>
       <body>
         <div class="app-shell app-shell--view-sidebar-open${codexIab ? ' app-shell--codex-iab' : ''}"
-          style="--app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208)}px">
+          style="--app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208 - (width <= 700 ? 17 : 0))}px">
           <header class="app-header" data-app-surface="chrome">
             <div class="app-header__identity">
               <span class="app-header__mark" aria-hidden="true">
@@ -141,15 +141,16 @@ function renderHeader({
 }
 
 function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiveInset: number): void {
-  expect(geometry.header).toMatchObject({ left: 0, top: 0, right: width, width, height: 48 });
-  expect(geometry.identity).toMatchObject({ left: 0, right: width, width, height: 28 });
+  const physicalWidth = width > 700 ? width + 17 : width;
+  expect(geometry.header).toMatchObject({ left: 0, top: 0, right: physicalWidth, width: physicalWidth, height: 48 });
+  expect(geometry.identity).toMatchObject({ left: 0, right: physicalWidth, width: physicalWidth, height: 28 });
   expect(geometry.mark).toMatchObject({ left: responsiveInset, top: 9.5, width: 28, height: 28 });
   expect(geometry.logo).toMatchObject(geometry.mark);
   expect(geometry.brand.left).toBe(208 + responsiveInset);
-  expect(geometry.headerGutterWidth).toBe('17px');
-  expect(geometry.headerGutterRight).toBe('0px');
+  expect(geometry.headerGutterWidth).toBe('18px');
+  expect(geometry.headerGutterRight).toBe('-1px');
   expect(Number(geometry.headerGutterZIndex)).toBeGreaterThan(Number(geometry.identityZIndex));
-  expect(Math.abs((geometry.route.left + geometry.route.right) / 2 - (geometry.brand.right + geometry.header.right) / 2))
+  expect(Math.abs((geometry.route.left + geometry.route.right) / 2 - (geometry.brand.right + physicalWidth) / 2))
     .toBeLessThanOrEqual(0.5);
 }
 
@@ -204,7 +205,7 @@ describe('shared AppHeader rendered geometry', () => {
     expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
     expect(geometry.shadowGutterWidth).toBe('17px');
-    expect(geometry.headerGutterWidth).toBe('17px');
+    expect(geometry.headerGutterWidth).toBe('18px');
     expect(geometry.iabEdgeWidth).toBe('17px');
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
   });

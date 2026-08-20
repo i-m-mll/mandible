@@ -131,16 +131,17 @@ describe('Codex app subdivision surface contract', () => {
     }
   });
 
-  it('owns one full-height left-casting structural shadow at the app subdivision', () => {
+  it('owns one full-height left-casting structural falloff at the app subdivision', () => {
     const edge = ruleBody(base, '.app-layout::after');
-    expect(edge).toContain('top: 0');
+    expect(edge).toContain('top: var(--app-header-height)');
     expect(edge).toContain('bottom: 0');
-    expect(edge).toContain('left: var(--app-detail-edge-x)');
-    expect(edge).toContain('width: 1px');
+    expect(edge).toContain('left: calc(var(--app-detail-edge-x) - var(--app-shadow-gutter-width))');
+    expect(edge).toContain('width: calc(var(--app-shadow-gutter-width) + 1px)');
     expect(edge).toContain('--app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset))');
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
-    expect(edge).toContain('background: var(--app-boundary-accent)');
-    expect(edge).toContain('box-shadow: var(--shadow-app-subdivision)');
+    expect(edge).toContain('var(--shadow-app-subdivision-paint)');
+    expect(edge).toContain('background-size: 1px 100%, var(--app-shadow-gutter-width) 100%');
+    expect(edge).toContain('box-shadow: none');
     expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#434343');
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
     expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#434343');
@@ -149,7 +150,7 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.125)');
-    expect(stylesheet).toMatch(/:where\(\.app-layout\)::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:\s*var\(--app-boundary-shadow-x\) 0 var\(--app-boundary-shadow-blur\) var\(--app-boundary-shadow-spread\) var\(--app-boundary-shadow-color\);/s);
+    expect(stylesheet).toMatch(/:where\(\.app-header\)::after,\s*:where\(\.app-layout\)::after,\s*:where\(\.app-layout--view-sidebar-open\) \.view-sidebar::after,\s*:where\(\.app-shell--codex-iab\) \.app-header::before,\s*:where\(\.app-shell--codex-iab\) \.app-rail::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s);
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
@@ -157,7 +158,8 @@ describe('Codex app subdivision surface contract', () => {
     const activeResizeEdge = base.match(/\.app-layout:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\)::after\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(activeResizeEdge).toContain('--app-boundary-accent: var(--app-divider-emphasis)');
     expect(activeResizeEdge).not.toMatch(/(?:width|box-shadow|border)\s*:/);
-    expect(base.match(/background:\s*var\(--app-boundary-accent\);/g)).toHaveLength(1);
+    expect(edge).toContain('linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent))');
+    expect(base).toMatch(/\.app-shell:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\) \.app-header::after\s*\{[^}]*--app-boundary-accent:\s*var\(--app-divider-emphasis\);/s);
     expect(base).not.toContain('border-right: 1px solid var(--app-divider)');
 
     for (const selector of ['.app-rail', '.app-bottom-panel', '.view-sidebar', '.detail-pane-shell__header', '.detail-pane-shell__body', '.detail-pane-shell__footer', '.briefing-detail__footer', '.composer-host']) {
@@ -166,7 +168,7 @@ describe('Codex app subdivision surface contract', () => {
     }
     expect(ruleBody(stylesheet, '.briefing-detail__footer')).not.toMatch(/background:/);
     expect(ruleBody(stylesheet, '.composer-host')).not.toMatch(/background:/);
-    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(2);
+    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
   });
 
   it('pins the measured screenshot plateaus, accents, and closest composable falloff', () => {

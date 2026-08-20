@@ -316,9 +316,9 @@ describe('ViewSidebar', () => {
   it('uses a higher-specificity two-class selector for the resize handle (cascade guard)', () => {
     const css = readResolvedStylesheet();
     expect(css).toMatch(/\.view-sidebar__footer\s*\{[^}]*flex:\s*0 0 auto/);
-    // The winning rule must be the two-class form, pinned to the gutter's inner edge.
+    // The winning rule remains pinned to the content edge; the gutter is additive.
     expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*position:\s*absolute/);
-    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*right:\s*var\(--app-shadow-gutter-width\)/);
+    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*right:\s*0/);
     expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle::before\s*\{[^}]*left:\s*-10px;[^}]*width:\s*10px;/s);
     // The old single-class positioning rule (which lost to source order) is gone.
     expect(css).not.toMatch(/(^|\n)\s*\.view-sidebar__resize-handle\s*\{[^}]*position:\s*absolute/);
