@@ -287,6 +287,11 @@ describe('taskFact', () => {
 
 describe('TasksView', () => {
   it('renders a Mandible reminder as a read-only first-party row with exact provenance', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     const created = createManagedReminder(
       db,
       parseManagedReminderCreateRequest({
@@ -325,9 +330,11 @@ describe('TasksView', () => {
     expect(within(detail).getByText(created.reminder.created_by_user_id)).toBeTruthy();
     expect(detail.querySelector('[data-detail-pane-header-variant="standard"]')).toBeTruthy();
     expect(within(detail).getByText('Mandible reminder · tasks-view-reminder-project')).toBeTruthy();
-    expect(within(detail).getByRole('button', {
-      name: `Copy reminder reference mandible-reminder:${created.reminder.id}`,
-    })).toBeTruthy();
+    const copyReminderReference = within(detail).getByRole('button', {
+      name: `Copy reminder reference ${created.reminder.id}`,
+    });
+    fireEvent.click(copyReminderReference);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(created.reminder.id));
     const reminderRow = within(document.querySelector('.tasks-sidebar') as HTMLElement)
       .getByText('Review the twentieth canonical merge').closest('.tasks-row') as HTMLElement;
     expect(within(reminderRow).getByText('tasks-view-reminder-project')).toBeTruthy();

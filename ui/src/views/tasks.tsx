@@ -1221,8 +1221,8 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               identity={{
                 entityLabel: selected.reminder.project_key,
                 displayRef: selected.reminder.id.slice(0, 7),
-                canonicalRef: selected.key,
-                copyLabel: `Copy reminder reference ${selected.key}`,
+                canonicalRef: selected.reminder.id,
+                copyLabel: `Copy reminder reference ${selected.reminder.id}`,
               }}
               title={selected.reminder.revision.payload.message}
               status={<span>{selected.reminder.lifecycle}</span>}
