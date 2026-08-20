@@ -25,6 +25,11 @@ type HeaderGeometry = {
   logoMaskPosition: string;
   logoMaskRepeat: string;
   logoMaskSize: string;
+  shadowGutterWidth: string;
+  headerGutterWidth: string;
+  headerGutterRight: string;
+  headerGutterZIndex: string;
+  identityZIndex: string;
   iabEdgeWidth: string;
 };
 
@@ -85,7 +90,9 @@ function renderHeader({
           };
           const route = document.querySelector('.app-header__route');
           const logoStyle = getComputedStyle(document.querySelector('.app-header__logo'));
-          const edgeStyle = getComputedStyle(document.querySelector('.app-header'), '::before');
+          const header = document.querySelector('.app-header');
+          const edgeStyle = getComputedStyle(header, '::before');
+          const gutterStyle = getComputedStyle(header, '::after');
           document.title = btoa(JSON.stringify({
             devicePixelRatio,
             header: snapshot('.app-header'),
@@ -108,6 +115,11 @@ function renderHeader({
             logoMaskPosition: logoStyle.webkitMaskPosition,
             logoMaskRepeat: logoStyle.webkitMaskRepeat,
             logoMaskSize: logoStyle.webkitMaskSize,
+            shadowGutterWidth: getComputedStyle(document.querySelector('.app-shell')).getPropertyValue('--app-shadow-gutter-width').trim(),
+            headerGutterWidth: gutterStyle.width,
+            headerGutterRight: gutterStyle.right,
+            headerGutterZIndex: gutterStyle.zIndex,
+            identityZIndex: getComputedStyle(document.querySelector('.app-header__identity')).zIndex,
             iabEdgeWidth: edgeStyle.width,
           }));
         </script>
@@ -134,6 +146,9 @@ function expectSharedGeometry(geometry: HeaderGeometry, width: number, responsiv
   expect(geometry.mark).toMatchObject({ left: responsiveInset, top: 9.5, width: 28, height: 28 });
   expect(geometry.logo).toMatchObject(geometry.mark);
   expect(geometry.brand.left).toBe(208 + responsiveInset);
+  expect(geometry.headerGutterWidth).toBe('17px');
+  expect(geometry.headerGutterRight).toBe('0px');
+  expect(Number(geometry.headerGutterZIndex)).toBeGreaterThan(Number(geometry.identityZIndex));
   expect(Math.abs((geometry.route.left + geometry.route.right) / 2 - (geometry.brand.right + geometry.header.right) / 2))
     .toBeLessThanOrEqual(0.5);
 }
@@ -188,7 +203,9 @@ describe('shared AppHeader rendered geometry', () => {
 
     expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
-    expect(geometry.iabEdgeWidth).toBe('15px');
+    expect(geometry.shadowGutterWidth).toBe('17px');
+    expect(geometry.headerGutterWidth).toBe('17px');
+    expect(geometry.iabEdgeWidth).toBe('17px');
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
   });
 });

@@ -85,6 +85,28 @@ a {
   width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
 }
 
+/* Keep the route's centering interval coupled to the physical header edge,
+ * then mask only the measured falloff strip. This preserves its midpoint while
+ * preventing visible text or controls from entering the blank gutter. */
+.app-header::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 2;
+  width: var(--app-shadow-gutter-width);
+  background: var(--surface-chrome);
+  pointer-events: none;
+}
+
+/* Declare the composition on its three consumers so the site-local signed x
+ * length resolves before inheritance; declaring it on :root would freeze an
+ * undefined orientation into the guaranteed-invalid custom-property value. */
+:where(.app-layout)::after,
+:where(.app-shell--codex-iab) .app-header::before,
+:where(.app-shell--codex-iab) .app-rail::before {
+  --shadow-app-subdivision: var(--app-boundary-shadow-x) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color);
+}
+
 /*
  * The Codex host edge is an absolutely positioned visual layer: it does not
  * participate in header or rail layout, so every existing child coordinate
@@ -93,12 +115,13 @@ a {
  */
 .app-shell--codex-iab .app-header::before,
 .app-shell--codex-iab .app-rail::before {
-  --app-boundary-direction: 1;
+  --app-boundary-shadow-x: var(--app-boundary-shadow-offset);
   --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
   inset: 0 auto 0 0;
-  width: var(--codex-iab-edge-width);
+  z-index: 2;
+  width: var(--app-shadow-gutter-width);
   background: var(--surface-chrome);
   border-inline-end: 1px solid var(--app-boundary-accent);
   box-shadow: var(--shadow-app-subdivision);
@@ -119,6 +142,8 @@ a {
 }
 
 .app-header__identity {
+  position: relative;
+  z-index: 1;
   min-width: 0;
   width: 100%;
   display: grid;
@@ -224,7 +249,7 @@ a {
 }
 
 .app-layout::after {
-  --app-boundary-direction: -1;
+  --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
   --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
@@ -360,6 +385,12 @@ a {
   overflow: hidden;
 }
 
+/* When no view sidebar owns the outer chrome edge, the rail owns the same
+ * measured blank strip inside its existing physical width. */
+.app-shell:not(.app-shell--view-sidebar-open) .app-rail {
+  padding-inline-end: var(--app-shadow-gutter-width);
+}
+
 .app-rail__nav {
   flex: 1;
   min-height: 0;
@@ -407,6 +438,10 @@ a {
   padding-inline: var(--app-rail-inline-padding);
   margin-inline: calc(-1 * var(--app-rail-inline-padding));
   border-top: 1px solid var(--border-muted);
+}
+
+.app-shell:not(.app-shell--view-sidebar-open) .app-rail__footer {
+  margin-inline-end: 0;
 }
 
 .app-rail__item {
@@ -932,6 +967,7 @@ a {
 
 .app-layout--view-sidebar-open .view-sidebar {
   padding-top: var(--app-header-height);
+  padding-right: var(--app-shadow-gutter-width);
 }
 
 /* Headerless variant (issues/graph/timeline): the frame is the single scroll
@@ -965,21 +1001,24 @@ a {
  * `.issues-tree__resize-handle` only won by being defined later, which broke
  * when the rule moved earlier in the refactor (issue e29a8c5).
  *
- * It replicates the original working mechanism exactly: a 0-width absolutely
- * positioned line pinned to the frame's right edge (`right:0`), with the
- * actual ~10px clickable/hover hit strip painted by `.sidebar-drag-handle::before`
- * (`left:-5px; width:10px`), so the strip straddles the right edge and is not
- * doubled. Same frame-relative right edge serves the header/body (Spaces)
- * variant too.
+ * The 0-width line is pinned to the measured gutter's inner edge. Its 10px
+ * clickable/hover strip extends inward only, so neither the handle nor any of
+ * its hit area enters the blank falloff strip. Drag deltas still update the
+ * shell-owned outer width.
  */
 .view-sidebar__resize-handle.sidebar-drag-handle {
   position: absolute;
   top: 0;
-  right: 0;
+  right: var(--app-shadow-gutter-width);
   bottom: 0;
   width: 0;
   cursor: col-resize;
   z-index: 3;
+}
+
+.view-sidebar__resize-handle.sidebar-drag-handle::before {
+  left: -10px;
+  width: 10px;
 }
 
 .app-layout--view-sidebar-open .view-sidebar__resize-handle.sidebar-drag-handle {
