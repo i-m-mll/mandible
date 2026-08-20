@@ -146,6 +146,16 @@ try {
     webSocket.addEventListener('error', reject, { once: true });
   });
   await cdpRequest(webSocket, 'Runtime.enable');
+  await waitFor(async () => {
+    const ready = await cdpRequest(webSocket, 'Runtime.evaluate', {
+      expression: `document.readyState === 'complete'
+        && document.querySelector('.timeline-sidebar') !== null
+        && document.querySelector('.view-sidebar__body') !== null
+        && document.querySelector('.app-bottom-panel') !== null`,
+      returnByValue: true,
+    });
+    return ready.result?.value === true;
+  }, 'Timeline layout harness DOM');
 
   const scenarios = [
     { name: 'shown-min', sidebarWidth: 260, hidden: false },
