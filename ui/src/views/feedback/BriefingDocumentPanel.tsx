@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
   postBriefingAnnotations,
@@ -39,6 +39,43 @@ type AnnotationEditor = {
 // stable mount token prevents another live renderer of the same round from
 // letting the browser overwrite this panel's controlled checked properties.
 let radioGroupSequence = 0;
+
+const DIRECTIVE_INTERACTIVE_SELECTOR = [
+  'a[href]',
+  'area[href]',
+  'audio[controls]',
+  'button',
+  'embed',
+  'iframe',
+  'input',
+  'label',
+  'object',
+  'select',
+  'summary',
+  'textarea',
+  'video[controls]',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[tabindex]:not([tabindex="-1"])',
+  '[role="button"]',
+  '[role="checkbox"]',
+  '[role="combobox"]',
+  '[role="link"]',
+  '[role="menuitem"]',
+  '[role="option"]',
+  '[role="radio"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="switch"]',
+  '[role="tab"]',
+  '[role="textbox"]',
+  '[role="treeitem"]',
+].join(',');
+
+function isInteractiveDirectiveTarget(target: EventTarget | null, directive: HTMLElement): boolean {
+  if (!(target instanceof Element) || target === directive) return false;
+  const interactive = target.closest(DIRECTIVE_INTERACTIVE_SELECTOR);
+  return interactive !== null && interactive !== directive && directive.contains(interactive);
+}
 
 function annotationKindLabel(kind: BriefingAnnotation['annotation_kind']): string {
   return kind === 'comment' ? 'Comment' : 'Suggested replacement';
@@ -94,10 +131,26 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const [status, setStatus] = useState<string | null>(null);
   const [selectedDirectiveId, setSelectedDirectiveId] = useState<string | null>(null);
   const [textEdits, setTextEdits] = useState<Record<string, string>>({});
+  const contentRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     setTextEdits({});
   }, [briefingId, roundId, document?.artifact_version_id, draftIdentity]);
+
+  useEffect(() => {
+    setSelectedDirectiveId(null);
+  }, [briefingId, roundId, document?.artifact_version_id]);
+
+  useEffect(() => {
+    const dismissSelection = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const directive = event.target.closest('.briefing-directive');
+      if (directive && contentRef.current?.contains(directive)) return;
+      setSelectedDirectiveId(null);
+    };
+    globalThis.document.addEventListener('click', dismissSelection);
+    return () => globalThis.document.removeEventListener('click', dismissSelection);
+  }, []);
 
   useEffect(() => {
     if (!document) return undefined;
@@ -308,10 +361,13 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
       const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
       const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
+      const selected = selectedDirectiveId === item.id;
       parts.push(
-        <section className={`briefing-directive${current || selectedDirectiveId === item.id ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
-          onClick={() => setSelectedDirectiveId(item.id)}
-          onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId((currentId) => currentId === item.id ? null : item.id); } }}>
+        <section className={`briefing-directive${selected ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
+          aria-labelledby={promptId}
+          aria-current={selected ? 'true' : undefined}
+          onClick={(event) => { if (!isInteractiveDirectiveTarget(event.target, event.currentTarget)) setSelectedDirectiveId(item.id); }}
+          onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId(item.id); } }}>
           <div className="briefing-directive__interaction contextual-action-owner">
             <div className="briefing-directive__passage">
               <div id={promptId} className="briefing-directive__body rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
@@ -319,7 +375,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
               {inlineAnnotations(directive.start_offset, directive.end_offset)}
               {responseControls(item, current, promptId)}
             </div>
-            <div className="briefing-directive__actions contextual-action-group" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
+            <div className={`briefing-directive__actions contextual-action-group${selected ? ' contextual-action-group--persistent' : ''}`} aria-label={`Response controls for ${item.revision.title || directive.key}`}>
               <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canInteract} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>
             </div>
           </div>
@@ -396,7 +452,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   };
 
   return (
-    <section className="briefing-document__content" aria-label="Briefing document">
+    <section ref={contentRef} className="briefing-document__content" aria-label="Briefing document">
       {currentContentError ? <p className="briefing-error" role="alert">{currentContentError}</p> : null}
       {round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
       {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
