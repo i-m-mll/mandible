@@ -1641,14 +1641,14 @@ describe('app shell', () => {
 
     const css = readResolvedStylesheet();
     expect(css).toMatch(/--app-view-sidebar-outer-width:\s*calc\(var\(--app-view-sidebar-width\) \+ var\(--app-shadow-gutter-width\)\);/s);
-    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-rail-width\) \+ var\(--app-view-sidebar-outer-width\)\);/s);
+    expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header\s*\{[^}]*width:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-width\) \+ var\(--app-view-sidebar-outer-width\)\);/s);
     expect(css).toMatch(/\.app-shell--view-sidebar-open \.app-header__identity\s*\{[^}]*width:\s*calc\(100% - var\(--app-shadow-gutter-width\)\);/s);
-    expect(css).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-rail-width\)\);/s);
+    expect(css).toMatch(/@media \(max-width: 700px\)\s*\{\s*\.app-shell\s*\{\s*--app-view-sidebar-width:\s*calc\(100vw - var\(--app-left-boundary-width\) - var\(--app-rail-width\)\);/s);
     expect(css).toMatch(/\.view-sidebar\s*\{[^}]*position:\s*relative;/s);
     expect((await screen.findByLabelText('Briefings') as HTMLElement).style.width)
       .toBe('var(--app-view-sidebar-width)');
-    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-outer-width\) minmax\(0, 1fr\);/s);
-    expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*var\(--app-rail-width\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-outer-width\)\) minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-width\)\) minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
 
     restoreLocalStorage();

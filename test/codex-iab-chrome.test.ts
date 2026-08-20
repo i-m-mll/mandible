@@ -16,26 +16,34 @@ describe('optional left chrome edge contract', () => {
     expect(`${appSource}\n${bindingSource}`).not.toMatch(/modelContext|codexGetTools|detectCodexIab/);
   });
 
-  it('uses zero structural reservation for the absolute visual layer without changing internal layout coordinates', () => {
+  it('derives a paint-width boundary column without a second gutter or width literal', () => {
     expect(stylesheet).toMatch(/--app-shadow-gutter-width:\s*0px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
     expect(stylesheet).not.toMatch(/--(?:codex-iab|left-shadow)-edge-width:/);
+    expect(stylesheet).toMatch(/\.app-shell\s*\{[^}]*--app-left-boundary-width:\s*0px;/s);
+    expect(stylesheet).toMatch(/\.app-shell--left-shadow\s*\{[^}]*--app-left-boundary-width:\s*var\(--app-boundary-shadow-paint-width\);/s);
+    expect(stylesheet).not.toMatch(/--app-left-boundary-width:\s*17px;/);
     expect(stylesheet).toMatch(
       /\.app-shell--left-shadow::before\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 auto 0 0;[^}]*width:\s*var\(--app-boundary-shadow-paint-width\);/s,
     );
-    expect(stylesheet).not.toMatch(/\.app-shell--left-shadow[^,{]*\{[^}]*(?:padding|margin|transform|grid-template-columns):/s);
+    expect(stylesheet).toMatch(/\.app-rail\s*\{[^}]*margin-left:\s*var\(--app-left-boundary-width\);/s);
+    expect(stylesheet).not.toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*border-inline-(?:start|end):/s);
   });
 
-  it('derives both edges from one profile with a sign-only direction change', () => {
+  it('mirrors one scaled shadow profile while keeping divider paint right-only', () => {
     expect(stylesheet).toMatch(/--app-boundary-shadow-offset:\s*8px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-blur:\s*36px;/);
     expect(stylesheet).toMatch(/--app-boundary-shadow-spread:\s*0px;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-intensity-scale:\s*0\.7;/);
+    expect(stylesheet).toMatch(/--app-boundary-shadow-paint-width:\s*17px;/);
+    expect(stylesheet).toMatch(/transparent 0%,[^;]*24%,[^;]*59%,[^;]*100%/s);
     expect(stylesheet).toMatch(
-      /:where\(\.app-shell\)::after,\s*:where\(\.app-shell--left-shadow\)::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s,
+      /:where\(\.app-shell\)::after,\s*:where\(\.app-shell--left-shadow\)::before\s*\{[^}]*--shadow-app-subdivision-paint:/s,
     );
-    expect(stylesheet).toMatch(/\.app-shell::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*var\(--shadow-app-subdivision-paint\);/s);
-    expect(stylesheet).toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);[^}]*box-shadow:\s*var\(--shadow-app-subdivision\);/s);
-    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
+    expect(stylesheet).toMatch(/\.app-shell::after\s*\{[^}]*--app-boundary-shadow-direction:\s*to right;[^}]*--app-boundary-divider-paint:\s*linear-gradient\(var\(--app-boundary-accent\), var\(--app-boundary-accent\)\);[^}]*background-image:\s*var\(--app-boundary-divider-paint\),\s*var\(--shadow-app-subdivision-paint\);/s);
+    expect(stylesheet).toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*--app-boundary-shadow-direction:\s*to left;[^}]*background-image:\s*var\(--shadow-app-subdivision-paint\);/s);
+    expect(stylesheet.match(/--app-boundary-divider-paint:/g)).toHaveLength(1);
+    expect(stylesheet).not.toMatch(/\.app-shell--left-shadow::before\s*\{[^}]*(?:divider|box-shadow)/s);
     expect(stylesheet).not.toMatch(/--shadow-codex-iab-edge:/);
   });
 
