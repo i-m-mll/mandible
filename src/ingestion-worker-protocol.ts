@@ -1,7 +1,12 @@
 import type { LogLevel } from "./types.js";
 
 export type IngestionWorkerCommand =
-  | { kind: "ingest"; paths: string[]; forceFull?: boolean }
+  | {
+      kind: "ingest";
+      paths: string[];
+      forceFull?: boolean;
+      bypassSameMtimeUnchanged?: boolean;
+    }
   | { kind: "reconcile"; repairLegacyOrphans?: boolean }
   | { kind: "full-ingest" };
 

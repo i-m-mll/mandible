@@ -10,6 +10,7 @@ import {
   observeStableSourceAliasExtent,
   SourceObservationError,
   type SourceReadInstrumentation,
+  type SourceFilesystemIdentity,
   type StableSourceObservation,
   type StableSourceExtentObservation,
 } from "./source-observer.js";
@@ -42,6 +43,7 @@ interface CurrentFacts {
   normalizedBlockCount: number;
   actualBlockCount: number;
   title: string;
+  filesystemIdentity: SourceFilesystemIdentity | null;
 }
 
 export type ConversationFreshnessCode =
@@ -182,6 +184,7 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
            s.current_version_id, v.availability AS version_availability,
            v.byte_length AS version_byte_length, v.file_mtime_ms AS version_mtime_ms,
            v.content_sha256 AS version_hash,
+           v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns,
            state.byte_offset AS ingest_byte_offset, state.tail_hash AS ingest_tail_hash,
            (SELECT COUNT(*) FROM conversation_blocks block WHERE block.conversation_id = c.id) AS actual_block_count
       FROM conversations c
@@ -206,20 +209,38 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
     normalizedBlockCount: Number(row.normalized_block_count),
     actualBlockCount: Number(row.actual_block_count),
     title: String(row.title),
+    filesystemIdentity: row.filesystem_device == null || row.filesystem_inode == null
+      || row.filesystem_ctime_ns == null
+      ? null
+      : {
+          device: String(row.filesystem_device),
+          inode: String(row.filesystem_inode),
+          ctimeNs: String(row.filesystem_ctime_ns),
+        },
   };
+}
+
+function matchesFilesystemIdentity(
+  facts: CurrentFacts,
+  observed: StableSourceExtentObservation | StableSourceObservation,
+): boolean {
+  return facts.filesystemIdentity !== null
+    && facts.filesystemIdentity.device === observed.filesystemIdentity.device
+    && facts.filesystemIdentity.inode === observed.filesystemIdentity.inode
+    && facts.filesystemIdentity.ctimeNs === observed.filesystemIdentity.ctimeNs;
 }
 
 function matchesIndexedExtent(facts: CurrentFacts, observed: StableSourceExtentObservation): boolean {
   // This bounded shortcut trusts the previously indexed full content hash only
   // while every immutable-version, extent, tail, and normalized-row fact still
-  // matches. It deliberately does not re-hash unchanged multi-gigabyte bytes;
-  // a same-size/same-mtime middle rewrite is therefore left to the ingestion
-  // observer, while ConversationSourceReader keeps its independent full
-  // immutable-version validation unchanged.
+  // matches, including the lossless filesystem identity captured with the
+  // authoritative version. It deliberately does not re-hash unchanged
+  // multi-gigabyte bytes; identity drift and legacy rows take the full path.
   return facts.sourceAvailability === "available"
     && facts.versionAvailability === "available"
     && facts.currentVersionId !== null
     && facts.versionHash !== null
+    && matchesFilesystemIdentity(facts, observed)
     && facts.versionByteLength === observed.byteLength
     && facts.versionMtimeMs === observed.fileMtimeMs
     && facts.ingestByteOffset === observed.byteLength
@@ -234,6 +255,7 @@ function matchesIndexed(facts: CurrentFacts, observed: StableSourceObservation):
     && facts.versionByteLength === observed.byteLength
     && facts.versionMtimeMs === observed.fileMtimeMs
     && facts.versionHash === observed.contentSha256
+    && matchesFilesystemIdentity(facts, observed)
     && facts.ingestByteOffset === observed.byteLength
     && facts.ingestTailHash === observed.tailHash
     && facts.normalizedBlockCount === facts.actualBlockCount;
@@ -241,7 +263,10 @@ function matchesIndexed(facts: CurrentFacts, observed: StableSourceObservation):
 
 function sameObservation(a: StableSourceObservation, b: StableSourceObservation): boolean {
   return a.path === b.path && a.byteLength === b.byteLength && a.fileMtimeMs === b.fileMtimeMs
-    && a.contentSha256 === b.contentSha256 && a.tailHash === b.tailHash;
+    && a.contentSha256 === b.contentSha256 && a.tailHash === b.tailHash
+    && a.filesystemIdentity.device === b.filesystemIdentity.device
+    && a.filesystemIdentity.inode === b.filesystemIdentity.inode
+    && a.filesystemIdentity.ctimeNs === b.filesystemIdentity.ctimeNs;
 }
 
 async function observePinned(

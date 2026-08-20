@@ -12,6 +12,11 @@ import type {
   RecordNormalizationCheckpointInput,
   UpdateConversationSourceCustodyInput,
 } from "./source-types.js";
+import {
+  sameSourceFilesystemIdentity,
+  sourceFilesystemIdentity,
+  type SourceFilesystemIdentity,
+} from "./source-observer.js";
 
 interface RecordRange {
   ordinal: number;
@@ -25,6 +30,7 @@ interface SourceSnapshot {
   size: number;
   mtimeMs: number;
   records: RecordRange[];
+  filesystemIdentity: SourceFilesystemIdentity;
 }
 
 interface LegacyBlockRow {
@@ -91,60 +97,72 @@ function sourceRoot(provider: ConversationSource, filePath: string): AliasRoot {
 }
 
 async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
-  const before = await fs.promises.stat(filePath);
-  if (!before.isFile()) throw new Error("conversation source is not a regular file");
-
-  const contentHash = createHash("sha256");
-  const records: RecordRange[] = [];
-  let carry: Buffer = Buffer.alloc(0);
-  let carryOffset = 0;
-  let total = 0;
-
-  for await (const rawChunk of fs.createReadStream(filePath)) {
-    const chunk = rawChunk as Buffer;
-    contentHash.update(chunk);
-    const data = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
-    let start = 0;
-    for (;;) {
-      const newline = data.indexOf(0x0a, start);
-      if (newline < 0) break;
-      const record = data.subarray(start, newline);
-      if (record.toString("utf8").trim()) {
-        records.push({
-          ordinal: records.length,
-          offset: carryOffset + start,
-          length: record.length,
-          hash: createHash("sha256").update(record).digest("hex"),
-        });
-      }
-      start = newline + 1;
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error("conversation source is not a regular file");
+    const size = Number(before.size);
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error("conversation source extent exceeds safe integer range");
     }
-    total += chunk.length;
-    carry = data.subarray(start);
-    carryOffset = total - carry.length;
-  }
-  if (carry.toString("utf8").trim()) {
-    records.push({
-      ordinal: records.length,
-      offset: carryOffset,
-      length: carry.length,
-      hash: createHash("sha256").update(carry).digest("hex"),
-    });
-  }
+    const beforeIdentity = sourceFilesystemIdentity(before);
 
-  const after = await fs.promises.stat(filePath);
-  if (
-    before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
-    || before.mtimeMs !== after.mtimeMs
-  ) {
-    throw new Error("conversation source changed while being indexed");
+    const contentHash = createHash("sha256");
+    const records: RecordRange[] = [];
+    let carry: Buffer = Buffer.alloc(0);
+    let carryOffset = 0;
+    let total = 0;
+
+    for await (const rawChunk of handle.createReadStream({ autoClose: false })) {
+      const chunk = rawChunk as Buffer;
+      contentHash.update(chunk);
+      const data = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
+      let start = 0;
+      for (;;) {
+        const newline = data.indexOf(0x0a, start);
+        if (newline < 0) break;
+        const record = data.subarray(start, newline);
+        if (record.toString("utf8").trim()) {
+          records.push({
+            ordinal: records.length,
+            offset: carryOffset + start,
+            length: record.length,
+            hash: createHash("sha256").update(record).digest("hex"),
+          });
+        }
+        start = newline + 1;
+      }
+      total += chunk.length;
+      carry = data.subarray(start);
+      carryOffset = total - carry.length;
+    }
+    if (carry.toString("utf8").trim()) {
+      records.push({
+        ordinal: records.length,
+        offset: carryOffset,
+        length: carry.length,
+        hash: createHash("sha256").update(carry).digest("hex"),
+      });
+    }
+
+    const after = await handle.stat({ bigint: true });
+    const afterSize = Number(after.size);
+    if (
+      total !== size || afterSize !== size || before.mtimeNs !== after.mtimeNs
+      || !sameSourceFilesystemIdentity(beforeIdentity, sourceFilesystemIdentity(after))
+    ) {
+      throw new Error("conversation source changed while being indexed");
+    }
+    return {
+      contentHash: contentHash.digest("hex"),
+      size,
+      mtimeMs: Number(after.mtimeNs) / 1_000_000,
+      records,
+      filesystemIdentity: beforeIdentity,
+    };
+  } finally {
+    await handle.close();
   }
-  return {
-    contentHash: contentHash.digest("hex"),
-    size: after.size,
-    mtimeMs: after.mtimeMs,
-    records,
-  };
 }
 
 function parseMetadata(raw: string): Record<string, unknown> {
@@ -204,6 +222,7 @@ export class ConversationSourceStore {
   resolveVersion(versionId: string): ConversationSourceVersion | null {
     const row = this.db.prepare(`
       SELECT id, source_id, content_sha256, byte_length, file_mtime_ms,
+             filesystem_device, filesystem_inode, filesystem_ctime_ns,
              availability, custody_state, generation, parser_format,
              parser_version, normalization_version, redaction_epoch
         FROM conversation_source_versions
@@ -216,6 +235,9 @@ export class ConversationSourceStore {
       contentSha256: String(row.content_sha256),
       byteLength: Number(row.byte_length),
       fileMtimeMs: row.file_mtime_ms == null ? null : Number(row.file_mtime_ms),
+      filesystemDevice: row.filesystem_device == null ? null : String(row.filesystem_device),
+      filesystemInode: row.filesystem_inode == null ? null : String(row.filesystem_inode),
+      filesystemCtimeNs: row.filesystem_ctime_ns == null ? null : String(row.filesystem_ctime_ns),
       availability: row.availability as ConversationSourceVersion["availability"],
       custodyState: row.custody_state as ConversationSourceVersion["custodyState"],
       generation: row.generation as ConversationSourceVersion["generation"],
@@ -392,13 +414,17 @@ export class ConversationSourceStore {
       `).run(aliasId, sourceId, alias.rootPath, alias.relativePath, aliasPath, alias.aliasKind, now, now);
       this.db.prepare(`
         INSERT INTO conversation_source_versions (
-          id, source_id, content_sha256, byte_length, file_mtime_ms, generation,
+          id, source_id, content_sha256, byte_length, file_mtime_ms,
+          filesystem_device, filesystem_inode, filesystem_ctime_ns, generation,
           parser_format, parser_version, normalization_version, redaction_epoch,
           availability, custody_state, created_at
-        ) VALUES (?, ?, ?, ?, ?, 'sealed_sha256', ?, ?, ?, ?, 'available', 'provider', ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sealed_sha256', ?, ?, ?, ?, 'available', 'provider', ?)
         ON CONFLICT(source_id, content_sha256) DO UPDATE SET
           byte_length = excluded.byte_length,
           file_mtime_ms = excluded.file_mtime_ms,
+          filesystem_device = excluded.filesystem_device,
+          filesystem_inode = excluded.filesystem_inode,
+          filesystem_ctime_ns = excluded.filesystem_ctime_ns,
           generation = 'sealed_sha256',
           parser_format = excluded.parser_format,
           parser_version = excluded.parser_version,
@@ -407,6 +433,8 @@ export class ConversationSourceStore {
           availability = 'available'
       `).run(
         versionId, sourceId, snapshot.contentHash, snapshot.size, snapshot.mtimeMs,
+        snapshot.filesystemIdentity.device, snapshot.filesystemIdentity.inode,
+        snapshot.filesystemIdentity.ctimeNs,
         input.parserFormat, input.parserVersion, input.normalizationVersion,
         input.redactionEpoch, now,
       );

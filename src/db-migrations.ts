@@ -4784,11 +4784,40 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
       `DROP TABLE user_settings_v145`,
     ],
   },
+  {
+    version: 147,
+    name: "conversation_source_filesystem_identity",
+    statements: [],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function ensureConversationSourceFilesystemIdentityColumns(db: Db): void {
+  if (!tableExists(db, "conversation_source_versions")) return;
+  const required = ["filesystem_device", "filesystem_inode", "filesystem_ctime_ns"];
+  for (const column of required) {
+    if (!hasColumn(db, "conversation_source_versions", column)) {
+      db.exec(`ALTER TABLE conversation_source_versions ADD COLUMN ${column} TEXT`);
+    }
+  }
+  const columns = db.prepare("PRAGMA table_info(conversation_source_versions)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  for (const name of required) {
+    const column = columns.find((entry) => entry.name === name);
+    if (!column || column.type.toUpperCase() !== "TEXT" || column.notnull !== 0
+        || column.dflt_value !== null || column.pk !== 0) {
+      throw new Error(`migration 147 verification: conversation_source_versions.${name} diverges`);
+    }
+  }
 }
 
 function verifyUserSettingsV145Schema(db: Db): void {
@@ -4893,7 +4922,14 @@ function verifyConversationSourceV140Schema(db: Db): void {
   for (const [table, expected] of Object.entries(required)) {
     const actual = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
       .map((column) => column.name);
-    if (actual.length !== expected.length || expected.some((name) => !actual.includes(name))) {
+    const allowedV147 = table === "conversation_source_versions"
+      ? ["filesystem_device", "filesystem_inode", "filesystem_ctime_ns"]
+      : [];
+    if (
+      expected.some((name) => !actual.includes(name))
+      || actual.some((name) => !expected.includes(name) && !allowedV147.includes(name))
+      || (actual.length !== expected.length && actual.length !== expected.length + allowedV147.length)
+    ) {
       throw new Error(`migration 140 precondition: ${table} has a divergent definition`);
     }
   }
@@ -5235,6 +5271,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 146) {
         verifyUserSettingsSchema(db);
+      }
+      if (migration.version === 147) {
+        ensureConversationSourceFilesystemIdentityColumns(db);
       }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
