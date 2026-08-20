@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
-import type { AuthHookManager } from "../src/auth-hooks.js";
+import { AuthHookManager } from "../src/auth-hooks.js";
 import type { Db } from "../src/db.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
@@ -2274,6 +2274,91 @@ describe("auth queue", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBe("1");
       expect(calls[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(request.merge_preflight_base_sha);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("re-establishes the exact original range after a reviewed-head update for a native-hook merge", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const rangeSnapshot = path.join(repo, "hook-range.txt");
+    try {
+      commitOnBranch(repo, "feature/reviewed-update", { "feature.txt": "first\n" });
+      registerWorkRepo(db, repo);
+
+      // An executable native hook keeps this request on the ordinary
+      // non-atomic merge path, matching the production lifecycle that exposed
+      // the missing original-range base.
+      const gitDir = git(repo, ["rev-parse", "--git-dir"]);
+      const nativeHook = path.join(repo, gitDir, "hooks", "post-merge");
+      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(nativeHook, 0o755);
+
+      const hookManager = new AuthHookManager(db);
+      hookManager.create({
+        repo_pattern: path.basename(repo),
+        auth_type: "merge",
+        command:
+          `test -n "$MANDIBLE_AUTH_MERGE_BASE_SHA" && ` +
+          `test -n "$MANDIBLE_AUTH_MERGE_HEAD_SHA" && ` +
+          `printf '%s\\n%s\\n' "$MANDIBLE_AUTH_MERGE_BASE_SHA" ` +
+          `"$MANDIBLE_AUTH_MERGE_HEAD_SHA" > "${rangeSnapshot}"`,
+        label: "Required original range",
+        required: true,
+      });
+      const queue = new AuthQueue({
+        db,
+        executor: async () => ({
+          exit_code: 0,
+          signal: null,
+          stdout: "ok\n",
+          stderr: "",
+          output: "ok\n",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        }),
+        hookManager,
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/reviewed-update --into main",
+        title: "Merge feature/reviewed-update",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/reviewed-update",
+        merge_head_sha: git(repo, ["rev-parse", "feature/reviewed-update"]),
+        cwd: repo,
+      });
+      const exactBase = git(repo, ["rev-parse", "main"]);
+
+      git(repo, ["checkout", "feature/reviewed-update"]);
+      writeFile(repo, "feature.txt", "reviewed final\n");
+      git(repo, ["add", "feature.txt"]);
+      git(repo, ["commit", "-m", "refresh reviewed head"]);
+      const reviewedHead = git(repo, ["rev-parse", "HEAD"]);
+      git(repo, ["checkout", "main"]);
+
+      // This is the production update path. It must keep invalidating every
+      // stale candidate field; approval is responsible for establishing a
+      // fresh, clean exact range for the updated identity.
+      const updated = queue.update(request.id, { merge_head_sha: reviewedHead });
+      expect(updated.merge_preflight_base_sha).toBeNull();
+      expect(updated.merge_candidate_pin_sha).toBeNull();
+
+      const approved = queue.approve(request.id);
+      expect(approved.merge_atomic_enabled).toBe(false);
+      await waitForStatus(queue, request.id, "completed");
+
+      expect(fs.readFileSync(rangeSnapshot, "utf8")).toBe(`${exactBase}\n${reviewedHead}\n`);
+      expect(queue.getRequest(request.id)).toMatchObject({
+        merge_preflight_base_sha: exactBase,
+        merge_head_sha: reviewedHead,
+      });
+      expect(hookManager.convergence(request.id).state).toBe("complete");
       queue.dispose();
     } finally {
       db.close();

@@ -707,7 +707,8 @@ run_merge_preflight() {
       auth_phase "reusing submit-time merge preflight; target ${base_branch} is still ${current_base_sha}."
       return 0
     fi
-    auth_phase "target ${base_branch} moved since submit; running merge preflight checks..."
+    err "${RED}Target ${base_branch} moved from reviewed base ${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA} to ${current_base_sha:-unknown}; requeue and reapprove. No ref or worktree was changed.${RESET}"
+    return 1
   else
     auth_phase "running merge preflight checks..."
   fi
