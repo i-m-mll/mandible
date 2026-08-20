@@ -133,6 +133,12 @@ export const METADATA_BACKUP_TABLES = [
   // UNIQUE/FK/CHECK as part of its own DDL, so slug uniqueness and the credential
   // status/kind CHECK constraints survive a backup round-trip.
   "users",
+  // Durable per-user presentation intent (migrations 145-146). Rail ordering
+  // and typography choices are canonical user-scoped settings, not a runtime
+  // cache, and cannot be reconstructed after loss. Keep them immediately after
+  // `users` so the referenced owner exists before these rows are restored; the
+  // composite primary key preserves independent values for every user/key.
+  "user_settings",
   "user_credentials",
   "user_bindings",
   "delegated_signing_leases",
