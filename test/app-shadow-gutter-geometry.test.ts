@@ -395,7 +395,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
 
   it('keeps active and mirrored sites on one shared paint and shadow contract', () => {
     const active = ruleBody(base, '.app-shell::after');
-    const mirrors = ruleBody(base, '.app-shell--codex-iab::before');
+    const mirrors = ruleBody(base, '.app-shell--left-shadow::before');
     for (const owner of [active, mirrors]) {
       expect(owner).toContain('var(--shadow-app-subdivision-paint)');
     }

@@ -30,7 +30,7 @@ type HeaderGeometry = {
   headerGutterRight: string;
   headerGutterZIndex: string;
   identityZIndex: string;
-  iabEdgeWidth: string;
+  leftShadowEdgeWidth: string;
 };
 
 type HeaderMode = 'open' | 'hidden' | 'collapsed';
@@ -53,7 +53,7 @@ function renderHeader({
   width,
   route,
   theme,
-  codexIab = false,
+  leftShadow = false,
   scale = 1,
   gutterWidth = 0,
   mode = 'open',
@@ -61,7 +61,7 @@ function renderHeader({
   width: number;
   route: string;
   theme: 'dark' | 'light';
-  codexIab?: boolean;
+  leftShadow?: boolean;
   scale?: number;
   gutterWidth?: number;
   mode?: HeaderMode;
@@ -74,7 +74,7 @@ function renderHeader({
     <html data-theme="${theme}">
       <head><style>${tokens}\n${base}</style></head>
       <body>
-        <div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${mode === 'collapsed' ? ' app-shell--rail-icons' : ''}${codexIab ? ' app-shell--codex-iab' : ''}"
+        <div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${mode === 'collapsed' ? ' app-shell--rail-icons' : ''}${leftShadow ? ' app-shell--left-shadow' : ''}"
           style="--app-shadow-gutter-width: ${gutterWidth}px; --app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208)}px">
           <header class="app-header${open ? '' : ' app-header--sidebar-hidden'}" data-app-surface="chrome">
             <div class="app-header__identity">
@@ -131,7 +131,7 @@ function renderHeader({
             headerGutterRight: gutterStyle.right,
             headerGutterZIndex: gutterStyle.zIndex,
             identityZIndex: getComputedStyle(document.querySelector('.app-header__identity')).zIndex,
-            iabEdgeWidth: edgeStyle.width,
+            leftShadowEdgeWidth: edgeStyle.width,
           }));
         </script>
       </body>
@@ -241,14 +241,14 @@ describe('shared AppHeader rendered geometry', () => {
     expect(geometry.brandColor).toBe(expected);
   });
 
-  it('keeps all coordinates and the midpoint invariant with the non-participating IAB edge at high DPI', () => {
-    const geometry = renderHeader({ width: 700, route: 'Conversations', theme: 'dark', codexIab: true, scale: 2 });
+  it('keeps all coordinates and the midpoint invariant with the optional left shadow at high DPI', () => {
+    const geometry = renderHeader({ width: 700, route: 'Conversations', theme: 'dark', leftShadow: true, scale: 2 });
 
     expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
     expect(geometry.shadowGutterWidth).toBe('0px');
     expect(geometry.headerGutterWidth).toBe('18px');
-    expect(geometry.iabEdgeWidth).toBe('17px');
+    expect(geometry.leftShadowEdgeWidth).toBe('17px');
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
   });
 });
