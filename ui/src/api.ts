@@ -4002,7 +4002,13 @@ export type BriefingRoundProjection = {
   binding_digest: string;
   created_at: number;
   latest_submission_for_actor: null | { id: string; ordinal: number };
-  document: null | { artifact_version_id: string; previous_round_id: string | null; profile: 'mandible-briefing.v2' };
+  document: null | {
+    artifact_version_id: string;
+    content_hash: string;
+    previous_round_id: string | null;
+    profile: 'mandible-briefing.v2';
+    source: string;
+  };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: BriefingAnnotation[];
@@ -4275,14 +4281,23 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
   const profile = rawDocument.profile;
-  const document = root.document !== null && profile === 'mandible-briefing.v2' ? {
+  const documentShapeValid = exactBriefingValueKeys(rawDocument, [
+    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source',
+  ]);
+  const documentFieldsValid = briefingString(rawDocument.artifact_version_id)
+    && /^[0-9a-f]{64}$/.test(briefingString(rawDocument.content_hash))
+    && typeof rawDocument.source === 'string'
+    && Boolean(rawDocument.source.trim())
+    && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
+  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile === 'mandible-briefing.v2' ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
+    content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
     profile,
+    source: typeof rawDocument.source === 'string' ? rawDocument.source : '',
   } : null;
   if (!document
-      || !document.artifact_version_id
-      || (rawDocument.previous_round_id !== null && typeof rawDocument.previous_round_id !== 'string')) valid = false;
+      || !document.artifact_version_id) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
   const bindingStatus = bindingRow.status;
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 
 import {
-  getArtifactContent,
   postBriefingAnnotations,
   type BriefingAnnotation,
   type BriefingAnnotationOperation,
@@ -80,9 +79,13 @@ async function sha256(value: string): Promise<string> {
 
 export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, draftIdentity = null, onRefresh, draft = {}, validationErrors = {}, onDirectiveValue, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
+  const documentKey = document
+    ? `${document.artifact_version_id}\u0000${document.content_hash}\u0000${document.source}`
+    : null;
   const [radioGroupScope] = useState(() => `briefing-radio-${++radioGroupSequence}`);
-  const [source, setSource] = useState<string | null>(null);
-  const [contentError, setContentError] = useState<string | null>(null);
+  const [verifiedDocumentKey, setVerifiedDocumentKey] = useState<string | null>(null);
+  const [verifiedBindingKey, setVerifiedBindingKey] = useState<string | null>(null);
+  const [contentError, setContentError] = useState<{ key: string; message: string } | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
   const [kind, setKind] = useState<BriefingAnnotation['annotation_kind']>('comment');
   const [body, setBody] = useState('');
@@ -98,29 +101,27 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
 
   useEffect(() => {
     if (!document) return undefined;
-    const controller = new AbortController();
-    setSource(null);
+    let cancelled = false;
+    setVerifiedDocumentKey(null);
+    setVerifiedBindingKey(null);
     setContentError(null);
-    onContentGateChange?.('Loading pinned document…');
-    void getArtifactContent(document.artifact_version_id, { signal: controller.signal })
-      .then((content) => {
-        if (content.status !== 'available' || !content.preview) {
-          throw new Error(content.reason || 'The pinned document content is unavailable.');
-        }
-        if (content.preview.truncated) {
-          throw new Error('The pinned document content was truncated and cannot be annotated safely.');
-        }
-        const next = content.preview.raw_text ?? content.preview.text;
-        if (new TextEncoder().encode(next).byteLength !== content.size_bytes) throw new Error('The pinned document content is incomplete.');
-        setSource(next);
+    onContentGateChange?.('Verifying exact pinned document…');
+    void sha256(document.source)
+      .then((digest) => {
+        if (digest !== document.content_hash) throw new Error('The pinned document content does not match its verified hash.');
+        if (!cancelled) setVerifiedDocumentKey(documentKey);
       })
       .catch((error) => {
-        if (controller.signal.aborted) return;
-        setContentError(error instanceof Error ? error.message : String(error));
-        onContentGateChange?.(error instanceof Error ? error.message : String(error));
+        if (cancelled || !documentKey) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setContentError({ key: documentKey, message });
+        onContentGateChange?.(message);
       });
-    return () => controller.abort();
-  }, [document?.artifact_version_id, onContentGateChange]);
+    return () => { cancelled = true; };
+  }, [documentKey, onContentGateChange]);
+
+  const source = documentKey && verifiedDocumentKey === documentKey ? document?.source ?? null : null;
+  const currentContentError = documentKey && contentError?.key === documentKey ? contentError.message : null;
 
   const annotations = round.annotations ?? [];
   const directiveItems = useMemo(() => round.items
@@ -148,12 +149,18 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
       if (body !== item.revision.prompt) throw new Error('Pinned directive text does not match its materialized prompt.');
       if (await sha256(source.slice(directive.start_offset, directive.end_offset)) !== directive.definition_digest) throw new Error('Pinned directive content does not match its binding.');
-    })).then(() => { if (!cancelled) onContentGateChange?.(''); })
+    })).then(() => {
+      if (!cancelled) {
+        setVerifiedBindingKey(documentKey);
+        onContentGateChange?.('');
+      }
+    })
       .catch((error) => { if (!cancelled) onContentGateChange?.(error instanceof Error ? error.message : String(error)); });
     return () => { cancelled = true; };
-  }, [directiveItems, documentIntegrityError, onContentGateChange, source]);
+  }, [directiveItems, documentIntegrityError, documentKey, onContentGateChange, source]);
 
   if (!document) return null;
+  const canInteract = canMutate && verifiedBindingKey === documentKey;
 
   const openEditor = (next: AnnotationEditor) => {
     setEditor(next);
@@ -201,7 +208,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     const error = validationErrors[item.id];
     const describedBy = error ? errorId : undefined;
     const clear = current ? (
-      <button type="button" className="briefing-directive__clear" aria-describedby={promptId} disabled={!canMutate} onClick={() => {
+      <button type="button" className="briefing-directive__clear" aria-describedby={promptId} disabled={!canInteract} onClick={() => {
         setTextEdits((edits) => ({ ...edits, [item.id]: '' }));
         onDirectiveValue?.(item.id, null);
       }}>Clear answer</button>
@@ -211,8 +218,8 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const verdict = current && 'verdict' in current ? current.verdict : null;
       control = (
         <div id={controlId} className="briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
-          <button type="button" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></button>
-          <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></button>
+          <button type="button" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></button>
+          <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></button>
         </div>
       );
     } else if (type === 'single_choice' || type === 'multi_choice') {
@@ -229,7 +236,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
                 name={type === 'single_choice' ? `${radioGroupScope}-${controlId}-choice` : undefined}
                 value={option.key}
                 checked={selected.has(option.key)}
-                disabled={!canMutate}
+                disabled={!canInteract}
                 onInput={() => {
                   if (type === 'single_choice') onDirectiveValue?.(item.id, { option_key: option.key });
                   else {
@@ -253,7 +260,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         id: controlId,
         value: text,
         maxLength: type === 'short_text' ? 240 : 4000,
-        disabled: !canMutate,
+        disabled: !canInteract,
         'aria-labelledby': promptId,
         'aria-invalid': Boolean(error),
         'aria-describedby': describedBy,
@@ -270,7 +277,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
           <legend className="sr-only">Rating from 1 to 5</legend>
           {[1, 2, 3, 4, 5].map((value) => (
-            <label key={value}><input type="radio" name={`${radioGroupScope}-${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
+            <label key={value}><input type="radio" name={`${radioGroupScope}-${controlId}-rating`} value={value} checked={rating === value} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
           ))}
         </fieldset>
       );
@@ -313,7 +320,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
               {responseControls(item, current, promptId)}
             </div>
             <div className="briefing-directive__actions contextual-action-group" aria-label={`Response controls for ${item.revision.title || directive.key}`}>
-              <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canMutate} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>
+              <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canInteract} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>
             </div>
           </div>
         </section>,
@@ -351,7 +358,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   };
 
   const save = async () => {
-    if (!editor || !canMutate) return;
+    if (!editor || !canInteract) return;
     const setOperation: BriefingAnnotationOperation = kind === 'comment'
       ? {
         operation: 'set',
@@ -381,7 +388,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   };
 
   const remove = async (annotation: BriefingAnnotation) => {
-    if (!canMutate) return;
+    if (!canInteract) return;
     await mutate(
       [{ operation: 'retract', annotation_event_id: annotation.annotation_event_id }],
       'Annotation deleted.',
@@ -390,10 +397,10 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
 
   return (
     <section className="briefing-document__content" aria-label="Briefing document">
-      {contentError ? <p className="briefing-error" role="alert">{contentError}</p> : null}
+      {currentContentError ? <p className="briefing-error" role="alert">{currentContentError}</p> : null}
       {round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
       {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
-      {source === null && !contentError ? <p className="briefing-empty" role="status">Loading document…</p> : null}
+      {source === null && !currentContentError ? <p className="briefing-empty" role="status">Verifying document…</p> : null}
       {renderProfileDocument()}
 
       {editor ? (
@@ -416,18 +423,18 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           {kind === 'suggest_replacement' ? (
             <label>
               Replacement
-              <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canMutate || busy} />
+              <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canInteract || busy} />
             </label>
           ) : null}
           <label>
             {kind === 'comment' ? 'Comment' : 'Note (optional)'}
-            <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canMutate || busy} />
+            <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canInteract || busy} />
           </label>
           <div className="briefing-document__popover-actions">
-            {editor.annotation && canMutate ? (
+            {editor.annotation && canInteract ? (
               <button type="button" className="btn btn--ghost btn--sm" onClick={() => void remove(editor.annotation!)} disabled={busy}>Delete</button>
             ) : null}
-            {canMutate ? <button type="button" className="btn btn--primary btn--sm" onClick={() => void save()} disabled={busy}>Save</button> : null}
+            {canInteract ? <button type="button" className="btn btn--primary btn--sm" onClick={() => void save()} disabled={busy}>Save</button> : null}
           </div>
         </div>
       ) : null}

@@ -77,7 +77,13 @@ function typedDetail(roundId: string, annotations: unknown[] = []) {
       id: roundId, ordinal: roundId === ROUND_ONE ? 1 : 2, artifact_version_id: artifactVersion,
       previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2',
       binding_digest: `binding-${roundId}`, created_at: roundId === ROUND_ONE ? 1 : 2,
-      document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2' },
+      document: {
+        artifact_version_id: artifactVersion,
+        content_hash: createHash('sha256').update(TYPED_SOURCE).digest('hex'),
+        previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE,
+        profile: 'mandible-briefing.v2',
+        source: TYPED_SOURCE,
+      },
       binding: { status: 'valid' },
       items: TYPED_DIRECTIVES.map((directive, position) => ({
         id: `item-${directive.key}`, directive_key: directive.key, position,
@@ -92,11 +98,18 @@ function typedDetail(roundId: string, annotations: unknown[] = []) {
 }
 
 function selectedRound(roundId: string, artifactVersion: string, submitted = false) {
+  const exactSource = source.replace('Intro', roundId === ROUND_ONE ? 'First' : 'Later');
   return {
     id: roundId, ordinal: roundId === ROUND_ONE ? 1 : 2, artifact_version_id: artifactVersion,
     previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2',
     binding_digest: `binding-${roundId}`, created_at: roundId === ROUND_ONE ? 1 : 2,
-    document: { artifact_version_id: artifactVersion, previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE, profile: 'mandible-briefing.v2' },
+    document: {
+      artifact_version_id: artifactVersion,
+      content_hash: createHash('sha256').update(exactSource).digest('hex'),
+      previous_round_id: roundId === ROUND_ONE ? null : ROUND_ONE,
+      profile: 'mandible-briefing.v2',
+      source: exactSource,
+    },
     binding: { status: 'valid' },
     items: [{ id: `item-${roundId}`, directive_key: 'decision', position: 0, definition_digest: digest,
       response_type: 'verdict', required: 1, prompt: 'Review this round', options: [],
@@ -158,7 +171,17 @@ describe('artifact-backed Briefing rounds', () => {
     expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', round_count: 2, created_at: 1, updated_at: 2 }] })[0])
       .toMatchObject({ collectionId: 'briefing-1', latestRoundId: 'round-2', itemCount: 2 });
     const projection = normalizeBriefingProjection(detail(ROUND_ONE));
-    expect(projection).toMatchObject({ briefing_id: 'briefing-1', selected_round_id: ROUND_ONE, latest_round_id: ROUND_TWO, latest_submission_for_actor: { id: `submission-${ROUND_ONE}` }, document: { artifact_version_id: ARTIFACT_VERSION } });
+    expect(projection).toMatchObject({
+      briefing_id: 'briefing-1',
+      selected_round_id: ROUND_ONE,
+      latest_round_id: ROUND_TWO,
+      latest_submission_for_actor: { id: `submission-${ROUND_ONE}` },
+      document: {
+        artifact_version_id: ARTIFACT_VERSION,
+        content_hash: createHash('sha256').update(source.replace('Intro', 'First')).digest('hex'),
+        source: source.replace('Intro', 'First'),
+      },
+    });
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
@@ -400,6 +423,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(roundSelectorControl?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Round occurrence' }));
     expect(roundSelectorControl?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Copy full selected round ref' }));
     expect(screen.getByRole('combobox', { name: 'Round occurrence' }).getAttribute('value') ?? (screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ROUND_TWO);
+    expect(await screen.findByText('Later')).toBeTruthy();
     const shell = screen.getByTestId('briefing-document-renderer').closest('.detail-pane-shell') as HTMLElement;
     expect(shell.querySelector(':scope > .detail-pane-shell__header')).toBeTruthy();
     expect(shell.querySelector(':scope > .detail-pane-shell__body')).toBeTruthy();
@@ -435,9 +459,12 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.input(roundSelect);
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE }));
     await waitFor(() => expect(screen.queryByText('Latest', { selector: '.detail-pane-header__state' })).toBeNull());
+    expect(await screen.findByText('First')).toBeTruthy();
+    expect(screen.queryByText('Later')).toBeNull();
     window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'briefing:round-published' } }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect((screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement).value).toBe(ROUND_ONE);
+    expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'Dismiss' }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByRole('button', { name: 'Submit correction' }).getAttribute('aria-disabled')).toBe('true');
@@ -950,19 +977,23 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('fails closed when materialized document bytes do not match the frozen directive binding', async () => {
+  it('fails closed when detail source bytes do not match the server-verified whole-document hash', async () => {
     const tampered = source.replace('Review this round', 'Changed after binding');
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
-      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) return new Response(JSON.stringify(detail()), { status: 200, headers: { 'content-type': 'application/json' } });
-      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(tampered).byteLength, source: null, preview: { encoding: 'utf-8', text: tampered, raw_text: tampered, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: tampered.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) {
+        const payload = detail() as any;
+        payload.selected_round.document.source = tampered;
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       throw new Error(`unexpected ${url}`);
-    }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
     render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
-    const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
-    await waitFor(() => expect(screen.getByText(/does not match its materialized prompt/)).toBeTruthy());
-    expect(keep.disabled).toBe(true);
+    await waitFor(() => expect(screen.getAllByText(/does not match its verified hash/)).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: 'Keep' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/artifacts/'))).toBe(false);
   });
 });
