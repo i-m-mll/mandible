@@ -5,12 +5,12 @@
 // shared view-sidebar container (the `app-layout--view-sidebar-open` contract;
 // see SpacesViewShell). Top-to-bottom it provides:
 //   - a FIXED header row (outside the scroll region): a live search filter
-//     input + a bare "+" icon that creates a TOP-LEVEL (null-project) space.
-//   - a SCROLLING region: a top-level group (null-project spaces) above the
-//     per-project foldable, drag-reorderable headers, each with its own bare
-//     "+" create icon. Spaces render as single name-only lines.
+//     input + the shared advanced filter/sort menu.
+//   - a SCROLLING region: a leading New space action, then a top-level group
+//     (null-project spaces) above the per-project foldable, drag-reorderable
+//     headers, each with its own contextual create action.
 //
-// Create flow: each "+" opens a typed create modal. Compatible types can opt
+// Create flow: each creation action opens the same typed create modal. Compatible types can opt
 // into opening the seed dialog after creation. On success the new space is
 // selected by navigating the URL hash (the single source of truth for selection).
 //
@@ -38,7 +38,7 @@ import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
-import { SidebarItemRow } from '../../components/shared/SidebarItemRow';
+import { SidebarItemRow, SidebarLeadingActionRow } from '../../components/shared/SidebarItemRow';
 import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import { ProjectsIcon } from '../../components/icons/TabIcons';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
@@ -46,6 +46,7 @@ import './SpacesSidebar.css';
 
 const COLLAPSE_STORAGE_KEY = 'spaces-tree:collapsed';
 const ORDER_STORAGE_KEY = 'spaces-tree:project-order';
+const SORT_STORAGE_KEY = 'spaces-tree:space-sort';
 const GROUPS_CACHE_KEY = 'spaces-tree:groups:v1';
 
 /** Stable sentinel id for the top-level (null project) group. */
@@ -85,6 +86,7 @@ type CreateTarget =
   | { kind: 'top-level' };
 
 type CreateMode = 'create' | 'seed';
+type SpaceSort = 'project-order' | 'title' | 'updated';
 
 type CreatePopover = {
   target: CreateTarget;
@@ -141,6 +143,35 @@ function persistOrder(order: string[]): void {
   } catch {
     // best-effort view state
   }
+}
+
+function loadSpaceSort(): SpaceSort {
+  if (typeof localStorage === 'undefined') return 'project-order';
+  try {
+    const value = localStorage.getItem(SORT_STORAGE_KEY);
+    return value === 'title' || value === 'updated' ? value : 'project-order';
+  } catch {
+    return 'project-order';
+  }
+}
+
+function persistSpaceSort(sort: SpaceSort): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, sort);
+  } catch {
+    // best-effort view state
+  }
+}
+
+function sortSpaces(spaces: Space[], sort: SpaceSort): Space[] {
+  if (sort === 'project-order') return spaces;
+  return [...spaces].sort((left, right) => {
+    if (sort === 'updated') {
+      return right.updated_at - left.updated_at || left.title.localeCompare(right.title);
+    }
+    return left.title.localeCompare(right.title);
+  });
 }
 
 function isSpaceGroupArray(value: unknown): value is SpaceGroup[] {
@@ -208,6 +239,14 @@ const PlusIcon = (): JSX.Element => (
   </svg>
 );
 
+const NewSpaceIcon = (): JSX.Element => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+    <path d="m12 3 8 4-8 4-8-4 8-4Z" />
+    <path d="m4 12 8 4 8-4" />
+    <path d="M12 16v6M9 19h6" />
+  </svg>
+);
+
 export function SpacesSidebar({
   hidden = false,
   selectedSpaceId = null,
@@ -222,6 +261,8 @@ export function SpacesSidebar({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [spaceSort, setSpaceSort] = useState<SpaceSort>(() => loadSpaceSort());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadCollapseState());
   const [order, setOrder] = useState<string[]>(() => loadOrder());
   const [dragKey, setDragKey] = useState<string | null>(null);
@@ -327,23 +368,28 @@ export function SpacesSidebar({
 
   const filteredTopLevel = useMemo(() => {
     if (!topLevelGroup) return [] as Space[];
-    if (!needle) return topLevelGroup.spaces;
-    return topLevelGroup.spaces.filter(matchSpace);
-  }, [topLevelGroup, needle, matchSpace]);
+    const spaces = needle ? topLevelGroup.spaces.filter(matchSpace) : topLevelGroup.spaces;
+    return sortSpaces(spaces, spaceSort);
+  }, [topLevelGroup, needle, matchSpace, spaceSort]);
 
   const filteredProjectGroups = useMemo(() => {
-    if (!needle) return orderedProjectGroups;
     return orderedProjectGroups
       .map((kg) => {
         const projectMatches = (kg.group.project_name ?? '').toLowerCase().includes(needle);
         // A project header stays visible if its name matches (then show all its
         // spaces) or any of its spaces match (then show only the matches).
-        const spaces = projectMatches ? kg.group.spaces : kg.group.spaces.filter(matchSpace);
+        const visibleSpaces = !needle || projectMatches ? kg.group.spaces : kg.group.spaces.filter(matchSpace);
+        const spaces = sortSpaces(visibleSpaces, spaceSort);
         if (!projectMatches && spaces.length === 0) return null;
         return { key: kg.key, group: { ...kg.group, spaces } } as KeyedGroup;
       })
       .filter((kg): kg is KeyedGroup => kg !== null);
-  }, [orderedProjectGroups, needle, matchSpace]);
+  }, [orderedProjectGroups, needle, matchSpace, spaceSort]);
+
+  const updateSpaceSort = useCallback((next: SpaceSort) => {
+    setSpaceSort(next);
+    persistSpaceSort(next);
+  }, []);
 
   const toggleCollapse = useCallback((key: string) => {
     setCollapsed((prev) => {
@@ -492,25 +538,6 @@ export function SpacesSidebar({
     );
   };
 
-  const createButton = (target: CreateTarget, ariaLabel: string, testId: string): JSX.Element => {
-    const handleCreate = (event: MouseEvent) => {
-      event.stopPropagation();
-      openChooser(target);
-    };
-    return (
-      <button
-        type="button"
-        className="spaces-tree__create spaces-tree__create--top-level"
-        aria-label={ariaLabel}
-        title={ariaLabel}
-        data-testid={testId}
-        onClick={handleCreate}
-      >
-        <PlusIcon />
-      </button>
-    );
-  };
-
   const renderChooser = (): JSX.Element | null => {
     if (!popover || popover.mode !== 'create') return null;
     const isTopLevel = popover.target.kind === 'top-level';
@@ -644,7 +671,44 @@ export function SpacesSidebar({
       searchAriaLabel="Filter spaces"
       clearAriaLabel="Clear spaces filter"
       inputType="text"
-      actionSlot={createButton({ kind: 'top-level' }, 'Create top-level space', 'create-top-level')}
+      filterTrigger={{
+        ariaLabel: 'Space filter and sort options',
+        title: 'Space filter and sort options',
+        kind: 'menu',
+        open: filterMenuOpen,
+        active: spaceSort !== 'project-order',
+        count: spaceSort !== 'project-order' ? 1 : 0,
+        onToggle: () => setFilterMenuOpen((open) => !open),
+      }}
+      panel={filterMenuOpen ? {
+        id: 'spaces-filter-sort-panel',
+        role: 'menu',
+        ariaLabel: 'Space filter and sort options',
+        onDismiss: () => setFilterMenuOpen(false),
+        children: (
+          <div className="sidebar-search-filter__section">
+            <span className="sidebar-search-filter__label">Space order</span>
+            <div className="sidebar-search-filter__options" role="group" aria-label="Space order">
+              {([
+                ['project-order', 'Project order'],
+                ['title', 'Name'],
+                ['updated', 'Recently updated'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={spaceSort === value}
+                  className={`sidebar-search-filter__option${spaceSort === value ? ' sidebar-search-filter__option--active' : ''}`}
+                  onClick={() => updateSpaceSort(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ),
+      } : undefined}
       testId="spaces-sidebar"
       inputTestId="spaces-filter-input"
     />
@@ -664,6 +728,15 @@ export function SpacesSidebar({
           carries the test-id + content padding (no own scroll, no double bar). */}
       <div className="spaces-tree__scroll" data-testid="spaces-tree-scroll">
         {/* keep test-id + content; scroll lives on .view-sidebar__body */}
+        <div className="spaces-tree__global-actions" role="region" aria-label="Space actions">
+          <SidebarLeadingActionRow
+            label="New space"
+            icon={<NewSpaceIcon />}
+            testId="create-top-level"
+            onPress={() => openChooser({ kind: 'top-level' })}
+          />
+        </div>
+
         {loading && groups.length === 0 ? (
           <p className="spaces-tree__status">Loading spaces…</p>
         ) : null}
@@ -737,7 +810,7 @@ export function SpacesSidebar({
           && filteredTopLevel.length === 0
           && filteredProjectGroups.length === 0 ? (
           <p className="spaces-tree__status" data-testid="spaces-tree-empty">
-            {needle ? 'No spaces match.' : 'No spaces yet. Use + to create one.'}
+            {needle ? 'No spaces match.' : 'No spaces yet. Create one to get started.'}
           </p>
         ) : null}
       </div>

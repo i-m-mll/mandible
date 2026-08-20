@@ -1,3 +1,7 @@
+.view-sidebar__header + .view-sidebar__body {
+  padding-top: 6px;
+}
+
 .sidebar-list-item:focus {
   outline: none;
 }
