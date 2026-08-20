@@ -36,6 +36,11 @@ type AnnotationEditor = {
   left: number;
 };
 
+// Radio `name` groups are document-global rather than component-local. A
+// stable mount token prevents another live renderer of the same round from
+// letting the browser overwrite this panel's controlled checked properties.
+let radioGroupSequence = 0;
+
 function annotationKindLabel(kind: BriefingAnnotation['annotation_kind']): string {
   return kind === 'comment' ? 'Comment' : 'Suggested replacement';
 }
@@ -75,6 +80,7 @@ async function sha256(value: string): Promise<string> {
 
 export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, draftIdentity = null, onRefresh, draft = {}, validationErrors = {}, onDirectiveValue, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
+  const [radioGroupScope] = useState(() => `briefing-radio-${++radioGroupSequence}`);
   const [source, setSource] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
@@ -220,7 +226,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
             <label key={option.key}>
               <input
                 type={type === 'single_choice' ? 'radio' : 'checkbox'}
-                name={type === 'single_choice' ? `${controlId}-choice` : undefined}
+                name={type === 'single_choice' ? `${radioGroupScope}-${controlId}-choice` : undefined}
                 value={option.key}
                 checked={selected.has(option.key)}
                 disabled={!canMutate}
@@ -264,7 +270,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
           <legend className="sr-only">Rating from 1 to 5</legend>
           {[1, 2, 3, 4, 5].map((value) => (
-            <label key={value}><input type="radio" name={`${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
+            <label key={value}><input type="radio" name={`${radioGroupScope}-${controlId}-rating`} value={value} checked={rating === value} disabled={!canMutate} onClick={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
           ))}
         </fieldset>
       );
