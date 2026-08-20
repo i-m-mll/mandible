@@ -95,6 +95,7 @@
      Retina profile therefore reserves 17 CSS px; crop/kernel ambiguity makes
      the scale inference medium-confidence while the measured span is exact. */
   --app-shadow-gutter-width: 17px;
+  --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, 0.018) 24%, rgba(0, 0, 0, 0.052) 59%, var(--app-boundary-shadow-color) 100%;
   --app-divider: #434343;
   --app-divider-emphasis: #434343;
   --z-app-subdivision: 70;
