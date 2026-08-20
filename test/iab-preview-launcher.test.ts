@@ -22,15 +22,22 @@ const execFileAsync = promisify(execFile);
 let tempRoots: string[] = [];
 let previewServer: http.Server | null = null;
 
+function fixtureGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  return env;
+}
+
 function git(args: string[], cwd: string): void {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
 }
 
 function gitOutput(args: string[], cwd: string): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
@@ -101,7 +108,9 @@ function runLauncherExport(name: "createProjectedSnapshot" | "materializeProject
 
 function createSeedFixture() {
   const worktree = fs.realpathSync.native(process.cwd());
-  const branch = gitOutput(["branch", "--show-current"], worktree);
+  const branchRepo = createRepo();
+  git(["checkout", "-b", "integration/test-preview"], branchRepo);
+  const branch = gitOutput(["branch", "--show-current"], branchRepo);
   const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-seed-cache-"));
   const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-seed-source-"));
   tempRoots.push(previewBase, sourceRoot);
@@ -133,7 +142,12 @@ function createSeedFixture() {
   fs.writeFileSync(metadataPath, JSON.stringify(metadata), "utf8");
   return {
     worktree, branch, previewBase, previewRoot, db, sourceRoot, sourceDb, metadata, metadataPath,
-    env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+    env: {
+      ...process.env,
+      GIT_DIR: path.join(branchRepo, ".git"),
+      GIT_WORK_TREE: worktree,
+      MANDIBLE_PREVIEW_BASE_DIR: previewBase,
+    },
   };
 }
 
