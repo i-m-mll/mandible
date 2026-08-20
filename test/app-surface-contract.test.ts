@@ -32,6 +32,54 @@ function ruleBody(css: string, selector: string): string {
   return '';
 }
 
+type Rgb = readonly [number, number, number];
+
+const screenshotCalibration = {
+  darkNormal: {
+    sha256: 'e6b18b02f19f6c581524f53ffeac8a42ad54fc99fd8bd0f67bdc5d5e45f0d16a',
+    size: [116, 12], mode: 'RGBA8', rows: '12/12 identical',
+    chrome: [34, 34, 34], shadow: [[88, 98, [33, 33, 33]]],
+    accent: [67, 67, 67], main: [24, 24, 24],
+  },
+  lightNormal: {
+    sha256: '00c72aaa5377bae7d37953915d8f0162729a57c1bc3d0140eef81572e3e09dc7',
+    size: [140, 32], mode: 'RGBA8', rows: '32/32 identical',
+    chrome: [252, 252, 252],
+    shadowRuns: [[83, 93, 251], [94, 100, 250], [101, 105, 249], [106, 109, 247], [110, 112, 245], [113, 113, 244], [114, 114, 243], [115, 116, 242]],
+    accent: [215, 215, 216], main: [255, 255, 255],
+  },
+  darkHover: {
+    sha256: 'f3c014f906ca312ea39e2fff795653921cb9dff09b677f59ad26edccfda504be',
+    size: [62, 20], mode: 'RGBA8', rows: '20/20 identical',
+    chrome: [34, 34, 34], shadow: [[22, 32, [33, 33, 33]]],
+    mainSideAccentMedian: [67, 67, 67], main: [24, 24, 24],
+  },
+  lightHover: {
+    sha256: '7ba8334684995a8baa1f6d020cd0c39859390fa323a03746ace197cba6ddaf07',
+    size: [70, 18], mode: 'RGBA8', rows: '9 unique; diffuse columns identical',
+    chrome: [252, 252, 252],
+    shadowRuns: [[17, 27, 251], [28, 34, 250], [35, 39, 249], [40, 43, 247], [44, 46, 245], [47, 47, 244], [48, 48, 243], [49, 50, 242]],
+    shadowSideEdgeMedian: [168, 169, 170],
+    shadowSideEdgeRange: [[167, 168, 170], [169, 169, 171]],
+    mainSideAccentMedian: [198, 198, 199],
+    mainSideAccentRange: [[197, 197, 198], [199, 199, 200]],
+    main: [255, 255, 255],
+  },
+} as const;
+
+function hexRgb(value: string): Rgb {
+  const hex = value.slice(1);
+  return [Number.parseInt(hex.slice(0, 2), 16), Number.parseInt(hex.slice(2, 4), 16), Number.parseInt(hex.slice(4, 6), 16)];
+}
+
+function normalCdf(value: number): number {
+  const sign = value < 0 ? -1 : 1;
+  const x = Math.abs(value) / Math.sqrt(2);
+  const t = 1 / (1 + 0.3275911 * x);
+  const erf = sign * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x));
+  return (1 + erf) / 2;
+}
+
 describe('Codex app subdivision surface contract', () => {
   it('defines the exact light and dark main/chrome values', () => {
     expect(tokenValue(tokenBlock('dark'), '--surface-main')).toBe('#181818');
@@ -89,25 +137,27 @@ describe('Codex app subdivision surface contract', () => {
     expect(edge).toContain('bottom: 0');
     expect(edge).toContain('left: var(--app-detail-edge-x)');
     expect(edge).toContain('width: 1px');
-    expect(edge).toContain('background: var(--app-divider)');
+    expect(edge).toContain('--app-boundary-direction: -1');
+    expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
+    expect(edge).toContain('background: var(--app-boundary-accent)');
     expect(edge).toContain('box-shadow: var(--shadow-app-subdivision)');
-    expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#5A5A5A');
+    expect(tokenValue(tokenBlock('dark'), '--app-divider')).toBe('#434343');
     expect(tokenValue(tokenBlock('light'), '--app-divider')).toBe('#D7D7D8');
-    expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#5B5B5B');
-    expect(tokenValue(tokenBlock('light'), '--app-divider-emphasis')).toBe('#CFCFD0');
-    expect(tokenValue(tokenBlock('dark'), '--app-subdivision-shadow-offset')).toBe('4px');
-    expect(tokenValue(tokenBlock('dark'), '--app-subdivision-shadow-blur')).toBe('10px');
-    expect(tokenValue(tokenBlock('dark'), '--app-subdivision-shadow-color')).toBe('rgba(0, 0, 0, 0.44)');
-    expect(tokenValue(tokenBlock('light'), '--app-subdivision-shadow-color')).toBe('rgba(15, 23, 42, 0.22)');
-    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('calc(-1 * var(--app-subdivision-shadow-offset)) 0 var(--app-subdivision-shadow-blur) 0 var(--app-subdivision-shadow-color)');
+    expect(tokenValue(tokenBlock('dark'), '--app-divider-emphasis')).toBe('#434343');
+    expect(tokenValue(tokenBlock('light'), '--app-divider-emphasis')).toBe('#C6C6C7');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-offset')).toBe('8px');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.125)');
+    expect(tokenValue(tokenBlock('dark'), '--shadow-app-subdivision')).toBe('calc(var(--app-boundary-direction) * var(--app-boundary-shadow-offset)) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color)');
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
     expect(base).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar,\s*\.app-layout--route-work \.work-sidebar\s*\{[^}]*border-right:\s*0;/s);
     const activeResizeEdge = base.match(/\.app-layout:has\(\.sidebar-drag-handle:is\(:hover, :focus-visible\)\)::after\s*\{([^}]*)\}/)?.[1] ?? '';
-    expect(activeResizeEdge).toContain('background: var(--app-divider-emphasis)');
+    expect(activeResizeEdge).toContain('--app-boundary-accent: var(--app-divider-emphasis)');
     expect(activeResizeEdge).not.toMatch(/(?:width|box-shadow|border)\s*:/);
-    expect(base.match(/background:\s*var\(--app-divider\);/g)).toHaveLength(1);
+    expect(base.match(/background:\s*var\(--app-boundary-accent\);/g)).toHaveLength(1);
     expect(base).not.toContain('border-right: 1px solid var(--app-divider)');
 
     for (const selector of ['.app-rail', '.app-bottom-panel', '.view-sidebar', '.detail-pane-shell__header', '.detail-pane-shell__body', '.detail-pane-shell__footer', '.briefing-detail__footer', '.composer-host']) {
@@ -116,7 +166,41 @@ describe('Codex app subdivision surface contract', () => {
     }
     expect(ruleBody(stylesheet, '.briefing-detail__footer')).not.toMatch(/background:/);
     expect(ruleBody(stylesheet, '.composer-host')).not.toMatch(/background:/);
-    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
+    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(2);
+  });
+
+  it('pins the measured screenshot plateaus, accents, and closest composable falloff', () => {
+    expect(screenshotCalibration.darkNormal.size).toEqual([116, 12]);
+    expect(screenshotCalibration.lightNormal.size).toEqual([140, 32]);
+    expect(screenshotCalibration.darkHover.size).toEqual([62, 20]);
+    expect(screenshotCalibration.lightHover.size).toEqual([70, 18]);
+    for (const fixture of Object.values(screenshotCalibration)) {
+      expect(fixture.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(fixture.mode).toBe('RGBA8');
+    }
+
+    expect(hexRgb(tokenValue(tokenBlock('dark'), '--surface-chrome'))).toEqual(screenshotCalibration.darkNormal.chrome);
+    expect(hexRgb(tokenValue(tokenBlock('dark'), '--surface-main'))).toEqual(screenshotCalibration.darkNormal.main);
+    expect(hexRgb(tokenValue(tokenBlock('light'), '--surface-chrome'))).toEqual(screenshotCalibration.lightNormal.chrome);
+    expect(hexRgb(tokenValue(tokenBlock('light'), '--surface-main'))).toEqual(screenshotCalibration.lightNormal.main);
+    expect(hexRgb(tokenValue(tokenBlock('dark'), '--app-divider'))).toEqual(screenshotCalibration.darkNormal.accent);
+    expect(hexRgb(tokenValue(tokenBlock('light'), '--app-divider'))).toEqual(screenshotCalibration.lightNormal.accent);
+    expect(hexRgb(tokenValue(tokenBlock('dark'), '--app-divider-emphasis'))).toEqual(screenshotCalibration.darkHover.mainSideAccentMedian);
+    expect(hexRgb(tokenValue(tokenBlock('light'), '--app-divider-emphasis'))).toEqual(screenshotCalibration.lightHover.mainSideAccentMedian);
+
+    // The fit excludes x=117 (divider) and x>=118 (main plateau). CSS blur is
+    // approximated as sigma=blur/2 because the source crop cannot identify the
+    // browser kernel or 1x/2x screenshot scale uniquely.
+    const measured = Array.from({ length: 117 }, (_, x) => {
+      if (x <= 82) return 252;
+      return screenshotCalibration.lightNormal.shadowRuns.find(([start, end]) => x >= start && x <= end)?.[2] ?? 252;
+    });
+    const predicted = measured.map((_, x) => Math.round(252 * (1 - 0.125 * normalCdf((-8 - (117 - x)) / 18))));
+    const residuals = predicted.map((value, index) => value - measured[index]!);
+    const rmse = Math.sqrt(residuals.reduce((sum, value) => sum + value * value, 0) / residuals.length);
+    expect(rmse).toBeLessThanOrEqual(0.307);
+    expect(Math.max(...residuals.map(Math.abs))).toBe(1);
+    expect(residuals.filter((value) => value === 0)).toHaveLength(106);
   });
 
   it('spans the rail footer divider across the chrome gutter', () => {
