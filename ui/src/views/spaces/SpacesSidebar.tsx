@@ -39,7 +39,7 @@ import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
 import { SidebarItemRow, SidebarLeadingActionRow } from '../../components/shared/SidebarItemRow';
-import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
+import { SidebarGroupNode, SidebarNewChatIcon } from '../../components/shared/SidebarGroupNode';
 import { ProjectsIcon } from '../../components/icons/TabIcons';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
@@ -236,14 +236,6 @@ function applyOrder(projectGroups: KeyedGroup[], order: string[]): KeyedGroup[] 
 const PlusIcon = (): JSX.Element => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
     <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
-  </svg>
-);
-
-const NewSpaceIcon = (): JSX.Element => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-    <path d="m12 3 8 4-8 4-8-4 8-4Z" />
-    <path d="m4 12 8 4 8-4" />
-    <path d="M12 16v6M9 19h6" />
   </svg>
 );
 
@@ -728,14 +720,12 @@ export function SpacesSidebar({
           carries the test-id + content padding (no own scroll, no double bar). */}
       <div className="spaces-tree__scroll" data-testid="spaces-tree-scroll">
         {/* keep test-id + content; scroll lives on .view-sidebar__body */}
-        <div className="spaces-tree__global-actions" role="region" aria-label="Space actions">
-          <SidebarLeadingActionRow
-            label="New space"
-            icon={<NewSpaceIcon />}
-            testId="create-top-level"
-            onPress={() => openChooser({ kind: 'top-level' })}
-          />
-        </div>
+        <SidebarLeadingActionRow
+          label="New space"
+          icon={<SidebarNewChatIcon size={16} />}
+          testId="create-top-level"
+          onPress={() => openChooser({ kind: 'top-level' })}
+        />
 
         {loading && groups.length === 0 ? (
           <p className="spaces-tree__status">Loading spaces…</p>
@@ -761,47 +751,41 @@ export function SpacesSidebar({
           const isCollapsed = Boolean(collapsed[kg.key]) && !needle;
           const projectName = kg.group.project_name ?? 'Project';
           return (
-            <div
+            <SidebarGroupNode
               key={kg.key}
-              className={`spaces-tree__group${dragKey === kg.key ? ' spaces-tree__group--dragging' : ''}`}
-            >
-              <div
-                className="spaces-tree__group-drag-target"
-                draggable
-                data-testid={`spaces-group-header-${kg.key}`}
-                onDragStart={() => beginDrag(kg.key)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
+              id={`spaces-group-${kg.key}`}
+              presentation="folder"
+              label={projectName}
+              count={kg.group.spaces.length}
+              countLabel={`${kg.group.spaces.length} space${kg.group.spaces.length === 1 ? '' : 's'} in ${projectName}`}
+              countVisibility="interaction"
+              expanded={!isCollapsed}
+              onToggle={() => toggleCollapse(kg.key)}
+              leadingIcon={<ProjectsIcon size={13} />}
+              testIds={{
+                root: `spaces-group-${kg.key}`,
+                heading: `spaces-group-toggle-${kg.key}`,
+                action: `create-in-${kg.key}`,
+                dragHandle: `spaces-group-header-${kg.key}`,
+              }}
+              action={{
+                label: `Create space in ${projectName}`,
+                icon: <PlusIcon />,
+                onPress: () => openChooser({ kind: 'project', projectId: kg.key, projectName }),
+              }}
+              drag={{
+                active: dragKey === kg.key,
+                onStart: () => beginDrag(kg.key),
+                onOver: (event) => event.preventDefault(),
+                onDrop: (event) => {
                   event.preventDefault();
                   handleDrop(kg.key);
-                }}
-                onDragEnd={endDrag}
-              >
-                <SidebarGroupNode
-                  id={`spaces-group-${kg.key}`}
-                  presentation="folder"
-                  label={projectName}
-                  count={kg.group.spaces.length}
-                  countLabel={`${kg.group.spaces.length} space${kg.group.spaces.length === 1 ? '' : 's'} in ${projectName}`}
-                  countVisibility="interaction"
-                  expanded={!isCollapsed}
-                  onToggle={() => toggleCollapse(kg.key)}
-                  leadingIcon={<ProjectsIcon size={13} />}
-                  testIds={{
-                    root: `spaces-group-${kg.key}`,
-                    heading: `spaces-group-toggle-${kg.key}`,
-                    action: `create-in-${kg.key}`,
-                  }}
-                  action={{
-                    label: `Create space in ${projectName}`,
-                    icon: <PlusIcon />,
-                    onPress: () => openChooser({ kind: 'project', projectId: kg.key, projectName }),
-                  }}
-                >
-                  {kg.group.spaces.map(renderSpaceRow)}
-                </SidebarGroupNode>
-              </div>
-            </div>
+                },
+                onEnd: endDrag,
+              }}
+            >
+              {kg.group.spaces.map(renderSpaceRow)}
+            </SidebarGroupNode>
           );
         })}
 

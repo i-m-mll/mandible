@@ -121,12 +121,20 @@ describe('SpacesSidebar render + grouping', () => {
     // sits above the first project group in DOM order.
     const scroll = screen.getByTestId('spaces-tree-scroll');
     const newSpace = screen.getByRole('button', { name: 'New space' });
-    expect(scroll.firstElementChild).toBe(newSpace.closest('[role="region"]'));
+    expect(scroll.firstElementChild).toBe(newSpace);
+    expect(newSpace.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
     const topLevelGroup = screen.getByTestId('spaces-group-top-level');
     const alphaGroup = screen.getByTestId('spaces-group-proj-a');
+    expect(alphaGroup.parentElement).toBe(scroll);
+    expect(alphaGroup.classList.contains('sidebar-group-node--folder')).toBe(true);
+    expect(
+      alphaGroup.querySelector('[data-testid="spaces-group-header-proj-a"]')
+        ?.classList.contains('sidebar-group-node__header'),
+    ).toBe(true);
     expect(scroll.contains(topLevelGroup)).toBe(true);
     expect(scroll.contains(alphaGroup)).toBe(true);
     expect(topLevelGroup.compareDocumentPosition(alphaGroup) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__global-actions|spaces-tree__group-drag-target/);
   });
 
   it('renders nothing when hidden', () => {
