@@ -7,6 +7,7 @@ import {
   SidebarItemOverflowMenu,
   SidebarItemPinAction,
   SidebarItemRow,
+  SidebarLeadingActionRow,
 } from '../ui/src/components/shared/SidebarItemRow';
 
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
@@ -25,6 +26,22 @@ function contrastRatio(foreground: string, background: string): number {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+describe('SidebarLeadingActionRow', () => {
+  it('provides one native, focusable action while keeping its icon decorative', () => {
+    const onPress = vi.fn();
+    render(<SidebarLeadingActionRow label="New item" icon={<svg data-testid="icon" />} onPress={onPress} />);
+
+    const action = screen.getByRole('button', { name: 'New item' });
+    expect(action.getAttribute('type')).toBe('button');
+    expect(action.classList.contains('sidebar-leading-action-row')).toBe(true);
+    expect(screen.getByTestId('icon').closest('.sidebar-leading-action-row__icon')?.getAttribute('aria-hidden')).toBe('true');
+    action.focus();
+    expect(document.activeElement).toBe(action);
+    fireEvent.click(action);
+    expect(onPress).toHaveBeenCalledOnce();
+  });
 });
 
 describe('SidebarItemRow', () => {

@@ -81,7 +81,9 @@
   gap: 6px;
   overflow-y: auto;
   min-height: 0;
-  padding: 0 12px 12px;
+  padding-right: 12px;
+  padding-bottom: 12px;
+  padding-left: 12px;
 }
 
 .artifacts-sidebar__item {
