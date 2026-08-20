@@ -4658,6 +4658,34 @@ describe('LedgerIssueDetail', () => {
     Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
   });
 
+  it('keeps embedded graph issue headers and bodies on one shared content-width contract', () => {
+    const detail = issueDetailProjection({
+      displayId: 'embed-width',
+      title: 'Embedded width contract',
+    });
+
+    render(h('aside', { class: 'graph-detail-pane graph-detail-pane--ledger' }, h(LedgerIssueDetail, {
+      compact: true,
+      detail,
+      onAddComment: () => undefined,
+    })));
+
+    const pane = document.querySelector('.graph-detail-pane--ledger');
+    const header = pane?.querySelector('.detail-pane-header');
+    const body = pane?.querySelector('.ledger-issue-detail__body');
+    expect(pane?.querySelector('.ledger-issue-detail--compact')).toBeTruthy();
+    expect(pane?.closest('.issues-detail')).toBeNull();
+    expect(header).toBeTruthy();
+    expect(body?.querySelector('.ledger-comment-composer')).toBeTruthy();
+
+    const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*--detail-content-inline-inset:\s*24px;/s);
+    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--detail-content-inline-inset\);/s);
+    expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail > \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
+    expect(css).toMatch(/\.app-bottom-panel \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
+    expect(css).toMatch(/\.graph-detail-pane--ledger \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
+  });
+
   it('keeps issue actions in the header overflow menu while preserving the comment composer button', () => {
     const detail = {
       id: 'issue_1',
