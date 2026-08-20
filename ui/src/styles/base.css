@@ -49,8 +49,8 @@ a {
   --app-rail-inline-padding: 12px;
   --app-rail-width: 208px;
   --app-view-sidebar-persisted-width: 0px;
-  /* Persisted/resizable values are content widths. The measured strip is a
-   * separate additive physical edge and never changes stored route state. */
+  /* Persisted/resizable values are content widths. Shadow paint is additive
+   * and never changes stored route state or reserves structural width. */
   --app-view-sidebar-width: var(--app-view-sidebar-persisted-width);
   --app-view-sidebar-outer-width: calc(var(--app-view-sidebar-width) + var(--app-shadow-gutter-width));
   --app-rail-outer-width: calc(var(--app-rail-width) + var(--app-shadow-gutter-width));
@@ -100,8 +100,8 @@ a {
 
 /* One app-shell boundary owns the complete chrome/main edge. It is independent
  * of header, ViewSidebar, detail, and bottom-panel heights, so its divider and
- * falloff remain continuous for the entire viewport. The paint span is wider
- * than the reserved gutter and overpaints chrome without affecting layout. */
+ * falloff remain continuous for the entire viewport. Its transparent paint
+ * modulates the chrome and its semantic hairlines without affecting layout. */
 .app-shell::after {
   --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
   --app-boundary-shadow-direction: to right;
@@ -111,12 +111,13 @@ a {
   inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width));
   z-index: var(--z-app-subdivision);
   width: calc(var(--app-boundary-shadow-paint-width) + 1px);
-  background-color: var(--surface-chrome);
+  background-color: transparent;
   background-image:
     linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
-    var(--shadow-app-subdivision-paint);
-  background-position: right, left;
-  background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%;
+    var(--shadow-app-subdivision-paint),
+    linear-gradient(var(--border-muted), var(--border-muted));
+  background-position: right, left, left calc(var(--app-header-height) - 1px);
+  background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%, var(--app-boundary-shadow-paint-width) 1px;
   background-repeat: no-repeat;
   pointer-events: none;
 }
@@ -378,7 +379,7 @@ a {
   border-right: none;
   box-shadow: none;
   /* The nav remains the vertical scroll owner. Keep the rail itself visible so
-   * its shared footer hairline can cross the reserved chrome strip. */
+   * its shared footer hairline remains available to boundary paint. */
   overflow: visible;
   width: var(--app-rail-width);
 }
@@ -987,9 +988,9 @@ a {
  * `.issues-tree__resize-handle` only won by being defined later, which broke
  * when the rule moved earlier in the refactor (issue e29a8c5).
  *
- * The 0-width line is translated across the reserved gutter to the physical
- * divider. Its 10px clickable/hover strip extends into main only, so the
- * visible shadow body never starts hover or drag behavior.
+ * The 0-width line sits at the effective chrome edge. Its 10px clickable/hover
+ * strip extends into main only, so the visible shadow body never starts hover
+ * or drag behavior.
  */
 .view-sidebar__resize-handle.sidebar-drag-handle {
   position: absolute;
