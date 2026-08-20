@@ -127,8 +127,8 @@ describe('Codex app subdivision surface contract', () => {
     const edge = ruleBody(base, '.app-shell::after');
     expect(edge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');
     expect(edge).toContain('width: calc(var(--app-boundary-shadow-paint-width) + 1px)');
-    expect(edge).toContain('--app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset))');
     expect(edge).toContain('--app-boundary-accent: var(--app-divider)');
+    expect(edge).toContain('--app-boundary-divider-paint: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent))');
     expect(edge).toContain('var(--shadow-app-subdivision-paint)');
     expect(edge).toContain('background-color: transparent');
     expect(edge).not.toContain('var(--border-muted)');
@@ -141,8 +141,9 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-offset')).toBe('8px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
-    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, 0.0375)');
-    expect(stylesheet).toMatch(/:where\(\.app-shell\)::after,\s*:where\(\.app-shell--left-shadow\)::before\s*\{[^}]*--shadow-app-subdivision:[^}]*--shadow-app-subdivision-paint:/s);
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-intensity-scale')).toBe('0.7');
+    expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-color')).toBe('rgba(0, 0, 0, calc(0.0375 * var(--app-boundary-shadow-intensity-scale)))');
+    expect(stylesheet).toMatch(/:where\(\.app-shell\)::after,\s*:where\(\.app-shell--left-shadow\)::before\s*\{[^}]*--shadow-app-subdivision-paint:/s);
 
     expect(ruleBody(base, '.app-header')).toContain('border-right: none');
     expect(ruleBody(base, '.app-rail')).toContain('border-right: none');
@@ -159,10 +160,10 @@ describe('Codex app subdivision surface contract', () => {
     }
     expect(ruleBody(stylesheet, '.briefing-detail__footer')).not.toMatch(/background:/);
     expect(ruleBody(stylesheet, '.composer-host')).not.toMatch(/background:/);
-    expect(stylesheet.match(/box-shadow:\s*var\(--shadow-app-subdivision\)/g)).toHaveLength(1);
+    expect(stylesheet).not.toMatch(/box-shadow:\s*var\(--shadow-app-subdivision\)/);
   });
 
-  it('retains the measured profile positions at 30% of the prior light and dark intensity', () => {
+  it('reduces the exact candidate shadow intensity by 30% without changing its curve', () => {
     expect(screenshotCalibration.darkNormal.size).toEqual([116, 12]);
     expect(screenshotCalibration.lightNormal.size).toEqual([140, 32]);
     expect(screenshotCalibration.darkHover.size).toEqual([62, 20]);
@@ -184,13 +185,16 @@ describe('Codex app subdivision surface contract', () => {
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-offset')).toBe('8px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-blur')).toBe('36px');
     expect(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-spread')).toBe('0px');
+    const scale = Number(tokenValue(tokenBlock('dark'), '--app-boundary-shadow-intensity-scale'));
+    expect(scale).toBe(0.7);
     const profile = tokenValue(tokenBlock('dark'), '--app-boundary-shadow-gradient-stops');
     expect(profile).toContain('transparent 0%');
-    expect(profile).toContain('rgba(0, 0, 0, 0.0054) 24%');
-    expect(profile).toContain('rgba(0, 0, 0, 0.0156) 59%');
-    expect(0.0054 / 0.018).toBeCloseTo(0.3, 8);
-    expect(0.0156 / 0.052).toBeCloseTo(0.3, 8);
-    expect(0.0375 / 0.125).toBeCloseTo(0.3, 8);
+    expect(profile).toContain('rgba(0, 0, 0, calc(0.0054 * var(--app-boundary-shadow-intensity-scale))) 24%');
+    expect(profile).toContain('rgba(0, 0, 0, calc(0.0156 * var(--app-boundary-shadow-intensity-scale))) 59%');
+    expect(profile).toContain('var(--app-boundary-shadow-color) 100%');
+    expect(0.0054 * scale).toBeCloseTo(0.00378, 8);
+    expect(0.0156 * scale).toBeCloseTo(0.01092, 8);
+    expect(0.0375 * scale).toBeCloseTo(0.02625, 8);
   });
 
   it('keeps the footer divider exactly rail-wide', () => {

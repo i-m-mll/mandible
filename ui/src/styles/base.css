@@ -46,6 +46,7 @@ a {
 
 .app-shell {
   --app-header-height: 48px;
+  --app-left-boundary-width: 0px;
   --app-rail-inline-padding: 12px;
   --app-rail-width: 208px;
   --app-view-sidebar-persisted-width: 0px;
@@ -54,12 +55,17 @@ a {
   --app-view-sidebar-width: var(--app-view-sidebar-persisted-width);
   --app-view-sidebar-outer-width: calc(var(--app-view-sidebar-width) + var(--app-shadow-gutter-width));
   --app-rail-outer-width: calc(var(--app-rail-width) + var(--app-shadow-gutter-width));
-  --app-detail-edge-x: var(--app-rail-outer-width);
+  --app-detail-edge-x: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width));
   height: 100vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   position: relative;
+  background: var(--surface-chrome);
+}
+
+.app-shell--left-shadow {
+  --app-left-boundary-width: var(--app-boundary-shadow-paint-width);
 }
 
 .app-shell--rail-icons {
@@ -67,11 +73,11 @@ a {
 }
 
 .app-shell--view-sidebar-open {
-  --app-detail-edge-x: calc(var(--app-rail-width) + var(--app-view-sidebar-outer-width));
+  --app-detail-edge-x: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }
 
 .app-shell:has(.app-layout--route-work) {
-  --app-detail-edge-x: calc(var(--app-rail-width) + 340px + var(--app-shadow-gutter-width));
+  --app-detail-edge-x: calc(var(--app-left-boundary-width) + var(--app-rail-width) + 340px + var(--app-shadow-gutter-width));
 }
 
 .tauri-window .app-shell {
@@ -81,7 +87,7 @@ a {
 .app-header {
   position: absolute;
   inset: 0 auto auto 0;
-  width: var(--app-rail-outer-width);
+  width: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width));
   height: var(--app-header-height);
   min-height: var(--app-header-height);
   min-width: 0;
@@ -95,7 +101,7 @@ a {
 }
 
 .app-shell--view-sidebar-open .app-header {
-  width: calc(var(--app-rail-width) + var(--app-view-sidebar-outer-width));
+  width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }
 
 /* One app-shell boundary owns the complete chrome/main edge. It is independent
@@ -103,9 +109,9 @@ a {
  * falloff remain continuous for the entire viewport. Its transparent paint
  * modulates the chrome and its semantic hairlines without affecting layout. */
 .app-shell::after {
-  --app-boundary-shadow-x: calc(0px - var(--app-boundary-shadow-offset));
   --app-boundary-shadow-direction: to right;
   --app-boundary-accent: var(--app-divider);
+  --app-boundary-divider-paint: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent));
   content: '';
   position: absolute;
   inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width));
@@ -113,7 +119,7 @@ a {
   width: calc(var(--app-boundary-shadow-paint-width) + 1px);
   background-color: transparent;
   background-image:
-    linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent)),
+    var(--app-boundary-divider-paint),
     var(--shadow-app-subdivision-paint);
   background-position: right, left;
   background-size: 1px 100%, var(--app-boundary-shadow-paint-width) 100%;
@@ -121,32 +127,26 @@ a {
   pointer-events: none;
 }
 
-/* Declare the composition on each directional shell edge so the site-local signed x
- * length resolves before inheritance; declaring it on :root would freeze an
- * undefined orientation into the guaranteed-invalid custom-property value. */
+/* Shadow paint is shared by both directional shell edges. Divider paint is a
+ * separate right-edge capability and is never inherited by the left edge. */
 :where(.app-shell)::after,
 :where(.app-shell--left-shadow)::before {
-  --shadow-app-subdivision: var(--app-boundary-shadow-x) 0 var(--app-boundary-shadow-blur) var(--app-boundary-shadow-spread) var(--app-boundary-shadow-color);
   --shadow-app-subdivision-paint: linear-gradient(var(--app-boundary-shadow-direction), var(--app-boundary-shadow-gradient-stops));
 }
 
 /*
  * The optional user-controlled edge is the same full-height shell primitive
- * with its direction reversed. It reserves no structural space.
+ * with its direction reversed. Its paint width becomes a boundary column,
+ * never a second gutter or a layer over chrome content.
  */
 .app-shell--left-shadow::before {
-  --app-boundary-shadow-x: var(--app-boundary-shadow-offset);
   --app-boundary-shadow-direction: to left;
-  --app-boundary-accent: var(--app-divider);
   content: '';
   position: absolute;
   inset: 0 auto 0 0;
   z-index: var(--z-app-subdivision);
   width: var(--app-boundary-shadow-paint-width);
-  background: var(--surface-chrome);
   background-image: var(--shadow-app-subdivision-paint);
-  border-inline-end: 1px solid var(--app-boundary-accent);
-  box-shadow: var(--shadow-app-subdivision);
   pointer-events: none;
 }
 
@@ -162,6 +162,11 @@ a {
 
 .app-shell--view-sidebar-open .app-header__identity {
   width: calc(100% - var(--app-shadow-gutter-width));
+}
+
+.app-shell--left-shadow .app-header__identity {
+  width: calc(100% - var(--app-left-boundary-width) - var(--app-shadow-gutter-width));
+  margin-left: var(--app-left-boundary-width);
 }
 
 .app-header--sidebar-hidden {
@@ -247,7 +252,7 @@ a {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: var(--app-rail-outer-width) minmax(0, 1fr);
+  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width)) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   position: relative;
   overflow: hidden;
@@ -255,7 +260,7 @@ a {
 }
 
 .app-layout--view-sidebar-open {
-  grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
+  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-width)) minmax(0, 1fr);
 }
 
 .app-layout--view-sidebar-open::before {
@@ -263,7 +268,7 @@ a {
   position: absolute;
   top: var(--app-header-height);
   bottom: 0;
-  left: var(--app-rail-width);
+  left: calc(var(--app-left-boundary-width) + var(--app-rail-width));
   z-index: var(--z-app-subdivision);
   width: 1px;
   pointer-events: none;
@@ -361,7 +366,7 @@ a {
 
 @media (max-width: 700px) {
   .app-shell {
-    --app-view-sidebar-width: calc(100vw - var(--app-rail-width));
+    --app-view-sidebar-width: calc(100vw - var(--app-left-boundary-width) - var(--app-rail-width));
   }
 }
 
@@ -381,6 +386,7 @@ a {
    * its shared footer hairline remains available to boundary paint. */
   overflow: visible;
   width: var(--app-rail-width);
+  margin-left: var(--app-left-boundary-width);
 }
 
 .app-rail__nav {
@@ -451,6 +457,14 @@ a {
   margin-inline: calc(-1 * var(--app-rail-inline-padding));
   border-top: 1px solid var(--neutral-alpha-06);
   position: relative;
+}
+
+.app-shell--left-shadow .app-rail__footer {
+  /* The semantic footer surface, including its existing neutral-alpha top
+   * hairline, reaches under the shared paint strip. Footer contents retain
+   * their rail-relative inset and the boundary paint modulates the line. */
+  padding-left: calc(var(--app-left-boundary-width) + var(--app-rail-inline-padding));
+  margin-left: calc(-1 * (var(--app-left-boundary-width) + var(--app-rail-inline-padding)));
 }
 
 .app-rail__item {

@@ -313,14 +313,17 @@ describe('shared AppHeader rendered geometry', () => {
     expect(geometry.brandColor).toBe(expected);
   });
 
-  it('keeps all coordinates and the midpoint invariant with the optional left shadow at high DPI', () => {
+  it('translates chrome content after the optional left boundary at high DPI', () => {
     const geometry = renderHeader({ width: 700, route: 'Conversations', theme: 'dark', leftShadow: true, scale: 2 });
 
-    expectSharedGeometry(geometry, 700, 10);
     expect(geometry.devicePixelRatio).toBe(2);
     expect(geometry.shadowGutterWidth).toBe('0px');
     expect(geometry.headerGutterWidth).toBe('18px');
     expect(geometry.leftShadowEdgeWidth).toBe('17px');
+    expect(geometry.header).toMatchObject({ left: 0, right: 717, width: 717 });
+    expect(geometry.identity).toMatchObject({ left: 17, right: 717, width: 700 });
+    expect(geometry.mark).toMatchObject({ left: 27, right: 55, width: 28 });
+    expect(geometry.brand!.left).toBe(235);
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
   });
 });
