@@ -384,7 +384,7 @@ describe("backup routes", () => {
         (id,briefing_id,ordinal,artifact_version_id,previous_round_id,profile,binding_digest,created_at)
         VALUES ('round-backup','briefing-backup',1,'artifact-version:briefing',NULL,'mandible-briefing.v2','${"b".repeat(64)}',1);
       INSERT INTO briefing_directive_definitions
-        VALUES ('definition-backup','artifact-version:briefing','ship','${"c".repeat(64)}','verdict',1,'Ship it','[]',0,36,26,33,1);
+        VALUES ('definition-backup','artifact-version:briefing','ship','${"c".repeat(64)}','verdict',1,'Ship it','[]','[]',0,36,26,33,1);
       INSERT INTO briefing_directive_instances
         (id,round_id,briefing_id,artifact_version_id,definition_id,directive_key,position,created_at)
         VALUES ('instance-backup','round-backup','briefing-backup','artifact-version:briefing','definition-backup','ship',0,1);

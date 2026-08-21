@@ -4,6 +4,7 @@ import {
   applyBriefingAnnotations,
   applyBriefingAnswers,
   BriefingStoreError,
+  exportBriefingSubmissionMarkdown,
   listBriefings,
   parseBriefingRunRequest,
   publishBriefingRun,
@@ -144,4 +145,14 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       handleError(res, error);
     }
   }, { fileRpc: "deny" });
+
+  server.get("/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", (req, res) => {
+    try {
+      const actor = activeHuman(db, req);
+      sendJson(res, 200, exportBriefingSubmissionMarkdown(db, req.params.briefingId, req.params.roundId,
+        req.params.submissionId, actor.user.id));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
 }
