@@ -171,12 +171,12 @@ function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: B
       element!.dataset.briefingDirectiveIndex = String(directiveIndex);
     }
     const first = matches[0].element!;
-    first.classList.add('contextual-action-owner');
+    first.classList.add('briefing-directive--owner', 'contextual-action-owner');
     first.tabIndex = 0;
     first.id = `briefing-directive-prompt-${directive.itemId}`.replace(/[^A-Za-z0-9_-]/g, '-');
     actionHost(document, first, 'briefingDirectiveAction', directiveIndex);
     const responseHost = document.createElement('div');
-    responseHost.className = 'briefing-directive briefing-directive__response-host';
+    responseHost.className = 'briefing-directive__response-host';
     responseHost.dataset.briefingDirectiveIndex = String(directiveIndex);
     responseHost.dataset.briefingDirectiveResponse = String(directiveIndex);
     const last = matches.at(-1)!.element!;
