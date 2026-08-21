@@ -186,6 +186,14 @@ function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: B
   return document.body.innerHTML;
 }
 
+function alignDirectiveRails(sourceTree: HTMLElement): void {
+  const gutterX = sourceTree.getBoundingClientRect().left;
+  sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
+    const ownerX = owner.getBoundingClientRect().left;
+    owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerX}px`);
+  });
+}
+
 function semanticHeading(value: string): string {
   const document = new DOMParser().parseFromString(renderMarkdown(value), 'text/html');
   return (document.body.textContent ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
@@ -322,6 +330,23 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       element.classList.toggle('contextual-action-group--persistent', directive?.itemId === selectedDirectiveId);
     });
   }, [markdownModel, portalRevision, selectedDirectiveId]);
+  useLayoutEffect(() => {
+    const sourceTree = renderedRef.current;
+    if (!sourceTree) return undefined;
+    const updateRails = () => alignDirectiveRails(sourceTree);
+    const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
+    updateRails();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateRails);
+    observer?.observe(sourceTree);
+    owners.forEach((owner) => observer?.observe(owner));
+    globalThis.addEventListener('resize', updateRails);
+    globalThis.document.fonts?.addEventListener('loadingdone', updateRails);
+    return () => {
+      observer?.disconnect();
+      globalThis.removeEventListener('resize', updateRails);
+      globalThis.document.fonts?.removeEventListener('loadingdone', updateRails);
+    };
+  }, [portalRevision, renderedMarkdown]);
   useEffect(() => {
     let cancelled = false;
     if (source === null) return undefined;
