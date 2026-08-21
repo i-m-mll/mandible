@@ -280,7 +280,10 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
 
 /** Historical v142 apply shape. It exists only long enough for v143 to seal and retire v1. */
 export const TRANSIENT_BRIEFING_V1_SCHEMA_SQL: readonly string[] = BRIEFING_SCHEMA_SQL.map((statement) =>
-  statement.replace("CHECK(profile = 'mandible-briefing.v2')", "CHECK(profile = 'mandible-briefing.v1')")
+  statement.replace(
+    /CHECK\(profile (?:= 'mandible-briefing\.v\d+'|IN \([^)]*\))\)/,
+    "CHECK(profile = 'mandible-briefing.v1')",
+  )
 );
 
 export const CANONICAL_AGENT_DISPATCH_SQL = `CREATE TABLE agent_dispatch_events (
