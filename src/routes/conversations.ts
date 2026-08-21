@@ -29,6 +29,11 @@ import type { SessionManager } from "../session-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
+import {
+  getConversationStructureCache,
+  sparseConversationBlockId,
+  sparseConversationBlockPosition,
+} from "../conversations/structure-cache.js";
 import type { SourceBackedConversationBlock } from "../conversations/source-types.js";
 import {
   ConversationFreshnessError,
@@ -294,8 +299,8 @@ function conversationRequiresSourceReader(
   conversationId: string,
 ): boolean {
   return Boolean(db.prepare(`
-    SELECT 1 FROM conversation_blocks
-     WHERE conversation_id = ? AND payload_state = 'source'
+    SELECT 1 FROM conversation_sources
+     WHERE conversation_id = ?
      LIMIT 1
   `).get(conversationId));
 }
@@ -520,7 +525,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       let sourceTruncated = false;
       if (!result.skipped && result.scanned_blocks < requestedLimit) {
         const params: unknown[] = [];
-        const where = ["EXISTS (SELECT 1 FROM conversation_blocks b WHERE b.conversation_id = c.id AND b.payload_state = 'source')"];
+        const where = ["EXISTS (SELECT 1 FROM conversation_sources source WHERE source.conversation_id = c.id)"];
         if (conversationId) {
           where.push("c.id = ?");
           params.push(conversationId);
@@ -1035,8 +1040,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     const query = req.query ?? {};
-    const useSourceReader = (query.source_backed !== "false" && query.source_backed !== "0")
-      || conversationRequiresSourceReader(db, id);
+    const sourceBacked = conversationRequiresSourceReader(db, id);
+    const useSourceReader = sourceBacked
+      || query.source_backed === "true" || query.source_backed === "1";
     const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
     const limit = Math.min(500, requestedLimit);
     if (query.target && query.target !== "initial" && query.target !== "latest") {
@@ -1065,41 +1071,128 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       targetKind = "position";
       requestedValue = position;
     }
-    const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);
-    if (!resolved) {
-      sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
-      return;
-    }
-
-    const total = (db.prepare(
-      "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ?",
-    ).get(id) as { total: number }).total;
+    let total = conv.block_count;
+    let windowOffset = 0;
     let blocks: BlockRow[] = [];
-    if (resolved.block) {
-      if (targetKind === "initial" || targetKind === "latest") {
-        blocks = db.prepare(
-          `SELECT * FROM (
-             SELECT * FROM conversation_blocks
-              WHERE conversation_id = ?
-              ORDER BY position DESC LIMIT ?
-           ) ORDER BY position ASC`,
-        ).all(id, limit) as BlockRow[];
-      } else {
-        const before = Math.floor((limit - 1) / 2);
-        const start = db.prepare(
-          `SELECT position FROM conversation_blocks
-            WHERE conversation_id = ? AND position <= ?
-            ORDER BY position DESC LIMIT 1 OFFSET ?`,
-        ).get(id, resolved.block.position, before) as { position: number } | undefined;
-        const first = start ?? db.prepare(
-          "SELECT MIN(position) AS position FROM conversation_blocks WHERE conversation_id = ?",
-        ).get(id) as { position: number };
-        blocks = db.prepare(
-          `SELECT * FROM conversation_blocks
-            WHERE conversation_id = ? AND position >= ?
-            ORDER BY position ASC LIMIT ?`,
-        ).all(id, first.position, limit) as BlockRow[];
+    let readableBlocks: Array<BlockRow | SourceBackedConversationBlock> = [];
+    let bodySource: "source" | "legacy" = "legacy";
+    let resolvedBlock: BlockRow | SourceBackedConversationBlock | null = null;
+    let resolvedTurnId: string | null = null;
+    if (useSourceReader) {
+      const source = db.prepare(`
+        SELECT current_version_id FROM conversation_sources
+         WHERE conversation_id = ? AND current_version_id IS NOT NULL
+         ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
+         LIMIT 1
+      `).get(id) as { current_version_id: string } | undefined;
+      const structureCache = getConversationStructureCache(db);
+      const cachedTotal = source
+        ? structureCache.blockCount(id, source.current_version_id)
+        : null;
+      if (cachedTotal !== null) total = cachedTotal;
+      let anchorPosition = total > 0 ? total - 1 : null;
+      if (targetKind === "position") {
+        anchorPosition = Number(requestedValue);
+      } else if (targetKind === "block" || targetKind === "turn") {
+        const sparsePosition = typeof requestedValue === "string"
+          ? sparseConversationBlockPosition(id, requestedValue)
+          : null;
+        const densePosition = sparsePosition === null && typeof requestedValue === "string"
+          ? db.prepare(`
+              SELECT position FROM conversation_structural_blocks
+               WHERE conversation_id = ? AND status = 'current'
+                 AND id = COALESCE((
+                   SELECT block_id FROM conversation_block_aliases WHERE alias = ?
+                 ), ?)
+            `).get(id, requestedValue, requestedValue) as { position: number } | undefined
+          : undefined;
+        anchorPosition = sparsePosition ?? densePosition?.position ?? null;
       }
+      const emptyInitial = total === 0 && (targetKind === "initial" || targetKind === "latest");
+      if (!emptyInitial && (anchorPosition === null || anchorPosition < 0 || anchorPosition >= total)) {
+        sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
+        return;
+      }
+      windowOffset = emptyInitial
+        ? 0
+        : targetKind === "initial" || targetKind === "latest"
+        ? Math.max(0, total - limit)
+        : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
+      const sourcePage = await sourceReader.readPage(id, { offset: windowOffset, limit });
+      if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
+        sendJson(res, sourcePage.status === "not_found" ? 404 : 409, {
+          error: sourcePage.reason,
+          status: sourcePage.status,
+        });
+        return;
+      }
+      readableBlocks = sourcePage.value.blocks;
+      bodySource = sourcePage.status;
+      total = sourcePage.value.total;
+      resolvedBlock = anchorPosition === null
+        ? null
+        : readableBlocks.find((block) => block.position === anchorPosition) ?? null;
+      if (!resolvedBlock && total > 0) {
+        sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
+        return;
+      }
+      const cachedTurnPosition = anchorPosition !== null && source && cachedTotal !== null
+        ? structureCache.turnPosition(id, source.current_version_id, anchorPosition)
+        : null;
+      if (cachedTurnPosition !== null) {
+        resolvedTurnId = sparseConversationBlockId(id, cachedTurnPosition);
+      } else if (resolvedBlock?.type === "user_message") {
+        resolvedTurnId = resolvedBlock.id;
+      } else if (anchorPosition !== null) {
+        const preceding = readableBlocks.filter((block) => block.position <= anchorPosition);
+        const previousUser = [...preceding].reverse()
+          .find((block) => block.type === "user_message")?.position ?? -1;
+        resolvedTurnId = preceding.find((block) =>
+          block.position > previousUser && block.type !== "user_message"
+        )?.id ?? resolvedBlock?.id ?? null;
+      }
+      if (targetKind === "turn" && resolvedTurnId !== requestedValue) {
+        sendJson(res, 404, { error: "Turn anchor not found" });
+        return;
+      }
+    } else {
+      const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);
+      if (!resolved) {
+        sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
+        return;
+      }
+      total = (db.prepare(
+        "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ?",
+      ).get(id) as { total: number }).total;
+      resolvedBlock = resolved.block;
+      resolvedTurnId = resolved.turnId;
+      if (resolved.block) {
+        if (targetKind === "initial" || targetKind === "latest") {
+          blocks = db.prepare(
+            `SELECT * FROM (
+               SELECT * FROM conversation_blocks
+                WHERE conversation_id = ?
+                ORDER BY position DESC LIMIT ?
+             ) ORDER BY position ASC`,
+          ).all(id, limit) as BlockRow[];
+        } else {
+          const before = Math.floor((limit - 1) / 2);
+          const start = db.prepare(
+            `SELECT position FROM conversation_blocks
+              WHERE conversation_id = ? AND position <= ?
+              ORDER BY position DESC LIMIT 1 OFFSET ?`,
+          ).get(id, resolved.block.position, before) as { position: number } | undefined;
+          const first = start ?? db.prepare(
+            "SELECT MIN(position) AS position FROM conversation_blocks WHERE conversation_id = ?",
+          ).get(id) as { position: number };
+          blocks = db.prepare(
+            `SELECT * FROM conversation_blocks
+              WHERE conversation_id = ? AND position >= ?
+              ORDER BY position ASC LIMIT ?`,
+          ).all(id, first.position, limit) as BlockRow[];
+        }
+      }
+      readableBlocks = blocks;
     }
 
     // Fetch sub-agent (child) conversations — Bug: d0759d1
@@ -1157,35 +1250,22 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
       : undefined;
 
-    const startPosition = blocks[0]?.position ?? null;
-    const endPosition = blocks[blocks.length - 1]?.position ?? null;
-    let readableBlocks: Array<BlockRow | SourceBackedConversationBlock> = blocks;
-    let bodySource: "source" | "legacy" = "legacy";
-    if (useSourceReader) {
-      const offset = startPosition === null ? 0 : (db.prepare(
-        "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ? AND position < ?",
-      ).get(id, startPosition) as { total: number }).total;
-      const sourcePage = await sourceReader.readPage(id, { offset, limit });
-      if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
-        sendJson(res, sourcePage.status === "not_found" ? 404 : 409, {
-          error: sourcePage.reason,
-          status: sourcePage.status,
-        });
-        return;
-      }
-      readableBlocks = sourcePage.value.blocks;
-      bodySource = sourcePage.status;
-    }
+    const startPosition = readableBlocks[0]?.position ?? null;
+    const endPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
     const mapped = useSourceReader
       ? mapConversation(maskSourceBackedConversationRow(conv), sessionManager)
       : mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
-    const hasBefore = startPosition !== null && Boolean(db.prepare(
-      "SELECT 1 FROM conversation_blocks WHERE conversation_id = ? AND position < ? LIMIT 1",
-    ).get(id, startPosition));
-    const afterCount = endPosition === null ? 0 : (db.prepare(
-      "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ? AND position > ?",
-    ).get(id, endPosition) as { total: number }).total;
+    const hasBefore = startPosition !== null && (useSourceReader
+      ? startPosition > 0
+      : Boolean(db.prepare(`SELECT 1 FROM conversation_blocks
+          WHERE conversation_id = ? AND position < ? LIMIT 1`).get(id, startPosition)));
+    const afterCount = endPosition === null
+      ? 0
+      : useSourceReader
+        ? Math.max(0, total - endPosition - 1)
+        : (db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
+            WHERE conversation_id = ? AND position > ?`).get(id, endPosition) as { count: number }).count;
 
     sendJson(res, 200, {
       conversation: mapped,
@@ -1197,9 +1277,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       target: {
         kind: targetKind,
         requested_value: requestedValue,
-        position: resolved.block?.position ?? null,
-        block_id: resolved.block?.id ?? null,
-        turn_id: resolved.turnId,
+        position: resolvedBlock?.position ?? null,
+        block_id: resolvedBlock?.id ?? null,
+        turn_id: resolvedTurnId,
       },
       window: {
         start_position: startPosition,
@@ -1227,6 +1307,46 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       .get(id) as { id: string } | undefined;
     if (!conv) {
       sendJson(res, 404, { error: "Conversation not found" });
+      return;
+    }
+
+    const sourceBacked = conversationRequiresSourceReader(db, id);
+    if (sourceBacked) {
+      const read = await sourceReader.readAll(id);
+      if (read.status !== "source" && read.status !== "legacy") {
+        sendJson(res, read.status === "not_found" ? 404 : 409, {
+          error: read.reason,
+          status: read.status,
+        });
+        return;
+      }
+      const blocks = read.value;
+      const childrenByParent = new Map<string, string[]>();
+      const counts = new Map<string, number>();
+      const previews = new Map<string, string>();
+      for (const block of blocks) {
+        if (block.dag_uuid) counts.set(block.dag_uuid, (counts.get(block.dag_uuid) ?? 0) + 1);
+        if (!block.dag_parent_uuid || !block.dag_uuid) continue;
+        const children = childrenByParent.get(block.dag_parent_uuid) ?? [];
+        if (!children.includes(block.dag_uuid)) children.push(block.dag_uuid);
+        childrenByParent.set(block.dag_parent_uuid, children);
+        const previewKey = `${block.dag_parent_uuid}\0${block.dag_uuid}`;
+        if (!previews.has(previewKey)
+            && (block.type === "assistant_message" || block.role === "assistant")) {
+          previews.set(previewKey, block.content.slice(0, 60));
+        }
+      }
+      const forks = [...childrenByParent.entries()]
+        .filter(([, children]) => children.length > 1)
+        .map(([parent, children]) => ({
+          parent_dag_uuid: parent,
+          branches: children.map((dagUuid) => ({
+            dag_uuid: dagUuid,
+            first_text: previews.get(`${parent}\0${dagUuid}`) ?? "",
+            block_count: counts.get(dagUuid) ?? 0,
+          })),
+        }));
+      sendJson(res, 200, { forks });
       return;
     }
 

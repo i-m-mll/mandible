@@ -41,8 +41,13 @@ export class IngestionActor {
     this.spawn();
   }
 
-  ingest(paths: string[], forceFull = false, bypassSameMtimeUnchanged = false): Promise<void> {
-    return this.request({ kind: "ingest", paths, forceFull, bypassSameMtimeUnchanged });
+  ingest(
+    paths: string[],
+    forceFull = false,
+    bypassSameMtimeUnchanged = false,
+    priority = false,
+  ): Promise<void> {
+    return this.request({ kind: "ingest", paths, forceFull, bypassSameMtimeUnchanged, priority });
   }
 
   reconcile(repairLegacyOrphans = false): Promise<void> {

@@ -20,6 +20,7 @@ import {
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { sourceFilesystemIdentity } from "../src/conversations/source-observer.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 
@@ -161,6 +162,24 @@ describe("exact conversation freshness", () => {
     await expect(ensureExactConversationFresh(db, "fresh-session", { ingest })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
     await expect(ensureExactConversationFresh(db, seeded.id.slice(0, 8), { ingest })).rejects.toMatchObject({ code: "not_found" });
     expect(ingests).toBe(0);
+  });
+
+  it("rebuilds a deleted sparse cache before declaring an unchanged source fresh", async () => {
+    const seeded = await seed("missing-structure-cache");
+    const cache = getConversationStructureCache(db);
+    cache.clear();
+
+    const refreshed = await ensureExactConversationFresh(db, seeded.id);
+
+    expect(refreshed.refreshed).toBe(true);
+    const source = db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ?`).get(seeded.id) as { current_version_id: string };
+    expect(cache.hasCompleteConversation(seeded.id, source.current_version_id, 2)).toBe(true);
+    const read = await new ConversationSourceReader(db).readAll(seeded.id);
+    expect(read.status).toBe("source");
+    if (read.status === "source") expect(read.value.map((block) => block.content)).toEqual(["hello", "initial tail"]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+      .get(seeded.id)).toEqual({ count: 0 });
   });
 
   it("coalesces concurrent append catch-up and serves the canonical tail through detail, blocks, and export", async () => {

@@ -106,16 +106,6 @@ describe("incremental tail ingestion", () => {
       status: "ingested",
     });
 
-    const initialConversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
-      .get(sessionPath) as { id: string };
-    // Model a historical parser projection that does not match the current
-    // native parser. Appending must still discard these disposable bytes.
-    db.prepare(`
-      UPDATE conversation_blocks
-         SET content = 'historical parser bytes', payload_state = 'legacy'
-       WHERE conversation_id = ? AND position = 0
-    `).run(initialConversation.id);
-
     await appendWithMtime(sessionPath, assistantRow("new tail", 3), 2);
     expect(await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 })).toMatchObject({
       status: "ingested",
@@ -124,15 +114,13 @@ describe("incremental tail ingestion", () => {
     const conversation = db.prepare("SELECT id, block_count FROM conversations WHERE source_path = ?")
       .get(sessionPath) as { id: string; block_count: number };
     expect(conversation.block_count).toBe(3);
-    expect(
-      db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-        .get(conversation.id),
-    ).toMatchObject({ count: 3 });
-    expect(db.prepare(`
-      SELECT COUNT(*) AS count FROM conversation_blocks
-       WHERE conversation_id = ?
-         AND (payload_state != 'source' OR content != '' OR metadata_json != '{}' OR compressed != 0)
-    `).get(conversation.id)).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+      .get(conversation.id)).toEqual({ count: 0 });
+    const sourcePage = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
+    expect(sourcePage.status).toBe("source");
+    if (sourcePage.status === "source") {
+      expect(sourcePage.value.blocks.map((block) => block.content)).toEqual(["hello", "hi", "new tail"]);
+    }
     expect(
       db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
@@ -221,10 +209,8 @@ describe("incremental tail ingestion", () => {
        WHERE source_path = ? AND session_id = 'tailtest-rewritten'
     `).get(sessionPath) as { id: string; session_id: string; block_count: number };
     expect(conversation).toMatchObject({ session_id: "tailtest-rewritten", block_count: 3 });
-    const firstBlock = db.prepare(
-      "SELECT content, metadata_json, compressed, payload_state FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
-    ).get(conversation.id) as { content: Buffer | string; metadata_json: string; compressed: number; payload_state: string };
-    expect(firstBlock).toMatchObject({ content: "", metadata_json: "{}", compressed: 0, payload_state: "source" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+      .get(conversation.id)).toEqual({ count: 0 });
     const sourcePage = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
     expect(sourcePage.status).toBe("source");
     if (sourcePage.status === "source") expect(sourcePage.value.blocks[0].content).toBe("rewritten hello");
@@ -232,8 +218,10 @@ describe("incremental tail ingestion", () => {
       db.prepare("SELECT byte_offset FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size });
+    expect(db.prepare("SELECT block_count FROM conversations WHERE id = ?")
+      .get(original.id)).toEqual({ block_count: 3 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-      .get(original.id)).toEqual({ count: 3 });
+      .get(original.id)).toEqual({ count: 0 });
   });
 
   it("detects a replacement with the exact previously indexed mtime", async () => {

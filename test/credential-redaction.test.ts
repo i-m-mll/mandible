@@ -365,16 +365,15 @@ describe("ingest-time credential redaction", () => {
     );
 
     await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
-    const first = storedBlocks();
+    const first = await indexedBlocks();
     expect(first).toHaveLength(2);
 
-    // Force the full re-ingest path over the untouched source. Block ids are
-    // derived from the content, so identical masked text must reproduce
-    // identical ids: masking is a pure function of the credential table and
-    // cannot make ingestion churn ids or content on every pass.
+    // Force the full re-ingest path over the untouched source. Sparse identities
+    // are positional, and masking remains a pure read-time function of the
+    // credential table, so neither ids nor visible content should churn.
     await ingestBatchForWorker([transcript], true);
 
-    expect(storedBlocks()).toEqual(first);
+    expect(await indexedBlocks()).toEqual(first);
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
@@ -452,23 +451,16 @@ describe("ingest-time credential redaction", () => {
     // those is what `mandible credential redact` is for.
   });
 
-  it("never deletes another conversation's block while recovering from an id clash", async () => {
-    // Re-review finding 2, the data-loss half: unique-conflict recovery deleted
-    // every row whose id matched one of the incoming ids, with no conversation
-    // scope. A block id collision across conversations therefore destroyed an
-    // unrelated conversation's block. Recovery must purge only this
-    // conversation and let the insert fail loudly otherwise.
+  it("never deletes a legacy block whose id matches a sparse source-backed id", async () => {
     makeAgent();
     const transcript = await writeCodexTranscript(codexTranscript("hello", "on it"));
     await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
-    const indexed = storedBlocks();
+    const indexed = await indexedBlocks();
     expect(indexed).toHaveLength(2);
     const collidingId = indexed[1].id;
 
-    // Free the id and hand it to an unrelated conversation. This stands in for
-    // the truncated-hash collision that is the only way a foreign row can hold
-    // an id this file will derive.
-    db.prepare("DELETE FROM conversation_blocks WHERE id = ?").run(collidingId);
+    // The sparse cache and the legacy compatibility table are independent
+    // namespaces. A stale legacy id must not be touched during source refresh.
     seedConversation("conv-bystander", {
       blocks: ["someone else's work"],
       sourcePath: transcript,
@@ -476,9 +468,7 @@ describe("ingest-time credential redaction", () => {
     db.prepare("UPDATE conversation_blocks SET id = ? WHERE id = 'conv-bystander-b0'")
       .run(collidingId);
 
-    // Grow the transcript so the re-parse is a real full re-ingest rather than
-    // the identical-source-hash update, then force the full path. Positions 0
-    // and 1 re-derive the same ids, so position 1 collides.
+    // Grow the transcript so the re-parse takes the real full path.
     await fsp.appendFile(
       transcript,
       codexRow({
@@ -493,13 +483,7 @@ describe("ingest-time credential redaction", () => {
     );
     const future = new Date(Date.now() + 5_000);
     fs.utimesSync(transcript, future, future);
-    const logs: string[] = [];
-    configureIngestionWorker((_level, event) => logs.push(event), () => {});
-    try {
-      await ingestBatchForWorker([transcript], true);
-    } finally {
-      configureIngestionWorker(() => {}, () => {});
-    }
+    await ingestBatchForWorker([transcript], true);
     const survivor = db
       .prepare("SELECT conversation_id, content, compressed FROM conversation_blocks WHERE id = ?")
       .get(collidingId) as
@@ -512,11 +496,12 @@ describe("ingest-time credential redaction", () => {
       .toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE source_path = ?").get(transcript))
       .toEqual({ n: 2 });
-
-    // The clash really did drive the unique-conflict recovery path, and that
-    // path refused to resolve it by deleting a row it does not own.
-    expect(logs).toContain("ingestion_block_id_collision_foreign");
-    expect(logs).toContain("ingestion_db_error");
+    const sourceConversation = db.prepare(
+      "SELECT id FROM conversations WHERE source_path = ? AND id != 'conv-bystander'",
+    ).get(transcript) as { id: string };
+    const refreshed = await new ConversationSourceReader(db).readAll(sourceConversation.id);
+    expect(refreshed.status).toBe("source");
+    if (refreshed.status === "source") expect(refreshed.value).toHaveLength(3);
   });
 
   it("leaves text that only looks like a token alone", async () => {
@@ -704,10 +689,7 @@ describe("mandible credential redact", () => {
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
-  it("keeps the prior source-backed block identity as retired history", async () => {
-    // Review finding 7: the redacted block kept its plaintext-derived id, so a
-    // deep link captured after the redaction broke silently at the next full
-    // re-ingest. Recomputing moves that change to redaction time.
+  it("keeps a source-backed positional identity stable without retaining history", async () => {
     makeAgent();
     const transcript = await writeCodexTranscript(
       codexTranscript(`token: ${LEAKED_TOKEN}`, "acknowledged"),
@@ -727,13 +709,13 @@ describe("mandible credential redact", () => {
       sources: { patched_files: 1 },
     });
 
-    // Re-ingestion refreshes the exact source identity. Content-derived current
-    // identity changes, while the former structural row remains as history.
+    // Re-ingestion refreshes the exact source identity. The source-backed id is
+    // positional, and no retired copy is retained in the durable database.
     await ingestBatchForWorker([transcript], true);
     const after = await indexedBlocks();
-    expect(after[0].id).not.toBe(before[0].id);
-    expect(db.prepare("SELECT status FROM conversation_structural_blocks WHERE id = ?")
-      .get(before[0].id)).toEqual({ status: "retired" });
+    expect(after[0].id).toBe(before[0].id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_structural_blocks").get())
+      .toEqual({ count: 0 });
     expect(after[0].content).toBe(`token: ${credentialMaskFor(credential.id)}`);
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });

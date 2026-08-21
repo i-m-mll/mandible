@@ -140,7 +140,7 @@ describe("watched tail ingestion latency", () => {
     ).toBe(true);
   });
 
-  it("tombstones a missing watched source while preserving the conversation fallback", async () => {
+  it("tombstones a missing watched source while preserving its durable coordinates", async () => {
     const ingestion = await import("../src/ingestion.js");
     const sessionDir = path.join(process.env.HOME!, ".codex", "sessions", "2026", "07", "02");
     await fsp.mkdir(sessionDir, { recursive: true });
@@ -160,7 +160,7 @@ describe("watched tail ingestion latency", () => {
     expect(
       db?.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = (SELECT id FROM conversations WHERE source_path = ?)")
         .get(sessionPath),
-    ).toMatchObject({ count: 1 });
+    ).toMatchObject({ count: 0 });
 
     expect(
       db?.prepare(`

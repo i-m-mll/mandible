@@ -15,6 +15,8 @@ class FakeSource implements ConversationSearchSourceAdapter {
   active = 0;
   maxActive = 0;
   epoch = "redaction:1";
+  reads: string[] = [];
+  shortlist: Set<string> | null = null;
 
   constructor(
     readonly blocks: Map<string, SearchBlockSource[]>,
@@ -33,11 +35,17 @@ class FakeSource implements ConversationSearchSourceAdapter {
   }
 
   async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[]> {
+    this.reads.push(conversationId);
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);
     if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
     this.active -= 1;
     return this.blocks.get(conversationId) ?? [];
+  }
+
+  async shortlistMaskedBlocks(conversationIds: readonly string[]): Promise<ReadonlySet<string> | null> {
+    if (this.shortlist === null) return null;
+    return new Set(conversationIds.filter((id) => this.shortlist!.has(id)));
   }
 }
 
@@ -153,6 +161,31 @@ describe("disposable conversation search cache", () => {
     }
   });
 
+  it("parses only native-file shortlist candidates while preserving caller order", async () => {
+    const blocks = new Map(Array.from({ length: 100 }, (_, index) => {
+      const id = `c${index}`;
+      return [id, [block(id, index === 70 ? "rare native needle" : `ordinary ${index}`)]];
+    }));
+    const source = new FakeSource(blocks);
+    source.shortlist = new Set(["c70"]);
+    const cache = new ConversationSearchCache(source, {
+      cachePath: tempCachePath(),
+      maxConcurrentColdParses: 4,
+    });
+    try {
+      const result = await cache.search({
+        conversationIds: [...blocks.keys()],
+        needle: "rare native needle",
+        limit: 1,
+      });
+      expect(result.matches.map((match) => match.conversation_id)).toEqual(["c70"]);
+      expect(source.reads).toEqual(["c70"]);
+      expect(result.metrics).toMatchObject({ cold_shortlist: 1, cold_conversations: 1 });
+    } finally {
+      cache.close();
+    }
+  });
+
   it("keeps credential canaries out of cache bytes and results", async () => {
     const token = `mandible_pat_${"A".repeat(43)}`;
     const source = new FakeSource(new Map([
@@ -194,6 +227,31 @@ describe("disposable conversation search cache", () => {
       const rebuilt = await cache.search({ conversationIds: ["c1"], needle: "safely", limit: 1 });
       expect(rebuilt.matches).toHaveLength(1);
       expect(rebuilt.metrics.cold_conversations).toBe(1);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("enforces the physical SQLite file-family cap, including FTS expansion", async () => {
+    let content = "physical-cap-needle ";
+    for (let index = 0; content.length < 512 * 1024; index += 1) {
+      content += `${index.toString(36)}-${(index * 2654435761 >>> 0).toString(36)} `;
+    }
+    const source = new FakeSource(new Map([["large", [block("large", content)]]]));
+    const cache = new ConversationSearchCache(source, {
+      cachePath: tempCachePath(),
+      maxCacheBytes: 2 * 1024 * 1024,
+      maxPhysicalBytes: 256 * 1024,
+    });
+    try {
+      const result = await cache.search({
+        conversationIds: ["large"],
+        needle: "physical-cap-needle",
+        limit: 1,
+      });
+      expect(result.matches).toHaveLength(1);
+      expect(cache.stats().physicalBytes).toBeLessThanOrEqual(256 * 1024);
+      expect(cache.stats().bodyBytes).toBe(0);
     } finally {
       cache.close();
     }
