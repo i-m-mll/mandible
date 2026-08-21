@@ -412,7 +412,7 @@
 .briefing-directive--owner::before {
   position: absolute;
   inset-block: 0;
-  inset-inline-start: calc(-1 * var(--space-4));
+  inset-inline-start: var(--briefing-directive-rail-offset, 0px);
   width: 2px;
   background: var(--border-faint);
   content: '';
@@ -445,7 +445,7 @@
 
 .briefing-directive__variant-controls {
   display: inline-grid;
-  grid-template-columns: 1.4em minmax(3em, auto) 1.4em;
+  grid-template-columns: 2em minmax(3em, auto) 2em;
   align-items: center;
   gap: .35em;
   font-size: .8em;
@@ -463,15 +463,25 @@
 
 .briefing-directive__variant-controls button {
   display: grid;
-  width: 1.4em;
-  height: 1.4em;
-  padding: .2em;
+  width: 2em;
+  height: 2em;
+  padding: .5em;
   place-items: center;
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
+  appearance: none;
+  border: 0;
+  border-radius: 0;
   background: transparent;
+  box-shadow: none;
   color: var(--text-primary);
   cursor: pointer;
+}
+
+.briefing-directive__variant-controls button:hover,
+.briefing-directive__variant-controls button:active,
+.briefing-directive__variant-controls button:disabled {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .briefing-directive__variant-controls button:disabled {

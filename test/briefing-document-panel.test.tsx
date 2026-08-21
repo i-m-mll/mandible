@@ -325,13 +325,42 @@ describe('Briefing document panel', () => {
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
   });
 
-  it('paints directive chrome in the margin and keeps response and comment rails at the document edge', async () => {
+  it('aligns differently indented directive rails to one document gutter without moving content', async () => {
+    const railSource = [
+      ':::spec-item{key="plain" type="verdict" required="true"}', 'Plain directive', ':::',
+      '',
+      ':::spec-item{key="list" type="verdict" required="true"}', '- Nested directive', ':::',
+    ].join('\n');
+    const directives = parseBriefingDirectives(railSource);
     vi.stubGlobal('fetch', vi.fn(async () => json(content())));
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({
+      document: {
+        artifact_version_id: 'artifact-version:rails',
+        content_hash: createHash('sha256').update(railSource).digest('hex'),
+        previous_round_id: null, profile: 'mandible-briefing.v2', source: railSource,
+      },
+      items: directives.map((directive, index) => ({
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
+        revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: directive.type, required: true, position: index, options: [] },
+        effective_response: null, responseVisible: true, directive,
+      })),
+    })} canMutate onRefresh={async () => null} />);
 
-    await screen.findByRole('button', { name: 'Keep' });
-    const directive = screen.getByText('Plan').closest('.briefing-directive') as HTMLElement;
+    await screen.findAllByRole('button', { name: 'Keep' });
+    const directive = screen.getByText('Plain directive').closest('.briefing-directive') as HTMLElement;
     const actions = directive.querySelector('.briefing-directive__actions') as HTMLElement;
+    const sourceTree = screen.getByLabelText('Pinned briefing document').querySelector('.briefing-document__source-tree') as HTMLElement;
+    const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
+    vi.spyOn(sourceTree, 'getBoundingClientRect').mockReturnValue({
+      x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 600, width: 640, height: 600, toJSON: () => ({}),
+    });
+    vi.spyOn(owners[0], 'getBoundingClientRect').mockReturnValue({
+      x: 488, y: 40, left: 488, right: 1088, top: 40, bottom: 80, width: 600, height: 40, toJSON: () => ({}),
+    });
+    vi.spyOn(owners[1], 'getBoundingClientRect').mockReturnValue({
+      x: 528, y: 100, left: 528, right: 1088, top: 100, bottom: 140, width: 560, height: 40, toJSON: () => ({}),
+    });
+    fireEvent(globalThis, new Event('resize'));
     const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
     const ownerRule = briefingStylesheet.match(/\.briefing-directive--owner \{([^}]*)\}/)?.[1] ?? '';
     const railRule = briefingStylesheet.match(/\.briefing-directive--owner::before \{([^}]*)\}/)?.[1] ?? '';
@@ -342,10 +371,15 @@ describe('Briefing document panel', () => {
     expect(directiveRule).toContain('box-shadow: none');
     expect(directiveRule).not.toMatch(/(?:margin|padding|border-left):/);
     expect(ownerRule).toContain('position: relative');
-    expect(railRule).toContain('inset-inline-start: calc(-1 * var(--space-4))');
+    expect(railRule).toContain('inset-inline-start: var(--briefing-directive-rail-offset, 0px)');
     expect(railRule).toContain('width: 2px');
     expect(railRule).toContain("content: ''");
-    expect(screen.getByLabelText('Pinned briefing document').querySelectorAll('.briefing-directive--owner')).toHaveLength(1);
+    const contentX = owners.map((owner) => owner.getBoundingClientRect().left);
+    const railX = owners.map((owner) => owner.getBoundingClientRect().left
+      + Number.parseFloat(owner.style.getPropertyValue('--briefing-directive-rail-offset')));
+    expect(contentX).toEqual([488, 528]);
+    expect(railX).toEqual([448, 448]);
+    expect(owners).toHaveLength(2);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-end: 0/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner > \.briefing-markdown__action-rail \{[^}]*inset-inline-end: calc\(-1 \* var\(--space-3\)\)/s);
@@ -629,6 +663,10 @@ describe('Briefing document panel', () => {
     expect(changes).toEqual([]);
     const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
     const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls button \{[^}]*width: 2em[^}]*height: 2em[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls button:hover,[^{]*\{[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls button:focus-visible \{[^}]*outline: 2px solid var\(--accent-border\)/s);
+    expect(briefingStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\) \{.*?\.briefing-directive__variant-controls button \{[^}]*min-width: 44px[^}]*min-height: 44px/s);
     expect(previous.disabled).toBe(true);
     await waitFor(() => expect(next.disabled).toBe(false));
     expect(screen.getByText('1 of 2')).toBeTruthy();
