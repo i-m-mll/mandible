@@ -1591,12 +1591,12 @@ function discoverSourceBackedCredentialConversations(
   fingerprint: string,
 ): Set<string> {
   const rows = db.prepare(`
-    SELECT DISTINCT c.source_path, cb.conversation_id
-      FROM conversation_blocks cb
-      JOIN conversations c ON c.id = cb.conversation_id
-     WHERE cb.payload_state = 'source'
+    SELECT DISTINCT c.source_path, c.id AS conversation_id
+      FROM conversations c
+      JOIN conversation_sources source ON source.conversation_id = c.id
+     WHERE source.current_version_id IS NOT NULL
        AND c.source_path IS NOT NULL
-     ORDER BY c.source_path, cb.conversation_id
+     ORDER BY c.source_path, c.id
   `).all() as Array<{ source_path: string; conversation_id: string }>;
   const conversationsByPath = new Map<string, string[]>();
   for (const row of rows) {

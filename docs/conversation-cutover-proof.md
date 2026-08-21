@@ -1,9 +1,8 @@
 # Conversation cutover proof tool
 
-`mandible conversation-cutover` is the non-destructive proof surface for the
-source-backed conversation migration. It does not change the default reader,
-delete legacy bodies, modify the source database, or claim adapter support from
-the source, cache, or custody lanes.
+`mandible conversation-cutover` builds verified replacements without mutating
+its source database. The `reclaim` command writes both a compact durable DB and
+a disposable sparse navigation cache; publication of either output is atomic.
 
 ## Commands
 
@@ -15,6 +14,13 @@ mandible conversation-cutover binding \
 mandible conversation-cutover rebuild \
   --source /explicit/source.sqlite \
   --destination /explicit/fresh.sqlite \
+  --json
+
+mandible conversation-cutover reclaim \
+  --source /explicit/source.sqlite \
+  --destination /explicit/compact.sqlite \
+  --log-db /explicit/operational-logs.sqlite \
+  --structure-cache /explicit/structure.sqlite \
   --json
 
 mandible conversation-cutover restore-drill \
@@ -39,6 +45,15 @@ interrupted run leaves a marker naming its partial output; the next run removes
 only that partial and rebuilds from the unchanged source. Tables matching the
 source-backed cache/search naming contract are excluded. Additional cache
 tables can be named with repeated `--exclude-table` arguments.
+
+`reclaim` copies all durable tables with parity checks, leaves the legacy
+conversation body/structural/alias/checkpoint tables empty, and excludes the
+verified copied operational log. Its sparse cache stores only conversation
+identity once plus integer position, type/role codes, parent position, native
+record offset/length/ordinal, sub-block ordinal, and hashed tool-link position.
+It stores no message text, metadata JSON, timestamps, DAG UUIDs, legacy aliases,
+or per-record hashes. Incomplete or source-hash-mismatched projections are
+omitted so normal ingestion rebuilds them from native provider files.
 
 The restore drill executes a metadata SQL backup in a fresh SQLite database,
 checks integrity and foreign keys, verifies every `SHA256SUMS` entry, rejects

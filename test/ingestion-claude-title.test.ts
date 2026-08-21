@@ -127,7 +127,7 @@ describe("Claude provider title ingestion", () => {
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
         .get(before.id),
-    ).toMatchObject({ count: 2 });
+    ).toMatchObject({ count: 0 });
     expect(events).toContainEqual({
       event: "conversation:updated",
       data: expect.objectContaining({

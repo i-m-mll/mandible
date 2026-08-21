@@ -41,6 +41,7 @@ import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
 import { ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
+import { getConversationStructureCache } from "./conversations/structure-cache.js";
 
 // --- Watch configuration ---
 
@@ -1035,7 +1036,7 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
     clearTimeout(pendingTimer);
     debounceTimers.delete(normalized);
   }
-  if (ingestionActor) await ingestionActor.ingest([normalized], false, true);
+  if (ingestionActor) await ingestionActor.ingest([normalized], false, true, true);
   else await ingestFile(normalized, { bypassSameMtimeUnchanged: true });
   clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
@@ -2292,16 +2293,32 @@ async function ingestFilePass(
   }
 
   let alreadyIngestedCount = 0;
+  let structureCacheNeedsRebuild = false;
   if (existing) {
     const actualCount = existing.actual_count ?? 0;
     const expectedCount = existing.block_count ?? 0;
     alreadyIngestedCount = Math.max(actualCount, expectedCount);
-    if (actualCount === 0 && expectedCount > 0) {
+    const currentSource = db.prepare(`
+      SELECT current_version_id
+        FROM conversation_sources
+       WHERE conversation_id = ? AND current_version_id IS NOT NULL
+       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
+       LIMIT 1
+    `).get(existing.id) as { current_version_id: string } | undefined;
+    const sparseComplete = Boolean(currentSource
+      && getConversationStructureCache(db).hasCompleteConversation(
+        existing.id,
+        currentSource.current_version_id,
+        expectedCount,
+      ));
+    structureCacheNeedsRebuild = expectedCount > 0 && actualCount === 0 && !sparseComplete;
+    if (structureCacheNeedsRebuild) {
       logger("warn", "ingestion_count_mismatch", {
         file: filePath,
         conversation_id: existing.id,
         expected_count: expectedCount,
         actual_count: actualCount,
+        sparse_cache_complete: false,
       });
     }
   }
@@ -2327,6 +2344,7 @@ async function ingestFilePass(
   if (
     !options.forceFull
     && !options.bypassSameMtimeUnchanged
+    && !structureCacheNeedsRebuild
     && sameMtimeAsExisting
     && parser.source === "codex"
     && appendState
@@ -2374,6 +2392,7 @@ async function ingestFilePass(
   // or truncate a path. They must parse the complete provider identity before
   // any unchanged/append shortcut is considered.
   let forceFullReingest = options.forceFull === true
+    || structureCacheNeedsRebuild
     || (sameMtimeAsExisting && appendState?.byte_offset === stat.size);
 
   // Parse the file
@@ -3354,6 +3373,61 @@ async function recordDurableConversationSource(
         reason: promotion.reason,
       });
     }
+    if (promotion.promoted || promotion.reason === "no legacy payload is available for promotion") {
+      const cache = getConversationStructureCache(db);
+      const currentToolPositions = new Map<string, number>();
+      for (const block of blocks) {
+        const toolId = block.metadata.tool_id;
+        if (block.type === "tool_use" && typeof toolId === "string" && toolId) {
+          currentToolPositions.set(toolId, block.position);
+        }
+      }
+      const parentPositions = new Map(blocks.map((block) => {
+        const explicit = block.parent_id !== null && /^\d+$/.test(block.parent_id)
+          ? Number(block.parent_id)
+          : null;
+        const toolId = block.metadata.tool_id;
+        const linked = block.type === "tool_result" && typeof toolId === "string" && toolId
+          ? currentToolPositions.get(toolId) ?? cache.findToolPosition(conversationId, toolId)
+          : null;
+        return [block.position, explicit ?? linked ?? null] as const;
+      }));
+      const captured = cache.captureDenseRows(
+        db,
+        conversationId,
+        structuralMode,
+        parentPositions,
+      );
+      if (captured.sourceVersionId
+          && captured.cached === result.conversation.block_count) {
+        db.transaction(() => {
+          db.prepare("DELETE FROM conversation_structural_blocks WHERE conversation_id = ?")
+            .run(conversationId);
+          db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
+            .run(conversationId);
+          db.prepare(`DELETE FROM conversation_normalization_checkpoints
+            WHERE NOT EXISTS (
+              SELECT 1 FROM conversation_structural_blocks block
+               WHERE block.normalization_checkpoint_id = conversation_normalization_checkpoints.id
+            )`).run();
+        }).immediate();
+        logger("debug", "conversation_structure_cached", {
+          file: filePath,
+          conversation_id: conversationId,
+          captured_blocks: captured.captured,
+          cached_blocks: captured.cached,
+          dense_rows_retained: 0,
+        });
+      } else {
+        logger("warn", "conversation_structure_cache_incomplete", {
+          file: filePath,
+          conversation_id: conversationId,
+          expected_blocks: result.conversation.block_count,
+          captured_blocks: captured.captured,
+          cached_blocks: captured.cached,
+        });
+      }
+    }
   } catch (error) {
     // Promotion happens only after the exact snapshot succeeds. A failed
     // snapshot therefore leaves newly inserted payload rows intact; a
@@ -3466,6 +3540,7 @@ type ReconcileOptions = {
   ingestChanged?: (filePath: string) => void | Promise<void>;
   watchConfigs?: Array<{ base: string; glob: string }>;
   repairLegacyOrphans?: boolean;
+  cooperate?: () => Promise<void>;
 };
 
 function scheduleReconcile(repairLegacyOrphans = false): void {
@@ -3590,6 +3665,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   // directory entries so the HTTP server stays responsive during startup scans.
   // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
   // loop for the entire scan before any yielding could occur.
+  let scannedEntries = 0;
   for (const config of options.watchConfigs ?? WATCH_CONFIGS) {
     if (!isCurrentIngestionRun(runToken)) {
       return;
@@ -3597,6 +3673,9 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     if (!fs.existsSync(config.base)) continue;
     scannedBases.push(config.base);
     for await (const filePath of walkFiles(config.base, config.glob)) {
+      if (options.cooperate && scannedEntries++ % 32 === 0) {
+        await options.cooperate();
+      }
       if (!isCurrentIngestionRun(runToken)) {
         return;
       }
@@ -3693,11 +3772,15 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   }
 }
 
-export async function reconcileForWorker(repairLegacyOrphans = false): Promise<void> {
+export async function reconcileForWorker(
+  repairLegacyOrphans = false,
+  cooperate?: () => Promise<void>,
+): Promise<void> {
   const runToken = ingestionRunToken;
   await reconcile(runToken, {
     repairLegacyOrphans,
     ingestChanged: (filePath) => ingestFile(filePath),
+    cooperate,
   });
 }
 
@@ -3891,6 +3974,10 @@ function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
           WHERE b.conversation_id = c.id
           LIMIT 1
         ))
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_sources source
+           WHERE source.conversation_id = c.id
+        )
     `).all() as Array<{ id: string }>;
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("ingestion_orphan_repair_v1", String(Date.now()));
