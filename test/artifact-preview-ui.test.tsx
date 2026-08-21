@@ -141,6 +141,52 @@ function renderArtifactDetail(
 }
 
 describe('artifact preview helpers', () => {
+  it('creates a Briefing from the exact selected materializable Markdown version', async () => {
+    const selected = version({ id: 'artifact-version:exact-v1', version_no: 1 });
+    const mockFetch = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/drafts') && !init?.method) {
+        return Promise.resolve(new Response(JSON.stringify({ draft: null }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/briefings' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          artifact_version_ref: selected.id,
+          title: 'AGENTS.review.md',
+        });
+        return Promise.resolve(new Response(JSON.stringify({
+          receipt_id: 'round-full',
+          briefing_id: 'briefing-full',
+          run_id: 'artifact:exact-v1',
+          round_id: 'round-full',
+          artifact_version_id: selected.id,
+          quiet: false,
+        }), { status: 201, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    window.location.hash = '#/artifacts';
+    renderArtifactDetail(content({ kind: 'markdown', media_type: 'text/markdown' }), {
+      artifact: artifact({ metadata: { filename: 'AGENTS.review.md' }, media_type: 'text/markdown' }),
+      versions: [selected],
+      selectedVersion: selected,
+      selectedVersionNo: 1,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Create briefing' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/briefing?briefing=briefing-full&round=round-full'));
+    expect(mockFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('disables Briefing creation without an exact materializable Markdown selection', () => {
+    renderArtifactDetail(content(), { selectedVersion: version(), selectedVersionNo: 1 });
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Create briefing' })).toHaveProperty('disabled', true);
+  });
+
   it('keeps raw JSON available when a formatted JSON preview is shown', () => {
     const preview = artifactPreview(content({
       kind: 'json',

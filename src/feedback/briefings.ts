@@ -361,7 +361,7 @@ export function publishBriefingFromArtifactVersion(
   const versionId = resolved.target_id;
   const document = pinnedRoundDocument(db, versionId);
   let directives: BriefingDirective[];
-  try { directives = parseBriefingDirectives(document.source, request.profile); }
+  try { directives = parseBriefingDirectives(document.source, request.profile, { allowEmpty: true }); }
   catch (error) { throw new BriefingStoreError(error instanceof Error ? error.message : String(error), 400, "invalid_briefing_document"); }
   for (const responder of request.responder_user_ids) {
     const user = db.prepare("SELECT kind, status FROM users WHERE id = ?").get(responder) as { kind: string; status: string } | undefined;
@@ -473,7 +473,7 @@ export function verifyBriefingRoundBinding(db: Db, roundId: string): BriefingBin
   }
   let directives: BriefingDirective[];
   try {
-    directives = parseBriefingDirectives(document.source, round.profile as BriefingProfile);
+    directives = parseBriefingDirectives(document.source, round.profile as BriefingProfile, { allowEmpty: true });
   } catch (error) {
     return { valid: false, reason: error instanceof Error ? error.message : String(error),
       source: document.source, content_hash: document.content_hash };

@@ -21,6 +21,7 @@
 #   conversations <subcommand>       Inspect DB-backed conversations
 #   conversation-cutover <command>   Build and audit source-backed cutover proof
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
+#   briefing create <version-ref>    Create a Briefing from one exact artifact version
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
 #   user <subcommand>                User registry (setup, list, show, credential, token, binding)
@@ -67,6 +68,7 @@ Commands:
   conversations <subcommand>       Inspect DB-backed conversations
   conversation-cutover <command>   Build and audit source-backed cutover proof
   artifact <subcommand>            Register, resolve, link, and check artifacts
+  briefing create <version-ref>    Create a Briefing from one exact artifact version
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
   user <subcommand>                User registry (setup, list, show, credential, token, binding)
@@ -123,6 +125,7 @@ case "${1:-}" in
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
   conversation-cutover) shift; exec "$MANDIBLE_CLI_DIR/conversation-cutover.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
+  briefing) shift; exec "$MANDIBLE_CLI_DIR/briefing.sh" "$@" ;;
   space) shift; exec "$MANDIBLE_CLI_DIR/space.sh" "$@" ;;
   project) shift; exec "$MANDIBLE_CLI_DIR/project.sh" "$@" ;;
   user) shift; exec "$MANDIBLE_CLI_DIR/user.sh" "$@" ;;
