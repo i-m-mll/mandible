@@ -19,6 +19,7 @@ export type BriefingMarkdownEntity = {
 
 export type BriefingDirectiveDisplayRange = {
   itemId: string;
+  responseType: BriefingDirectiveItem['revision']['response_type'];
   start: number;
   end: number;
   quote: string;
@@ -157,6 +158,7 @@ export function buildBriefingMarkdownModel(
     if (needsBlockBoundary(body, suffix)) appendSynthetic(builder, '\n');
     directives.push({
       itemId: item.id,
+      responseType: item.revision.response_type,
       start: bodyStart,
       end: bodyEnd,
       quote: body,
