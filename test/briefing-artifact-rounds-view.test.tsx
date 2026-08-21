@@ -351,7 +351,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(within(composition).getByRole('button', { name: 'Briefing actions' })).toBeTruthy();
     expect(within(composition).getByRole('group', { name: 'Round occurrence' })).toBeTruthy();
     const roundSelect = within(composition).getByRole('combobox', { name: 'Round occurrence' });
-    const roundCopy = within(composition).getByRole('button', { name: 'Copy full selected round ref' });
+    const roundCopy = within(composition).getByRole('button', { name: 'Copy selected round reference' });
     const selectorControl = roundSelect.closest('.detail-pane-header__selector-control');
     expect(selectorControl?.firstElementChild).toBe(roundSelect);
     expect(selectorControl?.nextElementSibling).toBe(roundCopy);
@@ -360,9 +360,9 @@ describe('artifact-backed Briefing rounds', () => {
     roundCopy.focus();
     expect(document.activeElement).toBe(roundCopy);
     fireEvent.click(roundCopy);
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_ROUND_ID));
-    fireEvent.click(screen.getByRole('button', { name: 'Copy full Briefing ID' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_BRIEFING_ID));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('briefing-round:c76f940'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Briefing reference' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('briefing:65db040'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
     expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href'))
@@ -438,7 +438,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(latestMarker.nextElementSibling).toBe(screen.getByRole('group', { name: 'Round occurrence' }));
     const roundSelectorControl = latestMarker.nextElementSibling?.querySelector('.detail-pane-header__selector-control');
     expect(roundSelectorControl?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Round occurrence' }));
-    expect(roundSelectorControl?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Copy full selected round ref' }));
+    expect(roundSelectorControl?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Copy selected round reference' }));
     expect(screen.getByRole('combobox', { name: 'Round occurrence' }).getAttribute('value') ?? (screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ROUND_TWO);
     expect(await screen.findByText('Later')).toBeTruthy();
     const shell = screen.getByTestId('briefing-document-renderer').closest('.detail-pane-shell') as HTMLElement;
@@ -447,13 +447,13 @@ describe('artifact-backed Briefing rounds', () => {
     expect(shell.querySelector(':scope > .detail-pane-shell__footer')).toBeTruthy();
     expect(within(shell.querySelector('.detail-pane-shell__body') as HTMLElement).queryByText(/Immutable round|Briefing round|Pinned document|Review source|Source and existing annotations/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href')).toBe('#/artifacts?ref=artifact-version%3Aaaaaaaaa-aaaa-4aaa-8aaa-aaaaaaa');
+    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href')).toBe('#/artifacts?ref=artifact-version%3Aaaaaaaaa');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
     const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
     expect(within(metadata).getByText('Round occurrence')).toBeTruthy();
     expect(within(metadata).getByText('22222222')).toBeTruthy();
     expect(within(metadata).queryByText(ROUND_TWO)).toBeNull();
-    expect(within(metadata).getByText('artifact-version:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaa')).toBeTruthy();
+    expect(within(metadata).getByText('artifact-version:aaaaaaaa')).toBeTruthy();
     fireEvent.click(within(metadata).getByRole('button', { name: 'Close Briefing metadata' }));
     const latestSubmit = screen.getByRole('button', { name: 'Submit' }) as HTMLButtonElement;
     expect(latestSubmit.getAttribute('aria-disabled')).toBe('true');

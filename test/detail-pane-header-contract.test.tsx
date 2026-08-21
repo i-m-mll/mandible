@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DetailPaneHeader } from '../ui/src/components/shared/DetailPaneHeader.js';
 import { DetailPaneShell } from '../ui/src/components/shared/DetailPaneShell.js';
+import { shortIdentityRef } from '../ui/src/identity-refs.js';
 
 afterEach(() => {
   cleanup();
@@ -13,7 +14,7 @@ afterEach(() => {
 });
 
 describe('canonical detail pane header', () => {
-  it('renders standard semantics while keeping the full canonical ref copy-only', async () => {
+  it('renders standard semantics while keeping exact authority internal and copying the short ref', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -54,7 +55,7 @@ describe('canonical detail pane header', () => {
     expect(within(body).queryByRole('group', { name: 'Detail actions' })).toBeNull();
 
     fireEvent.click(within(header).getByRole('button', { name: 'Copy Issue reference' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(canonicalRef));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('mandible/087857e'));
   });
 
   it('renders compact and selector semantics with selected canonical copy authority', async () => {
@@ -99,7 +100,14 @@ describe('canonical detail pane header', () => {
     expect(header.textContent).not.toContain(selectedCanonicalRef);
 
     fireEvent.click(copy);
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(selectedCanonicalRef));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('artifact-version:av_01Kabcdef0'));
+  });
+
+  it('centralizes typed and untyped ambiguity-safe clipboard formatting', () => {
+    expect(shortIdentityRef(`briefing:${'a'.repeat(64)}`)).toBe('briefing:aaaaaaa');
+    expect(shortIdentityRef(`artifact-version:${'b'.repeat(32)}`)).toBe('artifact-version:bbbbbbb');
+    expect(shortIdentityRef('01a01639-5f21-7c61-8623-42636a39fd49')).toBe('01a01639');
+    expect(shortIdentityRef(`mandible/${'c'.repeat(64)}`)).toBe('mandible/ccccccc');
   });
 
   it('allows an identity-free compact title row without rendering retired copy chrome', () => {
@@ -219,12 +227,12 @@ describe('canonical detail pane header', () => {
       name: 'Copy selected artifact version reference',
     }));
 
-    fireEvent.click(within(header).getByRole('button', { name: 'Copy full canonical reference' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(logicalCanonicalRef));
+    fireEvent.click(within(header).getByRole('button', { name: 'Copy reference' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('artifact:art_01kabcde'));
     fireEvent.click(within(header).getByRole('button', {
       name: 'Copy selected artifact version reference',
     }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(selectedCanonicalRef));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('artifact-version:av_01K9876543'));
 
     const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s);
