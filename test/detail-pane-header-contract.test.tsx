@@ -106,6 +106,8 @@ describe('canonical detail pane header', () => {
   it('centralizes typed and untyped ambiguity-safe clipboard formatting', () => {
     expect(shortIdentityRef(`briefing:${'a'.repeat(64)}`)).toBe('briefing:aaaaaaa');
     expect(shortIdentityRef(`artifact-version:${'b'.repeat(32)}`)).toBe('artifact-version:bbbbbbb');
+    expect(shortIdentityRef(`artifact-series:${'d'.repeat(32)}`)).toBe('artifact-series:ddddddd');
+    expect(shortIdentityRef('artifact-series:bbbbbbbbbbbb0')).toBe('artifact-series:bbbbbbbbbbbb0');
     expect(shortIdentityRef('01a01639-5f21-7c61-8623-42636a39fd49')).toBe('01a01639');
     expect(shortIdentityRef(`mandible/${'c'.repeat(64)}`)).toBe('mandible/ccccccc');
   });

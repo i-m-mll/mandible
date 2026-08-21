@@ -112,6 +112,7 @@ function renderArtifactDetail(
   options: {
     contentLoading?: boolean;
     artifact?: ArtifactRecord;
+    series?: ArtifactSeriesRecord;
     versions?: ArtifactVersionRecord[];
     selectedVersion?: ArtifactVersionRecord | null;
     selectedVersionNo?: number | null;
@@ -121,7 +122,7 @@ function renderArtifactDetail(
     <ArtifactDetail
       artifact={options.artifact ?? artifact()}
       resolution={null}
-      series={series()}
+      series={options.series ?? series()}
       versions={options.versions ?? []}
       selectedVersion={options.selectedVersion ?? null}
       selectedVersionNo={options.selectedVersionNo ?? null}
@@ -404,11 +405,18 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(container.querySelector('.artifact-preview')).toBeNull();
   });
 
-  it('uses the shared versioned geometry with bare series identity and canonical copy authority', async () => {
+  it('uses the shared versioned header to copy typed short series and version refs', async () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal('navigator', { clipboard: { writeText } });
-    const selected = version({ id: 'artifact-version:v1-full', version_no: 1 });
+    const selected = version({
+      id: 'artifact-version:e5dfd95425eb977baa7a2c7b4cf12ce7',
+      version_no: 1,
+    });
     const { container } = renderArtifactDetail(null, {
+      series: series({
+        id: 'artifact-series:9ce270d18e75438b40eb2f196fdcaf6d',
+        series_key: '9ce270d18e75438b40eb2f196fdcaf6d',
+      }),
       versions: [selected],
       selectedVersion: selected,
       selectedVersionNo: null,
@@ -425,7 +433,7 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(main?.children).toHaveLength(2);
     expect(main?.children[0]?.classList.contains('detail-pane-header__topline')).toBe(true);
     expect(main?.children[1]?.classList.contains('detail-pane-header__title-row')).toBe(true);
-    expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).toContain('156f240');
+    expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).toContain('9ce270d');
     expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).not.toContain('artifact-series:');
     expect(composition?.querySelector('.detail-pane-header__identity')?.textContent).not.toContain('rlrmp');
     expect(within(composition as HTMLElement).getByText('Latest', { selector: '.detail-pane-header__state' })).toBeTruthy();
@@ -443,8 +451,10 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(within(composition as HTMLElement).getByRole('button', { name: 'Artifact actions' })).toBeTruthy();
     fireEvent.click(within(composition as HTMLElement).getByRole('button', { name: 'Copy artifact series ref' }));
     fireEvent.click(selectorCopy);
-    await waitFor(() => expect(writeText).toHaveBeenNthCalledWith(1, 'artifact-series:156f240abcdef'));
-    expect(writeText).toHaveBeenNthCalledWith(2, 'artifact-version:v1-full');
+    await waitFor(() => expect(writeText.mock.calls).toEqual([
+      ['artifact-series:9ce270d'],
+      ['artifact-version:e5dfd95'],
+    ]));
     expect(detail?.contains(header as Node)).toBe(true);
     expect(detail?.contains(pane as Node)).toBe(true);
     expect(header?.nextElementSibling).toBe(pane);
