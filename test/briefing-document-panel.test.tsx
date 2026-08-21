@@ -325,7 +325,7 @@ describe('Briefing document panel', () => {
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
   });
 
-  it('aligns differently indented directive rails to one document gutter without moving content', async () => {
+  it('aligns zero-indent and indented directive rails ten pixels outside one document gutter', async () => {
     const railSource = [
       ':::spec-item{key="plain" type="verdict" required="true"}', 'Plain directive', ':::',
       '',
@@ -355,7 +355,7 @@ describe('Briefing document panel', () => {
       x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 600, width: 640, height: 600, toJSON: () => ({}),
     });
     vi.spyOn(owners[0], 'getBoundingClientRect').mockReturnValue({
-      x: 488, y: 40, left: 488, right: 1088, top: 40, bottom: 80, width: 600, height: 40, toJSON: () => ({}),
+      x: 448, y: 40, left: 448, right: 1088, top: 40, bottom: 80, width: 640, height: 40, toJSON: () => ({}),
     });
     vi.spyOn(owners[1], 'getBoundingClientRect').mockReturnValue({
       x: 528, y: 100, left: 528, right: 1088, top: 100, bottom: 140, width: 560, height: 40, toJSON: () => ({}),
@@ -377,8 +377,8 @@ describe('Briefing document panel', () => {
     const contentX = owners.map((owner) => owner.getBoundingClientRect().left);
     const railX = owners.map((owner) => owner.getBoundingClientRect().left
       + Number.parseFloat(owner.style.getPropertyValue('--briefing-directive-rail-offset')));
-    expect(contentX).toEqual([488, 528]);
-    expect(railX).toEqual([448, 448]);
+    expect(contentX).toEqual([448, 528]);
+    expect(railX).toEqual([438, 438]);
     expect(owners).toHaveLength(2);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-end: 0/s);
