@@ -3,6 +3,19 @@
 : "${MANDIBLE_PORT:=19420}"
 : "${MANDIBLE_BASE:=http://127.0.0.1:${MANDIBLE_PORT}}"
 
+# Run a jq filter with the shared human-facing identity contract loaded. JSON
+# output deliberately bypasses this helper so exact API authority is preserved.
+api_jq_human() {
+  local filter="$1"
+  shift
+  jq -L "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}" \
+    -r "$@" "include \"mandible-identity\"; ${filter}"
+}
+
+api_short_id() {
+  printf '%s\n' "$1" | api_jq_human 'mandible_short_id' -R
+}
+
 # Issue 24f0316 — Mandible splits its state by lifetime, and the CLI must agree
 # with the daemon on where each half lives:
 #

@@ -87,7 +87,7 @@ emit() {
   if (( json )); then
     printf '%s\n' "$result" | jq .
   else
-    printf '%s\n' "$result" | jq -r "$human"
+    printf '%s\n' "$result" | api_jq_human "$human"
   fi
 }
 
@@ -161,7 +161,7 @@ cmd_create() {
      + (if $renderer == "" then {} else {default_renderer:$renderer} end)
      + (if $description == "" then {} else {description:$description} end)')"
   response="$(api_post "/api/spaces" "$payload")" || die "${RED}Failed to create space.${RESET}" 1
-  emit "$response" "$json" '.space | "\(.id) \(.title) renderer:\(.default_renderer)"'
+  emit "$response" "$json" '.space | "\(mandible_display_id) \(.title) renderer:\(.default_renderer)"'
 }
 
 cmd_list() {
@@ -178,7 +178,7 @@ cmd_list() {
   require_tools
   local response
   response="$(api_get "/api/spaces?project_id=$(urlencode "$project")")" || die "${RED}Failed to list spaces.${RESET}" 1
-  emit "$response" "$json" '.spaces[]? | "\(.id) \(.title) renderer:\(.default_renderer)"'
+  emit "$response" "$json" '.spaces[]? | "\(mandible_display_id) \(.title) renderer:\(.default_renderer)"'
 }
 
 cmd_show() {
@@ -194,7 +194,7 @@ cmd_show() {
   require_tools
   local response
   response="$(api_get "/api/spaces/$(urlencode "$id")")" || die "${RED}Failed to show space.${RESET}" 1
-  emit "$response" "$json" '.space | "\(.id)\ntitle: \(.title)\nrenderer: \(.default_renderer)\nproject: \(.project_id)\ndescription: \(.description // "-")"'
+  emit "$response" "$json" '.space | "\(mandible_display_id)\ntitle: \(.title)\nrenderer: \(.default_renderer)\nproject: \(.project_key // (.project_id | mandible_short_id))\ndescription: \(.description // "-")"'
 }
 
 cmd_add_item() {
@@ -220,7 +220,7 @@ cmd_add_item() {
      + (if .ref_uri == null then {} else {ref_uri:.ref_uri} end)
      + (if $title == "" then {} else {title:$title} end)')"
   response="$(api_post "/api/spaces/$(urlencode "$id")/items" "$payload")" || die "${RED}Failed to add item.${RESET}" 1
-  emit "$response" "$json" '"\(if .created then "added" else "exists" end) \(.item.id) \(.item.ref_type):\(.item.ref_id)"'
+  emit "$response" "$json" '"\(if .created then "added" else "exists" end) \(.item | mandible_display_id) \((.item.ref_type + ":" + .item.ref_id) | mandible_typed_short_ref)"'
 }
 
 cmd_rm_item() {
@@ -241,7 +241,7 @@ cmd_rm_item() {
   local response
   response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/items/$(urlencode "$item_id")" "")" \
     || die "${RED}Failed to remove item.${RESET}" 1
-  emit "$response" "$json" '"removed \(.id)"'
+  emit "$response" "$json" '"removed \(.id | mandible_short_id)"'
 }
 
 cmd_place() {
@@ -281,7 +281,7 @@ cmd_place() {
      + (if $width == "" then {} else {width:($width|tonumber)} end)
      + (if $height == "" then {} else {height:($height|tonumber)} end)')"
   response="$(api_post "/api/spaces/$(urlencode "$id")/occurrences" "$payload")" || die "${RED}Failed to place occurrence.${RESET}" 1
-  emit "$response" "$json" '.occurrence | "placed \(.id) renderer:\(.renderer) item:\(.item_id // "-")"'
+  emit "$response" "$json" '.occurrence | "placed \(mandible_display_id) renderer:\(.renderer) item:\((.item_id // "-") | mandible_short_id)"'
 }
 
 cmd_link() {
@@ -305,7 +305,7 @@ cmd_link() {
      + (if $label == "" then {} else {label:$label} end)
      + (if $style == "" then {} else {style:$style} end)')"
   response="$(api_post "/api/spaces/$(urlencode "$id")/edges" "$payload")" || die "${RED}Failed to link occurrences.${RESET}" 1
-  emit "$response" "$json" '.edge | "linked \(.id) \(.source) -> \(.target)"'
+  emit "$response" "$json" '.edge | "linked \(mandible_display_id) \(.source | mandible_short_id) -> \(.target | mandible_short_id)"'
 }
 
 cmd_unlink() {
@@ -326,7 +326,7 @@ cmd_unlink() {
   local response
   response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/edges/$(urlencode "$edge_id")" "")" \
     || die "${RED}Failed to unlink edge.${RESET}" 1
-  emit "$response" "$json" '"unlinked \(.id)"'
+  emit "$response" "$json" '"unlinked \(.id | mandible_short_id)"'
 }
 
 # promote-edge: turn a canvas edge into a durable ledger relationship via the
@@ -585,7 +585,7 @@ cmd_block_add() {
     "$block_type" "$parent" "$item" "$snapshot" "$sort_key" "$markdown" "$metadata" \
     1 "$have_parent" "$have_item" "$have_snapshot" "$have_sort" "$have_markdown" "$have_metadata")"
   response="$(api_post "/api/spaces/$(urlencode "$id")/blocks" "$payload")" || die "${RED}Failed to add block.${RESET}" 1
-  emit "$response" "$json" '.block | "added \(.id) \(.block_type) parent:\(.parent_id // "-") item:\(.item_id // "-")"'
+  emit "$response" "$json" '.block | "added \(mandible_display_id) \(.block_type) parent:\((.parent_id // "-") | mandible_short_id) item:\((.item_id // "-") | mandible_short_id)"'
 }
 
 cmd_block_edit() {
@@ -618,7 +618,7 @@ cmd_block_edit() {
     "$have_type" "$have_parent" "$have_item" "$have_snapshot" "$have_sort" "$have_markdown" "$have_metadata")"
   response="$(api_send PATCH "/api/spaces/$(urlencode "$id")/blocks/$(urlencode "$block_id")" "$payload")" \
     || die "${RED}Failed to edit block.${RESET}" 1
-  emit "$response" "$json" '.block | "edited \(.id) \(.block_type) parent:\(.parent_id // "-") item:\(.item_id // "-")"'
+  emit "$response" "$json" '.block | "edited \(mandible_display_id) \(.block_type) parent:\((.parent_id // "-") | mandible_short_id) item:\((.item_id // "-") | mandible_short_id)"'
 }
 
 cmd_block_rm() {
@@ -639,7 +639,7 @@ cmd_block_rm() {
   local response
   response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/blocks/$(urlencode "$block_id")" "")" \
     || die "${RED}Failed to remove block.${RESET}" 1
-  emit "$response" "$json" '"removed \(.id)"'
+  emit "$response" "$json" '"removed \(.id | mandible_short_id)"'
 }
 
 cmd_block() {

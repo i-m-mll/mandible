@@ -95,7 +95,7 @@ emit() {
   if (( json )); then
     printf '%s\n' "$result" | jq .
   else
-    printf '%s\n' "$result" | jq -r "$human"
+    printf '%s\n' "$result" | api_jq_human "$human"
   fi
 }
 
@@ -339,7 +339,7 @@ cmd_setup() {
   local operator_ref
   operator_ref="$(printf '%s\n' "$response" | jq -r '.user.slug // .user.id // "operator"')"
   setup_signing_credential "$operator_ref"
-  emit "$response" "$json" '.user | "id: \(.id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
+  emit "$response" "$json" '.user | "id: \(mandible_display_id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
 }
 
 cmd_dashboard_link() {
@@ -419,9 +419,9 @@ cmd_show() {
   local response
   response="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
   emit "$response" "$json" '.user |
-    "id: \(.id)\nslug: \(.slug)\nkind: \(.kind)\nname: \(.display_name)\nemail: \(.email // "-")\nstatus: \(.status)",
-    "credentials:", (.credentials[]? | "  \(.id) \(.type) \(.fingerprint) [\(.status)]"),
-    "bindings:", (.bindings[]? | "  \(.id) \(.binding_type)=\(.value) [\(.status)]")'
+    "id: \(mandible_display_id)\nslug: \(.slug)\nkind: \(.kind)\nname: \(.display_name)\nemail: \(.email // "-")\nstatus: \(.status)",
+    "credentials:", (.credentials[]? | "  \(mandible_display_id) \(.type) \(.fingerprint) [\(.status)]"),
+    "bindings:", (.bindings[]? | "  \(mandible_display_id) \(.binding_type)=\(.value) [\(.status)]")'
 }
 
 cmd_update() {
@@ -508,7 +508,7 @@ credential_add() {
      + (if $label == "" then {} else {label:$label} end)')"
   response="$(api_send POST "/api/users/$(urlencode "$ref")/credentials" "$payload")" \
     || die "${RED}Failed to add credential.${RESET}" 1
-  emit "$response" "$json" '.credential | "added credential \(.id) (\(.type)) [\(.status)]"'
+  emit "$response" "$json" '.credential | "added credential \(mandible_display_id) (\(.type)) [\(.status)]"'
 }
 
 credential_revoke() {
@@ -525,7 +525,7 @@ credential_revoke() {
   local response
   response="$(api_send POST "/api/users/credentials/$(urlencode "$id")/revoke" "{}")" \
     || die "${RED}Failed to revoke credential.${RESET}" 1
-  emit "$response" "$json" '.credential | "revoked credential \(.id) [\(.status)]"'
+  emit "$response" "$json" '.credential | "revoked credential \(mandible_display_id) [\(.status)]"'
 }
 
 credential_list() {
@@ -543,7 +543,7 @@ credential_list() {
   local query="" response
   (( all )) && query="?all=1"
   response="$(api_read "/api/users/$(urlencode "$ref")/credentials${query}" "credentials")" || exit 1
-  emit "$response" "$json" '.credentials[]? | "\(.id)\t\(.type)\t\(.fingerprint)\t\(.status)\t\(.label // "-")"'
+  emit "$response" "$json" '.credentials[]? | "\(mandible_display_id)\t\(.type)\t\(.fingerprint)\t\(.status)\t\(.label // "-")"'
 }
 
 cmd_token() {
@@ -673,7 +673,7 @@ token_mint() {
   if (( ! store )); then
     err "${GREEN}Token minted. Copy it now — it will not be shown again.${RESET}"
     emit "$response" "$json" \
-      '"token: \(.token)", "credential: \(.credential.id) [\(.credential.status)]"'
+      '"token: \(.token)", "credential: \(.credential | mandible_display_id) [\(.credential.status)]"'
     (( mint_traced == 0 )) || set -x
     return 0
   fi
@@ -717,7 +717,7 @@ token_mint() {
     err "${GREEN}Token minted and stored. It was not printed.${RESET}"
   fi
   emit "$result" "$json" \
-    '"credential: \(.credential.id) [\(.credential.status)]",
+    '"credential: \(.credential | mandible_display_id) [\(.credential.status)]",
      "label: \(.credential.label // "-")",
      "backend: \(.secret.backend)",
      "service: \(.secret.service)",
@@ -739,7 +739,7 @@ token_list() {
   local query="" response
   (( all )) && query="?all=1"
   response="$(api_read "/api/users/$(urlencode "$ref")/tokens${query}" "tokens")" || exit 1
-  emit "$response" "$json" '.tokens[]? | "\(.id)\t\(.status)\t\(.label // "-")\t\(.created_at)"'
+  emit "$response" "$json" '.tokens[]? | "\(mandible_display_id)\t\(.status)\t\(.label // "-")\t\(.created_at)"'
 }
 
 cmd_binding() {
@@ -775,7 +775,7 @@ binding_add() {
      + (if $scope_set == 1 then {scope:$scope} else {} end)')"
   response="$(api_send POST "/api/users/$(urlencode "$ref")/bindings" "$payload")" \
     || die "${RED}Failed to add binding.${RESET}" 1
-  emit "$response" "$json" '.binding | "added binding \(.id) \(.binding_type)=\(.value)"'
+  emit "$response" "$json" '.binding | "added binding \(mandible_display_id) \(.binding_type)=\(.value)"'
 }
 
 binding_rm() {
@@ -808,7 +808,7 @@ binding_list() {
   require_tools
   local response
   response="$(api_read "/api/users/$(urlencode "$ref")/bindings" "bindings")" || exit 1
-  emit "$response" "$json" '.bindings[]? | "\(.id)\t\(.binding_type)\t\(.value)\t\(.status)\t\(.scope // "-")"'
+  emit "$response" "$json" '.bindings[]? | "\(mandible_display_id)\t\(.binding_type)\t\(.value)\t\(.status)\t\(.scope // "-")"'
 }
 
 cmd_group() {
@@ -920,7 +920,7 @@ EOF
       fi
       require_tools
       response="$(api_send POST "/api/users/grants" "$payload")" || die "Failed to add grant." 1
-      emit "$response" "$json" '.grant | "\(.id)\t\(.subject_type):\(.subject_id)\t\(.resource_type):\(.resource_id // "-")\t\(.permission)"'
+      emit "$response" "$json" '.grant | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.resource_type):\((.resource_id // "-") | mandible_short_id)\t\(.permission)"'
       ;;
     rm)
       while (( $# > 0 )); do
@@ -947,7 +947,7 @@ EOF
       fi
       require_tools
       response="$(api_read "/api/users/grants${query}" "grants")" || exit 1
-      emit "$response" "$json" '.grants[]? | "\(.id)\t\(.subject_type):\(.subject_id)\t\(.resource_type):\(.resource_id // "-")\t\(.permission)"'
+      emit "$response" "$json" '.grants[]? | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.resource_type):\((.resource_id // "-") | mandible_short_id)\t\(.permission)"'
       ;;
     *) die "Unknown grant subcommand: ${sub:-}. Use add|rm|list." 2 ;;
   esac

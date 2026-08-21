@@ -82,7 +82,7 @@ file_rpc_inventory() {
       branch
     }]'
   else
-    printf '%s\n' "$response" | jq -r '.conversations[] | "\(.source)\t\((.updated_at // .started_at)[0:19])\t\(.session_id // .id)\t\(.source_path)"'
+    printf '%s\n' "$response" | api_jq_human '.conversations[] | "\(.source)\t\((.updated_at // .started_at)[0:19])\t\((.session_id // .id) | mandible_short_id)\t\(.source_path)"'
   fi
 }
 

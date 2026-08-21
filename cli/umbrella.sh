@@ -34,10 +34,10 @@ print_status_response() {
   if (( json )); then
     printf '%s\n' "$response" | jq '.'
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       "umbrella \(.umbrella.short_id) [\(.umbrella.status)] \(.umbrella.title)",
       "children: \((.children // []) | length)",
-      "delegation_manifest: \(.delegation_manifest.id // "-")",
+      "delegation_manifest: \(if .delegation_manifest then (.delegation_manifest | mandible_display_id) else "-" end)",
       "operation: \(.operation.kind // "-")",
       "created_edges: \((.operation.created_child_refs // []) | length)",
       "missing_edges: \((.child_drift.missing_edge_refs // []) | length)",
