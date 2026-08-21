@@ -131,6 +131,10 @@ function actionHost(document: Document, element: HTMLElement, slot: string, inde
   return host;
 }
 
+function usesCompactResponseRail(type: BriefingDirectiveItem['revision']['response_type']): boolean {
+  return type === 'verdict' || type === 'text_variant';
+}
+
 function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: BriefingAnnotation[]): string {
   const document = new DOMParser().parseFromString(renderBriefingProse(model.markdown), 'text/html');
   const elementsByKind = new Map<BriefingMarkdownEntityKind, HTMLElement[]>();
@@ -176,41 +180,65 @@ function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: B
     first.id = `briefing-directive-prompt-${directive.itemId}`.replace(/[^A-Za-z0-9_-]/g, '-');
     actionHost(document, first, 'briefingDirectiveAction', directiveIndex);
     const responseHost = document.createElement('div');
-    responseHost.className = 'briefing-directive__response-host';
+    const compact = usesCompactResponseRail(directive.responseType);
+    responseHost.className = `briefing-directive__response-host briefing-directive__response-host--${compact ? 'rail' : 'flow'}`;
     responseHost.dataset.briefingDirectiveIndex = String(directiveIndex);
     responseHost.dataset.briefingDirectiveResponse = String(directiveIndex);
-    document.body.append(responseHost);
+    if (compact) document.body.append(responseHost);
+    else {
+      const last = matches.at(-1)!.element!;
+      if (last.tagName === 'LI') last.append(responseHost);
+      else last.after(responseHost);
+    }
   });
   return document.body.innerHTML;
 }
 
 const DIRECTIVE_RAIL_GUTTER_OFFSET = 10;
-const RIGHT_RAIL_ACTION_LANE_HEIGHT = 28;
-const RIGHT_RAIL_CONTROL_GAP = 8;
 
 function alignBriefingRails(sourceTree: HTMLElement): void {
   const sourceRect = sourceTree.getBoundingClientRect();
   const gutterX = sourceRect.left - DIRECTIVE_RAIL_GUTTER_OFFSET;
-  let nextResponseTop = 0;
+  let responseRailBottom = 0;
+  const ownerAnchors = (owner: HTMLElement, ownerRect = owner.getBoundingClientRect()) => {
+    const lineHeight = Number.parseFloat(globalThis.getComputedStyle(owner).lineHeight || '0');
+    const firstLineHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : Math.min(ownerRect.height, 24);
+    return {
+      actionCenter: firstLineHeight / 2,
+      responseCenter: ownerRect.top - sourceRect.top + firstLineHeight / 2,
+    };
+  };
   sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
     const ownerRect = owner.getBoundingClientRect();
     owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerRect.left}px`);
     const responseHost = sourceTree.querySelector<HTMLElement>(
-      `[data-briefing-directive-response="${owner.dataset.briefingDirectiveIndex}"]`,
+      `[data-briefing-directive-response="${owner.dataset.briefingDirectiveIndex}"].briefing-directive__response-host--rail`,
     );
     if (responseHost) {
-      const responseTop = Math.max(ownerRect.top - sourceRect.top + RIGHT_RAIL_ACTION_LANE_HEIGHT, nextResponseTop);
+      const { actionCenter, responseCenter } = ownerAnchors(owner, ownerRect);
+      const responseRect = responseHost.getBoundingClientRect();
+      const compactControl = responseHost.querySelector<HTMLElement>('.briefing-directive__verdict, .briefing-directive__variant-controls');
+      const controlRect = compactControl?.getBoundingClientRect();
+      const controlCenterOffset = controlRect && controlRect.height > 0
+        ? controlRect.top - responseRect.top + controlRect.height / 2
+        : responseRect.height / 2;
+      const responseTop = responseCenter - controlCenterOffset;
       responseHost.style.setProperty('--briefing-right-rail-top', `${responseTop}px`);
-      nextResponseTop = responseTop + responseHost.getBoundingClientRect().height + RIGHT_RAIL_CONTROL_GAP;
+      owner.querySelector<HTMLElement>('[data-briefing-directive-action]')
+        ?.style.setProperty('--briefing-right-rail-center', `${actionCenter}px`);
+      responseRailBottom = Math.max(responseRailBottom, responseTop + responseRect.height);
     }
   });
   const styles = globalThis.getComputedStyle(sourceTree);
   const contentRight = sourceRect.right - Number.parseFloat(styles.paddingRight || '0');
   const baseHeight = sourceRect.height - Number.parseFloat(styles.paddingBottom || '0');
-  sourceTree.style.setProperty('--briefing-right-rail-overflow', `${Math.max(0, nextResponseTop - baseHeight)}px`);
+  sourceTree.style.setProperty('--briefing-right-rail-overflow', `${Math.max(0, responseRailBottom - baseHeight)}px`);
   sourceTree.querySelectorAll<HTMLElement>('[data-briefing-entity-action], [data-briefing-directive-action]').forEach((host) => {
     const ownerRect = host.parentElement?.getBoundingClientRect();
-    if (ownerRect) host.style.setProperty('--briefing-right-rail-action-offset', `${contentRight + 8 - ownerRect.left}px`);
+    if (ownerRect) {
+      host.style.setProperty('--briefing-right-rail-action-offset', `${contentRight + 8 - ownerRect.left}px`);
+      host.style.setProperty('--briefing-right-rail-center', `${ownerAnchors(host.parentElement!, ownerRect).actionCenter}px`);
+    }
   });
 }
 
@@ -355,7 +383,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (!sourceTree) return undefined;
     const updateRails = () => alignBriefingRails(sourceTree);
     const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
-    const responseHosts = Array.from(sourceTree.querySelectorAll<HTMLElement>('[data-briefing-directive-response]'));
+    const responseHosts = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive__response-host--rail'));
     updateRails();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateRails);
     observer?.observe(sourceTree);
@@ -461,8 +489,8 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const verdict = current && 'verdict' in current ? current.verdict : null;
       control = (
         <div id={controlId} className="briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
-          <button type="button" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></button>
-          <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></button>
+          <ContextualAction className="briefing-directive__verdict-action" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></ContextualAction>
+          <ContextualAction className="briefing-directive__verdict-action" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></ContextualAction>
         </div>
       );
     } else if (type === 'single_choice' || type === 'multi_choice') {

@@ -22,6 +22,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
+  box-shadow: none;
   color: var(--text-subdued);
   cursor: pointer;
   font: inherit;
@@ -38,12 +39,14 @@
 .contextual-action:is([aria-expanded='true'], [aria-pressed='true']) {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--chrome-icon-hover-indirect);
 }
 
 .contextual-action:is(:hover, :focus-visible) {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--chrome-icon-hover-direct);
 }
 

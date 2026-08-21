@@ -290,7 +290,12 @@ describe('Briefing document panel', () => {
     render(<Harness />);
 
     const verdict = await screen.findByRole('group', { name: 'Keep this finding?' });
-    fireEvent.click(within(verdict).getByRole('button', { name: 'Keep' }));
+    const keep = within(verdict).getByRole('button', { name: 'Keep' });
+    expect(verdict.closest('.briefing-directive__response-host--rail')).toBeTruthy();
+    expect(keep.classList.contains('contextual-action')).toBe(true);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action \{[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action:is\(:hover, :focus-visible\) \{[^}]*background: transparent[^}]*box-shadow: none/s);
+    fireEvent.click(keep);
     const single = screen.getByRole('group', { name: 'Choose deployment mode' });
     expect(within(single).getAllByRole('radio').map((input) => (input as HTMLInputElement).value)).toEqual(['a', 'b']);
     expect(within(single).getAllByText(/Alpha|Beta/).map((label) => label.textContent)).toEqual(['Alpha', 'Beta']);
@@ -320,6 +325,11 @@ describe('Briefing document panel', () => {
     ]));
     expect(screen.getAllByLabelText('Required')).toHaveLength(6);
     const shortSection = short.closest('.briefing-directive__response-host') as HTMLElement;
+    expect(shortSection.classList.contains('briefing-directive__response-host--flow')).toBe(true);
+    expect(shortSection.previousElementSibling).toBe(screen.getByText('Give a short rationale').closest('.briefing-directive'));
+    [single, multi, long, rating].forEach((control) => {
+      expect(control.closest('.briefing-directive__response-host--flow')).toBeTruthy();
+    });
     fireEvent.click(within(shortSection).getByRole('button', { name: 'Clear answer' }));
     expect(changes.at(-1)).toEqual({ id: 'short', value: null });
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
@@ -364,7 +374,12 @@ describe('Briefing document panel', () => {
     responseHosts.forEach((host) => vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
       x: 928, y: 0, left: 928, right: 1088, top: 0, bottom: 100, width: 160, height: 100, toJSON: () => ({}),
     }));
-    vi.spyOn(globalThis, 'getComputedStyle').mockReturnValue({ paddingRight: '160px', paddingBottom: '0px' } as CSSStyleDeclaration);
+    responseHosts.forEach((host) => vi.spyOn(host.querySelector('.briefing-directive__verdict')!, 'getBoundingClientRect').mockReturnValue({
+      x: 960, y: 40, left: 960, right: 1010, top: 40, bottom: 60, width: 50, height: 20, toJSON: () => ({}),
+    }));
+    sourceTree.style.paddingRight = '160px';
+    sourceTree.style.paddingBottom = '0px';
+    owners.forEach((owner) => { owner.style.lineHeight = '24px'; });
     fireEvent(globalThis, new Event('resize'));
     const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
     const ownerRule = briefingStylesheet.match(/\.briefing-directive--owner \{([^}]*)\}/)?.[1] ?? '';
@@ -386,13 +401,14 @@ describe('Briefing document panel', () => {
     expect(railX).toEqual([438, 438]);
     expect(owners).toHaveLength(2);
     expect(actions.style.getPropertyValue('--briefing-right-rail-action-offset')).toBe('488px');
-    expect(responseHosts.map((host) => host.style.getPropertyValue('--briefing-right-rail-top'))).toEqual(['68px', '176px']);
+    expect(actions.style.getPropertyValue('--briefing-right-rail-center')).toBe('12px');
+    expect(responseHosts.map((host) => host.style.getPropertyValue('--briefing-right-rail-top'))).toEqual(['2px', '62px']);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
     expect(briefingStylesheet).toMatch(/\.briefing-document__source-tree \{[^}]*padding-inline-end: var\(--briefing-right-rail-width\)/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity \{[^}]*position: relative/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*position: absolute[^}]*width: var\(--briefing-right-rail-width\)[^}]*justify-items: end/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, 1fr\) 2em[^}]*width: 100%[^}]*padding-inline: \.4em/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \{[^}]*position: absolute[^}]*width: calc\(var\(--briefing-right-rail-width\) - var\(--briefing-right-action-slot-width\)\)[^}]*justify-items: end/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(0, 1fr\) 2em[^}]*width: 100%[^}]*padding-inline: \.2em/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
@@ -620,13 +636,13 @@ describe('Briefing document panel', () => {
   });
 
   it('renders only the active text variant and stores bounded keyed choices without manufacturing an initial answer', async () => {
-    const variantSource = '# Policy\n:::spec-item{key="wording" type="text_variant"}\n::alternative[Concise]{key="concise"}\nConcise policy.\n::alternative[Detailed]{key="detailed"}\nDetailed policy with more words.\n:::\n';
+    const variantSource = '# Policy\n:::spec-item{key="wording" type="text_variant"}\n::alternative[Concise]{key="concise"}\nThis is a layout and rail specimen.\n::alternative[Detailed]{key="detailed"}\nDetailed policy with more words.\n:::\n# Briefing directive layout specimens\n';
     const directiveStart = variantSource.indexOf(':::');
     const bodyStart = variantSource.indexOf('::alternative[Concise]');
     const bodyEnd = variantSource.indexOf('\n:::', bodyStart);
     const directiveEnd = bodyEnd + '\n:::'.length;
-    const conciseStart = variantSource.indexOf('Concise policy.');
-    const conciseEnd = conciseStart + 'Concise policy.'.length;
+    const conciseStart = variantSource.indexOf('This is a layout and rail specimen.');
+    const conciseEnd = conciseStart + 'This is a layout and rail specimen.'.length;
     const detailedStart = variantSource.indexOf('Detailed policy with more words.');
     const detailedEnd = detailedStart + 'Detailed policy with more words.'.length;
     const conciseMarkerStart = variantSource.indexOf('::alternative[Concise]');
@@ -645,7 +661,7 @@ describe('Briefing document panel', () => {
           id: 'variant-revision', ordinal: 1, title: 'Wording', prompt: 'Choose wording', description: null,
           response_type: 'text_variant', required: true, position: 1, options: [],
           variants: [
-            { key: 'concise', label: 'Concise', body: 'Concise policy.', start_offset: conciseMarkerStart, end_offset: conciseEnd, body_start_offset: conciseStart, body_end_offset: conciseEnd },
+            { key: 'concise', label: 'Concise', body: 'This is a layout and rail specimen.', start_offset: conciseMarkerStart, end_offset: conciseEnd, body_start_offset: conciseStart, body_end_offset: conciseEnd },
             { key: 'detailed', label: 'Detailed', body: 'Detailed policy with more words.', start_offset: detailedMarkerStart, end_offset: detailedEnd, body_start_offset: detailedStart, body_end_offset: detailedEnd },
           ],
         },
@@ -673,10 +689,42 @@ describe('Briefing document panel', () => {
     }
     const view = render(<Harness />);
 
-    expect(await screen.findByText('Concise policy.')).toBeTruthy();
+    const concise = await screen.findByText('This is a layout and rail specimen.');
     expect(screen.queryByText('Detailed policy with more words.')).toBeNull();
     expect(screen.queryByText('Concise', { exact: true })).toBeNull();
     expect(screen.getByRole('group', { name: 'Text variant: Concise' })).toBeTruthy();
+    const sourceTree = screen.getByLabelText('Pinned briefing document').querySelector('.briefing-document__source-tree') as HTMLElement;
+    const owner = concise.closest('.briefing-directive--owner') as HTMLElement;
+    const heading = screen.getByRole('heading', { name: 'Briefing directive layout specimens' });
+    const responseHost = screen.getByRole('group', { name: 'Text variant: Concise' }).closest('.briefing-directive__response-host--rail') as HTMLElement;
+    const actionHost = owner.querySelector('[data-briefing-directive-action]') as HTMLElement;
+    vi.spyOn(sourceTree, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 600, width: 640, height: 600, toJSON: () => ({}) });
+    vi.spyOn(owner, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 40, left: 448, right: 928, top: 40, bottom: 64, width: 480, height: 24, toJSON: () => ({}) });
+    vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 72, left: 448, right: 928, top: 72, bottom: 104, width: 480, height: 32, toJSON: () => ({}) });
+    vi.spyOn(responseHost, 'getBoundingClientRect').mockImplementation(() => {
+      const top = Number.parseFloat(responseHost.style.getPropertyValue('--briefing-right-rail-top')) || 40;
+      return { x: 928, y: top, left: 928, right: 1088, top, bottom: top + 24, width: 160, height: 24, toJSON: () => ({}) };
+    });
+    const variantControls = responseHost.querySelector('.briefing-directive__variant-controls') as HTMLElement;
+    vi.spyOn(variantControls, 'getBoundingClientRect').mockImplementation(() => {
+      const top = responseHost.getBoundingClientRect().top;
+      return { x: 960, y: top, left: 960, right: 1080, top, bottom: top + 24, width: 120, height: 24, toJSON: () => ({}) };
+    });
+    vi.spyOn(actionHost, 'getBoundingClientRect').mockImplementation(() => {
+      const center = owner.getBoundingClientRect().top + Number.parseFloat(actionHost.style.getPropertyValue('--briefing-right-rail-center') || '0');
+      return { x: 936, y: center - 10, left: 936, right: 956, top: center - 10, bottom: center + 10, width: 20, height: 20, toJSON: () => ({}) };
+    });
+    sourceTree.style.paddingRight = '160px';
+    sourceTree.style.paddingBottom = '0px';
+    owner.style.lineHeight = '24px';
+    fireEvent(globalThis, new Event('resize'));
+    expect(responseHost.style.getPropertyValue('--briefing-right-rail-top')).toBe('40px');
+    const responseControlRect = variantControls.getBoundingClientRect();
+    const actionRect = actionHost.getBoundingClientRect();
+    const responseControlCenter = responseControlRect.top + responseControlRect.height / 2;
+    const actionCenter = actionRect.top + actionRect.height / 2;
+    expect(responseControlCenter).toBe(actionCenter);
+    expect(responseControlCenter).toBeLessThan(heading.getBoundingClientRect().top);
     expect(changes).toEqual([]);
     const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
     const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;
@@ -690,12 +738,12 @@ describe('Briefing document panel', () => {
     fireEvent.click(next);
     expect(changes).toEqual([{ id: 'wording', value: { option_key: 'detailed' } }]);
     expect(await screen.findByText('Detailed policy with more words.')).toBeTruthy();
-    expect(screen.queryByText('Concise policy.')).toBeNull();
+    expect(screen.queryByText('This is a layout and rail specimen.')).toBeNull();
     expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
     const dialog = screen.getByRole('dialog', { name: 'Add annotation' });
     expect(within(dialog).getByText('Detailed policy with more words.')).toBeTruthy();
-    expect(within(dialog).queryByText(/alternative|Concise policy/)).toBeNull();
+    expect(within(dialog).queryByText(/alternative|layout and rail specimen/)).toBeNull();
     fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Keep the detailed wording.' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));

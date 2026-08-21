@@ -332,6 +332,7 @@
 
 .briefing-document__rendered {
   --briefing-right-rail-width: clamp(8rem, 20%, 10rem);
+  --briefing-right-action-slot-width: 2rem;
   position: relative;
   padding-inline: var(--space-3);
 }
@@ -357,8 +358,10 @@
 
 .briefing-markdown__action-rail {
   position: absolute;
+  inset-block-start: var(--briefing-right-rail-center, 0px);
   inset-inline-start: var(--briefing-right-rail-action-offset, auto);
   inset-inline-end: auto;
+  transform: translateY(-50%);
   z-index: 1;
   display: flex;
   width: 1.3em;
@@ -425,24 +428,41 @@
 }
 
 .briefing-directive__response-host {
+  display: grid;
+}
+
+.briefing-directive__response-host--rail {
   position: absolute;
   inset-block-start: var(--briefing-right-rail-top, 0px);
   inset-inline-end: 0;
-  display: grid;
   box-sizing: border-box;
-  width: var(--briefing-right-rail-width);
-  padding-inline: var(--space-2);
+  width: calc(var(--briefing-right-rail-width) - var(--briefing-right-action-slot-width));
+  padding-inline-end: var(--space-1);
   justify-items: end;
+}
+
+.briefing-directive__response-host--rail .briefing-directive__response {
+  margin-top: 0;
+}
+
+.briefing-directive__response-host--flow {
+  width: 100%;
+  justify-items: start;
+}
+
+.briefing-directive__response-host--flow .briefing-directive__response {
+  width: 100%;
+  justify-items: start;
 }
 
 .briefing-directive__variant-controls {
   display: inline-grid;
-  grid-template-columns: 2em minmax(3em, 1fr) 2em;
+  grid-template-columns: 2em minmax(0, 1fr) 2em;
   align-items: center;
   box-sizing: border-box;
   width: 100%;
   gap: 0;
-  padding-inline: .4em;
+  padding-inline: .2em;
   font-size: .8em;
 }
 
@@ -502,23 +522,16 @@
   min-height: 1.3em;
 }
 
-.briefing-directive__verdict button {
+.briefing-directive__verdict .briefing-directive__verdict-action {
   display: grid;
   width: 1.3em;
+  height: 1.3em;
   padding: .2em;
   place-items: center;
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
 }
 
-.briefing-directive__verdict button:hover,
-.briefing-directive__verdict button:focus-visible,
-.briefing-directive__verdict button[aria-pressed='true'] {
-  border-color: var(--accent-border);
-  background: var(--surface-inset);
+.briefing-directive__verdict .briefing-directive__verdict-action:is(:hover, :focus-visible, [aria-pressed='true']) {
   color: var(--text-primary);
 }
 
