@@ -362,6 +362,47 @@
   padding-inline: var(--space-3);
 }
 
+.briefing-document__heading {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+  padding-inline: var(--space-3);
+}
+
+.briefing-document__heading-content > :first-child {
+  margin-top: 0;
+}
+
+.briefing-document__heading-actions {
+  display: flex;
+}
+
+.briefing-document__heading-actions button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  place-items: center;
+}
+
+.briefing-document__heading-actions svg,
+.briefing-directive__variant-controls svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.briefing-document__section-intent {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .briefing-directive {
   margin-block: calc(var(--space-1) / 2);
   margin-inline: var(--space-3) 0;
@@ -394,6 +435,46 @@
   justify-items: start;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+.briefing-directive__variant-controls {
+  display: inline-grid;
+  grid-template-columns: 36px minmax(8rem, auto) 36px;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.briefing-directive__variant-controls > span {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+
+.briefing-directive__variant-controls small {
+  color: var(--text-muted);
+}
+
+.briefing-directive__variant-controls button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 7px;
+  place-items: center;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.briefing-directive__variant-controls button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.briefing-directive__variant-controls button:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
 }
 
 .briefing-directive__verdict,
@@ -636,6 +717,12 @@ textarea.briefing-directive__text {
   .briefing-directive__rating label,
   .briefing-directive__clear,
   .briefing-directive__actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .briefing-document__heading-actions button,
+  .briefing-directive__variant-controls button {
     min-width: 44px;
     min-height: 44px;
   }

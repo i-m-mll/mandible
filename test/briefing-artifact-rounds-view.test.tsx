@@ -202,6 +202,82 @@ describe('artifact-backed Briefing rounds', () => {
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
+  it('normalizes ordered v3 text variants with exact Markdown bodies and ranges', () => {
+    const variantSource = ':::spec-item{key="wording" type="text_variant"}\n::alternative[Short]{key="short"}\nShort.\n::alternative[Long]{key="long"}\nLonger wording.\n:::';
+    const start = variantSource.indexOf(':::');
+    const bodyStart = variantSource.indexOf('Short.');
+    const bodyEnd = variantSource.lastIndexOf('\n:::');
+    const longBodyStart = variantSource.indexOf('Longer wording.');
+    const payload = detail(ROUND_TWO) as any;
+    payload.selected_round.profile = 'mandible-briefing.v3';
+    payload.selected_round.document = {
+      ...payload.selected_round.document,
+      profile: 'mandible-briefing.v3',
+      source: variantSource,
+      content_hash: createHash('sha256').update(variantSource).digest('hex'),
+    };
+    payload.selected_round.items = [{
+      id: 'item-wording', directive_key: 'wording', position: 0,
+      definition_digest: createHash('sha256').update(variantSource).digest('hex'),
+      response_type: 'text_variant', required: 1, prompt: 'Choose wording', options: [],
+      variants: [
+        { key: 'short', label: 'Short', body: 'Short.', start_offset: variantSource.indexOf('::alternative[Short]'), end_offset: bodyStart + 6, body_start_offset: bodyStart, body_end_offset: bodyStart + 6 },
+        { key: 'long', label: 'Long', body: 'Longer wording.', start_offset: variantSource.indexOf('::alternative[Long]'), end_offset: longBodyStart + 15, body_start_offset: longBodyStart, body_end_offset: longBodyStart + 15 },
+      ],
+      start_offset: start, end_offset: variantSource.length,
+      body_start_offset: bodyStart, body_end_offset: bodyEnd,
+    }];
+    payload.selected_round.answers = [];
+
+    const projection = normalizeBriefingProjection(payload);
+    expect(projection.valid).toBe(true);
+    expect(projection.document?.profile).toBe('mandible-briefing.v3');
+    expect(projection.items[0].revision).toMatchObject({
+      response_type: 'text_variant',
+      variants: [
+        { key: 'short', label: 'Short', body: 'Short.' },
+        { key: 'long', label: 'Long', body: 'Longer wording.' },
+      ],
+    });
+  });
+
+  it('gates reviewed Markdown export on the active actor frozen submission and surfaces refusal locally', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_ONE}`) return new Response(JSON.stringify(detail(ROUND_ONE)), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url.endsWith(`/submissions/submission-${ROUND_ONE}/export`)) return new Response(JSON.stringify({ error: 'Frozen export is unavailable.' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} />
+    </AppShellProvider>);
+    await screen.findByText('First');
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Export reviewed Markdown' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Frozen export is unavailable.');
+    expect(calls).toContain(`/api/briefings/briefing-1/rounds/${ROUND_ONE}/submissions/submission-${ROUND_ONE}/export`);
+  });
+
+  it('does not offer reviewed Markdown export before the active actor has a frozen submission', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) return new Response(JSON.stringify(detail(ROUND_TWO)), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={PRODUCTION_ALLOW_INSTANCE} />
+    </AppShellProvider>);
+    await screen.findByText('Later');
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
+    expect(screen.queryByRole('menuitem', { name: 'Export reviewed Markdown' })).toBeNull();
+  });
+
   it('rejects a selectable stale typed detail whose copied database has no authoritative round identity', () => {
     const authoritative = typedDetail(ROUND_ONE);
     expect(normalizeBriefingProjection(authoritative).valid).toBe(true);

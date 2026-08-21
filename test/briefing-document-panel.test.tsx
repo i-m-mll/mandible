@@ -4,9 +4,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { BriefingRoundProjection } from '../ui/src/api';
+import type { BriefingResponseValue, BriefingRoundProjection } from '../ui/src/api';
 
-import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import { BriefingDocumentPanel, findMarkdownHeadingSections } from '../ui/src/views/feedback/BriefingDocumentPanel';
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
@@ -482,6 +482,129 @@ describe('Briefing document panel', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
+  });
+
+  it('renders only the active text variant and stores bounded keyed choices without manufacturing an initial answer', async () => {
+    const variantSource = '# Policy\n:::spec-item{key="wording" type="text_variant"}\n::alternative[Concise]{key="concise"}\nConcise policy.\n::alternative[Detailed]{key="detailed"}\nDetailed policy with more words.\n:::\n';
+    const directiveStart = variantSource.indexOf(':::');
+    const bodyStart = variantSource.indexOf('::alternative[Concise]');
+    const bodyEnd = variantSource.indexOf('\n:::', bodyStart);
+    const directiveEnd = bodyEnd + '\n:::'.length;
+    const conciseStart = variantSource.indexOf('Concise policy.');
+    const conciseEnd = conciseStart + 'Concise policy.'.length;
+    const detailedStart = variantSource.indexOf('Detailed policy with more words.');
+    const detailedEnd = detailedStart + 'Detailed policy with more words.'.length;
+    const conciseMarkerStart = variantSource.indexOf('::alternative[Concise]');
+    const detailedMarkerStart = variantSource.indexOf('::alternative[Detailed]');
+    const variantRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:variants',
+        content_hash: createHash('sha256').update(variantSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v3',
+        source: variantSource,
+      },
+      items: [{
+        id: 'wording', client_item_key: 'wording', parent_item_id: null, item_kind: 'item',
+        revision: {
+          id: 'variant-revision', ordinal: 1, title: 'Wording', prompt: 'Choose wording', description: null,
+          response_type: 'text_variant', required: true, position: 1, options: [],
+          variants: [
+            { key: 'concise', label: 'Concise', body: 'Concise policy.', start_offset: conciseMarkerStart, end_offset: conciseEnd, body_start_offset: conciseStart, body_end_offset: conciseEnd },
+            { key: 'detailed', label: 'Detailed', body: 'Detailed policy with more words.', start_offset: detailedMarkerStart, end_offset: detailedEnd, body_start_offset: detailedStart, body_end_offset: detailedEnd },
+          ],
+        },
+        effective_response: null, responseVisible: true,
+        directive: {
+          key: 'wording', definition_digest: createHash('sha256').update(variantSource.slice(directiveStart, directiveEnd)).digest('hex'),
+          start_offset: directiveStart, end_offset: directiveEnd, body_start_offset: bodyStart, body_end_offset: bodyEnd,
+        },
+      }],
+    });
+    const changes: unknown[] = [];
+    function Harness({ canMutate = true }: { canMutate?: boolean }) {
+      const [draft, setDraft] = useState<Record<string, BriefingResponseValue | null>>({});
+      return <BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Document review" roundId="round-1" round={variantRound}
+        canMutate={canMutate} onRefresh={async () => null} draft={draft}
+        onDirectiveValue={(id, value) => { changes.push({ id, value }); setDraft((current) => ({ ...current, [id]: value })); }} />;
+    }
+    const view = render(<Harness />);
+
+    expect(await screen.findByText('Concise policy.')).toBeTruthy();
+    expect(screen.queryByText('Detailed policy with more words.')).toBeNull();
+    expect(changes).toEqual([]);
+    const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
+    const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;
+    expect(previous.disabled).toBe(true);
+    await waitFor(() => expect(next.disabled).toBe(false));
+    expect(screen.getByText('1 of 2')).toBeTruthy();
+    fireEvent.click(next);
+    expect(changes).toEqual([{ id: 'wording', value: { option_key: 'detailed' } }]);
+    expect(await screen.findByText('Detailed policy with more words.')).toBeTruthy();
+    expect(screen.queryByText('Concise policy.')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Previous text variant' }));
+    expect(changes.at(-1)).toEqual({ id: 'wording', value: { option_key: 'concise' } });
+
+    view.rerender(<Harness canMutate={false} />);
+    expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Comment' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('calculates whole-section UTF-16 ranges across nested headings while ignoring fenced headings', () => {
+    const markdown = '# Root 😀\nIntro\n```md\n# Fenced\n```\n## Child\nChild text\n### Deep\nDeep text\n## Peer\nPeer text\n# Next\nEnd\n';
+    const sections = findMarkdownHeadingSections(markdown);
+    expect(sections.map(({ level, label }) => ({ level, label }))).toEqual([
+      { level: 1, label: 'Root 😀' },
+      { level: 2, label: 'Child' },
+      { level: 3, label: 'Deep' },
+      { level: 2, label: 'Peer' },
+      { level: 1, label: 'Next' },
+    ]);
+    expect(sections[0].sectionEnd).toBe(markdown.indexOf('# Next'));
+    expect(sections[1].sectionEnd).toBe(markdown.indexOf('## Peer'));
+    expect(sections[2].sectionEnd).toBe(markdown.indexOf('## Peer'));
+    expect(markdown.slice(sections[0].headingStart, sections[0].sectionEnd)).toContain('# Fenced');
+  });
+
+  it('saves a heading Comment as the exact whole-section quote without exposing inert directive syntax in the editor', async () => {
+    const sectionSource = '# Policy\nIntro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n## Detail\nDetail text\n# Next\nTail\n';
+    const [directive] = parseBriefingDirectives(sectionSource);
+    const posts: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method) return json(content());
+      posts.push(JSON.parse(String(init.body)));
+      return json({ annotation_event_ids: ['annotation-section'] });
+    }));
+    const sectionRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:section',
+        content_hash: createHash('sha256').update(sectionSource).digest('hex'),
+        previous_round_id: null, profile: 'mandible-briefing.v3', source: sectionSource,
+      },
+      items: [{
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
+        revision: { id: directive.definition_digest, ordinal: 1, title: 'Plan', prompt: directive.body, description: null, response_type: 'verdict', required: true, position: 1, options: [] },
+        effective_response: null, responseVisible: true, directive,
+      }],
+    });
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Document review" roundId="round-1" round={sectionRound} canMutate onRefresh={async () => null} />);
+
+    const action = await screen.findByRole('button', { name: 'Comment on section Policy' }) as HTMLButtonElement;
+    await waitFor(() => expect(action.disabled).toBe(false));
+    fireEvent.click(action);
+    expect(screen.getByText('Whole section:')).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByText('Policy')).toBeTruthy();
+    expect(screen.queryByText(/spec-item/)).toBeNull();
+    const dialog = screen.getByRole('dialog');
+    fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Review the complete policy section.' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    const expectedEnd = sectionSource.indexOf('# Next');
+    expect(posts[0].annotations[0]).toEqual({
+      operation: 'set', kind: 'comment', start_offset: 0, end_offset: expectedEnd,
+      quote: sectionSource.slice(0, expectedEnd), body: 'Review the complete policy section.', replacement_text: null,
+    });
   });
 
 });
