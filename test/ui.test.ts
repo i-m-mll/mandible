@@ -2032,7 +2032,7 @@ describe('app shell', () => {
       .toBeTruthy();
     const detailShell = graphPanel.querySelector('.detail-pane-shell');
     expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
-      .toEqual(['header', 'body']);
+      .toEqual(['header', 'body', 'overlay-host']);
     const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy Repo reference' });
     expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
     expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
