@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
+import { decompressContent } from "../compression.js";
 import type { Db } from "../db.js";
 import type { ConversationSource } from "../parsers/types.js";
 import type {
@@ -9,6 +10,7 @@ import type {
   ConversationSourceVersion,
   RecordConversationSourceInput,
   RecordConversationSourceAliasInput,
+  RecordManagedNormalizedSourceInput,
   RecordNormalizationCheckpointInput,
   UpdateConversationSourceCustodyInput,
 } from "./source-types.js";
@@ -31,6 +33,7 @@ interface SourceSnapshot {
   mtimeMs: number;
   records: RecordRange[];
   filesystemIdentity: SourceFilesystemIdentity;
+  mode: number;
 }
 
 interface LegacyBlockRow {
@@ -44,6 +47,36 @@ interface LegacyBlockRow {
   metadata_json: string;
   dag_uuid: string | null;
   dag_parent_uuid: string | null;
+}
+
+interface CompatibilityBlockRow extends LegacyBlockRow {
+  content: Buffer | string;
+  compressed: number;
+  payload_state: "legacy" | "source";
+}
+
+class ConversationPayloadChangedError extends Error {}
+
+function rawValueEquals(left: unknown, right: unknown): boolean {
+  if (Buffer.isBuffer(left) || Buffer.isBuffer(right)) {
+    return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
+  }
+  return left === right;
+}
+
+function sameCompatibilityRows(
+  left: readonly CompatibilityBlockRow[],
+  right: readonly CompatibilityBlockRow[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const fields: ReadonlyArray<keyof CompatibilityBlockRow> = [
+    "id", "conversation_id", "type", "role", "content", "compressed",
+    "position", "timestamp", "parent_id", "metadata_json", "dag_uuid",
+    "dag_parent_uuid", "payload_state",
+  ];
+  return left.every((row, index) => fields.every(
+    (field) => rawValueEquals(row[field], right[index][field]),
+  ));
 }
 
 interface AliasRoot {
@@ -159,6 +192,7 @@ async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
       mtimeMs: Number(after.mtimeNs) / 1_000_000,
       records,
       filesystemIdentity: beforeIdentity,
+      mode: Number(after.mode),
     };
   } finally {
     await handle.close();
@@ -181,12 +215,26 @@ function numericMetadata(metadata: Record<string, unknown>, key: string): number
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function providerBlockKey(block: LegacyBlockRow, metadata: Record<string, unknown>, range: RecordRange): string {
-  const sub = numericMetadata(metadata, "source_sub_block_ordinal") ?? 0;
-  if (block.dag_uuid) return `dag:${block.dag_uuid}:${block.type}:${sub}`;
+function providerBlockKey(
+  block: LegacyBlockRow,
+  metadata: Record<string, unknown>,
+  range: RecordRange,
+  subBlockOrdinal: number,
+): string {
+  const sub = numericMetadata(metadata, "source_sub_block_ordinal") ?? subBlockOrdinal;
+  const recordIdentity = `${range.ordinal}:${range.offset}:${range.hash}`;
+  if (block.dag_uuid) return `dag:${block.dag_uuid}:${block.type}:${sub}:record:${recordIdentity}`;
   const toolId = typeof metadata.tool_id === "string" ? metadata.tool_id : "";
-  if (toolId) return `tool:${toolId}:${block.type}:${sub}`;
-  return `record:${range.hash}:${block.type}:${sub}`;
+  if (toolId) return `tool:${toolId}:${block.type}:${sub}:record:${recordIdentity}`;
+  return `record:${recordIdentity}:${block.type}:${sub}`;
+}
+
+function sameJson(left: string, right: string): boolean {
+  try {
+    return JSON.stringify(JSON.parse(left)) === JSON.stringify(JSON.parse(right));
+  } catch {
+    return left === right;
+  }
 }
 
 export class ConversationSourceStore {
@@ -271,6 +319,314 @@ export class ConversationSourceStore {
       "SELECT block_id FROM conversation_block_aliases WHERE alias = ?",
     ).get(alias) as { block_id: string } | undefined;
     return row?.block_id ?? null;
+  }
+
+  /**
+   * Remove the duplicate normalized payload only after every current block has
+   * an exact bounded source locator under the current sealed version.
+   */
+  private compatibilityRows(conversationId: string): CompatibilityBlockRow[] {
+    return this.db.prepare(`
+      SELECT id, conversation_id, type, role, content, compressed, position,
+             timestamp, parent_id, metadata_json, dag_uuid, dag_parent_uuid,
+             payload_state
+        FROM conversation_blocks
+       WHERE conversation_id = ?
+       ORDER BY position, id
+    `).all(conversationId) as CompatibilityBlockRow[];
+  }
+
+  private stripConversationPayload(conversationId: string): { promoted: boolean; blocks: number; reason: string | null } {
+    const state = this.db.prepare(`
+        SELECT c.block_count,
+               (SELECT COUNT(*) FROM conversation_blocks b
+                 WHERE b.conversation_id = c.id) AS body_rows,
+               (SELECT COUNT(*) FROM conversation_structural_blocks sb
+                 WHERE sb.conversation_id = c.id AND sb.status = 'current') AS structural_rows,
+               (SELECT COUNT(*) FROM conversation_structural_blocks sb
+                 WHERE sb.conversation_id = c.id AND sb.status = 'current'
+                   AND NOT (sb.source_version_id = s.current_version_id
+                            AND sb.record_offset IS NOT NULL
+                            AND sb.record_length IS NOT NULL
+                            AND sb.record_length <= 67108864
+                            AND sb.record_hash IS NOT NULL
+                            AND sb.record_ordinal IS NOT NULL
+                            AND sb.record_ordinal >= 0
+                            AND (v.parser_format = 'mandible-normalized-jsonl'
+                              OR s.provider <> 'gemini'
+                              OR (sb.record_offset = 0
+                                AND sb.record_length = v.byte_length
+                                AND sb.record_hash = v.content_sha256
+                                AND sb.record_ordinal = 0)))) AS invalid_locators,
+               s.id AS source_id,
+               s.provider,
+               s.availability,
+               v.generation,
+               v.availability AS version_availability,
+               v.filesystem_device,
+               v.filesystem_inode,
+               v.filesystem_ctime_ns,
+               v.byte_length,
+               v.content_sha256
+          FROM conversations c
+          JOIN conversation_sources s ON s.conversation_id = c.id
+          JOIN conversation_source_versions v ON v.id = s.current_version_id
+         WHERE c.id = ?
+    `).get(conversationId) as {
+        block_count: number;
+        body_rows: number;
+        structural_rows: number;
+        invalid_locators: number;
+        source_id: string;
+        provider: ConversationSource;
+        availability: string;
+        generation: string;
+        version_availability: string;
+        filesystem_device: string | null;
+        filesystem_inode: string | null;
+        filesystem_ctime_ns: string | null;
+        byte_length: number;
+        content_sha256: string;
+    } | undefined;
+    if (!state) return { promoted: false, blocks: 0, reason: "current sealed source is missing" };
+    if (state.availability !== "available" || state.version_availability !== "available"
+        || state.generation !== "sealed_sha256" || !state.filesystem_device
+        || !state.filesystem_inode || !state.filesystem_ctime_ns) {
+      return { promoted: false, blocks: state.body_rows, reason: "current source is not exactly available" };
+    }
+    if (state.body_rows !== state.block_count || state.structural_rows !== state.block_count
+        || state.invalid_locators !== 0) {
+      return { promoted: false, blocks: state.body_rows, reason: "bounded structural locator coverage is incomplete" };
+    }
+    const expectedIdentity: SourceFilesystemIdentity = {
+      device: state.filesystem_device,
+      inode: state.filesystem_inode,
+      ctimeNs: state.filesystem_ctime_ns,
+    };
+    const aliases = this.db.prepare(`
+      SELECT root_path, relative_path, path
+        FROM conversation_source_aliases
+       WHERE source_id = ? AND availability = 'available'
+       ORDER BY last_seen_at DESC
+    `).all(state.source_id) as Array<{ root_path: string; relative_path: string; path: string }>;
+    let sourceHandle: number | null = null;
+    let sourcePath: string | null = null;
+    let sourceRootPath: string | null = null;
+    for (const alias of aliases) {
+      try {
+        const declaredRoot = path.resolve(alias.root_path);
+        const declared = path.resolve(alias.root_path, alias.relative_path);
+        if (declared !== path.resolve(alias.path) || !insideDeclaredRoot(declaredRoot, declared)) continue;
+        const rootReal = fs.realpathSync.native(declaredRoot);
+        const fileReal = fs.realpathSync.native(declared);
+        if (!insideDeclaredRoot(rootReal, fileReal)) continue;
+        const handle = fs.openSync(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        const stat = fs.fstatSync(handle, { bigint: true });
+        if (!stat.isFile() || Number(stat.size) !== state.byte_length
+            || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(stat))) {
+          fs.closeSync(handle);
+          continue;
+        }
+        sourceHandle = handle;
+        sourcePath = declared;
+        sourceRootPath = rootReal;
+        break;
+      } catch {
+        // Try the next verified provider alias.
+      }
+    }
+    if (sourceHandle === null || sourcePath === null || sourceRootPath === null) {
+      return { promoted: false, blocks: state.body_rows, reason: "exact provider source is no longer present" };
+    }
+    try {
+      this.db.prepare(`
+        UPDATE conversation_blocks
+           SET content = '', metadata_json = '{}', compressed = 0,
+               payload_state = 'source'
+         WHERE conversation_id = ?
+      `).run(conversationId);
+      const finalFdStat = fs.fstatSync(sourceHandle, { bigint: true });
+      const finalRealPath = fs.realpathSync.native(sourcePath);
+      const finalPathStat = fs.statSync(finalRealPath, { bigint: true });
+      if (Number(finalFdStat.size) !== state.byte_length
+          || Number(finalPathStat.size) !== state.byte_length
+          || !insideDeclaredRoot(sourceRootPath, finalRealPath)
+          || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(finalFdStat))
+          || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(finalPathStat))) {
+        throw new Error("conversation source changed while duplicate payload was stripped");
+      }
+      return { promoted: true, blocks: state.block_count, reason: null };
+    } finally {
+      fs.closeSync(sourceHandle);
+    }
+  }
+
+  /** Strip only after the ordinary unmasked source reader exactly reproduces the DB projection. */
+  async verifyAndPromoteConversationPayload(
+    conversationId: string,
+    normalizedProjection?: ReadonlyArray<{
+      id: string;
+      type: string;
+      role: string;
+      content: string;
+      position: number;
+      timestamp: string | null;
+      parent_id: string | null;
+      metadata_json: string;
+      dag_uuid: string | null;
+      dag_parent_uuid: string | null;
+    }>,
+  ): Promise<{ promoted: boolean; blocks: number; reason: string | null }> {
+    const compatibilitySnapshot = this.compatibilityRows(conversationId);
+    const expected = compatibilitySnapshot.filter((row) => row.payload_state === "legacy");
+    if (expected.length === 0) {
+      return { promoted: false, blocks: 0, reason: "no legacy payload is available for projection verification" };
+    }
+    if (normalizedProjection && normalizedProjection.length !== expected.length) {
+      return { promoted: false, blocks: expected.length, reason: "normalized projection block count diverges" };
+    }
+    const { ConversationSourceReader } = await import("./source-reader.js");
+    const read = await new ConversationSourceReader(this.db, {
+      legacyFallback: false,
+      maskCredentials: false,
+    }).readAll(conversationId);
+    if (read.status !== "source") {
+      return { promoted: false, blocks: expected.length, reason: `exact source read failed: ${read.reason}` };
+    }
+    const malformedSource = compatibilitySnapshot.some((row) => row.payload_state === "source"
+      && (row.content.length !== 0 || row.metadata_json !== "{}" || row.compressed !== 0));
+    if (read.value.length !== compatibilitySnapshot.length || malformedSource) {
+      return { promoted: false, blocks: expected.length, reason: "exact source projection block count diverges" };
+    }
+    const sourceByPosition = new Map(read.value.map((block) => [block.position, block]));
+    for (let index = 0; index < expected.length; index += 1) {
+      const row = expected[index];
+      const projection = normalizedProjection?.[index];
+      if (projection && (projection.id !== row.id || projection.position !== row.position
+          || projection.type !== row.type || projection.role !== row.role
+          || projection.timestamp !== row.timestamp || projection.parent_id !== row.parent_id
+          || projection.dag_uuid !== row.dag_uuid || projection.dag_parent_uuid !== row.dag_parent_uuid)) {
+        return { promoted: false, blocks: expected.length, reason: "normalized projection structural identity diverges" };
+      }
+      const block = sourceByPosition.get(row.position);
+      if (!block) {
+        return { promoted: false, blocks: expected.length, reason: "exact source projection block count diverges" };
+      }
+      const compared = projection ?? {
+        ...row,
+        content: decompressContent(row.content, row.compressed === 1),
+      };
+      const expectedId = this.resolveLegacyBlockId(compared.id) ?? compared.id;
+      const parentAtPosition = compared.parent_id !== null && /^\d+$/.test(compared.parent_id)
+        ? sourceByPosition.get(Number(compared.parent_id))?.id ?? null
+        : null;
+      const expectedParent = parentAtPosition ?? (compared.parent_id === null
+        ? null
+        : this.resolveLegacyBlockId(compared.parent_id) ?? compared.parent_id);
+      if (block.id !== expectedId || block.position !== compared.position
+          || block.type !== compared.type || block.role !== compared.role || block.content !== compared.content
+          || !sameJson(block.metadata_json, compared.metadata_json)
+          || block.timestamp !== compared.timestamp || block.parent_id !== expectedParent
+          || block.dag_uuid !== compared.dag_uuid || block.dag_parent_uuid !== compared.dag_parent_uuid) {
+        return {
+          promoted: false,
+          blocks: expected.length,
+          reason: `exact source projection diverges at block position ${row.position}`,
+        };
+      }
+    }
+    const promote = this.db.transaction(() => {
+      const current = this.compatibilityRows(conversationId);
+      if (!sameCompatibilityRows(compatibilitySnapshot, current)) {
+        throw new ConversationPayloadChangedError("conversation payload changed after source verification");
+      }
+      return this.stripConversationPayload(conversationId);
+    });
+    try {
+      return promote.immediate();
+    } catch (error) {
+      if (error instanceof ConversationPayloadChangedError) {
+        return { promoted: false, blocks: expected.length, reason: error.message };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Native provider bytes are the conversation authority. Once the current
+   * parser can read the sealed, indexed source, discard an old normalized
+   * cache without requiring a historical parser projection to match it.
+   */
+  async promoteNativeConversationPayload(
+    conversationId: string,
+  ): Promise<{ promoted: boolean; blocks: number; reason: string | null }> {
+    const compatibilitySnapshot = this.compatibilityRows(conversationId);
+    const expected = compatibilitySnapshot.filter((row) => row.payload_state === "legacy");
+    if (expected.length === 0) {
+      return { promoted: false, blocks: 0, reason: "no legacy payload is available for promotion" };
+    }
+    const { ConversationSourceReader } = await import("./source-reader.js");
+    const read = await new ConversationSourceReader(this.db, {
+      legacyFallback: false,
+      maskCredentials: false,
+    }).readAll(conversationId);
+    if (read.status !== "source") {
+      return { promoted: false, blocks: expected.length, reason: `native source read failed: ${read.reason}` };
+    }
+    const promote = this.db.transaction(() => {
+      const current = this.compatibilityRows(conversationId);
+      if (!sameCompatibilityRows(compatibilitySnapshot, current)) {
+        throw new ConversationPayloadChangedError("conversation payload changed after native source verification");
+      }
+      this.db.prepare(`UPDATE conversation_blocks
+        SET content = '', metadata_json = '{}', compressed = 0, payload_state = 'source'
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).run(conversationId);
+      return { promoted: true, blocks: expected.length, reason: null };
+    });
+    try {
+      return promote.immediate();
+    } catch (error) {
+      if (error instanceof ConversationPayloadChangedError) {
+        return { promoted: false, blocks: expected.length, reason: error.message };
+      }
+      throw error;
+    }
+  }
+
+  /** Retain the conversation index while making an unresolved native source explicit. */
+  discardUnavailableConversationPayload(input: {
+    conversationId: string;
+    provider: ConversationSource;
+    nativeSessionId: string;
+    reason: string;
+    parserFormat: string;
+    parserVersion: string;
+    normalizationVersion: string;
+    redactionEpoch: number;
+  }): { promoted: boolean; blocks: number; reason: string | null } {
+    const existing = this.db.prepare(`SELECT id FROM conversation_sources
+      WHERE conversation_id = ? AND provider = ?`).get(input.conversationId, input.provider) as { id: string } | undefined;
+    const sourceId = existing?.id ?? stableId("csrc", input.conversationId, input.provider);
+    const now = Date.now();
+    return this.db.transaction(() => {
+      const count = (this.db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).get(input.conversationId) as { count: number }).count;
+      this.db.prepare(`
+        INSERT INTO conversation_sources (
+          id, conversation_id, provider, native_session_id, parser_format, parser_version,
+          normalization_version, redaction_epoch, availability, custody_state,
+          current_version_id, unavailable_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'missing', 'provider', NULL, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET availability = 'missing',
+          unavailable_reason = excluded.unavailable_reason, updated_at = excluded.updated_at
+      `).run(sourceId, input.conversationId, input.provider, input.nativeSessionId,
+        input.parserFormat, input.parserVersion, input.normalizationVersion, input.redactionEpoch,
+        input.reason, now, now);
+      this.db.prepare(`UPDATE conversation_blocks
+        SET content = '', metadata_json = '{}', compressed = 0, payload_state = 'source'
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).run(input.conversationId);
+      return { promoted: count > 0, blocks: count, reason: input.reason };
+    }).immediate();
   }
 
   /** Register a provider or managed-custody alias without changing source identity. */
@@ -372,13 +728,36 @@ export class ConversationSourceStore {
     const aliasPath = path.resolve(input.filePath);
     const aliasId = stableId("csa", sourceId, aliasPath);
     const now = Date.now();
-    const blocks = this.db.prepare(`
-      SELECT id, conversation_id, type, role, position, timestamp, parent_id,
-             metadata_json, dag_uuid, dag_parent_uuid
-        FROM conversation_blocks
-       WHERE conversation_id = ?
-       ORDER BY position
-    `).all(input.conversationId) as LegacyBlockRow[];
+    const blocks: LegacyBlockRow[] = input.blocks
+      ? input.blocks.map((block) => ({
+        id: block.legacyId,
+        conversation_id: input.conversationId,
+        type: block.type,
+        role: block.role,
+        position: block.position,
+        timestamp: block.timestamp,
+        parent_id: block.parent_id,
+        metadata_json: JSON.stringify(block.metadata),
+        dag_uuid: block.dag_uuid ?? null,
+        dag_parent_uuid: block.dag_parent_uuid ?? null,
+      }))
+      : this.db.prepare(`
+        SELECT id, conversation_id, type, role, position, timestamp, parent_id,
+               metadata_json, dag_uuid, dag_parent_uuid
+          FROM conversation_blocks
+         WHERE conversation_id = ?
+         ORDER BY position
+      `).all(input.conversationId) as LegacyBlockRow[];
+    const structuralMode = input.blocks ? input.structuralMode ?? "replace" : "replace";
+    const codexModelPositions = new Set(
+      input.provider === "codex"
+        ? blocks.filter((block) => {
+          const metadata = parseMetadata(block.metadata_json);
+          return (block.type === "assistant_message" || block.type === "thinking")
+            && typeof metadata.model === "string" && metadata.model.length > 0;
+        }).map((block) => block.position)
+        : [],
+    );
 
     const apply = this.db.transaction(() => {
       this.db.prepare(`
@@ -451,37 +830,97 @@ export class ConversationSourceStore {
          WHERE id = ?
       `).run(versionId, now, sourceId);
 
-      this.db.prepare(
-        "UPDATE conversation_structural_blocks SET status = 'retired', updated_at = ? WHERE conversation_id = ? AND status = 'current'",
-      ).run(now, input.conversationId);
+      const inheritedCodexModelPositions = new Set<number>();
+      if (structuralMode === "append") {
+        const priorCheckpoints = this.db.prepare(`
+          SELECT sb.position, checkpoint.state_json
+            FROM conversation_structural_blocks sb
+            JOIN conversation_normalization_checkpoints checkpoint
+              ON checkpoint.id = sb.normalization_checkpoint_id
+           WHERE sb.conversation_id = ? AND sb.status = 'current'
+        `).all(input.conversationId) as Array<{ position: number; state_json: string }>;
+        for (const checkpoint of priorCheckpoints) {
+          try {
+            const state = JSON.parse(checkpoint.state_json) as { kind?: unknown; version?: unknown };
+            if (state.kind === "codex-model-metadata" && state.version === 1) {
+              inheritedCodexModelPositions.add(checkpoint.position);
+            }
+          } catch {
+            // The reader will fail closed on a malformed referenced checkpoint.
+          }
+        }
+      }
+      const allCodexModelPositions = new Set([...inheritedCodexModelPositions, ...codexModelPositions]);
+      const codexModelCheckpointId = allCodexModelPositions.size === 0 ? null : this.recordCheckpoint({
+        sourceVersionId: versionId,
+        recordOrdinal: 0,
+        prefixOffset: 0,
+        parserFormat: input.parserFormat,
+        parserVersion: input.parserVersion,
+        normalizationVersion: input.normalizationVersion,
+        redactionEpoch: input.redactionEpoch,
+        // This is parser state only: it proves that the full Codex parser
+        // attached model metadata for these rows; it stores no transcript body.
+        state: { kind: "codex-model-metadata", version: 1 },
+      });
 
-      const positionToId = new Map<number, string>();
+      if (structuralMode === "append") {
+        // An append creates a new sealed source version but does not change the
+        // already-indexed prefix. Rebind that prefix to the new version and add
+        // only the parser-provided tail below. This is what lets ingestion stop
+        // retaining normalized body metadata merely to rebuild the locator map.
+        this.db.prepare(`
+          UPDATE conversation_structural_blocks
+             SET source_version_id = ?, normalization_checkpoint_id = NULL,
+                 parser_format = ?, parser_version = ?, normalization_version = ?,
+                 redaction_epoch = ?, updated_at = ?
+           WHERE conversation_id = ? AND status = 'current'
+        `).run(
+          versionId, input.parserFormat, input.parserVersion,
+          input.normalizationVersion, input.redactionEpoch, now, input.conversationId,
+        );
+        if (codexModelCheckpointId && inheritedCodexModelPositions.size > 0) {
+          this.db.prepare(`
+            UPDATE conversation_structural_blocks
+               SET normalization_checkpoint_id = ?
+             WHERE conversation_id = ? AND status = 'current'
+               AND position IN (${[...inheritedCodexModelPositions].map(() => "?").join(",")})
+          `).run(codexModelCheckpointId, input.conversationId, ...inheritedCodexModelPositions);
+        }
+      } else {
+        this.db.prepare(
+          "UPDATE conversation_structural_blocks SET status = 'retired', updated_at = ? WHERE conversation_id = ? AND status = 'current'",
+        ).run(now, input.conversationId);
+      }
+
+      const positionToId = new Map<number, string>(
+        structuralMode === "append"
+          ? (this.db.prepare(`
+              SELECT position, id FROM conversation_structural_blocks
+               WHERE conversation_id = ? AND status = 'current'
+            `).all(input.conversationId) as Array<{ position: number; id: string }>)
+            .map((row) => [row.position, row.id])
+          : [],
+      );
       const pendingParents: Array<{ blockId: string; parentPosition: number | null }> = [];
       const providerKeyOccurrences = new Map<string, number>();
       for (const block of blocks) {
         const metadata = parseMetadata(block.metadata_json);
-        const recordOrdinal = numericMetadata(metadata, "source_record_ordinal");
-        const range = recordOrdinal === null
+        // Gemini's legacy JSON and JSONL parser normalizes the whole session at
+        // once and does not expose per-message record ordinals. Its files are
+        // bounded, so seal the complete provider file as one exact record.
+        const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
+        const recordOrdinal = wholeGeminiSource
+          ? 0
+          : numericMetadata(metadata, "source_record_ordinal");
+        const range = wholeGeminiSource
+          ? { ordinal: 0, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
+          : recordOrdinal === null
           ? { ordinal: -1, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
           : snapshot.records[recordOrdinal];
         if (!range) continue;
         const subBlockOrdinal = numericMetadata(metadata, "source_sub_block_ordinal") ?? block.position;
-        const checkpointId = stableId(
-          "ccp", versionId, String(range.ordinal), input.parserVersion,
-          input.normalizationVersion, String(input.redactionEpoch),
-        );
-        this.db.prepare(`
-          INSERT OR IGNORE INTO conversation_normalization_checkpoints (
-            id, source_version_id, record_ordinal, prefix_offset, parser_format,
-            parser_version, normalization_version, redaction_epoch, state_json, created_at
-          ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-        `).run(
-          checkpointId, versionId, range.ordinal, input.parserFormat, input.parserVersion,
-          input.normalizationVersion, input.redactionEpoch,
-          JSON.stringify({ strategy: "replay-prefix", through_record: range.ordinal }), now,
-        );
-
-        const providerKeyBase = providerBlockKey(block, metadata, range);
+        const providerKeyBase = providerBlockKey(block, metadata, range, subBlockOrdinal);
         const providerKeyOccurrence = providerKeyOccurrences.get(providerKeyBase) ?? 0;
         providerKeyOccurrences.set(providerKeyBase, providerKeyOccurrence + 1);
         const providerKey = providerKeyOccurrence === 0
@@ -495,7 +934,12 @@ export class ConversationSourceStore {
            WHERE conversation_id = ? AND provider_key = ?
            ORDER BY created_at LIMIT 1
         `).get(input.conversationId, providerKey) as { id: string } | undefined;
-        const blockId = aliasRow?.block_id ?? keyRow?.id
+        // The provider key is the stable parser identity. A legacy block alias
+        // can point at an older placeholder structural row while a partial
+        // prior index already owns this key; reusing the alias row would try
+        // to assign the same unique key twice. Reuse the key owner and move
+        // the legacy alias to it instead.
+        const blockId = keyRow?.id ?? aliasRow?.block_id
           ?? stableId("cblk", input.conversationId, providerKey);
         positionToId.set(block.position, blockId);
         const parentPosition = block.parent_id !== null && /^\d+$/.test(block.parent_id)
@@ -529,7 +973,8 @@ export class ConversationSourceStore {
           blockId, input.conversationId, versionId, providerKey, block.position,
           block.type, block.role, block.timestamp, block.dag_uuid, block.dag_parent_uuid,
           range.offset, range.length, range.hash, range.ordinal, subBlockOrdinal,
-          checkpointId, input.parserFormat, input.parserVersion,
+          allCodexModelPositions.has(block.position) ? codexModelCheckpointId : null,
+          input.parserFormat, input.parserVersion,
           input.normalizationVersion, input.redactionEpoch, now, now,
         );
         this.db.prepare(`
@@ -548,6 +993,150 @@ export class ConversationSourceStore {
       }
     });
     apply();
+    return versionId;
+  }
+
+  /** Register an immutable Mandible-owned normalized source without stripping DB payload. */
+  async recordManagedNormalizedSource(input: RecordManagedNormalizedSourceInput): Promise<string> {
+    const rootPath = fs.realpathSync.native(path.resolve(input.rootPath));
+    const filePath = fs.realpathSync.native(path.resolve(input.filePath));
+    if (!insideDeclaredRoot(rootPath, filePath)) {
+      throw new Error("managed conversation source escapes its declared root");
+    }
+    const snapshot = await snapshotJsonl(filePath);
+    if ((snapshot.mode & 0o7777) !== 0o600) {
+      throw new Error("managed conversation source permissions are not owner-only 0600");
+    }
+    if (snapshot.contentHash !== input.expectedContentHash) {
+      throw new Error("managed conversation source changed after materialization");
+    }
+    if (snapshot.records.length !== input.blocks.length) {
+      throw new Error("managed conversation source record count diverges");
+    }
+    for (let index = 0; index < input.blocks.length; index += 1) {
+      const block = input.blocks[index];
+      const range = snapshot.records[index];
+      if (block.recordOrdinal !== range.ordinal || block.recordOffset !== range.offset
+          || block.recordLength !== range.length || block.recordHash !== range.hash) {
+        throw new Error("managed conversation source locator map diverges");
+      }
+    }
+
+    const existingSource = this.db.prepare(`
+      SELECT id FROM conversation_sources WHERE conversation_id = ? AND provider = ?
+    `).get(input.conversationId, input.provider) as { id: string } | undefined;
+    const sourceId = existingSource?.id ?? stableId("csrc", input.conversationId, input.provider);
+    const existingVersion = this.db.prepare(`
+      SELECT id FROM conversation_source_versions WHERE source_id = ? AND content_sha256 = ?
+    `).get(sourceId, snapshot.contentHash) as { id: string } | undefined;
+    const versionId = existingVersion?.id ?? stableId("cver", sourceId, snapshot.contentHash);
+    const aliasId = stableId("csa", sourceId, filePath);
+    const now = Date.now();
+    const blockIds = new Set(input.blocks.map((block) => block.id));
+    const blockIdsByPosition = new Map(input.blocks.map((block) => [block.position, block.id]));
+
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO conversation_sources (
+          id, conversation_id, provider, native_session_id, parser_format, parser_version,
+          normalization_version, redaction_epoch, availability, custody_state,
+          current_version_id, unavailable_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', 'sealed', NULL, NULL, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          native_session_id = excluded.native_session_id,
+          parser_format = excluded.parser_format,
+          parser_version = excluded.parser_version,
+          normalization_version = excluded.normalization_version,
+          redaction_epoch = excluded.redaction_epoch,
+          availability = 'available', custody_state = 'sealed',
+          unavailable_reason = NULL, updated_at = excluded.updated_at
+      `).run(
+        sourceId, input.conversationId, input.provider, input.nativeSessionId,
+        input.parserFormat, input.parserVersion, input.normalizationVersion,
+        input.redactionEpoch, now, now,
+      );
+      this.db.prepare(`
+        INSERT INTO conversation_source_aliases (
+          id, source_id, root_kind, root_path, relative_path, path, alias_kind,
+          availability, first_seen_at, last_seen_at
+        ) VALUES (?, ?, 'managed_custody', ?, ?, ?, 'managed', 'available', ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+          source_id = excluded.source_id, root_kind = 'managed_custody',
+          root_path = excluded.root_path, relative_path = excluded.relative_path,
+          alias_kind = 'managed', availability = 'available',
+          last_seen_at = excluded.last_seen_at
+      `).run(aliasId, sourceId, rootPath, path.relative(rootPath, filePath), filePath, now, now);
+      this.db.prepare(`
+        INSERT INTO conversation_source_versions (
+          id, source_id, content_sha256, byte_length, file_mtime_ms,
+          filesystem_device, filesystem_inode, filesystem_ctime_ns, generation,
+          parser_format, parser_version, normalization_version, redaction_epoch,
+          availability, custody_state, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sealed_sha256', ?, ?, ?, ?, 'available', 'sealed', ?)
+        ON CONFLICT(source_id, content_sha256) DO UPDATE SET
+          byte_length = excluded.byte_length, file_mtime_ms = excluded.file_mtime_ms,
+          filesystem_device = excluded.filesystem_device,
+          filesystem_inode = excluded.filesystem_inode,
+          filesystem_ctime_ns = excluded.filesystem_ctime_ns,
+          generation = 'sealed_sha256', parser_format = excluded.parser_format,
+          parser_version = excluded.parser_version,
+          normalization_version = excluded.normalization_version,
+          redaction_epoch = excluded.redaction_epoch,
+          availability = 'available', custody_state = 'sealed'
+      `).run(
+        versionId, sourceId, snapshot.contentHash, snapshot.size, snapshot.mtimeMs,
+        snapshot.filesystemIdentity.device, snapshot.filesystemIdentity.inode,
+        snapshot.filesystemIdentity.ctimeNs, input.parserFormat, input.parserVersion,
+        input.normalizationVersion, input.redactionEpoch, now,
+      );
+      this.db.prepare(`
+        UPDATE conversation_sources SET current_version_id = ?, updated_at = ? WHERE id = ?
+      `).run(versionId, now, sourceId);
+      this.db.prepare(`
+        UPDATE conversation_structural_blocks SET status = 'retired', updated_at = ?
+         WHERE conversation_id = ? AND status = 'current'
+      `).run(now, input.conversationId);
+
+      for (const block of input.blocks) {
+        this.db.prepare(`
+          INSERT INTO conversation_structural_blocks (
+            id, conversation_id, source_version_id, status, provider_key, position,
+            type, role, timestamp, parent_block_id, dag_uuid, dag_parent_uuid,
+            record_offset, record_length, record_hash, record_ordinal,
+            sub_block_ordinal, normalization_checkpoint_id, parser_format,
+            parser_version, normalization_version, redaction_epoch, created_at, updated_at
+          ) VALUES (?, ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            source_version_id = excluded.source_version_id, status = 'current',
+            provider_key = excluded.provider_key, position = excluded.position,
+            type = excluded.type, role = excluded.role, timestamp = excluded.timestamp,
+            parent_block_id = excluded.parent_block_id, dag_uuid = excluded.dag_uuid,
+            dag_parent_uuid = excluded.dag_parent_uuid,
+            record_offset = excluded.record_offset, record_length = excluded.record_length,
+            record_hash = excluded.record_hash, record_ordinal = excluded.record_ordinal,
+            sub_block_ordinal = 0, normalization_checkpoint_id = NULL,
+            parser_format = excluded.parser_format, parser_version = excluded.parser_version,
+            normalization_version = excluded.normalization_version,
+            redaction_epoch = excluded.redaction_epoch, updated_at = excluded.updated_at
+        `).run(
+          block.id, input.conversationId, versionId,
+          `managed:${block.recordHash}`, block.position, block.type, block.role,
+          block.timestamp, block.parentId && blockIds.has(block.parentId)
+            ? block.parentId
+            : block.parentId && /^\d+$/.test(block.parentId)
+              ? blockIdsByPosition.get(Number(block.parentId)) ?? null
+              : null,
+          block.dagUuid, block.dagParentUuid, block.recordOffset, block.recordLength,
+          block.recordHash, block.recordOrdinal, input.parserFormat, input.parserVersion,
+          input.normalizationVersion, input.redactionEpoch, now, now,
+        );
+        this.db.prepare(`
+          INSERT INTO conversation_block_aliases (alias, block_id, alias_kind, created_at)
+          VALUES (?, ?, 'legacy', ?)
+          ON CONFLICT(alias) DO UPDATE SET block_id = excluded.block_id
+        `).run(block.id, block.id, now);
+      }
+    })();
     return versionId;
   }
 

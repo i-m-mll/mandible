@@ -302,7 +302,8 @@ export class GeminiParser implements ConversationParser {
   }
 
   async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
-    if (!input.filePath.endsWith(".jsonl")) {
+    if (!input.filePath.endsWith(".jsonl")
+        && !(input.filePath.endsWith(".json") && input.baseBlockCount === 0)) {
       return null;
     }
     return this.parseRaw(input.filePath, input.raw, {

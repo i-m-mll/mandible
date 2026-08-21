@@ -568,6 +568,7 @@ export interface CredentialLeakScanResult {
 
 export interface ScannableBlock {
   content: string | null | undefined;
+  metadata?: unknown;
   id?: string | null;
   position?: number | null;
 }
@@ -744,7 +745,7 @@ function walkBlocksForCredentials(
 
   for (const block of blocks) {
     const originalContent = typeof block.content === "string" ? block.content : null;
-    const originalMetadata = mask ? metadataText(block.metadata) : null;
+    const originalMetadata = metadataText(block.metadata);
     let text = originalContent;
     let metadataJson = originalMetadata;
     let blockSpans = 0;
@@ -1093,7 +1094,8 @@ export function backfillCredentialLeakScan(
             c.title AS title
      FROM conversation_blocks b
      JOIN conversations c ON c.id = b.conversation_id
-     WHERE (? IS NULL OR b.conversation_id = ?)
+     WHERE b.payload_state = 'legacy'
+       AND (? IS NULL OR b.conversation_id = ?)
      ORDER BY b.rowid
      LIMIT ? OFFSET ?`,
   );

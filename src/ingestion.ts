@@ -1950,17 +1950,22 @@ function resolveIncrementalToolParents(
 ): void {
   const priorToolCall = db.prepare(`
     SELECT position
-      FROM conversation_blocks
+      FROM conversation_structural_blocks
      WHERE conversation_id = ?
+       AND status = 'current'
        AND type = 'tool_use'
-       AND json_extract(metadata_json, '$.tool_id') = ?
+       AND provider_key LIKE ? ESCAPE '\\'
      ORDER BY position DESC
      LIMIT 1
   `);
   for (const block of result.blocks) {
     const toolId = block.metadata.tool_id;
     if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
-    const parent = priorToolCall.get(conversationId, toolId) as { position: number } | undefined;
+    const escapedToolId = toolId.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    const parent = priorToolCall.get(
+      conversationId,
+      `tool:${escapedToolId}:tool_use:%`,
+    ) as { position: number } | undefined;
     if (parent) block.parent_id = String(parent.position);
   }
 }
@@ -2708,7 +2713,7 @@ async function ingestFilePass(
       block_count: result.conversation.block_count,
     });
     await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
-    await recordDurableConversationSource(db, existing.id, result, filePath);
+    await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks);
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
@@ -2808,7 +2813,14 @@ async function ingestFilePass(
       appendInfo?.byteOffset,
     );
     if (!appendInfo?.hasMore) {
-      await recordDurableConversationSource(db, conversationId, result, filePath);
+      await recordDurableConversationSource(
+        db,
+        conversationId,
+        result,
+        filePath,
+        isDeltaAppend ? "append" : "replace",
+        newBlocks,
+      );
     }
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
@@ -3244,7 +3256,14 @@ async function ingestFilePass(
     appendInfo?.byteOffset,
   );
   if (!appendInfo?.hasMore) {
-    await recordDurableConversationSource(db, conversationId, result, filePath);
+    await recordDurableConversationSource(
+      db,
+      conversationId,
+      result,
+      filePath,
+      isDeltaAppend ? "append" : "replace",
+      newBlocks,
+    );
   }
 
   // Bug: e01653d — update last_active on the matching session so the
@@ -3302,19 +3321,43 @@ async function recordDurableConversationSource(
   conversationId: string,
   result: ParseResult,
   filePath: string,
+  structuralMode: "replace" | "append",
+  blocks: readonly Omit<ConversationBlock, "id" | "conversation_id">[],
 ): Promise<void> {
   try {
-    await new ConversationSourceStore(db).recordConversation({
+    const legacyIds = assignConversationBlockIds(
+      blocks.map((block) => ({
+        conversation_id: conversationId,
+        type: block.type,
+        timestamp: block.timestamp,
+        content: block.content,
+        position: block.position,
+      })),
+    );
+    const store = new ConversationSourceStore(db);
+    await store.recordConversation({
       conversationId,
       provider: result.conversation.source,
       nativeSessionId: result.conversation.session_id,
       filePath,
       expectedContentHash: result.conversation.source_hash,
+      structuralMode,
+      blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })),
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
+    const promotion = await store.promoteNativeConversationPayload(conversationId);
+    if (!promotion.promoted
+        && promotion.reason !== "no legacy payload is available for promotion") {
+      logger("warn", "conversation_source_projection_mismatch", {
+        file: filePath,
+        conversation_id: conversationId,
+        reason: promotion.reason,
+      });
+    }
   } catch (error) {
-    // The legacy body remains the safe default. A failed source snapshot must
-    // never turn a successful ingest into data loss or plausible unverified text.
+    // Promotion happens only after the exact snapshot succeeds. A failed
+    // snapshot therefore leaves newly inserted payload rows intact; a
+    // previously promoted conversation keeps its existing verified structure.
     logger("warn", "conversation_source_snapshot_failed", {
       file: filePath,
       conversation_id: conversationId,

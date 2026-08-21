@@ -71,7 +71,18 @@
       if (enrolled === true) return;
     } catch {
       // A missing or invalid protected file must not become an anonymous
-      // operator credential. Strict mode will keep mutations locked.
+      // operator credential. The durable keychain path below remains safe to
+      // try because Rust independently verifies the same-user daemon.
+    }
+    try {
+      // The one-shot proof is normally gone after the first enrollment. Redeem
+      // the durable keychain credential for a bounded dashboard session before
+      // the first dashboard request so the shell never flashes anonymous UI.
+      const enrolled = await invoke("client_auth_keychain_enroll", { route: "/" });
+      if (enrolled === true) return;
+    } catch {
+      // No keychain item or a refused enrollment falls through to the honest
+      // anonymous dashboard, where renderer recovery and manual login remain.
     }
     window.location.replace(`http://127.0.0.1:${status.port}`);
   }

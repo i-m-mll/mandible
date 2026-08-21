@@ -36,7 +36,7 @@ describe("migration v107: user registry core", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "147",
+value: "148",
     });
 
     const tables = db

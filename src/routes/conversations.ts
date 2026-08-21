@@ -14,6 +14,7 @@ import {
   backfillCredentialLeakScan,
   maskUnverifiedCandidates,
   remediationFor,
+  scanBlocksForCredentialLeaks,
 } from "../credential-leak-scan.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
@@ -288,6 +289,17 @@ async function readAllBlocks(
   return { blocks: result.value, bodySource: result.status };
 }
 
+function conversationRequiresSourceReader(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM conversation_blocks
+     WHERE conversation_id = ? AND payload_state = 'source'
+     LIMIT 1
+  `).get(conversationId));
+}
+
 function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
   if (!(error instanceof ConversationFreshnessError)) return false;
   if (error.code === "freshness_pending") {
@@ -486,23 +498,88 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   // Current in-memory wrap-session tokens are intentionally invisible here and
   // expire through session liveness plus TTL. The response never contains token
   // material — only credential ids, labels, locations, and remediation.
-  server.post("/api/conversations/scan-credentials", (req, res) => {
+  server.post("/api/conversations/scan-credentials", async (req, res) => {
     try {
       requireOperator(getDb(), req);
       const body = (req.body && typeof req.body === "object" && !Array.isArray(req.body)
         ? req.body
         : {}) as Record<string, unknown>;
-      const result = backfillCredentialLeakScan(getDb(), {
-        conversationId: typeof body.conversation_id === "string" ? body.conversation_id : null,
-        limit: typeof body.limit === "number" ? body.limit : undefined,
+      const scanDb = getDb();
+      const conversationId = typeof body.conversation_id === "string" ? body.conversation_id : null;
+      const requestedLimit = typeof body.limit === "number" && body.limit > 0
+        ? body.limit : Number.POSITIVE_INFINITY;
+      const result = backfillCredentialLeakScan(scanDb, {
+        conversationId,
+        limit: requestedLimit,
         record: body.record === false ? false : undefined,
       });
+      const detections = new Map(result.detections.map((detection) => [detection.event_id, detection]));
+      const sourceErrors: Array<{ conversation_id: string; error: string }> = [];
+      let scannedSourceBlocks = 0;
+      let scannedSourceConversations = 0;
+      let sourceTruncated = false;
+      if (!result.skipped && result.scanned_blocks < requestedLimit) {
+        const params: unknown[] = [];
+        const where = ["EXISTS (SELECT 1 FROM conversation_blocks b WHERE b.conversation_id = c.id AND b.payload_state = 'source')"];
+        if (conversationId) {
+          where.push("c.id = ?");
+          params.push(conversationId);
+        }
+        const sourceConversations = scanDb.prepare(`
+          SELECT c.id, c.title, c.session_id, c.source, c.branch
+            FROM conversations c
+           WHERE ${where.join(" AND ")}
+           ORDER BY c.id
+        `).all(...params) as Array<Pick<ConversationRow, "id" | "title" | "session_id" | "source" | "branch">>;
+        const rawReader = new ConversationSourceReader(scanDb, { legacyFallback: false, maskCredentials: false });
+        for (const conversation of sourceConversations) {
+          let offset = 0;
+          let scannedConversation = false;
+          while (result.scanned_blocks + scannedSourceBlocks < requestedLimit) {
+            const take = Math.min(100, requestedLimit - result.scanned_blocks - scannedSourceBlocks);
+            const page = await rawReader.readPage(conversation.id, { offset, limit: take });
+            if (page.status !== "source") {
+              sourceErrors.push({ conversation_id: conversation.id, error: page.reason });
+              break;
+            }
+            if (page.value.blocks.length === 0) break;
+            const scanned = scanBlocksForCredentialLeaks(
+              scanDb,
+              page.value.blocks.map((block) => ({
+                id: block.id,
+                position: block.position,
+                content: block.content,
+                metadata: (() => {
+                  try { return JSON.parse(block.metadata_json) as unknown; } catch { return block.metadata_json; }
+                })(),
+              })),
+              {
+                conversation_id: conversation.id,
+                conversation_title: conversation.title,
+                session_id: conversation.session_id,
+                source: conversation.source,
+                branch: conversation.branch,
+              },
+              { record: body.record !== false },
+            );
+            for (const detection of scanned.detections) detections.set(detection.event_id, detection);
+            sourceTruncated ||= scanned.truncated;
+            scannedSourceBlocks += page.value.blocks.length;
+            scannedConversation = true;
+            offset += page.value.blocks.length;
+            if (offset >= page.value.total) break;
+          }
+          if (scannedConversation) scannedSourceConversations += 1;
+          if (result.scanned_blocks + scannedSourceBlocks >= requestedLimit) break;
+        }
+      }
       sendJson(res, 200, {
-        scanned_blocks: result.scanned_blocks,
-        scanned_conversations: result.scanned_conversations,
-        truncated: result.truncated,
+        scanned_blocks: result.scanned_blocks + scannedSourceBlocks,
+        scanned_conversations: result.scanned_conversations + scannedSourceConversations,
+        truncated: result.truncated || sourceTruncated,
         skipped: result.skipped ?? null,
-        detections: result.detections.map((detection) => ({
+        source_errors: sourceErrors,
+        detections: [...detections.values()].map((detection) => ({
           event_id: detection.event_id,
           detected_at: detection.detected_at,
           credential_id: detection.credential.credential_id,
@@ -529,6 +606,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  // File RPC is the only daemon transport available to sandboxed CLI callers,
+  // and the daemon alone holds the pepper required for verified matching.
   }, { fileRpc: "allow" });
 
   // POST /api/conversations/export/transform — AI transform via Claude CLI
@@ -956,7 +1035,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     const query = req.query ?? {};
-    const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
+    const useSourceReader = (query.source_backed !== "false" && query.source_backed !== "0")
+      || conversationRequiresSourceReader(db, id);
     const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
     const limit = Math.min(500, requestedLimit);
     if (query.target && query.target !== "initial" && query.target !== "latest") {
@@ -966,10 +1046,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const explicitAnchors = [query.block, query.turn, query.position].filter((value) => value !== undefined);
     if (explicitAnchors.length > 1) {
       sendJson(res, 400, { error: "Choose exactly one of block, turn, or position" });
-      return;
-    }
-    if (useSourceReader && explicitAnchors.length > 0) {
-      sendJson(res, 400, { error: "Exact anchors require the indexed conversation body" });
       return;
     }
     let targetKind: PositionTargetKind = query.target === "latest" ? "latest" : "initial";
@@ -1154,12 +1230,19 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return;
     }
 
+    const hasStructuralForkRows = Boolean(db.prepare(`
+      SELECT 1 FROM conversation_structural_blocks
+       WHERE conversation_id = ? AND status = 'current' LIMIT 1
+    `).get(id));
+    const forkTable = hasStructuralForkRows ? "conversation_structural_blocks" : "conversation_blocks";
+    const forkStatus = hasStructuralForkRows ? "AND status = 'current'" : "";
+
     // Find fork points: dag_parent_uuid values with multiple distinct dag_uuid children
     const forkPoints = db
       .prepare(
         `SELECT dag_parent_uuid, COUNT(DISTINCT dag_uuid) as branch_count
-         FROM conversation_blocks
-         WHERE conversation_id = ? AND dag_parent_uuid IS NOT NULL
+         FROM ${forkTable}
+         WHERE conversation_id = ? ${forkStatus} AND dag_parent_uuid IS NOT NULL
          GROUP BY dag_parent_uuid
          HAVING COUNT(DISTINCT dag_uuid) > 1`
       )
@@ -1169,8 +1252,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const childRows = db
       .prepare(
         `SELECT dag_parent_uuid, dag_uuid
-         FROM conversation_blocks
-         WHERE conversation_id = ? AND dag_parent_uuid IS NOT NULL AND dag_uuid IS NOT NULL
+         FROM ${forkTable}
+         WHERE conversation_id = ? ${forkStatus} AND dag_parent_uuid IS NOT NULL AND dag_uuid IS NOT NULL
          GROUP BY dag_parent_uuid, dag_uuid
          ORDER BY MIN(position) ASC`,
       )
@@ -1178,15 +1261,16 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
     const previewRows = db
       .prepare(
-        `SELECT dag_parent_uuid, dag_uuid, content, compressed
+        `SELECT dag_parent_uuid, dag_uuid, id${hasStructuralForkRows ? "" : ", content, compressed"}
          FROM (
-           SELECT dag_parent_uuid, dag_uuid, content, compressed,
+           SELECT dag_parent_uuid, dag_uuid, id${hasStructuralForkRows ? "" : ", content, compressed"},
                   ROW_NUMBER() OVER (
                     PARTITION BY dag_parent_uuid, dag_uuid
                     ORDER BY position ASC
                   ) AS rn
-             FROM conversation_blocks
+             FROM ${forkTable}
             WHERE conversation_id = ?
+              ${forkStatus}
               AND dag_parent_uuid IS NOT NULL
               AND dag_uuid IS NOT NULL
               AND type IN ('assistant_message', 'assistant')
@@ -1196,15 +1280,16 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       .all(id) as Array<{
         dag_parent_uuid: string;
         dag_uuid: string;
-        content: Buffer | string;
-        compressed: number;
+        id: string;
+        content?: Buffer | string;
+        compressed?: number;
       }>;
 
     const countRows = db
       .prepare(
         `SELECT dag_uuid, COUNT(*) as cnt
-         FROM conversation_blocks
-         WHERE conversation_id = ? AND dag_uuid IS NOT NULL
+         FROM ${forkTable}
+         WHERE conversation_id = ? ${forkStatus} AND dag_uuid IS NOT NULL
          GROUP BY dag_uuid`,
       )
       .all(id) as Array<{ dag_uuid: string; cnt: number }>;
@@ -1213,8 +1298,15 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     await Promise.all(previewRows
       .filter((row) => forkParentUuids.has(row.dag_parent_uuid))
       .map(async (row) => {
-        const text = await decompressContentAsync(row.content, row.compressed === 1);
-        previews.set(`${row.dag_parent_uuid}\0${row.dag_uuid}`, text.slice(0, 60));
+        if (!hasStructuralForkRows) {
+          const text = await decompressContentAsync(row.content ?? "", row.compressed === 1);
+          previews.set(`${row.dag_parent_uuid}\0${row.dag_uuid}`, text.slice(0, 60));
+          return;
+        }
+        const read = await sourceReader.readBlock(row.id);
+        if (read.status === "source" || read.status === "legacy") {
+          previews.set(`${row.dag_parent_uuid}\0${row.dag_uuid}`, read.value.content.slice(0, 60));
+        }
       }));
 
     const blockCounts = new Map(countRows.map((row) => [row.dag_uuid, row.cnt]));
@@ -1457,7 +1549,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     if (query.type) {
       types = query.type.split(",").map((t) => t.trim()).filter(Boolean);
     }
-    const useSourceReader = query.source_backed === "true" || query.source_backed === "1";
+    const useSourceReader = (query.source_backed !== "false" && query.source_backed !== "0")
+      || conversationRequiresSourceReader(db, id);
     if (!useSourceReader) {
       const params: unknown[] = [id];
       const conditions = ["conversation_id = ?"];
@@ -1619,7 +1712,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     let readable: Awaited<ReturnType<typeof readAllBlocks>> | null = null;
-    if (body.source_backed) {
+    const useSourceReader = body.source_backed !== false
+      || conversationRequiresSourceReader(db, id);
+    if (useSourceReader) {
       try {
         readable = await readAllBlocks(sourceReader, id);
       } catch (error) {
@@ -1639,7 +1734,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     let output: string;
     let contentType: string;
 
-    const exportConversation = body.source_backed
+    const exportConversation = useSourceReader
       ? maskSourceBackedConversationRow(conv)
       : conv;
 

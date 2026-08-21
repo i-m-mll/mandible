@@ -10,6 +10,7 @@ import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion
 import { decompressContent } from "../src/compression.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 
 let tempDir = "";
 let db: Db;
@@ -105,6 +106,16 @@ describe("incremental tail ingestion", () => {
       status: "ingested",
     });
 
+    const initialConversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    // Model a historical parser projection that does not match the current
+    // native parser. Appending must still discard these disposable bytes.
+    db.prepare(`
+      UPDATE conversation_blocks
+         SET content = 'historical parser bytes', payload_state = 'legacy'
+       WHERE conversation_id = ? AND position = 0
+    `).run(initialConversation.id);
+
     await appendWithMtime(sessionPath, assistantRow("new tail", 3), 2);
     expect(await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 })).toMatchObject({
       status: "ingested",
@@ -117,6 +128,11 @@ describe("incremental tail ingestion", () => {
       db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
         .get(conversation.id),
     ).toMatchObject({ count: 3 });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_blocks
+       WHERE conversation_id = ?
+         AND (payload_state != 'source' OR content != '' OR metadata_json != '{}' OR compressed != 0)
+    `).get(conversation.id)).toEqual({ count: 0 });
     expect(
       db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
@@ -206,9 +222,12 @@ describe("incremental tail ingestion", () => {
     `).get(sessionPath) as { id: string; session_id: string; block_count: number };
     expect(conversation).toMatchObject({ session_id: "tailtest-rewritten", block_count: 3 });
     const firstBlock = db.prepare(
-      "SELECT content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
-    ).get(conversation.id) as { content: Buffer | string; compressed: number };
-    expect(decompressContent(firstBlock.content, firstBlock.compressed === 1)).toBe("rewritten hello");
+      "SELECT content, metadata_json, compressed, payload_state FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
+    ).get(conversation.id) as { content: Buffer | string; metadata_json: string; compressed: number; payload_state: string };
+    expect(firstBlock).toMatchObject({ content: "", metadata_json: "{}", compressed: 0, payload_state: "source" });
+    const sourcePage = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
+    expect(sourcePage.status).toBe("source");
+    if (sourcePage.status === "source") expect(sourcePage.value.blocks[0].content).toBe("rewritten hello");
     expect(
       db.prepare("SELECT byte_offset FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),
@@ -306,6 +325,23 @@ describe("incremental tail ingestion", () => {
     });
 
     expect(events).not.toContain("ingestion_complete");
+    expect(events).not.toContain("conversation_source_snapshot_failed");
+  });
+
+  it("does not warn when a touched already-source-backed conversation has no legacy payload to promote", async () => {
+    const sessionPath = await makeCodexSession();
+    const source = initialCodexRows("reconcile-source-backed");
+    await writeWithMtime(sessionPath, source, 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    await writeWithMtime(sessionPath, source, 2);
+    const events: string[] = [];
+
+    await triggerReconcileForTest({
+      watchConfigs: watchConfigs(),
+      log: (_level, event) => events.push(event),
+    });
+
+    expect(events).not.toContain("conversation_source_projection_mismatch");
     expect(events).not.toContain("conversation_source_snapshot_failed");
   });
 

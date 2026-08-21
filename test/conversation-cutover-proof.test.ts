@@ -8,10 +8,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   auditCutover,
   buildCompactDestination,
+  buildLegacyReclaimedDestination,
+  inspectLegacyReclaimReadiness,
   inspectSourceBinding,
   runRestoreDrill,
   stableJson,
 } from "../scripts/conversation-cutover-proof.mjs";
+import { migrate } from "../src/db.js";
 
 let roots: string[] = [];
 
@@ -185,6 +188,152 @@ describe("conversation cutover compact rebuild", () => {
     expect(recovered.recovered_partial).toBe(true);
     expect(fs.existsSync(`${destination}.rebuild-in-progress.json`)).toBe(false);
     expect(fs.existsSync(destination)).toBe(true);
+  });
+
+  it("preserves pre-existing foreign-key violations without creating new ones", () => {
+    const { root, source } = fixture();
+    const sourceDb = new Database(source);
+    sourceDb.pragma("foreign_keys = OFF");
+    sourceDb.prepare("INSERT INTO workflow_workers VALUES (?, ?, ?)")
+      .run("orphan-worker", "old-workflow", "missing-conversation");
+    sourceDb.close();
+
+    const destination = path.join(root, "compact-with-orphan.sqlite");
+    const report = buildCompactDestination({ source, destination });
+    expect(report).toMatchObject({
+      pass: true,
+      foreign_key_parity: { source: 1, destination: 1, match: true },
+      foreign_key_violations: [{
+        table: "workflow_workers",
+        rowid: 2,
+        parent: "conversations",
+        fkid: 0,
+      }],
+    });
+    const rebuilt = new Database(destination, { readonly: true });
+    expect(rebuilt.pragma("foreign_key_check")).toHaveLength(1);
+    rebuilt.close();
+  });
+
+  it("proves exact projected digests for deliberately reclaimed conversation tables", () => {
+    const { root, source } = fixture();
+    const sourceDb = new Database(source);
+    sourceDb.exec(`
+      CREATE TABLE conversation_normalization_checkpoints (
+        id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL
+      );
+      CREATE TABLE conversation_structural_blocks (
+        id TEXT PRIMARY KEY,
+        normalization_checkpoint_id TEXT REFERENCES conversation_normalization_checkpoints(id),
+        body TEXT NOT NULL
+      );
+      INSERT INTO conversation_normalization_checkpoints VALUES ('checkpoint-one', '{"kind":"codex-model-metadata","version":1}');
+      INSERT INTO conversation_normalization_checkpoints VALUES ('orphaned-checkpoint', '{"strategy":"replay-prefix"}');
+      INSERT INTO conversation_structural_blocks VALUES ('structural-one', 'checkpoint-one', 'exact body');
+    `);
+    sourceDb.prepare("INSERT INTO conversation_normalization_checkpoints VALUES (?, ?)").run(
+      "large-obsolete-checkpoint",
+      JSON.stringify({ strategy: "replay-prefix", obsolete_payload: "x".repeat(2 * 1024 * 1024) }),
+    );
+    sourceDb.close();
+
+    const destination = path.join(root, "compact-reclaimed-checkpoints.sqlite");
+    const report = buildCompactDestination({
+      source,
+      destination,
+      reclaimConversationCheckpoints: true,
+    });
+    expect(report.table_parity.conversation_normalization_checkpoints).toMatchObject({ match: true });
+    expect(report.table_parity.conversation_structural_blocks).toMatchObject({ match: true });
+    expect(report.table_parity.conversation_normalization_checkpoints.source)
+      .toEqual(report.table_parity.conversation_normalization_checkpoints.destination);
+    expect(report.table_parity.conversation_structural_blocks.source)
+      .toEqual(report.table_parity.conversation_structural_blocks.destination);
+    expect(report.copied_rows.conversation_normalization_checkpoints).toBe(1);
+    expect(report.destination.size_bytes).toBeLessThan(512 * 1024);
+
+    const rebuilt = new Database(destination, { readonly: true });
+    expect(rebuilt.prepare("SELECT * FROM conversation_structural_blocks").get()).toEqual({
+      id: "structural-one",
+      normalization_checkpoint_id: "checkpoint-one",
+      body: "exact body",
+    });
+    expect(rebuilt.prepare("SELECT id FROM conversation_normalization_checkpoints ORDER BY id").all())
+      .toEqual([{ id: "checkpoint-one" }]);
+    rebuilt.close();
+  });
+});
+
+describe("legacy storage reclaim", () => {
+  it("refuses reclaim while any legacy conversation payload remains", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-reclaim-legacy-"));
+    roots.push(root);
+    const source = path.join(root, "mandible.db");
+    const db = new Database(source);
+    migrate(db);
+    db.prepare(`
+      INSERT INTO conversations (
+        id, source, source_path, source_hash, source_mtime, title, started_at,
+        block_count, session_id, tags, created_at, updated_at
+      ) VALUES ('legacy-conversation', 'codex', '/tmp/legacy', 'hash', 1, 'legacy',
+                'now', 1, 'legacy-session', '[]', 'now', 'now')
+    `).run();
+    db.prepare(`
+      INSERT INTO conversation_blocks (
+        id, conversation_id, type, role, content, position, metadata_json
+      ) VALUES ('legacy-block', 'legacy-conversation', 'assistant_message', 'assistant',
+                'must remain', 0, '{}')
+    `).run();
+    db.close();
+
+    const readiness = inspectLegacyReclaimReadiness({ source });
+    expect(readiness).toMatchObject({ pass: false, legacy_payloads: 1 });
+    expect(readiness.errors).toContain("1 legacy conversation block payloads remain");
+  });
+
+  it("requires recorded log verification and builds a compact destination without legacy logs", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-reclaim-proof-"));
+    roots.push(root);
+    const source = path.join(root, "mandible.db");
+    const logDbPath = path.join(root, "operational-logs.db");
+    const destination = path.join(root, "reclaimed.db");
+    const db = new Database(source);
+    migrate(db);
+    db.prepare(`
+      INSERT INTO daemon_log (id, ts, level, event, subsystem, fields_json)
+      VALUES ('legacy-one', 100, 'info', 'legacy', 'test', '{}')
+    `).run();
+    db.close();
+
+    const logDb = new Database(logDbPath);
+    logDb.exec(`
+      CREATE TABLE operational_log_copy_state (
+        source_path TEXT PRIMARY KEY, last_ts INTEGER, last_id TEXT,
+        completed_at INTEGER, verified_at INTEGER,
+        verified_legacy_rows INTEGER, verified_primary_rows INTEGER,
+        legacy_high_water_ts INTEGER, legacy_high_water_id TEXT,
+        legacy_high_water_rows INTEGER, legacy_generation_rowid INTEGER,
+        copied_rows INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+      )
+    `);
+    logDb.prepare(`
+      INSERT INTO operational_log_copy_state VALUES (?, 100, 'legacy-one', 1, 2, 1, 1, 100, 'legacy-one', 1, 1, 1, 2)
+    `).run(fs.realpathSync.native(source));
+    logDb.close();
+
+    expect(inspectLegacyReclaimReadiness({ source, logDb: logDbPath })).toMatchObject({ pass: true });
+    const report = buildLegacyReclaimedDestination({ source, destination, logDb: logDbPath });
+    expect(report).toMatchObject({ pass: true, rebuild: { reclaimed_conversation_checkpoints: true } });
+    const rebuilt = new Database(destination, { readonly: true });
+    expect(rebuilt.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_log'").get())
+      .toBeUndefined();
+    expect(rebuilt.prepare("SELECT COUNT(*) AS count FROM conversation_normalization_checkpoints").get())
+      .toEqual({ count: 0 });
+    rebuilt.close();
+    const original = new Database(source, { readonly: true });
+    expect(original.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 1 });
+    original.close();
   });
 });
 

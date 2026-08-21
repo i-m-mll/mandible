@@ -22,9 +22,9 @@ describe("migration v143: artifact-backed Briefing rounds", () => {
   it("keeps fresh baseline and migration head converged without obsolete feedback tables", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(147);
-    expect(CURRENT_SCHEMA_VERSION).toBe(147);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "147" });
+    expect(BASELINE_SCHEMA_VERSION).toBe(148);
+    expect(CURRENT_SCHEMA_VERSION).toBe(148);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "148" });
     expect(BRIEFING_SCHEMA_TABLES.every((table) => db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
     ).get(table))).toBe(true);

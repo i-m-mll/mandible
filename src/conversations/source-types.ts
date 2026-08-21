@@ -1,4 +1,4 @@
-import type { BlockType, ConversationSource, Role } from "../parsers/types.js";
+import type { BlockType, ConversationBlock, ConversationSource, Role } from "../parsers/types.js";
 
 /** Durable source availability. Missing/stale sources retain all identities. */
 export type ConversationSourceAvailability =
@@ -107,6 +107,12 @@ export interface RecordConversationSourceInput extends ConversationSourceEpochs 
   filePath: string;
   /** Full parser-observed SHA-256 when available; append markers are omitted. */
   expectedContentHash?: string;
+  /**
+   * Parser output supplied by ingestion so source indexing does not depend on
+   * retaining a second body copy in conversation_blocks.
+   */
+  blocks?: ReadonlyArray<Omit<ConversationBlock, "id" | "conversation_id"> & { legacyId: string }>;
+  structuralMode?: "replace" | "append";
 }
 
 export interface RecordConversationSourceAliasInput {
@@ -116,6 +122,29 @@ export interface RecordConversationSourceAliasInput {
   relativePath: string;
   aliasKind: "active" | "archive" | "provider" | "managed";
   availability?: ConversationSourceAvailability;
+}
+
+export interface RecordManagedNormalizedSourceInput extends ConversationSourceEpochs {
+  conversationId: string;
+  provider: ConversationSource;
+  nativeSessionId: string;
+  rootPath: string;
+  filePath: string;
+  expectedContentHash: string;
+  blocks: ReadonlyArray<{
+    id: string;
+    type: BlockType;
+    role: Role;
+    position: number;
+    timestamp: string | null;
+    parentId: string | null;
+    dagUuid: string | null;
+    dagParentUuid: string | null;
+    recordOffset: number;
+    recordLength: number;
+    recordHash: string;
+    recordOrdinal: number;
+  }>;
 }
 
 export interface RecordNormalizationCheckpointInput extends ConversationSourceEpochs {

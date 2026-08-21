@@ -486,46 +486,54 @@ export class ConversationSearchCache {
     const sources = this.source.describe(input.conversationIds);
     const redactionEpoch = this.source.redactionEpoch();
     let activeCold = 0;
-    const bodies = await mapConcurrent(sources, this.maxConcurrentColdParses, async (item) => {
-      const key = this.key(item.sourceVersionId, redactionEpoch);
-      const cached = this.cachedBlocks(item.conversationId, key);
-      if (cached) {
-        metrics.hot_conversations += 1;
-        metrics.hot_blocks += cached.length;
-        return cached;
-      }
-      activeCold += 1;
-      metrics.max_cold_parse_concurrency = Math.max(metrics.max_cold_parse_concurrency, activeCold);
-      try {
-        const blocks = await this.source.readMaskedBlocks(item.conversationId);
-        metrics.cold_conversations += 1;
-        metrics.cold_blocks += blocks.length;
-        metrics.uncached_oversize_blocks += this.replaceConversation(item.conversationId, key, blocks);
-        return blocks.map((block) => ({
-          block_id: block.id,
-          conversation_id: block.conversationId,
-          block_type: block.type,
-          role: block.role,
-          position: block.position,
-          body: block.content,
-        }));
-      } finally {
-        activeCold -= 1;
-      }
-    });
-
     const matches: ConversationSearchMatch[] = [];
-    for (const blocks of bodies) {
-      for (const block of blocks) {
-        if (input.blockType && block.block_type !== input.blockType) continue;
-        metrics.exact_verified_blocks += 1;
-        const snippet = snippetFor(block.body, needleLower);
-        if (snippet !== null) {
-          matches.push({ conversation_id: block.conversation_id, block_id: block.block_id, snippet });
-          break;
+    // Preserve caller ordering while avoiding the old all-before-first-result
+    // behavior. A cold search used to parse every native conversation source
+    // before it examined even the first block, so a common query over a large
+    // corpus could take minutes despite a small result limit. Work one bounded
+    // concurrency batch at a time and stop once that limit is satisfied.
+    for (let start = 0; start < sources.length && matches.length < input.limit; start += this.maxConcurrentColdParses) {
+      const batch = sources.slice(start, start + this.maxConcurrentColdParses);
+      const bodies = await mapConcurrent(batch, this.maxConcurrentColdParses, async (item) => {
+        const key = this.key(item.sourceVersionId, redactionEpoch);
+        const cached = this.cachedBlocks(item.conversationId, key);
+        if (cached) {
+          metrics.hot_conversations += 1;
+          metrics.hot_blocks += cached.length;
+          return cached;
         }
+        activeCold += 1;
+        metrics.max_cold_parse_concurrency = Math.max(metrics.max_cold_parse_concurrency, activeCold);
+        try {
+          const blocks = await this.source.readMaskedBlocks(item.conversationId);
+          metrics.cold_conversations += 1;
+          metrics.cold_blocks += blocks.length;
+          metrics.uncached_oversize_blocks += this.replaceConversation(item.conversationId, key, blocks);
+          return blocks.map((block) => ({
+            block_id: block.id,
+            conversation_id: block.conversationId,
+            block_type: block.type,
+            role: block.role,
+            position: block.position,
+            body: block.content,
+          }));
+        } finally {
+          activeCold -= 1;
+        }
+      });
+
+      for (const blocks of bodies) {
+        for (const block of blocks) {
+          if (input.blockType && block.block_type !== input.blockType) continue;
+          metrics.exact_verified_blocks += 1;
+          const snippet = snippetFor(block.body, needleLower);
+          if (snippet !== null) {
+            matches.push({ conversation_id: block.conversation_id, block_id: block.block_id, snippet });
+            break;
+          }
+        }
+        if (matches.length >= input.limit) break;
       }
-      if (matches.length >= input.limit) break;
     }
     metrics.elapsed_ms = Math.round((performance.now() - started) * 100) / 100;
     return { matches, metrics };

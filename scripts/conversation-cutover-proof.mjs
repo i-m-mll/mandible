@@ -91,15 +91,33 @@ function sha256(value) {
 }
 
 function hashFile(target) {
-  return sha256(fs.readFileSync(target));
+  const digest = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+  const fd = fs.openSync(target, "r");
+  try {
+    for (;;) {
+      const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      digest.update(buffer.subarray(0, read));
+    }
+    return digest.digest("hex");
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function dbFileSnapshot(dbPath) {
   const snapshot = {};
-  for (const suffix of ["", "-wal", "-shm"]) {
+  // The database and WAL contain durable SQLite bytes. The shared-memory file
+  // is only a transient lock/index cache: attaching the source read-only can
+  // legitimately create or rewrite it even when no database content changed.
+  for (const suffix of ["", "-wal"]) {
     const target = `${dbPath}${suffix}`;
     if (!fs.existsSync(target)) continue;
     const stat = fs.statSync(target);
+    // SQLite may create an empty WAL as a connection artifact. It contains no
+    // durable database bytes, so absent and zero-length are equivalent here.
+    if (suffix === "-wal" && stat.size === 0) continue;
     snapshot[suffix || "db"] = { size_bytes: stat.size, sha256: hashFile(target) };
   }
   return snapshot;
@@ -144,17 +162,25 @@ function userSchema(db, schema = "main") {
   };
 }
 
-function normalizedRows(db, schema, table) {
+function normalizedRowIterator(db, schema, table) {
   const columns = visibleColumns(db, schema, table);
   const selected = columns.map((column) => quoteIdentifier(column.name)).join(", ");
   return db.prepare(
     `SELECT ${selected} FROM ${schema}.${quoteIdentifier(table)}${orderClause(columns)}`,
-  ).all();
+  ).iterate();
 }
 
 function tableDigest(db, schema, table) {
-  const rows = normalizedRows(db, schema, table);
-  return { rows: rows.length, sha256: sha256(stableJson(rows)) };
+  const digest = createHash("sha256");
+  let rows = 0;
+  digest.update("[");
+  for (const row of normalizedRowIterator(db, schema, table)) {
+    if (rows > 0) digest.update(",");
+    digest.update(stableJson(row));
+    rows += 1;
+  }
+  digest.update("]");
+  return { rows, sha256: digest.digest("hex") };
 }
 
 function sourceDatabaseBinding(db, sourcePath, schema = "main") {
@@ -200,8 +226,42 @@ function normalizedForeignKeys(db, schema) {
   })).sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
 }
 
+function foreignKeyViolationCount(rows) {
+  return rows.length;
+}
+
+function projectedTableDigest(db, schema, table, options = {}) {
+  const columns = visibleColumns(db, schema, table);
+  const selected = columns.map((column) => {
+    const expression = options.columns?.[column.name];
+    return expression === undefined
+      ? quoteIdentifier(column.name)
+      : `${expression} AS ${quoteIdentifier(column.name)}`;
+  }).join(", ");
+  const rows = db.prepare(
+    `SELECT ${selected} FROM ${schema}.${quoteIdentifier(table)}`
+      + `${options.where ? ` WHERE ${options.where}` : ""}${orderClause(columns)}`,
+  ).iterate();
+  const digest = createHash("sha256");
+  let count = 0;
+  digest.update("[");
+  for (const row of rows) {
+    if (count > 0) digest.update(",");
+    digest.update(stableJson(row));
+    count += 1;
+  }
+  digest.update("]");
+  return { rows: count, sha256: digest.digest("hex") };
+}
+
 function isDisposableTable(name, explicit) {
   return explicit.has(name) || DEFAULT_DISPOSABLE_TABLE_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+function usableRowidAlias(table, columns) {
+  if (/\bWITHOUT\s+ROWID\b/i.test(table.sql)) return null;
+  const names = new Set(columns.map((column) => column.name.toLowerCase()));
+  return ["rowid", "_rowid_", "oid"].find((alias) => !names.has(alias)) ?? null;
 }
 
 function assertSafeDestination(sourcePath, destinationPath) {
@@ -260,6 +320,7 @@ export function buildCompactDestination(options) {
     db.pragma("foreign_keys = OFF");
     db.prepare("ATTACH DATABASE ? AS source").run(sourcePath);
     const binding = sourceDatabaseBinding(db, sourcePath, "source");
+    const sourceForeignKeys = normalizedForeignKeys(db, "source");
     db.exec("BEGIN DEFERRED");
     const schema = userSchema(db, "source");
     const copied = {};
@@ -271,8 +332,34 @@ export function buildCompactDestination(options) {
     let copiedTables = 0;
     for (const table of retainedTables) {
       const columns = visibleColumns(db, "source", table.name);
-      const names = columns.map((column) => quoteIdentifier(column.name)).join(", ");
-      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${names} FROM source.${quoteIdentifier(table.name)}${orderClause(columns)}`;
+      const rowidAlias = usableRowidAlias(table, columns);
+      const names = [
+        ...(rowidAlias ? [quoteIdentifier(rowidAlias)] : []),
+        ...columns.map((column) => quoteIdentifier(column.name)),
+      ].join(", ");
+      const reclaimCheckpoints = options.reclaimConversationCheckpoints
+        && table.name === "conversation_normalization_checkpoints";
+      const reclaimStructuralReferences = options.reclaimConversationCheckpoints
+        && table.name === "conversation_structural_blocks";
+      const sourceProjection = [
+        ...(rowidAlias ? [quoteIdentifier(rowidAlias)] : []),
+        ...columns.map((column) => {
+          if (reclaimStructuralReferences && column.name === "normalization_checkpoint_id") {
+            return `CASE WHEN normalization_checkpoint_id IN (
+              SELECT id FROM source.conversation_normalization_checkpoints
+               WHERE state_json = '{"kind":"codex-model-metadata","version":1}'
+            ) THEN normalization_checkpoint_id ELSE NULL END AS ${quoteIdentifier(column.name)}`;
+          }
+          return quoteIdentifier(column.name);
+        }),
+      ].join(", ");
+      const checkpointWhere = reclaimCheckpoints
+        ? ` WHERE state_json = '{"kind":"codex-model-metadata","version":1}'
+              AND id IN (SELECT normalization_checkpoint_id
+                           FROM source.conversation_structural_blocks
+                          WHERE normalization_checkpoint_id IS NOT NULL)`
+        : "";
+      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${sourceProjection} FROM source.${quoteIdentifier(table.name)}${checkpointWhere}${orderClause(columns)}`;
       copied[table.name] = db.prepare(sql).run().changes;
       copiedTables += 1;
       if (options.interruptAfterTables === copiedTables) throw new SimulatedInterruption();
@@ -290,17 +377,49 @@ export function buildCompactDestination(options) {
     const integrity = db.pragma("integrity_check", { simple: true });
     const foreignKeys = normalizedForeignKeys(db, "main");
     if (integrity !== "ok") throw new Error(`Compact destination integrity_check failed: ${integrity}`);
-    if (foreignKeys.length > 0) {
-      throw new Error(`Compact destination has ${foreignKeys.length} foreign-key violation(s)`);
+    if (stableJson(foreignKeys) !== stableJson(sourceForeignKeys)) {
+      throw new Error("Compact destination foreign-key violations differ from source");
     }
     const parity = {};
     for (const table of retainedTables) {
+      const transformedCheckpointTable = options.reclaimConversationCheckpoints
+        && table.name === "conversation_normalization_checkpoints";
+      const transformedStructuralTable = options.reclaimConversationCheckpoints
+        && table.name === "conversation_structural_blocks";
       parity[table.name] = {
-        source: tableDigest(db, "source", table.name),
+        source: transformedCheckpointTable
+          ? projectedTableDigest(db, "source", table.name, {
+            where: "state_json = '{\"kind\":\"codex-model-metadata\",\"version\":1}' AND id IN (SELECT normalization_checkpoint_id FROM source.conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL)",
+          })
+          : transformedStructuralTable
+            ? projectedTableDigest(db, "source", table.name, {
+              columns: {
+                normalization_checkpoint_id: "CASE WHEN normalization_checkpoint_id IN (SELECT id FROM source.conversation_normalization_checkpoints WHERE state_json = '{\"kind\":\"codex-model-metadata\",\"version\":1}') THEN normalization_checkpoint_id ELSE NULL END",
+              },
+            })
+          : tableDigest(db, "source", table.name),
         destination: tableDigest(db, "main", table.name),
       };
       parity[table.name].match = stableJson(parity[table.name].source) === stableJson(parity[table.name].destination);
       if (!parity[table.name].match) throw new Error(`Row parity failed for ${table.name}`);
+    }
+    const checkpointReclaim = options.reclaimConversationCheckpoints ? {
+      structural_source_rows: Number(db.prepare(
+        "SELECT COUNT(*) AS count FROM source.conversation_structural_blocks",
+      ).get().count),
+      structural_destination_rows: Number(db.prepare(
+        "SELECT COUNT(*) AS count FROM main.conversation_structural_blocks",
+      ).get().count),
+      destination_checkpoint_rows: Number(db.prepare(
+        "SELECT COUNT(*) AS count FROM main.conversation_normalization_checkpoints",
+      ).get().count),
+      referenced_checkpoint_rows: Number(db.prepare(
+        "SELECT COUNT(DISTINCT normalization_checkpoint_id) AS count FROM main.conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL",
+      ).get().count),
+    } : null;
+    if (checkpointReclaim && (checkpointReclaim.structural_source_rows !== checkpointReclaim.structural_destination_rows
+        || checkpointReclaim.destination_checkpoint_rows !== checkpointReclaim.referenced_checkpoint_rows)) {
+      throw new Error("Conversation checkpoint reclaim validation failed");
     }
     db.prepare("DETACH DATABASE source").run();
     const sourceAfter = dbFileSnapshot(sourcePath);
@@ -320,9 +439,16 @@ export function buildCompactDestination(options) {
       destination: { path: destinationPath, size_bytes: fs.statSync(destinationPath).size },
       recovered_partial: recoveredPartial,
       integrity_check: "ok",
-      foreign_key_violations: [],
+      foreign_key_violations: foreignKeys,
+      foreign_key_parity: {
+        source: foreignKeyViolationCount(sourceForeignKeys),
+        destination: foreignKeyViolationCount(foreignKeys),
+        match: true,
+      },
       copied_rows: copied,
       excluded_tables: excluded.sort(),
+      reclaimed_conversation_checkpoints: options.reclaimConversationCheckpoints === true,
+      checkpoint_reclaim: checkpointReclaim,
       cache_exclusion: { pass: excluded.every((name) => !retainedNames.has(name)), excluded_tables: excluded.sort() },
       table_parity: parity,
       row_count_report: Object.fromEntries(Object.entries(parity).map(([name, value]) => [name, {
@@ -351,6 +477,127 @@ export function buildCompactDestination(options) {
     }
     throw error;
   }
+}
+
+function defaultOperationalLogPath(sourcePath) {
+  const parsed = path.parse(sourcePath);
+  return path.join(parsed.dir, parsed.base === "mandible.db" ? "operational-logs.db" : `${parsed.name}.operational-logs.db`);
+}
+
+export function inspectLegacyReclaimReadiness(options) {
+  const sourcePath = path.resolve(options.source);
+  const logDbPath = path.resolve(options.logDb ?? defaultOperationalLogPath(sourcePath));
+  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  try {
+    const blockColumns = visibleColumns(db, "main", "conversation_blocks").map((column) => column.name);
+    if (!blockColumns.includes("payload_state")) {
+      return { pass: false, errors: ["source-backed payload migration has not run"], source: sourcePath, operational_log: logDbPath };
+    }
+    const payload = db.prepare(`
+      SELECT payload_state, COUNT(*) AS blocks,
+             COALESCE(SUM(length(content) + length(metadata_json)), 0) AS payload_bytes
+        FROM conversation_blocks GROUP BY payload_state ORDER BY payload_state
+    `).all();
+    const malformedSourcePayloads = Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_blocks
+       WHERE payload_state = 'source'
+         AND (length(content) != 0 OR metadata_json != '{}' OR compressed != 0)
+    `).get().count);
+    const legacyPayloads = Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_blocks WHERE payload_state = 'legacy'
+    `).get().count);
+    const locatorGaps = Number(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM conversation_blocks b
+        JOIN conversations c ON c.id = b.conversation_id
+        JOIN conversation_sources s ON s.conversation_id = c.id
+          AND s.provider = c.source AND s.availability = 'available'
+       WHERE b.payload_state = 'source'
+         AND NOT EXISTS (
+           SELECT 1 FROM conversation_structural_blocks sb
+           JOIN conversation_source_versions v ON v.id = sb.source_version_id
+            WHERE sb.conversation_id = b.conversation_id
+              AND sb.position = b.position AND sb.status = 'current'
+              AND sb.source_version_id IS NOT NULL
+              AND sb.record_offset IS NOT NULL AND sb.record_length IS NOT NULL
+              AND sb.record_length <= 67108864 AND sb.record_hash IS NOT NULL
+              AND sb.record_ordinal IS NOT NULL AND sb.record_ordinal >= 0
+              AND (c.source <> 'gemini'
+                OR (sb.record_offset = 0
+                  AND sb.record_length = v.byte_length
+                  AND sb.record_hash = v.content_sha256
+                  AND sb.record_ordinal = 0))
+         )
+    `).get().count);
+    const legacyRows = Number(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get().count);
+    const legacyGeneration = Number(db.prepare("SELECT COALESCE(MAX(rowid), 0) AS value FROM daemon_log").get().value);
+    const highWater = db.prepare(`
+      SELECT ts, id FROM daemon_log ORDER BY ts DESC, id DESC LIMIT 1
+    `).get() ?? { ts: null, id: null };
+
+    let logState = null;
+    if (fs.existsSync(logDbPath)) {
+      const logDb = new Database(logDbPath, { readonly: true, fileMustExist: true });
+      try {
+        logState = logDb.prepare(`
+          SELECT * FROM operational_log_copy_state
+           WHERE source_path = ?
+        `).get(canonicalPath(sourcePath)) ?? null;
+      } finally {
+        logDb.close();
+      }
+    }
+    const logVerified = Boolean(logState?.completed_at && logState?.verified_at
+      && Number(logState.verified_legacy_rows) === legacyRows
+      && Number(logState.legacy_high_water_rows) === legacyRows
+      && Number(logState.legacy_generation_rowid) === legacyGeneration
+      && (logState.legacy_high_water_ts ?? null) === (highWater.ts ?? null)
+      && (logState.legacy_high_water_id ?? null) === (highWater.id ?? null));
+    const errors = [];
+    if (!logVerified) errors.push("legacy daemon-log copy has no current recorded verifier snapshot");
+    if (legacyPayloads > 0) errors.push(`${legacyPayloads} legacy conversation block payloads remain`);
+    if (malformedSourcePayloads > 0) errors.push(`${malformedSourcePayloads} source-backed block payloads were not stripped`);
+    if (locatorGaps > 0) errors.push(`${locatorGaps} source-backed blocks lack bounded exact locators`);
+    return {
+      pass: errors.length === 0,
+      errors,
+      source: sourcePath,
+      operational_log: logDbPath,
+      payload,
+      legacy_payloads: legacyPayloads,
+      malformed_source_payloads: malformedSourcePayloads,
+      source_locator_gaps: locatorGaps,
+      legacy_daemon_log: {
+        rows: legacyRows,
+        generation_rowid: legacyGeneration,
+        high_water: highWater,
+        recorded_state: logState,
+        verified: logVerified,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
+export function buildLegacyReclaimedDestination(options) {
+  const readiness = inspectLegacyReclaimReadiness(options);
+  if (!readiness.pass) {
+    return { version: REPORT_VERSION, report_kind: "legacy-storage-reclaim", readiness, pass: false };
+  }
+  const rebuild = buildCompactDestination({
+    source: options.source,
+    destination: options.destination,
+    excludeTables: ["daemon_log"],
+    reclaimConversationCheckpoints: true,
+  });
+  return {
+    version: REPORT_VERSION,
+    report_kind: "legacy-storage-reclaim",
+    readiness,
+    rebuild,
+    pass: rebuild.pass === true,
+  };
 }
 
 function normalizeMetadata(value) {
@@ -779,6 +1026,7 @@ function parseArgs(argv) {
       case "--destination": options.destination = requiredValue(argv, ++index, arg); break;
       case "--exclude-table": options.excludeTables.push(requiredValue(argv, ++index, arg)); break;
       case "--evidence": options.evidence = requiredValue(argv, ++index, arg); break;
+      case "--log-db": options.logDb = requiredValue(argv, ++index, arg); break;
       case "--rebuild-report": options.rebuildReport = requiredValue(argv, ++index, arg); break;
       case "--restore-report": options.restoreReports.push(requiredValue(argv, ++index, arg)); break;
       case "--metadata-sql": options.metadataSql = requiredValue(argv, ++index, arg); break;
@@ -798,6 +1046,7 @@ function usage() {
 Commands:
   binding --source DB [--json]
   rebuild --source DB --destination DB [--exclude-table NAME...] [--json]
+  reclaim --source DB --destination DB [--log-db DB] [--json]
   restore-drill --source DB --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
   audit --source DB --evidence FILE [--rebuild-report FILE] [--restore-report FILE...] [--json]
 
@@ -820,6 +1069,9 @@ async function main(argv) {
   } else if (options.command === "rebuild") {
     if (!options.source || !options.destination) throw new Error("rebuild requires --source and --destination");
     report = buildCompactDestination({ source: options.source, destination: options.destination, excludeTables: options.excludeTables });
+  } else if (options.command === "reclaim") {
+    if (!options.source || !options.destination) throw new Error("reclaim requires --source and --destination");
+    report = buildLegacyReclaimedDestination(options);
   } else if (options.command === "restore-drill") {
     if (!options.source || !options.metadataSql || !options.custodyRoot || !options.destinationRoot) {
       throw new Error("restore-drill requires --source, --metadata-sql, --custody-root, and --destination-root");

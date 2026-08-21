@@ -414,39 +414,40 @@ export function verifyLegacyDaemonLogCopy(
       verifiedAt: null,
     };
   }
-  const sourcePath = canonicalExistingPath(store.canonicalDbPath);
-  if (options.record !== false) invalidateStaleCopyState(store.db, sourcePath, finiteInteger(options.now, Date.now()));
-  const generationBefore = currentLegacyGeneration(store.db);
-  const legacyRows = countRows(store.db, `${LEGACY_LOG_SCHEMA}.daemon_log`);
-  const primaryRows = countRows(store.db, "main.daemon_log");
-  const coveredRows = numberResult(store.db.prepare(
+  const verify = store.db.transaction((): CopyVerificationResult => {
+    const sourcePath = canonicalExistingPath(store.canonicalDbPath);
+    if (options.record !== false) invalidateStaleCopyState(store.db, sourcePath, finiteInteger(options.now, Date.now()));
+    const generationBefore = currentLegacyGeneration(store.db);
+    const legacyRows = countRows(store.db, `${LEGACY_LOG_SCHEMA}.daemon_log`);
+    const primaryRows = countRows(store.db, "main.daemon_log");
+    const coveredRows = numberResult(store.db.prepare(
     `SELECT COUNT(*) AS count
      FROM ${LEGACY_LOG_SCHEMA}.daemon_log legacy
      JOIN main.daemon_log current ON current.id = legacy.id`,
-  ).get());
-  const mismatchedRows = numberResult(store.db.prepare(
+    ).get());
+    const mismatchedRows = numberResult(store.db.prepare(
     `SELECT COUNT(*) AS count
      FROM ${LEGACY_LOG_SCHEMA}.daemon_log legacy
      JOIN main.daemon_log current ON current.id = legacy.id
      WHERE ${LOG_COLUMNS.filter((column) => column !== "id")
        .map((column) => `current.${column} IS NOT legacy.${column}`)
        .join(" OR ")}`,
-  ).get());
-  const visible = visibleDaemonLogSource(store.db);
-  const visibleRows = numberResult(store.db.prepare(
+    ).get());
+    const visible = visibleDaemonLogSource(store.db);
+    const visibleRows = numberResult(store.db.prepare(
     `${visible.cte} SELECT COUNT(*) AS count FROM ${visible.table}`,
-  ).get());
-  const missingRows = legacyRows - coveredRows;
-  const legacySnapshot = currentLegacyCompletionSnapshot(store.db);
-  const generationStable = generationBefore === legacySnapshot.generationRowid;
-  const copyComplete = hasCurrentCompletedCopy(store.db, sourcePath);
-  const queryParity = visibleRows === primaryRows && missingRows === 0 && mismatchedRows === 0;
-  const verified = copyComplete && queryParity && generationStable;
-  let verifiedAt: number | null = null;
-  if (verified && options.record !== false) {
-    assertWritableStore(store.db);
-    verifiedAt = finiteInteger(options.now, Date.now());
-    store.db.prepare(
+    ).get());
+    const missingRows = legacyRows - coveredRows;
+    const legacySnapshot = currentLegacyCompletionSnapshot(store.db);
+    const generationStable = generationBefore === legacySnapshot.generationRowid;
+    const copyComplete = hasCurrentCompletedCopy(store.db, sourcePath);
+    const queryParity = visibleRows === primaryRows && missingRows === 0 && mismatchedRows === 0;
+    const verified = copyComplete && queryParity && generationStable;
+    let verifiedAt: number | null = null;
+    if (verified && options.record !== false) {
+      assertWritableStore(store.db);
+      verifiedAt = finiteInteger(options.now, Date.now());
+      store.db.prepare(
       `UPDATE operational_log_copy_state
        SET verified_at = ?, verified_legacy_rows = ?, verified_primary_rows = ?,
            legacy_high_water_ts = ?, legacy_high_water_id = ?,
@@ -462,20 +463,25 @@ export function verifyLegacyDaemonLogCopy(
       legacySnapshot.generationRowid,
       verifiedAt,
       sourcePath,
-    );
-  }
-  return {
-    sourcePath,
-    legacyRows,
-    coveredRows,
-    missingRows,
-    mismatchedRows,
-    visibleRows,
-    primaryRows,
-    queryParity,
-    verified,
-    verifiedAt,
-  };
+      );
+    }
+    return {
+      sourcePath,
+      legacyRows,
+      coveredRows,
+      missingRows,
+      mismatchedRows,
+      visibleRows,
+      primaryRows,
+      queryParity,
+      verified,
+      verifiedAt,
+    };
+  });
+  // Recording reserves the operational DB writer before the long parity scan,
+  // so retention cannot make the verifier compare counts from different
+  // moments. Read-only planning still gets one coherent deferred snapshot.
+  return options.record === false ? verify.deferred() : verify.immediate();
 }
 
 export function planLegacyDaemonLogReclaim(store: OperationalLogStore): ReclaimPlan {

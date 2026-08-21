@@ -4789,11 +4789,37 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "conversation_source_filesystem_identity",
     statements: [],
   },
+  {
+    version: 148,
+    name: "source_backed_conversation_payloads",
+    statements: [
+      `ALTER TABLE conversation_blocks ADD COLUMN payload_state TEXT NOT NULL DEFAULT 'legacy'
+         CHECK(payload_state IN ('legacy','source'))`,
+    ],
+  },
 ];
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
     .some((entry) => entry.name === column);
+}
+
+function verifySourceBackedPayloadStateSchema(db: Db): void {
+  const column = (db.prepare("PRAGMA table_info(conversation_blocks)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>).find((entry) => entry.name === "payload_state");
+  const tableSql = ((db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversation_blocks'
+  `).get() as { sql: string } | undefined)?.sql ?? "");
+  const hasExactCheck = /CHECK\s*\(\s*["`]?(?:payload_state)["`]?\s+IN\s*\(\s*'legacy'\s*,\s*'source'\s*\)\s*\)/i
+    .test(tableSql);
+  if (!column || column.type.toUpperCase() !== "TEXT" || column.notnull !== 1
+      || column.dflt_value !== "'legacy'" || !hasExactCheck) {
+    throw new Error("migration 148 verification: conversation_blocks.payload_state diverges");
+  }
 }
 
 function ensureConversationSourceFilesystemIdentityColumns(db: Db): void {
@@ -5176,6 +5202,14 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           statements = [];
         }
       }
+      if (migration.name === "source_backed_conversation_payloads") {
+        if (!tableExists(db, "conversation_blocks")) {
+          statements = [];
+        } else if (hasColumn(db, "conversation_blocks", "payload_state")) {
+          verifySourceBackedPayloadStateSchema(db);
+          statements = [];
+        }
+      }
       if (migration.name === "user_settings" && tableExists(db, "user_settings")) {
         const sql = ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_settings'")
           .get() as { sql: string } | undefined)?.sql ?? "");
@@ -5274,6 +5308,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 147) {
         ensureConversationSourceFilesystemIdentityColumns(db);
+      }
+      if (migration.version === 148 && tableExists(db, "conversation_blocks")) {
+        verifySourceBackedPayloadStateSchema(db);
       }
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);

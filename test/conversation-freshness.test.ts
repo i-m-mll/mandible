@@ -19,7 +19,6 @@ import {
 } from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
-import { decompressContent } from "../src/compression.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { sourceFilesystemIdentity } from "../src/conversations/source-observer.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
@@ -112,6 +111,13 @@ async function seed(sessionId = "fresh-session"): Promise<{ file: string; id: st
   const row = db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(file) as { id: string };
   updateThread(sessionId, { rolloutPath: file });
   return { file, id: row.id };
+}
+
+async function exactContents(conversationId: string): Promise<string[]> {
+  const read = await new ConversationSourceReader(db).readAll(conversationId);
+  expect(read.status).toBe("source");
+  if (read.status !== "source") return [];
+  return read.value.map((block) => block.content);
 }
 
 beforeEach(() => {
@@ -222,11 +228,7 @@ describe("exact conversation freshness", () => {
       conversationId: seeded.id,
       refreshed: true,
     });
-    const last = db.prepare(`
-      SELECT content, compressed FROM conversation_blocks
-       WHERE conversation_id = ? ORDER BY position DESC LIMIT 1
-    `).get(seeded.id) as { content: Buffer | string; compressed: number };
-    expect(decompressContent(last.content, last.compressed === 1)).toBe(`${padding}€`);
+    expect((await exactContents(seeded.id)).at(-1)).toBe(`${padding}€`);
   });
 
   it("chooses the sole available duplicate owner and fails closed when two owners are available", async () => {
@@ -277,10 +279,10 @@ describe("exact conversation freshness", () => {
       refreshed: true,
     });
     const rows = db.prepare(
-      "SELECT conversation_id, content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(seeded.id) as Array<{ conversation_id: string; content: Buffer | string; compressed: number }>;
+      "SELECT conversation_id FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+    ).all(seeded.id) as Array<{ conversation_id: string }>;
     expect(rows.every((row) => row.conversation_id === seeded.id)).toBe(true);
-    expect(rows.some((row) => decompressContent(row.content, row.compressed === 1).includes("rewritten body"))).toBe(true);
+    expect((await exactContents(seeded.id)).some((content) => content.includes("rewritten body"))).toBe(true);
     expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_source_versions WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)")
       .get(seeded.id)).toMatchObject({ count: 2 });
   });
@@ -323,10 +325,7 @@ describe("exact conversation freshness", () => {
         return triggerExactPathIngest(source);
       },
     });
-    const normalized = (db.prepare(
-      "SELECT content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(seeded.id) as Array<{ content: Buffer | string; compressed: number }>)
-      .map((row) => decompressContent(row.content, row.compressed === 1)).join("\n");
+    const normalized = (await exactContents(seeded.id)).join("\n");
     expect(result.refreshed).toBe(true);
     expect(ingests).toBe(1);
     expect(normalized).toContain(freshMarker);
@@ -416,9 +415,13 @@ describe("exact conversation freshness", () => {
     await appendAt(seeded.file, assistant("tail beyond cold limit", 3), 2);
     const reader = new ConversationSourceReader(db, { maxSourceBytes: 1 });
     const coldRead = await reader.readAll(seeded.id);
-    expect(coldRead).toMatchObject({ status: "legacy", reason: "unsupported" });
+    expect(coldRead).toMatchObject({
+      status: "unsupported",
+      reason: "requested source page exceeds bounded range-read limit",
+    });
     await expect(ensureExactConversationFresh(db, seeded.id)).resolves.toMatchObject({ refreshed: true });
     expect(db.prepare("SELECT block_count FROM conversations WHERE id = ?").get(seeded.id)).toMatchObject({ block_count: 3 });
+    expect(await exactContents(seeded.id)).toHaveLength(3);
   });
 
   it("times out a caller without cancelling the authoritative single-flight", async () => {

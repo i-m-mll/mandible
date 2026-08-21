@@ -58,6 +58,19 @@ export interface SourceReadObservation {
   fileSize: number;
 }
 
+export interface SourceByteRange {
+  offset: number;
+  length: number;
+}
+
+export interface StableSourceRangeObservation {
+  path: string;
+  byteLength: number;
+  fileMtimeMs: number;
+  filesystemIdentity: SourceFilesystemIdentity;
+  ranges: Buffer[];
+}
+
 export type SourceReadInstrumentation = (read: SourceReadObservation) => void;
 
 export class SourceObservationError extends Error {
@@ -236,6 +249,92 @@ export async function observeStableSourceAliasExtent(
     if (error instanceof SourceObservationError) throw error;
     throw new SourceObservationError(
       error instanceof Error ? error.message : "conversation source could not be read",
+      "unavailable",
+    );
+  }
+}
+
+/**
+ * Read only caller-selected immutable JSONL records from one verified alias.
+ * The descriptor and extent are checked before and after the reads, so a large
+ * transcript never has to be materialized merely to show one page.
+ */
+export async function observeStableSourceAliasRanges(
+  alias: ConversationSourceAlias,
+  ranges: readonly SourceByteRange[],
+  options: {
+    maxRangeBytes?: number;
+    maxTotalBytes?: number;
+    instrumentation?: SourceReadInstrumentation;
+  } = {},
+): Promise<StableSourceRangeObservation> {
+  if (alias.availability !== "available") {
+    throw new SourceObservationError("conversation source alias is unavailable", "unavailable");
+  }
+  const maxRangeBytes = options.maxRangeBytes ?? 64 * 1024 * 1024;
+  const maxTotalBytes = options.maxTotalBytes ?? 128 * 1024 * 1024;
+  const totalRequested = ranges.reduce((sum, range) => sum + range.length, 0);
+  if (ranges.some((range) => !Number.isSafeInteger(range.offset) || range.offset < 0
+      || !Number.isSafeInteger(range.length) || range.length < 0 || range.length > maxRangeBytes)
+      || !Number.isSafeInteger(totalRequested) || totalRequested > maxTotalBytes) {
+    throw new SourceObservationError("requested source page exceeds bounded range-read limit", "unsupported");
+  }
+  try {
+    const declaredRoot = path.resolve(alias.rootPath);
+    const declared = path.resolve(alias.rootPath, alias.relativePath);
+    if (declared !== path.resolve(alias.path) || !insideSourceRoot(declaredRoot, declared)) {
+      throw new SourceObservationError("conversation source alias escapes its declared root", "unavailable");
+    }
+    const rootReal = await fs.promises.realpath(declaredRoot);
+    const fileReal = await fs.promises.realpath(declared);
+    if (!insideSourceRoot(rootReal, fileReal)) {
+      throw new SourceObservationError("conversation source resolves outside its declared root", "unavailable");
+    }
+    const handle = await fs.promises.open(fileReal, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile()) throw new SourceObservationError("conversation source is not a regular file", "unavailable");
+      const beforeExtent = numericSourceExtent(before);
+      const beforeIdentity = sourceFilesystemIdentity(before);
+      const buffers: Buffer[] = [];
+      for (const range of ranges) {
+        if (range.offset + range.length > beforeExtent.byteLength) {
+          throw new SourceObservationError("source record range is outside the observed extent", "changed");
+        }
+        const bytes = Buffer.alloc(range.length);
+        let read = 0;
+        while (read < range.length) {
+          const length = Math.min(1024 * 1024, range.length - read);
+          options.instrumentation?.({ position: range.offset + read, length, fileSize: beforeExtent.byteLength });
+          const result = await handle.read(bytes, read, length, range.offset + read);
+          if (result.bytesRead === 0) break;
+          read += result.bytesRead;
+        }
+        if (read !== range.length) {
+          throw new SourceObservationError("conversation source changed during range read", "changed");
+        }
+        buffers.push(bytes);
+      }
+      const after = await handle.stat({ bigint: true });
+      const afterExtent = numericSourceExtent(after);
+      if (!sameSourceFilesystemIdentity(beforeIdentity, sourceFilesystemIdentity(after))
+          || beforeExtent.byteLength !== afterExtent.byteLength || before.mtimeNs !== after.mtimeNs) {
+        throw new SourceObservationError("conversation source changed while ranges were read", "changed");
+      }
+      return {
+        path: alias.path,
+        byteLength: beforeExtent.byteLength,
+        fileMtimeMs: beforeExtent.fileMtimeMs,
+        filesystemIdentity: beforeIdentity,
+        ranges: buffers,
+      };
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (error instanceof SourceObservationError) throw error;
+    throw new SourceObservationError(
+      error instanceof Error ? error.message : "conversation source ranges could not be read",
       "unavailable",
     );
   }

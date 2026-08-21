@@ -2,7 +2,7 @@
 import Database from "better-sqlite3";
 import { getParserForFile } from "../parsers/index.js";
 import { getParserCapability, PARSER_CAPABILITIES } from "../parsers/capabilities.js";
-import { decompressContent } from "../compression.js";
+import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
   filterBlocks,
   makeEnvelope,
@@ -103,7 +103,7 @@ async function runLogs(args: CliArgs): Promise<void> {
   }
 }
 
-function runConversations(args: CliArgs): void {
+async function runConversations(args: CliArgs): Promise<void> {
   const dbPath = args.positional[0];
   const ident = args.positional[1];
   if (!dbPath || !ident) throw new Error("missing database path or conversation id");
@@ -120,16 +120,11 @@ function runConversations(args: CliArgs): void {
     if (!exact && conversations.length > 1) throw new Error(`ambiguous conversation reference: ${ident}`);
     const conversation = exact ?? conversations[0];
     if (!conversation?.id) throw new Error(`conversation not found: ${ident}`);
-    const rows = db.prepare(`
-      SELECT id, conversation_id, type, role, content, compressed, position, timestamp, parent_id, metadata_json
-      FROM conversation_blocks
-      WHERE conversation_id = ?
-      ORDER BY position ASC
-    `).all(conversation.id) as Array<InspectableBlock & { compressed: number; content: Buffer | string }>;
-    const blocks = rows.map((row) => ({
-      ...row,
-      content: decompressContent(row.content, row.compressed === 1),
-    }));
+    const read = await new ConversationSourceReader(db).readAll(conversation.id);
+    if (read.status !== "source" && read.status !== "legacy") {
+      throw new Error(`conversation source ${read.status}: ${read.reason}`);
+    }
+    const blocks = read.value;
     const filters = filterOptions(args);
     const filtered = filterBlocks(blocks, filters);
     if (args.json) {
@@ -149,7 +144,7 @@ async function main(): Promise<void> {
   if (mode === "logs") {
     await runLogs(args);
   } else if (mode === "conversations") {
-    runConversations(args);
+    await runConversations(args);
   } else if (mode === "capabilities") {
     const provider = args.positional[0];
     const capabilities = provider

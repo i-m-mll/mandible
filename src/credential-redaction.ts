@@ -42,6 +42,9 @@ import { UserRegistryError } from "./users/store.js";
 const redactionLog = getDaemonLogger();
 
 const DEFAULT_BATCH_SIZE = 500;
+const SOURCE_DISCOVERY_CHUNK_BYTES = 4 * 1024 * 1024;
+const MAX_SOURCE_PATCH_BYTES = 256 * 1024 * 1024;
+const SOURCE_DISCOVERY_OVERLAP = API_TOKEN_PREFIX.length + 43 - 1;
 
 /**
  * How many times a source rewrite may restart because the file changed under
@@ -884,6 +887,14 @@ function patchThroughDescriptor(
     return patchOutcome("failed");
   }
   if (!stat.isFile()) return patchOutcome("missing");
+  if (stat.size > MAX_SOURCE_PATCH_BYTES) {
+    redactionLog("warn", "credential_redaction_source_too_large", {
+      file: filePath,
+      byte_length: stat.size,
+      max_patch_bytes: MAX_SOURCE_PATCH_BYTES,
+    });
+    return patchOutcome("refused");
+  }
 
   const original = readExactly(fd, 0, stat.size);
   if (original === null) {
@@ -1267,6 +1278,7 @@ export function redactCredential(
     `SELECT id, conversation_id, content, metadata_json, compressed,
             type, timestamp, position
      FROM conversation_blocks
+     WHERE payload_state = 'legacy'
      ORDER BY rowid
      LIMIT ? OFFSET ?`,
   );
@@ -1283,6 +1295,25 @@ export function redactCredential(
   // already carries the mask, so its blocks need no edit — but its source file
   // still holds the working token and is exactly what --patch-sources is for.
   const sourceCandidates = new Set<string>();
+  for (const row of db.prepare(`
+    SELECT DISTINCT json_extract(data_json, '$.conversation_id') AS conversation_id
+      FROM webhook_events
+     WHERE event_type = 'credential_leak'
+       AND json_extract(data_json, '$.credential_id') = ?
+       AND json_type(data_json, '$.conversation_id') = 'text'
+  `).all(credential.id) as Array<{ conversation_id: string }>) {
+    sourceCandidates.add(row.conversation_id);
+  }
+  if (options.patchSources) {
+    // Once transcript payloads have been reclaimed, an older credential may
+    // exist only in provider JSONL. Discover those files with a bounded stream
+    // instead of materializing every source (one production source is >3 GiB).
+    for (const conversationId of discoverSourceBackedCredentialConversations(
+      db,
+      pepper,
+      credential.fingerprint,
+    )) sourceCandidates.add(conversationId);
+  }
   let scanned = 0;
   let redactedBlocks = 0;
   let redactedSpans = 0;
@@ -1546,6 +1577,85 @@ function redactConversationMetadata(
     sourceCandidates.add(row.id);
   }
   return { fields, spans, unverified, truncated };
+}
+
+/**
+ * Find source-backed conversations containing one credential without loading
+ * whole provider logs into memory. A truncated candidate scan is treated as a
+ * possible match so the destructive patcher can refuse it explicitly rather
+ * than silently declaring the source clean.
+ */
+function discoverSourceBackedCredentialConversations(
+  db: Db,
+  pepper: string,
+  fingerprint: string,
+): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT c.source_path, cb.conversation_id
+      FROM conversation_blocks cb
+      JOIN conversations c ON c.id = cb.conversation_id
+     WHERE cb.payload_state = 'source'
+       AND c.source_path IS NOT NULL
+     ORDER BY c.source_path, cb.conversation_id
+  `).all() as Array<{ source_path: string; conversation_id: string }>;
+  const conversationsByPath = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = conversationsByPath.get(row.source_path) ?? [];
+    ids.push(row.conversation_id);
+    conversationsByPath.set(row.source_path, ids);
+  }
+
+  const matches = new Set<string>();
+  for (const [filePath, conversationIds] of conversationsByPath) {
+    if (!sourceMayContainCredential(filePath, pepper, fingerprint)) continue;
+    for (const conversationId of conversationIds) matches.add(conversationId);
+  }
+  return matches;
+}
+
+function sourceMayContainCredential(
+  filePath: string,
+  pepper: string,
+  fingerprint: string,
+): boolean {
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, "r");
+  } catch {
+    // Let the existing patch/report path classify missing and unreadable files
+    // when another durable clue already points to them. An otherwise unknown
+    // unreadable source cannot be safely claimed to contain this credential.
+    return false;
+  }
+  try {
+    const buffer = Buffer.allocUnsafe(SOURCE_DISCOVERY_CHUNK_BYTES);
+    let offset = 0;
+    let overlap = "";
+    for (;;) {
+      const read = fs.readSync(fd, buffer, 0, buffer.length, offset);
+      if (read <= 0) return false;
+      offset += read;
+      const text = overlap + buffer.subarray(0, read).toString("latin1");
+      const extracted = extractTokenCandidatesWithStatus(text);
+      for (const candidate of extracted.candidates) {
+        if (fingerprintForToken(pepper, candidate) === fingerprint) return true;
+      }
+      if (extracted.truncated) return true;
+      overlap = text.slice(-SOURCE_DISCOVERY_OVERLAP);
+    }
+  } catch (error) {
+    redactionLog("warn", "credential_redaction_source_discovery_failed", {
+      file: filePath,
+      error: String(error),
+    });
+    return false;
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Read-only descriptor; nothing further is recoverable here.
+    }
+  }
 }
 
 function patchSourcesForConversations(

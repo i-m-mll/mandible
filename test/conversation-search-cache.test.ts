@@ -127,6 +127,32 @@ describe("disposable conversation search cache", () => {
     }
   });
 
+  it("stops cold parsing after the first bounded batch satisfies the result limit", async () => {
+    const blocks = new Map(Array.from({ length: 12 }, (_, index) => {
+      const id = `c${index}`;
+      return [id, [block(id, `needle ${index}`)]];
+    }));
+    const source = new FakeSource(blocks, 8);
+    const cache = new ConversationSearchCache(source, {
+      cachePath: tempCachePath(),
+      maxConcurrentColdParses: 3,
+    });
+    try {
+      const result = await cache.search({
+        conversationIds: [...blocks.keys()],
+        needle: "needle",
+        limit: 1,
+      });
+      expect(result.matches).toHaveLength(1);
+      expect(result.metrics).toMatchObject({
+        cold_conversations: 3,
+        max_cold_parse_concurrency: 3,
+      });
+    } finally {
+      cache.close();
+    }
+  });
+
   it("keeps credential canaries out of cache bytes and results", async () => {
     const token = `mandible_pat_${"A".repeat(43)}`;
     const source = new FakeSource(new Map([
