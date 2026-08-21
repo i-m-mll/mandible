@@ -2450,6 +2450,81 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain("# Report");
   });
 
+  it("serves exact commit-pinned bytes when the file is absent from the registered checkout", async () => {
+    const repoRoot = path.join(tempDir, "repo");
+    const reportPath = path.join(repoRoot, "results", "report.md");
+    const report = "# Pinned report\n\nExact committed bytes.\n";
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+    git(repoRoot, ["config", "user.email", "test@example.invalid"]);
+    git(repoRoot, ["config", "user.name", "Test User"]);
+    git(repoRoot, ["config", "commit.gpgsign", "false"]);
+    fs.writeFileSync(reportPath, report, "utf8");
+    git(repoRoot, ["add", "results/report.md"]);
+    git(repoRoot, ["commit", "-m", "add pinned report"]);
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    createLedgerCheckout("rlrmp", repoRoot);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256(report),
+      media_type: "text/markdown",
+      uri: `repo://rlrmp@${commit}/results/report.md`,
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: commit, commit, path: "results/report.md" },
+      availability: "present",
+      metadata: { filename: "report.md", recoverability: "repo_commit" },
+      reference: { recoverability: "repo_commit" },
+    }, 1000, tempDir);
+
+    fs.rmSync(reportPath);
+    expect(fs.existsSync(reportPath)).toBe(false);
+
+    const content = getArtifactContent(db, artifact.id);
+    const asyncContent = await getArtifactContentAsync(db, artifact.id);
+
+    for (const result of [content, asyncContent]) {
+      expect(result).toMatchObject({
+        status: "available",
+        kind: "markdown",
+        size_bytes: Buffer.byteLength(report),
+        source: {
+          kind: "repo_locator",
+          locator: `repo_commit:rlrmp@${commit}:results/report.md`,
+        },
+        preview: { text: report, truncated: false },
+        download: { available: true, size_bytes: Buffer.byteLength(report), filename: "report.md" },
+      });
+    }
+    expect(checkArtifactMaterialization(db, artifact.id)).toMatchObject({
+      materializable: true,
+      hash_matches: true,
+      source: `repo_commit:rlrmp@${commit}:results/report.md`,
+    });
+
+    const mismatched = ingestArtifact(db, {
+      sha256: sha256("wrong bytes\n"),
+      media_type: "text/markdown",
+      uri: `repo://rlrmp@${commit}/results/report.md`,
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: commit, commit, path: "results/report.md" },
+      availability: "present",
+      metadata: { filename: "report.md", recoverability: "repo_commit" },
+      reference: { recoverability: "repo_commit" },
+    }, 2000, tempDir);
+    expect(getArtifactContent(db, mismatched.id)).toMatchObject({
+      status: "unavailable",
+      reason: "artifact bytes do not match registered sha256",
+      download: { available: false, reason: "artifact bytes do not match registered sha256" },
+    });
+    expect(checkArtifactMaterialization(db, mismatched.id)).toMatchObject({
+      materializable: true,
+      hash_matches: false,
+      reasons: ["hash_mismatch"],
+    });
+  });
+
   it("rejects repo locator traversal outside the registered checkout", () => {
     const repoRoot = path.join(tempDir, "repo");
     const outsidePath = path.join(tempDir, "outside.txt");
