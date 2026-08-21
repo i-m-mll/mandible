@@ -28,12 +28,71 @@ export type BriefingDocumentPanelProps = {
 type AnnotationEditor = {
   annotation: BriefingAnnotation | null;
   directiveItemId?: string;
+  sectionHeading?: string;
   start: number;
   end: number;
   quote: string;
   top: number;
   left: number;
 };
+
+export type MarkdownHeadingSection = {
+  level: number;
+  label: string;
+  headingStart: number;
+  headingEnd: number;
+  sectionEnd: number;
+};
+
+type MarkdownHeading = Omit<MarkdownHeadingSection, 'sectionEnd'>;
+
+export function findMarkdownHeadingSections(source: string): MarkdownHeadingSection[] {
+  const lines = source.match(/.*(?:\r?\n|$)/g)?.filter(Boolean) ?? [];
+  const headings: MarkdownHeading[] = [];
+  let offset = 0;
+  let fence: { marker: '`' | '~'; length: number } | null = null;
+  let previous: { start: number; end: number; text: string; eligible: boolean } | null = null;
+  for (const line of lines) {
+    const start = offset;
+    offset += line.length;
+    const text = line.replace(/\r?\n$/, '');
+    const fenceMatch = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(text);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0] as '`' | '~';
+      if (!fence) fence = { marker, length: fenceMatch[1].length };
+      else if (fence.marker === marker && fenceMatch[1].length >= fence.length
+          && new RegExp(`^[ \\t]{0,3}\\${marker}{${fence.length},}[ \\t]*$`).test(text)) fence = null;
+      previous = null;
+      continue;
+    }
+    if (fence) {
+      previous = null;
+      continue;
+    }
+    const atx = /^[ \t]{0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*#*[ \t]*|[ \t]*)$/.exec(text);
+    if (atx) {
+      headings.push({ level: atx[1].length, label: (atx[2] ?? '').trim(), headingStart: start, headingEnd: offset });
+      previous = null;
+      continue;
+    }
+    const setext = /^[ \t]{0,3}(=+|-+)[ \t]*$/.exec(text);
+    if (setext && previous?.eligible) {
+      headings.push({ level: setext[1][0] === '=' ? 1 : 2, label: previous.text.trim(), headingStart: previous.start, headingEnd: offset });
+      previous = null;
+      continue;
+    }
+    previous = {
+      start,
+      end: offset,
+      text,
+      eligible: Boolean(text.trim()) && !/^[ \t]{4}/.test(text),
+    };
+  }
+  return headings.map((heading, index) => {
+    const next = headings.slice(index + 1).find((candidate) => candidate.level <= heading.level);
+    return { ...heading, sectionEnd: next?.headingStart ?? source.length };
+  });
+}
 
 // Radio `name` groups are document-global rather than component-local. A
 // stable mount token prevents another live renderer of the same round from
@@ -175,6 +234,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
 
   const source = documentKey && verifiedDocumentKey === documentKey ? document?.source ?? null : null;
   const currentContentError = documentKey && contentError?.key === documentKey ? contentError.message : null;
+  const headingSections = useMemo(() => source === null ? [] : findMarkdownHeadingSections(source), [source]);
 
   const annotations = round.annotations ?? [];
   const directiveItems = useMemo(() => round.items
@@ -188,6 +248,14 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       if (directive.start_offset < cursor || directive.end_offset > source.length
           || directive.body_start_offset < directive.start_offset || directive.body_end_offset > directive.end_offset
           || directive.body_start_offset >= directive.body_end_offset) return 'The pinned directive ranges are inconsistent.';
+      if (item.revision.response_type === 'text_variant') {
+        const variants = item.revision.variants ?? [];
+        if (variants.some((variant) => variant.start_offset < directive.body_start_offset
+            || variant.end_offset > directive.body_end_offset
+            || source.slice(variant.body_start_offset, variant.body_end_offset) !== variant.body)) {
+          return 'The pinned text-variant ranges are inconsistent.';
+        }
+      }
       cursor = directive.end_offset;
     }
     return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
@@ -200,7 +268,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     void Promise.all(directiveItems.map(async (item) => {
       const directive = item.directive!;
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
-      if (body !== item.revision.prompt) throw new Error('Pinned directive text does not match its materialized prompt.');
+      if (item.revision.response_type !== 'text_variant' && body !== item.revision.prompt) throw new Error('Pinned directive text does not match its materialized prompt.');
       if (await sha256(source.slice(directive.start_offset, directive.end_offset)) !== directive.definition_digest) throw new Error('Pinned directive content does not match its binding.');
     })).then(() => {
       if (!cancelled) {
@@ -238,6 +306,19 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (!item || !directive || source === null) return;
     const quote = source.slice(directive.body_start_offset, directive.body_end_offset);
     openEditor({ annotation: null, directiveItemId: itemId, start: directive.body_start_offset, end: directive.body_end_offset, quote, top: 96, left: 24 });
+  };
+
+  const openSectionComment = (section: MarkdownHeadingSection) => {
+    if (source === null) return;
+    openEditor({
+      annotation: null,
+      sectionHeading: section.label,
+      start: section.headingStart,
+      end: section.sectionEnd,
+      quote: source.slice(section.headingStart, section.sectionEnd),
+      top: 96,
+      left: 24,
+    });
   };
 
   const inlineAnnotations = (start: number, end: number) => {
@@ -334,6 +415,20 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           ))}
         </fieldset>
       );
+    } else if (type === 'text_variant') {
+      const variants = item.revision.variants ?? [];
+      const selectedKey = current && 'option_key' in current ? current.option_key : null;
+      const selectedIndex = Math.max(0, variants.findIndex((variant) => variant.key === selectedKey));
+      const selectedVariant = variants[selectedIndex];
+      control = selectedVariant ? (
+        <div id={controlId} className="briefing-directive__variant-controls" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
+          <button type="button" aria-label="Previous text variant" disabled={!canInteract || selectedIndex === 0}
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><PreviousIcon /></button>
+          <span><strong>{selectedVariant.label}</strong><small>{selectedIndex + 1} of {variants.length}</small></span>
+          <button type="button" aria-label="Next text variant" disabled={!canInteract || selectedIndex === variants.length - 1}
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex + 1].key })}><NextIcon /></button>
+        </div>
+      ) : null;
     }
     return (
       <div className="briefing-directive__response">
@@ -344,22 +439,57 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     );
   };
 
+  const renderProseRange = (start: number, end: number, first: boolean): JSX.Element[] => {
+    if (source === null || start >= end) return [];
+    const hiddenLeadingLength = first ? source.length - suppressRepeatedLeadingHeading(source, briefingTitle).length : 0;
+    const visibleStart = Math.max(start, hiddenLeadingLength);
+    const parts: JSX.Element[] = [];
+    let cursor = visibleStart;
+    const pushProse = (from: number, to: number) => {
+      if (from >= to) return;
+      const prose = source.slice(from, to);
+      if (!prose.trim() && !annotations.some((annotation) => annotation.start_offset < to && annotation.end_offset > from)) return;
+      parts.push(
+        <div key={`prose-${from}-${to}`} className="briefing-document__passage">
+          <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />
+          {inlineAnnotations(from, to)}
+        </div>,
+      );
+    };
+    for (const section of headingSections) {
+      if (section.headingStart < visibleStart || section.headingEnd > end) continue;
+      pushProse(cursor, section.headingStart);
+      const headingSource = source.slice(section.headingStart, section.headingEnd);
+      parts.push(
+        <div key={`heading-${section.headingStart}`} className="briefing-document__heading contextual-action-owner">
+          <div className="briefing-document__heading-content rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(headingSource) }} />
+          <div className="briefing-document__heading-actions contextual-action-group" aria-label={`Section controls for ${section.label}`}>
+            <ContextualAction aria-label={`Comment on section ${section.label}`} title="Comment on whole section"
+              aria-expanded={editor?.sectionHeading === section.label && editor.start === section.headingStart}
+              disabled={!canInteract} onClick={() => openSectionComment(section)}><CommentIcon /></ContextualAction>
+          </div>
+          {inlineAnnotations(section.headingStart, section.headingEnd)}
+        </div>,
+      );
+      cursor = section.headingEnd;
+    }
+    pushProse(cursor, end);
+    return parts;
+  };
+
   const renderProfileDocument = () => {
     if (source === null || documentIntegrityError) return null;
     const parts: JSX.Element[] = [];
     let cursor = 0;
     for (const item of directiveItems) {
       const directive = item.directive!;
-      const authoritativeProse = source.slice(cursor, directive.start_offset);
-      const prose = cursor === 0 ? suppressRepeatedLeadingHeading(authoritativeProse, briefingTitle) : authoritativeProse;
-      if (prose.trim() || annotations.some((annotation) => annotation.start_offset < directive.start_offset && annotation.end_offset > cursor)) parts.push(
-        <div key={`prose-${parts.length}`} className="briefing-document__passage">
-          <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />
-          {inlineAnnotations(cursor, directive.start_offset)}
-        </div>,
-      );
+      parts.push(...renderProseRange(cursor, directive.start_offset, cursor === 0));
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
       const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
+      const variants = item.revision.variants ?? [];
+      const selectedVariantKey = current && 'option_key' in current ? current.option_key : null;
+      const selectedVariant = variants.find((variant) => variant.key === selectedVariantKey) ?? variants[0];
+      const visibleBody = item.revision.response_type === 'text_variant' && selectedVariant ? selectedVariant.body : body;
       const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
       const selected = selectedDirectiveId === item.id;
       parts.push(
@@ -370,7 +500,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId(item.id); } }}>
           <div className="briefing-directive__interaction contextual-action-owner">
             <div className="briefing-directive__passage">
-              <div id={promptId} className="briefing-directive__body rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+              <div id={promptId} className="briefing-directive__body rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(visibleBody) }} />
               {item.revision.required ? <span className="briefing-directive__required" aria-label="Required">Required</span> : null}
               {inlineAnnotations(directive.start_offset, directive.end_offset)}
               {responseControls(item, current, promptId)}
@@ -383,13 +513,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       );
       cursor = directive.end_offset;
     }
-    const tail = source.slice(cursor);
-    if (tail.trim() || annotations.some((annotation) => annotation.start_offset < source.length && annotation.end_offset > cursor)) parts.push(
-      <div key={`prose-${parts.length}`} className="briefing-document__passage">
-        <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />
-        {inlineAnnotations(cursor, source.length)}
-      </div>,
-    );
+    parts.push(...renderProseRange(cursor, source.length, cursor === 0));
     return <div className="briefing-document__rendered" aria-label="Pinned briefing document">{parts}</div>;
   };
 
@@ -471,12 +595,16 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
             <strong>{editor.annotation ? 'Edit annotation' : 'Add annotation'}</strong>
             <button type="button" aria-label="Close annotation editor" onClick={() => setEditor(null)}>×</button>
           </div>
-          <blockquote>{editor.quote}</blockquote>
-          <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
-            <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
-            <button type="button" role="tab" aria-selected={kind === 'suggest_replacement'} onClick={() => setKind('suggest_replacement')}>Suggest replacement</button>
-          </div>
-          {kind === 'suggest_replacement' ? (
+          {editor.sectionHeading
+            ? <p className="briefing-document__section-intent">Whole section: <strong>{editor.sectionHeading}</strong></p>
+            : <blockquote>{editor.quote}</blockquote>}
+          {!editor.sectionHeading ? (
+            <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
+              <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
+              <button type="button" role="tab" aria-selected={kind === 'suggest_replacement'} onClick={() => setKind('suggest_replacement')}>Suggest replacement</button>
+            </div>
+          ) : null}
+          {kind === 'suggest_replacement' && !editor.sectionHeading ? (
             <label>
               Replacement
               <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canInteract || busy} />
@@ -510,6 +638,14 @@ function DismissIcon(): JSX.Element {
 
 function CommentIcon(): JSX.Element {
   return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" /></svg>;
+}
+
+function PreviousIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m10 3-5 5 5 5" /></svg>;
+}
+
+function NextIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg>;
 }
 
 export default BriefingDocumentPanel;
