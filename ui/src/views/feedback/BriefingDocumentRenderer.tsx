@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import {
   getBriefing,
+  getBriefingReviewedMarkdown,
   getClientAuthWhoami,
   isApiErrorStatus,
   postBriefingAnswers,
@@ -130,6 +131,8 @@ export function BriefingDocumentRenderer({
   const [reload, setReload] = useState(0);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const headerRef = useRef<HTMLElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
@@ -189,6 +192,8 @@ export function BriefingDocumentRenderer({
     setDraftScope(null);
     setValidationErrors({});
     setStatus(null);
+    setExportBusy(false);
+    setExportError(null);
     onBriefingChange?.(null);
     void reconcile();
   }, [briefingId, roundId]);
@@ -375,6 +380,28 @@ export function BriefingDocumentRenderer({
   };
 
   const title = round?.title || briefingTitle || 'Briefing';
+
+  const exportReviewedMarkdown = async () => {
+    const submissionId = round?.latest_submission_for_actor?.id;
+    if (!round || !submissionId || exportBusy) return;
+    setActionsOpen(false);
+    setExportBusy(true);
+    setExportError(null);
+    try {
+      const result = await getBriefingReviewedMarkdown(briefingId, round.selected_round_id, submissionId);
+      const url = URL.createObjectURL(new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' }));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = result.filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setStatus(result.sha256 ? `Reviewed Markdown exported (${result.sha256.slice(0, 12)}…).` : 'Reviewed Markdown exported.');
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportBusy(false);
+    }
+  };
   const roundOptions = briefingRoundOptions(round?.rounds ?? []);
   const roundLabels = new Map(roundOptions.map(({ round: summary, label }) => [summary.id, label]));
   const selectedSummary = round?.rounds.find((candidate) => candidate.id === round.selected_round_id) ?? null;
@@ -394,6 +421,7 @@ export function BriefingDocumentRenderer({
           ? <div className="briefing-error" role="alert">The selected Briefing projection is invalid or unsupported.</div>
           : (
             <div className="briefing-document" data-testid="briefing-document-renderer">
+              {exportError ? <div className="briefing-error" role="alert">{exportError}</div> : null}
               {Object.keys(validationErrors).length > 0 ? (
                 <div className="briefing-document__validation" role="alert">
                   Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
@@ -424,7 +452,7 @@ export function BriefingDocumentRenderer({
           identity={{
             displayRef: shortRouteId(briefingId).replace(/^briefing:/i, ''),
             canonicalRef: briefingId,
-            copyLabel: 'Copy full Briefing ID',
+            copyLabel: 'Copy Briefing reference',
           }}
           title={title}
           titleTooltip={title}
@@ -441,7 +469,7 @@ export function BriefingDocumentRenderer({
               </select>
             ),
             selectedCanonicalRef: round.selected_round_id,
-            copyLabel: 'Copy full selected round ref',
+            copyLabel: 'Copy selected round reference',
           } : undefined}
           actions={round ? (
             <>
@@ -465,6 +493,11 @@ export function BriefingDocumentRenderer({
                   style={actionsMenuStyle}
                 >
                   <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
+                  {round.latest_submission_for_actor ? (
+                    <button type="button" role="menuitem" disabled={exportBusy} onClick={() => void exportReviewedMarkdown()}>
+                      {exportBusy ? 'Exporting reviewed Markdown…' : 'Export reviewed Markdown'}
+                    </button>
+                  ) : null}
                   {artifactVersionRef ? (
                     <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
                   ) : null}

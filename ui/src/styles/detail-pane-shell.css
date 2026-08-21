@@ -47,6 +47,21 @@
   font-size: var(--detail-content-size);
 }
 
+.detail-pane-shell__body--overlay-open {
+  overflow: hidden;
+}
+
+.detail-pane-shell__overlay-host {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.detail-pane-shell__overlay-host > .detail-pane-modal {
+  pointer-events: auto;
+}
+
 .app-layout--route-timeline .detail-pane-shell__body {
   --detail-content-family: var(--font-ui);
   --detail-content-size: var(--font-ui-size);

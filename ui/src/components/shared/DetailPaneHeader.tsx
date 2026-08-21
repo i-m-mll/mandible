@@ -1,4 +1,5 @@
 import type { ComponentChildren } from 'preact';
+import { shortIdentityRef } from '../../identity-refs';
 import { CopyRefButton, DetailHeaderIdentity } from './DetailHeaderIdentity';
 
 export type DetailPaneHeaderVariant = 'standard' | 'compact' | 'versioned';
@@ -8,8 +9,10 @@ export type DetailPaneHeaderIdentity = {
   entityLabel?: string;
   /** Ambiguity-safe short reference rendered in the header. Never pass the full ID here. */
   displayRef: string;
-  /** Full canonical reference copied by the identity control. */
+  /** Exact canonical authority retained for API and storage operations. */
   canonicalRef: string;
+  /** Ordinary ambiguity-safe clipboard ref. Defaults to compacting canonicalRef. */
+  copyRef?: string;
   copyLabel?: string;
 };
 
@@ -18,8 +21,10 @@ export type DetailPaneHeaderSelector = {
   label: string;
   /** Bare selection control; the header owns its shared wrapper and preset. */
   control: ComponentChildren;
-  /** Full canonical reference for the currently selected item. */
+  /** Exact canonical authority for the currently selected item. */
   selectedCanonicalRef: string;
+  /** Ordinary ambiguity-safe clipboard ref. Defaults to compacting selectedCanonicalRef. */
+  selectedCopyRef?: string;
   copyLabel?: string;
 };
 
@@ -94,12 +99,12 @@ function renderIdentity(identity: DetailPaneHeaderIdentity): JSX.Element {
       shortIdClassName="detail-pane-header__display-ref"
       contextLabel={identity.entityLabel}
       shortId={identity.displayRef}
-      copyValue={identity.canonicalRef}
+      copyValue={identity.copyRef ?? shortIdentityRef(identity.canonicalRef)}
       copyLabel={
         identity.copyLabel
         ?? (identity.entityLabel
           ? `Copy ${identity.entityLabel} reference`
-          : 'Copy full canonical reference')
+          : 'Copy reference')
       }
     />
   );
@@ -161,7 +166,7 @@ export function DetailPaneHeader({
                 <div className="detail-pane-header__selector" role="group" aria-label={selector.label}>
                   <div className="detail-pane-header__selector-control">{selector.control}</div>
                   <CopyRefButton
-                    value={selector.selectedCanonicalRef}
+                    value={selector.selectedCopyRef ?? shortIdentityRef(selector.selectedCanonicalRef)}
                     label={selector.copyLabel ?? `Copy selected ${selector.label.toLowerCase()} reference`}
                   />
                 </div>
@@ -208,7 +213,7 @@ export function DetailPaneHeader({
                       {selector.control}
                     </div>
                     <CopyRefButton
-                      value={selector.selectedCanonicalRef}
+                      value={selector.selectedCopyRef ?? shortIdentityRef(selector.selectedCanonicalRef)}
                       label={
                         selector.copyLabel
                         ?? `Copy selected ${selector.label.toLowerCase()} reference`

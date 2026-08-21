@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { createPortal } from 'preact/compat';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { DetailPaneOverlayContext } from './DetailPaneShell';
+
+export type DetailPaneModalEmbeddedFallback = {
+  scrollOwnerRef?: { current: HTMLElement | null };
+  excludeAboveRef?: { current: HTMLElement | null };
+  scrollOwnerSelector?: string | string[];
+};
 
 export type DetailPaneModalProps = {
   open: boolean;
@@ -6,8 +14,9 @@ export type DetailPaneModalProps = {
   titleId: string;
   title: string;
   closeLabel: string;
-  excludeAboveRef: { current: HTMLElement | null };
-  scrollOwnerSelector: string | string[];
+  excludeAboveRef?: { current: HTMLElement | null };
+  scrollOwnerSelector?: string | string[];
+  embeddedFallback?: DetailPaneModalEmbeddedFallback;
   scrollLockClassName?: string;
   className?: string;
   panelClassName?: string;
@@ -29,11 +38,13 @@ export function DetailPaneModal({
   closeLabel,
   excludeAboveRef,
   scrollOwnerSelector,
+  embeddedFallback,
   scrollLockClassName,
   className = '',
   panelClassName = '',
   children,
 }: DetailPaneModalProps): JSX.Element | null {
+  const paneContext = useContext(DetailPaneOverlayContext);
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   const [bounds, setBoundsState] = useState<PaneBounds | null>(null);
@@ -42,12 +53,19 @@ export function DetailPaneModal({
     onCloseRef.current = onClose;
   }, [onClose]);
 
-  useEffect(() => {
-    if (!open) return undefined;
+  const contextOwner = paneContext?.scrollOwner ?? null;
+  const fallbackExcluded = embeddedFallback?.excludeAboveRef?.current ?? excludeAboveRef?.current ?? null;
+  const fallbackSelector = embeddedFallback?.scrollOwnerSelector ?? scrollOwnerSelector;
+  const fallbackOwner = embeddedFallback?.scrollOwnerRef?.current
+    ?? (fallbackExcluded && fallbackSelector
+      ? findScrollOwner(fallbackExcluded, fallbackSelector)
+      : null);
+  const scrollOwner = contextOwner ?? fallbackOwner;
+  const excluded = contextOwner ? null : fallbackExcluded;
 
-    const excluded = excludeAboveRef.current;
-    const scrollOwner = excluded ? findScrollOwner(excluded, scrollOwnerSelector) : null;
-    if (!excluded || !scrollOwner) {
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    if (!scrollOwner) {
       setBoundsState(null);
       return undefined;
     }
@@ -55,9 +73,11 @@ export function DetailPaneModal({
     const originalScrollTop = scrollOwner.scrollTop;
 
     const updateBounds = () => {
-      const excludedRect = excluded.getBoundingClientRect();
       const ownerRect = scrollOwner.getBoundingClientRect();
-      const top = Math.min(ownerRect.bottom, Math.max(ownerRect.top, excludedRect.bottom));
+      const excludedRect = excluded?.getBoundingClientRect();
+      const top = excludedRect
+        ? Math.min(ownerRect.bottom, Math.max(ownerRect.top, excludedRect.bottom))
+        : ownerRect.top;
       setModalBounds({
         top: Math.round(top),
         right: Math.round(Math.max(0, window.innerWidth - ownerRect.right)),
@@ -96,6 +116,7 @@ export function DetailPaneModal({
     };
 
     updateBounds();
+    scrollOwner.classList.add('detail-pane-shell__body--overlay-open');
     if (scrollLockClassName) scrollOwner.classList.add(scrollLockClassName);
     scrollOwner.scrollTop = originalScrollTop;
 
@@ -111,12 +132,13 @@ export function DetailPaneModal({
       window.removeEventListener('resize', updateBounds);
       window.removeEventListener('scroll', updateBounds, true);
       scrollOwner.removeEventListener('scroll', preserveScroll);
+      scrollOwner.classList.remove('detail-pane-shell__body--overlay-open');
       if (scrollLockClassName) scrollOwner.classList.remove(scrollLockClassName);
       scrollOwner.scrollTop = originalScrollTop;
     };
-  }, [open, excludeAboveRef, scrollOwnerSelector, scrollLockClassName]);
+  }, [open, scrollOwner, excluded, scrollLockClassName]);
 
-  if (!open) return null;
+  if (!open || !scrollOwner) return null;
 
   const style = bounds
     ? {
@@ -127,7 +149,7 @@ export function DetailPaneModal({
       } as JSX.CSSProperties
     : undefined;
 
-  return (
+  const modal = (
     <div
       className={`detail-pane-modal${className ? ` ${className}` : ''}`}
       role="dialog"
@@ -151,6 +173,7 @@ export function DetailPaneModal({
       </div>
     </div>
   );
+  return paneContext?.host ? createPortal(modal, paneContext.host) : modal;
 }
 
 function findScrollOwner(excluded: HTMLElement, selectors: string | string[]): HTMLElement | null {

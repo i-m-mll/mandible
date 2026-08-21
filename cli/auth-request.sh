@@ -966,7 +966,7 @@ if [[ "$http_status" == "409" ]]; then
     echo "No new request was created; '${head_branch}' is NOT in the auth queue from this run."
     echo ""
     echo "The existing request that caused this refusal:"
-    echo "  ID:     ${existing_id}"
+    echo "  ID:     $(api_short_id "$existing_id")"
     echo "  Status: ${existing_status}"
     # Older daemons answer 409 without the `existing` block. Print nothing
     # rather than substituting this caller's arguments — an unlabelled echo of
@@ -982,7 +982,7 @@ if [[ "$http_status" == "409" ]]; then
     fi
     echo ""
     echo "If that request is the same work, update it:"
-    echo "  PUT /api/auth/request/${existing_id}"
+    echo "  PUT /api/auth/request/$(api_short_id "$existing_id")"
     echo "If it is different work that merely shares a branch name, rename this"
     echo "branch or resolve the existing request first, then resubmit."
   } >&2
@@ -999,7 +999,7 @@ else
     exit 1
   fi
 
-  echo "Auth request submitted: ${request_id}"
+  echo "Auth request submitted: $(api_short_id "$request_id")"
   echo "Title: ${title}"
   echo "Branch: ${head_branch} -> ${base_branch}"
   echo "Files: ${files_changed} changed, +${additions} -${deletions}"
@@ -1048,18 +1048,18 @@ while IFS= read -r line; do
         exit_code_val=$(printf '%s' "$json" | jq -r '.data.exit_code // "null"' 2>/dev/null)
         case "$status" in
           completed)
-            echo "Auth request ${request_id}: completed (exit ${exit_code_val})"
+            echo "Auth request $(api_short_id "$request_id"): completed (exit ${exit_code_val})"
             printf 'ok' > "$tmp_sse_result"
             break
             ;;
           rejected|expired|dismissed)
             error=$(printf '%s' "$json" | jq -r '.data.error // "none"' 2>/dev/null)
-            echo "Auth request ${request_id}: ${status} -- ${error}"
+            echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
             printf 'fail' > "$tmp_sse_result"
             break
             ;;
           *)
-            echo "Auth request ${request_id}: resolved with status '${status}'"
+            echo "Auth request $(api_short_id "$request_id"): resolved with status '${status}'"
             printf 'ok' > "$tmp_sse_result"
             break
             ;;
@@ -1086,16 +1086,16 @@ if [[ -n "$final" ]]; then
   case "$status" in
     completed)
       exit_code_val=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
-      echo "Auth request ${request_id}: completed (exit ${exit_code_val})"
+      echo "Auth request $(api_short_id "$request_id"): completed (exit ${exit_code_val})"
       exit 0
       ;;
     rejected|expired|dismissed)
       error=$(printf '%s' "$final" | jq -r '.error // "none"')
-      echo "Auth request ${request_id}: ${status} -- ${error}"
+      echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
       exit 1
       ;;
   esac
 fi
 
-echo "Auth request ${request_id}: SSE connection lost, status unknown. Check dashboard." >&2
+echo "Auth request $(api_short_id "$request_id"): SSE connection lost, status unknown. Check dashboard." >&2
 exit 1

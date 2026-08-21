@@ -3954,7 +3954,7 @@ function briefingStringArray(value: unknown): string[] {
 
 // --- immutable Briefing rounds ----------------------------------------------
 
-export type BriefingResponseType = 'verdict' | 'single_choice' | 'multi_choice' | 'short_text' | 'long_text' | 'rating';
+export type BriefingResponseType = 'verdict' | 'single_choice' | 'multi_choice' | 'short_text' | 'long_text' | 'rating' | 'text_variant';
 export type BriefingResponseValue =
   | { verdict: 'keep' | 'dismiss' }
   | { text: string }
@@ -3965,6 +3965,16 @@ export type BriefingResponseValue =
 export type BriefingDirectiveOption = {
   key: string;
   label: string;
+};
+
+export type BriefingTextVariant = {
+  key: string;
+  label: string;
+  body: string;
+  start_offset: number;
+  end_offset: number;
+  body_start_offset: number;
+  body_end_offset: number;
 };
 
 export type BriefingDirectiveItem = {
@@ -3982,6 +3992,7 @@ export type BriefingDirectiveItem = {
     required: boolean;
     position: number;
     options: BriefingDirectiveOption[];
+    variants?: BriefingTextVariant[];
   };
   effective_response: null | { response_event_id: string; value: BriefingResponseValue };
   responseVisible: boolean;
@@ -4006,7 +4017,7 @@ export type BriefingRoundProjection = {
     artifact_version_id: string;
     content_hash: string;
     previous_round_id: string | null;
-    profile: 'mandible-briefing.v2';
+    profile: 'mandible-briefing.v2' | 'mandible-briefing.v3';
     source: string;
   };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
@@ -4082,7 +4093,7 @@ export type BriefingAnnotationOperation =
 
 const BRIEFING_ROUND_STATES = new Set(['open', 'submitted']);
 const BRIEFING_RESPONSE_TYPES = new Set<BriefingResponseType>([
-  'verdict', 'single_choice', 'multi_choice', 'short_text', 'long_text', 'rating',
+  'verdict', 'single_choice', 'multi_choice', 'short_text', 'long_text', 'rating', 'text_variant',
 ]);
 
 function exactBriefingValueKeys(row: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -4121,7 +4132,7 @@ function briefingResponseValue(
       : null;
   }
   const allowed = new Set(optionKeys);
-  if (responseType === 'single_choice') {
+  if (responseType === 'single_choice' || responseType === 'text_variant') {
     return exactBriefingValueKeys(row, ['option_key'])
       && typeof row.option_key === 'string'
       && allowed.has(row.option_key)
@@ -4204,13 +4215,39 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       if (!option.key || !option.label) valid = false;
       return Boolean(option.key && option.label);
     });
+    if (responseType === 'text_variant' && !Array.isArray(revision.variants)) valid = false;
+    const variants = (Array.isArray(revision.variants) ? revision.variants : []).map((variant) => {
+      const value = briefingRecord(variant);
+      if (!exactBriefingValueKeys(value, ['key', 'label', 'body', 'start_offset', 'end_offset', 'body_start_offset', 'body_end_offset'])) valid = false;
+      const parsed = {
+        key: briefingString(value.key),
+        label: briefingString(value.label),
+        body: briefingString(value.body),
+        start_offset: value.start_offset,
+        end_offset: value.end_offset,
+        body_start_offset: value.body_start_offset,
+        body_end_offset: value.body_end_offset,
+      };
+      if (!parsed.key || !parsed.label || !parsed.body || !Number.isSafeInteger(parsed.start_offset)
+          || !Number.isSafeInteger(parsed.end_offset) || (parsed.start_offset as number) < 0
+          || (parsed.end_offset as number) <= (parsed.start_offset as number)
+          || !Number.isSafeInteger(parsed.body_start_offset) || !Number.isSafeInteger(parsed.body_end_offset)
+          || (parsed.body_start_offset as number) <= (parsed.start_offset as number)
+          || (parsed.body_end_offset as number) > (parsed.end_offset as number)
+          || (parsed.body_end_offset as number) <= (parsed.body_start_offset as number)) valid = false;
+      return parsed as BriefingTextVariant;
+    });
     const choice = responseType === 'single_choice' || responseType === 'multi_choice';
-    if (itemKind === 'group' && (revision.required === true || options.length > 0)) valid = false;
-    if (itemKind === 'item' && ((choice && options.length === 0) || (!choice && options.length > 0))) valid = false;
+    const textVariant = responseType === 'text_variant';
+    if (itemKind === 'group' && (revision.required === true || options.length > 0 || variants.length > 0)) valid = false;
+    if (itemKind === 'item' && ((choice && options.length === 0) || (!choice && options.length > 0)
+        || (textVariant ? variants.length < 2 || variants.length > 12 : variants.length > 0))) valid = false;
     const hasEffective = Object.prototype.hasOwnProperty.call(row, 'effective_response');
     const effective = briefingRecord(row.effective_response);
     const effectiveValue = responseType && hasEffective && row.effective_response !== null
-      ? briefingResponseValue(effective.value, responseType, options.map((option) => option.key))
+      ? briefingResponseValue(effective.value, responseType, textVariant
+        ? variants.map((variant) => variant.key)
+        : options.map((option) => option.key))
       : null;
     if (hasEffective && row.effective_response !== null
         && (!briefingString(effective.response_event_id) || !effectiveValue)) valid = false;
@@ -4243,6 +4280,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
         required: revision.required === true,
         position: briefingOptionalNumber(revision.position) ?? 0,
         options,
+        variants,
       },
       effective_response: effectiveValue
         ? { response_event_id: briefingString(effective.response_event_id), value: effectiveValue }
@@ -4261,6 +4299,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
   for (const item of items) {
     if (item.parent_item_id && itemById.get(item.parent_item_id)?.item_kind !== 'group') valid = false;
     if (new Set(item.revision.options.map((option) => option.key)).size !== item.revision.options.length) valid = false;
+    const variantKeys = (item.revision.variants ?? []).map((variant) => variant.key);
+    if (new Set(variantKeys).size !== variantKeys.length) valid = false;
     const ancestors = new Set<string>([item.id]);
     let parent = item.parent_item_id;
     while (parent) {
@@ -4289,7 +4329,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     && typeof rawDocument.source === 'string'
     && Boolean(rawDocument.source.trim())
     && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
-  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile === 'mandible-briefing.v2' ? {
+  const document = root.document !== null && documentShapeValid && documentFieldsValid
+    && (profile === 'mandible-briefing.v2' || profile === 'mandible-briefing.v3') ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
@@ -4327,7 +4368,9 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     for (const item of items) {
       const directive = item.directive;
       const choice = item.revision.response_type === 'single_choice' || item.revision.response_type === 'multi_choice';
+      const textVariant = item.revision.response_type === 'text_variant';
       if (item.item_kind !== 'item' || !item.revision.response_type || (choice ? item.revision.options.length < 2 || item.revision.options.length > 12 : item.revision.options.length !== 0)
+          || (textVariant ? (item.revision.variants?.length ?? 0) < 2 || (item.revision.variants?.length ?? 0) > 12 : (item.revision.variants?.length ?? 0) !== 0)
           || !item.client_item_key || !directive || directive.key !== item.client_item_key || keys.has(directive.key)) valid = false;
       if (directive) keys.add(directive.key);
     }
@@ -4437,6 +4480,7 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
         required: item.required === true || item.required === 1,
         position: briefingOptionalNumber(item.position) ?? 0,
         options: Array.isArray(item.options) ? item.options : [],
+        variants: Array.isArray(item.variants) ? item.variants : [],
       },
       effective_response: answer ? {
         response_event_id: briefingString(answer.response_event_id),
@@ -4511,6 +4555,24 @@ export async function getBriefing(briefingId: string, roundId?: string | null, s
   const query = roundId ? `?round=${encodeURIComponent(roundId)}` : '';
   const response = await apiGet(`/api/briefings/${encodeURIComponent(briefingId)}${query}`, signal ? { signal } : {});
   return normalizeBriefingProjection(await parseMaybeJson(response));
+}
+
+export async function getBriefingReviewedMarkdown(
+  briefingId: string,
+  roundId: string,
+  submissionId: string,
+): Promise<{ markdown: string; sha256: string | null; filename: string }> {
+  const path = `/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/submissions/${encodeURIComponent(submissionId)}/export`;
+  const response = await apiGet(path);
+  const payload = briefingRecord(await parseMaybeJson(response));
+  const markdown = briefingString(payload.content);
+  const sha256 = briefingString(payload.sha256);
+  if (!markdown || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error('The reviewed Markdown export response is invalid.');
+  return {
+    markdown,
+    sha256,
+    filename: 'briefing-reviewed.md',
+  };
 }
 
 export async function postBriefingAnswers(

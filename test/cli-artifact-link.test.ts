@@ -251,7 +251,7 @@ describe("artifact link CLI", () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout.trim()).toBe(
-        "linked artifact:abc123def456 references issue:issue-12 [pinned v3]",
+        "linked artifact:abc123def456 references issue:issue-1234567890 [pinned v3]",
       );
       const linkRequest = recorder.requests.find((request) => request.url === "/api/artifacts/link")!;
       expect(linkRequest.body).toMatchObject({
@@ -292,11 +292,11 @@ describe("artifact link CLI", () => {
 
       expect(living.status).toBe(0);
       expect(living.stdout.trim()).toBe(
-        "linked artifact:abc123def456 references issue:issue-12 [living · latest v3]",
+        "linked artifact:abc123def456 references issue:issue-1234567890 [living · latest v3]",
       );
       expect(pinned.status).toBe(0);
       expect(pinned.stdout.trim()).toBe(
-        "linked artifact:abc123def456 references issue:issue-12 [pinned v3]",
+        "linked artifact:abc123def456 references issue:issue-1234567890 [pinned v3]",
       );
       const linkBodies = recorder.requests
         .filter((request) => request.url === "/api/artifacts/link")

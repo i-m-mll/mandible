@@ -57,26 +57,26 @@ read_response() {
 
 print_reminder() {
   local response="$1" envelope="$2"
-  printf '%s\n' "$response" | jq -r --arg envelope "$envelope" '
+  printf '%s\n' "$response" | api_jq_human '
     def predicate:
       .revision.payload.predicate
       | if .kind == "at" then "at " + .at
-        elif .kind == "issue_closed" then "issue_closed " + .issue_id
-        else "auth_merge_count_gte project=" + .project_id
+        elif .kind == "issue_closed" then "issue_closed " + (.issue_id | mandible_short_id)
+        else "auth_merge_count_gte project=" + (.project_id | mandible_short_id)
           + " threshold=" + (.threshold | tostring)
           + (if .base_branch == null then "" else " base_branch=" + .base_branch end)
           + (if .canonical_message == null then "" else " canonical_message=" + (.canonical_message | tostring) end)
         end;
     (if $envelope == "create" then .reminder else .reminder end) as $r
-    | "Reminder \($r.id)",
-      "project: \($r.project_key) (\($r.project_id))",
+    | "Reminder \($r | mandible_display_id)",
+      "project: \($r.project_key) (\($r.project_id | mandible_short_id))",
       "lifecycle: \($r.lifecycle)",
       "predicate: \($r | predicate)",
       "message: \($r.revision.payload.message)",
       (if $envelope == "create" then "stored: \(.stored)\nfired_immediately: \(.fired_immediately)" else empty end),
       (if $r.occurrence == null then "occurrence: none"
-       else "occurrence: \($r.occurrence.id)\nevidence: \($r.occurrence.triggering_evidence | tojson)" end)
-  '
+       else "occurrence: \($r.occurrence | mandible_display_id)\nevidence: \($r.occurrence.triggering_evidence | tojson)" end)
+  ' --arg envelope "$envelope"
 }
 
 cmd_create() {
@@ -192,10 +192,10 @@ cmd_list() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .reminders[]?
-      | [.id, .lifecycle, .project_key, .revision.payload.predicate.kind,
-         (.occurrence.id // "-"), .revision.payload.message]
+      | [mandible_display_id, .lifecycle, .project_key, .revision.payload.predicate.kind,
+         (if .occurrence then (.occurrence | mandible_display_id) else "-" end), .revision.payload.message]
       | @tsv
     '
   fi

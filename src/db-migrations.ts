@@ -13,6 +13,7 @@ import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
 import { migrateLegacyFeedbackToBriefings, retireBriefingV1ToCustody } from "./feedback/migrate-legacy.js";
 import {
+  BRIEFING_SCHEMA_SQL,
   BRIEFING_SCHEMA_TABLES,
   TRANSIENT_BRIEFING_V1_SCHEMA_SQL,
 } from "./feedback/schema.js";
@@ -4797,7 +4798,46 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
          CHECK(payload_state IN ('legacy','source'))`,
     ],
   },
+  {
+    version: 149,
+    name: "briefing_v3_text_variants",
+    statements: [],
+  },
 ];
+
+function migrateBriefingV3Schema(db: Db): void {
+  if (!tableExists(db, "briefing_rounds")) return;
+  const roundsSql = BRIEFING_SCHEMA_SQL.find((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS briefing_rounds"));
+  const definitionsSql = BRIEFING_SCHEMA_SQL.find((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS briefing_directive_definitions"));
+  if (!roundsSql || !definitionsSql) throw new Error("migration 149 schema definitions are unavailable");
+  const roundsLiveSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'briefing_rounds'").get() as { sql: string }).sql;
+  const definitionsLiveSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'briefing_directive_definitions'").get() as { sql: string }).sql;
+  const already = roundsLiveSql.includes("mandible-briefing.v3") && definitionsLiveSql.includes("text_variant")
+    && hasColumn(db, "briefing_directive_definitions", "variants_json");
+  if (already) return;
+  db.pragma("legacy_alter_table = ON");
+  try {
+    db.exec("ALTER TABLE briefing_rounds RENAME TO briefing_rounds_v148");
+    db.exec("ALTER TABLE briefing_directive_definitions RENAME TO briefing_directive_definitions_v148");
+    db.exec(roundsSql);
+    db.exec(definitionsSql);
+    db.exec(`INSERT INTO briefing_rounds
+      (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
+      SELECT id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at
+      FROM briefing_rounds_v148`);
+    db.exec(`INSERT INTO briefing_directive_definitions
+      (id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt, options_json,
+       variants_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
+      SELECT id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt, options_json,
+       '[]', start_offset, end_offset, body_start_offset, body_end_offset, created_at
+      FROM briefing_directive_definitions_v148`);
+    db.exec("DROP TABLE briefing_directive_definitions_v148");
+    db.exec("DROP TABLE briefing_rounds_v148");
+    for (const statement of BRIEFING_SCHEMA_SQL) db.exec(statement);
+  } finally {
+    db.pragma("legacy_alter_table = OFF");
+  }
+}
 
 function hasColumn(db: Db, table: string, column: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
@@ -5312,6 +5352,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 148 && tableExists(db, "conversation_blocks")) {
         verifySourceBackedPayloadStateSchema(db);
       }
+      if (migration.version === 149) migrateBriefingV3Schema(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
@@ -5348,7 +5389,8 @@ export function migrate(db: Db): void {
   const afterV126 = pending.filter((migration) => migration.version > 126 && migration.version < 143);
   const v143 = pending.filter((migration) => migration.version === 143);
   const v144 = pending.filter((migration) => migration.version === 144);
-  const afterV144 = pending.filter((migration) => migration.version > 144);
+  const afterV144 = pending.filter((migration) => migration.version > 144 && migration.version < 149);
+  const v149 = pending.filter((migration) => migration.version === 149);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -5637,6 +5679,12 @@ export function migrate(db: Db): void {
     assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 144 verification");
   }
   applySchemaMigrations(db, afterV144);
+  if (v149.length > 0) {
+    db.pragma("foreign_keys = OFF");
+    try { applySchemaMigrations(db, v149); }
+    finally { db.pragma("foreign_keys = ON"); }
+    assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 149 verification");
+  }
 
   // v133 was exercised by development daemons before release, under its
   // pre-integration number. Converge those head-version databases too: remove

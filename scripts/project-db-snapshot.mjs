@@ -14,7 +14,8 @@ const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const DEFAULT_SOURCE = liveDbPath();
-const PROJECTED_TABLES = new Set(["daemon_log", "conversations", "conversation_blocks"]);
+const REQUIRED_PROJECTED_TABLES = new Set(["conversations", "conversation_blocks"]);
+const PROJECTED_TABLES = new Set(["daemon_log", ...REQUIRED_PROJECTED_TABLES]);
 const LOG_ALL_WINDOW_MS = DAY_MS;
 const LOG_SEVERE_WINDOW_MS = 7 * DAY_MS;
 const CONVERSATION_WINDOW_MS = 7 * DAY_MS;
@@ -55,9 +56,11 @@ export function projectDatabaseSnapshot(options) {
 
     const schema = readSourceSchema(db);
     requireProjectedTables(schema.tables);
+    const sourceTableNames = new Set(schema.tables.map((table) => table.name));
+    const hasLegacyDaemonLog = sourceTableNames.has("daemon_log");
     const sourcePragmas = readSourcePragmas(db);
     const sourceForeignKeyViolations = normalizedForeignKeyViolations(db, "source");
-    const cutoffMs = resolveCutoffMs(db, options.cutoffMs);
+    const cutoffMs = resolveCutoffMs(db, options.cutoffMs, hasLegacyDaemonLog);
     const windows = {
       cutoff_ms: cutoffMs,
       logs_all_after_ms: Math.max(0, cutoffMs - LOG_ALL_WINDOW_MS),
@@ -72,7 +75,7 @@ export function projectDatabaseSnapshot(options) {
     for (const table of schema.tables) db.exec(table.sql);
     selectConversationProjection(db, windows);
 
-    const space = estimateAndCheckSpace(db, outputPath, windows);
+    const space = estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog);
     const copied = {};
     for (const table of schema.tables) {
       copied[table.name] = copyTable(db, table.name, windows);
@@ -105,7 +108,7 @@ export function projectDatabaseSnapshot(options) {
       throw new Error(`Projected database introduced ${introducedViolations.length} foreign-key violation(s)`);
     }
 
-    const outputCounts = readProjectedCounts(db);
+    const outputCounts = readProjectedCounts(db, hasLegacyDaemonLog);
     db.close();
     db = null;
 
@@ -141,7 +144,8 @@ export function projectDatabaseSnapshot(options) {
       tables: {
         copied_rows: copied,
         projected_counts: outputCounts,
-        complete_table_count: schema.tables.length - PROJECTED_TABLES.size,
+        complete_table_count: schema.tables.length
+          - [...PROJECTED_TABLES].filter((name) => sourceTableNames.has(name)).length,
       },
       schema: {
         tables: schema.tables.length,
@@ -239,7 +243,7 @@ function readSourceSchema(db) {
 
 function requireProjectedTables(tables) {
   const names = new Set(tables.map((table) => table.name));
-  const missing = [...PROJECTED_TABLES].filter((name) => !names.has(name));
+  const missing = [...REQUIRED_PROJECTED_TABLES].filter((name) => !names.has(name));
   if (missing.length > 0) {
     throw new Error(`Source database is missing projected table(s): ${missing.join(", ")}`);
   }
@@ -254,8 +258,12 @@ function readSourcePragmas(db) {
   };
 }
 
-function resolveCutoffMs(db, explicitCutoff) {
+function resolveCutoffMs(db, explicitCutoff, hasLegacyDaemonLog) {
   if (explicitCutoff !== null && explicitCutoff !== undefined) return explicitCutoff;
+  if (!hasLegacyDaemonLog) {
+    const row = db.prepare("SELECT COALESCE(MAX(source_mtime), 0) AS cutoff_ms FROM source.conversations").get();
+    return Number(row.cutoff_ms ?? 0);
+  }
   const row = db.prepare(
     `SELECT COALESCE(MAX(value), 0) AS cutoff_ms
        FROM (
@@ -339,7 +347,7 @@ function conversationForeignKeyReferences(db) {
   return references.filter((reference) => reference.table !== "conversation_blocks");
 }
 
-function estimateAndCheckSpace(db, outputPath, windows) {
+function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog) {
   let canonicalPhysicalBytes;
   try {
     canonicalPhysicalBytes = Number(db.prepare(
@@ -356,7 +364,7 @@ function estimateAndCheckSpace(db, outputPath, windows) {
       .find((row) => row.name === "source").file).size;
   }
 
-  const logPayloadBytes = Number(db.prepare(
+  const logPayloadBytes = hasLegacyDaemonLog ? Number(db.prepare(
     `SELECT COALESCE(SUM(
        length(id) + length(level) + length(event) + length(subsystem) + length(fields_json) +
        COALESCE(length(issue_id), 0) + COALESCE(length(auth_request_id), 0) +
@@ -366,7 +374,7 @@ function estimateAndCheckSpace(db, outputPath, windows) {
        FROM source.daemon_log
       WHERE ts >= @logs_all_after_ms
          OR (ts >= @logs_severe_after_ms AND level IN ('warn', 'error'))`,
-  ).get(windows).bytes);
+  ).get(windows).bytes) : 0;
   const conversationPayloadBytes = Number(db.prepare(
     `SELECT COALESCE(SUM(length(b.content) + length(b.metadata_json)), 0) AS bytes
        FROM source.conversation_blocks b
@@ -439,9 +447,11 @@ function copySqliteSequence(db, tables) {
   }
 }
 
-function readProjectedCounts(db) {
+function readProjectedCounts(db, hasLegacyDaemonLog) {
   return {
-    daemon_log: Number(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get().count),
+    daemon_log: hasLegacyDaemonLog
+      ? Number(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get().count)
+      : 0,
     conversations: Number(db.prepare("SELECT COUNT(*) AS count FROM conversations").get().count),
     conversation_blocks: Number(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks").get().count),
   };

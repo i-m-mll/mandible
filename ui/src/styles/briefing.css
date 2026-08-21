@@ -99,11 +99,7 @@
 .briefing-document__prose > :last-child { margin-bottom: 0; }
 
 .briefing-document__popover {
-  z-index: 45;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-popover);
-  box-shadow: var(--shadow-soft);
+  width: min(26rem, 100%);
 }
 
 .briefing-document__tabs button {
@@ -116,30 +112,11 @@
   cursor: pointer;
 }
 
-.briefing-document__popover {
-  display: grid;
-  gap: var(--space-3);
-  width: min(26rem, calc(100vw - 16px));
-  max-height: calc(100vh - 16px);
-  padding: var(--space-3);
-  overflow: auto;
-}
-
-.briefing-document__popover-header,
 .briefing-document__popover-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-}
-
-.briefing-document__popover-header button {
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--text-lg);
-  cursor: pointer;
 }
 
 .briefing-document__popover blockquote {
@@ -354,31 +331,85 @@
 }
 
 .briefing-document__rendered {
-  display: grid;
-  gap: 0;
-}
-
-.briefing-document__prose {
+  --briefing-right-rail-width: clamp(8rem, 20%, 10rem);
+  --briefing-right-action-slot-width: 2rem;
+  position: relative;
   padding-inline: var(--space-3);
 }
 
-.briefing-directive {
-  margin-block: calc(var(--space-1) / 2);
-  margin-inline: var(--space-3) 0;
-  padding: var(--space-3);
-  border-left: 2px solid var(--border-faint);
-  border-radius: 0;
+.briefing-document__source-tree {
+  position: relative;
+  box-sizing: border-box;
+  padding-inline-end: var(--briefing-right-rail-width);
+  padding-block-end: var(--briefing-right-rail-overflow, 0);
 }
 
-.briefing-directive__interaction {
+.briefing-document__source-tree > :first-child {
+  margin-top: 0;
+}
+
+.briefing-document__source-tree > :last-child {
+  margin-bottom: 0;
+}
+
+.briefing-markdown__entity {
+  position: relative;
+}
+
+.briefing-markdown__action-rail {
+  position: absolute;
+  inset-block-start: var(--briefing-right-rail-center, 0px);
+  inset-inline-start: var(--briefing-right-rail-action-offset, auto);
+  inset-inline-end: auto;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: flex;
+  width: 1.3em;
+  height: 1.3em;
+  align-items: center;
+  justify-content: center;
+}
+
+.briefing-markdown__action-rail button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--space-3);
+  width: 1.3em;
+  height: 1.3em;
+  padding: .2em;
+  place-items: center;
 }
 
-.briefing-directive__passage {
-  min-width: 0;
+.briefing-markdown__action-rail svg,
+.briefing-directive__variant-controls svg {
+  width: 1em;
+  height: 1em;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.briefing-document__section-intent {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.briefing-directive {
+  box-shadow: none;
+}
+
+.briefing-directive--owner {
+  position: relative;
+}
+
+.briefing-directive--owner::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: var(--briefing-directive-rail-offset, 0px);
+  width: 2px;
+  background: var(--border-faint);
+  content: '';
+  pointer-events: none;
 }
 
 .briefing-directive__required {
@@ -391,47 +422,79 @@
 
 .briefing-directive__response {
   display: grid;
-  justify-items: start;
+  justify-items: end;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+  margin-top: var(--space-2);
 }
 
-.briefing-directive__verdict,
+.briefing-directive__response-host {
+  display: grid;
+}
+
+.briefing-directive__response-host--rail {
+  position: absolute;
+  inset-block-start: var(--briefing-right-rail-top, 0px);
+  inset-inline-end: 0;
+  box-sizing: border-box;
+  width: calc(var(--briefing-right-rail-width) - var(--briefing-right-action-slot-width));
+  padding-inline-start: var(--space-1);
+  justify-items: start;
+}
+
+.briefing-directive__response-host--rail .briefing-directive__response {
+  justify-items: start;
+  margin-top: 0;
+}
+
+.briefing-directive__response-host--flow {
+  width: 100%;
+  justify-items: start;
+}
+
+.briefing-directive__response-host--flow .briefing-directive__response {
+  width: 100%;
+  justify-items: start;
+}
+
+.briefing-directive__compact-controls {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 2em;
+  align-items: center;
+  column-gap: var(--space-1);
+  font-size: .8em;
+  white-space: nowrap;
+}
+
+.briefing-directive__variant-controls {
+  grid-template-columns: 2em minmax(3em, max-content) 2em;
+}
+
+.briefing-directive__variant-controls > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.briefing-directive__variant-controls small {
+  color: var(--text-muted);
+}
+
 .briefing-directive__rating {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
 }
 
-.briefing-directive__verdict button,
 .briefing-directive__rating label,
 .briefing-directive__choices label {
-  min-height: 36px;
+  min-height: 1.3em;
 }
 
-.briefing-directive__verdict button {
-  display: grid;
-  width: 36px;
-  padding: 7px;
-  place-items: center;
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.briefing-directive__verdict button:hover,
-.briefing-directive__verdict button:focus-visible,
-.briefing-directive__verdict button[aria-pressed='true'] {
-  border-color: var(--accent-border);
-  background: var(--surface-inset);
-  color: var(--text-primary);
-}
-
-.briefing-directive__verdict svg {
-  width: 18px;
-  height: 18px;
+.briefing-directive__compact-controls svg {
+  width: 1em;
+  height: 1em;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -455,8 +518,8 @@
 .briefing-directive__rating label {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  gap: .35em;
+  padding: .15em .4em;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -482,7 +545,7 @@
 
 .briefing-directive__rating label {
   justify-content: center;
-  min-width: 36px;
+  min-width: 1.3em;
 }
 
 .briefing-directive__rating input {
@@ -518,15 +581,15 @@ textarea.briefing-directive__text {
 }
 
 .briefing-directive__clear {
-  min-height: 32px;
-  padding: var(--space-1) var(--space-2);
+  min-height: 1.3em;
+  padding: .15em .4em;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
-  font-size: var(--text-sm);
+  font-size: .8em;
 }
 
 .briefing-directive__clear:hover,
@@ -540,9 +603,12 @@ textarea.briefing-directive__text {
   font-size: var(--text-sm);
 }
 
-.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover) {
-  border-left-color: var(--border-default);
+.briefing-directive:not(.briefing-directive--selected):hover {
   background: var(--surface-card);
+}
+
+.briefing-directive--owner:not(.briefing-directive--selected):hover::before {
+  background: var(--border-default);
 }
 
 .briefing-directive:focus-visible {
@@ -551,32 +617,11 @@ textarea.briefing-directive__text {
 }
 
 .briefing-directive--selected {
-  border-left-color: var(--accent-border);
   background: var(--surface-card);
 }
 
-.briefing-directive__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.briefing-directive__actions button {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  padding: 5px;
-  place-items: center;
-}
-
-.briefing-directive__actions button svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.briefing-directive--owner.briefing-directive--selected::before {
+  background: var(--accent-border);
 }
 
 .briefing-document__inline-annotations {
@@ -631,14 +676,14 @@ textarea.briefing-directive__text {
 }
 
 @media (hover: none), (pointer: coarse) {
-  .briefing-directive__verdict button,
   .briefing-directive__choices label,
   .briefing-directive__rating label,
   .briefing-directive__clear,
-  .briefing-directive__actions button {
+  .briefing-markdown__action-rail button {
     min-width: 44px;
     min-height: 44px;
   }
+
 }
 
 @media (max-width: 700px) {

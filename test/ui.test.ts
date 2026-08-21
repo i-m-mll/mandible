@@ -2032,8 +2032,8 @@ describe('app shell', () => {
       .toBeTruthy();
     const detailShell = graphPanel.querySelector('.detail-pane-shell');
     expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
-      .toEqual(['header', 'body']);
-    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy full Repo reference' });
+      .toEqual(['header', 'body', 'overlay-host']);
+    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy Repo reference' });
     expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
     expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
     expect(within(graphPanel).queryByText('Actions')).toBeNull();
@@ -2478,7 +2478,7 @@ describe('AuthQueueView', () => {
     expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
 
     fireEvent.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith('req-structured-detail');
+    expect(writeText).toHaveBeenCalledWith('auth:req-stru');
 
     fireEvent.click(diffToggle);
     const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
@@ -2520,11 +2520,11 @@ describe('AuthQueueView', () => {
     expect(screen.getByRole('button', { name: 'Show changes diff' })).toBeTruthy();
     expect(document.querySelector('.auth-detail__panels')).toBeTruthy();
 
-    const detailScroller = document.querySelector('.auth-detail') as HTMLElement | null;
+    const detailScroller = document.querySelector('.auth-detail__body') as HTMLElement | null;
     fireEvent.click(screen.getByRole('button', { name: 'Auth actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Auth metadata' });
-    await waitFor(() => expect(detailScroller?.className).toContain('auth-detail--metadata-open'));
+    await waitFor(() => expect(detailScroller?.className).toContain('detail-pane-shell__body--overlay-open'));
     expect(document.querySelector('.auth-detail__pane')?.contains(metadataDialog)).toBe(true);
     expect(document.querySelector('.auth-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Approval source')).toBeTruthy();
@@ -4025,7 +4025,7 @@ describe('LedgerIssueDetail', () => {
     expect(body?.contains(overflowAction)).toBe(false);
 
     fireEvent.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith('mandible/abc123-full-canonical-id');
+    expect(writeText).toHaveBeenCalledWith('mandible/abc123');
   });
 
   it('prefers canonical project keys over checkout repo ids in copy refs', () => {
@@ -4546,43 +4546,22 @@ describe('LedgerIssueDetail', () => {
     expect(issueVisibleMeta).not.toContain('git_bug');
     expect(issueVisibleMeta).not.toContain('umbrella');
     expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeNull();
-    const detailPane = document.querySelector('.ledger-issue-detail') as HTMLElement | null;
     const detailScroller = document.querySelector('.ledger-issue-detail__body') as HTMLElement | null;
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
-    const originalClosest = HTMLElement.prototype.closest;
-    const closestSpy = vi.spyOn(HTMLElement.prototype, 'closest').mockImplementation(function closestIssueOwner(selector: string) {
-      if (selector === '.issues-detail' && this.classList.contains('ledger-issue-detail__header')) {
-        return detailPane;
-      }
-      return originalClosest.call(this, selector);
-    });
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getIssueRect() {
-      if (this.classList.contains('ledger-issue-detail')) {
+      if (this.classList.contains('ledger-issue-detail__body')) {
         return {
           x: 300,
-          y: 0,
-          top: 0,
+          y: 176,
+          top: 176,
           right: 1180,
           bottom: 800,
           left: 300,
           width: 880,
-          height: 800,
-          toJSON: () => ({}),
-        } as DOMRect;
-      }
-      if (this.classList.contains('ledger-issue-detail__header')) {
-        return {
-          x: 300,
-          y: 0,
-          top: 0,
-          right: 1180,
-          bottom: 176,
-          left: 300,
-          width: 880,
-          height: 176,
+          height: 624,
           toJSON: () => ({}),
         } as DOMRect;
       }
@@ -4602,9 +4581,10 @@ describe('LedgerIssueDetail', () => {
     fireEvent.click(screen.getByLabelText('Issue actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const issueMetadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
-    await waitFor(() => expect(detailPane?.className).toContain('issues-detail--metadata-open'));
+    await waitFor(() => expect(detailScroller?.className).toContain('detail-pane-shell__body--overlay-open'));
     expect(detailScroller?.scrollTop).toBe(320);
     expect(issueMetadataDialog.closest('.ledger-issue-detail__body')).toBeNull();
+    expect(issueMetadataDialog.parentElement?.hasAttribute('data-detail-pane-overlay-host')).toBe(true);
     expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('176px');
     expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('300px');
     expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('100px');
@@ -4617,9 +4597,8 @@ describe('LedgerIssueDetail', () => {
     expect(within(issueMetadataDialog).getByText('git_bug')).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
-    await waitFor(() => expect(detailPane?.className).not.toContain('issues-detail--metadata-open'));
+    await waitFor(() => expect(detailScroller?.className).not.toContain('detail-pane-shell__body--overlay-open'));
     rectSpy.mockRestore();
-    closestSpy.mockRestore();
     Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
 
@@ -4641,35 +4620,22 @@ describe('LedgerIssueDetail', () => {
 
     render(h('div', { class: 'graph-detail-pane' }, h(LedgerIssueDetail, { detail })));
 
-    const graphPane = document.querySelector('.graph-detail-pane') as HTMLElement | null;
+    const embeddedScroller = document.querySelector('.ledger-issue-detail__body') as HTMLElement | null;
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: 760, configurable: true });
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getEmbeddedIssueRect() {
-      if (this.classList.contains('graph-detail-pane')) {
+      if (this.classList.contains('ledger-issue-detail__body')) {
         return {
           x: 720,
-          y: 80,
-          top: 80,
+          y: 196,
+          top: 196,
           right: 1180,
           bottom: 740,
           left: 720,
           width: 460,
-          height: 660,
-          toJSON: () => ({}),
-        } as DOMRect;
-      }
-      if (this.classList.contains('ledger-issue-detail__header')) {
-        return {
-          x: 720,
-          y: 80,
-          top: 80,
-          right: 1180,
-          bottom: 196,
-          left: 720,
-          width: 460,
-          height: 116,
+          height: 544,
           toJSON: () => ({}),
         } as DOMRect;
       }
@@ -4685,14 +4651,14 @@ describe('LedgerIssueDetail', () => {
         toJSON: () => ({}),
       } as DOMRect;
     });
-    if (graphPane) graphPane.scrollTop = 144;
+    if (embeddedScroller) embeddedScroller.scrollTop = 144;
 
     fireEvent.click(screen.getByLabelText('Issue actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
 
-    await waitFor(() => expect(graphPane?.className).toContain('issues-detail--metadata-open'));
-    expect(graphPane?.scrollTop).toBe(144);
+    await waitFor(() => expect(embeddedScroller?.className).toContain('detail-pane-shell__body--overlay-open'));
+    expect(embeddedScroller?.scrollTop).toBe(144);
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('196px');
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('720px');
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('20px');
@@ -4701,7 +4667,7 @@ describe('LedgerIssueDetail', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
-    await waitFor(() => expect(graphPane?.className).not.toContain('issues-detail--metadata-open'));
+    await waitFor(() => expect(embeddedScroller?.className).not.toContain('detail-pane-shell__body--overlay-open'));
     rectSpy.mockRestore();
     Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
@@ -5107,7 +5073,7 @@ describe('ArtifactsView', () => {
     expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Created:');
     expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Updated:');
     expect(detailBody?.querySelector('.artifact-detail__context')).toBeNull();
-    const seriesCopyButton = screen.getByRole('button', { name: 'Copy full artifact series ref' });
+    const seriesCopyButton = screen.getByRole('button', { name: 'Copy artifact series ref' });
     fireEvent.click(seriesCopyButton);
     fireEvent.pointerUp(seriesCopyButton);
     expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report');
@@ -5128,35 +5094,22 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('menuitem', { name: 'Add to Space' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
-    const detailScroller = document.querySelector('.artifacts-detail');
+    const detailScroller = document.querySelector('.artifact-detail__pane');
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getArtifactRect() {
-      if (this.classList.contains('artifacts-detail')) {
+      if (this.classList.contains('artifact-detail__pane')) {
         return {
           x: 376,
-          y: 0,
-          top: 0,
+          y: 219,
+          top: 219,
           right: 1123,
           bottom: 900,
           left: 376,
           width: 747,
-          height: 900,
-          toJSON: () => ({}),
-        } as DOMRect;
-      }
-      if (this.classList.contains('artifact-detail__header')) {
-        return {
-          x: 376,
-          y: 0,
-          top: 0,
-          right: 1123,
-          bottom: 219,
-          left: 376,
-          width: 747,
-          height: 219,
+          height: 681,
           toJSON: () => ({}),
         } as DOMRect;
       }
@@ -5173,10 +5126,10 @@ describe('ArtifactsView', () => {
       } as DOMRect;
     });
     if (detailScroller) detailScroller.scrollTop = 480;
-    expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open');
+    expect(detailScroller?.className).not.toContain('detail-pane-shell__body--overlay-open');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
-    await waitFor(() => expect(detailScroller?.className).toContain('artifacts-detail--metadata-open'));
+    await waitFor(() => expect(detailScroller?.className).toContain('detail-pane-shell__body--overlay-open'));
     expect(detailScroller?.scrollTop).toBe(480);
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('219px');
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('376px');
@@ -5192,7 +5145,7 @@ describe('ArtifactsView', () => {
     expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaaaaaaa');
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
-    await waitFor(() => expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open'));
+    await waitFor(() => expect(detailScroller?.className).not.toContain('detail-pane-shell__body--overlay-open'));
     rectSpy.mockRestore();
     Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
@@ -5371,7 +5324,7 @@ describe('ArtifactsView', () => {
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy full artifact ref' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy artifact ref' }));
     fireEvent.click(screen.getByRole('button', { name: 'Copy selected artifact-version reference' }));
     expect(writeText).toHaveBeenNthCalledWith(1, collisionSafeRef);
     expect(writeText).toHaveBeenNthCalledWith(2, collisionSafeRef);
@@ -5848,6 +5801,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*clip;/s);
     expect(css).toMatch(/\.detail-pane-shell__header\s*\{[^}]*flex:\s*none;[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.detail-pane-shell__body\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
+    expect(css).toMatch(/\.detail-pane-shell__body--overlay-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.detail-pane-shell__overlay-host\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).not.toMatch(/\.issues-detail\s*\{[^}]*background:/s);
     expect(css).toMatch(/\.issues-detail__content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);

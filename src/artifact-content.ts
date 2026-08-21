@@ -139,6 +139,36 @@ export function checkArtifactMaterialization(
     };
   }
 
+  const commitRepoBytes = readCommitPinnedRepoArtifactBytes(db, artifact);
+  if (commitRepoBytes) {
+    if (!commitRepoBytes.ok) {
+      return {
+        artifact_id: artifact.id,
+        ref: options.ref,
+        materializable: false,
+        hash_matches: expected ? null : true,
+        expected_sha256: expected,
+        actual_sha256: null,
+        source: null,
+        recoverability,
+        reasons: [commitRepoBytes.reason],
+        warnings: [],
+      };
+    }
+    return {
+      artifact_id: artifact.id,
+      ref: options.ref,
+      materializable: true,
+      hash_matches: commitRepoBytes.hash_matches,
+      expected_sha256: expected,
+      actual_sha256: commitRepoBytes.actual_sha256,
+      source: commitRepoBytes.source,
+      recoverability,
+      reasons: commitRepoBytes.hash_matches === false ? ["hash_mismatch"] : [],
+      warnings: [],
+    };
+  }
+
   const repoBytes = readRepoArtifactBytes(db, artifact);
   if (repoBytes.ok) {
     const actual = crypto.createHash("sha256").update(repoBytes.bytes).digest("hex");
@@ -220,6 +250,18 @@ export function getArtifactContent(
     },
     reason,
   });
+
+  const commitBytes = readCommitPinnedRepoArtifactBytes(db, artifact);
+  if (commitBytes) {
+    if (!commitBytes.ok) return unresolvedDownload(commitBytes.reason);
+    if (commitBytes.hash_matches === false) {
+      return unresolvedDownload("artifact bytes do not match registered sha256");
+    }
+    return artifactContentFromBytes(artifact, commitBytes.bytes, {
+      kind: "repo_locator",
+      locator: commitBytes.source,
+    }, previewBytes);
+  }
 
   const resolved = resolveRegisteredArtifactPath(db, artifact);
   if (!resolved.ok) {
@@ -334,6 +376,18 @@ export async function getArtifactContentAsync(
     reason,
   });
 
+  const commitBytes = readCommitPinnedRepoArtifactBytes(db, artifact);
+  if (commitBytes) {
+    if (!commitBytes.ok) return unresolvedDownload(commitBytes.reason);
+    if (commitBytes.hash_matches === false) {
+      return unresolvedDownload("artifact bytes do not match registered sha256");
+    }
+    return artifactContentFromBytes(artifact, commitBytes.bytes, {
+      kind: "repo_locator",
+      locator: commitBytes.source,
+    }, previewBytes);
+  }
+
   const resolved = resolveRegisteredArtifactPath(db, artifact);
   if (!resolved.ok) {
     return unresolvedDownload(resolved.reason);
@@ -416,6 +470,57 @@ export async function getArtifactContentAsync(
     kind,
     preview,
   };
+}
+
+function artifactContentFromBytes(
+  artifact: ArtifactRecord,
+  bytes: Buffer,
+  source: NonNullable<ArtifactContentResult["source"]>,
+  previewBytes: number,
+): ArtifactContentResult {
+  const mediaType = artifact.media_type ?? inferMediaType(artifact);
+  const filename = artifactFilename(artifact);
+  const sizeBytes = bytes.byteLength;
+  const base = {
+    artifact_id: artifact.id,
+    status: "available" as const,
+    media_type: mediaType,
+    size_bytes: sizeBytes,
+    source,
+    download: {
+      available: true,
+      media_type: mediaType,
+      size_bytes: sizeBytes,
+      filename,
+    },
+    warnings: [] as string[],
+  };
+  const kind = previewKind(mediaType, filename);
+  if (kind === "binary") return { ...base, kind, preview: null };
+
+  const textPreviewBytes = kind === "html"
+    ? Math.max(previewBytes, HTML_PREVIEW_BYTES)
+    : kind === "json"
+      ? sizeBytes <= JSON_COMPLETE_PREVIEW_BYTES
+        ? Math.max(previewBytes, JSON_COMPLETE_PREVIEW_BYTES)
+        : Math.max(previewBytes, JSON_PARTIAL_PREVIEW_BYTES)
+      : previewBytes;
+  const preview = readTextPreviewBytes(bytes, textPreviewBytes);
+  if (!preview) return { ...base, kind: "binary", preview: null };
+  if (kind === "json") {
+    const formatted = preview.truncated ? null : prettyJson(preview.text);
+    return {
+      ...base,
+      kind,
+      preview: {
+        ...preview,
+        ...(formatted && formatted !== preview.text ? { raw_text: preview.text, formatted: "json" as const } : {}),
+        ...(preview.truncated ? { format_skipped: "partial_preview" as const } : {}),
+        text: formatted ?? preview.text,
+      },
+    };
+  }
+  return { ...base, kind, preview };
 }
 
 function resolveRegisteredArtifactPath(
@@ -705,6 +810,37 @@ function readRepoArtifactBytes(
   }
 }
 
+function readCommitPinnedRepoArtifactBytes(
+  db: Db,
+  artifact: ArtifactRecord,
+): {
+  ok: true;
+  bytes: Buffer;
+  source: string;
+  actual_sha256: string;
+  hash_matches: boolean | null;
+} | { ok: false; reason: string } | null {
+  const commit = stringValue(artifact.repo_locator.commit);
+  if (!commit || !/^[a-f0-9]{40,64}$/i.test(commit)) return null;
+
+  const repo = readRepoArtifactBytes(db, artifact);
+  if (!repo.ok) {
+    return { ok: false, reason: "artifact commit-pinned repo bytes are not available" };
+  }
+  const actual = crypto.createHash("sha256").update(repo.bytes).digest("hex");
+  let hashMatches: boolean | null = null;
+  if (artifact.algorithm === "sha256" && /^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
+    hashMatches = actual === artifact.content_hash.toLowerCase();
+  }
+  return {
+    ok: true,
+    bytes: repo.bytes,
+    source: repo.source,
+    actual_sha256: actual,
+    hash_matches: hashMatches,
+  };
+}
+
 function recoverabilityForArtifact(artifact: ArtifactRecord): ArtifactRecoverability | null {
   const raw = artifact.metadata.recoverability ?? artifact.reference.recoverability ?? artifact.retention.recoverability;
   switch (raw) {
@@ -874,6 +1010,23 @@ function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPre
   }
 }
 
+function readTextPreviewBytes(bytes: Buffer, maxBytes: number): ArtifactContentPreview | null {
+  const limit = Math.max(0, maxBytes);
+  const bytesToRead = Math.min(bytes.byteLength, limit + 1);
+  const truncated = bytesToRead > limit;
+  const previewBytes = bytes.subarray(0, truncated ? limit : bytesToRead);
+  const decoded = decodeUtf8Preview(previewBytes, truncated);
+  if (decoded === null) return null;
+  return {
+    encoding: "utf-8",
+    text: decoded,
+    truncated,
+    preview_bytes: previewBytes.byteLength,
+    total_bytes: bytes.byteLength,
+    omitted_bytes: Math.max(0, bytes.byteLength - previewBytes.byteLength),
+  };
+}
+
 function prettyJson(text: string): string | null {
   try {
     return JSON.stringify(JSON.parse(text), null, 2);
@@ -1021,11 +1174,15 @@ export function readArtifactBytesFull(
   // rather than the current working-tree state.
   const commit = stringValue(artifact.repo_locator.commit);
   if (commit && /^[a-f0-9]{40,64}$/i.test(commit)) {
-    const repo = readRepoArtifactBytes(db, artifact);
-    if (repo.ok) {
-      if (repo.bytes.byteLength > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
-      return { ok: true, bytes: repo.bytes, source: repo.source };
+    const repo = readCommitPinnedRepoArtifactBytes(db, artifact);
+    if (!repo || !repo.ok) {
+      return { ok: false, reason: repo?.reason ?? "artifact commit-pinned repo bytes are not available" };
     }
+    if (repo.hash_matches === false) {
+      return { ok: false, reason: "artifact bytes do not match registered sha256" };
+    }
+    if (repo.bytes.byteLength > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
+    return { ok: true, bytes: repo.bytes, source: repo.source };
   }
 
   const resolved = resolveRegisteredArtifactPath(db, artifact);

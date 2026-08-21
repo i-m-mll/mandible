@@ -1,8 +1,33 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BriefingDirectiveError, parseBriefingDirectives } from "../src/feedback/briefing-directives.js";
+import { BRIEFING_PROFILE_V3, BriefingDirectiveError, parseBriefingDirectives } from "../src/feedback/briefing-directives.js";
 
 describe("mandible-briefing.v2 directives", () => {
+  it("keeps v2 frozen while v3 parses exact text alternatives", () => {
+    const source = `# Policy
+
+:::spec-item{key="push-authorization" type="text_variant" required="false"}
+::alternative[Current wording]{key="current"}
+First **nonblank** Markdown body.
+::alternative[Action-scoped wording]{key="action-scoped"}
+Second nonblank Markdown body.
+:::`;
+    expect(() => parseBriefingDirectives(source)).toThrow(/unsupported/);
+    const directive = parseBriefingDirectives(source, BRIEFING_PROFILE_V3)[0];
+    expect(directive.variants.map(({ key, label, body }) => ({ key, label, body }))).toEqual([
+      { key: "current", label: "Current wording", body: "First **nonblank** Markdown body." },
+      { key: "action-scoped", label: "Action-scoped wording", body: "Second nonblank Markdown body." },
+    ]);
+  });
+
+  it.each([
+    `:::spec-item{key="x" type="text_variant" required="false"}\n::alternative[A]{key="a"}\nA\n:::`,
+    `:::spec-item{key="x" type="text_variant" required="false"}\n::alternative[A]{key="a"}\nA\n::alternative[B]{key="a"}\nB\n:::`,
+    `:::spec-item{key="x" type="text_variant" required="false"}\n::alternative[A]{other="a"}\nA\n::alternative[B]{key="b"}\nB\n:::`,
+    `:::spec-item{key="x" type="verdict" required="false"}\nPrompt\n::alternative[A]{key="a"}\nA\n::alternative[B]{key="b"}\nB\n:::`,
+  ])("fails closed on malformed v3 alternatives", (source) => {
+    expect(() => parseBriefingDirectives(source, BRIEFING_PROFILE_V3)).toThrow();
+  });
   it("uses UTF-16 ranges and hashes the exact CRLF directive slice", () => {
     const source = "Before 😀\r\n:::spec-item{key=\"ship.it\" type=\"verdict\" required=\"true\"}\r\nBody **here**\r\n:::\r\n";
     const [directive] = parseBriefingDirectives(source);

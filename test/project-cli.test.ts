@@ -363,6 +363,7 @@ describe("project CLI write round-trips", () => {
         };
       },
     );
+    expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("dry run");
   });
@@ -380,6 +381,7 @@ describe("project CLI write round-trips", () => {
         };
       },
     );
+    expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("applied: yes");
   });

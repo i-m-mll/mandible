@@ -939,7 +939,7 @@ export function ArtifactDetail({
   const selectedArtifactRef = selectedVersion?.id || immutableArtifactRef;
   const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
   const headerCopyValue = series ? canonicalArtifactSeriesRef(series.id) : immutableArtifactRef;
-  const headerCopyLabel = series ? 'Copy full artifact series ref' : 'Copy full artifact ref';
+  const headerCopyLabel = series ? 'Copy artifact series ref' : 'Copy artifact ref';
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
     ['Series', seriesRefValue, true, series ? canonicalArtifactSeriesRef(series.id) : seriesRefValue],

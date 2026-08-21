@@ -354,7 +354,8 @@ describe("auth request duplicate refusal", () => {
       expect(output).toContain("REFUSED");
       expect(output).toContain("Nothing was queued");
       // The stored request's own identity, so the repo mismatch is visible.
-      expect(output).toContain("1e412da6-168e-424d-9e93-5e2f1c140c44");
+      expect(output).toContain("1e412da6");
+      expect(output).not.toContain("1e412da6-168e-424d-9e93-5e2f1c140c44");
       expect(output).toContain("Stored request from another repo");
       expect(output).toContain("other-repo");
       // Never the caller's own arguments echoed back as if they were stored.

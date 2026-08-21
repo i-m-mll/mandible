@@ -1015,15 +1015,16 @@ export type ResolveRefResponse = { resolution: ResolverResult };
 
 // --- Briefings: logical identity -> immutable artifact-backed rounds ---------
 
-export type FeedbackResponseType = "verdict" | "single_choice" | "multi_choice" | "short_text" | "long_text" | "rating";
+export type FeedbackResponseType = "verdict" | "single_choice" | "multi_choice" | "short_text" | "long_text" | "rating" | "text_variant";
 export type FeedbackVerdictValue = { verdict: "keep" | "dismiss" };
 export type FeedbackShortTextValue = { text: string };
 export type FeedbackLongTextValue = { text: string };
 export type FeedbackSingleChoiceValue = { option_key: string };
 export type FeedbackMultiChoiceValue = { option_keys: string[] };
 export type FeedbackRatingValue = { rating: number };
+export type FeedbackTextVariantValue = { option_key: string };
 export type FeedbackResponseValue = FeedbackVerdictValue | FeedbackShortTextValue | FeedbackLongTextValue
-  | FeedbackSingleChoiceValue | FeedbackMultiChoiceValue | FeedbackRatingValue;
+  | FeedbackSingleChoiceValue | FeedbackMultiChoiceValue | FeedbackRatingValue | FeedbackTextVariantValue;
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 export type BriefingRunSourceHealth = {

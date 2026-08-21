@@ -15,6 +15,7 @@ import { retireBriefingV1ToCustody } from "../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../src/feedback/rich-briefing-demo.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 import { createUser } from "../src/users/store.js";
+import { insertRawLedgerCheckout, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
 const execFileAsync = promisify(execFile);
@@ -93,7 +94,7 @@ function byteInventory(root: string): string[] {
   return entries.sort();
 }
 
-function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo", details: object) {
+function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo" | "materializeProjectedAgentsReview", details: object) {
   const source = `
     const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
     const result = await launcher[${JSON.stringify(name)}](${JSON.stringify(details)});
@@ -696,6 +697,50 @@ exit 0
 }
 
 describe("iab-preview launcher", () => {
+  it("rejects malformed agents-review refs before touching the launcher-owned copy", () => {
+    const fixture = createSeedFixture();
+    const before = fs.readFileSync(fixture.db);
+    const result = runLauncherExport("materializeProjectedAgentsReview", {
+      worktree: fixture.worktree, previewRoot: fixture.previewRoot, db: fixture.db,
+      sourceDb: fixture.sourceDb, artifactVersionRef: "artifact-version:bad!",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("artifact version ref is missing or malformed");
+    expect(fs.readFileSync(fixture.db)).toEqual(before);
+  });
+
+  it("seeds one committed link-custody v3 artifact idempotently without touching source bytes", () => {
+    const fixture = createSeedFixture();
+    const repo = createRepo();
+    const reviewPath = path.join(repo, "AGENTS.review.md");
+    const review = `# Policy\n\n:::spec-item{key="wording" type="text_variant" required="true"}\n::alternative[One]{key="one"}\nOne.\n::alternative[Two]{key="two"}\nTwo.\n:::`;
+    fs.writeFileSync(reviewPath, review); git(["add", "AGENTS.review.md"], repo); git(["commit", "-m", "review"], repo);
+    const db = openDb(fixture.db);
+    const projectId = insertRawLedgerProject(db, { name: "review-fixture" });
+    insertRawLedgerCheckout(db, { projectId, name: "review-fixture", root: fs.realpathSync(repo), conflict: "replace" });
+    const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
+    setSetting(db, "user.operator_id", operator.id);
+    const artifact = recordArtifactVersion(db, { source_kind: "tracked_repo", path: reviewPath,
+      role: "review-document", media_type: "text/plain" });
+    expect(artifact.version).toMatchObject({ source_kind: "tracked_repo", custody_mode: "link" });
+    expect(db.prepare("SELECT media_type FROM artifact_blob WHERE content_hash = ?").get(artifact.artifact.content_hash))
+      .toEqual({ media_type: "text/plain" });
+    db.close();
+    const sourceHash = fileHash(reviewPath);
+    const details = { worktree: fixture.worktree, previewRoot: fixture.previewRoot, db: fixture.db,
+      sourceDb: fixture.sourceDb, artifactVersionRef: artifact.version.id };
+    const first = runLauncherExport("materializeProjectedAgentsReview", details);
+    expect(first.status, first.stderr).toBe(0);
+    const second = runLauncherExport("materializeProjectedAgentsReview", details);
+    expect(second.status, second.stderr).toBe(0);
+    expect(JSON.parse(second.stdout).round_id).toBe(JSON.parse(first.stdout).round_id);
+    const seeded = new Database(fixture.db, { readonly: true });
+    expect(seeded.prepare("SELECT profile, artifact_version_id FROM briefing_rounds").all()).toEqual([
+      { profile: "mandible-briefing.v3", artifact_version_id: artifact.version.id },
+    ]);
+    seeded.close();
+    expect(fileHash(reviewPath)).toBe(sourceHash);
+  }, 30_000);
   it("materializes the exact retired copied-preview shape before startup preparation completes", async () => {
     const source = createSeedFixture();
     installRetiredV1Demo(source, { historicalCompatibleUsers: true });

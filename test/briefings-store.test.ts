@@ -11,12 +11,15 @@ import {
   applyBriefingAnnotations,
   applyBriefingAnswers,
   BriefingStoreError,
+  exportBriefingSubmissionMarkdown,
   parseBriefingRunRequest,
   publishBriefingRun,
+  publishBriefingFromArtifactVersion,
   readBriefing,
   submitBriefingRound,
 } from "../src/feedback/briefings.js";
 import { createUser } from "../src/users/store.js";
+import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
 let db: Db;
 let root: string;
@@ -58,6 +61,55 @@ afterEach(() => {
 });
 
 describe("artifact-backed Briefing rounds", () => {
+  it("reuses one exact v3 artifact version and exports only current frozen text choices", () => {
+    const markdown = `# Agent policy
+
+Ordinary prose stays exact.
+
+:::spec-item{key="push" type="text_variant" required="true"}
+::alternative[Current]{key="current"}
+Never push.
+::alternative[Scoped]{key="scoped"}
+Push only with current authorization.
+:::
+
+:::spec-item{key="note" type="long_text" required="false"}
+Review note prompt.
+:::`;
+    const sourcePath = path.join(root, "AGENTS.review.md");
+    fs.writeFileSync(sourcePath, markdown);
+    const artifact = recordArtifactVersion(db, {
+      source_kind: "local_only", path: sourcePath, logical_name: "AGENTS.review.md",
+      title: "Agent instructions review", role: "review-document", media_type: "text/markdown",
+    }, 900);
+    const receipt = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "agents-review-prototype", title: "Agent instructions review",
+      artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    }, 1_000);
+    expect(receipt.artifact_version_id).toBe(artifact.version.id);
+    expect(publishBriefingFromArtifactVersion(db, {
+      briefing_key: "agents-review-prototype", title: "Agent instructions review",
+      artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    }, 1_001).round_id).toBe(receipt.round_id);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_version").get()).toEqual({ n: 1 });
+    expect(() => exportBriefingSubmissionMarkdown(db, receipt.briefing_id, receipt.round_id!, "missing", humanId))
+      .toThrow(/submission not found/);
+    const answer = applyBriefingAnswers(db, receipt.briefing_id, receipt.round_id!, humanId, [{
+      directive_key: "push", operation: "set", expected_response_event_id: null, value: { option_key: "scoped" },
+    }], 1_100).answers[0];
+    const submission = submitBriefingRound(db, receipt.briefing_id, receipt.round_id!, humanId, {
+      answers: [{ directive_key: "push", response_event_id: answer.response_event_id }],
+      annotation_event_ids: [], supersedes_submission_id: null,
+    }, 1_200);
+    const exported = exportBriefingSubmissionMarkdown(db, receipt.briefing_id, receipt.round_id!, submission.submission_id, humanId);
+    expect(exported.content).toBe("# Agent policy\n\nOrdinary prose stays exact.\n\nPush only with current authorization.\n\nReview note prompt.");
+    expect(exported.sha256).toMatch(/^[a-f0-9]{64}$/);
+    applyBriefingAnswers(db, receipt.briefing_id, receipt.round_id!, humanId, [{
+      directive_key: "push", operation: "set", expected_response_event_id: answer.response_event_id, value: { option_key: "current" },
+    }], 1_300);
+    expect(() => exportBriefingSubmissionMarkdown(db, receipt.briefing_id, receipt.round_id!, submission.submission_id, humanId))
+      .toThrow(/non-current/);
+  });
   it("replays immutable run identities, records quiet receipts, and reuses only unchanged artifact versions", () => {
     const first = publishBriefingRun(db, request(), publisherId, 1_000);
     expect(publishBriefingRun(db, request(), publisherId, 1_001)).toEqual(first);

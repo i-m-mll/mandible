@@ -537,17 +537,6 @@ a {
   border-color: var(--neutral-alpha-10);
 }
 
-.app-rail__item--active::before {
-  content: '';
-  position: absolute;
-  left: -7px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--accent-blue);
-}
-
 .app-rail__tooltip {
   position: absolute;
   left: calc(100% + 9px);

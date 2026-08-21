@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { createPortal } from 'preact/compat';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
   postBriefingAnnotations,
@@ -10,6 +11,12 @@ import {
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
 import { ContextualAction } from '../../components/shared/ContextualAction';
+import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
+import {
+  buildBriefingMarkdownModel,
+  type BriefingMarkdownEntityKind,
+  type BriefingMarkdownModel,
+} from './briefingMarkdownModel';
 
 export type BriefingDocumentPanelProps = {
   briefingId: string;
@@ -28,11 +35,11 @@ export type BriefingDocumentPanelProps = {
 type AnnotationEditor = {
   annotation: BriefingAnnotation | null;
   directiveItemId?: string;
+  sectionHeading?: string;
   start: number;
   end: number;
   quote: string;
-  top: number;
-  left: number;
+  displayQuote?: string;
 };
 
 // Radio `name` groups are document-global rather than component-local. A
@@ -95,6 +102,146 @@ function renderBriefingProse(value: string): string {
   return document.body.innerHTML;
 }
 
+function semanticElements(document: Document, kind: BriefingMarkdownEntityKind): HTMLElement[] {
+  const selector = kind === 'heading' ? 'h1, h2, h3, h4, h5, h6'
+    : kind === 'paragraph' ? 'p'
+      : kind === 'list-item' ? 'li'
+        : kind === 'table' ? 'table'
+          : kind === 'block-quote' ? 'blockquote'
+            : 'pre';
+  return Array.from(document.body.querySelectorAll<HTMLElement>(selector)).filter((element) => {
+    if (kind === 'paragraph' || kind === 'fenced-code') return !element.parentElement?.closest('li, blockquote');
+    if (kind === 'block-quote') return !element.parentElement?.closest('blockquote');
+    return true;
+  });
+}
+
+function actionHost(document: Document, element: HTMLElement, slot: string, index: number): HTMLElement {
+  let host: HTMLElement;
+  if (element.tagName === 'TABLE') {
+    host = element.querySelector(':scope > caption') as HTMLElement | null ?? document.createElement('caption');
+    if (!host.parentElement) element.prepend(host);
+  } else {
+    host = document.createElement('span');
+    element.prepend(host);
+  }
+  host.classList.add('briefing-markdown__action-rail', 'contextual-action-group');
+  if (slot === 'briefingDirectiveAction') host.classList.add('briefing-directive__actions');
+  host.dataset[slot] = String(index);
+  return host;
+}
+
+function usesCompactResponseRail(type: BriefingDirectiveItem['revision']['response_type']): boolean {
+  return type === 'verdict' || type === 'text_variant';
+}
+
+function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: BriefingAnnotation[]): string {
+  const document = new DOMParser().parseFromString(renderBriefingProse(model.markdown), 'text/html');
+  const elementsByKind = new Map<BriefingMarkdownEntityKind, HTMLElement[]>();
+  const kindCursors = new Map<BriefingMarkdownEntityKind, number>();
+  const blockElements = model.blocks.map((block) => {
+    let elements = elementsByKind.get(block.kind);
+    if (!elements) {
+      elements = semanticElements(document, block.kind);
+      elementsByKind.set(block.kind, elements);
+    }
+    const index = kindCursors.get(block.kind) ?? 0;
+    kindCursors.set(block.kind, index + 1);
+    return elements[index] ?? null;
+  });
+
+  model.entities.forEach((entity, entityIndex) => {
+    const blockIndex = model.blocks.findIndex((block) => block.kind === entity.kind
+      && block.displayStart === entity.displayStart && block.displayEnd === entity.displayEnd);
+    const element = blockElements[blockIndex];
+    if (!element) return;
+    element.classList.add('briefing-markdown__entity', 'contextual-action-owner');
+    actionHost(document, element, 'briefingEntityAction', entityIndex);
+    if (annotations.some((annotation) => annotation.start_offset < entity.end && annotation.end_offset > entity.start)) {
+      const annotationHost = document.createElement('div');
+      annotationHost.dataset.briefingEntityAnnotations = String(entityIndex);
+      if (element.tagName === 'LI') element.append(annotationHost);
+      else element.after(annotationHost);
+    }
+  });
+
+  model.directives.forEach((directive, directiveIndex) => {
+    const matches = model.blocks
+      .map((block, index) => ({ block, element: blockElements[index] }))
+      .filter(({ block, element }) => element && block.displayStart < directive.displayEnd && block.displayEnd > directive.displayStart);
+    if (matches.length === 0) return;
+    for (const { element } of matches) {
+      element!.classList.add('briefing-directive');
+      element!.dataset.briefingDirectiveIndex = String(directiveIndex);
+    }
+    const first = matches[0].element!;
+    first.classList.add('briefing-directive--owner', 'contextual-action-owner');
+    first.tabIndex = 0;
+    first.id = `briefing-directive-prompt-${directive.itemId}`.replace(/[^A-Za-z0-9_-]/g, '-');
+    actionHost(document, first, 'briefingDirectiveAction', directiveIndex);
+    const responseHost = document.createElement('div');
+    const compact = usesCompactResponseRail(directive.responseType);
+    responseHost.className = `briefing-directive__response-host briefing-directive__response-host--${compact ? 'rail' : 'flow'}`;
+    responseHost.dataset.briefingDirectiveIndex = String(directiveIndex);
+    responseHost.dataset.briefingDirectiveResponse = String(directiveIndex);
+    if (compact) document.body.append(responseHost);
+    else {
+      const last = matches.at(-1)!.element!;
+      if (last.tagName === 'LI') last.append(responseHost);
+      else last.after(responseHost);
+    }
+  });
+  return document.body.innerHTML;
+}
+
+const DIRECTIVE_RAIL_GUTTER_OFFSET = 10;
+
+function alignBriefingRails(sourceTree: HTMLElement): void {
+  const sourceRect = sourceTree.getBoundingClientRect();
+  const gutterX = sourceRect.left - DIRECTIVE_RAIL_GUTTER_OFFSET;
+  let responseRailBottom = 0;
+  const ownerAnchors = (owner: HTMLElement, ownerRect = owner.getBoundingClientRect()) => {
+    const lineHeight = Number.parseFloat(globalThis.getComputedStyle(owner).lineHeight || '0');
+    const firstLineHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : Math.min(ownerRect.height, 24);
+    return {
+      actionCenter: firstLineHeight / 2,
+      responseCenter: ownerRect.top - sourceRect.top + firstLineHeight / 2,
+    };
+  };
+  sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
+    const ownerRect = owner.getBoundingClientRect();
+    owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerRect.left}px`);
+    const responseHost = sourceTree.querySelector<HTMLElement>(
+      `[data-briefing-directive-response="${owner.dataset.briefingDirectiveIndex}"].briefing-directive__response-host--rail`,
+    );
+    if (responseHost) {
+      const { actionCenter, responseCenter } = ownerAnchors(owner, ownerRect);
+      const responseRect = responseHost.getBoundingClientRect();
+      const compactControl = responseHost.querySelector<HTMLElement>('.briefing-directive__verdict, .briefing-directive__variant-controls');
+      const controlRect = compactControl?.getBoundingClientRect();
+      const controlCenterOffset = controlRect && controlRect.height > 0
+        ? controlRect.top - responseRect.top + controlRect.height / 2
+        : responseRect.height / 2;
+      const responseTop = responseCenter - controlCenterOffset;
+      responseHost.style.setProperty('--briefing-right-rail-top', `${responseTop}px`);
+      owner.querySelector<HTMLElement>('[data-briefing-directive-action]')
+        ?.style.setProperty('--briefing-right-rail-center', `${actionCenter}px`);
+      responseRailBottom = Math.max(responseRailBottom, responseTop + responseRect.height);
+    }
+  });
+  const styles = globalThis.getComputedStyle(sourceTree);
+  const contentRight = sourceRect.right - Number.parseFloat(styles.paddingRight || '0');
+  const baseHeight = sourceRect.height - Number.parseFloat(styles.paddingBottom || '0');
+  sourceTree.style.setProperty('--briefing-right-rail-overflow', `${Math.max(0, responseRailBottom - baseHeight)}px`);
+  sourceTree.querySelectorAll<HTMLElement>('[data-briefing-entity-action], [data-briefing-directive-action]').forEach((host) => {
+    const ownerRect = host.parentElement?.getBoundingClientRect();
+    if (ownerRect) {
+      host.style.setProperty('--briefing-right-rail-action-offset', `${contentRight + 8 - ownerRect.left}px`);
+      host.style.setProperty('--briefing-right-rail-center', `${ownerAnchors(host.parentElement!, ownerRect).actionCenter}px`);
+    }
+  });
+}
+
 function semanticHeading(value: string): string {
   const document = new DOMParser().parseFromString(renderMarkdown(value), 'text/html');
   return (document.body.textContent ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
@@ -131,7 +278,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const [status, setStatus] = useState<string | null>(null);
   const [selectedDirectiveId, setSelectedDirectiveId] = useState<string | null>(null);
   const [textEdits, setTextEdits] = useState<Record<string, string>>({});
+  const [portalRevision, setPortalRevision] = useState(0);
   const contentRef = useRef<HTMLElement>(null);
+  const renderedRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setTextEdits({});
@@ -144,7 +293,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   useEffect(() => {
     const dismissSelection = (event: MouseEvent) => {
       if (!(event.target instanceof Element)) return;
-      const directive = event.target.closest('.briefing-directive');
+      const directive = event.target.closest('[data-briefing-directive-index]');
       if (directive && contentRef.current?.contains(directive)) return;
       setSelectedDirectiveId(null);
     };
@@ -176,7 +325,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const source = documentKey && verifiedDocumentKey === documentKey ? document?.source ?? null : null;
   const currentContentError = documentKey && contentError?.key === documentKey ? contentError.message : null;
 
-  const annotations = round.annotations ?? [];
+  const annotations = useMemo(() => round.annotations ?? [], [round.annotations]);
   const directiveItems = useMemo(() => round.items
     .filter((item) => item.directive)
     .sort((left, right) => left.directive!.start_offset - right.directive!.start_offset), [round.items]);
@@ -188,10 +337,66 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       if (directive.start_offset < cursor || directive.end_offset > source.length
           || directive.body_start_offset < directive.start_offset || directive.body_end_offset > directive.end_offset
           || directive.body_start_offset >= directive.body_end_offset) return 'The pinned directive ranges are inconsistent.';
+      if (item.revision.response_type === 'text_variant') {
+        const variants = item.revision.variants ?? [];
+        if (variants.some((variant) => variant.start_offset < directive.body_start_offset
+            || variant.end_offset > directive.body_end_offset
+            || source.slice(variant.body_start_offset, variant.body_end_offset) !== variant.body)) {
+          return 'The pinned text-variant ranges are inconsistent.';
+        }
+      }
       cursor = directive.end_offset;
     }
     return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
   }, [directiveItems, source]);
+  const selectedVariantKeys = useMemo(() => Object.fromEntries(directiveItems.map((item) => {
+    const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
+    return [item.id, current && 'option_key' in current ? current.option_key : null];
+  })), [directiveItems, draft]);
+  const markdownModel = useMemo(() => source === null ? null : buildBriefingMarkdownModel(
+    source,
+    directiveItems,
+    selectedVariantKeys,
+    source.length - suppressRepeatedLeadingHeading(source, briefingTitle).length,
+  ), [briefingTitle, directiveItems, selectedVariantKeys, source]);
+  const renderedMarkdown = useMemo(() => markdownModel
+    ? renderSourceMappedMarkdown(markdownModel, annotations)
+    : '', [annotations, markdownModel]);
+  useLayoutEffect(() => {
+    if (renderedMarkdown) setPortalRevision((revision) => revision + 1);
+  }, [renderedMarkdown]);
+  useLayoutEffect(() => {
+    if (!markdownModel || !renderedRef.current) return;
+    renderedRef.current.querySelectorAll<HTMLElement>('[data-briefing-directive-index]').forEach((element) => {
+      const directive = markdownModel.directives[Number(element.dataset.briefingDirectiveIndex)];
+      const selected = directive?.itemId === selectedDirectiveId;
+      element.classList.toggle('briefing-directive--selected', selected);
+      if (element.tabIndex === 0) element.setAttribute('aria-current', selected ? 'true' : 'false');
+    });
+    renderedRef.current.querySelectorAll<HTMLElement>('[data-briefing-directive-action]').forEach((element) => {
+      const directive = markdownModel.directives[Number(element.dataset.briefingDirectiveAction)];
+      element.classList.toggle('contextual-action-group--persistent', directive?.itemId === selectedDirectiveId);
+    });
+  }, [markdownModel, portalRevision, selectedDirectiveId]);
+  useLayoutEffect(() => {
+    const sourceTree = renderedRef.current;
+    if (!sourceTree) return undefined;
+    const updateRails = () => alignBriefingRails(sourceTree);
+    const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
+    const responseHosts = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive__response-host--rail'));
+    updateRails();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateRails);
+    observer?.observe(sourceTree);
+    owners.forEach((owner) => observer?.observe(owner));
+    responseHosts.forEach((host) => observer?.observe(host));
+    globalThis.addEventListener('resize', updateRails);
+    globalThis.document.fonts?.addEventListener('loadingdone', updateRails);
+    return () => {
+      observer?.disconnect();
+      globalThis.removeEventListener('resize', updateRails);
+      globalThis.document.fonts?.removeEventListener('loadingdone', updateRails);
+    };
+  }, [portalRevision, renderedMarkdown]);
   useEffect(() => {
     let cancelled = false;
     if (source === null) return undefined;
@@ -200,7 +405,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     void Promise.all(directiveItems.map(async (item) => {
       const directive = item.directive!;
       const body = source.slice(directive.body_start_offset, directive.body_end_offset);
-      if (body !== item.revision.prompt) throw new Error('Pinned directive text does not match its materialized prompt.');
+      if (item.revision.response_type !== 'text_variant' && body !== item.revision.prompt) throw new Error('Pinned directive text does not match its materialized prompt.');
       if (await sha256(source.slice(directive.start_offset, directive.end_offset)) !== directive.definition_digest) throw new Error('Pinned directive content does not match its binding.');
     })).then(() => {
       if (!cancelled) {
@@ -228,16 +433,29 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     start: annotation.start_offset,
     end: annotation.end_offset,
     quote: annotation.quote,
-    top: 96,
-    left: 24,
+    displayQuote: markdownModel?.directives.find((directive) => (
+      annotation.start_offset < directive.containerEnd && annotation.end_offset > directive.containerStart
+    ))?.quote,
   });
 
   const openDirectiveComment = (itemId: string) => {
     const item = round.items.find((candidate) => candidate.id === itemId);
-    const directive = item?.directive;
+    const directive = markdownModel?.directives.find((candidate) => candidate.itemId === itemId);
     if (!item || !directive || source === null) return;
-    const quote = source.slice(directive.body_start_offset, directive.body_end_offset);
-    openEditor({ annotation: null, directiveItemId: itemId, start: directive.body_start_offset, end: directive.body_end_offset, quote, top: 96, left: 24 });
+    openEditor({ annotation: null, directiveItemId: itemId, start: directive.start, end: directive.end, quote: directive.quote });
+  };
+
+  const openEntityComment = (entityIndex: number) => {
+    const entity = markdownModel?.entities[entityIndex];
+    if (!entity || source === null) return;
+    if (entity.kind === 'heading' && entity.sectionEnd) {
+      const rawQuote = source.slice(entity.start, entity.sectionEnd);
+      const quote = rawQuote.trim();
+      const start = entity.start + rawQuote.indexOf(quote);
+      openEditor({ annotation: null, sectionHeading: entity.label, start, end: start + quote.length, quote });
+      return;
+    }
+    openEditor({ annotation: null, start: entity.start, end: entity.end, quote: entity.quote });
   };
 
   const inlineAnnotations = (start: number, end: number) => {
@@ -270,9 +488,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (type === 'verdict') {
       const verdict = current && 'verdict' in current ? current.verdict : null;
       control = (
-        <div id={controlId} className="briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
-          <button type="button" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></button>
-          <button type="button" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></button>
+        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
+          <ContextualAction presentation="compact" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></ContextualAction>
+          <ContextualAction presentation="compact" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></ContextualAction>
         </div>
       );
     } else if (type === 'single_choice' || type === 'multi_choice') {
@@ -334,6 +552,20 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           ))}
         </fieldset>
       );
+    } else if (type === 'text_variant') {
+      const variants = item.revision.variants ?? [];
+      const selectedKey = current && 'option_key' in current ? current.option_key : null;
+      const selectedIndex = Math.max(0, variants.findIndex((variant) => variant.key === selectedKey));
+      const selectedVariant = variants[selectedIndex];
+      control = selectedVariant ? (
+        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__variant-controls" role="group" aria-label={`Text variant: ${selectedVariant.label}`} aria-describedby={describedBy}>
+          <ContextualAction presentation="compact" aria-label="Previous text variant" disabled={!canInteract || selectedIndex === 0}
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><PreviousIcon /></ContextualAction>
+          <span><small>{selectedIndex + 1} of {variants.length}</small></span>
+          <ContextualAction presentation="compact" aria-label="Next text variant" disabled={!canInteract || selectedIndex === variants.length - 1}
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex + 1].key })}><NextIcon /></ContextualAction>
+        </div>
+      ) : null;
     }
     return (
       <div className="briefing-directive__response">
@@ -345,52 +577,61 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   };
 
   const renderProfileDocument = () => {
-    if (source === null || documentIntegrityError) return null;
-    const parts: JSX.Element[] = [];
-    let cursor = 0;
-    for (const item of directiveItems) {
-      const directive = item.directive!;
-      const authoritativeProse = source.slice(cursor, directive.start_offset);
-      const prose = cursor === 0 ? suppressRepeatedLeadingHeading(authoritativeProse, briefingTitle) : authoritativeProse;
-      if (prose.trim() || annotations.some((annotation) => annotation.start_offset < directive.start_offset && annotation.end_offset > cursor)) parts.push(
-        <div key={`prose-${parts.length}`} className="briefing-document__passage">
-          <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(prose) }} />
-          {inlineAnnotations(cursor, directive.start_offset)}
-        </div>,
-      );
-      const body = source.slice(directive.body_start_offset, directive.body_end_offset);
-      const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
-      const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
-      const selected = selectedDirectiveId === item.id;
-      parts.push(
-        <section className={`briefing-directive${selected ? ' briefing-directive--selected' : ''}`} key={item.id} tabIndex={0}
-          aria-labelledby={promptId}
-          aria-current={selected ? 'true' : undefined}
-          onClick={(event) => { if (!isInteractiveDirectiveTarget(event.target, event.currentTarget)) setSelectedDirectiveId(item.id); }}
-          onKeyDown={(event) => { if (event.currentTarget === event.target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setSelectedDirectiveId(item.id); } }}>
-          <div className="briefing-directive__interaction contextual-action-owner">
-            <div className="briefing-directive__passage">
-              <div id={promptId} className="briefing-directive__body rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(body) }} />
+    if (source === null || documentIntegrityError || !markdownModel) return null;
+    void portalRevision;
+    const entityHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-entity-action]') ?? [];
+    const entityAnnotationHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-entity-annotations]') ?? [];
+    const directiveActionHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-action]') ?? [];
+    const directiveResponseHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-response]') ?? [];
+    return (
+      <div className="briefing-document__rendered rendered-markdown" aria-label="Pinned briefing document"
+        onClick={(event) => {
+          if (!(event.target instanceof Element)) return;
+          const directiveElement = event.target.closest<HTMLElement>('[data-briefing-directive-index]');
+          if (!directiveElement || !renderedRef.current?.contains(directiveElement) || isInteractiveDirectiveTarget(event.target, directiveElement)) return;
+          const directive = markdownModel.directives[Number(directiveElement.dataset.briefingDirectiveIndex)];
+          if (directive) setSelectedDirectiveId(directive.itemId);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          if (!(event.target instanceof HTMLElement) || !event.target.matches('[data-briefing-directive-index]')) return;
+          event.preventDefault();
+          const directive = markdownModel.directives[Number(event.target.dataset.briefingDirectiveIndex)];
+          if (directive) setSelectedDirectiveId(directive.itemId);
+        }}>
+        <div ref={renderedRef} className="briefing-document__source-tree briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderedMarkdown }} />
+        {markdownModel.entities.map((entity, index) => {
+          const host = Array.from(entityHosts).find((candidate) => candidate.dataset.briefingEntityAction === String(index));
+          const annotationHost = Array.from(entityAnnotationHosts).find((candidate) => candidate.dataset.briefingEntityAnnotations === String(index));
+          const heading = entity.kind === 'heading';
+          return [host ? createPortal(
+            <ContextualAction aria-label={heading ? `Comment on section ${entity.label}` : `Comment on ${entity.kind}: ${entity.label}`}
+              title={heading ? 'Comment on whole section' : 'Comment on this Markdown block'}
+              aria-expanded={editor?.start === entity.start}
+              disabled={!canInteract} onClick={() => openEntityComment(index)}><CommentIcon /></ContextualAction>,
+            host,
+          ) : null, annotationHost ? createPortal(inlineAnnotations(entity.start, entity.end), annotationHost) : null];
+        })}
+        {directiveItems.map((item) => {
+          const directiveIndex = markdownModel.directives.findIndex((directive) => directive.itemId === item.id);
+          const actionHost = Array.from(directiveActionHosts).find((candidate) => candidate.dataset.briefingDirectiveAction === String(directiveIndex));
+          const responseHost = Array.from(directiveResponseHosts).find((candidate) => candidate.dataset.briefingDirectiveResponse === String(directiveIndex));
+          const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
+          const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
+          return [
+            actionHost ? createPortal(
+              <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id}
+                disabled={!canInteract} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>, actionHost,
+            ) : null,
+            responseHost ? createPortal(<>
               {item.revision.required ? <span className="briefing-directive__required" aria-label="Required">Required</span> : null}
-              {inlineAnnotations(directive.start_offset, directive.end_offset)}
+              {inlineAnnotations(item.directive!.start_offset, item.directive!.end_offset)}
               {responseControls(item, current, promptId)}
-            </div>
-            <div className={`briefing-directive__actions contextual-action-group${selected ? ' contextual-action-group--persistent' : ''}`} aria-label={`Response controls for ${item.revision.title || directive.key}`}>
-              <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id} disabled={!canInteract} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>
-            </div>
-          </div>
-        </section>,
-      );
-      cursor = directive.end_offset;
-    }
-    const tail = source.slice(cursor);
-    if (tail.trim() || annotations.some((annotation) => annotation.start_offset < source.length && annotation.end_offset > cursor)) parts.push(
-      <div key={`prose-${parts.length}`} className="briefing-document__passage">
-        <div className="briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderBriefingProse(tail) }} />
-        {inlineAnnotations(cursor, source.length)}
-      </div>,
+            </>, responseHost) : null,
+          ];
+        })}
+      </div>
     );
-    return <div className="briefing-document__rendered" aria-label="Pinned briefing document">{parts}</div>;
   };
 
   const mutate = async (operations: BriefingAnnotationOperation[], success: string) => {
@@ -459,24 +700,29 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       {source === null && !currentContentError ? <p className="briefing-empty" role="status">Verifying document…</p> : null}
       {renderProfileDocument()}
 
-      {editor ? (
-        <div
-          className="briefing-document__popover"
-          role="dialog"
-          aria-modal="false"
-          aria-label={editor.annotation ? 'Edit annotation' : 'Add annotation'}
-          style={{ position: 'fixed', top: `${Math.max(8, editor.top + 40)}px`, left: `${Math.max(8, editor.left)}px` }}
-        >
-          <div className="briefing-document__popover-header">
-            <strong>{editor.annotation ? 'Edit annotation' : 'Add annotation'}</strong>
-            <button type="button" aria-label="Close annotation editor" onClick={() => setEditor(null)}>×</button>
-          </div>
-          <blockquote>{editor.quote}</blockquote>
-          <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
-            <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
-            <button type="button" role="tab" aria-selected={kind === 'suggest_replacement'} onClick={() => setKind('suggest_replacement')}>Suggest replacement</button>
-          </div>
-          {kind === 'suggest_replacement' ? (
+      <DetailPaneModal
+        open={editor !== null}
+        onClose={() => setEditor(null)}
+        titleId="briefing-annotation-editor-title"
+        title={editor?.annotation ? 'Edit annotation' : 'Add annotation'}
+        closeLabel="Close annotation editor"
+        embeddedFallback={{ scrollOwnerRef: contentRef }}
+        scrollLockClassName="detail-pane-shell__body--overlay-open"
+        className="briefing-document__annotation-modal"
+        panelClassName="briefing-document__popover"
+      >
+        {editor ? (
+          <>
+          {editor.sectionHeading
+            ? <p className="briefing-document__section-intent">Whole section: <strong>{editor.sectionHeading}</strong></p>
+            : <blockquote>{editor.displayQuote ?? editor.quote}</blockquote>}
+          {!editor.sectionHeading ? (
+            <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
+              <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
+              <button type="button" role="tab" aria-selected={kind === 'suggest_replacement'} onClick={() => setKind('suggest_replacement')}>Suggest replacement</button>
+            </div>
+          ) : null}
+          {kind === 'suggest_replacement' && !editor.sectionHeading ? (
             <label>
               Replacement
               <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canInteract || busy} />
@@ -492,8 +738,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
             ) : null}
             {canInteract ? <button type="button" className="btn btn--primary btn--sm" onClick={() => void save()} disabled={busy}>Save</button> : null}
           </div>
-        </div>
-      ) : null}
+          </>
+        ) : <></>}
+      </DetailPaneModal>
 
       <div className="briefing-document__status" role="status" aria-live="polite">{status}</div>
     </section>
@@ -510,6 +757,14 @@ function DismissIcon(): JSX.Element {
 
 function CommentIcon(): JSX.Element {
   return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" /></svg>;
+}
+
+function PreviousIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m10 3-5 5 5 5" /></svg>;
+}
+
+function NextIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg>;
 }
 
 export default BriefingDocumentPanel;
