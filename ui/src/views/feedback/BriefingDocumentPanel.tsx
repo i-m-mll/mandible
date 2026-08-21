@@ -186,8 +186,10 @@ function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: B
   return document.body.innerHTML;
 }
 
+const DIRECTIVE_RAIL_GUTTER_OFFSET = 10;
+
 function alignDirectiveRails(sourceTree: HTMLElement): void {
-  const gutterX = sourceTree.getBoundingClientRect().left;
+  const gutterX = sourceTree.getBoundingClientRect().left - DIRECTIVE_RAIL_GUTTER_OFFSET;
   sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
     const ownerX = owner.getBoundingClientRect().left;
     owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerX}px`);
