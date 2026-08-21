@@ -331,8 +331,16 @@
 }
 
 .briefing-document__rendered {
+  --briefing-right-rail-width: clamp(8rem, 20%, 10rem);
   position: relative;
   padding-inline: var(--space-3);
+}
+
+.briefing-document__source-tree {
+  position: relative;
+  box-sizing: border-box;
+  padding-inline-end: var(--briefing-right-rail-width);
+  padding-block-end: var(--briefing-right-rail-overflow, 0);
 }
 
 .briefing-document__source-tree > :first-child {
@@ -343,9 +351,14 @@
   margin-bottom: 0;
 }
 
+.briefing-markdown__entity {
+  position: relative;
+}
+
 .briefing-markdown__action-rail {
   position: absolute;
-  inset-inline-end: 0;
+  inset-inline-start: var(--briefing-right-rail-action-offset, auto);
+  inset-inline-end: auto;
   z-index: 1;
   display: flex;
   width: 1.3em;
@@ -396,10 +409,6 @@
   pointer-events: none;
 }
 
-.briefing-directive--owner > .briefing-markdown__action-rail {
-  inset-inline-end: calc(-1 * var(--space-3));
-}
-
 .briefing-directive__required {
   display: inline-block;
   margin-top: var(--space-1);
@@ -416,15 +425,24 @@
 }
 
 .briefing-directive__response-host {
+  position: absolute;
+  inset-block-start: var(--briefing-right-rail-top, 0px);
+  inset-inline-end: 0;
   display: grid;
+  box-sizing: border-box;
+  width: var(--briefing-right-rail-width);
+  padding-inline: var(--space-2);
   justify-items: end;
 }
 
 .briefing-directive__variant-controls {
   display: inline-grid;
-  grid-template-columns: 2em minmax(3em, auto) 2em;
+  grid-template-columns: 2em minmax(3em, 1fr) 2em;
   align-items: center;
-  gap: .35em;
+  box-sizing: border-box;
+  width: 100%;
+  gap: 0;
+  padding-inline: .4em;
   font-size: .8em;
 }
 
