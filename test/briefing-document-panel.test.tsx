@@ -351,6 +351,7 @@ describe('Briefing document panel', () => {
     const actions = directive.querySelector('.briefing-directive__actions') as HTMLElement;
     const sourceTree = screen.getByLabelText('Pinned briefing document').querySelector('.briefing-document__source-tree') as HTMLElement;
     const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
+    const responseHosts = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive__response-host'));
     vi.spyOn(sourceTree, 'getBoundingClientRect').mockReturnValue({
       x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 600, width: 640, height: 600, toJSON: () => ({}),
     });
@@ -360,6 +361,10 @@ describe('Briefing document panel', () => {
     vi.spyOn(owners[1], 'getBoundingClientRect').mockReturnValue({
       x: 528, y: 100, left: 528, right: 1088, top: 100, bottom: 140, width: 560, height: 40, toJSON: () => ({}),
     });
+    responseHosts.forEach((host) => vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
+      x: 928, y: 0, left: 928, right: 1088, top: 0, bottom: 100, width: 160, height: 100, toJSON: () => ({}),
+    }));
+    vi.spyOn(globalThis, 'getComputedStyle').mockReturnValue({ paddingRight: '160px', paddingBottom: '0px' } as CSSStyleDeclaration);
     fireEvent(globalThis, new Event('resize'));
     const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
     const ownerRule = briefingStylesheet.match(/\.briefing-directive--owner \{([^}]*)\}/)?.[1] ?? '';
@@ -380,10 +385,14 @@ describe('Briefing document panel', () => {
     expect(contentX).toEqual([448, 528]);
     expect(railX).toEqual([438, 438]);
     expect(owners).toHaveLength(2);
+    expect(actions.style.getPropertyValue('--briefing-right-rail-action-offset')).toBe('488px');
+    expect(responseHosts.map((host) => host.style.getPropertyValue('--briefing-right-rail-top'))).toEqual(['68px', '176px']);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
-    expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-end: 0/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive--owner > \.briefing-markdown__action-rail \{[^}]*inset-inline-end: calc\(-1 \* var\(--space-3\)\)/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*justify-items: end/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-document__source-tree \{[^}]*padding-inline-end: var\(--briefing-right-rail-width\)/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity \{[^}]*position: relative/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*position: absolute[^}]*width: var\(--briefing-right-rail-width\)[^}]*justify-items: end/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, 1fr\) 2em[^}]*width: 100%[^}]*padding-inline: \.4em/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);

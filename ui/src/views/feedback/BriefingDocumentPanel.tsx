@@ -179,20 +179,38 @@ function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: B
     responseHost.className = 'briefing-directive__response-host';
     responseHost.dataset.briefingDirectiveIndex = String(directiveIndex);
     responseHost.dataset.briefingDirectiveResponse = String(directiveIndex);
-    const last = matches.at(-1)!.element!;
-    if (last.tagName === 'LI') last.append(responseHost);
-    else last.after(responseHost);
+    document.body.append(responseHost);
   });
   return document.body.innerHTML;
 }
 
 const DIRECTIVE_RAIL_GUTTER_OFFSET = 10;
+const RIGHT_RAIL_ACTION_LANE_HEIGHT = 28;
+const RIGHT_RAIL_CONTROL_GAP = 8;
 
-function alignDirectiveRails(sourceTree: HTMLElement): void {
-  const gutterX = sourceTree.getBoundingClientRect().left - DIRECTIVE_RAIL_GUTTER_OFFSET;
+function alignBriefingRails(sourceTree: HTMLElement): void {
+  const sourceRect = sourceTree.getBoundingClientRect();
+  const gutterX = sourceRect.left - DIRECTIVE_RAIL_GUTTER_OFFSET;
+  let nextResponseTop = 0;
   sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
-    const ownerX = owner.getBoundingClientRect().left;
-    owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerX}px`);
+    const ownerRect = owner.getBoundingClientRect();
+    owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerRect.left}px`);
+    const responseHost = sourceTree.querySelector<HTMLElement>(
+      `[data-briefing-directive-response="${owner.dataset.briefingDirectiveIndex}"]`,
+    );
+    if (responseHost) {
+      const responseTop = Math.max(ownerRect.top - sourceRect.top + RIGHT_RAIL_ACTION_LANE_HEIGHT, nextResponseTop);
+      responseHost.style.setProperty('--briefing-right-rail-top', `${responseTop}px`);
+      nextResponseTop = responseTop + responseHost.getBoundingClientRect().height + RIGHT_RAIL_CONTROL_GAP;
+    }
+  });
+  const styles = globalThis.getComputedStyle(sourceTree);
+  const contentRight = sourceRect.right - Number.parseFloat(styles.paddingRight || '0');
+  const baseHeight = sourceRect.height - Number.parseFloat(styles.paddingBottom || '0');
+  sourceTree.style.setProperty('--briefing-right-rail-overflow', `${Math.max(0, nextResponseTop - baseHeight)}px`);
+  sourceTree.querySelectorAll<HTMLElement>('[data-briefing-entity-action], [data-briefing-directive-action]').forEach((host) => {
+    const ownerRect = host.parentElement?.getBoundingClientRect();
+    if (ownerRect) host.style.setProperty('--briefing-right-rail-action-offset', `${contentRight + 8 - ownerRect.left}px`);
   });
 }
 
@@ -335,12 +353,14 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   useLayoutEffect(() => {
     const sourceTree = renderedRef.current;
     if (!sourceTree) return undefined;
-    const updateRails = () => alignDirectiveRails(sourceTree);
+    const updateRails = () => alignBriefingRails(sourceTree);
     const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
+    const responseHosts = Array.from(sourceTree.querySelectorAll<HTMLElement>('[data-briefing-directive-response]'));
     updateRails();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateRails);
     observer?.observe(sourceTree);
     owners.forEach((owner) => observer?.observe(owner));
+    responseHosts.forEach((host) => observer?.observe(host));
     globalThis.addEventListener('resize', updateRails);
     globalThis.document.fonts?.addEventListener('loadingdone', updateRails);
     return () => {
