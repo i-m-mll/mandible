@@ -350,16 +350,24 @@ export async function prepareSourceBackedConversationStorage(options: {
     db.exec(`
       UPDATE conversation_structural_blocks
          SET normalization_checkpoint_id = NULL
-       WHERE normalization_checkpoint_id IN (
-         SELECT id FROM conversation_normalization_checkpoints
-          WHERE state_json <> '${CODEX_MODEL_CHECKPOINT}'
-       );
+       WHERE normalization_checkpoint_id IS NOT NULL
+         AND normalization_checkpoint_id NOT IN (
+           SELECT id FROM conversation_normalization_checkpoints
+            WHERE state_json = '${CODEX_MODEL_CHECKPOINT}'
+         );
+      CREATE TEMP TABLE retained_codex_model_checkpoints (id TEXT PRIMARY KEY);
+      INSERT INTO retained_codex_model_checkpoints (id)
+        SELECT DISTINCT sb.normalization_checkpoint_id
+          FROM conversation_structural_blocks sb
+          JOIN conversation_normalization_checkpoints checkpoint
+            ON checkpoint.id = sb.normalization_checkpoint_id
+         WHERE checkpoint.state_json = '${CODEX_MODEL_CHECKPOINT}';
       DELETE FROM conversation_normalization_checkpoints
-       WHERE state_json <> '${CODEX_MODEL_CHECKPOINT}'
-          OR NOT EXISTS (
-            SELECT 1 FROM conversation_structural_blocks
-             WHERE normalization_checkpoint_id = conversation_normalization_checkpoints.id
-          );
+       WHERE state_json <> '${CODEX_MODEL_CHECKPOINT}';
+      DELETE FROM conversation_normalization_checkpoints
+       WHERE state_json = '${CODEX_MODEL_CHECKPOINT}'
+         AND id NOT IN (SELECT id FROM retained_codex_model_checkpoints);
+      DROP TABLE retained_codex_model_checkpoints;
     `);
     return {
       apply: true,
