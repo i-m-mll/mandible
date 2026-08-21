@@ -61,6 +61,11 @@ describe('parseResourceRef recognizes canonical ref forms', () => {
     expect(blob?.canonical).toBe(`artifact-blob:${HASH64}`);
   });
 
+  it('keeps typed UUID refs while compacting their identity atomically', () => {
+    expect(parseResourceRef('artifact-version:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')?.display)
+      .toBe('artifact-version:aaaaaaaa');
+  });
+
   it('repo:// custody refs', () => {
     const parsed = parseResourceRef('repo://mandible@main/src/db.ts');
     expect(parsed?.kind).toBe('repo');

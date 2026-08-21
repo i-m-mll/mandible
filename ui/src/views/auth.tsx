@@ -925,7 +925,7 @@ function AuthCard({
           onClick={(event) => {
             event.stopPropagation();
             if (fullId) {
-              navigator.clipboard.writeText(fullId);
+              navigator.clipboard.writeText(`auth:${requestHash}`);
             }
           }}
         >
@@ -1506,6 +1506,7 @@ function AuthRequestDetail({
             entityLabel: repoName,
             displayRef: shortRef,
             canonicalRef: fullId,
+            copyRef: `auth:${shortRef}`,
             copyLabel: `Copy auth:${shortRef}`,
           }}
           title={<span dangerouslySetInnerHTML={{
