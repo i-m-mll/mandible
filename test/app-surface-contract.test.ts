@@ -197,9 +197,10 @@ describe('Codex app subdivision surface contract', () => {
     expect(0.0375 * scale).toBeCloseTo(0.02625, 8);
   });
 
-  it('keeps the footer divider exactly rail-wide', () => {
+  it('keeps the rail margin strip-free and the footer divider exactly rail-wide', () => {
     const rail = ruleBody(base, '.app-rail');
     const footer = ruleBody(base, '.app-rail__footer');
+    expect(ruleBody(base, '.app-rail__item--active::before')).toBe('');
     expect(rail).toContain('--app-rail-inline-padding: 12px');
     expect(rail).toContain('padding: calc(var(--app-header-height) + 18px) var(--app-rail-inline-padding) 18px');
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
