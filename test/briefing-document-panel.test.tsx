@@ -568,12 +568,17 @@ describe('Briefing document panel', () => {
   });
 
   it('saves a heading Comment as the exact whole-section quote without exposing inert directive syntax in the editor', async () => {
-    const sectionSource = '# Policy\nIntro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n## Detail\nDetail text\n# Next\nTail\n';
-    const [directive] = parseBriefingDirectives(sectionSource);
+    const sectionSource = '### Branches, Worktrees, and Signing\n\nIntro\n:::spec-item{key="push" type="text_variant" required="false"}\n::alternative[Current wording]{key="current"}\nCurrent policy.\n::alternative[Action-scoped wording]{key="action-scoped"}\nAction-scoped policy.\n:::\n- Closing policy.\n\n### Mandible Auth Requests\n\nTail\n';
+    const [directive] = parseBriefingDirectives(sectionSource, 'mandible-briefing.v3');
     const posts: any[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (!init?.method) return json(content());
-      posts.push(JSON.parse(String(init.body)));
+      const payload = JSON.parse(String(init.body));
+      posts.push(payload);
+      const annotation = payload.annotations[0];
+      if (sectionSource.slice(annotation.start_offset, annotation.end_offset) !== annotation.quote.trim()) {
+        return json({ error: 'annotation quote does not match document' }, 400);
+      }
       return json({ annotation_event_ids: ['annotation-section'] });
     }));
     const sectionRound = round({
@@ -584,27 +589,31 @@ describe('Briefing document panel', () => {
       },
       items: [{
         id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
-        revision: { id: directive.definition_digest, ordinal: 1, title: 'Plan', prompt: directive.body, description: null, response_type: 'verdict', required: true, position: 1, options: [] },
+        revision: { id: directive.definition_digest, ordinal: 1, title: 'Push', prompt: directive.body, description: null, response_type: 'text_variant', required: false, position: 1, options: [], variants: directive.variants },
         effective_response: null, responseVisible: true, directive,
       }],
     });
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Document review" roundId="round-1" round={sectionRound} canMutate onRefresh={async () => null} />);
 
-    const action = await screen.findByRole('button', { name: 'Comment on section Policy' }) as HTMLButtonElement;
+    const action = await screen.findByRole('button', { name: 'Comment on section Branches, Worktrees, and Signing' }) as HTMLButtonElement;
     await waitFor(() => expect(action.disabled).toBe(false));
     fireEvent.click(action);
     expect(screen.getByText('Whole section:')).toBeTruthy();
-    expect(within(screen.getByRole('dialog')).getByText('Policy')).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByText('Branches, Worktrees, and Signing')).toBeTruthy();
     expect(screen.queryByText(/spec-item/)).toBeNull();
     const dialog = screen.getByRole('dialog');
     fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Review the complete policy section.' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    const expectedEnd = sectionSource.indexOf('# Next');
+    const rawEnd = sectionSource.indexOf('### Mandible Auth Requests');
+    const expectedQuote = sectionSource.slice(0, rawEnd).trim();
+    const expectedEnd = expectedQuote.length;
     expect(posts[0].annotations[0]).toEqual({
       operation: 'set', kind: 'comment', start_offset: 0, end_offset: expectedEnd,
-      quote: sectionSource.slice(0, expectedEnd), body: 'Review the complete policy section.', replacement_text: null,
+      quote: expectedQuote, body: 'Review the complete policy section.', replacement_text: null,
     });
+    expect(expectedQuote).toContain(':::spec-item{key="push" type="text_variant" required="false"}');
+    expect(expectedQuote).toContain('::alternative[Action-scoped wording]{key="action-scoped"}');
   });
 
 });

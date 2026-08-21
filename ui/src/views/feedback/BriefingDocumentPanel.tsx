@@ -310,12 +310,19 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
 
   const openSectionComment = (section: MarkdownHeadingSection) => {
     if (source === null) return;
+    // The annotation endpoint validates a trimmed nonblank quote against the
+    // supplied source range. Whole sections naturally include the blank line
+    // before the next peer heading, so trim the range and quote together while
+    // retaining every non-whitespace source character, including directive markers.
+    const rawQuote = source.slice(section.headingStart, section.sectionEnd);
+    const quote = rawQuote.trim();
+    const start = section.headingStart + rawQuote.indexOf(quote);
     openEditor({
       annotation: null,
       sectionHeading: section.label,
-      start: section.headingStart,
-      end: section.sectionEnd,
-      quote: source.slice(section.headingStart, section.sectionEnd),
+      start,
+      end: start + quote.length,
+      quote,
       top: 96,
       left: 24,
     });
