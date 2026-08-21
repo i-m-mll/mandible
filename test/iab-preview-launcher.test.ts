@@ -721,8 +721,10 @@ describe("iab-preview launcher", () => {
     const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
     setSetting(db, "user.operator_id", operator.id);
     const artifact = recordArtifactVersion(db, { source_kind: "tracked_repo", path: reviewPath,
-      role: "review-document", media_type: "text/markdown" });
+      role: "review-document", media_type: "text/plain" });
     expect(artifact.version).toMatchObject({ source_kind: "tracked_repo", custody_mode: "link" });
+    expect(db.prepare("SELECT media_type FROM artifact_blob WHERE content_hash = ?").get(artifact.artifact.content_hash))
+      .toEqual({ media_type: "text/plain" });
     db.close();
     const sourceHash = fileHash(reviewPath);
     const details = { worktree: fixture.worktree, previewRoot: fixture.previewRoot, db: fixture.db,
