@@ -339,23 +339,24 @@ export function buildCompactDestination(options) {
       ].join(", ");
       const sourceProjection = [
         ...(rowidAlias ? [quoteIdentifier(rowidAlias)] : []),
-        ...columns.map((column) => (
-        options.reclaimConversationCheckpoints
-          && table.name === "conversation_structural_blocks"
-          && column.name === "normalization_checkpoint_id"
-          ? `NULL AS ${quoteIdentifier(column.name)}`
-          : quoteIdentifier(column.name)
-        )),
+        ...columns.map((column) => quoteIdentifier(column.name)),
       ].join(", ");
-      const emptyTable = options.reclaimConversationCheckpoints
-        && table.name === "conversation_normalization_checkpoints";
-      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${sourceProjection} FROM source.${quoteIdentifier(table.name)}${emptyTable ? " WHERE 0" : orderClause(columns)}`;
+      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${sourceProjection} FROM source.${quoteIdentifier(table.name)}${orderClause(columns)}`;
       copied[table.name] = db.prepare(sql).run().changes;
       copiedTables += 1;
       if (options.interruptAfterTables === copiedTables) throw new SimulatedInterruption();
     }
 
     const retainedNames = new Set(retainedTables.map((table) => table.name));
+    if (options.reclaimConversationCheckpoints && retainedNames.has("conversation_normalization_checkpoints")) {
+      db.exec(`
+        DELETE FROM conversation_normalization_checkpoints
+         WHERE NOT EXISTS (
+           SELECT 1 FROM conversation_structural_blocks
+            WHERE normalization_checkpoint_id = conversation_normalization_checkpoints.id
+         )
+      `);
+    }
     for (const object of [...schema.indexes, ...schema.views, ...schema.triggers]) {
       if (object.type !== "view" && object.tbl_name && !retainedNames.has(object.tbl_name)) continue;
       if (object.type === "view" && excluded.some((name) => sqlReferencesIdentifier(object.sql, name))) continue;
@@ -374,16 +375,12 @@ export function buildCompactDestination(options) {
     for (const table of retainedTables) {
       const transformedCheckpointTable = options.reclaimConversationCheckpoints
         && table.name === "conversation_normalization_checkpoints";
-      const transformedStructuralTable = options.reclaimConversationCheckpoints
-        && table.name === "conversation_structural_blocks";
       parity[table.name] = {
         source: transformedCheckpointTable
-          ? projectedTableDigest(db, "source", table.name, { where: "0" })
-          : transformedStructuralTable
-            ? projectedTableDigest(db, "source", table.name, {
-              columns: { normalization_checkpoint_id: "NULL" },
-            })
-            : tableDigest(db, "source", table.name),
+          ? projectedTableDigest(db, "source", table.name, {
+            where: "id IN (SELECT normalization_checkpoint_id FROM conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL)",
+          })
+          : tableDigest(db, "source", table.name),
         destination: tableDigest(db, "main", table.name),
       };
       parity[table.name].match = stableJson(parity[table.name].source) === stableJson(parity[table.name].destination);
@@ -399,9 +396,12 @@ export function buildCompactDestination(options) {
       destination_checkpoint_rows: Number(db.prepare(
         "SELECT COUNT(*) AS count FROM main.conversation_normalization_checkpoints",
       ).get().count),
+      referenced_checkpoint_rows: Number(db.prepare(
+        "SELECT COUNT(DISTINCT normalization_checkpoint_id) AS count FROM main.conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL",
+      ).get().count),
     } : null;
     if (checkpointReclaim && (checkpointReclaim.structural_source_rows !== checkpointReclaim.structural_destination_rows
-        || checkpointReclaim.destination_checkpoint_rows !== 0)) {
+        || checkpointReclaim.destination_checkpoint_rows !== checkpointReclaim.referenced_checkpoint_rows)) {
       throw new Error("Conversation checkpoint reclaim validation failed");
     }
     db.prepare("DETACH DATABASE source").run();

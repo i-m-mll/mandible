@@ -56,12 +56,12 @@ function insertConversation(db: Database.Database, id: string, filePath: string,
   db.prepare(`
     INSERT INTO conversations (
       id, source, source_path, source_hash, source_mtime, title, started_at,
-      block_count, session_id, tags, created_at, updated_at
-    ) VALUES (?, 'codex', ?, ?, ?, ?, ?, ?, ?, '[]', datetime('now'), datetime('now'))
+      block_count, session_id, model, tags, created_at, updated_at
+    ) VALUES (?, 'codex', ?, ?, ?, ?, ?, ?, ?, ?, '[]', datetime('now'), datetime('now'))
   `).run(
     id, filePath, result.conversation.source_hash, result.conversation.source_mtime,
     result.conversation.title, result.conversation.started_at, result.blocks.length,
-    result.conversation.session_id,
+    result.conversation.session_id, result.conversation.model,
   );
   replaceBlocks(db, id, result);
 }
@@ -153,6 +153,42 @@ describe("versioned conversation source reader", () => {
         expect(legacy.value.content).toBe(block.content);
         expect(legacy.value.metadata_json).toBe(JSON.stringify(block.metadata));
       }
+    }
+    db.close();
+  });
+
+  it("restores Codex model metadata from the durable conversation context for bounded reads", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    const sourceRecords = records([
+      { type: "response_item", timestamp: "2026-08-17T00:00:04Z", payload: { type: "reasoning", summary: "model-aware thinking" } },
+    ]);
+    sourceRecords.splice(1, 0, {
+      type: "turn_context", timestamp: "2026-08-17T00:00:00Z", payload: { model: "gpt-5.6" },
+    });
+    writeRecords(filePath, sourceRecords);
+    const parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const store = new ConversationSourceStore(db);
+    await store.recordConversation({
+      conversationId: "conversation-a",
+      provider: "codex",
+      nativeSessionId: parsed.conversation.session_id,
+      filePath,
+      blocks: parsed.blocks.map((block) => ({ ...block, legacyId: `legacy-conversation-a-${block.position}` })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+    await expect(store.verifyAndPromoteConversationPayload("conversation-a"))
+      .resolves.toMatchObject({ promoted: true });
+
+    const read = await new ConversationSourceReader(db).readAll("conversation-a");
+    expect(read.status).toBe("source");
+    if (read.status !== "source") throw new Error("expected source read");
+    for (const block of parsed.blocks.filter((block) => block.type === "assistant_message" || block.type === "thinking")) {
+      const sourceBlock = read.value.find((candidate) => candidate.position === block.position);
+      expect(sourceBlock?.metadata_json).toBe(JSON.stringify(block.metadata));
+      expect(JSON.parse(sourceBlock?.metadata_json ?? "{}")).toMatchObject({ model: "gpt-5.6" });
     }
     db.close();
   });

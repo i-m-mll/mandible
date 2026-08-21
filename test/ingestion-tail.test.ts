@@ -313,6 +313,23 @@ describe("incremental tail ingestion", () => {
     expect(events).not.toContain("conversation_source_snapshot_failed");
   });
 
+  it("does not warn when a touched already-source-backed conversation has no legacy payload to promote", async () => {
+    const sessionPath = await makeCodexSession();
+    const source = initialCodexRows("reconcile-source-backed");
+    await writeWithMtime(sessionPath, source, 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    await writeWithMtime(sessionPath, source, 2);
+    const events: string[] = [];
+
+    await triggerReconcileForTest({
+      watchConfigs: watchConfigs(),
+      log: (_level, event) => events.push(event),
+    });
+
+    expect(events).not.toContain("conversation_source_projection_mismatch");
+    expect(events).not.toContain("conversation_source_snapshot_failed");
+  });
+
   it("reconcile preserves fallback data after same-mtime truncation", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows("reconcile-same-mtime-truncated"), 1);

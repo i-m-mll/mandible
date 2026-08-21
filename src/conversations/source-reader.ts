@@ -80,6 +80,21 @@ interface LegacyRow {
   dag_parent_uuid: string | null;
 }
 
+interface ConversationReadContext {
+  source: ConversationSource;
+  model: string | null;
+}
+
+interface CheckpointRow {
+  id: string;
+  source_version_id: string;
+  parser_format: string;
+  parser_version: string;
+  normalization_version: string;
+  redaction_epoch: number;
+  state_json: string;
+}
+
 type SnapshotResult =
   | { ok: true; records: Map<string, Buffer>; version: VersionRow; provider: ConversationSource; aliasPath: string }
   | { ok: false; kind: SourceReadFailureKind; reason: string };
@@ -359,6 +374,21 @@ export class ConversationSourceReader {
       }
       for (const block of parsed.blocks) parsedByPosition.set(block.position, block);
     }
+    // Incremental provider parses are deliberately one bounded record at a
+    // time. Codex's model arrives in an earlier turn_context record, so recover
+    // it only when the structural row carries the exact parser-state checkpoint
+    // proving the full parser attached model metadata.
+    const conversation = this.db.prepare(`
+      SELECT source, model FROM conversations WHERE id = ?
+    `).get(conversationId) as ConversationReadContext | undefined;
+    const checkpointIds = [...new Set(contextRows
+      .map((row) => row.normalization_checkpoint_id)
+      .filter((id): id is string => id !== null))];
+    const checkpoints = checkpointIds.length === 0 ? [] : this.db.prepare(`
+      SELECT * FROM conversation_normalization_checkpoints
+       WHERE id IN (${checkpointIds.map(() => "?").join(",")})
+    `).all(...checkpointIds) as CheckpointRow[];
+    const checkpointById = new Map(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
     const blocks: SourceBackedConversationBlock[] = [];
     const rowById = new Map(contextRows.map((row) => [row.id, row]));
     for (const row of rows) {
@@ -373,7 +403,38 @@ export class ConversationSourceReader {
         && typeof parentBlock?.metadata.tool_name === "string"
         ? { ...block, metadata: { ...block.metadata, tool_name: parentBlock.metadata.tool_name } }
         : block;
-      blocks.push(this.sourceBlock(row, withBoundedLinkage));
+      const checkpoint = row.normalization_checkpoint_id
+        ? checkpointById.get(row.normalization_checkpoint_id)
+        : undefined;
+      let hasCodexModelCheckpoint = false;
+      if (row.normalization_checkpoint_id && !checkpoint) {
+        return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint is missing");
+      }
+      if (checkpoint) {
+        if (checkpoint.source_version_id !== snapshot.version.id
+            || checkpoint.parser_format !== row.parser_format
+            || checkpoint.parser_version !== row.parser_version
+            || checkpoint.normalization_version !== row.normalization_version
+            || checkpoint.redaction_epoch !== row.redaction_epoch) {
+          return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint epoch diverges");
+        }
+        try {
+          const state = JSON.parse(checkpoint.state_json) as { kind?: unknown; version?: unknown };
+          hasCodexModelCheckpoint = state.kind === "codex-model-metadata" && state.version === 1;
+        } catch {
+          return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint is invalid");
+        }
+      }
+      const withCodexModel = hasCodexModelCheckpoint && conversation?.source === "codex"
+        && typeof conversation.model === "string" && conversation.model.length > 0
+        && (withBoundedLinkage.type === "assistant_message" || withBoundedLinkage.type === "thinking")
+        && withBoundedLinkage.metadata.model === undefined
+        ? {
+          ...withBoundedLinkage,
+          metadata: { ...withBoundedLinkage.metadata, model: conversation.model },
+        }
+        : withBoundedLinkage;
+      blocks.push(this.sourceBlock(row, withCodexModel));
     }
     return {
       status: "source",

@@ -228,6 +228,7 @@ describe("conversation cutover compact rebuild", () => {
         body TEXT NOT NULL
       );
       INSERT INTO conversation_normalization_checkpoints VALUES ('checkpoint-one');
+      INSERT INTO conversation_normalization_checkpoints VALUES ('orphaned-checkpoint');
       INSERT INTO conversation_structural_blocks VALUES ('structural-one', 'checkpoint-one', 'exact body');
     `);
     sourceDb.close();
@@ -248,9 +249,11 @@ describe("conversation cutover compact rebuild", () => {
     const rebuilt = new Database(destination, { readonly: true });
     expect(rebuilt.prepare("SELECT * FROM conversation_structural_blocks").get()).toEqual({
       id: "structural-one",
-      normalization_checkpoint_id: null,
+      normalization_checkpoint_id: "checkpoint-one",
       body: "exact body",
     });
+    expect(rebuilt.prepare("SELECT id FROM conversation_normalization_checkpoints ORDER BY id").all())
+      .toEqual([{ id: "checkpoint-one" }]);
     rebuilt.close();
   });
 });

@@ -667,6 +667,15 @@ export class ConversationSourceStore {
          ORDER BY position
       `).all(input.conversationId) as LegacyBlockRow[];
     const structuralMode = input.blocks ? input.structuralMode ?? "replace" : "replace";
+    const codexModelPositions = new Set(
+      input.provider === "codex"
+        ? blocks.filter((block) => {
+          const metadata = parseMetadata(block.metadata_json);
+          return (block.type === "assistant_message" || block.type === "thinking")
+            && typeof metadata.model === "string" && metadata.model.length > 0;
+        }).map((block) => block.position)
+        : [],
+    );
 
     const apply = this.db.transaction(() => {
       this.db.prepare(`
@@ -739,6 +748,40 @@ export class ConversationSourceStore {
          WHERE id = ?
       `).run(versionId, now, sourceId);
 
+      const inheritedCodexModelPositions = new Set<number>();
+      if (structuralMode === "append") {
+        const priorCheckpoints = this.db.prepare(`
+          SELECT sb.position, checkpoint.state_json
+            FROM conversation_structural_blocks sb
+            JOIN conversation_normalization_checkpoints checkpoint
+              ON checkpoint.id = sb.normalization_checkpoint_id
+           WHERE sb.conversation_id = ? AND sb.status = 'current'
+        `).all(input.conversationId) as Array<{ position: number; state_json: string }>;
+        for (const checkpoint of priorCheckpoints) {
+          try {
+            const state = JSON.parse(checkpoint.state_json) as { kind?: unknown; version?: unknown };
+            if (state.kind === "codex-model-metadata" && state.version === 1) {
+              inheritedCodexModelPositions.add(checkpoint.position);
+            }
+          } catch {
+            // The reader will fail closed on a malformed referenced checkpoint.
+          }
+        }
+      }
+      const allCodexModelPositions = new Set([...inheritedCodexModelPositions, ...codexModelPositions]);
+      const codexModelCheckpointId = allCodexModelPositions.size === 0 ? null : this.recordCheckpoint({
+        sourceVersionId: versionId,
+        recordOrdinal: 0,
+        prefixOffset: 0,
+        parserFormat: input.parserFormat,
+        parserVersion: input.parserVersion,
+        normalizationVersion: input.normalizationVersion,
+        redactionEpoch: input.redactionEpoch,
+        // This is parser state only: it proves that the full Codex parser
+        // attached model metadata for these rows; it stores no transcript body.
+        state: { kind: "codex-model-metadata", version: 1 },
+      });
+
       if (structuralMode === "append") {
         // An append creates a new sealed source version but does not change the
         // already-indexed prefix. Rebind that prefix to the new version and add
@@ -754,6 +797,14 @@ export class ConversationSourceStore {
           versionId, input.parserFormat, input.parserVersion,
           input.normalizationVersion, input.redactionEpoch, now, input.conversationId,
         );
+        if (codexModelCheckpointId && inheritedCodexModelPositions.size > 0) {
+          this.db.prepare(`
+            UPDATE conversation_structural_blocks
+               SET normalization_checkpoint_id = ?
+             WHERE conversation_id = ? AND status = 'current'
+               AND position IN (${[...inheritedCodexModelPositions].map(() => "?").join(",")})
+          `).run(codexModelCheckpointId, input.conversationId, ...inheritedCodexModelPositions);
+        }
       } else {
         this.db.prepare(
           "UPDATE conversation_structural_blocks SET status = 'retired', updated_at = ? WHERE conversation_id = ? AND status = 'current'",
@@ -835,7 +886,8 @@ export class ConversationSourceStore {
           blockId, input.conversationId, versionId, providerKey, block.position,
           block.type, block.role, block.timestamp, block.dag_uuid, block.dag_parent_uuid,
           range.offset, range.length, range.hash, range.ordinal, subBlockOrdinal,
-          null, input.parserFormat, input.parserVersion,
+          allCodexModelPositions.has(block.position) ? codexModelCheckpointId : null,
+          input.parserFormat, input.parserVersion,
           input.normalizationVersion, input.redactionEpoch, now, now,
         );
         this.db.prepare(`

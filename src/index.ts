@@ -121,6 +121,27 @@ export interface StartOptions {
   operationalLogDbPath?: string;
 }
 
+export function startIngestionAfterStartupWorkScan(
+  scan: Promise<unknown>,
+  start: () => void,
+  logger: Logger,
+): void {
+  const startAfterScan = () => {
+    try {
+      start();
+    } catch (error) {
+      logger("warn", "ingestion_start_failed", { error: String(error) });
+    }
+  };
+  void scan.then(
+    startAfterScan,
+    (error) => {
+      logger("warn", "startup_work_scan_failed", { error: String(error) });
+      startAfterScan();
+    },
+  );
+}
+
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
   // Bug: 645f8a8 — arm the readiness gate before any startup work. Health
   // reports ready:false from the moment the listener accepts connections until
@@ -424,10 +445,18 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // start the yielding scanner explicitly. Its completion event advances the
   // warm tier after the first reconciliation pass, even when a recent scan is
   // reused from the persisted skip window.
-  if (operationalMutationsAllowed) {
-    void workScanner.scanAllAsync({ skip_recent: true }).catch((error) => {
-      logger("warn", "startup_work_scan_failed", { error: String(error) });
-    });
+  const startupWorkScan = operationalMutationsAllowed
+    ? workScanner.scanAllAsync({ skip_recent: true })
+    : null;
+  if (startupWorkScan) {
+    startIngestionAfterStartupWorkScan(startupWorkScan, () => {
+      startIngestion(logger, {
+        dbPath,
+        // Read the last periodic sample so ingestion backoff does not reset the
+        // shared lag histogram between batches. Issue: 0d81726.
+        getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
+      });
+    }, logger);
   } else {
     startupWorkScanComplete = true;
   }
@@ -439,20 +468,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     startupInfo = commit;
     sse.setStartupCommit(commit);
   });
-
-  // Start conversation ingestion watchers
-  if (operationalMutationsAllowed) {
-    try {
-      startIngestion(logger, {
-        dbPath,
-        // Read the last periodic sample so ingestion backoff does not reset the
-        // shared lag histogram between batches. Issue: 0d81726.
-        getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
-      });
-    } catch (error) {
-      logger("warn", "ingestion_start_failed", { error: String(error) });
-    }
-  }
 
   // Startup reconciliation can shell out to inspect many local processes and
   // worktrees. Run it after the daemon is healthy so startup callers are not

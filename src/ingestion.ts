@@ -3346,7 +3346,8 @@ async function recordDurableConversationSource(
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
     const promotion = await store.verifyAndPromoteConversationPayload(conversationId);
-    if (!promotion.promoted) {
+    if (!promotion.promoted
+        && promotion.reason !== "no legacy payload is available for projection verification") {
       logger("warn", "conversation_source_projection_mismatch", {
         file: filePath,
         conversation_id: conversationId,
