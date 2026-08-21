@@ -131,7 +131,7 @@ cmd_add() {
     exit 1
   }
 
-  reminder_id=$(printf '%s' "$response" | jq -r '.display_id // .id // empty')
+  reminder_id=$(printf '%s' "$response" | api_jq_human 'mandible_display_id')
   if [[ -z "$reminder_id" ]]; then
     print -u2 "error: failed to parse created reminder ID"
     exit 1

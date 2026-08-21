@@ -1236,11 +1236,11 @@ cmd_record() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .result as $r
-      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version.ref // $r.version.id)",
-        "series \($r.series.ref // $r.series.id) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
-        "artifact \($r.artifact.ref // $r.artifact.id)",
+      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version | mandible_display_ref)",
+        "series \($r.series | mandible_display_ref) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
+        "artifact \($r.artifact | mandible_display_ref)",
         ( ($r.warnings // [])[] | "warning: \(.)" )'
   fi
 }

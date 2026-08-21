@@ -704,7 +704,7 @@ cmd_link() {
   if [[ ! "$status" =~ ^2 ]]; then
     die_api_status "Failed to link relationship(s) from ${source_ref}" "$status" "$response"
   fi
-  printf '%s\n' "$response" | jq -r '"linked \(.edges | length) relationship(s) action_id=\(.action_id)"'
+  printf '%s\n' "$response" | api_jq_human '"linked \(.edges | length) relationship(s) action_id=\(.action_id | mandible_short_id)"'
 }
 
 cmd_unlink() {
@@ -758,7 +758,7 @@ cmd_unlink() {
   if [[ ! "$status" =~ ^2 ]]; then
     die_api_status "Failed to unlink relationship(s) from ${source_ref}" "$status" "$response"
   fi
-  printf '%s\n' "$response" | jq -r '"unlinked \(.edges | length) relationship(s) action_id=\(.action_id)"'
+  printf '%s\n' "$response" | api_jq_human '"unlinked \(.edges | length) relationship(s) action_id=\(.action_id | mandible_short_id)"'
 }
 
 print_issue_heads() {
@@ -1394,11 +1394,11 @@ cmd_parent_role_status() {
   if (( json )); then
     printf '%s\n' "$response" | jq '.'
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       if .live_holder then
-        "live holder: \(.live_holder.session_id // "-") (\(.live_holder.mechanism // "-"))"
+        "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-"))"
       elif .holder then
-        "stale holder: \(.holder.session_id // "-") (\(.holder.mechanism // "-"))"
+        "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.mechanism // "-"))"
       else
         "no parent-role holder"
       end

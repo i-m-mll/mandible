@@ -61,8 +61,8 @@ print_reminder() {
     def predicate:
       .revision.payload.predicate
       | if .kind == "at" then "at " + .at
-        elif .kind == "issue_closed" then "issue_closed " + .issue_id
-        else "auth_merge_count_gte project=" + .project_id
+        elif .kind == "issue_closed" then "issue_closed " + (.issue_id | mandible_short_id)
+        else "auth_merge_count_gte project=" + (.project_id | mandible_short_id)
           + " threshold=" + (.threshold | tostring)
           + (if .base_branch == null then "" else " base_branch=" + .base_branch end)
           + (if .canonical_message == null then "" else " canonical_message=" + (.canonical_message | tostring) end)
