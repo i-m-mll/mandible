@@ -106,6 +106,16 @@ describe("incremental tail ingestion", () => {
       status: "ingested",
     });
 
+    const initialConversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    // Model a historical parser projection that does not match the current
+    // native parser. Appending must still discard these disposable bytes.
+    db.prepare(`
+      UPDATE conversation_blocks
+         SET content = 'historical parser bytes', payload_state = 'legacy'
+       WHERE conversation_id = ? AND position = 0
+    `).run(initialConversation.id);
+
     await appendWithMtime(sessionPath, assistantRow("new tail", 3), 2);
     expect(await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 })).toMatchObject({
       status: "ingested",
@@ -118,6 +128,11 @@ describe("incremental tail ingestion", () => {
       db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
         .get(conversation.id),
     ).toMatchObject({ count: 3 });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM conversation_blocks
+       WHERE conversation_id = ?
+         AND (payload_state != 'source' OR content != '' OR metadata_json != '{}' OR compressed != 0)
+    `).get(conversation.id)).toEqual({ count: 0 });
     expect(
       db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),

@@ -3345,9 +3345,9 @@ async function recordDurableConversationSource(
       blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })),
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
-    const promotion = await store.verifyAndPromoteConversationPayload(conversationId);
+    const promotion = await store.promoteNativeConversationPayload(conversationId);
     if (!promotion.promoted
-        && promotion.reason !== "no legacy payload is available for projection verification") {
+        && promotion.reason !== "no legacy payload is available for promotion") {
       logger("warn", "conversation_source_projection_mismatch", {
         file: filePath,
         conversation_id: conversationId,
