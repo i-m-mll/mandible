@@ -437,11 +437,6 @@ function pinnedRoundDocument(db: Db, artifactVersionId: string): { source: strin
   if (!version || version.id !== artifactVersionId) {
     throw new BriefingStoreError("round document is unavailable", 409, "document_unavailable");
   }
-  const blob = db.prepare("SELECT media_type FROM artifact_blob WHERE id = ?").get(version.blob_id) as
-    { media_type: string | null } | undefined;
-  if (blob?.media_type !== "text/markdown") {
-    throw new BriefingStoreError("round document is not UTF-8 Markdown", 409, "document_unavailable");
-  }
   const content = readArtifactBytesFull(db, version.id);
   if (!content.ok) throw new BriefingStoreError("round document is unavailable", 409, "document_unavailable");
   if (createHash("sha256").update(content.bytes).digest("hex") !== version.content_hash) {
