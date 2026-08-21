@@ -74,7 +74,7 @@ describe('typed anchored detail and main notice contract', () => {
     );
     const shell = container.querySelector('.detail-pane-shell');
     const slots = Array.from(shell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot'));
-    expect(slots).toEqual(['header', 'notice', 'body', 'footer']);
+    expect(slots).toEqual(['header', 'notice', 'body', 'footer', 'overlay-host']);
     const notice = shell?.querySelector(':scope > .detail-pane-shell__notice');
     const body = shell?.querySelector(':scope > .detail-pane-shell__body');
     expect(notice?.contains(body ?? null)).toBe(false);

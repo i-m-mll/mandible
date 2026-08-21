@@ -648,6 +648,14 @@ describe('Briefing document panel', () => {
       }],
     });
     const changes: unknown[] = [];
+    const posts: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)));
+        return json({ annotation_event_ids: ['annotation-variant'] });
+      }
+      return json(content());
+    }));
     function Harness({ canMutate = true }: { canMutate?: boolean }) {
       const [draft, setDraft] = useState<Record<string, BriefingResponseValue | null>>({});
       return <BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Document review" roundId="round-1" round={variantRound}
@@ -675,6 +683,17 @@ describe('Briefing document panel', () => {
     expect(await screen.findByText('Detailed policy with more words.')).toBeTruthy();
     expect(screen.queryByText('Concise policy.')).toBeNull();
     expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add annotation' });
+    expect(within(dialog).getByText('Detailed policy with more words.')).toBeTruthy();
+    expect(within(dialog).queryByText(/alternative|Concise policy/)).toBeNull();
+    fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Keep the detailed wording.' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].annotations).toEqual([{
+      operation: 'set', kind: 'comment', start_offset: detailedStart, end_offset: detailedEnd,
+      quote: 'Detailed policy with more words.', body: 'Keep the detailed wording.', replacement_text: null,
+    }]);
     fireEvent.click(screen.getByRole('button', { name: 'Previous text variant' }));
     expect(changes.at(-1)).toEqual({ id: 'wording', value: { option_key: 'concise' } });
 

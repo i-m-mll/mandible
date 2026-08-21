@@ -27,7 +27,7 @@ describe('anchored detail pane footer contract', () => {
     const shell = container.querySelector('.detail-pane-shell');
     const slots = Array.from(shell?.children ?? [])
       .map((element) => element.getAttribute('data-detail-pane-slot'));
-    expect(slots).toEqual(['header', 'body', 'footer']);
+    expect(slots).toEqual(['header', 'body', 'footer', 'overlay-host']);
     expect(shell?.querySelectorAll(':scope > .detail-pane-shell__footer')).toHaveLength(1);
     expect(shell?.querySelector(':scope > .detail-pane-shell__footer')?.getAttribute('aria-label'))
       .toBe('Selection actions');
