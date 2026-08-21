@@ -128,6 +128,8 @@ describe("auth list CLI", () => {
     expect(result.stdout).toContain("Auth queue: 2 active request(s)");
     expect(result.stdout).toContain("[11111111] pending mandible feature/auth-list-cli -> main");
     expect(result.stdout).toContain("[22222222] completed dotfiles feature/auth-list-instructions -> main");
+    expect(result.stdout).not.toContain(queue.requests[0].id);
+    expect(result.stdout).not.toContain(queue.requests[1].id);
   });
 
   it("filters by repo, branch, and status in JSON output", async () => {

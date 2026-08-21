@@ -22,6 +22,12 @@ import type {
   SourceReadResult,
 } from "./source-types.js";
 import {
+  getConversationStructureCache,
+  parseSparseConversationBlockId,
+  sparseConversationBlockId,
+  type SparseConversationBlockRow,
+} from "./structure-cache.js";
+import {
   MANAGED_NORMALIZED_SOURCE_EPOCHS,
   parseManagedNormalizedRecord,
 } from "./managed-normalized-source.js";
@@ -149,12 +155,14 @@ export interface ConversationSourceReaderOptions {
  */
 export class ConversationSourceReader {
   private readonly store: ConversationSourceStore;
+  private readonly structureCache;
   private readonly legacyFallback: boolean;
   private readonly maxSourceBytes: number;
   private readonly maskCredentials: boolean;
 
   constructor(private readonly db: Db, options: ConversationSourceReaderOptions = {}) {
     this.store = new ConversationSourceStore(db);
+    this.structureCache = getConversationStructureCache(db);
     this.legacyFallback = options.legacyFallback !== false;
     this.maxSourceBytes = options.maxSourceBytes ?? DEFAULT_MAX_SOURCE_BYTES;
     this.maskCredentials = options.maskCredentials !== false;
@@ -166,6 +174,26 @@ export class ConversationSourceReader {
       SELECT * FROM conversation_structural_blocks WHERE id = ? AND status = 'current'
     `).get(durableId) as StructuralRow | undefined;
     if (!row) {
+      const sparseRef = parseSparseConversationBlockId(blockRef);
+      if (sparseRef) {
+        const source = this.store.resolveConversation(sparseRef.conversationId);
+        const sparse = source?.currentVersionId
+          ? this.structureCache.readPosition(
+            sparseRef.conversationId,
+            source.currentVersionId,
+            sparseRef.position,
+          )
+          : null;
+        if (sparse) {
+          const page = await this.readSparseRows(sparseRef.conversationId, [sparse], sparse.position);
+          if (page.status === "source" || page.status === "legacy") {
+            const value = page.value.blocks[0];
+            if (value) return { ...page, value };
+          } else {
+            return { status: page.status, reason: page.reason };
+          }
+        }
+      }
       const legacy = this.db.prepare(
         "SELECT * FROM conversation_blocks WHERE id = ?",
       ).get(blockRef) as LegacyRow | undefined;
@@ -204,6 +232,34 @@ export class ConversationSourceReader {
     `).all(...params, limit, offset) as StructuralRow[];
 
     if (rows.length === 0) {
+      const source = this.store.resolveConversation(conversationId);
+      const sparsePage = source?.currentVersionId
+        ? this.structureCache.readPage(conversationId, source.currentVersionId, {
+          offset,
+          limit,
+          types: options.types,
+        })
+        : null;
+      if (sparsePage && (sparsePage.rows.length > 0 || sparsePage.total === 0)) {
+        const sparseResult = await this.readSparseRows(
+          conversationId,
+          sparsePage.rows,
+          offset,
+          options.types,
+        );
+        if (sparseResult.status === "source" || sparseResult.status === "legacy") {
+          return {
+            ...sparseResult,
+            value: {
+              ...sparseResult.value,
+              total: sparsePage.total,
+              offset,
+              limit,
+            },
+          };
+        }
+        return sparseResult;
+      }
       return this.legacyPage(conversationId, offset, limit, options.types, "not_found");
     }
     const result = await this.readStructuralRows(conversationId, rows, offset, options.types);
@@ -275,18 +331,25 @@ export class ConversationSourceReader {
     rows: StructuralRow[],
     fallbackOffset: number,
     fallbackTypes?: readonly string[],
+    sparseParentRows?: readonly StructuralRow[],
+    verifyRecordHashes = true,
   ): Promise<SourceReadResult<SourceBlockPage>> {
     if (!rows[0].source_version_id || rows[0].record_offset == null || rows[0].record_hash == null) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "source locator has not been indexed");
     }
     const parentIds = [...new Set(rows.map((row) => row.parent_block_id).filter((id): id is string => id !== null))];
-    const parentRows = parentIds.length === 0 ? [] : this.db.prepare(`
+    const parentRows = sparseParentRows ?? (parentIds.length === 0 ? [] : this.db.prepare(`
       SELECT * FROM conversation_structural_blocks
        WHERE conversation_id = ? AND status = 'current'
          AND id IN (${parentIds.map(() => "?").join(",")})
-    `).all(conversationId, ...parentIds) as StructuralRow[];
+    `).all(conversationId, ...parentIds) as StructuralRow[]);
     const contextRows = [...new Map([...rows, ...parentRows].map((row) => [row.id, row])).values()];
-    const snapshot = await this.openVerifiedRecords(conversationId, rows[0].source_version_id, contextRows);
+    const snapshot = await this.openVerifiedRecords(
+      conversationId,
+      rows[0].source_version_id,
+      contextRows,
+      verifyRecordHashes,
+    );
     if (!snapshot.ok) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, snapshot.kind, snapshot.reason);
     }
@@ -298,9 +361,10 @@ export class ConversationSourceReader {
       if (!record) {
         return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "record range was not read");
       }
-      const recordHash = createHash("sha256")
-        .update(record).digest("hex");
-      if (recordHash !== row.record_hash) {
+      const recordHash = verifyRecordHashes
+        ? createHash("sha256").update(record).digest("hex")
+        : null;
+      if (verifyRecordHashes && recordHash !== row.record_hash) {
         return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "record hash mismatch");
       }
     }
@@ -443,6 +507,60 @@ export class ConversationSourceReader {
     };
   }
 
+  private structuralRowFromSparse(row: SparseConversationBlockRow): StructuralRow {
+    return {
+      id: sparseConversationBlockId(row.conversationId, row.position),
+      conversation_id: row.conversationId,
+      source_version_id: row.sourceVersionId,
+      position: row.position,
+      type: row.type,
+      role: row.role,
+      timestamp: null,
+      parent_block_id: row.parentPosition === null
+        ? null
+        : sparseConversationBlockId(row.conversationId, row.parentPosition),
+      dag_uuid: null,
+      dag_parent_uuid: null,
+      record_offset: row.recordOffset,
+      record_length: row.recordLength,
+      record_hash: "",
+      record_ordinal: row.recordOrdinal,
+      sub_block_ordinal: row.subBlockOrdinal,
+      normalization_checkpoint_id: null,
+      parser_format: row.parserFormat,
+      parser_version: row.parserVersion,
+      normalization_version: row.normalizationVersion,
+      redaction_epoch: row.redactionEpoch,
+    };
+  }
+
+  private async readSparseRows(
+    conversationId: string,
+    rows: readonly SparseConversationBlockRow[],
+    fallbackOffset: number,
+    fallbackTypes?: readonly string[],
+  ): Promise<SourceReadResult<SourceBlockPage>> {
+    if (rows.length === 0) {
+      return { status: "source", value: { blocks: [], total: 0, offset: fallbackOffset, limit: 0 }, sourceVersionId: "" };
+    }
+    const sourceVersionId = rows[0].sourceVersionId;
+    const parentPositions = [...new Set(rows
+      .map((row) => row.parentPosition)
+      .filter((position): position is number => position !== null))];
+    const sparseParents = parentPositions.flatMap((position) => {
+      const parent = this.structureCache.readPosition(conversationId, sourceVersionId, position);
+      return parent ? [this.structuralRowFromSparse(parent)] : [];
+    });
+    return this.readStructuralRows(
+      conversationId,
+      rows.map((row) => this.structuralRowFromSparse(row)),
+      fallbackOffset,
+      fallbackTypes,
+      sparseParents,
+      false,
+    );
+  }
+
   private sourceBlock(
     row: StructuralRow,
     block: Omit<ConversationBlock, "id" | "conversation_id">,
@@ -472,7 +590,10 @@ export class ConversationSourceReader {
       metadata_json: metadataJson,
       dag_uuid: block.dag_uuid ?? row.dag_uuid,
       dag_parent_uuid: block.dag_parent_uuid ?? row.dag_parent_uuid,
-      locator: locator(row),
+      // Sparse cache rows deliberately omit per-record hashes. The complete
+      // source version and observed file extent remain authoritative; do not
+      // manufacture a durable-looking locator from disposable coordinates.
+      locator: row.record_hash ? locator(row) : null,
     };
   }
 
@@ -539,6 +660,7 @@ export class ConversationSourceReader {
     conversationId: string,
     versionId: string,
     rows: readonly StructuralRow[],
+    verifyRecordHashes = true,
   ): Promise<SnapshotResult> {
     const source = this.store.resolveConversation(conversationId);
     if (!source || source.currentVersionId !== versionId) {

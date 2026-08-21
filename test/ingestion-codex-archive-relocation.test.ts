@@ -13,6 +13,7 @@ import path from "node:path";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import { CodexParser } from "../src/parsers/codex.js";
+import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 
 const ROLLOUT_NAME = "rollout-2026-08-11T09-15-00-019f8ab1-archive-move.jsonl";
 const SESSION_ID = "019f8ab1-archive-move";
@@ -71,6 +72,15 @@ function conversationRow(sourcePath: string): { id: string; block_count: number 
 }
 
 function blockCount(conversationId: string): number {
+  const source = db.prepare(`SELECT current_version_id FROM conversation_sources
+    WHERE conversation_id = ? AND current_version_id IS NOT NULL`).get(conversationId) as {
+      current_version_id: string;
+    } | undefined;
+  if (source) {
+    const sparse = getConversationStructureCache(db)
+      .blockCount(conversationId, source.current_version_id);
+    if (sparse !== null) return sparse;
+  }
   const result = db
     .prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
     .get(conversationId) as { count: number };
@@ -355,7 +365,7 @@ describe("codex archive relocation", () => {
     expect(blockCount(ingested!.id)).toBe(ingested!.block_count);
   });
 
-  it("tombstones a genuinely missing source without deleting fallback bodies", async () => {
+  it("tombstones a genuinely missing source without deleting its durable identity", async () => {
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
     expect(conversationRow(sessionPath)).toBeDefined();
 

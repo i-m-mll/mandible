@@ -16,6 +16,7 @@ import {
 } from "./source-observer.js";
 import type { ConversationSourceAlias } from "./source-types.js";
 import { readExactCodexTitleAuthority } from "./codex-title-authority.js";
+import { getConversationStructureCache } from "./structure-cache.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -42,6 +43,7 @@ interface CurrentFacts {
   ingestTailHash: string | null;
   normalizedBlockCount: number;
   actualBlockCount: number;
+  structureCacheComplete: boolean;
   title: string;
   filesystemIdentity: SourceFilesystemIdentity | null;
 }
@@ -186,7 +188,7 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
            v.content_sha256 AS version_hash,
            v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns,
            state.byte_offset AS ingest_byte_offset, state.tail_hash AS ingest_tail_hash,
-           (SELECT COUNT(*) FROM conversation_blocks block WHERE block.conversation_id = c.id) AS actual_block_count
+           c.block_count AS actual_block_count
       FROM conversations c
       JOIN conversation_sources s ON s.conversation_id = c.id AND s.id = ?
       LEFT JOIN conversation_source_versions v ON v.id = s.current_version_id
@@ -194,20 +196,28 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
      WHERE c.id = ?
   `).get(pinned.sourceId, sourcePath, pinned.conversationId) as Record<string, unknown> | undefined;
   if (!row) throw new ConversationFreshnessError("source_changed", "pinned conversation source identity changed");
+  const currentVersionId = row.current_version_id == null ? null : String(row.current_version_id);
+  const normalizedBlockCount = Number(row.normalized_block_count);
   return {
     conversationId: String(row.conversation_id),
     sourceId: String(row.source_id),
     sourcePath,
     sourceAvailability: String(row.source_availability),
-    currentVersionId: row.current_version_id == null ? null : String(row.current_version_id),
+    currentVersionId,
     versionAvailability: row.version_availability == null ? null : String(row.version_availability),
     versionByteLength: row.version_byte_length == null ? null : Number(row.version_byte_length),
     versionMtimeMs: row.version_mtime_ms == null ? null : Number(row.version_mtime_ms),
     versionHash: row.version_hash == null ? null : String(row.version_hash),
     ingestByteOffset: row.ingest_byte_offset == null ? null : Number(row.ingest_byte_offset),
     ingestTailHash: row.ingest_tail_hash == null ? null : String(row.ingest_tail_hash),
-    normalizedBlockCount: Number(row.normalized_block_count),
+    normalizedBlockCount,
     actualBlockCount: Number(row.actual_block_count),
+    structureCacheComplete: currentVersionId !== null
+      && getConversationStructureCache(db).hasCompleteConversation(
+        pinned.conversationId,
+        currentVersionId,
+        normalizedBlockCount,
+      ),
     title: String(row.title),
     filesystemIdentity: row.filesystem_device == null || row.filesystem_inode == null
       || row.filesystem_ctime_ns == null
@@ -234,8 +244,9 @@ function matchesIndexedExtent(facts: CurrentFacts, observed: StableSourceExtentO
   // This bounded shortcut trusts the previously indexed full content hash only
   // while every immutable-version, extent, tail, and normalized-row fact still
   // matches, including the lossless filesystem identity captured with the
-  // authoritative version. It deliberately does not re-hash unchanged
-  // multi-gigabyte bytes; identity drift and legacy rows take the full path.
+  // authoritative version. Dense normalized block rows are deliberately absent
+  // after the sparse cutover; conversations.block_count is the parser-owned
+  // projection while the native extent and append marker prove freshness.
   return facts.sourceAvailability === "available"
     && facts.versionAvailability === "available"
     && facts.currentVersionId !== null
@@ -245,7 +256,8 @@ function matchesIndexedExtent(facts: CurrentFacts, observed: StableSourceExtentO
     && facts.versionMtimeMs === observed.fileMtimeMs
     && facts.ingestByteOffset === observed.byteLength
     && facts.ingestTailHash === observed.tailHash
-    && facts.normalizedBlockCount === facts.actualBlockCount;
+    && facts.normalizedBlockCount === facts.actualBlockCount
+    && facts.structureCacheComplete;
 }
 
 function matchesIndexed(facts: CurrentFacts, observed: StableSourceObservation): boolean {
@@ -258,7 +270,8 @@ function matchesIndexed(facts: CurrentFacts, observed: StableSourceObservation):
     && matchesFilesystemIdentity(facts, observed)
     && facts.ingestByteOffset === observed.byteLength
     && facts.ingestTailHash === observed.tailHash
-    && facts.normalizedBlockCount === facts.actualBlockCount;
+    && facts.normalizedBlockCount === facts.actualBlockCount
+    && facts.structureCacheComplete;
 }
 
 function sameObservation(a: StableSourceObservation, b: StableSourceObservation): boolean {

@@ -10,6 +10,10 @@ import { ConversationSourceReader } from "../src/conversations/source-reader.js"
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import {
+  getConversationStructureCache,
+  sparseConversationBlockId,
+} from "../src/conversations/structure-cache.js";
+import {
   ConversationSearchCache,
   SourceBackedConversationSearchSourceAdapter,
 } from "../src/conversations/search-cache.js";
@@ -154,6 +158,44 @@ describe("versioned conversation source reader", () => {
         expect(legacy.value.metadata_json).toBe(JSON.stringify(block.metadata));
       }
     }
+    db.close();
+  });
+
+  it("pages exact native records after dense structural rows and aliases are reclaimed", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const versionId = await record(db, "conversation-a", filePath);
+    const cache = getConversationStructureCache(db);
+    expect(cache.captureDenseRows(db, "conversation-a", "replace")).toMatchObject({
+      captured: 3,
+      cached: 3,
+      sourceVersionId: versionId,
+    });
+    expect(cache.findToolPosition("conversation-a", "call-1")).toBe(0);
+    db.exec(`
+      DELETE FROM conversation_block_aliases;
+      DELETE FROM conversation_structural_blocks;
+      DELETE FROM conversation_blocks;
+      DELETE FROM conversation_normalization_checkpoints;
+    `);
+
+    const reader = new ConversationSourceReader(db);
+    const page = await reader.readPage("conversation-a", { offset: 0, limit: 2 });
+    expect(page.status).toBe("source");
+    if (page.status !== "source") throw new Error("expected sparse source read");
+    expect(page.value).toMatchObject({ total: 3, offset: 0, limit: 2 });
+    expect(page.value.blocks.map((block) => block.content))
+      .toEqual(parsed.blocks.slice(0, 2).map((block) => block.content));
+    expect(page.value.blocks[1].parent_id).toBe(page.value.blocks[0].id);
+    expect(page.value.blocks.every((block) => block.locator === null)).toBe(true);
+
+    const direct = await reader.readBlock(sparseConversationBlockId("conversation-a", 2));
+    expect(direct.status).toBe("source");
+    if (direct.status === "source") expect(direct.value.content).toBe(parsed.blocks[2].content);
     db.close();
   });
 

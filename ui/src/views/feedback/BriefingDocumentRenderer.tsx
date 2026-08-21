@@ -452,7 +452,7 @@ export function BriefingDocumentRenderer({
           identity={{
             displayRef: shortRouteId(briefingId).replace(/^briefing:/i, ''),
             canonicalRef: briefingId,
-            copyLabel: 'Copy full Briefing ID',
+            copyLabel: 'Copy Briefing reference',
           }}
           title={title}
           titleTooltip={title}
@@ -469,7 +469,7 @@ export function BriefingDocumentRenderer({
               </select>
             ),
             selectedCanonicalRef: round.selected_round_id,
-            copyLabel: 'Copy full selected round ref',
+            copyLabel: 'Copy selected round reference',
           } : undefined}
           actions={round ? (
             <>

@@ -1191,7 +1191,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
                 entityLabel: selected.executor,
                 displayRef: selected.task.task_id,
                 canonicalRef: selected.key,
-                copyLabel: `Copy task reference ${selected.key}`,
+                copyLabel: 'Copy task reference',
               }}
               title={selected.task.display_name}
               status={(
@@ -1222,7 +1222,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
                 entityLabel: selected.reminder.project_key,
                 displayRef: selected.reminder.id.slice(0, 7),
                 canonicalRef: selected.reminder.id,
-                copyLabel: `Copy reminder reference ${selected.reminder.id}`,
+                copyLabel: 'Copy reminder reference',
               }}
               title={selected.reminder.revision.payload.message}
               status={<span>{selected.reminder.lifecycle}</span>}

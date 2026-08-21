@@ -97,9 +97,9 @@ conversation_custody_command() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       if .status then
-        (.status | "\(.conversation_id): \(.state)" + (if .active_version then " version \(.active_version)" else "" end))
+        (.status | "\(.conversation_id | mandible_short_id): \(.state)" + (if .active_version then " version \(.active_version)" else "" end))
       elif .archive_path then "Archive: \(.archive_path)"
       elif .staging_path then "Staged \(.files) files at \(.staging_path)\nProvider restore: \(.capability.capability)"
       elif .ok != null then "Integrity: " + (if .ok then "verified" else "FAILED\n" + (.errors | join("\n")) end)
@@ -152,7 +152,7 @@ file_rpc_list() {
   if (( json )); then
     printf '%s\n' "$response" | jq '.conversations'
   else
-    printf '%s\n' "$response" | jq -r '.conversations[] | "\(.id[0:8])\t\(.source)\t\(.started_at)\t\(.block_count)\t\(.title)"'
+    printf '%s\n' "$response" | api_jq_human '.conversations[] | "\(mandible_display_id)\t\(.source)\t\(.started_at)\t\(.block_count)\t\(.title)"'
   fi
 }
 
@@ -207,7 +207,7 @@ conversation_render_mutation() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '"\(.id) [\(.source)] \(.title)\nstarred: \(.starred)\ntags: \(.tags | join(", "))\nnotes: \(.notes // "-")"'
+    printf '%s\n' "$response" | api_jq_human '"\(mandible_display_id) [\(.source)] \(.title)\nstarred: \(.starred)\ntags: \(.tags | join(", "))\nnotes: \(.notes // "-")"'
   fi
 }
 
@@ -277,10 +277,10 @@ file_rpc_show() {
       printf '%s\n' "$response" | jq '{conversation: .conversation}'
     fi
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .conversation as $c |
-      "\($c.id) [\($c.source)] \($c.title)",
-      "session: \($c.session_id)",
+      "\($c | mandible_display_id) [\($c.source)] \($c.title)",
+      "session: \($c.session_id | mandible_short_id)",
       "started: \($c.started_at)",
       "blocks: \($c.block_count)",
       "cwd: \($c.cwd // "-")",

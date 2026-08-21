@@ -65,4 +65,4 @@ fi
 
 api_send PATCH "/api/sessions/$(urlencode "$session_id")" "$payload" >/dev/null
 
-echo "Task updated for session ${session_id}"
+echo "Task updated for session $(api_short_id "$session_id")"

@@ -441,7 +441,7 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(composition?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Created:');
     expect(composition?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Updated:');
     expect(within(composition as HTMLElement).getByRole('button', { name: 'Artifact actions' })).toBeTruthy();
-    fireEvent.click(within(composition as HTMLElement).getByRole('button', { name: 'Copy full artifact series ref' }));
+    fireEvent.click(within(composition as HTMLElement).getByRole('button', { name: 'Copy artifact series ref' }));
     fireEvent.click(selectorCopy);
     await waitFor(() => expect(writeText).toHaveBeenNthCalledWith(1, 'artifact-series:156f240abcdef'));
     expect(writeText).toHaveBeenNthCalledWith(2, 'artifact-version:v1-full');

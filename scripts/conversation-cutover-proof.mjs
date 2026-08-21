@@ -31,6 +31,27 @@ const DEFAULT_DISPOSABLE_TABLE_PATTERNS = Object.freeze([
   /^conversation_parser_checkpoint_cache(?:_|$)/,
 ]);
 
+const DENSE_CONVERSATION_INDEX_TABLES = Object.freeze([
+  "conversation_blocks",
+  "conversation_structural_blocks",
+  "conversation_block_aliases",
+  "conversation_normalization_checkpoints",
+]);
+const SPARSE_BLOCK_TYPES = Object.freeze([
+  "user_message", "assistant_message", "thinking", "plan", "tool_use",
+  "tool_result", "system", "event",
+]);
+const SPARSE_ROLES = Object.freeze(["user", "assistant", "system", "tool"]);
+const SPARSE_STRUCTURE_CACHE_VERSION = 3;
+
+function sparseToolKey(toolId) {
+  return createHash("sha256").update(toolId).digest().subarray(0, 16);
+}
+
+function sparseToolId(providerKey) {
+  return String(providerKey).match(/^tool:(.*):tool_use:\d+:record:/)?.[1] ?? null;
+}
+
 class SimulatedInterruption extends Error {
   constructor(message = "simulated rebuild interruption") {
     super(message);
@@ -324,6 +345,7 @@ export function buildCompactDestination(options) {
     db.exec("BEGIN DEFERRED");
     const schema = userSchema(db, "source");
     const copied = {};
+    const emptied = new Set(options.emptyConversationIndex ? DENSE_CONVERSATION_INDEX_TABLES : []);
     const excluded = schema.tables.map((table) => table.name)
       .filter((name) => isDisposableTable(name, explicitExcluded));
     const retainedTables = schema.tables.filter((table) => !excluded.includes(table.name));
@@ -360,7 +382,7 @@ export function buildCompactDestination(options) {
                           WHERE normalization_checkpoint_id IS NOT NULL)`
         : "";
       const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${sourceProjection} FROM source.${quoteIdentifier(table.name)}${checkpointWhere}${orderClause(columns)}`;
-      copied[table.name] = db.prepare(sql).run().changes;
+      copied[table.name] = emptied.has(table.name) ? 0 : db.prepare(sql).run().changes;
       copiedTables += 1;
       if (options.interruptAfterTables === copiedTables) throw new SimulatedInterruption();
     }
@@ -387,7 +409,9 @@ export function buildCompactDestination(options) {
       const transformedStructuralTable = options.reclaimConversationCheckpoints
         && table.name === "conversation_structural_blocks";
       parity[table.name] = {
-        source: transformedCheckpointTable
+        source: emptied.has(table.name)
+          ? projectedTableDigest(db, "source", table.name, { where: "0" })
+          : transformedCheckpointTable
           ? projectedTableDigest(db, "source", table.name, {
             where: "state_json = '{\"kind\":\"codex-model-metadata\",\"version\":1}' AND id IN (SELECT normalization_checkpoint_id FROM source.conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL)",
           })
@@ -403,7 +427,7 @@ export function buildCompactDestination(options) {
       parity[table.name].match = stableJson(parity[table.name].source) === stableJson(parity[table.name].destination);
       if (!parity[table.name].match) throw new Error(`Row parity failed for ${table.name}`);
     }
-    const checkpointReclaim = options.reclaimConversationCheckpoints ? {
+    const checkpointReclaim = options.reclaimConversationCheckpoints && !options.emptyConversationIndex ? {
       structural_source_rows: Number(db.prepare(
         "SELECT COUNT(*) AS count FROM source.conversation_structural_blocks",
       ).get().count),
@@ -447,6 +471,8 @@ export function buildCompactDestination(options) {
       },
       copied_rows: copied,
       excluded_tables: excluded.sort(),
+      emptied_tables: [...emptied].sort(),
+      reclaimed_dense_conversation_index: options.emptyConversationIndex === true,
       reclaimed_conversation_checkpoints: options.reclaimConversationCheckpoints === true,
       checkpoint_reclaim: checkpointReclaim,
       cache_exclusion: { pass: excluded.every((name) => !retainedNames.has(name)), excluded_tables: excluded.sort() },
@@ -475,6 +501,221 @@ export function buildCompactDestination(options) {
     if (committed && error instanceof SimulatedInterruption) {
       throw new Error("invalid simulated interruption after commit");
     }
+    throw error;
+  }
+}
+
+/**
+ * Build the complete disposable navigation cache directly from the old dense
+ * projection. The source database stays read-only and the finished cache is
+ * published by atomic rename only after count and integrity checks pass.
+ */
+export function buildSparseConversationStructureCache(options) {
+  const sourcePath = path.resolve(options.source);
+  const destinationPath = path.resolve(options.destination);
+  const partialPath = `${destinationPath}.partial`;
+  const markerPath = `${destinationPath}.rebuild-in-progress.json`;
+  assertSafeDestination(sourcePath, destinationPath);
+  if (!fs.existsSync(sourcePath)) throw new Error(`Source database does not exist: ${sourcePath}`);
+  if (fs.existsSync(destinationPath)) throw new Error(`Structure cache already exists: ${destinationPath}`);
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+  if (fs.existsSync(markerPath)) {
+    removeDbFamily(partialPath);
+    fs.rmSync(markerPath, { force: true });
+  } else if (fs.existsSync(partialPath)) {
+    throw new Error(`Unowned structure-cache partial exists: ${partialPath}`);
+  }
+
+  const sourceBefore = dbFileSnapshot(sourcePath);
+  fs.writeFileSync(markerPath, `${stableJson({
+    version: REPORT_VERSION,
+    source: sourcePath,
+    destination: destinationPath,
+    partial: partialPath,
+  })}\n`, { encoding: "utf8", flag: "wx" });
+  fsyncFile(markerPath);
+  let db;
+  try {
+    db = new Database(partialPath);
+    db.pragma("journal_mode = DELETE");
+    db.pragma("synchronous = FULL");
+    db.pragma("foreign_keys = ON");
+    db.prepare("ATTACH DATABASE ? AS source").run(sourcePath);
+    const now = Date.now();
+    db.exec(`
+      CREATE TABLE cache_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) WITHOUT ROWID;
+      CREATE TABLE cache_conversations (
+        cache_id INTEGER PRIMARY KEY,
+        conversation_id TEXT NOT NULL UNIQUE,
+        source_version_id TEXT NOT NULL,
+        parser_format TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        normalization_version TEXT NOT NULL,
+        redaction_epoch INTEGER NOT NULL,
+        block_count INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        accessed_at INTEGER NOT NULL
+      );
+      CREATE TABLE cache_blocks (
+        cache_conversation_id INTEGER NOT NULL
+          REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        type_code INTEGER NOT NULL,
+        role_code INTEGER NOT NULL,
+        parent_position INTEGER,
+        record_offset INTEGER NOT NULL,
+        record_length INTEGER NOT NULL,
+        record_ordinal INTEGER NOT NULL,
+        sub_block_ordinal INTEGER NOT NULL,
+        PRIMARY KEY (cache_conversation_id, position)
+      ) WITHOUT ROWID;
+      CREATE TABLE cache_tool_links (
+        cache_conversation_id INTEGER NOT NULL
+          REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        tool_key BLOB NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (cache_conversation_id, tool_key)
+      ) WITHOUT ROWID;
+    `);
+    db.prepare("INSERT INTO cache_meta (key, value) VALUES ('schema_version', ?)")
+      .run(String(SPARSE_STRUCTURE_CACHE_VERSION));
+    db.prepare(`
+      INSERT INTO cache_conversations (
+        conversation_id, source_version_id, parser_format, parser_version,
+        normalization_version, redaction_epoch, block_count, updated_at, accessed_at
+      )
+      SELECT c.id, source.current_version_id, source.parser_format,
+             source.parser_version, source.normalization_version,
+             source.redaction_epoch, c.block_count, ?, ?
+        FROM source.conversations c
+        JOIN source.conversation_sources source
+          ON source.conversation_id = c.id AND source.provider = c.source
+        JOIN source.conversation_source_versions version
+          ON version.id = source.current_version_id
+       WHERE source.current_version_id IS NOT NULL
+         AND version.content_sha256 = c.source_hash
+         AND (
+           SELECT COUNT(*) FROM source.conversation_structural_blocks block
+            WHERE block.conversation_id = c.id
+              AND block.source_version_id = source.current_version_id
+              AND block.status = 'current'
+              AND block.position < c.block_count
+              AND block.record_offset IS NOT NULL
+              AND block.record_length IS NOT NULL
+              AND block.record_ordinal IS NOT NULL
+         ) = c.block_count
+    `).run(now, now);
+    const typeCase = SPARSE_BLOCK_TYPES
+      .map((value, index) => `WHEN '${value}' THEN ${index}`)
+      .join(" ");
+    const roleCase = SPARSE_ROLES
+      .map((value, index) => `WHEN '${value}' THEN ${index}`)
+      .join(" ");
+    db.exec(`
+      INSERT INTO cache_blocks (
+        cache_conversation_id, position, type_code, role_code, parent_position,
+        record_offset, record_length, record_ordinal, sub_block_ordinal
+      )
+      SELECT cached.cache_id, block.position,
+             CASE block.type ${typeCase} ELSE -1 END,
+             CASE block.role ${roleCase} ELSE -1 END,
+             parent.position, block.record_offset, block.record_length,
+             block.record_ordinal, block.sub_block_ordinal
+        FROM source.conversation_structural_blocks block
+        JOIN cache_conversations cached
+          ON cached.conversation_id = block.conversation_id
+         AND cached.source_version_id = block.source_version_id
+        LEFT JOIN source.conversation_structural_blocks parent
+          ON parent.id = block.parent_block_id
+       WHERE block.status = 'current'
+         AND block.position < (
+           SELECT block_count FROM source.conversations
+            WHERE id = block.conversation_id
+         )
+         AND block.record_offset IS NOT NULL
+         AND block.record_length IS NOT NULL
+         AND block.record_ordinal IS NOT NULL
+       ORDER BY cached.cache_id, block.position;
+    `);
+    const insertTool = db.prepare(`
+      INSERT INTO cache_tool_links (cache_conversation_id, tool_key, position)
+      VALUES (?, ?, ?)
+      ON CONFLICT(cache_conversation_id, tool_key) DO UPDATE SET position = excluded.position
+    `);
+    const cacheIds = new Map(db.prepare(
+      "SELECT conversation_id, cache_id FROM cache_conversations",
+    ).all().map((row) => [row.conversation_id, row.cache_id]));
+    const sourceReader = new Database(sourcePath, { readonly: true, fileMustExist: true });
+    const insertToolLinks = db.transaction(() => {
+      for (const row of sourceReader.prepare(`
+        SELECT block.conversation_id, block.provider_key, block.position
+          FROM conversation_structural_blocks block
+          JOIN conversations conversation ON conversation.id = block.conversation_id
+         WHERE block.status = 'current' AND block.type = 'tool_use'
+           AND block.position < conversation.block_count
+      `).iterate()) {
+        const cacheId = cacheIds.get(row.conversation_id);
+        if (cacheId === undefined) continue;
+        const toolId = sparseToolId(row.provider_key);
+        if (toolId) insertTool.run(cacheId, sparseToolKey(toolId), row.position);
+      }
+    });
+    try {
+      insertToolLinks();
+    } finally {
+      sourceReader.close();
+    }
+    const counts = db.prepare(`
+      SELECT COUNT(*) AS conversations,
+             COALESCE(SUM(block_count), 0) AS expected_blocks,
+             (SELECT COUNT(*) FROM cache_blocks) AS cached_blocks,
+             (SELECT COUNT(*) FROM cache_blocks WHERE type_code < 0 OR role_code < 0) AS invalid_codes,
+             (SELECT COUNT(*) FROM cache_tool_links) AS tool_links,
+             (SELECT COUNT(*) FROM source.conversations) AS source_conversations,
+             (SELECT COALESCE(SUM(block_count), 0) FROM source.conversations) AS source_blocks
+        FROM cache_conversations
+    `).get();
+    if (Number(counts.expected_blocks) !== Number(counts.cached_blocks)) {
+      throw new Error(`Sparse cache coverage mismatch: expected ${counts.expected_blocks}, cached ${counts.cached_blocks}`);
+    }
+    if (Number(counts.invalid_codes) !== 0) {
+      throw new Error(`${counts.invalid_codes} sparse cache rows use unsupported type or role values`);
+    }
+    const integrity = db.pragma("integrity_check", { simple: true });
+    const foreignKeys = db.pragma("foreign_key_check");
+    if (integrity !== "ok" || foreignKeys.length > 0) {
+      throw new Error(`Sparse cache verification failed (integrity=${integrity}, foreign_keys=${foreignKeys.length})`);
+    }
+    db.prepare("DETACH DATABASE source").run();
+    if (stableJson(dbFileSnapshot(sourcePath)) !== stableJson(sourceBefore)) {
+      throw new Error("Source database or sidecars changed during sparse-cache build");
+    }
+    db.close();
+    db = undefined;
+    fsyncFile(partialPath);
+    fs.renameSync(partialPath, destinationPath);
+    fs.rmSync(markerPath, { force: true });
+    return {
+      version: REPORT_VERSION,
+      report_kind: "sparse-conversation-structure-cache",
+      source: { path: sourcePath, files: sourceBefore },
+      destination: { path: destinationPath, size_bytes: fs.statSync(destinationPath).size },
+      conversations: Number(counts.conversations),
+      blocks: Number(counts.cached_blocks),
+      tool_links: Number(counts.tool_links),
+      rebuild_conversations: Number(counts.source_conversations) - Number(counts.conversations),
+      rebuild_blocks: Number(counts.source_blocks) - Number(counts.cached_blocks),
+      integrity_check: "ok",
+      foreign_key_violations: [],
+      pass: true,
+    };
+  } catch (error) {
+    try { db?.close(); } catch {}
+    removeDbFamily(partialPath);
+    fs.rmSync(markerPath, { force: true });
     throw error;
   }
 }
@@ -585,16 +826,29 @@ export function buildLegacyReclaimedDestination(options) {
   if (!readiness.pass) {
     return { version: REPORT_VERSION, report_kind: "legacy-storage-reclaim", readiness, pass: false };
   }
-  const rebuild = buildCompactDestination({
+  const structureCachePath = path.resolve(options.structureCache
+    ?? `${path.resolve(options.destination)}.conversation-structure.db`);
+  const structure_cache = buildSparseConversationStructureCache({
     source: options.source,
-    destination: options.destination,
-    excludeTables: ["daemon_log"],
-    reclaimConversationCheckpoints: true,
+    destination: structureCachePath,
   });
+  let rebuild;
+  try {
+    rebuild = buildCompactDestination({
+      source: options.source,
+      destination: options.destination,
+      excludeTables: ["daemon_log"],
+      emptyConversationIndex: true,
+    });
+  } catch (error) {
+    removeDbFamily(structureCachePath);
+    throw error;
+  }
   return {
     version: REPORT_VERSION,
     report_kind: "legacy-storage-reclaim",
     readiness,
+    structure_cache,
     rebuild,
     pass: rebuild.pass === true,
   };
@@ -1027,6 +1281,7 @@ function parseArgs(argv) {
       case "--exclude-table": options.excludeTables.push(requiredValue(argv, ++index, arg)); break;
       case "--evidence": options.evidence = requiredValue(argv, ++index, arg); break;
       case "--log-db": options.logDb = requiredValue(argv, ++index, arg); break;
+      case "--structure-cache": options.structureCache = requiredValue(argv, ++index, arg); break;
       case "--rebuild-report": options.rebuildReport = requiredValue(argv, ++index, arg); break;
       case "--restore-report": options.restoreReports.push(requiredValue(argv, ++index, arg)); break;
       case "--metadata-sql": options.metadataSql = requiredValue(argv, ++index, arg); break;
@@ -1046,7 +1301,7 @@ function usage() {
 Commands:
   binding --source DB [--json]
   rebuild --source DB --destination DB [--exclude-table NAME...] [--json]
-  reclaim --source DB --destination DB [--log-db DB] [--json]
+  reclaim --source DB --destination DB [--log-db DB] [--structure-cache DB] [--json]
   restore-drill --source DB --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
   audit --source DB --evidence FILE [--rebuild-report FILE] [--restore-report FILE...] [--json]
 

@@ -275,20 +275,18 @@ describe("conversation full-text API parity", () => {
       expect(response.body).toMatchObject({ body_source: "source" });
     }
     const detailBody = detail.body as {
-      conversation: { summary: string; notes: string };
+      conversation: { summary: null; notes: string };
       blocks: Array<{ id: string; metadata_json: string; locator: unknown }>;
     };
-    expect(detailBody.conversation.summary).toContain("[mandible-credential:unverified#1]");
+    // Parser-derived summaries are disposable and are recomputed from the
+    // native source rather than preserved as a second body representation.
+    expect(detailBody.conversation.summary).toBeNull();
     expect(detailBody.conversation.notes).toContain("[mandible-credential:unverified#1]");
     expect(detailBody.blocks.some((block) => block.metadata_json.includes("[mandible-credential:unverified#"))).toBe(true);
-    expect(detailBody.blocks.every((block) => block.id.startsWith("cblk_"))).toBe(true);
-    expect(detailBody.blocks.every((block) => block.locator !== null)).toBe(true);
+    expect(detailBody.blocks.every((block) => block.id.startsWith("cblk:"))).toBe(true);
+    expect(detailBody.blocks.every((block) => block.locator === null)).toBe(true);
 
-    db.prepare(`
-      UPDATE conversation_structural_blocks
-         SET record_hash = ?
-       WHERE conversation_id = 'source-mask' AND status = 'current'
-    `).run("0".repeat(64));
+    fs.rmSync(sourcePath);
     const failingRouter = new Router({ clientAuth: authenticator });
     registerConversationRoutes(failingRouter);
     const failedDetail = await failingRouter.invoke({
@@ -307,7 +305,10 @@ describe("conversation full-text API parity", () => {
     });
     for (const response of [failedDetail, failedBlocks]) {
       expect(response.status).toBe(409);
-      expect(response.body).toMatchObject({ error: expect.any(String), status: expect.any(String) });
+      expect(response.body).toMatchObject({
+        error: "source_unavailable",
+        message: expect.any(String),
+      });
     }
     expect(failedExport.status).toBe(409);
     expect(failedExport.body).toMatchObject({

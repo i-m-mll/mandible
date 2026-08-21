@@ -7,6 +7,7 @@ import {
   triggerFullIngestForWorker,
 } from "./ingestion.js";
 import type { IngestionWorkerRequest, IngestionWorkerResponse } from "./ingestion-worker-protocol.js";
+import { IngestionPriorityQueue } from "./ingestion-priority-queue.js";
 import type { Logger } from "./types.js";
 
 const port = parentPort;
@@ -33,14 +34,18 @@ const logger: Logger = (level, message, details) => send({
 });
 configureIngestionWorker(logger, (event, data) => send({ kind: "broadcast", event, data }));
 
-let requestChain = Promise.resolve();
+const requestQueue = new IngestionPriorityQueue<IngestionWorkerRequest>(handle);
 port.on("message", (request: IngestionWorkerRequest) => {
-  // Preserve watcher and explicit-ingest ordering on the single writer.
-  requestChain = requestChain.then(() => handle(request));
+  // Exact read barriers may pass a long filesystem reconciliation only at its
+  // explicit cooperative boundaries. All database writes remain serialized.
+  void requestQueue.enqueue(request, request.kind === "ingest" && request.priority === true);
 });
 send({ kind: "ready" });
 
-async function handle(request: IngestionWorkerRequest): Promise<void> {
+async function handle(
+  request: IngestionWorkerRequest,
+  cooperate: () => Promise<void>,
+): Promise<void> {
   try {
     const value = await withBusyRetry(async () => {
       if (request.kind === "ingest") {
@@ -52,7 +57,7 @@ async function handle(request: IngestionWorkerRequest): Promise<void> {
         return undefined;
       }
       if (request.kind === "reconcile") {
-        await reconcileForWorker(request.repairLegacyOrphans === true);
+        await reconcileForWorker(request.repairLegacyOrphans === true, cooperate);
         return undefined;
       }
       return triggerFullIngestForWorker();

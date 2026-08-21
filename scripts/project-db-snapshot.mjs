@@ -27,6 +27,7 @@ export function projectDatabaseSnapshot(options) {
   const manifestPath = path.resolve(expandHome(options.manifest ?? `${outputPath}.manifest.json`));
   const partialPath = `${outputPath}.partial-${process.pid}`;
   const partialManifestPath = `${manifestPath}.partial-${process.pid}`;
+  const partialStructureCachePath = `${partialPath}.conversation-structure.db`;
 
   if (!fs.existsSync(sourcePath)) throw new Error(`Source database does not exist: ${sourcePath}`);
   if (!options.replace && fs.existsSync(outputPath)) {
@@ -36,6 +37,7 @@ export function projectDatabaseSnapshot(options) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   removeDatabaseArtifacts(partialPath);
+  removeDatabaseArtifacts(partialStructureCachePath);
   removeIfExists(partialManifestPath);
 
   let db = null;
@@ -88,7 +90,11 @@ export function projectDatabaseSnapshot(options) {
 
     db.close();
     db = null;
-    const titleConvergence = convergeProjectedConversationTitles(partialPath);
+    const titleConvergence = convergeProjectedConversationTitles(partialPath, partialStructureCachePath);
+    // Title convergence may rebuild the disposable source-coordinate cache.
+    // A projected database does not own that cache, so never publish it with
+    // the snapshot or leave it behind when a candidate succeeds.
+    removeDatabaseArtifacts(partialStructureCachePath);
     db = new Database(partialPath);
     db.pragma("foreign_keys = ON");
 
@@ -182,12 +188,13 @@ export function projectDatabaseSnapshot(options) {
       }
     }
     removeDatabaseArtifacts(partialPath);
+    removeDatabaseArtifacts(partialStructureCachePath);
     removeIfExists(partialManifestPath);
     throw error;
   }
 }
 
-function convergeProjectedConversationTitles(dbPath) {
+function convergeProjectedConversationTitles(dbPath, structureCachePath) {
   const entrypoint = fileURLToPath(new URL(
     "../dist/cli/projected-conversation-convergence.js",
     import.meta.url,
@@ -198,6 +205,10 @@ function convergeProjectedConversationTitles(dbPath) {
   const result = spawnSync(process.execPath, [entrypoint, "--db", dbPath, "--json"], {
     cwd: path.dirname(fileURLToPath(import.meta.url)),
     encoding: "utf8",
+    env: {
+      ...process.env,
+      MANDIBLE_CONVERSATION_STRUCTURE_DB: structureCachePath,
+    },
   });
   if (result.status !== 0) {
     throw new Error(

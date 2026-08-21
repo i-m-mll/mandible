@@ -875,7 +875,7 @@ function DetailPane({
             entityLabel: typeLabel(node.type),
             displayRef: shortRouteId(node.id),
             canonicalRef: node.id,
-            copyLabel: `Copy full ${typeLabel(node.type)} reference`,
+            copyLabel: `Copy ${typeLabel(node.type)} reference`,
           }}
           title={node.label}
           status={node.status ? <span className="graph-detail-pane__status">{node.status}</span> : undefined}

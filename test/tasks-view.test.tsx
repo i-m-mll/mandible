@@ -331,7 +331,7 @@ describe('TasksView', () => {
     expect(detail.querySelector('[data-detail-pane-header-variant="standard"]')).toBeTruthy();
     expect(within(detail).getByText('Mandible reminder · tasks-view-reminder-project')).toBeTruthy();
     const copyReminderReference = within(detail).getByRole('button', {
-      name: `Copy reminder reference ${created.reminder.id}`,
+      name: 'Copy reminder reference',
     });
     fireEvent.click(copyReminderReference);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(created.reminder.id));
@@ -757,7 +757,7 @@ describe('TasksView', () => {
     expect(within(detail).getAllByText('agent-schedule').length).toBeGreaterThan(0);
     expect(detail.querySelector('.detail-pane-header .tasks-freshness--stale')?.textContent).toBe('stale');
     expect(within(detail).getByRole('button', {
-      name: 'Copy task reference agent-schedule/daily-digest',
+      name: 'Copy task reference',
     })).toBeTruthy();
     expect(within(detail).getByRole('button', { name: 'Request disable' })
       .closest('.detail-pane-header__actions')).toBeTruthy();

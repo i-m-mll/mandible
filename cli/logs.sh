@@ -82,7 +82,7 @@ file_rpc_inventory() {
       branch
     }]'
   else
-    printf '%s\n' "$response" | jq -r '.conversations[] | "\(.source)\t\((.updated_at // .started_at)[0:19])\t\(.session_id // .id)\t\(.source_path)"'
+    printf '%s\n' "$response" | api_jq_human '.conversations[] | "\(.source)\t\((.updated_at // .started_at)[0:19])\t\((.session_id // .id) | mandible_short_id)\t\(.source_path)"'
   fi
 }
 
@@ -132,13 +132,13 @@ file_rpc_inspect() {
   if (( json )); then
     printf '%s\n' "$response" | jq --argjson head "$head" '{summary: .conversation, records: (.blocks[0:$head])}'
   else
-    printf '%s\n' "$response" | jq -r --argjson head "$head" '
+    printf '%s\n' "$response" | api_jq_human '
       .conversation as $c |
-      "\($c.source) \($c.session_id // $c.id)",
+      "\($c.source) \(($c.session_id // $c.id) | mandible_short_id)",
       "path: \($c.source_path)",
       "mtime: \($c.updated_at // $c.started_at)",
       "records shown: \([.blocks[0:$head][]] | length)",
-      (.blocks[0:$head][] | (.content | gsub("\\s+"; " ") | if length > 500 then .[0:497] + "..." else . end))'
+      (.blocks[0:$head][] | (.content | gsub("\\s+"; " ") | if length > 500 then .[0:497] + "..." else . end))' --argjson head "$head"
   fi
 }
 

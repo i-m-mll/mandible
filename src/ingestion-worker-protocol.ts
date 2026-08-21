@@ -6,6 +6,7 @@ export type IngestionWorkerCommand =
       paths: string[];
       forceFull?: boolean;
       bypassSameMtimeUnchanged?: boolean;
+      priority?: boolean;
     }
   | { kind: "reconcile"; repairLegacyOrphans?: boolean }
   | { kind: "full-ingest" };
