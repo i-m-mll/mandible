@@ -279,11 +279,12 @@ export function SpacesViewShell({
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
   const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
+  const requiresAuthoritativeResolution = Boolean(spaceId && isGeneratedShortSpaceRef(spaceId));
   const waitingForFactPacket = Boolean(
     spaceId &&
     !selectedFactPacket &&
     !spaceLoadError &&
-    (!explicitRenderer || loadSpaceFactPacket),
+    (!explicitRenderer || loadSpaceFactPacket || requiresAuthoritativeResolution),
   );
 
   return (
@@ -357,7 +358,11 @@ export function SpacesViewShell({
                 Select a space, or create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
-          ) : spaceLoadError && !explicitRenderer && !selectedSpace && !selectedSnapshot && !selectedFactPacket ? (
+          ) : spaceLoadError &&
+              (!explicitRenderer || requiresAuthoritativeResolution) &&
+              !selectedSpace &&
+              !selectedSnapshot &&
+              !selectedFactPacket ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">{spaceLoadError}</p>
             </div>

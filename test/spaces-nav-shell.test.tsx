@@ -4,6 +4,13 @@ import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
+const getSpaceFactPacketMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../ui/src/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ui/src/api')>();
+  return { ...actual, getSpaceFactPacket: getSpaceFactPacketMock };
+});
+
 import { parseRouteFromHash } from '../ui/src/routing';
 import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
 import {
@@ -52,6 +59,7 @@ function makePacket(space: Space = makeSpace()): SpaceFactPacket {
 
 beforeEach(() => {
   installMemoryLocalStorage();
+  getSpaceFactPacketMock.mockReset();
 });
 
 afterEach(() => {
@@ -205,6 +213,36 @@ describe('SpacesViewShell', () => {
 
     await waitFor(() => expect(screen.getByText("ambiguous space ref '7038d21f'")).toBeTruthy());
     expect(screen.queryByTestId('wrong-cached-canvas-mount')).toBeNull();
+  });
+
+  it('does not mount an explicit renderer before or after a short ref is rejected as ambiguous', async () => {
+    let rejectLoad: ((error: Error) => void) | undefined;
+    getSpaceFactPacketMock.mockReturnValue(new Promise((_resolve, reject) => {
+      rejectLoad = reject;
+    }));
+    const seenSpaceIds: Array<string | null> = [];
+    function CanvasMount(props: SpaceRendererMountProps): JSX.Element {
+      seenSpaceIds.push(props.spaceId);
+      return <div data-testid="unresolved-explicit-canvas">canvas mount</div>;
+    }
+
+    render(
+      <SpacesViewShell
+        projectId="rlrmp"
+        spaceId="7038d21f"
+        renderer="canvas"
+        renderers={{ canvas: CanvasMount }}
+      />,
+    );
+
+    expect(getSpaceFactPacketMock).toHaveBeenCalledWith('7038d21f');
+    const mountedBeforeRejection = screen.queryByTestId('unresolved-explicit-canvas');
+    rejectLoad?.(new Error("ambiguous space ref '7038d21f'"));
+
+    await waitFor(() => expect(screen.getByText("ambiguous space ref '7038d21f'")).toBeTruthy());
+    expect(mountedBeforeRejection).toBeNull();
+    expect(screen.queryByTestId('unresolved-explicit-canvas')).toBeNull();
+    expect(seenSpaceIds).toEqual([]);
   });
 
   it('uses the cached primary renderer while waiting for the fact packet', () => {
