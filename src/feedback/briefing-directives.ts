@@ -4,12 +4,22 @@ import remarkDirective from "remark-directive";
 import remarkParse from "remark-parse";
 
 export const BRIEFING_PROFILE = "mandible-briefing.v2" as const;
+export const BRIEFING_PROFILE_V3 = "mandible-briefing.v3" as const;
+export type BriefingProfile = typeof BRIEFING_PROFILE | typeof BRIEFING_PROFILE_V3;
 
 export const BRIEFING_RESPONSE_TYPES = [
   "verdict", "single_choice", "multi_choice", "short_text", "long_text", "rating",
 ] as const;
-export type BriefingResponseType = (typeof BRIEFING_RESPONSE_TYPES)[number];
+export const BRIEFING_V3_RESPONSE_TYPES = [...BRIEFING_RESPONSE_TYPES, "text_variant"] as const;
+export type BriefingResponseType = (typeof BRIEFING_V3_RESPONSE_TYPES)[number];
 export type BriefingOption = { key: string; label: string };
+export type BriefingTextVariant = BriefingOption & {
+  start_offset: number;
+  end_offset: number;
+  body_start_offset: number;
+  body_end_offset: number;
+  body: string;
+};
 
 export type BriefingDirective = {
   key: string;
@@ -21,6 +31,7 @@ export type BriefingDirective = {
   body_end_offset: number;
   body: string;
   options: BriefingOption[];
+  variants: BriefingTextVariant[];
   definition_digest: string;
 };
 
@@ -44,10 +55,14 @@ function directiveBody(
   start: number,
   end: number,
   type: BriefingResponseType,
-): { start: number; end: number; body: string; options: BriefingOption[] } {
+  profile: BriefingProfile,
+): { start: number; end: number; body: string; options: BriefingOption[]; variants: BriefingTextVariant[] } {
   const openEnd = source.indexOf("\n", start);
   if (openEnd < start || openEnd >= end) throw new BriefingDirectiveError("directive body is empty");
-  if (!/^:::spec-item\{key="[A-Za-z0-9._-]{1,128}" type="(?:verdict|single_choice|multi_choice|short_text|long_text|rating)" required="(?:true|false)"\}\r?$/.test(source.slice(start, openEnd))) {
+  const types = profile === BRIEFING_PROFILE_V3
+    ? "verdict|single_choice|multi_choice|short_text|long_text|rating|text_variant"
+    : "verdict|single_choice|multi_choice|short_text|long_text|rating";
+  if (!(new RegExp(`^:::spec-item\\{key="[A-Za-z0-9._-]{1,128}" type="(?:${types})" required="(?:true|false)"\\}\\r?$`)).test(source.slice(start, openEnd))) {
     throw new BriefingDirectiveError("directive opener is not in the briefing grammar");
   }
   const closeStart = source.lastIndexOf("\n:::", end - 1);
@@ -57,6 +72,50 @@ function directiveBody(
   const bodyStart = openEnd + 1;
   const containerBodyEnd = source[closeStart - 1] === "\r" ? closeStart - 1 : closeStart;
   const children = node.children ?? [];
+  const alternativeNodes = children.filter((child) => child.type === "leafDirective" && child.name === "alternative");
+  if (type === "text_variant") {
+    if (profile !== BRIEFING_PROFILE_V3 || alternativeNodes.length < 2 || alternativeNodes.length > 12) {
+      throw new BriefingDirectiveError("text_variant directives require 2-12 alternatives in mandible-briefing.v3");
+    }
+    const variants: BriefingTextVariant[] = [];
+    const variantKeys = new Set<string>();
+    for (const [index, alternative] of alternativeNodes.entries()) {
+      const range = offsets(alternative);
+      const attrs = alternative.attributes ?? {};
+      if (Object.keys(attrs).join(",") !== "key" || typeof attrs.key !== "string"
+          || !/^[A-Za-z0-9._-]{1,128}$/.test(attrs.key)) {
+        throw new BriefingDirectiveError("alternative key is invalid");
+      }
+      if (variantKeys.has(attrs.key)) throw new BriefingDirectiveError("alternative keys must be unique");
+      variantKeys.add(attrs.key);
+      if (alternative.children?.length !== 1 || alternative.children[0]?.type !== "text"
+          || typeof alternative.children[0].value !== "string" || !alternative.children[0].value.trim()) {
+        throw new BriefingDirectiveError("alternative labels must be nonblank plain text");
+      }
+      const label = alternative.children[0].value;
+      if (source.slice(range.start, range.end) !== `::alternative[${label}]{key="${attrs.key}"}`) {
+        throw new BriefingDirectiveError("alternative marker is not in the briefing grammar");
+      }
+      const separator = source.slice(range.end, range.end + 2) === "\r\n" ? "\r\n" : source[range.end] === "\n" ? "\n" : null;
+      if (!separator) throw new BriefingDirectiveError("alternative marker must be followed by a Markdown body");
+      const bodyStart = range.end + separator.length;
+      const bodyEndRaw = index + 1 < alternativeNodes.length ? offsets(alternativeNodes[index + 1]).start : containerBodyEnd;
+      let bodyEnd = bodyEndRaw;
+      while (bodyEnd > bodyStart && (source[bodyEnd - 1] === "\n" || source[bodyEnd - 1] === "\r")) bodyEnd -= 1;
+      const body = source.slice(bodyStart, bodyEnd);
+      if (bodyStart <= range.end || !body.trim()) throw new BriefingDirectiveError("alternative bodies must be nonblank Markdown");
+      variants.push({ key: attrs.key, label, start_offset: range.start, end_offset: bodyEnd,
+        body_start_offset: bodyStart, body_end_offset: bodyEnd, body });
+    }
+    const allowed = new Set(alternativeNodes);
+    for (const child of children) {
+      if (child.type?.endsWith("Directive") && !allowed.has(child)) {
+        throw new BriefingDirectiveError("text_variant alternatives must be direct children");
+      }
+    }
+    return { start: bodyStart, end: containerBodyEnd, body: source.slice(bodyStart, containerBodyEnd), options: [], variants };
+  }
+  if (alternativeNodes.length > 0) throw new BriefingDirectiveError("alternatives are only supported by text_variant directives");
   const firstOption = children.findIndex((child) => child.type === "leafDirective" && child.name === "option");
   const optionNodes = firstOption < 0 ? [] : children.slice(firstOption);
   if (optionNodes.some((child) => child.type !== "leafDirective" || child.name !== "option")) {
@@ -101,11 +160,11 @@ function directiveBody(
   while (bodyEnd > bodyStart && (source[bodyEnd - 1] === "\n" || source[bodyEnd - 1] === "\r")) bodyEnd -= 1;
   const body = source.slice(bodyStart, bodyEnd);
   if (!body.trim()) throw new BriefingDirectiveError("directive body is empty");
-  return { start: bodyStart, end: bodyEnd, body, options };
+  return { start: bodyStart, end: bodyEnd, body, options, variants: [] };
 }
 
 /** Parses the deliberately small, inert briefing directive grammar. Offsets are JS UTF-16 code units. */
-export function parseBriefingDirectives(source: string): BriefingDirective[] {
+export function parseBriefingDirectives(source: string, profile: BriefingProfile = BRIEFING_PROFILE): BriefingDirective[] {
   const tree = unified().use(remarkParse).use(remarkDirective).parse(source) as unknown as Node;
   const directives: BriefingDirective[] = [];
   const seen = new Set<string>();
@@ -123,7 +182,8 @@ export function parseBriefingDirectives(source: string): BriefingDirective[] {
       if (typeof attrs.key !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(attrs.key)) {
         throw new BriefingDirectiveError("directive key must use 1-128 ASCII letters, digits, '.', '_' or '-'");
       }
-      if (typeof attrs.type !== "string" || !(BRIEFING_RESPONSE_TYPES as readonly string[]).includes(attrs.type)) {
+      const responseTypes = profile === BRIEFING_PROFILE_V3 ? BRIEFING_V3_RESPONSE_TYPES : BRIEFING_RESPONSE_TYPES;
+      if (typeof attrs.type !== "string" || !(responseTypes as readonly string[]).includes(attrs.type)) {
         throw new BriefingDirectiveError("directive type is unsupported");
       }
       if (attrs.required !== "true" && attrs.required !== "false") {
@@ -132,7 +192,7 @@ export function parseBriefingDirectives(source: string): BriefingDirective[] {
       if (seen.has(attrs.key)) throw new BriefingDirectiveError("directive keys must be unique");
       seen.add(attrs.key);
       const range = offsets(node);
-      const body = directiveBody(source, node, range.start, range.end, attrs.type as BriefingResponseType);
+      const body = directiveBody(source, node, range.start, range.end, attrs.type as BriefingResponseType, profile);
       directives.push({
         key: attrs.key,
         type: attrs.type as BriefingResponseType,
@@ -143,12 +203,13 @@ export function parseBriefingDirectives(source: string): BriefingDirective[] {
         body_end_offset: body.end,
         body: body.body,
         options: body.options,
+        variants: body.variants,
         definition_digest: createHash("sha256").update(Buffer.from(source.slice(range.start, range.end), "utf8")).digest("hex"),
       });
       // remark-directive represents nested containers as children. They must
       // still be inspected instead of being hidden by this accepted parent.
       for (const child of node.children ?? []) {
-        if (child.type === "leafDirective" && child.name === "option") continue;
+        if (child.type === "leafDirective" && (child.name === "option" || child.name === "alternative")) continue;
         walk(child, false);
       }
       return;

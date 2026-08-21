@@ -28,7 +28,8 @@ if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLT
 async function runCli() {
   const command = process.argv[2] === "cleanup"
     ? "cleanup"
-    : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo" : "preview";
+    : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo"
+      : process.argv[2] === "seed-agents-review" ? "seed-agents-review" : "preview";
   const args = parseArgs(command === "preview" ? process.argv.slice(2) : process.argv.slice(3), command);
 
   if (args.help) {
@@ -37,6 +38,9 @@ async function runCli() {
   }
 
   try {
+    if (command === "seed-agents-review" && !args.artifactVersion) {
+      throw new Error("seed-agents-review requires --artifact-version");
+    }
     const result = command === "cleanup"
       ? await cleanupPreviewCache(args)
       : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
@@ -73,6 +77,7 @@ async function main(options) {
     mode = "current-integration";
     const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
+      if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
       if (existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
@@ -101,6 +106,7 @@ async function main(options) {
       ? await healthyExistingPreview(branch, { worktree: selectedWorktree })
       : null;
     if (existing && !options.dryRun) {
+      if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
       if (!selectedWorktree) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
@@ -179,6 +185,10 @@ async function main(options) {
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
   const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree });
   replaceSymlink(dbCopy, path.join(preview.root, "current.db"));
+  const agentsReview = options.artifactVersion
+    ? await materializeProjectedAgentsReview({ worktree, previewRoot: preview.root, db: dbCopy, sourceDb,
+      artifactVersionRef: options.artifactVersion })
+    : null;
 
   const stdoutLog = path.join(preview.root, "stdout.log");
   const stderrLog = path.join(preview.root, "stderr.log");
@@ -224,6 +234,7 @@ async function main(options) {
     db: dbCopy,
     sourceDb,
     projection,
+    agentsReview,
     preStartCleanup,
     instanceEnv: previewInstanceEnv({ port, dbCopy, sourceDb, pidFile }),
     previewRoot: preview.root,
@@ -261,6 +272,62 @@ async function seedBriefingDemo(options) {
     sourceDb: custody.sourceDb,
     artifactRoot: custody.artifactRoot,
   };
+}
+
+export async function materializeProjectedAgentsReview(details) {
+  const custody = validateProjectedBriefingDemoCustody({
+    ...details,
+    artifactRoot: details.artifactRoot ?? path.join(details.previewRoot, "agents-review-artifacts"),
+  });
+  if (!details.artifactVersionRef || !/^artifact-version:[A-Za-z0-9._:-]{7,}$/.test(details.artifactVersionRef)) {
+    throw new Error("Refusing agents review seed: artifact version ref is missing or malformed.");
+  }
+  const priorEnv = {};
+  const seedEnv = {
+    MANDIBLE_DB: custody.db,
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_INSTANCE_SOURCE_DB: custody.sourceDb,
+  };
+  for (const [key, value] of Object.entries(seedEnv)) {
+    priorEnv[key] = process.env[key]; process.env[key] = value;
+  }
+  let db = null;
+  try {
+    const cacheBust = `?iab-preview-agents-review=${Date.now()}`;
+    const [{ openDb }, briefings, artifacts, users] = await Promise.all([
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "db.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "feedback", "briefings.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "provider-artifacts.js")).href}${cacheBust}`),
+      import(`${pathToFileURL(path.join(custody.worktree, "dist", "users", "store.js")).href}${cacheBust}`),
+    ]);
+    db = openDb(custody.db);
+    const resolved = artifacts.resolveArtifactRefReadonlyFull(db, details.artifactVersionRef);
+    const version = resolved.status === "resolved" && resolved.target_type === "artifact_version"
+      ? artifacts.getCanonicalArtifactVersion(db, resolved.target_id) : null;
+    if (!version || version.source_kind !== "tracked_repo" || version.custody_mode !== "link" || !version.commit_sha) {
+      throw new Error("Refusing agents review seed: artifact version must be committed tracked-repo link custody.");
+    }
+    const operatorId = users.getOperatorId(db);
+    if (!operatorId) throw new Error("Refusing agents review seed: configured human operator is unavailable.");
+    const receipt = briefings.publishBriefingFromArtifactVersion(db, {
+      briefing_key: "agents-incremental-review-prototype",
+      title: "Incremental AGENTS review",
+      artifact_version_ref: version.id,
+      profile: "mandible-briefing.v3",
+      responder_user_ids: [operatorId],
+    });
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    db.close(); db = null;
+    return { schema: "mandible-agents-review-preview@1", result: "seeded", briefing_id: receipt.briefing_id,
+      round_id: receipt.round_id, artifact_version_id: receipt.artifact_version_id };
+  } finally {
+    db?.close();
+    for (const [key, value] of Object.entries(priorEnv)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 }
 
 export async function materializeProjectedBriefingDemo(details) {
@@ -509,7 +576,12 @@ function parseArgs(argv, commandName) {
     json: false,
     noBuild: false,
     port: null,
+    artifactVersion: null,
   };
+
+  if (commandName === "seed-agents-review") {
+    options.artifactVersion = null;
+  }
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -542,11 +614,13 @@ function parseArgs(argv, commandName) {
           throw new Error(`Invalid --port value: ${argv[index]}`);
         }
         break;
+      case "--artifact-version":
+        options.artifactVersion = requireValue(argv, ++index, arg);
+        break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
-
   return options;
 }
 
@@ -604,6 +678,14 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage(commandName = "preview") {
+  if (commandName === "seed-agents-review") {
+    console.log(`Usage: node scripts/iab-preview.mjs seed-agents-review --artifact-version <exact-ref> [options]
+
+Create a launcher-owned preview copy, bind one committed link-custody v3 review artifact,
+and only then start the preview daemon. The source database and artifact are never mutated.
+`);
+    return;
+  }
   if (commandName === "seed-briefing-demo") {
     console.log(`Usage: node scripts/iab-preview.mjs seed-briefing-demo [--json]
 

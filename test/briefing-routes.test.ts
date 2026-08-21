@@ -14,6 +14,8 @@ import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { createUser } from "../src/users/store.js";
 import { broadcast } from "../src/sse.js";
+import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
+import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
 class SlugGate implements ClientAuthGate {
   constructor(private readonly db: () => Db) {}
@@ -69,6 +71,27 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("exports one exact actor-owned frozen v3 submission through authenticated GET", async () => {
+    const markdown = `# Policy\n\n:::spec-item{key="wording" type="text_variant" required="true"}\n::alternative[One]{key="one"}\nOne.\n::alternative[Two]{key="two"}\nTwo.\n:::`;
+    const file = path.join(root, "review.md"); fs.writeFileSync(file, markdown);
+    const artifact = recordArtifactVersion(db, { source_kind: "local_only", path: file,
+      logical_name: "review.md", role: "review-document", media_type: "text/markdown" });
+    const ids = publishBriefingFromArtifactVersion(db, { briefing_key: "review", title: "Review",
+      artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId] });
+    const answer = await router.invoke({ method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
+      credential: "human", body: { answers: [{ directive_key: "wording", operation: "set",
+        expected_response_event_id: null, value: { option_key: "two" } }] } });
+    const eventId = (answer.body as { answers: Array<{ response_event_id: string }> }).answers[0].response_event_id;
+    const submission = await router.invoke({ method: "POST", url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,
+      credential: "human", body: { answers: [{ directive_key: "wording", response_event_id: eventId }],
+        annotation_event_ids: [], supersedes_submission_id: null } });
+    const submissionId = (submission.body as { submission_id: string }).submission_id;
+    const url = `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submissions/${submissionId}/export`;
+    expect(await router.invoke({ method: "GET", url })).toMatchObject({ status: 401 });
+    expect(await router.invoke({ method: "GET", url, credential: "human" })).toMatchObject({
+      status: 200, body: { content: "# Policy\n\nTwo.", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+  });
   it("authenticates publishers, returns stable run identity, and rejects old compatibility routes", async () => {
     expect((await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload() })).status).toBe(401);
     expect((await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "session:agent-schedule" })).status).toBe(403);
