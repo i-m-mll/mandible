@@ -437,11 +437,12 @@
   inset-inline-end: 0;
   box-sizing: border-box;
   width: calc(var(--briefing-right-rail-width) - var(--briefing-right-action-slot-width));
-  padding-inline-end: var(--space-1);
-  justify-items: end;
+  padding-inline-start: var(--space-1);
+  justify-items: start;
 }
 
 .briefing-directive__response-host--rail .briefing-directive__response {
+  justify-items: start;
   margin-top: 0;
 }
 
@@ -455,87 +456,43 @@
   justify-items: start;
 }
 
-.briefing-directive__variant-controls {
+.briefing-directive__compact-controls {
   display: inline-grid;
-  grid-template-columns: 2em minmax(0, 1fr) 2em;
+  grid-auto-flow: column;
+  grid-auto-columns: 2em;
   align-items: center;
-  box-sizing: border-box;
-  width: 100%;
-  gap: 0;
-  padding-inline: .2em;
+  column-gap: var(--space-1);
   font-size: .8em;
+  white-space: nowrap;
+}
+
+.briefing-directive__variant-controls {
+  grid-template-columns: 2em minmax(3em, max-content) 2em;
 }
 
 .briefing-directive__variant-controls > span {
-  display: grid;
-  justify-items: center;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
 }
 
 .briefing-directive__variant-controls small {
   color: var(--text-muted);
 }
 
-.briefing-directive__variant-controls button {
-  display: grid;
-  width: 2em;
-  height: 2em;
-  padding: .5em;
-  place-items: center;
-  appearance: none;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.briefing-directive__variant-controls button:hover,
-.briefing-directive__variant-controls button:active,
-.briefing-directive__variant-controls button:disabled {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.briefing-directive__variant-controls button:disabled {
-  cursor: not-allowed;
-  opacity: .45;
-}
-
-.briefing-directive__variant-controls button:focus-visible {
-  outline: 2px solid var(--accent-border);
-  outline-offset: 2px;
-}
-
-.briefing-directive__verdict,
 .briefing-directive__rating {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
 }
 
-.briefing-directive__verdict button,
 .briefing-directive__rating label,
 .briefing-directive__choices label {
   min-height: 1.3em;
 }
 
-.briefing-directive__verdict .briefing-directive__verdict-action {
-  display: grid;
-  width: 1.3em;
-  height: 1.3em;
-  padding: .2em;
-  place-items: center;
-  color: var(--text-muted);
-}
-
-.briefing-directive__verdict .briefing-directive__verdict-action:is(:hover, :focus-visible, [aria-pressed='true']) {
-  color: var(--text-primary);
-}
-
-.briefing-directive__verdict svg {
+.briefing-directive__compact-controls svg {
   width: 1em;
   height: 1em;
   fill: none;
@@ -719,7 +676,6 @@ textarea.briefing-directive__text {
 }
 
 @media (hover: none), (pointer: coarse) {
-  .briefing-directive__verdict button,
   .briefing-directive__choices label,
   .briefing-directive__rating label,
   .briefing-directive__clear,
@@ -728,10 +684,6 @@ textarea.briefing-directive__text {
     min-height: 44px;
   }
 
-  .briefing-directive__variant-controls button {
-    min-width: 44px;
-    min-height: 44px;
-  }
 }
 
 @media (max-width: 700px) {
