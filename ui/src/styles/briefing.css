@@ -354,43 +354,41 @@
 }
 
 .briefing-document__rendered {
-  display: grid;
-  gap: 0;
-}
-
-.briefing-document__prose {
-  padding-inline: var(--space-3);
-}
-
-.briefing-document__heading {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--space-2);
   padding-inline: var(--space-3);
 }
 
-.briefing-document__heading-content > :first-child {
+.briefing-document__source-tree > :first-child {
   margin-top: 0;
 }
 
-.briefing-document__heading-actions {
-  display: flex;
+.briefing-document__source-tree > :last-child {
+  margin-bottom: 0;
 }
 
-.briefing-document__heading-actions button {
+.briefing-markdown__action-rail {
+  position: absolute;
+  inset-inline-end: 0;
+  z-index: 1;
+  display: flex;
+  width: 1.3em;
+  height: 1.3em;
+  align-items: center;
+  justify-content: center;
+}
+
+.briefing-markdown__action-rail button {
   display: grid;
-  width: 30px;
-  height: 30px;
-  padding: 5px;
+  width: 1.3em;
+  height: 1.3em;
+  padding: .2em;
   place-items: center;
 }
 
-.briefing-document__heading-actions svg,
+.briefing-markdown__action-rail svg,
 .briefing-directive__variant-controls svg {
-  width: 18px;
-  height: 18px;
+  width: 1em;
+  height: 1em;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -404,22 +402,7 @@
 }
 
 .briefing-directive {
-  margin-block: calc(var(--space-1) / 2);
-  margin-inline: var(--space-3) 0;
-  padding: var(--space-3);
-  border-left: 2px solid var(--border-faint);
-  border-radius: 0;
-}
-
-.briefing-directive__interaction {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--space-3);
-}
-
-.briefing-directive__passage {
-  min-width: 0;
+  box-shadow: -2px 0 0 var(--border-faint);
 }
 
 .briefing-directive__required {
@@ -432,16 +415,22 @@
 
 .briefing-directive__response {
   display: grid;
-  justify-items: start;
+  justify-items: end;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.briefing-directive__response-host {
+  display: grid;
+  justify-items: end;
 }
 
 .briefing-directive__variant-controls {
   display: inline-grid;
-  grid-template-columns: 36px minmax(8rem, auto) 36px;
+  grid-template-columns: 1.4em minmax(3em, auto) 1.4em;
   align-items: center;
-  gap: var(--space-2);
+  gap: .35em;
+  font-size: .8em;
 }
 
 .briefing-directive__variant-controls > span {
@@ -456,9 +445,9 @@
 
 .briefing-directive__variant-controls button {
   display: grid;
-  width: 36px;
-  height: 36px;
-  padding: 7px;
+  width: 1.4em;
+  height: 1.4em;
+  padding: .2em;
   place-items: center;
   border: 1px solid var(--border-muted);
   border-radius: var(--radius-sm);
@@ -487,13 +476,13 @@
 .briefing-directive__verdict button,
 .briefing-directive__rating label,
 .briefing-directive__choices label {
-  min-height: 36px;
+  min-height: 1.3em;
 }
 
 .briefing-directive__verdict button {
   display: grid;
-  width: 36px;
-  padding: 7px;
+  width: 1.3em;
+  padding: .2em;
   place-items: center;
   border: 1px solid var(--border-muted);
   border-radius: var(--radius-sm);
@@ -511,8 +500,8 @@
 }
 
 .briefing-directive__verdict svg {
-  width: 18px;
-  height: 18px;
+  width: 1em;
+  height: 1em;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -536,8 +525,8 @@
 .briefing-directive__rating label {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  gap: .35em;
+  padding: .15em .4em;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -563,7 +552,7 @@
 
 .briefing-directive__rating label {
   justify-content: center;
-  min-width: 36px;
+  min-width: 1.3em;
 }
 
 .briefing-directive__rating input {
@@ -599,15 +588,15 @@ textarea.briefing-directive__text {
 }
 
 .briefing-directive__clear {
-  min-height: 32px;
-  padding: var(--space-1) var(--space-2);
+  min-height: 1.3em;
+  padding: .15em .4em;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
-  font-size: var(--text-sm);
+  font-size: .8em;
 }
 
 .briefing-directive__clear:hover,
@@ -621,8 +610,8 @@ textarea.briefing-directive__text {
   font-size: var(--text-sm);
 }
 
-.briefing-directive:not(.briefing-directive--selected):has(> .briefing-directive__interaction:hover) {
-  border-left-color: var(--border-default);
+.briefing-directive:not(.briefing-directive--selected):hover {
+  box-shadow: -2px 0 0 var(--border-default);
   background: var(--surface-card);
 }
 
@@ -632,32 +621,8 @@ textarea.briefing-directive__text {
 }
 
 .briefing-directive--selected {
-  border-left-color: var(--accent-border);
+  box-shadow: -2px 0 0 var(--accent-border);
   background: var(--surface-card);
-}
-
-.briefing-directive__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.briefing-directive__actions button {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  padding: 5px;
-  place-items: center;
-}
-
-.briefing-directive__actions button svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .briefing-document__inline-annotations {
@@ -716,12 +681,11 @@ textarea.briefing-directive__text {
   .briefing-directive__choices label,
   .briefing-directive__rating label,
   .briefing-directive__clear,
-  .briefing-directive__actions button {
+  .briefing-markdown__action-rail button {
     min-width: 44px;
     min-height: 44px;
   }
 
-  .briefing-document__heading-actions button,
   .briefing-directive__variant-controls button {
     min-width: 44px;
     min-height: 44px;

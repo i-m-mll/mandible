@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BriefingResponseValue, BriefingRoundProjection } from '../ui/src/api';
 
-import { BriefingDocumentPanel, findMarkdownHeadingSections } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import { buildBriefingMarkdownModel } from '../ui/src/views/feedback/briefingMarkdownModel';
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
@@ -183,6 +184,73 @@ describe('Briefing document panel', () => {
     expect(prose?.querySelector('p code')?.textContent).toBe('answer');
   });
 
+  it('maps coherent Markdown entities to exact UTF-16 ranges with deterministic nested targets', () => {
+    const mappedSource = [
+      '## Policy 😀',
+      '',
+      'Opening paragraph.',
+      '',
+      '- Parent item',
+      '  - Nested item',
+      '',
+      '> Quoted paragraph.',
+      '',
+      '| A | B |',
+      '| - | - |',
+      '| x | y |',
+      '',
+      '```ts',
+      'const value = 1;',
+      '```',
+      '',
+      ':::spec-item{key="typed" type="verdict" required="true"}',
+      '- Typed list item',
+      ':::',
+    ].join('\n');
+    const directive = parseBriefingDirectives(mappedSource)[0];
+    const item = {
+      id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item' as const,
+      revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: directive.type, required: true, position: 1, options: [] },
+      effective_response: null, responseVisible: true, directive,
+    };
+    const model = buildBriefingMarkdownModel(mappedSource, [item], {});
+
+    expect(model.entities.map((entity) => entity.kind)).toEqual([
+      'heading', 'paragraph', 'list-item', 'list-item', 'block-quote', 'table', 'fenced-code',
+    ]);
+    expect(model.entities.every((entity) => mappedSource.slice(entity.start, entity.end) === entity.quote)).toBe(true);
+    expect(model.entities.find((entity) => entity.kind === 'heading')?.start).toBe(0);
+    expect(model.entities.find((entity) => entity.kind === 'heading')?.end).toBe('## Policy 😀'.length);
+    expect(model.entities.filter((entity) => entity.kind === 'paragraph')).toHaveLength(1);
+    expect(model.entities.some((entity) => entity.quote.includes('Typed list item'))).toBe(false);
+    expect(model.markdown).not.toContain(':::spec-item');
+  });
+
+  it('keeps directive and ordinary list items in one rendered list with independent exact-range actions', async () => {
+    const listSource = '- Before\n\n:::spec-item{key="typed" type="verdict" required="true"}\n- Typed\n:::\n\n- After\n';
+    const directive = parseBriefingDirectives(listSource)[0];
+    const listRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:list',
+        content_hash: createHash('sha256').update(listSource).digest('hex'),
+        previous_round_id: null, profile: 'mandible-briefing.v2', source: listSource,
+      },
+      items: [{
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
+        revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: 'verdict', required: true, position: 1, options: [] },
+        effective_response: null, responseVisible: true, directive,
+      }],
+    });
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="List" roundId="round-1" round={listRound} canMutate onRefresh={async () => null} />);
+
+    const document = await screen.findByLabelText('Pinned briefing document');
+    expect(document.querySelectorAll('ul')).toHaveLength(1);
+    expect(document.querySelectorAll('li')).toHaveLength(3);
+    expect(screen.getByRole('button', { name: 'Comment on list-item: - Before' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Comment on list-item: - After' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Comment' })).toHaveLength(1);
+  });
+
   it('renders all six v2 controls with native semantics, prompt names, ordered options, bounds, and canonical clear drafts', async () => {
     const typedSource = [
       '# Typed review',
@@ -257,32 +325,24 @@ describe('Briefing document panel', () => {
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
   });
 
-  it('uses discrete content-edge segments with synchronized hover and persistent selected actions', async () => {
+  it('paints directive chrome in the margin and keeps response and comment rails at the document edge', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(content())));
     render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
 
-    const keep = await screen.findByRole('button', { name: 'Keep' });
-    const directive = keep.closest('.briefing-directive') as HTMLElement;
-    const interaction = directive.firstElementChild as HTMLElement;
+    await screen.findByRole('button', { name: 'Keep' });
+    const directive = screen.getByText('Plan').closest('.briefing-directive') as HTMLElement;
+    const actions = directive.querySelector('.briefing-directive__actions') as HTMLElement;
     const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
-    const interactionRule = briefingStylesheet.match(/\.briefing-directive__interaction \{([^}]*)\}/)?.[1] ?? '';
 
-    expect(interaction.classList.contains('briefing-directive__interaction')).toBe(true);
-    expect(interaction.classList.contains('contextual-action-owner')).toBe(true);
-    expect(interaction.querySelector('.briefing-directive__passage')).toBeTruthy();
-    expect(interaction.querySelector('.briefing-directive__actions')).toBeTruthy();
-    expect(directiveRule).toContain('margin-block: calc(var(--space-1) / 2)');
-    expect(directiveRule).toContain('margin-inline: var(--space-3) 0');
-    expect(directiveRule).toContain('padding: var(--space-3)');
-    expect(directiveRule).toContain('border-left: 2px solid var(--border-faint)');
-    expect(interactionRule).not.toContain('padding:');
-    expect(briefingStylesheet).toMatch(/\.briefing-directive:not\(\.briefing-directive--selected\):has\(> \.briefing-directive__interaction:hover\)/);
-    expect(briefingStylesheet).toMatch(/border-left-color: var\(--border-default\)/);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive--selected \{[^}]*border-left-color: var\(--accent-border\)/s);
-    expect(interaction.querySelector('.briefing-directive__actions')?.classList.contains('contextual-action-group')).toBe(true);
+    expect(directive.classList.contains('contextual-action-owner')).toBe(true);
+    expect(actions.classList.contains('contextual-action-group')).toBe(true);
+    expect(directiveRule).toContain('box-shadow: -2px 0 0 var(--border-faint)');
+    expect(directiveRule).not.toMatch(/(?:margin|padding|border-left):/);
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-end: 0/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*justify-items: end/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive--selected \{[^}]*box-shadow: -2px 0 0 var\(--accent-border\)/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
-    expect(briefingStylesheet).not.toMatch(/\.briefing-directive:hover(?:\s|,|\{)/);
   });
 
   it('selects only non-interactive directive surfaces, switches one-at-a-time, and dismisses outside', async () => {
@@ -332,9 +392,10 @@ describe('Briefing document panel', () => {
     expect(first.classList.contains('briefing-directive--selected')).toBe(false);
 
     fireEvent.click(firstPrompt);
-    const beta = within(second).getByText('Beta').closest('label') as HTMLLabelElement;
+    const secondControls = screen.getByRole('group', { name: 'Second prompt' });
+    const beta = within(secondControls).getByText('Beta').closest('label') as HTMLLabelElement;
     fireEvent.click(beta);
-    fireEvent.click(within(second).getByRole('radio', { name: 'Beta' }));
+    fireEvent.click(within(secondControls).getByRole('radio', { name: 'Beta' }));
     expect(first.classList.contains('briefing-directive--selected')).toBe(true);
     expect(second.classList.contains('briefing-directive--selected')).toBe(false);
     expect(changes).toContainEqual({ id: 'second', value: { option_key: 'b' } });
@@ -359,7 +420,7 @@ describe('Briefing document panel', () => {
     fireEvent.click(secondPrompt);
     expect(first.classList.contains('briefing-directive--selected')).toBe(false);
     expect(second.classList.contains('briefing-directive--selected')).toBe(true);
-    fireEvent.keyDown(within(first).getByRole('button', { name: 'Keep' }), { key: 'Enter' });
+    fireEvent.keyDown(within(screen.getByRole('group', { name: 'First prompt' })).getByRole('button', { name: 'Keep' }), { key: 'Enter' });
     expect(second.classList.contains('briefing-directive--selected')).toBe(true);
 
     first.focus();
@@ -453,6 +514,27 @@ describe('Briefing document panel', () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
   });
 
+  it('posts an ordinary Markdown entity comment with its exact source range and quote', async () => {
+    const posts: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method) return json(content());
+      posts.push(JSON.parse(String(init.body)));
+      return json({ annotation_event_ids: ['annotation-entity'] });
+    }));
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={async () => null} />);
+
+    const action = await screen.findByRole('button', { name: 'Comment on paragraph: Intro' }) as HTMLButtonElement;
+    await waitFor(() => expect(action.disabled).toBe(false));
+    fireEvent.click(action);
+    fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Explain the introduction.' } });
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].annotations[0]).toEqual({
+      operation: 'set', kind: 'comment', start_offset: 0, end_offset: 5,
+      quote: 'Intro', body: 'Explain the introduction.', replacement_text: null,
+    });
+  });
+
   it('opens a focusable annotation row, edits by retract+set, and deletes by retract', async () => {
     const posts: any[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -532,6 +614,8 @@ describe('Briefing document panel', () => {
 
     expect(await screen.findByText('Concise policy.')).toBeTruthy();
     expect(screen.queryByText('Detailed policy with more words.')).toBeNull();
+    expect(screen.queryByText('Concise', { exact: true })).toBeNull();
+    expect(screen.getByRole('group', { name: 'Text variant: Concise' })).toBeTruthy();
     expect(changes).toEqual([]);
     const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
     const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;
@@ -549,22 +633,6 @@ describe('Briefing document panel', () => {
     view.rerender(<Harness canMutate={false} />);
     expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Comment' }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('calculates whole-section UTF-16 ranges across nested headings while ignoring fenced headings', () => {
-    const markdown = '# Root 😀\nIntro\n```md\n# Fenced\n```\n## Child\nChild text\n### Deep\nDeep text\n## Peer\nPeer text\n# Next\nEnd\n';
-    const sections = findMarkdownHeadingSections(markdown);
-    expect(sections.map(({ level, label }) => ({ level, label }))).toEqual([
-      { level: 1, label: 'Root 😀' },
-      { level: 2, label: 'Child' },
-      { level: 3, label: 'Deep' },
-      { level: 2, label: 'Peer' },
-      { level: 1, label: 'Next' },
-    ]);
-    expect(sections[0].sectionEnd).toBe(markdown.indexOf('# Next'));
-    expect(sections[1].sectionEnd).toBe(markdown.indexOf('## Peer'));
-    expect(sections[2].sectionEnd).toBe(markdown.indexOf('## Peer'));
-    expect(markdown.slice(sections[0].headingStart, sections[0].sectionEnd)).toContain('# Fenced');
   });
 
   it('saves a heading Comment as the exact whole-section quote without exposing inert directive syntax in the editor', async () => {
