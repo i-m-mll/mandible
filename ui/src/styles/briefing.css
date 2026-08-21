@@ -402,7 +402,25 @@
 }
 
 .briefing-directive {
-  box-shadow: -2px 0 0 var(--border-faint);
+  box-shadow: none;
+}
+
+.briefing-directive--owner {
+  position: relative;
+}
+
+.briefing-directive--owner::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(-1 * var(--space-4));
+  width: 2px;
+  background: var(--border-faint);
+  content: '';
+  pointer-events: none;
+}
+
+.briefing-directive--owner > .briefing-markdown__action-rail {
+  inset-inline-end: calc(-1 * var(--space-3));
 }
 
 .briefing-directive__required {
@@ -611,8 +629,11 @@ textarea.briefing-directive__text {
 }
 
 .briefing-directive:not(.briefing-directive--selected):hover {
-  box-shadow: -2px 0 0 var(--border-default);
   background: var(--surface-card);
+}
+
+.briefing-directive--owner:not(.briefing-directive--selected):hover::before {
+  background: var(--border-default);
 }
 
 .briefing-directive:focus-visible {
@@ -621,8 +642,11 @@ textarea.briefing-directive__text {
 }
 
 .briefing-directive--selected {
-  box-shadow: -2px 0 0 var(--accent-border);
   background: var(--surface-card);
+}
+
+.briefing-directive--owner.briefing-directive--selected::before {
+  background: var(--accent-border);
 }
 
 .briefing-document__inline-annotations {

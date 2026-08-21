@@ -319,7 +319,7 @@ describe('Briefing document panel', () => {
       { id: 'rating', value: { rating: 5 } },
     ]));
     expect(screen.getAllByLabelText('Required')).toHaveLength(6);
-    const shortSection = short.closest('.briefing-directive') as HTMLElement;
+    const shortSection = short.closest('.briefing-directive__response-host') as HTMLElement;
     fireEvent.click(within(shortSection).getByRole('button', { name: 'Clear answer' }));
     expect(changes.at(-1)).toEqual({ id: 'short', value: null });
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
@@ -333,14 +333,24 @@ describe('Briefing document panel', () => {
     const directive = screen.getByText('Plan').closest('.briefing-directive') as HTMLElement;
     const actions = directive.querySelector('.briefing-directive__actions') as HTMLElement;
     const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
+    const ownerRule = briefingStylesheet.match(/\.briefing-directive--owner \{([^}]*)\}/)?.[1] ?? '';
+    const railRule = briefingStylesheet.match(/\.briefing-directive--owner::before \{([^}]*)\}/)?.[1] ?? '';
 
     expect(directive.classList.contains('contextual-action-owner')).toBe(true);
+    expect(directive.classList.contains('briefing-directive--owner')).toBe(true);
     expect(actions.classList.contains('contextual-action-group')).toBe(true);
-    expect(directiveRule).toContain('box-shadow: -2px 0 0 var(--border-faint)');
+    expect(directiveRule).toContain('box-shadow: none');
     expect(directiveRule).not.toMatch(/(?:margin|padding|border-left):/);
+    expect(ownerRule).toContain('position: relative');
+    expect(railRule).toContain('inset-inline-start: calc(-1 * var(--space-4))');
+    expect(railRule).toContain('width: 2px');
+    expect(railRule).toContain("content: ''");
+    expect(screen.getByLabelText('Pinned briefing document').querySelectorAll('.briefing-directive--owner')).toHaveLength(1);
+    expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-end: 0/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive--owner > \.briefing-markdown__action-rail \{[^}]*inset-inline-end: calc\(-1 \* var\(--space-3\)\)/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*justify-items: end/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive--selected \{[^}]*box-shadow: -2px 0 0 var\(--accent-border\)/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
   });
@@ -464,7 +474,7 @@ describe('Briefing document panel', () => {
     expect(screen.queryByRole('heading', { name: 'Review plan' })).toBeNull();
     expect(screen.getByLabelText('Pinned briefing document').querySelector('img')).toBeNull();
     expect(screen.getByRole('button', { name: /Body.*Comment.*Current actor note/ })).toBeTruthy();
-    const region = keep.closest('.briefing-directive') as HTMLElement;
+    const region = screen.getByText('Body').closest('.briefing-directive') as HTMLElement;
     fireEvent.click(region);
     expect(region.className).toContain('briefing-directive--selected');
     fireEvent.keyDown(region, { key: 'Enter' });
