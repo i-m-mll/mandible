@@ -52,7 +52,7 @@ cmd_default() {
   cont_count=$(printf '%s' "$response" | jq '.continuations | length')
   if [[ "$cont_count" -gt 0 ]]; then
     print "\033[1;36mContinuations:\033[0m"
-    printf '%s' "$response" | jq -r '.continuations[] | "  [\(.session_id | .[0:8])] \(.continuation) (ended: \(.ended_at))"'
+    printf '%s' "$response" | api_jq_human '.continuations[] | "  [\(.session_id | mandible_short_id)] \(.continuation) (ended: \(.ended_at))"'
     print ""
   fi
 
@@ -61,7 +61,7 @@ cmd_default() {
   auth_count=$(printf '%s' "$response" | jq '.auth_results | length')
   if [[ "$auth_count" -gt 0 ]]; then
     print "\033[1;33mAuth Results:\033[0m"
-    printf '%s' "$response" | jq -r '.auth_results[] | "  [\(.id | .[0:8])] \(.title) — \(.status)\(if .exit_code != null then " (exit \(.exit_code))" else "" end)"'
+    printf '%s' "$response" | api_jq_human '.auth_results[] | "  [\(mandible_display_id)] \(.title) — \(.status)\(if .exit_code != null then " (exit \(.exit_code))" else "" end)"'
     print ""
   fi
 
@@ -70,7 +70,7 @@ cmd_default() {
   issue_count=$(printf '%s' "$response" | jq '.open_issues | length')
   if [[ "$issue_count" -gt 0 ]]; then
     print "\033[1;32mOpen Issues:\033[0m"
-    printf '%s' "$response" | jq -r '.open_issues[] | "  [\(.id | .[0:8])] \(.title)\(if (.labels | length) > 0 then " [\(.labels | join(", "))]" else "" end)"'
+    printf '%s' "$response" | api_jq_human '.open_issues[] | "  [\(mandible_display_id)] \(.title)\(if (.labels | length) > 0 then " [\(.labels | join(", "))]" else "" end)"'
     print ""
   fi
 }
@@ -161,7 +161,7 @@ cmd_ack() {
   local ok
   ok=$(printf '%s' "$response" | jq -r '.ok // empty')
   if [[ "$ok" == "true" ]]; then
-    print "Acknowledged ${type} ${id}"
+    print "Acknowledged ${type} $(api_short_id "$id")"
   else
     local err
     err=$(printf '%s' "$response" | jq -r '.error // "unknown error"')

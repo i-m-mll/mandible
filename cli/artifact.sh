@@ -567,12 +567,12 @@ payload_for_path() {
 }
 
 print_batch_human() {
-  jq -r '
+  api_jq_human '
     (.registered[]? |
-      if .version then "registered \(.version.ref // .version.id) in \(.series.ref // .series.id)"
-      elif .blob_only then "registered blob \(.artifact.ref // .artifact.id)"
-      else "registered \(.artifact.ref // .artifact.id) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")" end),
-    (.linked[]? | "linked \(.artifact.id) \(.link.link_type) issue:\(.link.entity_id[0:8])"),
+      if .version then "registered \(.version | mandible_display_ref) in \(.series | mandible_display_ref)"
+      elif .blob_only then "registered blob \(.artifact | mandible_display_ref)"
+      else "registered \(.artifact | mandible_display_ref) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")" end),
+    (.linked[]? | "linked \(.artifact | mandible_display_ref) \(.link.link_type) issue:\(.link.entity_id | mandible_short_id)"),
     (.failed[]? | "failed \(.input // .ref // "-") \(.error)")
   '
 }
@@ -816,14 +816,14 @@ cmd_link() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .link as $l
       | .resolution as $r
       | ($l.link_kind // "pinned") as $kind
       | ($l.resolved_version_no // $r.resolved_version_no // $r.version.version_no // null) as $version
       | (if $version == null then "" else " v\($version)" end) as $version_suffix
       | (if $kind == "living" then "[living · latest\($version_suffix)]" else "[pinned\($version_suffix)]" end) as $badge
-      | "linked \($r.artifact.id) \($l.link_type) issue:\($l.entity_id[0:8]) \($badge)"'
+      | "linked \($r.artifact | mandible_display_ref) \($l.link_type) issue:\($l.entity_id | mandible_short_id) \($badge)"'
   fi
 }
 
@@ -843,9 +843,9 @@ cmd_resolve() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .resolution
-      | "\(.status) \(.target_type // "legacy_artifact") \(.target_id // .artifact.id // "-") \(.normalized_ref)",
+      | "\(.status) \(.target_type // "legacy_artifact") \((.target_id // .artifact.ref // .artifact.id // "-") | mandible_typed_short_ref) \((.normalized_ref // "-") | mandible_typed_short_ref)",
         ( (.warnings // [])[] | "warning: \(.)" )'
   fi
 }
@@ -949,7 +949,7 @@ cmd_list() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '.artifacts[]? | "\(.id) \(.custody_mode) \(.availability) \(.role // "-") \(.uri)"'
+    printf '%s\n' "$response" | api_jq_human '.artifacts[]? | "\(mandible_display_ref) \(.custody_mode) \(.availability) \(.role // "-") \(.uri)"'
   fi
 }
 
@@ -985,9 +985,9 @@ cmd_associate() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .association
-      | "associated \(.target_type):\(.target_id) with project \(.project_id) [\(.association_kind)\(if .role != "" then " · " + .role else "" end)]"'
+      | "associated \((.target_ref // (.target_type + ":" + .target_id)) | mandible_typed_short_ref) with project \(.project_key // (.project_id | mandible_short_id)) [\(.association_kind)\(if .role != "" then " · " + .role else "" end)]"'
   fi
 }
 
@@ -1016,9 +1016,9 @@ cmd_associations() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .associations[]?
-      | "\(.project_id) \(.association_kind) \(.target_type):\(.target_id)\(if .role != "" then " " + .role else "" end)"'
+      | "\(.project_key // (.project_id | mandible_short_id)) \(.association_kind) \((.target_ref // (.target_type + ":" + .target_id)) | mandible_typed_short_ref)\(if .role != "" then " " + .role else "" end)"'
   fi
 }
 
@@ -1058,7 +1058,7 @@ cmd_show() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '.artifact | "\(.id)\nrole: \(.role // "-")\ncustody: \(.custody_mode)\navailability: \(.availability)\nuri: \(.uri)"'
+    printf '%s\n' "$response" | api_jq_human '.artifact | "\(mandible_display_ref)\nrole: \(.role // "-")\ncustody: \(.custody_mode)\navailability: \(.availability)\nuri: \(.uri)"'
   fi
 }
 
@@ -1108,7 +1108,7 @@ cmd_check() {
   if (( json )); then
     printf '%s\n' "$result" | jq .
   else
-    printf '%s\n' "$result" | jq -r '.checks[] | .check as $c | "\($c.materializable // false) \($c.artifact_id // .ref) \((($c.reasons // []) + ($c.warnings // [])) | join(","))"'
+    printf '%s\n' "$result" | api_jq_human '.checks[] | .check as $c | "\($c.materializable // false) \(($c.ref // $c.artifact_ref // $c.artifact_id // .ref) | mandible_typed_short_ref) \((($c.reasons // []) + ($c.warnings // [])) | join(","))"'
   fi
 }
 
@@ -1130,12 +1130,12 @@ cmd_versions() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .history.series as $s
       | ($s.ref // ($s.id | sub("^artifact-series:"; "artifact:"))) as $artifact_ref
       | "artifact \($artifact_ref) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
       (.history.versions[]
-        | "  v\(.version_no) \(.source_kind) \(.ref // .id // .artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
+        | "  v\(.version_no) \(.source_kind) \((.ref // .id // .artifact_id) | mandible_typed_short_ref)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
   fi
 }
 
@@ -1357,7 +1357,7 @@ cmd_snapshot() {
   if (( json )); then
     printf '%s\n' "$result" | jq .
   else
-    printf '%s\n' "$result" | jq -r '"snapshotted \(.artifact.id) \(.artifact.custody_mode) \(.artifact.availability)"'
+    printf '%s\n' "$result" | api_jq_human '"snapshotted \(.artifact | mandible_display_ref) \(.artifact.custody_mode) \(.artifact.availability)"'
   fi
 }
 
@@ -1412,7 +1412,7 @@ bundle_create() {
     if (( json )); then
       printf '%s\n' "$bundle_response" | jq .
     else
-      printf '%s\n' "$bundle_response" | jq -r '"bundle \(.bundle.id) members=\(.members|length)"'
+      printf '%s\n' "$bundle_response" | api_jq_human '"bundle \(.bundle | mandible_display_ref) members=\(.members|length)"'
     fi
     return
   fi
@@ -1497,7 +1497,7 @@ bundle_create() {
     bundle_artifact="$(printf '%s' "$bundle_response" | jq '.artifact')"
     bundle_response="$(jq -n --argjson bundle "$bundle_artifact" --argjson members "$member_results" --argjson failed "$failed" '{command:"bundle create", bundle:$bundle, members:$members, failed:$failed}')"
   fi
-  if (( json )); then printf '%s\n' "$bundle_response" | jq .; else printf '%s\n' "$bundle_response" | jq -r '"bundle \(.bundle.id // .planned_payload.logical_name) members=\(.members|length)"'; fi
+  if (( json )); then printf '%s\n' "$bundle_response" | jq .; else printf '%s\n' "$bundle_response" | api_jq_human '"bundle \(if .bundle then (.bundle | mandible_display_ref) else .planned_payload.logical_name end) members=\(.members|length)"'; fi
 }
 
 bundle_add() {
@@ -1527,7 +1527,7 @@ bundle_add() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '"bundle \(.bundle.id) members=\(.members|length)"'
+    printf '%s\n' "$response" | api_jq_human '"bundle \(.bundle | mandible_display_ref) members=\(.members|length)"'
   fi
 }
 
@@ -1537,7 +1537,7 @@ bundle_show() {
   local bundle_id result
   bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
   result="$(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")")" || die "${RED}Failed to show bundle.${RESET}" 1
-  if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | jq -r '"bundle \(.bundle.id) members=\(.members|length)"'; fi
+  if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | api_jq_human '"bundle \(.bundle | mandible_display_ref) members=\(.members|length)"'; fi
 }
 
 cmd_bundle() {

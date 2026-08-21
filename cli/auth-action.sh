@@ -135,9 +135,9 @@ parse_action_options() {
 }
 
 print_action_human() {
-  jq -r '
+  api_jq_human '
     .actions[]? |
-    "[\(.id[0:8])] #\(.ordinal) \(.kind) \(.target_issue_ref) \(.state) digest=\(.target_digest // "-")"
+    "[\(mandible_display_id)] #\(.ordinal) \(.kind) \(.target_issue_ref) \(.state) digest=\((.target_digest // "-") | mandible_short_id)"
   '
 }
 
