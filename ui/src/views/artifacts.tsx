@@ -23,6 +23,7 @@ import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
   deleteArtifactDraft,
+  createBriefingFromArtifactVersion,
   getArtifact,
   getArtifactContent,
   getArtifactDiff,
@@ -70,6 +71,7 @@ import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { briefingRoute } from '../routing';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -981,6 +983,8 @@ export function ArtifactDetail({
   const [diffError, setDiffError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [openingExternally, setOpeningExternally] = useState(false);
+  const [briefingCreating, setBriefingCreating] = useState(false);
+  const [briefingError, setBriefingError] = useState<string | null>(null);
   const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
   const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
   latestDraftRef.current = draft;
@@ -1096,6 +1100,28 @@ export function ArtifactDetail({
   const externalOpenState = content?.status === 'available' && content.source
     ? { enabled: true, reason: '' }
     : { enabled: false, reason: content?.reason ?? 'Artifact material is not available as a local file.' };
+  const briefingCreateState = selectedVersion && content?.status === 'available' && content.kind === 'markdown'
+    ? { enabled: true, reason: '' }
+    : { enabled: false, reason: 'Create briefing requires one explicitly resolved, materializable Markdown artifact version.' };
+
+  const createBriefing = async () => {
+    if (!selectedVersion || !briefingCreateState.enabled) return;
+    setBriefingCreating(true);
+    setBriefingError(null);
+    try {
+      const receipt = await createBriefingFromArtifactVersion({
+        artifact_version_ref: selectedVersion.id,
+        title: artifactTitle(artifact),
+      });
+      if (typeof window !== 'undefined') {
+        window.location.hash = briefingRoute(receipt.briefing_id, receipt.round_id).slice(1);
+      }
+    } catch (error) {
+      setBriefingError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBriefingCreating(false);
+    }
+  };
 
   const openSelectedArtifactExternally = async () => {
     setActionsOpen(false);
@@ -1381,6 +1407,16 @@ export function ArtifactDetail({
                   type="button"
                   className="artifact-detail__actions-item"
                   role="menuitem"
+                  disabled={!briefingCreateState.enabled || briefingCreating}
+                  title={briefingCreateState.enabled ? 'Create a new Briefing from this exact selected version' : briefingCreateState.reason}
+                  onClick={() => closeActionsAfter(() => void createBriefing())}
+                >
+                  {briefingCreating ? 'Creating briefing…' : 'Create briefing'}
+                </button>
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
                   disabled={spaceActionDisabled}
                   title={!spaceProjectId ? 'No project context for Spaces' : 'Add to Space'}
                   onClick={() => closeActionsAfter(() => setSpacePickerOpen(true))}
@@ -1452,6 +1488,7 @@ export function ArtifactDetail({
     >
         {detailError && <div className="artifacts-error">{detailError}</div>}
         {openError && <div className="artifacts-error" role="alert">Could not open artifact: {openError}</div>}
+        {briefingError && <div className="artifacts-error" role="alert">Could not create briefing: {briefingError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}

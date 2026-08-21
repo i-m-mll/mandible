@@ -61,6 +61,23 @@ afterEach(() => {
 });
 
 describe("artifact-backed Briefing rounds", () => {
+  it("binds directive-free exact Markdown as an annotation-only Briefing without weakening run ingestion", () => {
+    const sourcePath = path.join(root, "AGENTS.review.md");
+    fs.writeFileSync(sourcePath, "# Agent instructions\n\nPlain policy text.\n");
+    const artifact = recordArtifactVersion(db, {
+      source_kind: "local_only", path: sourcePath, logical_name: "AGENTS.review.md",
+      role: "review-document", media_type: "text/markdown",
+    });
+    const receipt = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "plain-agents-review", title: "Agent instructions",
+      artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    });
+    expect(receipt.artifact_version_id).toBe(artifact.version.id);
+    expect(readBriefing(db, receipt.briefing_id, { roundId: receipt.round_id!, actorUserId: humanId,
+      operator: false })).toMatchObject({ selected_round: { items: [], binding: { status: "valid" } } });
+    expect(() => publishBriefingRun(db, request("# Plain run\n"), publisherId)).toThrow(/no spec-item directives/);
+  });
+
   it("reuses one exact v3 artifact version and exports only current frozen text choices", () => {
     const markdown = `# Agent policy
 

@@ -2922,6 +2922,23 @@ export type ArtifactDiffResult = {
   reason?: string;
 };
 
+export type CreateBriefingFromArtifactVersionResult = {
+  receipt_id: string;
+  briefing_id: string;
+  run_id: string;
+  round_id: string;
+  artifact_version_id: string;
+  quiet: false;
+};
+
+export async function createBriefingFromArtifactVersion(input: {
+  artifact_version_ref: string;
+  title: string;
+}): Promise<CreateBriefingFromArtifactVersionResult> {
+  const response = await apiPost('/api/briefings', input);
+  return (await parseMaybeJson(response)) as CreateBriefingFromArtifactVersionResult;
+}
+
 export type KnowledgeBackrefRecord = {
   id: string;
   source_type: 'artifact' | 'document';

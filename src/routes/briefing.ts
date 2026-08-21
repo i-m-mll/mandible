@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { getDb, type Db } from "../db.js";
 import {
@@ -7,6 +9,7 @@ import {
   exportBriefingSubmissionMarkdown,
   listBriefings,
   parseBriefingRunRequest,
+  publishBriefingFromArtifactVersion,
   publishBriefingRun,
   readBriefing,
   submitBriefingRound,
@@ -45,6 +48,38 @@ function body(req: RequestLike): Record<string, unknown> {
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+  server.post("/api/briefings", (req, res) => {
+    try {
+      const actor = activeHuman(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody)
+        .filter((key) => key !== "artifact_version_ref" && key !== "title");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      const artifactVersionRef = typeof requestBody.artifact_version_ref === "string"
+        ? requestBody.artifact_version_ref.trim() : "";
+      const title = typeof requestBody.title === "string" ? requestBody.title.trim() : "";
+      if (!artifactVersionRef) throw new BriefingStoreError("artifact_version_ref must be a nonblank exact artifact-version ref");
+      if (!title) throw new BriefingStoreError("title must be a nonblank string");
+      const receipt = publishBriefingFromArtifactVersion(db, {
+        briefing_key: `manual:${randomUUID()}`,
+        title,
+        artifact_version_ref: artifactVersionRef,
+        profile: "mandible-briefing.v3",
+        responder_user_ids: [actor.user.id],
+      });
+      broadcast(BRIEFING_EVENTS.created, { briefing_id: receipt.briefing_id });
+      broadcast(BRIEFING_EVENTS.roundPublished, {
+        briefing_id: receipt.briefing_id,
+        round_id: receipt.round_id,
+      });
+      sendJson(res, 201, receipt);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
   server.post("/api/briefings/runs", (req, res) => {
     try {
       requireIdentity(req);

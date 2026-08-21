@@ -164,7 +164,11 @@ function directiveBody(
 }
 
 /** Parses the deliberately small, inert briefing directive grammar. Offsets are JS UTF-16 code units. */
-export function parseBriefingDirectives(source: string, profile: BriefingProfile = BRIEFING_PROFILE): BriefingDirective[] {
+export function parseBriefingDirectives(
+  source: string,
+  profile: BriefingProfile = BRIEFING_PROFILE,
+  options: { allowEmpty?: boolean } = {},
+): BriefingDirective[] {
   const tree = unified().use(remarkParse).use(remarkDirective).parse(source) as unknown as Node;
   const directives: BriefingDirective[] = [];
   const seen = new Set<string>();
@@ -217,6 +221,8 @@ export function parseBriefingDirectives(source: string, profile: BriefingProfile
     for (const child of node.children ?? []) walk(child, node === tree);
   };
   walk(tree, false);
-  if (directives.length === 0) throw new BriefingDirectiveError("briefing document has no spec-item directives");
+  if (directives.length === 0 && !options.allowEmpty) {
+    throw new BriefingDirectiveError("briefing document has no spec-item directives");
+  }
   return directives;
 }

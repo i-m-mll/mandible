@@ -71,6 +71,51 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("creates distinct logical Briefings from one explicitly selected exact artifact version", async () => {
+    const source = path.join(root, "AGENTS.review.md");
+    fs.writeFileSync(source, "# Version one\n");
+    const firstVersion = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "AGENTS.review.md", role: "review-document", media_type: "text/markdown" }, 100);
+    fs.writeFileSync(source, "# Version two\n");
+    const latestVersion = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "AGENTS.review.md", role: "review-document", media_type: "text/markdown" }, 200);
+    const request = { artifact_version_ref: firstVersion.version.id, title: "AGENTS review" };
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request }))
+      .toMatchObject({ status: 401 });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "agent-schedule" })).toMatchObject({ status: 403 });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { ...request, responder_user_ids: ["spoofed"] } })).toMatchObject({
+      status: 400, body: { error: expect.stringContaining("unsupported field") },
+    });
+
+    const created = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "human" });
+    const createdAgain = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "human" });
+    expect(created).toMatchObject({ status: 201, body: { artifact_version_id: firstVersion.version.id } });
+    expect(createdAgain).toMatchObject({ status: 201, body: { artifact_version_id: firstVersion.version.id } });
+    expect((created.body as { briefing_id: string }).briefing_id)
+      .not.toBe((createdAgain.body as { briefing_id: string }).briefing_id);
+    expect(firstVersion.version.id).not.toBe(latestVersion.version.id);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 2 });
+    expect(db.prepare("SELECT DISTINCT artifact_version_id FROM briefing_rounds").all())
+      .toEqual([{ artifact_version_id: firstVersion.version.id }]);
+    expect(vi.mocked(broadcast).mock.calls.filter(([event]) => event === "briefing:created")).toHaveLength(2);
+  });
+
+  it("rejects logical artifact refs instead of silently selecting their latest version", async () => {
+    const source = path.join(root, "review.md");
+    fs.writeFileSync(source, "# Review\n");
+    const artifact = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "review.md", role: "review-document", media_type: "text/markdown" });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: artifact.artifact.id, title: "Review" } })).toMatchObject({
+      status: 404, body: { code: "artifact_version_not_found" },
+    });
+  });
+
   it("exports one exact actor-owned frozen v3 submission through authenticated GET", async () => {
     const markdown = `# Policy\n\n:::spec-item{key="wording" type="text_variant" required="true"}\n::alternative[One]{key="one"}\nOne.\n::alternative[Two]{key="two"}\nTwo.\n:::`;
     const file = path.join(root, "review.md"); fs.writeFileSync(file, markdown);
