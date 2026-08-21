@@ -26,4 +26,17 @@ describe("startup ingestion ordering", () => {
       error: String(failure),
     });
   });
+
+  it("does not start ingestion after daemon shutdown cancels the pending scan", async () => {
+    let resolveScan: (() => void) | undefined;
+    const scan = new Promise<void>((resolve) => { resolveScan = resolve; });
+    const start = vi.fn();
+    const cancel = startIngestionAfterStartupWorkScan(scan, start, vi.fn());
+
+    cancel();
+    resolveScan?.();
+    await Promise.resolve();
+
+    expect(start).not.toHaveBeenCalled();
+  });
 });

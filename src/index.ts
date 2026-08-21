@@ -125,8 +125,10 @@ export function startIngestionAfterStartupWorkScan(
   scan: Promise<unknown>,
   start: () => void,
   logger: Logger,
-): void {
+): () => void {
+  let cancelled = false;
   const startAfterScan = () => {
+    if (cancelled) return;
     try {
       start();
     } catch (error) {
@@ -140,6 +142,7 @@ export function startIngestionAfterStartupWorkScan(
       startAfterScan();
     },
   );
+  return () => { cancelled = true; };
 }
 
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
@@ -448,16 +451,17 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const startupWorkScan = operationalMutationsAllowed
     ? workScanner.scanAllAsync({ skip_recent: true })
     : null;
-  if (startupWorkScan) {
-    startIngestionAfterStartupWorkScan(startupWorkScan, () => {
+  const cancelStartupIngestion = startupWorkScan
+    ? startIngestionAfterStartupWorkScan(startupWorkScan, () => {
       startIngestion(logger, {
         dbPath,
         // Read the last periodic sample so ingestion backoff does not reset the
         // shared lag histogram between batches. Issue: 0d81726.
         getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
       });
-    }, logger);
-  } else {
+    }, logger)
+    : () => undefined;
+  if (!startupWorkScan) {
     startupWorkScanComplete = true;
   }
 
@@ -634,6 +638,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       process.exit(1);
     }
     closing = true;
+    cancelStartupIngestion();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
