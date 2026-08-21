@@ -9,6 +9,7 @@ import {
   auditCutover,
   buildCompactDestination,
   buildLegacyReclaimedDestination,
+  buildSparseConversationStructureCache,
   inspectLegacyReclaimReadiness,
   inspectSourceBinding,
   runRestoreDrill,
@@ -266,6 +267,55 @@ describe("conversation cutover compact rebuild", () => {
 });
 
 describe("legacy storage reclaim", () => {
+  it("moves only integer navigation coordinates into the disposable sparse cache", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-sparse-cache-"));
+    roots.push(root);
+    const source = path.join(root, "source.db");
+    const destination = path.join(root, "structure.db");
+    const db = new Database(source);
+    db.exec(`
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY, source TEXT NOT NULL, source_hash TEXT NOT NULL,
+        block_count INTEGER NOT NULL
+      );
+      CREATE TABLE conversation_sources (
+        conversation_id TEXT NOT NULL, provider TEXT NOT NULL, current_version_id TEXT,
+        parser_format TEXT NOT NULL, parser_version TEXT NOT NULL,
+        normalization_version TEXT NOT NULL, redaction_epoch INTEGER NOT NULL
+      );
+      CREATE TABLE conversation_source_versions (id TEXT PRIMARY KEY, content_sha256 TEXT NOT NULL);
+      CREATE TABLE conversation_structural_blocks (
+        id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, source_version_id TEXT,
+        status TEXT NOT NULL, provider_key TEXT NOT NULL, position INTEGER NOT NULL,
+        type TEXT NOT NULL, role TEXT NOT NULL,
+        parent_block_id TEXT, record_offset INTEGER, record_length INTEGER,
+        record_ordinal INTEGER, sub_block_ordinal INTEGER NOT NULL
+      );
+      INSERT INTO conversations VALUES ('conv', 'codex', 'hash', 2);
+      INSERT INTO conversation_sources VALUES ('conv', 'codex', 'version', 'provider-jsonl', '1', '1', 0);
+      INSERT INTO conversation_source_versions VALUES ('version', 'hash');
+      INSERT INTO conversation_structural_blocks VALUES
+        ('block-0', 'conv', 'version', 'current', 'tool:call-1:tool_use:0:record:1:10:hash', 0, 'tool_use', 'assistant', NULL, 10, 20, 1, 0),
+        ('block-1', 'conv', 'version', 'current', 'tool:call-1:tool_result:0:record:2:30:hash', 1, 'tool_result', 'tool', 'block-0', 30, 40, 2, 0);
+    `);
+    db.close();
+
+    const report = buildSparseConversationStructureCache({ source, destination });
+    expect(report).toMatchObject({ pass: true, conversations: 1, blocks: 2, tool_links: 1 });
+    const cache = new Database(destination, { readonly: true });
+    expect(cache.prepare(`
+      SELECT position, type_code, role_code, parent_position,
+             record_offset, record_length, record_ordinal, sub_block_ordinal
+        FROM cache_blocks ORDER BY position
+    `).all()).toEqual([
+      { position: 0, type_code: 4, role_code: 1, parent_position: null, record_offset: 10, record_length: 20, record_ordinal: 1, sub_block_ordinal: 0 },
+      { position: 1, type_code: 5, role_code: 3, parent_position: 0, record_offset: 30, record_length: 40, record_ordinal: 2, sub_block_ordinal: 0 },
+    ]);
+    expect(cache.prepare("SELECT name FROM pragma_table_info('cache_blocks') ORDER BY cid").all())
+      .not.toContainEqual({ name: "content" });
+    cache.close();
+  });
+
   it("refuses reclaim while any legacy conversation payload remains", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-reclaim-legacy-"));
     roots.push(root);
@@ -324,7 +374,11 @@ describe("legacy storage reclaim", () => {
 
     expect(inspectLegacyReclaimReadiness({ source, logDb: logDbPath })).toMatchObject({ pass: true });
     const report = buildLegacyReclaimedDestination({ source, destination, logDb: logDbPath });
-    expect(report).toMatchObject({ pass: true, rebuild: { reclaimed_conversation_checkpoints: true } });
+    expect(report).toMatchObject({
+      pass: true,
+      structure_cache: { pass: true },
+      rebuild: { reclaimed_dense_conversation_index: true },
+    });
     const rebuilt = new Database(destination, { readonly: true });
     expect(rebuilt.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_log'").get())
       .toBeUndefined();

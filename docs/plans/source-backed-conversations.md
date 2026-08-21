@@ -1,6 +1,14 @@
 # Source-backed conversation storage
 
-Status: implementation contract for umbrella `2da2033`
+Status: historical migration plan; sparse cutover decision updated 2026-08-21
+
+> The original dual-read retention gates below describe the migration that led
+> to source-backed reads. The current operator decision supersedes its legacy
+> body/alias retention requirement: provider-native files and Mandible ledger
+> metadata are authoritative, and dense normalized conversation projections are
+> intentionally reclaimed. A disposable sparse cache now holds only bounded
+> native-record navigation coordinates. Missing cache entries are reparsed from
+> native files; old block aliases and dense replay history are not preserved.
 
 ## Decision
 
@@ -10,20 +18,19 @@ source state, but normalized bodies become derived data. Derived bodies and
 search material may be cached; deleting the cache must never remove durable
 Mandible state.
 
-This is an additive, dual-read migration. Existing `conversation_blocks`
-remain a read-only fallback until every cutover gate in this document passes.
-No feature branch may delete legacy bodies, vacuum the production database, or
-silently change the default reader.
+The rollout began as an additive dual-read migration. The sparse cutover now
+makes verified provider files the default body reader and intentionally leaves
+the dense compatibility tables empty in a freshly rebuilt database. Legacy
+rows remain readable only for old databases and isolated compatibility data;
+they are not regenerated for source-backed conversations.
 
 ## Durable and disposable boundaries
 
 Durable canonical state:
 
 - immutable Mandible conversation IDs;
-- durable block surrogate IDs and aliases for every legacy block ID;
 - provider/native session identifiers without assuming they are unique;
 - source aliases, immutable source versions, availability, and custody state;
-- structural block identity, order, DAG identity, and normalization context;
 - tags, notes, star/preservation intent, parent links, workflow links, and
   other user-authored relationships;
 - custody manifests, integrity results, and restore evidence.
@@ -31,6 +38,7 @@ Durable canonical state:
 Disposable derived state:
 
 - parser checkpoints that can be recreated from a verified source version;
+- block-order/record-range coordinates and old block aliases;
 - masked normalized hot bodies;
 - masked FTS/trigram postings and snippets;
 - ingestion telemetry and operational daemon logs.
@@ -46,15 +54,19 @@ Each conversation may have several path aliases and source versions. An active
 Codex rollout moving to `archived_sessions`, a provider rename, or an exact-byte
 copy changes aliases without changing the Mandible conversation ID.
 
-Every readable structural block locator contains at least:
+The disposable sparse cache records only:
 
 ```text
+conversation_id
 source_version_id
+position
+type_code
+role_code
+parent_position
 record_offset
 record_length
-record_hash
+record_ordinal
 sub_block_ordinal
-normalization_checkpoint_id
 parser_format
 parser_version
 normalization_version
@@ -70,14 +82,15 @@ A source read must:
 
 1. resolve only within an allowlisted provider root or managed custody root;
 2. reject symlink escapes and non-regular files;
-3. validate the opened descriptor, source generation, and record hash;
-4. use a parser checkpoint or replay enough prefix context for tool/result and
-   multi-record normalization;
+3. validate the opened descriptor and complete source generation;
+4. read only the bounded native records and parent/tool context named by the
+   sparse cache;
 5. verify the source did not change during the read;
-6. fail closed to reindex or the legacy-body fallback on any mismatch.
+6. fail closed to reindex on any mismatch.
 
 Missing sources produce `source_unavailable` tombstones. They do not delete
-conversation rows, annotations, relationships, or legacy fallback bodies.
+conversation rows, annotations, relationships, or other ledger metadata; no
+dense fallback body is retained after sparse cutover.
 
 ## Shared source-store API
 
@@ -126,6 +139,11 @@ rotate any index whose targeted erasure cannot be proven.
 
 Cold parsing is concurrency- and memory-bounded. Performance acceptance is
 measured separately for cold and hot detail reads and searches.
+
+The normalized-body budget is not the disk budget: trigram postings can be
+several times larger than input text. The cache therefore enforces both a 32
+MiB normalized-body LRU budget and a 256 MiB cap over the complete SQLite file
+family, rebuilding the disposable FTS file if tombstones prevent compaction.
 
 ## Preservation, archive, and restore contract
 

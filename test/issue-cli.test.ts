@@ -458,7 +458,7 @@ function listen(): Promise<number> {
         void readBody().then((body) => {
           requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
           res.end(JSON.stringify({
-            action_id: "edge_action",
+            action_id: "edge_action0123456789abcdef",
             edges: [
               { id: "edge_1", source_issue_id: "issue-1", target_issue_id: "issue-2" },
               { id: "edge_2", source_issue_id: "issue-1", target_issue_id: "issue-3" },
@@ -471,7 +471,7 @@ function listen(): Promise<number> {
         void readBody().then((body) => {
           requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
           res.end(JSON.stringify({
-            action_id: "edge_unlink",
+            action_id: "edge_unlink0123456789abcdef",
             edges: [{ id: "edge_1", deleted_at: 1_700_000_000_000 }],
           }));
         });
@@ -785,7 +785,8 @@ describe("issue CLI body revisions", () => {
     ], port);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("linked 2 relationship(s) action_id=edge_action");
+    expect(result.stdout).toContain("linked 2 relationship(s) action_id=edge_action0123");
+    expect(result.stdout).not.toContain("edge_action0123456789abcdef");
     expect(requestBodies).toContainEqual({
       path: "/api/ledger/relationships",
       method: "POST",
@@ -847,7 +848,8 @@ describe("issue CLI body revisions", () => {
     ], port);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("unlinked 1 relationship(s) action_id=edge_unlink");
+    expect(result.stdout).toContain("unlinked 1 relationship(s) action_id=edge_unlink0123");
+    expect(result.stdout).not.toContain("edge_unlink0123456789abcdef");
     expect(requestBodies).toContainEqual({
       path: "/api/ledger/relationships/unlink",
       method: "POST",

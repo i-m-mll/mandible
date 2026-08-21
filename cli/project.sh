@@ -54,7 +54,7 @@ emit() {
   if (( json )); then
     printf '%s\n' "$result" | jq .
   else
-    printf '%s\n' "$result" | jq -r "$human"
+    printf '%s\n' "$result" | api_jq_human "$human"
   fi
 }
 
@@ -290,11 +290,11 @@ cmd_repair() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       .report |
       "keys_backfilled: \(.keys_backfilled)",
       if .merge then
-        "merge \(.merge.source_project_id) -> \(.merge.target_project_id)",
+        "merge \(.merge.source_project_id | mandible_short_id) -> \(.merge.target_project_id | mandible_short_id)",
         "merge rows to move: \(([.merge.moves[]?.rows] | add) // 0) across \((.merge.moves // []) | length) table-column(s)",
         if ((.merge.conflicts // []) | length) > 0 then
           "conflicts: \([.merge.conflicts[] | "\(.kind):\(.value)"] | join(", "))"

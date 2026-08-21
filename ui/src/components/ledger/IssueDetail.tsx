@@ -204,6 +204,7 @@ export function LedgerIssueDetail({
             entityLabel: detail.project.repo_name ?? detail.project.display_name,
             displayRef: detail.display_id,
             canonicalRef: `${projectRef}/${detail.id}`,
+            copyRef: `${projectRef}/${detail.display_id}`,
             copyLabel: `Copy ${projectRef}/${detail.display_id}`,
           }}
           title={<span dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(detail.title) }} />}

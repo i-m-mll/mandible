@@ -205,12 +205,12 @@ labels_json() {
 }
 
 print_issue_detail() {
-  jq -r '
+  api_jq_human '
     "\(.display_id) [\(.status)] \(.title)",
     (if (.labels | length) > 0 then "labels: \(.labels | join(", "))" else "labels:" end),
     "",
     .body,
-    (.comments[]? | "\n---\n\(.id) \(.author.display) \(.source)\n\(.body)")
+    (.comments[]? | "\n---\n\(.id | mandible_short_id) \(.author.display) \(.source)\n\(.body)")
   '
 }
 
@@ -312,8 +312,8 @@ cmd_comment_add() {
     '{message:$message} + (if $reopen == "1" then {reopen:true} else {} end)')
   response=$(api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$payload") \
     || die "${RED}Failed to add comment to ${id}${RESET}" 1
-  printf '%s\n' "$response" | jq -r '
-    "comment \(((.comments // []) | sort_by(.created_at // 0) | last | .id) // "-") issue_status=\(.status // "unknown")"
+  printf '%s\n' "$response" | api_jq_human '
+    "comment \((((.comments // []) | sort_by(.created_at // 0) | last | .id) // "-") | mandible_short_id) issue_status=\(.status // "unknown")"
   '
 }
 
@@ -457,7 +457,7 @@ cmd_report() {
       conflicts
     }'
   else
-    api_get "/api/ledger/issues/$(urlencode "$id")" | jq -r '
+    api_get "/api/ledger/issues/$(urlencode "$id")" | api_jq_human '
       def list_or_dash(xs): if (xs // []) | length == 0 then "-" else (xs | join(", ")) end;
       def short(s): (s // "" | gsub("\\s+"; " ") | if length > 180 then .[0:177] + "..." else . end);
       "\(.display_id) [\(.status)] \(.title)",
@@ -477,7 +477,7 @@ cmd_report() {
       "",
       "latest comments:",
       (((.comments // []) | sort_by(.created_at // "") | reverse | .[0:5][])?
-        | "- \(.id // "?") \(.author.display // .author.id // "unknown") \(.created_at // ""): \(short(.body))")
+        | "- \((.id // "?") | mandible_short_id) \(.author.display // (.author.id | mandible_short_id) // "unknown") \(.created_at // ""): \(short(.body))")
     '
   fi
 }
@@ -557,7 +557,7 @@ cmd_triage() {
       | sort_by(.updated_at // "")
       | .[0:$limit]
       | if $json then .
-        else .[] | "\(.id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
+        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
 }
@@ -704,7 +704,7 @@ cmd_link() {
   if [[ ! "$status" =~ ^2 ]]; then
     die_api_status "Failed to link relationship(s) from ${source_ref}" "$status" "$response"
   fi
-  printf '%s\n' "$response" | jq -r '"linked \(.edges | length) relationship(s) action_id=\(.action_id)"'
+  printf '%s\n' "$response" | api_jq_human '"linked \(.edges | length) relationship(s) action_id=\(.action_id | mandible_short_id)"'
 }
 
 cmd_unlink() {
@@ -758,7 +758,7 @@ cmd_unlink() {
   if [[ ! "$status" =~ ^2 ]]; then
     die_api_status "Failed to unlink relationship(s) from ${source_ref}" "$status" "$response"
   fi
-  printf '%s\n' "$response" | jq -r '"unlinked \(.edges | length) relationship(s) action_id=\(.action_id)"'
+  printf '%s\n' "$response" | api_jq_human '"unlinked \(.edges | length) relationship(s) action_id=\(.action_id | mandible_short_id)"'
 }
 
 print_issue_heads() {
@@ -1149,7 +1149,7 @@ cmd_checkpoint() {
       request=$(jq -n --arg kind "$kind" --argjson payload "$payload" '{kind:$kind, payload:$payload}')
       response=$(api_send POST "/api/ledger/issues/$(urlencode "$id")/checkpoints" "$request") \
         || die "${RED}Failed to add checkpoint for ${id}${RESET}" 1
-      printf '%s\n' "$response" | jq -r '"checkpoint \(.id) \(.kind) \(.created_at)"'
+      printf '%s\n' "$response" | api_jq_human '"checkpoint \(.id | mandible_short_id) \(.kind) \(.created_at)"'
       ;;
     show)
       local id=""
@@ -1203,16 +1203,16 @@ cmd_checkpoint() {
       if (( json )); then
         printf '%s\n' "$response" | jq '.'
       elif (( latest )); then
-        printf '%s\n' "$response" | jq -r '
-          "checkpoint \(.id) \(.kind)",
+        printf '%s\n' "$response" | api_jq_human '
+          "checkpoint \(.id | mandible_short_id) \(.kind)",
           "created_at: \(.created_at)",
           "payload:",
           (.payload | tojson)
         '
       else
-        printf '%s\n' "$response" | jq -r '
+        printf '%s\n' "$response" | api_jq_human '
           .checkpoints[]? |
-          "checkpoint \(.id) \(.kind)\t\(.created_at)\t\(.payload | tojson)"
+          "checkpoint \(.id | mandible_short_id) \(.kind)\t\(.created_at)\t\(.payload | tojson)"
         '
       fi
       ;;
@@ -1342,7 +1342,7 @@ cmd_list() {
     root=$(urlencode "$inferred_repo")
   fi
   query="repo=${root}&status=$(urlencode "$status")"
-  api_get "/api/issues?${query}" | jq -r '.[] as $repo | $repo.issues[] | "\(.id)\t\(.status)\t\($repo.repo_name)\t\(.title)"'
+  api_get "/api/issues?${query}" | api_jq_human '.[] as $repo | $repo.issues[] | "\(mandible_display_id)\t\(.status)\t\($repo.repo_name)\t\(.title)"'
 }
 
 cmd_parent_role() {
@@ -1394,11 +1394,11 @@ cmd_parent_role_status() {
   if (( json )); then
     printf '%s\n' "$response" | jq '.'
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | api_jq_human '
       if .live_holder then
-        "live holder: \(.live_holder.session_id // "-") (\(.live_holder.mechanism // "-"))"
+        "live holder: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-"))"
       elif .holder then
-        "stale holder: \(.holder.session_id // "-") (\(.holder.mechanism // "-"))"
+        "stale holder: \((.holder.session_id // "-") | mandible_short_id) (\(.holder.mechanism // "-"))"
       else
         "no parent-role holder"
       end
@@ -1463,12 +1463,12 @@ PARENT_ROLE_ASSUME_USAGE
     if (( json )); then
       printf '%s\n' "$response" | jq '.'
     else
-      printf '%s\n' "$response" | jq -r '"parent-role assumed checkpoint=\(.checkpoint.id) holder=\(.parent_role.holder.payload.session_id)"'
+      printf '%s\n' "$response" | api_jq_human '"parent-role assumed checkpoint=\(.checkpoint.id | mandible_short_id) holder=\(.parent_role.holder.payload.session_id | mandible_short_id)"'
     fi
     return 0
   fi
   if [[ "$status" == "409" ]]; then
-    printf '%s\n' "$response" | jq -r '"live parent-role holder exists: \(.live_holder.session_id // "-") (\(.live_holder.mechanism // "-")); rerun with --override to retake"' >&2
+    printf '%s\n' "$response" | api_jq_human '"live parent-role holder exists: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-")); rerun with --override to retake"' >&2
     return 3
   fi
   printf '%s\n' "$response" >&2
@@ -1531,7 +1531,7 @@ cmd_open() {
 
 print_revision_history() {
   local with_body="$1"
-  jq -r --arg with_body "$with_body" '
+  api_jq_human '
     def timestamp:
       ((.occurred_at // .observed_at // 0) / 1000 | todateiso8601);
     def actor:
@@ -1544,12 +1544,12 @@ print_revision_history() {
       else
         "rev\tid\treason\tsource\toccurred\tactor\thash",
         ($revisions[]
-          | "#\(.revision_no)\t\(.id)\t\(.reason)\t\(.source)\t\(timestamp)\t\(actor)\t\(short_hash)",
+          | "#\(.revision_no)\t\(.id | mandible_short_id)\t\(.reason)\t\(.source)\t\(timestamp)\t\(actor | mandible_short_id)\t\(short_hash)",
             (if $with_body == "1" then
               "----- body #\(.revision_no) -----\n\(.snapshot_body)\n----- end body #\(.revision_no) -----"
             else empty end))
       end
-  '
+  ' --arg with_body "$with_body"
 }
 
 cmd_description_show() {
@@ -1876,18 +1876,18 @@ fetch_revision() {
 }
 
 print_revision_detail() {
-  jq -r '
+  api_jq_human '
     def timestamp:
       ((.occurred_at // .observed_at // 0) / 1000 | todateiso8601);
-    "revision: \(.id)",
-    "entity: \(.entity_type) \(.entity_id)",
-    "issue: \(.issue_id)",
+    "revision: \(.id | mandible_short_id)",
+    "entity: \(.entity_type) \(.entity_id | mandible_short_id)",
+    "issue: \(.issue_id | mandible_short_id)",
     "number: #\(.revision_no)",
     "reason: \(.reason)",
     "source: \(.source)",
     "occurred: \(timestamp)",
-    "actor: \(.actor_id // .actor_type // "-")",
-    "base_revision: \(.base_revision_id // "-")",
+    "actor: \((.actor_id // .actor_type // "-") | mandible_short_id)",
+    "base_revision: \((.base_revision_id // "-") | mandible_short_id)",
     "hash: \(.new_hash)",
     "",
     "body:",

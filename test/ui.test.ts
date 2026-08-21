@@ -2033,7 +2033,7 @@ describe('app shell', () => {
     const detailShell = graphPanel.querySelector('.detail-pane-shell');
     expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
       .toEqual(['header', 'body']);
-    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy full Repo reference' });
+    const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy Repo reference' });
     expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
     expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
     expect(within(graphPanel).queryByText('Actions')).toBeNull();
@@ -2478,7 +2478,7 @@ describe('AuthQueueView', () => {
     expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
 
     fireEvent.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith('req-structured-detail');
+    expect(writeText).toHaveBeenCalledWith('auth:req-stru');
 
     fireEvent.click(diffToggle);
     const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
@@ -4025,7 +4025,7 @@ describe('LedgerIssueDetail', () => {
     expect(body?.contains(overflowAction)).toBe(false);
 
     fireEvent.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith('mandible/abc123-full-canonical-id');
+    expect(writeText).toHaveBeenCalledWith('mandible/abc123');
   });
 
   it('prefers canonical project keys over checkout repo ids in copy refs', () => {
@@ -5073,7 +5073,7 @@ describe('ArtifactsView', () => {
     expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Created:');
     expect(detailHeader?.querySelector('.artifact-detail__header-context')?.textContent).toContain('Updated:');
     expect(detailBody?.querySelector('.artifact-detail__context')).toBeNull();
-    const seriesCopyButton = screen.getByRole('button', { name: 'Copy full artifact series ref' });
+    const seriesCopyButton = screen.getByRole('button', { name: 'Copy artifact series ref' });
     fireEvent.click(seriesCopyButton);
     fireEvent.pointerUp(seriesCopyButton);
     expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report');
@@ -5324,7 +5324,7 @@ describe('ArtifactsView', () => {
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy full artifact ref' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy artifact ref' }));
     fireEvent.click(screen.getByRole('button', { name: 'Copy selected artifact-version reference' }));
     expect(writeText).toHaveBeenNthCalledWith(1, collisionSafeRef);
     expect(writeText).toHaveBeenNthCalledWith(2, collisionSafeRef);
