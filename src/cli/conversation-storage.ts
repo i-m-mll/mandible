@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
 import Database from "better-sqlite3";
-import { decompressContent } from "../compression.js";
 import { migrate, type Db } from "../db.js";
 import { ConversationSourceStore } from "../conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../conversations/source-types.js";
@@ -15,14 +14,7 @@ import {
   redactCredentialLeaksInBlocks,
 } from "../credential-leak-scan.js";
 import { getAllParsers } from "../parsers/index.js";
-import type { BlockType, ConversationBlock, ConversationSource, Role } from "../parsers/types.js";
-import { getMandibleHomePath } from "../platform-paths.js";
-import {
-  MANAGED_NORMALIZED_SOURCE_EPOCHS,
-  serializeManagedNormalizedRecords,
-  writeManagedNormalizedSource,
-  type ManagedNormalizedBlockRecord,
-} from "../conversations/managed-normalized-source.js";
+import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
 
 // Deliberately below the multi-gigabyte sources that need the already-bounded
 // ingestion path, but large enough to repair the finite legacy cohort observed
@@ -39,135 +31,70 @@ interface Candidate {
   branch: string | null;
 }
 
-interface LegacyCustodyRow {
-  id: string;
-  conversation_id: string;
-  type: BlockType;
-  role: Role;
-  content: Buffer | string;
-  compressed: number;
-  position: number;
-  timestamp: string | null;
-  parent_id: string | null;
-  metadata_json: string;
-  dag_uuid: string | null;
-  dag_parent_uuid: string | null;
-}
+/** Build one exact filename index per Codex root; final identity is parsed below. */
+class CodexSessionSourceIndex {
+  private readonly pathsBySession = new Map<string, string[]>();
+  private readonly indexedRoots = new Set<string>();
 
-interface CompatibilityPreflightRow extends LegacyCustodyRow {
-  payload_state: "legacy" | "source";
-}
-
-function metadataMatches(raw: string, metadata: unknown): boolean {
-  try {
-    return isDeepStrictEqual(JSON.parse(raw), JSON.parse(JSON.stringify(metadata)));
-  } catch {
-    return false;
-  }
-}
-
-function preflightReplacementProjection(
-  db: Db,
-  conversationId: string,
-  blocks: readonly Omit<ConversationBlock, "id" | "conversation_id">[],
-): boolean {
-  const rows = db.prepare(`
-    SELECT id, conversation_id, type, role, content, compressed, position,
-           timestamp, parent_id, metadata_json, dag_uuid, dag_parent_uuid,
-           payload_state
-      FROM conversation_blocks
-     WHERE conversation_id = ?
-     ORDER BY position, id
-  `).all(conversationId) as CompatibilityPreflightRow[];
-  if (rows.length !== blocks.length) return false;
-  const rowsByPosition = new Map(rows.map((row) => [row.position, row]));
-  if (rowsByPosition.size !== rows.length) return false;
-
-  for (const block of blocks) {
-    const row = rowsByPosition.get(block.position);
-    if (!row || row.type !== block.type || row.role !== block.role
-        || row.timestamp !== block.timestamp
-        || row.dag_uuid !== (block.dag_uuid ?? null)
-        || row.dag_parent_uuid !== (block.dag_parent_uuid ?? null)) return false;
-    const parentAtPosition = block.parent_id !== null && /^\d+$/.test(block.parent_id)
-      ? rowsByPosition.get(Number(block.parent_id))?.id ?? null
-      : null;
-    if (row.parent_id !== block.parent_id && row.parent_id !== parentAtPosition) return false;
-    if (row.payload_state === "source") {
-      if (row.content.length !== 0 || row.metadata_json !== "{}" || row.compressed !== 0) return false;
-      continue;
+  find(sessionId: string, stalePath: string): string | null {
+    // Prefer the root named by the durable (though stale) provider path.
+    // A foreign Codex root with the same UUID must not make a local repair
+    // ambiguous, but an active/archive duplicate inside one root still does.
+    for (const root of this.rootsFor(stalePath)) {
+      this.indexRoot(root);
+      const matches = (this.pathsBySession.get(sessionId) ?? [])
+        .filter((candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`));
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) return null;
     }
-    if (decompressContent(row.content, row.compressed === 1) !== block.content
-        || !metadataMatches(row.metadata_json, block.metadata)) return false;
+    return null;
   }
-  return true;
+
+  private rootsFor(stalePath: string): string[] {
+    const roots: string[] = [];
+    const parts = path.resolve(stalePath).split(path.sep);
+    const codex = parts.lastIndexOf(".codex");
+    if (codex >= 0) roots.push(parts.slice(0, codex + 1).join(path.sep) || path.sep);
+    const homeRoot = path.join(os.homedir(), ".codex");
+    if (!roots.includes(homeRoot)) roots.push(homeRoot);
+    return roots;
+  }
+
+  private indexRoot(root: string): void {
+    const resolved = path.resolve(root);
+    if (this.indexedRoots.has(resolved)) return;
+    this.indexedRoots.add(resolved);
+    for (const rootName of ["sessions", "archived_sessions"]) {
+      const start = path.join(resolved, rootName);
+      if (!fs.existsSync(start)) continue;
+      const pending = [start];
+      while (pending.length > 0) {
+        const directory = pending.pop()!;
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          const entryPath = path.join(directory, entry.name);
+          if (entry.isDirectory()) pending.push(entryPath);
+          else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+            const match = entry.name.match(/-([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/i);
+            if (match) this.pathsBySession.set(match[1], [...(this.pathsBySession.get(match[1]) ?? []), entryPath]);
+          }
+        }
+      }
+    }
+  }
 }
 
-async function preserveMissingSource(
-  db: Db,
+async function markMissingNativeSource(
   store: ConversationSourceStore,
   candidate: Candidate,
-  custodyRoot: string,
-): Promise<{ promoted: boolean; blocks: number; filePath: string }> {
-  const rows = db.prepare(`
-    SELECT id, conversation_id, type, role, content, compressed, position,
-           timestamp, parent_id, metadata_json, dag_uuid, dag_parent_uuid
-      FROM conversation_blocks
-     WHERE conversation_id = ? AND payload_state = 'legacy'
-     ORDER BY position
-  `).all(candidate.id) as LegacyCustodyRow[];
-  if (rows.length === 0) throw new Error("missing source conversation has no legacy payload to preserve");
-
-  // Managed custody is the sole exact source for this cohort. Preserve the
-  // decompressed legacy body and metadata string byte-for-byte; masking belongs
-  // to the ordinary reader/search/export presentation boundary.
-  const records: ManagedNormalizedBlockRecord[] = rows.map((row) => ({
-    format: "mandible-normalized-block/1",
-    id: row.id,
-    conversation_id: candidate.id,
-    type: row.type,
-    role: row.role,
-    content: decompressContent(row.content, row.compressed === 1),
-    position: row.position,
-    timestamp: row.timestamp,
-    parent_id: row.parent_id,
-    metadata_json: row.metadata_json,
-    dag_uuid: row.dag_uuid,
-    dag_parent_uuid: row.dag_parent_uuid,
-  }));
-  const serialized = serializeManagedNormalizedRecords(records);
-  const materialized = writeManagedNormalizedSource({
-    rootPath: custodyRoot,
-    conversationId: candidate.id,
-    bytes: serialized.bytes,
-    contentHash: serialized.contentHash,
-  });
-  await store.recordManagedNormalizedSource({
+): Promise<{ promoted: boolean; blocks: number; filePath: null }> {
+  const discarded = store.discardUnavailableConversationPayload({
     conversationId: candidate.id,
     provider: candidate.source,
     nativeSessionId: candidate.session_id,
-    rootPath: materialized.rootPath,
-    filePath: materialized.filePath,
-    expectedContentHash: serialized.contentHash,
-    blocks: records.map((block, index) => ({
-      id: block.id,
-      type: block.type,
-      role: block.role,
-      position: block.position,
-      timestamp: block.timestamp,
-      parentId: block.parent_id,
-      dagUuid: block.dag_uuid,
-      dagParentUuid: block.dag_parent_uuid,
-      recordOffset: serialized.ranges[index].offset,
-      recordLength: serialized.ranges[index].length,
-      recordHash: serialized.ranges[index].hash,
-      recordOrdinal: serialized.ranges[index].ordinal,
-    })),
-    ...MANAGED_NORMALIZED_SOURCE_EPOCHS,
+    reason: "exact provider source could not be resolved",
+    ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
-  const verified = await store.verifyAndPromoteConversationPayload(candidate.id, records);
-  if (!verified.promoted) throw new Error(verified.reason ?? "managed custody verification failed");
-  return { promoted: true, blocks: rows.length, filePath: materialized.filePath };
+  return { promoted: discarded.promoted, blocks: discarded.blocks, filePath: null };
 }
 
 function summary(db: Db) {
@@ -242,17 +169,19 @@ export async function prepareSourceBackedConversationStorage(options: {
        LIMIT ?
     `).all(limit) as Candidate[];
     const store = new ConversationSourceStore(db);
-    const managedCustodyRoot = path.resolve(
-      options.managedCustodyRoot ?? getMandibleHomePath("conversation-sources"),
-    );
+    const codexSources = new CodexSessionSourceIndex();
     let promoted = 0;
     let skipped = 0;
     const errors: Array<{ conversation_id: string; error: string }> = [];
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index];
-      if (!candidate.source_path || !fs.existsSync(candidate.source_path)) {
+      let sourcePath = candidate.source_path;
+      if ((!sourcePath || !fs.existsSync(sourcePath)) && candidate.source === "codex") {
+        sourcePath = codexSources.find(candidate.session_id, candidate.source_path) ?? sourcePath;
+      }
+      if (!sourcePath || !fs.existsSync(sourcePath)) {
         try {
-          const preserved = await preserveMissingSource(db, store, candidate, managedCustodyRoot);
+          const preserved = await markMissingNativeSource(store, candidate);
           if (preserved.promoted) promoted += 1;
         } catch (error) {
           errors.push({
@@ -274,11 +203,11 @@ export async function prepareSourceBackedConversationStorage(options: {
           }
           continue;
         }
-        const sourceBytes = fs.statSync(candidate.source_path).size;
+        const sourceBytes = fs.statSync(sourcePath).size;
         let result;
         if (sourceBytes <= MAX_PREPARATION_REPARSE_BYTES) {
           const parser = getAllParsers().find((entry) => entry.source === candidate.source);
-          const parsed = await parser?.parse(candidate.source_path);
+          let parsed = await parser?.parse(sourcePath);
           if (!parsed) {
             skipped += 1;
             continue;
@@ -294,11 +223,25 @@ export async function prepareSourceBackedConversationStorage(options: {
           } catch {
             maskAllCandidatesInBlocks(parsed.blocks);
           }
-          if (!preflightReplacementProjection(db, candidate.id, parsed.blocks)) {
-            skipped += 1;
-            continue;
+          if (candidate.source === "codex" && parsed.conversation.session_id !== candidate.session_id) {
+            const resolved = codexSources.find(candidate.session_id, candidate.source_path);
+            if (!resolved || resolved === sourcePath) {
+              skipped += 1;
+              continue;
+            }
+            sourcePath = resolved;
+            parsed = await parser?.parse(sourcePath);
+            if (!parsed || parsed.conversation.session_id !== candidate.session_id) {
+              skipped += 1;
+              continue;
+            }
           }
-          const legacyIds = assignConversationBlockIds(parsed.blocks.map((block) => ({
+          const existingIds = new Map((db.prepare(`
+            SELECT id, position FROM conversation_blocks
+             WHERE conversation_id = ? ORDER BY position, id
+          `).all(candidate.id) as Array<{ id: string; position: number }>)
+            .map((row) => [row.position, row.id]));
+          const derivedIds = assignConversationBlockIds(parsed.blocks.map((block) => ({
             conversation_id: candidate.id,
             type: block.type,
             timestamp: block.timestamp,
@@ -309,16 +252,16 @@ export async function prepareSourceBackedConversationStorage(options: {
             conversationId: candidate.id,
             provider: candidate.source,
             nativeSessionId: parsed.conversation.session_id,
-            filePath: candidate.source_path,
+            filePath: sourcePath,
             expectedContentHash: parsed.conversation.source_hash,
             structuralMode: "replace",
             blocks: parsed.blocks.map((block, blockIndex) => ({
               ...block,
-              legacyId: legacyIds[blockIndex],
+              legacyId: existingIds.get(block.position) ?? derivedIds[blockIndex],
             })),
             ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
           });
-          result = await store.verifyAndPromoteConversationPayload(candidate.id);
+          result = await store.promoteNativeConversationPayload(candidate.id);
         } else {
           // Large sources are never materialized here. Refresh their sealed
           // identity using existing locators; sources needing a full structural
@@ -327,11 +270,11 @@ export async function prepareSourceBackedConversationStorage(options: {
             conversationId: candidate.id,
             provider: candidate.source,
             nativeSessionId: candidate.session_id,
-            filePath: candidate.source_path,
+            filePath: sourcePath,
             expectedContentHash: candidate.source_hash,
             ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
           });
-          result = await store.verifyAndPromoteConversationPayload(candidate.id);
+          result = await store.promoteNativeConversationPayload(candidate.id);
         }
         if (result.promoted) promoted += 1;
         else skipped += 1;

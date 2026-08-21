@@ -547,6 +547,81 @@ export class ConversationSourceStore {
     }
   }
 
+  /**
+   * Native provider bytes are the conversation authority. Once the current
+   * parser can read the sealed, indexed source, discard an old normalized
+   * cache without requiring a historical parser projection to match it.
+   */
+  async promoteNativeConversationPayload(
+    conversationId: string,
+  ): Promise<{ promoted: boolean; blocks: number; reason: string | null }> {
+    const compatibilitySnapshot = this.compatibilityRows(conversationId);
+    const expected = compatibilitySnapshot.filter((row) => row.payload_state === "legacy");
+    if (expected.length === 0) {
+      return { promoted: false, blocks: 0, reason: "no legacy payload is available for promotion" };
+    }
+    const { ConversationSourceReader } = await import("./source-reader.js");
+    const read = await new ConversationSourceReader(this.db, {
+      legacyFallback: false,
+      maskCredentials: false,
+    }).readAll(conversationId);
+    if (read.status !== "source") {
+      return { promoted: false, blocks: expected.length, reason: `native source read failed: ${read.reason}` };
+    }
+    const promote = this.db.transaction(() => {
+      const current = this.compatibilityRows(conversationId);
+      if (!sameCompatibilityRows(compatibilitySnapshot, current)) {
+        throw new ConversationPayloadChangedError("conversation payload changed after native source verification");
+      }
+      this.db.prepare(`UPDATE conversation_blocks
+        SET content = '', metadata_json = '{}', compressed = 0, payload_state = 'source'
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).run(conversationId);
+      return { promoted: true, blocks: expected.length, reason: null };
+    });
+    try {
+      return promote.immediate();
+    } catch (error) {
+      if (error instanceof ConversationPayloadChangedError) {
+        return { promoted: false, blocks: expected.length, reason: error.message };
+      }
+      throw error;
+    }
+  }
+
+  /** Retain the conversation index while making an unresolved native source explicit. */
+  discardUnavailableConversationPayload(input: {
+    conversationId: string;
+    provider: ConversationSource;
+    nativeSessionId: string;
+    reason: string;
+    parserFormat: string;
+    parserVersion: string;
+    normalizationVersion: string;
+    redactionEpoch: number;
+  }): { promoted: boolean; blocks: number; reason: string | null } {
+    const sourceId = stableId("csrc", input.conversationId, input.provider);
+    const now = Date.now();
+    return this.db.transaction(() => {
+      const count = (this.db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).get(input.conversationId) as { count: number }).count;
+      this.db.prepare(`
+        INSERT INTO conversation_sources (
+          id, conversation_id, provider, native_session_id, parser_format, parser_version,
+          normalization_version, redaction_epoch, availability, custody_state,
+          current_version_id, unavailable_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'missing', 'provider', NULL, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET availability = 'missing',
+          unavailable_reason = excluded.unavailable_reason, updated_at = excluded.updated_at
+      `).run(sourceId, input.conversationId, input.provider, input.nativeSessionId,
+        input.parserFormat, input.parserVersion, input.normalizationVersion, input.redactionEpoch,
+        input.reason, now, now);
+      this.db.prepare(`UPDATE conversation_blocks
+        SET content = '', metadata_json = '{}', compressed = 0, payload_state = 'source'
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).run(input.conversationId);
+      return { promoted: count > 0, blocks: count, reason: input.reason };
+    }).immediate();
+  }
+
   /** Register a provider or managed-custody alias without changing source identity. */
   recordAlias(input: RecordConversationSourceAliasInput): string {
     const rootPath = path.resolve(input.rootPath);
