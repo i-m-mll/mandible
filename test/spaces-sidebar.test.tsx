@@ -370,6 +370,7 @@ describe('SpacesSidebar create flow', () => {
     await waitFor(() =>
       expect(onSelectSpace).toHaveBeenCalledWith({
         projectId: 'proj-a',
+        projectKey: 'alpha',
         spaceId: 'new1',
         renderer: null,
       }),
@@ -404,6 +405,38 @@ describe('SpacesSidebar create flow', () => {
         expect.objectContaining({ projectId: null, spaceId: 'top9' }),
       ),
     );
+  });
+
+  it('carries the chosen canonical project key when creating from the top-level project picker', async () => {
+    const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
+    const loadProjectsFn = vi.fn().mockResolvedValue([
+      { id: 'proj-a', project_key: 'alpha', display_name: 'Alpha' },
+    ]);
+    const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('chosen1', 'Chosen', 'proj-a'));
+    const onSelectSpace = vi.fn();
+    render(
+      <SpacesSidebar
+        onSelectSpace={onSelectSpace}
+        loadGroups={loadGroups}
+        loadProjectsFn={loadProjectsFn}
+        createSpaceFn={createSpaceFn}
+      />,
+    );
+    await screen.findByText('Roadmap');
+
+    fireEvent.click(screen.getByRole('button', { name: 'New space' }));
+    const projectPicker = await screen.findByTestId('space-create-project');
+    await screen.findByRole('option', { name: 'Alpha' });
+    fireEvent.input(projectPicker, { target: { value: 'proj-a' } });
+    fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'Chosen' } });
+    fireEvent.click(screen.getByTestId('space-create-submit'));
+
+    await waitFor(() => expect(onSelectSpace).toHaveBeenCalledWith({
+      projectId: 'proj-a',
+      projectKey: 'alpha',
+      spaceId: 'chosen1',
+      renderer: null,
+    }));
   });
 
   it('opens the second seed dialog after creating a compatible seeded type', async () => {
@@ -443,9 +476,12 @@ describe('SpacesSidebar create flow', () => {
 
     await waitFor(() => expect(seedSpace).toHaveBeenCalledWith('seed1', expect.any(Object)));
     await waitFor(() =>
-      expect(onSelectSpace).toHaveBeenCalledWith(
-        expect.objectContaining({ spaceId: 'seed1', projectId: 'proj-a' }),
-      ),
+      expect(onSelectSpace).toHaveBeenCalledWith({
+        spaceId: 'seed1',
+        projectId: 'proj-a',
+        projectKey: 'alpha',
+        renderer: null,
+      }),
     );
   });
 });

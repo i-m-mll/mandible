@@ -87,7 +87,7 @@ export type SpacesSidebarProps = {
 };
 
 type CreateTarget =
-  | { kind: 'project'; projectId: string; projectName: string }
+  | { kind: 'project'; projectId: string; projectKey: string | null; projectName: string }
   | { kind: 'top-level' };
 
 type CreateMode = 'create' | 'seed';
@@ -99,6 +99,7 @@ type CreatePopover = {
   /** Space id created for the seed path (so SpaceSeedDialog can mount). */
   seedSpaceId?: string;
   seedProjectId?: string | null;
+  seedProjectKey?: string | null;
 };
 
 const SPACE_TYPE_OPTIONS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
@@ -278,6 +279,7 @@ export function SpacesSidebar({
   // are still enumerable. `chooserProjectId === null` means "top-level (no project)".
   const [chooserProjects, setChooserProjects] = useState<ProjectPickerItem[]>([]);
   const [chooserProjectId, setChooserProjectId] = useState<string | null>(null);
+  const chooserProjectKeyRef = useRef<string | null>(null);
 
   const containerRef = useRef<HTMLElement>(null);
 
@@ -309,15 +311,14 @@ export function SpacesSidebar({
 
   useEffect(() => {
     if (!selectedSpaceId || !onSelectedSpaceResolved) return;
-    const matches: Space[] = [];
     for (const group of groups) {
       for (const space of group.spaces) {
-        if (space.id === selectedSpaceId || space.id.startsWith(selectedSpaceId)) {
-          matches.push(space);
+        if (space.id === selectedSpaceId) {
+          onSelectedSpaceResolved(space);
+          return;
         }
       }
     }
-    if (matches.length === 1) onSelectedSpaceResolved(matches[0]);
   }, [groups, selectedSpaceId, onSelectedSpaceResolved]);
 
   // --- close create popover on outside pointer / Escape ---
@@ -434,6 +435,7 @@ export function SpacesSidebar({
       setBlankTitle('');
       setCreateError(null);
       setChooserProjectId(null);
+      chooserProjectKeyRef.current = null;
       setCreateRenderer('canvas');
       setSeedAfterCreate(false);
       setPopover({ target, mode: 'create' });
@@ -460,6 +462,9 @@ export function SpacesSidebar({
         // registry picker. A null chooserProjectId means "create as top-level".
         const projectId =
           target.kind === 'project' ? target.projectId : chooserProjectId;
+        const projectKey = target.kind === 'project'
+          ? target.projectKey
+          : chooserProjectKeyRef.current;
         const space = await createSpaceFn({ project_id: projectId, title: trimmed, default_renderer: renderer });
         if (shouldSeed && canSeedRenderer(renderer)) {
           setPopover({
@@ -467,12 +472,14 @@ export function SpacesSidebar({
             mode: 'seed',
             seedSpaceId: space.id,
             seedProjectId: space.project_id,
+            seedProjectKey: projectKey,
           });
         } else {
           setPopover(null);
           refresh();
           onSelectSpace({
             projectId: space.project_id,
+            projectKey,
             spaceId: space.id,
             renderer: null,
           });
@@ -494,6 +501,7 @@ export function SpacesSidebar({
       if (current?.seedSpaceId) {
         onSelectSpace({
           projectId: current.seedProjectId ?? null,
+          projectKey: current.seedProjectKey ?? null,
           spaceId: current.seedSpaceId,
           renderer: null,
         });
@@ -609,9 +617,11 @@ export function SpacesSidebar({
               className="spaces-tree__chooser-select"
               data-testid="space-create-project"
               value={chooserProjectId ?? ''}
-              onChange={(event) => {
+              onInput={(event) => {
                 const val = (event.currentTarget as HTMLSelectElement).value;
                 setChooserProjectId(val || null);
+                chooserProjectKeyRef.current =
+                  chooserProjects.find((project) => project.id === val)?.project_key ?? null;
               }}
             >
               <option value="">Top level (no project)</option>
@@ -779,7 +789,12 @@ export function SpacesSidebar({
               action={{
                 label: `Create space in ${projectName}`,
                 icon: <PlusIcon />,
-                onPress: () => openChooser({ kind: 'project', projectId: kg.key, projectName }),
+                onPress: () => openChooser({
+                  kind: 'project',
+                  projectId: kg.key,
+                  projectKey: kg.group.project_key,
+                  projectName,
+                }),
               }}
               drag={{
                 active: dragKey === kg.key,

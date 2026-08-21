@@ -580,6 +580,7 @@ describe('SpaceCanvas rendering', () => {
   });
 
   it('renders linked Space nodes with type/project cues and a canonical Open route', () => {
+    window.location.hash = '#/spaces?project=rlrmp&space=old&filter=open&sidebar=hidden&agent_session=01a0217a&other=keep&renderer=canvas';
     const model: SpaceCanvasModel = {
       items: [linkedSpaceItem('7038d21f-b494-47fb-b9b8-d5fb93b3309a', 'Design doc')],
       occurrences: [occ('7038d21f-b494-47fb-b9b8-d5fb93b3309a', { x: 10, y: 20 })],
@@ -594,7 +595,9 @@ describe('SpaceCanvas rendering', () => {
     expect(screen.getByText('Mandible')).toBeTruthy();
     expect(screen.getByText('Design doc')).toBeTruthy();
     const open = screen.getByTestId('space-canvas-linked-space-open') as HTMLAnchorElement;
-    expect(open.getAttribute('href')).toBe('#/spaces?space=7038d21f');
+    expect(open.getAttribute('href')).toBe(
+      '#/spaces?project=rlrmp&space=7038d21f&filter=open&sidebar=hidden&agent_session=01a0217a&other=keep',
+    );
     expect(open.textContent).toBe('Open');
   });
 

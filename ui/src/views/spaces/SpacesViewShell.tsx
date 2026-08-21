@@ -149,6 +149,10 @@ function loadCachedSelection(spaceId: string | null): SpaceSelectionSnapshot | n
   return null;
 }
 
+function isGeneratedShortSpaceRef(spaceRef: string): boolean {
+  return /^[0-9a-f]{8}$/i.test(spaceRef);
+}
+
 function persistCachedSelection(snapshot: SpaceSelectionSnapshot): void {
   if (typeof localStorage === 'undefined') return;
   try {
@@ -192,12 +196,12 @@ export function SpacesViewShell({
   );
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
   const [selectedFactPacket, setSelectedFactPacket] = useState<SpaceFactPacket | null>(() => (
-    spaceId
+    spaceId && !isGeneratedShortSpaceRef(spaceId)
       ? readPersistedDetail<SpaceFactPacket>('spaces', detailRequestKey('spaces', { spaceId }))
       : null
   ));
   const [selectedSnapshot, setSelectedSnapshot] = useState<SpaceSelectionSnapshot | null>(
-    () => loadCachedSelection(spaceId),
+    () => (spaceId && !isGeneratedShortSpaceRef(spaceId) ? loadCachedSelection(spaceId) : null),
   );
   const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
 
@@ -210,11 +214,19 @@ export function SpacesViewShell({
       return undefined;
     }
     let cancelled = false;
-    const requestKey = detailRequestKey('spaces', { spaceId });
-    const cachedPacket = readPersistedDetail<SpaceFactPacket>('spaces', requestKey);
+    const canUseCachedSelection = !isGeneratedShortSpaceRef(spaceId);
+    const cachedPacket = canUseCachedSelection
+      ? readPersistedDetail<SpaceFactPacket>('spaces', detailRequestKey('spaces', { spaceId }))
+      : null;
     setSelectedSpace((current) => (current?.id === spaceId ? current : null));
     setSelectedFactPacket((current) => (current?.space.id === spaceId ? current : cachedPacket));
-    setSelectedSnapshot((current) => (current?.id === spaceId ? current : loadCachedSelection(spaceId)));
+    setSelectedSnapshot((current) => (
+      canUseCachedSelection && current?.id === spaceId
+        ? current
+        : canUseCachedSelection
+          ? loadCachedSelection(spaceId)
+          : null
+    ));
     setSpaceLoadError(null);
     resolvedLoadSpaceFactPacket(spaceId)
       .then((packet) => {
@@ -223,7 +235,11 @@ export function SpacesViewShell({
           const snapshot = snapshotFromSpace(space);
           setSelectedSpace(space);
           setSelectedFactPacket(packet);
-          writePersistedDetail('spaces', requestKey, packet);
+          writePersistedDetail(
+            'spaces',
+            detailRequestKey('spaces', { spaceId: packet.space.id }),
+            packet,
+          );
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);
         }
@@ -237,7 +253,7 @@ export function SpacesViewShell({
   }, [spaceId, resolvedLoadSpaceFactPacket]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
-    if (!spaceId || (space.id !== spaceId && !space.id.startsWith(spaceId))) return;
+    if (!spaceId || space.id !== spaceId) return;
     const snapshot = snapshotFromSpace(space);
     setSelectedSnapshot(snapshot);
     persistCachedSelection(snapshot);

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { parseRouteFromHash } from '../ui/src/routing';
+import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
 import {
   SpacesViewShell,
   type SpaceRendererMountProps,
@@ -155,6 +156,55 @@ describe('SpacesViewShell', () => {
       projectId: 'prj_00mpmto02f_ec55d4e21bfe5ce116fb',
       spaceId: fullId,
     });
+  });
+
+  it('does not upgrade a short ref from one stale sidebar match when the backend reports ambiguity', async () => {
+    const staleFullId = '7038d21f-b494-47fb-b9b8-d5fb93b3309a';
+    localStorage.setItem('spaces-tree:groups:v1', JSON.stringify([{
+      project_id: 'prj-stale',
+      project_key: 'stale',
+      project_name: 'Stale',
+      spaces: [makeSpace({ id: staleFullId, project_id: 'prj-stale' })],
+    }]));
+    function CanvasMount(): JSX.Element {
+      return <div data-testid="wrong-canvas-mount">wrong canvas</div>;
+    }
+
+    render(
+      <SpacesViewShell
+        projectId="stale"
+        spaceId="7038d21f"
+        renderers={{ canvas: CanvasMount }}
+        loadSpaceFactPacket={vi.fn().mockRejectedValue(new Error("ambiguous space ref '7038d21f'"))}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("ambiguous space ref '7038d21f'")).toBeTruthy());
+    expect(screen.queryByTestId('wrong-canvas-mount')).toBeNull();
+  });
+
+  it('does not preload a persisted detail packet keyed by an unverified generated short ref', async () => {
+    const shortRef = '7038d21f';
+    writePersistedDetail(
+      'spaces',
+      detailRequestKey('spaces', { spaceId: shortRef }),
+      makePacket(makeSpace({ id: '7038d21f-b494-47fb-b9b8-d5fb93b3309a' })),
+    );
+    function CanvasMount(): JSX.Element {
+      return <div data-testid="wrong-cached-canvas-mount">wrong cached canvas</div>;
+    }
+
+    render(
+      <SpacesViewShell
+        projectId="rlrmp"
+        spaceId={shortRef}
+        renderers={{ canvas: CanvasMount }}
+        loadSpaceFactPacket={vi.fn().mockRejectedValue(new Error("ambiguous space ref '7038d21f'"))}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("ambiguous space ref '7038d21f'")).toBeTruthy());
+    expect(screen.queryByTestId('wrong-cached-canvas-mount')).toBeNull();
   });
 
   it('uses the cached primary renderer while waiting for the fact packet', () => {
