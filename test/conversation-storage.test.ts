@@ -281,6 +281,7 @@ describe("source-backed conversation storage preparation", () => {
       startTime: "2026-08-20T00:00:00Z",
       messages: [
         { id: "user-1", type: "user", content: "Gemini question", timestamp: "2026-08-20T00:00:01Z" },
+        { id: "user-2", type: "user", content: "Gemini follow-up", timestamp: "2026-08-20T00:00:01Z" },
         { id: "model-1", type: "gemini", content: "Gemini answer", timestamp: "2026-08-20T00:00:02Z" },
       ],
     }));
@@ -350,6 +351,9 @@ describe("source-backed conversation storage preparation", () => {
          AND sb.record_length = v.byte_length
          AND sb.record_hash = v.content_sha256
     `).get()).toEqual({ count: parsed.blocks.length });
+    expect(repaired.prepare(`SELECT COUNT(DISTINCT provider_key) AS count
+      FROM conversation_structural_blocks WHERE conversation_id = 'gemini-conversation'
+        AND status = 'current'`).get()).toEqual({ count: parsed.blocks.length });
     const page = await new ConversationSourceReader(repaired).readPage("gemini-conversation", { limit: 10 });
     expect(page.status).toBe("source");
     if (page.status === "source") {

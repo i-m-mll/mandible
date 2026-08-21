@@ -215,8 +215,13 @@ function numericMetadata(metadata: Record<string, unknown>, key: string): number
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function providerBlockKey(block: LegacyBlockRow, metadata: Record<string, unknown>, range: RecordRange): string {
-  const sub = numericMetadata(metadata, "source_sub_block_ordinal") ?? 0;
+function providerBlockKey(
+  block: LegacyBlockRow,
+  metadata: Record<string, unknown>,
+  range: RecordRange,
+  subBlockOrdinal: number,
+): string {
+  const sub = numericMetadata(metadata, "source_sub_block_ordinal") ?? subBlockOrdinal;
   const recordIdentity = `${range.ordinal}:${range.offset}:${range.hash}`;
   if (block.dag_uuid) return `dag:${block.dag_uuid}:${block.type}:${sub}:record:${recordIdentity}`;
   const toolId = typeof metadata.tool_id === "string" ? metadata.tool_id : "";
@@ -599,7 +604,9 @@ export class ConversationSourceStore {
     normalizationVersion: string;
     redactionEpoch: number;
   }): { promoted: boolean; blocks: number; reason: string | null } {
-    const sourceId = stableId("csrc", input.conversationId, input.provider);
+    const existing = this.db.prepare(`SELECT id FROM conversation_sources
+      WHERE conversation_id = ? AND provider = ?`).get(input.conversationId, input.provider) as { id: string } | undefined;
+    const sourceId = existing?.id ?? stableId("csrc", input.conversationId, input.provider);
     const now = Date.now();
     return this.db.transaction(() => {
       const count = (this.db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
@@ -913,7 +920,7 @@ export class ConversationSourceStore {
           : snapshot.records[recordOrdinal];
         if (!range) continue;
         const subBlockOrdinal = numericMetadata(metadata, "source_sub_block_ordinal") ?? block.position;
-        const providerKeyBase = providerBlockKey(block, metadata, range);
+        const providerKeyBase = providerBlockKey(block, metadata, range, subBlockOrdinal);
         const providerKeyOccurrence = providerKeyOccurrences.get(providerKeyBase) ?? 0;
         providerKeyOccurrences.set(providerKeyBase, providerKeyOccurrence + 1);
         const providerKey = providerKeyOccurrence === 0
@@ -927,7 +934,12 @@ export class ConversationSourceStore {
            WHERE conversation_id = ? AND provider_key = ?
            ORDER BY created_at LIMIT 1
         `).get(input.conversationId, providerKey) as { id: string } | undefined;
-        const blockId = aliasRow?.block_id ?? keyRow?.id
+        // The provider key is the stable parser identity. A legacy block alias
+        // can point at an older placeholder structural row while a partial
+        // prior index already owns this key; reusing the alias row would try
+        // to assign the same unique key twice. Reuse the key owner and move
+        // the legacy alias to it instead.
+        const blockId = keyRow?.id ?? aliasRow?.block_id
           ?? stableId("cblk", input.conversationId, providerKey);
         positionToId.set(block.position, blockId);
         const parentPosition = block.parent_id !== null && /^\d+$/.test(block.parent_id)

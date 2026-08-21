@@ -86,12 +86,13 @@ class CodexSessionSourceIndex {
 async function markMissingNativeSource(
   store: ConversationSourceStore,
   candidate: Candidate,
+  reason = "exact provider source could not be resolved",
 ): Promise<{ promoted: boolean; blocks: number; filePath: null }> {
   const discarded = store.discardUnavailableConversationPayload({
     conversationId: candidate.id,
     provider: candidate.source,
     nativeSessionId: candidate.session_id,
-    reason: "exact provider source could not be resolved",
+    reason,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
   return { promoted: discarded.promoted, blocks: discarded.blocks, filePath: null };
@@ -175,6 +176,8 @@ export async function prepareSourceBackedConversationStorage(options: {
     const errors: Array<{ conversation_id: string; error: string }> = [];
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index];
+      const hasLegacyPayload = (db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
+        WHERE conversation_id = ? AND payload_state = 'legacy'`).get(candidate.id) as { count: number }).count > 0;
       let sourcePath = candidate.source_path;
       if ((!sourcePath || !fs.existsSync(sourcePath)) && candidate.source === "codex") {
         sourcePath = codexSources.find(candidate.session_id, candidate.source_path) ?? sourcePath;
@@ -209,7 +212,10 @@ export async function prepareSourceBackedConversationStorage(options: {
           const parser = getAllParsers().find((entry) => entry.source === candidate.source);
           let parsed = await parser?.parse(sourcePath);
           if (!parsed) {
-            skipped += 1;
+            if (hasLegacyPayload) {
+              const discarded = await markMissingNativeSource(store, candidate, "provider source could not be parsed");
+              if (discarded.promoted) promoted += 1;
+            } else skipped += 1;
             continue;
           }
           try {
@@ -226,13 +232,19 @@ export async function prepareSourceBackedConversationStorage(options: {
           if (candidate.source === "codex" && parsed.conversation.session_id !== candidate.session_id) {
             const resolved = codexSources.find(candidate.session_id, candidate.source_path);
             if (!resolved || resolved === sourcePath) {
-              skipped += 1;
+              if (hasLegacyPayload) {
+                const discarded = await markMissingNativeSource(store, candidate, "exact Codex session source could not be resolved");
+                if (discarded.promoted) promoted += 1;
+              } else skipped += 1;
               continue;
             }
             sourcePath = resolved;
             parsed = await parser?.parse(sourcePath);
             if (!parsed || parsed.conversation.session_id !== candidate.session_id) {
-              skipped += 1;
+              if (hasLegacyPayload) {
+                const discarded = await markMissingNativeSource(store, candidate, "exact Codex session source could not be parsed");
+                if (discarded.promoted) promoted += 1;
+              } else skipped += 1;
               continue;
             }
           }
@@ -277,7 +289,12 @@ export async function prepareSourceBackedConversationStorage(options: {
           result = await store.promoteNativeConversationPayload(candidate.id);
         }
         if (result.promoted) promoted += 1;
-        else skipped += 1;
+        else if (hasLegacyPayload && result.blocks > 0) {
+          const discarded = await markMissingNativeSource(
+            store, candidate, `native source index is unavailable: ${result.reason ?? "unknown failure"}`,
+          );
+          if (discarded.promoted) promoted += 1;
+        } else skipped += 1;
       } catch (error) {
         errors.push({
           conversation_id: candidate.id,
