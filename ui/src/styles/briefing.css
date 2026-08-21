@@ -99,11 +99,7 @@
 .briefing-document__prose > :last-child { margin-bottom: 0; }
 
 .briefing-document__popover {
-  z-index: 45;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-popover);
-  box-shadow: var(--shadow-soft);
+  width: min(26rem, 100%);
 }
 
 .briefing-document__tabs button {
@@ -116,30 +112,11 @@
   cursor: pointer;
 }
 
-.briefing-document__popover {
-  display: grid;
-  gap: var(--space-3);
-  width: min(26rem, calc(100vw - 16px));
-  max-height: calc(100vh - 16px);
-  padding: var(--space-3);
-  overflow: auto;
-}
-
-.briefing-document__popover-header,
 .briefing-document__popover-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-}
-
-.briefing-document__popover-header button {
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--text-lg);
-  cursor: pointer;
 }
 
 .briefing-document__popover blockquote {

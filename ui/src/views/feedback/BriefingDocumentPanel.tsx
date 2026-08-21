@@ -11,6 +11,7 @@ import {
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
 import { ContextualAction } from '../../components/shared/ContextualAction';
+import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import {
   buildBriefingMarkdownModel,
   type BriefingMarkdownEntityKind,
@@ -38,8 +39,7 @@ type AnnotationEditor = {
   start: number;
   end: number;
   quote: string;
-  top: number;
-  left: number;
+  displayQuote?: string;
 };
 
 // Radio `name` groups are document-global rather than component-local. A
@@ -383,16 +383,16 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     start: annotation.start_offset,
     end: annotation.end_offset,
     quote: annotation.quote,
-    top: 96,
-    left: 24,
+    displayQuote: markdownModel?.directives.find((directive) => (
+      annotation.start_offset < directive.containerEnd && annotation.end_offset > directive.containerStart
+    ))?.quote,
   });
 
   const openDirectiveComment = (itemId: string) => {
     const item = round.items.find((candidate) => candidate.id === itemId);
-    const directive = item?.directive;
+    const directive = markdownModel?.directives.find((candidate) => candidate.itemId === itemId);
     if (!item || !directive || source === null) return;
-    const quote = source.slice(directive.body_start_offset, directive.body_end_offset);
-    openEditor({ annotation: null, directiveItemId: itemId, start: directive.body_start_offset, end: directive.body_end_offset, quote, top: 96, left: 24 });
+    openEditor({ annotation: null, directiveItemId: itemId, start: directive.start, end: directive.end, quote: directive.quote });
   };
 
   const openEntityComment = (entityIndex: number) => {
@@ -402,10 +402,10 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const rawQuote = source.slice(entity.start, entity.sectionEnd);
       const quote = rawQuote.trim();
       const start = entity.start + rawQuote.indexOf(quote);
-      openEditor({ annotation: null, sectionHeading: entity.label, start, end: start + quote.length, quote, top: 96, left: 24 });
+      openEditor({ annotation: null, sectionHeading: entity.label, start, end: start + quote.length, quote });
       return;
     }
-    openEditor({ annotation: null, start: entity.start, end: entity.end, quote: entity.quote, top: 96, left: 24 });
+    openEditor({ annotation: null, start: entity.start, end: entity.end, quote: entity.quote });
   };
 
   const inlineAnnotations = (start: number, end: number) => {
@@ -650,21 +650,22 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       {source === null && !currentContentError ? <p className="briefing-empty" role="status">Verifying document…</p> : null}
       {renderProfileDocument()}
 
-      {editor ? (
-        <div
-          className="briefing-document__popover"
-          role="dialog"
-          aria-modal="false"
-          aria-label={editor.annotation ? 'Edit annotation' : 'Add annotation'}
-          style={{ position: 'fixed', top: `${Math.max(8, editor.top + 40)}px`, left: `${Math.max(8, editor.left)}px` }}
-        >
-          <div className="briefing-document__popover-header">
-            <strong>{editor.annotation ? 'Edit annotation' : 'Add annotation'}</strong>
-            <button type="button" aria-label="Close annotation editor" onClick={() => setEditor(null)}>×</button>
-          </div>
+      <DetailPaneModal
+        open={editor !== null}
+        onClose={() => setEditor(null)}
+        titleId="briefing-annotation-editor-title"
+        title={editor?.annotation ? 'Edit annotation' : 'Add annotation'}
+        closeLabel="Close annotation editor"
+        embeddedFallback={{ scrollOwnerRef: contentRef }}
+        scrollLockClassName="detail-pane-shell__body--overlay-open"
+        className="briefing-document__annotation-modal"
+        panelClassName="briefing-document__popover"
+      >
+        {editor ? (
+          <>
           {editor.sectionHeading
             ? <p className="briefing-document__section-intent">Whole section: <strong>{editor.sectionHeading}</strong></p>
-            : <blockquote>{editor.quote}</blockquote>}
+            : <blockquote>{editor.displayQuote ?? editor.quote}</blockquote>}
           {!editor.sectionHeading ? (
             <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
               <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
@@ -687,8 +688,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
             ) : null}
             {canInteract ? <button type="button" className="btn btn--primary btn--sm" onClick={() => void save()} disabled={busy}>Save</button> : null}
           </div>
-        </div>
-      ) : null}
+          </>
+        ) : <></>}
+      </DetailPaneModal>
 
       <div className="briefing-document__status" role="status" aria-live="polite">{status}</div>
     </section>

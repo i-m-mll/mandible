@@ -19,6 +19,11 @@ export type BriefingMarkdownEntity = {
 
 export type BriefingDirectiveDisplayRange = {
   itemId: string;
+  start: number;
+  end: number;
+  quote: string;
+  containerStart: number;
+  containerEnd: number;
   displayStart: number;
   displayEnd: number;
 };
@@ -150,7 +155,16 @@ export function buildBriefingMarkdownModel(
     const displayEnd = builder.value.length;
     const suffix = source.slice(directive.end_offset);
     if (needsBlockBoundary(body, suffix)) appendSynthetic(builder, '\n');
-    directives.push({ itemId: item.id, displayStart, displayEnd });
+    directives.push({
+      itemId: item.id,
+      start: bodyStart,
+      end: bodyEnd,
+      quote: body,
+      containerStart: directive.start_offset,
+      containerEnd: directive.end_offset,
+      displayStart,
+      displayEnd,
+    });
     cursor = directive.end_offset;
   }
   appendOriginal(builder, source, cursor, source.length);
