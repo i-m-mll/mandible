@@ -305,6 +305,43 @@ export async function prepareSourceBackedConversationStorage(options: {
         options.onProgress?.(`processed ${index + 1}/${candidates.length}; promoted ${promoted}; errors ${errors.length}`);
       }
     }
+    // Once bodies have been reclaimed, incomplete locator coverage cannot be
+    // treated as source-backed exact-read capability. Preserve the ledger
+    // conversation row, but make this explicitly unavailable instead of
+    // leaving a misleading available source descriptor behind.
+    const incomplete = db.prepare(`
+      SELECT c.id, c.source, c.source_path, c.source_hash, c.session_id, c.title, c.branch
+        FROM conversations c
+        LEFT JOIN conversation_sources s
+          ON s.conversation_id = c.id AND s.provider = c.source
+       WHERE NOT EXISTS (
+               SELECT 1 FROM conversation_blocks b
+                WHERE b.conversation_id = c.id AND b.payload_state = 'legacy'
+             )
+         AND EXISTS (
+               SELECT 1 FROM conversation_blocks b
+                WHERE b.conversation_id = c.id AND b.payload_state = 'source'
+             )
+         AND (s.id IS NULL OR s.availability = 'available')
+         AND EXISTS (
+               SELECT 1 FROM conversation_blocks b
+                WHERE b.conversation_id = c.id AND b.payload_state = 'source'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM conversation_structural_blocks sb
+                     WHERE sb.conversation_id = c.id AND sb.position = b.position
+                       AND sb.status = 'current' AND sb.source_version_id IS NOT NULL
+                       AND sb.record_offset IS NOT NULL AND sb.record_length IS NOT NULL
+                       AND sb.record_length <= 67108864 AND sb.record_hash IS NOT NULL
+                       AND sb.record_ordinal IS NOT NULL AND sb.record_ordinal >= 0
+                  )
+             )
+    `).all() as Candidate[];
+    for (const candidate of incomplete) {
+      const discarded = await markMissingNativeSource(
+        store, candidate, "native source index is unavailable: bounded exact locator coverage is incomplete",
+      );
+      if (discarded.promoted) promoted += 1;
+    }
     return {
       apply: true,
       before,

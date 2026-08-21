@@ -493,6 +493,8 @@ export function inspectLegacyReclaimReadiness(options) {
       SELECT COUNT(*) AS count
         FROM conversation_blocks b
         JOIN conversations c ON c.id = b.conversation_id
+        JOIN conversation_sources s ON s.conversation_id = c.id
+          AND s.provider = c.source AND s.availability = 'available'
        WHERE b.payload_state = 'source'
          AND NOT EXISTS (
            SELECT 1 FROM conversation_structural_blocks sb

@@ -228,8 +228,9 @@ describe("source-backed conversation storage preparation", () => {
       payload_state: "source",
     });
     const read = await new ConversationSourceReader(retained).readAll("conversation-storage");
-    expect(read.status).toBe("source");
-    if (read.status === "source") expect(read.value.map((block) => block.content)).toEqual(["source-backed body"]);
+    expect(read.status).toBe("unavailable");
+    expect(retained.prepare("SELECT availability FROM conversation_sources WHERE conversation_id = 'conversation-storage'").get())
+      .toEqual({ availability: "missing" });
     retained.close();
   });
 
