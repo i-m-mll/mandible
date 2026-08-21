@@ -291,8 +291,12 @@ describe('Briefing document panel', () => {
 
     const verdict = await screen.findByRole('group', { name: 'Keep this finding?' });
     const keep = within(verdict).getByRole('button', { name: 'Keep' });
+    const dismiss = within(verdict).getByRole('button', { name: 'Dismiss' });
     expect(verdict.closest('.briefing-directive__response-host--rail')).toBeTruthy();
+    expect(verdict.classList.contains('briefing-directive__compact-controls')).toBe(true);
     expect(keep.classList.contains('contextual-action')).toBe(true);
+    expect(keep.classList.contains('contextual-action--compact')).toBe(true);
+    expect(dismiss.classList.contains('contextual-action--compact')).toBe(true);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action \{[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action:is\(:hover, :focus-visible\) \{[^}]*background: transparent[^}]*box-shadow: none/s);
     fireEvent.click(keep);
@@ -407,8 +411,10 @@ describe('Briefing document panel', () => {
     expect(briefingStylesheet).toMatch(/\.briefing-document__source-tree \{[^}]*padding-inline-end: var\(--briefing-right-rail-width\)/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity \{[^}]*position: relative/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \{[^}]*position: absolute[^}]*width: calc\(var\(--briefing-right-rail-width\) - var\(--briefing-right-action-slot-width\)\)[^}]*justify-items: end/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(0, 1fr\) 2em[^}]*width: 100%[^}]*padding-inline: \.2em/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \{[^}]*position: absolute[^}]*width: calc\(var\(--briefing-right-rail-width\) - var\(--briefing-right-action-slot-width\)\)[^}]*padding-inline-start: var\(--space-1\)[^}]*justify-items: start/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \.briefing-directive__response \{[^}]*justify-items: start/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__compact-controls \{[^}]*grid-auto-columns: 2em[^}]*column-gap: var\(--space-1\)[^}]*white-space: nowrap/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, max-content\) 2em/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
@@ -728,10 +734,12 @@ describe('Briefing document panel', () => {
     expect(changes).toEqual([]);
     const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
     const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls button \{[^}]*width: 2em[^}]*height: 2em[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls button:hover,[^{]*\{[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls button:focus-visible \{[^}]*outline: 2px solid var\(--accent-border\)/s);
-    expect(briefingStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\) \{.*?\.briefing-directive__variant-controls button \{[^}]*min-width: 44px[^}]*min-height: 44px/s);
+    expect(variantControls.classList.contains('briefing-directive__compact-controls')).toBe(true);
+    expect(previous.classList.contains('contextual-action--compact')).toBe(true);
+    expect(next.classList.contains('contextual-action--compact')).toBe(true);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, max-content\) 2em/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls > span \{[^}]*justify-content: center/s);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action--compact:is\(:hover, :focus-visible\) \{[^}]*background: var\(--surface-hover\)/s);
     expect(previous.disabled).toBe(true);
     await waitFor(() => expect(next.disabled).toBe(false));
     expect(screen.getByText('1 of 2')).toBeTruthy();

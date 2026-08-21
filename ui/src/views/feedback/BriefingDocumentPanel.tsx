@@ -488,9 +488,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (type === 'verdict') {
       const verdict = current && 'verdict' in current ? current.verdict : null;
       control = (
-        <div id={controlId} className="briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
-          <ContextualAction className="briefing-directive__verdict-action" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></ContextualAction>
-          <ContextualAction className="briefing-directive__verdict-action" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></ContextualAction>
+        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
+          <ContextualAction presentation="compact" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></ContextualAction>
+          <ContextualAction presentation="compact" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></ContextualAction>
         </div>
       );
     } else if (type === 'single_choice' || type === 'multi_choice') {
@@ -558,12 +558,12 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const selectedIndex = Math.max(0, variants.findIndex((variant) => variant.key === selectedKey));
       const selectedVariant = variants[selectedIndex];
       control = selectedVariant ? (
-        <div id={controlId} className="briefing-directive__variant-controls" role="group" aria-label={`Text variant: ${selectedVariant.label}`} aria-describedby={describedBy}>
-          <button type="button" aria-label="Previous text variant" disabled={!canInteract || selectedIndex === 0}
-            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><PreviousIcon /></button>
+        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__variant-controls" role="group" aria-label={`Text variant: ${selectedVariant.label}`} aria-describedby={describedBy}>
+          <ContextualAction presentation="compact" aria-label="Previous text variant" disabled={!canInteract || selectedIndex === 0}
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><PreviousIcon /></ContextualAction>
           <span><small>{selectedIndex + 1} of {variants.length}</small></span>
-          <button type="button" aria-label="Next text variant" disabled={!canInteract || selectedIndex === variants.length - 1}
-            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex + 1].key })}><NextIcon /></button>
+          <ContextualAction presentation="compact" aria-label="Next text variant" disabled={!canInteract || selectedIndex === variants.length - 1}
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex + 1].key })}><NextIcon /></ContextualAction>
         </div>
       ) : null;
     }

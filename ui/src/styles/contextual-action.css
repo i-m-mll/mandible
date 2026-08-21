@@ -60,6 +60,45 @@
   opacity: 0.55;
 }
 
+/* Always-on compact controls share one stable visual and interaction box. */
+.contextual-action--compact {
+  box-sizing: border-box;
+  flex: 0 0 2em;
+  width: 2em;
+  height: 2em;
+  padding: .5em;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.contextual-action--compact > svg {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+.contextual-action--compact:is(:hover, :focus-visible) {
+  border: 0;
+  background: var(--surface-hover);
+  box-shadow: none;
+  color: var(--text-primary);
+}
+
+.contextual-action--compact[aria-pressed='true'] {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+.contextual-action--compact:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
 @media (hover: none), (pointer: coarse) {
   .contextual-action-group {
     opacity: 1;
@@ -68,6 +107,11 @@
 
   :where(.contextual-action-group) .contextual-action {
     color: var(--chrome-icon-hover-indirect);
+  }
+
+  .contextual-action--compact {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 

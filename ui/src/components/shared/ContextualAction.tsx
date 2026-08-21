@@ -4,6 +4,7 @@ import { forwardRef } from 'preact/compat';
 export type ContextualActionProps = Omit<JSX.HTMLAttributes<HTMLButtonElement>, 'className' | 'type'> & {
   children: ComponentChildren;
   className?: string;
+  presentation?: 'bare' | 'compact';
   type?: 'button' | 'submit' | 'reset';
 };
 
@@ -11,6 +12,7 @@ export type ContextualActionProps = Omit<JSX.HTMLAttributes<HTMLButtonElement>, 
 export const ContextualAction = forwardRef<HTMLButtonElement, ContextualActionProps>(function ContextualAction({
   children,
   className,
+  presentation = 'bare',
   type = 'button',
   ...buttonProps
 }, ref): JSX.Element {
@@ -19,7 +21,7 @@ export const ContextualAction = forwardRef<HTMLButtonElement, ContextualActionPr
       {...buttonProps}
       ref={ref}
       type={type}
-      className={`contextual-action${className ? ` ${className}` : ''}`}
+      className={`contextual-action${presentation === 'compact' ? ' contextual-action--compact' : ''}${className ? ` ${className}` : ''}`}
     >
       {children}
     </button>
