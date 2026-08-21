@@ -97,6 +97,12 @@ describe("dashboard client-auth enrollment", () => {
       "utf8",
     );
     expect(bootstrap).toContain('invoke("client_auth_enroll")');
+    expect(bootstrap).toContain('invoke("client_auth_keychain_enroll", { route: "/" })');
+    expect(bootstrap.indexOf('invoke("client_auth_keychain_enroll"'))
+      .toBeGreaterThan(bootstrap.indexOf('invoke("client_auth_enroll")'));
+    expect(bootstrap.indexOf('window.location.replace(`http://127.0.0.1:',
+      bootstrap.indexOf('invoke("client_auth_keychain_enroll"')))
+      .toBeGreaterThan(bootstrap.indexOf('invoke("client_auth_keychain_enroll"'));
     expect(bootstrap).not.toContain("mandible_auth=");
     expect(rust).toContain("CLIENT_AUTH_BOOTSTRAP_CONSUMED.swap(true");
     expect(rust).toContain("fn enrollment_precheck(app: &AppHandle)");
