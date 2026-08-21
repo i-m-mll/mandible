@@ -35,7 +35,7 @@ afterEach(() => {
 
 afterAll(() => resetDb({ poison: false }));
 
-function createFixture(): { root: string; source: string } {
+function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { root: string; source: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-projected-db-test-"));
   tempRoots.push(root);
   const source = path.join(root, "source.db");
@@ -182,6 +182,7 @@ function createFixture(): { root: string; source: string } {
   insertLog.run("old-warn", CUTOFF_MS - 2 * DAY_MS, "warn", "warning");
   insertLog.run("old-info", CUTOFF_MS - 2 * DAY_MS, "info", "old-info");
   insertLog.run("expired-error", CUTOFF_MS - 8 * DAY_MS, "error", "expired");
+  if (options.includeLegacyDaemonLog === false) db.exec("DROP TABLE daemon_log");
   db.close();
   return { root, source };
 }
@@ -280,7 +281,43 @@ function runSnapshot(source: string, output: string, extraArgs: string[] = []) {
   ], { encoding: "utf8" });
 }
 
+function runSnapshotWithAutomaticCutoff(source: string, output: string) {
+  return spawnSync(process.execPath, [
+    SCRIPT,
+    "--source", source,
+    "--output", output,
+    "--json",
+  ], { encoding: "utf8" });
+}
+
 describe("project-db-snapshot", () => {
+  it("projects a canonical source after daemon_log moved to the operational-log database", () => {
+    const { root, source } = createFixture({ includeLegacyDaemonLog: false });
+    const output = path.join(root, "preview.db");
+    const result = runSnapshotWithAutomaticCutoff(source, output);
+
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.projection.cutoff_ms).toBe(CUTOFF_MS - DAY_MS);
+    expect(manifest.tables.projected_counts).toEqual({
+      daemon_log: 0,
+      conversations: 6,
+      conversation_blocks: 6,
+    });
+    expect(manifest.tables.copied_rows).not.toHaveProperty("daemon_log");
+    expect(manifest.tables.complete_table_count).toBe(5);
+
+    const projected = new Database(output, { readonly: true });
+    expect(projected.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_log'",
+    ).get()).toBeUndefined();
+    expect(projected.prepare("SELECT id FROM conversations ORDER BY id").pluck().all())
+      .toEqual(["newest-b", "old-parent", "recent-child", "session-old", "starred-old", "workflow-old"]);
+    expect(projected.prepare("PRAGMA quick_check").pluck().get()).toBe("ok");
+    expect(projected.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    projected.close();
+  });
+
   it("copies canonical data and applies the deterministic log/conversation projection", () => {
     const { root, source } = createFixture();
     const output = path.join(root, "preview.db");
@@ -464,7 +501,8 @@ describe("project-db-snapshot", () => {
 
     const result = runSnapshot(source, output);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("missing projected table");
+    expect(result.stderr).toContain("missing projected table(s): conversations, conversation_blocks");
+    expect(result.stderr).not.toContain("daemon_log");
     expect(fs.existsSync(output)).toBe(false);
     expect(fs.readdirSync(root).some((name) => name.includes(".partial-"))).toBe(false);
   });
