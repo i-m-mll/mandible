@@ -1309,7 +1309,6 @@ export function ArtifactDetail({
           identity={{
             displayRef: headerShortId,
             canonicalRef: headerCopyValue,
-            copyRef: headerCopyValue,
             copyLabel: headerCopyLabel,
           }}
           title={artifactTitle(artifact)}
@@ -1342,7 +1341,6 @@ export function ArtifactDetail({
               </select>
             ),
             selectedCanonicalRef: selectedArtifactRef,
-            selectedCopyRef: selectedArtifactRef,
             copyLabel: 'Copy selected artifact-version reference',
           }}
           actions={(
