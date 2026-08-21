@@ -232,6 +232,10 @@ describe("conversation cutover compact rebuild", () => {
       INSERT INTO conversation_normalization_checkpoints VALUES ('orphaned-checkpoint', '{"strategy":"replay-prefix"}');
       INSERT INTO conversation_structural_blocks VALUES ('structural-one', 'checkpoint-one', 'exact body');
     `);
+    sourceDb.prepare("INSERT INTO conversation_normalization_checkpoints VALUES (?, ?)").run(
+      "large-obsolete-checkpoint",
+      JSON.stringify({ strategy: "replay-prefix", obsolete_payload: "x".repeat(2 * 1024 * 1024) }),
+    );
     sourceDb.close();
 
     const destination = path.join(root, "compact-reclaimed-checkpoints.sqlite");
@@ -246,6 +250,8 @@ describe("conversation cutover compact rebuild", () => {
       .toEqual(report.table_parity.conversation_normalization_checkpoints.destination);
     expect(report.table_parity.conversation_structural_blocks.source)
       .toEqual(report.table_parity.conversation_structural_blocks.destination);
+    expect(report.copied_rows.conversation_normalization_checkpoints).toBe(1);
+    expect(report.destination.size_bytes).toBeLessThan(512 * 1024);
 
     const rebuilt = new Database(destination, { readonly: true });
     expect(rebuilt.prepare("SELECT * FROM conversation_structural_blocks").get()).toEqual({

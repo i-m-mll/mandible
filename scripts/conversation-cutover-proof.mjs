@@ -337,41 +337,35 @@ export function buildCompactDestination(options) {
         ...(rowidAlias ? [quoteIdentifier(rowidAlias)] : []),
         ...columns.map((column) => quoteIdentifier(column.name)),
       ].join(", ");
+      const reclaimCheckpoints = options.reclaimConversationCheckpoints
+        && table.name === "conversation_normalization_checkpoints";
+      const reclaimStructuralReferences = options.reclaimConversationCheckpoints
+        && table.name === "conversation_structural_blocks";
       const sourceProjection = [
         ...(rowidAlias ? [quoteIdentifier(rowidAlias)] : []),
-        ...columns.map((column) => quoteIdentifier(column.name)),
+        ...columns.map((column) => {
+          if (reclaimStructuralReferences && column.name === "normalization_checkpoint_id") {
+            return `CASE WHEN normalization_checkpoint_id IN (
+              SELECT id FROM source.conversation_normalization_checkpoints
+               WHERE state_json = '{"kind":"codex-model-metadata","version":1}'
+            ) THEN normalization_checkpoint_id ELSE NULL END AS ${quoteIdentifier(column.name)}`;
+          }
+          return quoteIdentifier(column.name);
+        }),
       ].join(", ");
-      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${sourceProjection} FROM source.${quoteIdentifier(table.name)}${orderClause(columns)}`;
+      const checkpointWhere = reclaimCheckpoints
+        ? ` WHERE state_json = '{"kind":"codex-model-metadata","version":1}'
+              AND id IN (SELECT normalization_checkpoint_id
+                           FROM source.conversation_structural_blocks
+                          WHERE normalization_checkpoint_id IS NOT NULL)`
+        : "";
+      const sql = `INSERT INTO ${quoteIdentifier(table.name)} (${names}) SELECT ${sourceProjection} FROM source.${quoteIdentifier(table.name)}${checkpointWhere}${orderClause(columns)}`;
       copied[table.name] = db.prepare(sql).run().changes;
       copiedTables += 1;
       if (options.interruptAfterTables === copiedTables) throw new SimulatedInterruption();
     }
 
     const retainedNames = new Set(retainedTables.map((table) => table.name));
-    if (options.reclaimConversationCheckpoints && retainedNames.has("conversation_normalization_checkpoints")) {
-      db.exec(`
-        UPDATE conversation_structural_blocks
-           SET normalization_checkpoint_id = NULL
-         WHERE normalization_checkpoint_id IS NOT NULL
-           AND normalization_checkpoint_id NOT IN (
-             SELECT id FROM conversation_normalization_checkpoints
-              WHERE state_json = '{"kind":"codex-model-metadata","version":1}'
-           );
-        CREATE TEMP TABLE retained_codex_model_checkpoints (id TEXT PRIMARY KEY);
-        INSERT INTO retained_codex_model_checkpoints (id)
-          SELECT DISTINCT sb.normalization_checkpoint_id
-            FROM conversation_structural_blocks sb
-            JOIN conversation_normalization_checkpoints checkpoint
-              ON checkpoint.id = sb.normalization_checkpoint_id
-           WHERE checkpoint.state_json = '{"kind":"codex-model-metadata","version":1}';
-        DELETE FROM conversation_normalization_checkpoints
-         WHERE state_json <> '{"kind":"codex-model-metadata","version":1}';
-        DELETE FROM conversation_normalization_checkpoints
-         WHERE state_json = '{"kind":"codex-model-metadata","version":1}'
-           AND id NOT IN (SELECT id FROM retained_codex_model_checkpoints);
-        DROP TABLE retained_codex_model_checkpoints;
-      `);
-    }
     for (const object of [...schema.indexes, ...schema.views, ...schema.triggers]) {
       if (object.type !== "view" && object.tbl_name && !retainedNames.has(object.tbl_name)) continue;
       if (object.type === "view" && excluded.some((name) => sqlReferencesIdentifier(object.sql, name))) continue;
