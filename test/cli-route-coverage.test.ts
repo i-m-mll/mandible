@@ -27,9 +27,9 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   // silently escaping the route-policy coverage lint.
   "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
-  "cli/conversations.sh:150 api_get \"$request\")",
-  "cli/conversations.sh:314 api_get \"$request\")",
-  "cli/conversations.sh:385 api_get \"$request\")",
+  "cli/conversations.sh:151 api_get \"$request\")",
+  "cli/conversations.sh:315 api_get \"$request\")",
+  "cli/conversations.sh:386 api_get \"$request\")",
   "cli/inbox.sh:38 api_get \"$url\")",
   "cli/inbox.sh:84 api_get \"$url\")",
   "cli/issue.sh:920 api_get \"$checkpoint_path\") \\",
@@ -55,10 +55,13 @@ describe("CLI API route coverage", () => {
     expect(formatUnresolved(unresolved)).toEqual([...EXPECTED_DYNAMIC_CLI_API_CALL_SITES].sort());
   });
 
-  it("allows only the selected conversation export projection among adjacent POST routes", () => {
+  it("allows only export plus the daemon-only credential workflow among conversation POST routes", () => {
     const policies = collectRoutePolicies();
 
     expect(policies.get(routeKey("POST", "/api/conversations/:id/export"))).toBe("allow");
+    // The CLI must cross the daemon boundary in file-only sandboxes because
+    // only the daemon holds the candidate-verification pepper.
+    expect(policies.get(routeKey("POST", "/api/conversations/scan-credentials"))).toBe("allow");
     expect(policies.get(routeKey("POST", "/api/conversations/ingest"))).toBe("deny");
     expect(policies.get(routeKey("POST", "/api/conversations/export/transform"))).toBe("deny");
     expect(policies.get(routeKey("POST", "/api/conversations/:id/fork"))).toBe("deny");

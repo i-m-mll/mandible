@@ -142,13 +142,95 @@ describe("versioned conversation source reader", () => {
       "tool_use", "tool_result", "assistant_message",
     ]);
     expect(result.value.blocks[1].parent_id).toBe(result.value.blocks[0].id);
+    expect(result.value.blocks[1].metadata_json).toBe(JSON.stringify(parsed.blocks[1].metadata));
+    expect(JSON.parse(result.value.blocks[1].metadata_json)).toMatchObject({ tool_name: "shell" });
     expect(result.value.blocks.every((block) => block.locator?.recordHash.length === 64)).toBe(true);
 
     for (const block of parsed.blocks) {
       const legacy = await new ConversationSourceReader(db).readBlock(`legacy-conversation-a-${block.position}`);
       expect(legacy.status).toBe("source");
-      if (legacy.status === "source") expect(legacy.value.content).toBe(block.content);
+      if (legacy.status === "source") {
+        expect(legacy.value.content).toBe(block.content);
+        expect(legacy.value.metadata_json).toBe(JSON.stringify(block.metadata));
+      }
     }
+    db.close();
+  });
+
+  it("surfaces the exact source failure after legacy payload has been stripped", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const store = new ConversationSourceStore(db);
+    await record(db, "conversation-a", filePath);
+    await expect(store.verifyAndPromoteConversationPayload("conversation-a")).resolves.toMatchObject({ promoted: true });
+    fs.rmSync(filePath);
+
+    const result = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
+    expect(result.status).toBe("stale");
+    if (result.status === "stale") expect(result.reason).toMatch(/no exact root-confined alias/);
+    db.close();
+  });
+
+  it("keeps byte-identical appended records structurally distinct", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    const repeated = {
+      type: "response_item",
+      timestamp: "2026-08-17T00:00:01Z",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "same" }] },
+    };
+    const initialRows = [records()[0], repeated];
+    writeRecords(filePath, initialRows);
+    let parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const store = new ConversationSourceStore(db);
+    await record(db, "conversation-a", filePath);
+    await expect(store.verifyAndPromoteConversationPayload("conversation-a")).resolves.toMatchObject({ promoted: true });
+
+    writeRecords(filePath, [...initialRows, repeated]);
+    parsed = await parse(filePath);
+    const tail = parsed.blocks[1];
+    db.prepare(`
+      INSERT INTO conversation_blocks (
+        id, conversation_id, type, role, content, compressed, position, timestamp,
+        parent_id, metadata_json, dag_uuid, dag_parent_uuid
+      ) VALUES (?, 'conversation-a', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "legacy-conversation-a-1", tail.type, tail.role, tail.content, tail.position,
+      tail.timestamp, tail.parent_id, JSON.stringify(tail.metadata),
+      tail.dag_uuid ?? null, tail.dag_parent_uuid ?? null,
+    );
+    db.prepare("UPDATE conversations SET block_count = ?, source_hash = ?, source_mtime = ? WHERE id = 'conversation-a'")
+      .run(parsed.blocks.length, parsed.conversation.source_hash, parsed.conversation.source_mtime);
+    await store.recordConversation({
+      conversationId: "conversation-a",
+      provider: "codex",
+      nativeSessionId: "duplicate-session",
+      filePath,
+      expectedContentHash: parsed.conversation.source_hash,
+      structuralMode: "append",
+      blocks: [{ ...parsed.blocks[1], legacyId: "legacy-conversation-a-1" }],
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+
+    const rows = db.prepare(`SELECT provider_key, record_ordinal FROM conversation_structural_blocks
+      WHERE conversation_id = 'conversation-a' AND status = 'current' ORDER BY position`).all() as Array<{
+        provider_key: string; record_ordinal: number;
+      }>;
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.provider_key)).size).toBe(2);
+    expect(rows.map((row) => row.record_ordinal)).toEqual([1, 2]);
+    const read = await new ConversationSourceReader(db, { maskCredentials: false }).readAll("conversation-a");
+    expect(read.status).toBe("source");
+    if (read.status === "source") expect(read.value.map((block) => block.content)).toEqual(["same", "same"]);
+    await expect(store.verifyAndPromoteConversationPayload("conversation-a")).resolves.toMatchObject({ promoted: true });
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
+      WHERE conversation_id = 'conversation-a' AND payload_state = 'source'`).get()).toEqual({ count: 2 });
     db.close();
   });
 

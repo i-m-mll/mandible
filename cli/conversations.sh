@@ -21,6 +21,7 @@ Usage:
   mandible conversations tag add <conversation-ref|--current> <tag...> [--json]
   mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]
   mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]
+  mandible conversations storage prepare [--apply] [--limit N] [--json]
   mandible conversations custody status <id|session-id> [--json]
   mandible conversations custody capture <id|session-id> [--rewind] [--mirroring] [--json]
   mandible conversations custody verify <id|session-id> [--version VERSION] [--json]
@@ -473,6 +474,10 @@ if api_is_file_rpc; then
 fi
 
 case "${1:-}" in
+  storage)
+    shift
+    exec node "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-storage.js" "$@" --db "$MANDIBLE_DB"
+    ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
   custody) shift; conversation_custody_command "$@"; exit $? ;;
 esac

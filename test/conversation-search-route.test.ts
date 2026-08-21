@@ -227,7 +227,7 @@ describe("conversation full-text API parity", () => {
     expect(structural.id).not.toBe("legacy-source-route-0");
   });
 
-  it("masks revoked and unverified canaries across source-backed detail and export responses", async () => {
+  it("forces verified source reads when stripped compatibility rows opt out of source-backed responses", async () => {
     const authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") });
     const operator = setupOperator(db, { display_name: "Operator" });
     const revoked = authenticator.mintApiToken(operator.id, { label: "revoked source canary" });
@@ -242,22 +242,27 @@ describe("conversation full-text API parity", () => {
       { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "function_call", call_id: "call-mask", name: "shell", arguments: JSON.stringify({ revoked: revoked.token, unverified: unverifiedCanary }) } },
       { type: "response_item", timestamp: "2026-08-17T00:00:02Z", payload: { type: "function_call_output", call_id: "call-mask", output: `revoked ${revoked.token}; unverified ${unverifiedCanary}` } },
     ]);
+    db.prepare(`
+      UPDATE conversation_blocks
+         SET content = '', metadata_json = '{}', compressed = 0, payload_state = 'source'
+       WHERE conversation_id = 'source-mask'
+    `).run();
 
     const router = new Router({ clientAuth: authenticator });
     registerConversationRoutes(router);
     const detail = await router.invoke({
       method: "GET",
-      url: "/api/conversations/source-mask?source_backed=1",
+      url: "/api/conversations/source-mask?source_backed=false",
     });
     const blocks = await router.invoke({
       method: "GET",
-      url: "/api/conversations/source-mask/blocks?source_backed=1",
+      url: "/api/conversations/source-mask/blocks?source_backed=false",
     });
     const exported = await router.invoke({
       method: "POST",
       url: "/api/conversations/source-mask/export",
       credential: requestToken,
-      body: { format: "json", source_backed: true },
+      body: { format: "json", source_backed: false },
     });
 
     const responses = [["detail", detail], ["blocks", blocks], ["export", exported]] as const;
@@ -267,6 +272,7 @@ describe("conversation full-text API parity", () => {
       expect(serialized).not.toContain(revoked.token);
       expect(serialized).not.toContain(unverifiedCanary);
       expect(serialized).toContain("[mandible-credential:unverified#");
+      expect(response.body).toMatchObject({ body_source: "source" });
     }
     const detailBody = detail.body as {
       conversation: { summary: string; notes: string };
@@ -277,5 +283,36 @@ describe("conversation full-text API parity", () => {
     expect(detailBody.blocks.some((block) => block.metadata_json.includes("[mandible-credential:unverified#"))).toBe(true);
     expect(detailBody.blocks.every((block) => block.id.startsWith("cblk_"))).toBe(true);
     expect(detailBody.blocks.every((block) => block.locator !== null)).toBe(true);
+
+    db.prepare(`
+      UPDATE conversation_structural_blocks
+         SET record_hash = ?
+       WHERE conversation_id = 'source-mask' AND status = 'current'
+    `).run("0".repeat(64));
+    const failingRouter = new Router({ clientAuth: authenticator });
+    registerConversationRoutes(failingRouter);
+    const failedDetail = await failingRouter.invoke({
+      method: "GET",
+      url: "/api/conversations/source-mask?source_backed=false",
+    });
+    const failedBlocks = await failingRouter.invoke({
+      method: "GET",
+      url: "/api/conversations/source-mask/blocks?source_backed=false",
+    });
+    const failedExport = await failingRouter.invoke({
+      method: "POST",
+      url: "/api/conversations/source-mask/export",
+      credential: requestToken,
+      body: { format: "json", source_backed: false },
+    });
+    for (const response of [failedDetail, failedBlocks]) {
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ error: expect.any(String), status: expect.any(String) });
+    }
+    expect(failedExport.status).toBe(409);
+    expect(failedExport.body).toMatchObject({
+      error: "source_unavailable",
+      message: expect.any(String),
+    });
   });
 });

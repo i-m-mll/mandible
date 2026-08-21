@@ -8,7 +8,12 @@ import type { Db } from "../db.js";
 import { getAllParsers } from "../parsers/index.js";
 import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
 import { ConversationSourceStore } from "./source-store.js";
-import { observeStableSourceAlias, SourceObservationError } from "./source-observer.js";
+import {
+  observeStableSourceAlias,
+  observeStableSourceAliasRanges,
+  sameSourceFilesystemIdentity,
+  SourceObservationError,
+} from "./source-observer.js";
 import type {
   ConversationBlockLocator,
   SourceBackedConversationBlock,
@@ -16,8 +21,13 @@ import type {
   SourceReadFailureKind,
   SourceReadResult,
 } from "./source-types.js";
+import {
+  MANAGED_NORMALIZED_SOURCE_EPOCHS,
+  parseManagedNormalizedRecord,
+} from "./managed-normalized-source.js";
 
-const DEFAULT_MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_MAX_SOURCE_BYTES = 128 * 1024 * 1024;
+const MAX_SOURCE_RECORD_BYTES = 64 * 1024 * 1024;
 
 interface StructuralRow {
   id: string;
@@ -50,6 +60,9 @@ interface VersionRow {
   parser_version: string;
   normalization_version: string;
   redaction_epoch: number;
+  filesystem_device: string | null;
+  filesystem_inode: string | null;
+  filesystem_ctime_ns: string | null;
 }
 
 interface LegacyRow {
@@ -68,8 +81,12 @@ interface LegacyRow {
 }
 
 type SnapshotResult =
-  | { ok: true; bytes: Buffer; version: VersionRow; provider: ConversationSource }
+  | { ok: true; records: Map<string, Buffer>; version: VersionRow; provider: ConversationSource; aliasPath: string }
   | { ok: false; kind: SourceReadFailureKind; reason: string };
+
+function recordKey(row: Pick<StructuralRow, "record_offset" | "record_length">): string {
+  return `${row.record_offset}:${row.record_length}`;
+}
 
 function locator(row: StructuralRow): ConversationBlockLocator {
   return {
@@ -107,6 +124,8 @@ function legacyBlock(row: LegacyRow): SourceBackedConversationBlock {
 export interface ConversationSourceReaderOptions {
   legacyFallback?: boolean;
   maxSourceBytes?: number;
+  /** Trusted internal scanners can inspect raw parsed bytes without serializing them. */
+  maskCredentials?: boolean;
 }
 
 /**
@@ -117,11 +136,13 @@ export class ConversationSourceReader {
   private readonly store: ConversationSourceStore;
   private readonly legacyFallback: boolean;
   private readonly maxSourceBytes: number;
+  private readonly maskCredentials: boolean;
 
   constructor(private readonly db: Db, options: ConversationSourceReaderOptions = {}) {
     this.store = new ConversationSourceStore(db);
     this.legacyFallback = options.legacyFallback !== false;
     this.maxSourceBytes = options.maxSourceBytes ?? DEFAULT_MAX_SOURCE_BYTES;
+    this.maskCredentials = options.maskCredentials !== false;
   }
 
   async readBlock(blockRef: string): Promise<SourceReadResult<SourceBackedConversationBlock>> {
@@ -178,23 +199,37 @@ export class ConversationSourceReader {
   }
 
   async readAll(conversationId: string): Promise<SourceReadResult<SourceBackedConversationBlock[]>> {
-    const rows = this.db.prepare(`
-      SELECT * FROM conversation_structural_blocks
-       WHERE conversation_id = ? AND status = 'current'
-       ORDER BY position
-    `).all(conversationId) as StructuralRow[];
-    if (rows.length === 0) {
-      const legacy = this.legacyPage(conversationId, 0, Number.MAX_SAFE_INTEGER, undefined, "not_found");
-      if (legacy.status === "source" || legacy.status === "legacy") {
-        return { ...legacy, value: legacy.value.blocks };
+    // Do not turn an export into a whole-source read. A single conversation can
+    // live in a multi-gigabyte provider JSONL, while each indexed record remains
+    // independently bounded. Paging also keeps the aggregate read cap meaningful.
+    const blocks: SourceBackedConversationBlock[] = [];
+    let offset = 0;
+    let firstStatus: "source" | "legacy" | null = null;
+    let sourceVersionId: string | undefined;
+    for (;;) {
+      const page = await this.readPage(conversationId, { offset, limit: 100 });
+      if (page.status !== "source" && page.status !== "legacy") return page;
+      if (firstStatus === null) {
+        firstStatus = page.status;
+        sourceVersionId = page.status === "source" ? page.sourceVersionId : undefined;
+      } else if (
+        page.status !== firstStatus
+        || (page.status === "source" && page.sourceVersionId !== sourceVersionId)
+      ) {
+        return { status: "stale", reason: "conversation source changed during paged read" };
       }
-      return legacy;
+      blocks.push(...page.value.blocks);
+      offset += page.value.blocks.length;
+      if (offset >= page.value.total || page.value.blocks.length === 0) {
+        if (firstStatus === "source") {
+          return { status: "source", value: blocks, sourceVersionId: sourceVersionId! };
+        }
+        if (page.status !== "legacy") {
+          return { status: "stale", reason: "conversation source changed during paged read" };
+        }
+        return { status: "legacy", value: blocks, reason: page.reason };
+      }
     }
-    const result = await this.readStructuralRows(conversationId, rows, 0);
-    if (result.status === "source" || result.status === "legacy") {
-      return { ...result, value: result.value.blocks };
-    }
-    return result;
   }
 
   async streamBlocks(
@@ -229,23 +264,61 @@ export class ConversationSourceReader {
     if (!rows[0].source_version_id || rows[0].record_offset == null || rows[0].record_hash == null) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "source locator has not been indexed");
     }
-    const snapshot = await this.openVerifiedSnapshot(conversationId, rows[0].source_version_id);
+    const parentIds = [...new Set(rows.map((row) => row.parent_block_id).filter((id): id is string => id !== null))];
+    const parentRows = parentIds.length === 0 ? [] : this.db.prepare(`
+      SELECT * FROM conversation_structural_blocks
+       WHERE conversation_id = ? AND status = 'current'
+         AND id IN (${parentIds.map(() => "?").join(",")})
+    `).all(conversationId, ...parentIds) as StructuralRow[];
+    const contextRows = [...new Map([...rows, ...parentRows].map((row) => [row.id, row])).values()];
+    const snapshot = await this.openVerifiedRecords(conversationId, rows[0].source_version_id, contextRows);
     if (!snapshot.ok) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, snapshot.kind, snapshot.reason);
     }
-    for (const row of rows) {
+    for (const row of contextRows) {
       if (row.source_version_id !== snapshot.version.id) {
         return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "page spans source versions");
       }
-      const end = row.record_offset + row.record_length;
-      if (row.record_offset < 0 || row.record_length < 0 || end > snapshot.bytes.length) {
-        return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "record range is outside source bytes");
+      const record = snapshot.records.get(recordKey(row));
+      if (!record) {
+        return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "record range was not read");
       }
       const recordHash = createHash("sha256")
-        .update(snapshot.bytes.subarray(row.record_offset, end)).digest("hex");
+        .update(record).digest("hex");
       if (recordHash !== row.record_hash) {
         return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "record hash mismatch");
       }
+    }
+
+    if (snapshot.version.parser_format === MANAGED_NORMALIZED_SOURCE_EPOCHS.parserFormat) {
+      if (snapshot.version.parser_version !== MANAGED_NORMALIZED_SOURCE_EPOCHS.parserVersion
+          || snapshot.version.normalization_version !== MANAGED_NORMALIZED_SOURCE_EPOCHS.normalizationVersion
+          || snapshot.version.redaction_epoch !== MANAGED_NORMALIZED_SOURCE_EPOCHS.redactionEpoch) {
+        return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "managed normalized parser epoch is unavailable");
+      }
+      const blocks: SourceBackedConversationBlock[] = [];
+      try {
+        for (const row of rows) {
+          const record = parseManagedNormalizedRecord(snapshot.records.get(recordKey(row))!);
+          if (record.id !== row.id || record.conversation_id !== row.conversation_id
+              || record.position !== row.position || record.type !== row.type
+              || record.role !== row.role || record.timestamp !== row.timestamp
+              || record.dag_uuid !== row.dag_uuid || record.dag_parent_uuid !== row.dag_parent_uuid) {
+            return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "managed normalized record no longer matches structural identity");
+          }
+          blocks.push(this.managedSourceBlock(row, record));
+        }
+      } catch (error) {
+        return this.legacyPage(
+          conversationId, fallbackOffset, rows.length, fallbackTypes, "stale",
+          error instanceof Error ? error.message : "managed normalized record could not be decoded",
+        );
+      }
+      return {
+        status: "source",
+        value: { blocks, total: blocks.length, offset: rows[0].position, limit: rows.length },
+        sourceVersionId: snapshot.version.id,
+      };
     }
 
     const parser = getAllParsers().find((candidate) => candidate.source === snapshot.provider);
@@ -259,25 +332,48 @@ export class ConversationSourceReader {
     ) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "recorded parser epoch is unavailable");
     }
-    const parsed = await parser.parseIncremental({
-      filePath: "source-snapshot.jsonl",
-      raw: snapshot.bytes.toString("utf8"),
-      baseBlockCount: 0,
-      baseRecordCount: 0,
-      sourceHash: snapshot.version.content_sha256,
-      sourceMtime: 0,
-    });
-    if (!parsed) {
-      return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "verified source produced no blocks");
+    const rowsByRecord = new Map<string, StructuralRow[]>();
+    for (const row of contextRows) {
+      const key = recordKey(row);
+      const grouped = rowsByRecord.get(key) ?? [];
+      grouped.push(row);
+      rowsByRecord.set(key, grouped);
     }
-    const parsedByPosition = new Map(parsed.blocks.map((block) => [block.position, block]));
+    const parsedByPosition = new Map<number, Omit<ConversationBlock, "id" | "conversation_id">>();
+    for (const [key, recordRows] of rowsByRecord) {
+      const record = snapshot.records.get(key);
+      if (!record) continue;
+      const baseBlockCount = recordRows[0].position - recordRows[0].sub_block_ordinal;
+      const parsed = await parser.parseIncremental({
+        filePath: snapshot.provider === "gemini" && snapshot.aliasPath.endsWith(".json")
+          ? "source-record.json"
+          : "source-record.jsonl",
+        raw: `${record.toString("utf8")}\n`,
+        baseBlockCount,
+        baseRecordCount: recordRows[0].record_ordinal,
+        sourceHash: snapshot.version.content_sha256,
+        sourceMtime: 0,
+      });
+      if (!parsed) {
+        return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "verified source record produced no blocks");
+      }
+      for (const block of parsed.blocks) parsedByPosition.set(block.position, block);
+    }
     const blocks: SourceBackedConversationBlock[] = [];
+    const rowById = new Map(contextRows.map((row) => [row.id, row]));
     for (const row of rows) {
       const block = parsedByPosition.get(row.position);
       if (!block || block.type !== row.type || block.role !== row.role) {
         return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "parser output no longer matches structural identity");
       }
-      blocks.push(this.sourceBlock(row, block));
+      const parent = row.parent_block_id ? rowById.get(row.parent_block_id) : undefined;
+      const parentBlock = parent ? parsedByPosition.get(parent.position) : undefined;
+      const withBoundedLinkage = block.type === "tool_result"
+        && typeof block.metadata.tool_name !== "string"
+        && typeof parentBlock?.metadata.tool_name === "string"
+        ? { ...block, metadata: { ...block.metadata, tool_name: parentBlock.metadata.tool_name } }
+        : block;
+      blocks.push(this.sourceBlock(row, withBoundedLinkage));
     }
     return {
       status: "source",
@@ -295,12 +391,14 @@ export class ConversationSourceReader {
     // Match the disposable search boundary before any source-backed API or
     // export response can serialize those bytes. Legacy fallback rows retain
     // their existing behavior until the explicit cutover gate.
-    const content = maskUnverifiedCandidates(
-      maskActiveCredentialsInText(this.db, block.content).text,
-    ).text;
-    const metadataJson = maskUnverifiedCandidates(
-      maskActiveCredentialsInText(this.db, JSON.stringify(block.metadata)).text,
-    ).text;
+    const content = this.maskCredentials
+      ? maskUnverifiedCandidates(maskActiveCredentialsInText(this.db, block.content).text).text
+      : block.content;
+    const metadataJson = this.maskCredentials
+      ? maskUnverifiedCandidates(
+        maskActiveCredentialsInText(this.db, JSON.stringify(block.metadata)).text,
+      ).text
+      : JSON.stringify(block.metadata);
     return {
       id: row.id,
       conversation_id: row.conversation_id,
@@ -317,6 +415,32 @@ export class ConversationSourceReader {
     };
   }
 
+  private managedSourceBlock(
+    row: StructuralRow,
+    record: ReturnType<typeof parseManagedNormalizedRecord>,
+  ): SourceBackedConversationBlock {
+    const content = this.maskCredentials
+      ? maskUnverifiedCandidates(maskActiveCredentialsInText(this.db, record.content).text).text
+      : record.content;
+    const metadataJson = this.maskCredentials
+      ? maskUnverifiedCandidates(maskActiveCredentialsInText(this.db, record.metadata_json).text).text
+      : record.metadata_json;
+    return {
+      id: record.id,
+      conversation_id: record.conversation_id,
+      type: record.type,
+      role: record.role,
+      content,
+      position: record.position,
+      timestamp: record.timestamp,
+      parent_id: row.parent_block_id,
+      metadata_json: metadataJson,
+      dag_uuid: record.dag_uuid,
+      dag_parent_uuid: record.dag_parent_uuid,
+      locator: locator(row),
+    };
+  }
+
   private legacyPage(
     conversationId: string,
     offset: number,
@@ -327,7 +451,7 @@ export class ConversationSourceReader {
   ): SourceReadResult<SourceBlockPage> {
     if (!this.legacyFallback) return { status: reason, reason: detail };
     const params: unknown[] = [conversationId];
-    const conditions = ["conversation_id = ?"];
+    const conditions = ["conversation_id = ?", "payload_state = 'legacy'"];
     if (types && types.length > 0) {
       conditions.push(`type IN (${types.map(() => "?").join(",")})`);
       params.push(...types);
@@ -340,6 +464,9 @@ export class ConversationSourceReader {
       SELECT * FROM conversation_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, limit, offset) as LegacyRow[];
+    if (rows.length === 0 && total === 0 && reason !== "not_found") {
+      return { status: reason, reason: detail };
+    }
     return {
       status: "legacy",
       value: { blocks: rows.map(legacyBlock), total, offset, limit },
@@ -347,7 +474,11 @@ export class ConversationSourceReader {
     };
   }
 
-  private async openVerifiedSnapshot(conversationId: string, versionId: string): Promise<SnapshotResult> {
+  private async openVerifiedRecords(
+    conversationId: string,
+    versionId: string,
+    rows: readonly StructuralRow[],
+  ): Promise<SnapshotResult> {
     const source = this.store.resolveConversation(conversationId);
     if (!source || source.currentVersionId !== versionId) {
       return { ok: false, kind: "stale", reason: "source version is not current" };
@@ -357,34 +488,61 @@ export class ConversationSourceReader {
     }
     const version = this.db.prepare(`
       SELECT id, content_sha256, byte_length, parser_format, parser_version,
-             normalization_version, redaction_epoch
+             normalization_version, redaction_epoch, filesystem_device,
+             filesystem_inode, filesystem_ctime_ns
         FROM conversation_source_versions WHERE id = ? AND availability = 'available'
     `).get(versionId) as VersionRow | undefined;
     if (!version) return { ok: false, kind: "unavailable", reason: "source version is unavailable" };
-    if (version.byte_length > this.maxSourceBytes) {
-      return { ok: false, kind: "unsupported", reason: "source exceeds bounded cold-read limit" };
+    if (!version.filesystem_device || !version.filesystem_inode || !version.filesystem_ctime_ns) {
+      return { ok: false, kind: "stale", reason: "source version predates exact filesystem identity" };
     }
+
+    const uniqueRanges = [...new Map(rows.map((row) => [recordKey(row), {
+      offset: row.record_offset,
+      length: row.record_length,
+    }])).values()];
 
     for (const alias of this.store.listAliases(source.sourceId)) {
       if (alias.availability !== "available") continue;
       try {
-        const observed = await observeStableSourceAlias(alias, {
-          captureBytes: true,
-          maxBytes: this.maxSourceBytes,
+        const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
+          maxRangeBytes: MAX_SOURCE_RECORD_BYTES,
+          maxTotalBytes: this.maxSourceBytes,
         });
-        if (
-          observed.byteLength !== version.byte_length
-          || observed.contentSha256 !== version.content_sha256
-          || !observed.bytes
-        ) continue;
-        return { ok: true, bytes: observed.bytes, version, provider: source.provider };
+        if (observed.byteLength !== version.byte_length) continue;
+        const exactIdentity = sameSourceFilesystemIdentity(observed.filesystemIdentity, {
+          device: version.filesystem_device,
+          inode: version.filesystem_inode,
+          ctimeNs: version.filesystem_ctime_ns,
+        });
+        if (!exactIdentity) {
+          // A restored or relocated small file can have new inode/ctime facts
+          // while retaining the exact sealed bytes. Re-hash it once; large
+          // sources wait for freshness ingestion to refresh their identity.
+          if (version.byte_length > this.maxSourceBytes) continue;
+          const full = await observeStableSourceAlias(alias, { captureBytes: false, maxBytes: this.maxSourceBytes });
+          if (full.contentSha256 !== version.content_sha256) continue;
+        }
+        return {
+          ok: true,
+          records: new Map(uniqueRanges.map((range, index) => [
+            `${range.offset}:${range.length}`,
+            observed.ranges[index],
+          ])),
+          version,
+          provider: source.provider,
+          aliasPath: alias.path,
+        };
       } catch (error) {
         if (error instanceof SourceObservationError && error.kind === "unsupported") {
           return { ok: false, kind: "unsupported", reason: error.message };
         }
+        if (error instanceof SourceObservationError && error.kind === "changed") {
+          return { ok: false, kind: "stale", reason: error.message };
+        }
         // Try another durable alias (for example Codex active/archive relocation).
       }
     }
-    return { ok: false, kind: "stale", reason: "no root-confined alias matches the recorded source version" };
+    return { ok: false, kind: "stale", reason: "no exact root-confined alias matches the recorded source version" };
   }
 }

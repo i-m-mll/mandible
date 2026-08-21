@@ -10,6 +10,7 @@ import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion
 import { decompressContent } from "../src/compression.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 
 let tempDir = "";
 let db: Db;
@@ -206,9 +207,12 @@ describe("incremental tail ingestion", () => {
     `).get(sessionPath) as { id: string; session_id: string; block_count: number };
     expect(conversation).toMatchObject({ session_id: "tailtest-rewritten", block_count: 3 });
     const firstBlock = db.prepare(
-      "SELECT content, compressed FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
-    ).get(conversation.id) as { content: Buffer | string; compressed: number };
-    expect(decompressContent(firstBlock.content, firstBlock.compressed === 1)).toBe("rewritten hello");
+      "SELECT content, metadata_json, compressed, payload_state FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC LIMIT 1",
+    ).get(conversation.id) as { content: Buffer | string; metadata_json: string; compressed: number; payload_state: string };
+    expect(firstBlock).toMatchObject({ content: "", metadata_json: "{}", compressed: 0, payload_state: "source" });
+    const sourcePage = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
+    expect(sourcePage.status).toBe("source");
+    if (sourcePage.status === "source") expect(sourcePage.value.blocks[0].content).toBe("rewritten hello");
     expect(
       db.prepare("SELECT byte_offset FROM conversation_ingest_state WHERE file_path = ?")
         .get(sessionPath),

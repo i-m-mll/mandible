@@ -20,10 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import { compressContent, decompressContent } from "../src/compression.js";
-import {
-  assignConversationBlockIds,
-  conversationBlockId,
-} from "../src/conversation-block-id.js";
+import { conversationBlockId } from "../src/conversation-block-id.js";
 import {
   configureIngestionWorker,
   ingestBatchForWorker,
@@ -48,6 +45,7 @@ import {
   resetCredentialLeakScanCache,
 } from "../src/credential-leak-scan.js";
 import { redactCredential } from "../src/credential-redaction.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 
 const LEAKED_TOKEN = `${API_TOKEN_PREFIX}${"L".repeat(43)}`;
 const OTHER_TOKEN = `${API_TOKEN_PREFIX}${"O".repeat(43)}`;
@@ -132,6 +130,28 @@ function storedBlocks(): StoredBlock[] {
       timestamp: row.timestamp,
       content: decompressContent(row.content, row.compressed === 1),
     }));
+}
+
+async function indexedBlocks(maskCredentials = true): Promise<StoredBlock[]> {
+  const reader = new ConversationSourceReader(db, { maskCredentials });
+  const conversations = db
+    .prepare("SELECT id FROM conversations ORDER BY id")
+    .all() as Array<{ id: string }>;
+  const blocks: StoredBlock[] = [];
+  for (const conversation of conversations) {
+    const result = await reader.readAll(conversation.id);
+    if (result.status !== "source" && result.status !== "legacy") continue;
+    blocks.push(...result.value.map((block) => ({
+      id: block.id,
+      conversation_id: block.conversation_id,
+      position: block.position,
+      type: block.type,
+      timestamp: block.timestamp,
+      content: block.content,
+    })));
+  }
+  return blocks.sort((left, right) =>
+    left.conversation_id.localeCompare(right.conversation_id) || left.position - right.position);
 }
 
 /**
@@ -235,7 +255,7 @@ describe("ingest-time credential redaction", () => {
       .toMatchObject({ status: "ingested" });
 
     const mask = credentialMaskFor(credential.id);
-    const blocks = storedBlocks();
+    const blocks = await indexedBlocks();
     expect(blocks.map((block) => block.content)).toEqual([
       `export MANDIBLE_TOKEN=${mask}`,
       `ok, also ${mask} again`,
@@ -283,9 +303,13 @@ describe("ingest-time credential redaction", () => {
     }
 
     const mask = credentialMaskFor(credential.id);
-    const toolBlock = db
-      .prepare("SELECT metadata_json FROM conversation_blocks WHERE type = 'tool_use'")
-      .get() as { metadata_json: string };
+    const conversationId = (db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(transcript) as { id: string }).id;
+    const sourceResult = await new ConversationSourceReader(db).readAll(conversationId);
+    expect(sourceResult.status).toBe("source");
+    const toolBlock = sourceResult.status === "source"
+      ? sourceResult.value.find((block) => block.type === "tool_use")!
+      : undefined!;
     expect(toolBlock.metadata_json).not.toContain(LEAKED_TOKEN);
     expect(toolBlock.metadata_json).toContain(mask);
     // The metadata object is still structured JSON, not a mangled string.
@@ -504,7 +528,7 @@ describe("ingest-time credential redaction", () => {
 
     await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
 
-    expect(storedBlocks()[0].content).toBe(`not a real token: ${LOOKALIKE_TOKEN}`);
+    expect((await indexedBlocks(false))[0].content).toBe(`not a real token: ${LOOKALIKE_TOKEN}`);
     expect(leakAlerts()).toHaveLength(0);
   });
 
@@ -680,7 +704,7 @@ describe("mandible credential redact", () => {
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
-  it("recomputes a redacted block's id to the value a re-ingest will derive", async () => {
+  it("keeps the prior source-backed block identity as retired history", async () => {
     // Review finding 7: the redacted block kept its plaintext-derived id, so a
     // deep link captured after the redaction broke silently at the next full
     // re-ingest. Recomputing moves that change to redaction time.
@@ -691,28 +715,26 @@ describe("mandible credential redact", () => {
     // Ingested before the credential is known, so ingest-time masking has
     // nothing to match and the plaintext lands in the index.
     await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
-    const before = storedBlocks();
+    const before = await indexedBlocks(false);
     expect(before[0].content).toBe(`token: ${LEAKED_TOKEN}`);
-    expect(before[0].id).toBe(conversationBlockId({
-      conversation_id: before[0].conversation_id,
-      type: before[0].type,
-      timestamp: before[0].timestamp,
-      content: before[0].content,
-      position: before[0].position,
-    }));
 
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     const report = redactCredential(db, credential.id, { patchSources: true });
 
-    expect(report).toMatchObject({ renumbered_blocks: 1, id_conflicts: 0 });
-    const after = storedBlocks();
-    expect(after[0].id).not.toBe(before[0].id);
-    expect(after[0].content).toBe(`token: ${credentialMaskFor(credential.id)}`);
+    expect(report).toMatchObject({
+      renumbered_blocks: 0,
+      id_conflicts: 0,
+      sources: { patched_files: 1 },
+    });
 
-    // The id the redaction chose is the id the next full ingest derives, so the
-    // link handed to the operator after redaction keeps working.
+    // Re-ingestion refreshes the exact source identity. Content-derived current
+    // identity changes, while the former structural row remains as history.
     await ingestBatchForWorker([transcript], true);
-    expect(storedBlocks()).toEqual(after);
+    const after = await indexedBlocks();
+    expect(after[0].id).not.toBe(before[0].id);
+    expect(db.prepare("SELECT status FROM conversation_structural_blocks WHERE id = ?")
+      .get(before[0].id)).toEqual({ status: "retired" });
+    expect(after[0].content).toBe(`token: ${credentialMaskFor(credential.id)}`);
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
@@ -784,7 +806,7 @@ describe("mandible credential redact", () => {
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
-  it("converges a contested block id on the assignment a re-ingest derives", async () => {
+  it("keeps source-backed identities unique through a content-id collision", async () => {
     // Third-pass finding 3. The previous round argued the conflict branch was
     // unreachable because `UNIQUE(conversation_id, position)` guarantees two
     // rows differ in a hashed input. That argument is wrong: the derivation
@@ -809,40 +831,30 @@ describe("mandible credential redact", () => {
     texts[12] = `payload${LEAKED_TOKEN}`;
     const transcript = await writeCodexTranscript(codexAssistantTranscript(texts));
     await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
-    expect(storedBlocks()).toHaveLength(13);
+    expect(await indexedBlocks(false)).toHaveLength(13);
 
     const report = redactCredential(db, credential.id, { patchSources: true });
 
-    const after = storedBlocks();
+    // Source-backed payloads are refreshed from the patched provider file;
+    // there is intentionally no transcript body in the DB to inspect here.
+    await ingestBatchForWorker([transcript], true);
+    const after = await indexedBlocks();
     expect(after[12].content).toBe(`payload${mask}`);
     expect(new Set(after.map((block) => block.id)).size).toBe(13);
-    // The contested id went to the block a fresh parse reaches first, and the
-    // later one took the deterministic fallback — the whole-conversation
-    // assignment, not a per-row guess. Keeping the plaintext-derived id here
-    // was the defect: it is an id nothing can re-derive.
-    expect(after.map((block) => block.id)).toEqual(assignConversationBlockIds(after.map((block) => ({
-      conversation_id: block.conversation_id,
-      type: block.type,
-      timestamp: block.timestamp,
-      content: block.content,
-      position: block.position,
-    }))));
-    expect(report).toMatchObject({ id_conflicts: 1, unresolved_id_conflicts: 0 });
+    // Source-backed ids are structural identities, so the old unframed content
+    // hash collision cannot make either block disappear or steal the other id.
+    expect(report).toMatchObject({
+      id_conflicts: 0,
+      unresolved_id_conflicts: 0,
+      sources: { patched_files: 1 },
+    });
 
-    // Tampering with a block proves the forced re-ingest below actually ran:
-    // before this fix it aborted on the same UNIQUE conflict and left the
-    // conversation exactly as it was, which would have made the id comparison
-    // pass vacuously.
-    db.prepare("UPDATE conversation_blocks SET content = ? WHERE conversation_id = ? AND position = 0")
-      .run(compressContent("tampered"), after[0].conversation_id);
-
-    // Ingestion short-circuits on an mtime that moved less than 100ms, which a
-    // rewrite inside one test always does.
+    // A second forced ingest is idempotent.
     const future = new Date(Date.now() + 5_000);
     fs.utimesSync(transcript, future, future);
     await ingestBatchForWorker([transcript], true);
 
-    expect(storedBlocks()).toEqual(after);
+    expect(await indexedBlocks()).toEqual(after);
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
@@ -2113,6 +2125,9 @@ describe("credential redact --patch-sources", () => {
       // The replacement, created once and held through rename, tail appends,
       // and the mode restore.
       'fs.openSync(tempPath, "ax", finalMode)',
+      // Bounded discovery uses its own read-only descriptor and closes it
+      // before any candidate file enters the rewrite cycle.
+      'fs.openSync(filePath, "r")',
     ]);
     // Mode changes go through the held descriptor, never through a path that
     // may name a different file by then.
@@ -2220,7 +2235,7 @@ describe("credential redact --patch-sources", () => {
     await ingestBatchForWorker([transcript], true);
 
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
-    expect(storedBlocks()[0].content).toBe(`token: ${credentialMaskFor(credential.id)}`);
+    expect((await indexedBlocks())[0].content).toBe(`token: ${credentialMaskFor(credential.id)}`);
   });
 });
 
