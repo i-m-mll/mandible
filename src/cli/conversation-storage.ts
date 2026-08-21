@@ -20,6 +20,7 @@ import type { ConversationBlock, ConversationSource } from "../parsers/types.js"
 // ingestion path, but large enough to repair the finite legacy cohort observed
 // in production without leaving redundant payload behind.
 const MAX_PREPARATION_REPARSE_BYTES = 512 * 1024 * 1024;
+const CODEX_MODEL_CHECKPOINT = '{"kind":"codex-model-metadata","version":1}';
 
 interface Candidate {
   id: string;
@@ -342,6 +343,24 @@ export async function prepareSourceBackedConversationStorage(options: {
       );
       if (discarded.promoted) promoted += 1;
     }
+    // Native JSONL and ledger rows are authoritative. Historical replay
+    // checkpoints are parser-cache state, so clear their structural links
+    // before deleting them. Retain only the compact current Codex model
+    // marker, and only while a structural row still uses it.
+    db.exec(`
+      UPDATE conversation_structural_blocks
+         SET normalization_checkpoint_id = NULL
+       WHERE normalization_checkpoint_id IN (
+         SELECT id FROM conversation_normalization_checkpoints
+          WHERE state_json <> '${CODEX_MODEL_CHECKPOINT}'
+       );
+      DELETE FROM conversation_normalization_checkpoints
+       WHERE state_json <> '${CODEX_MODEL_CHECKPOINT}'
+          OR NOT EXISTS (
+            SELECT 1 FROM conversation_structural_blocks
+             WHERE normalization_checkpoint_id = conversation_normalization_checkpoints.id
+          );
+    `);
     return {
       apply: true,
       before,

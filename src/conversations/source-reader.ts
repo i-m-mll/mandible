@@ -407,22 +407,22 @@ export class ConversationSourceReader {
         ? checkpointById.get(row.normalization_checkpoint_id)
         : undefined;
       let hasCodexModelCheckpoint = false;
-      if (row.normalization_checkpoint_id && !checkpoint) {
-        return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint is missing");
-      }
       if (checkpoint) {
-        if (checkpoint.source_version_id !== snapshot.version.id
-            || checkpoint.parser_format !== row.parser_format
-            || checkpoint.parser_version !== row.parser_version
-            || checkpoint.normalization_version !== row.normalization_version
-            || checkpoint.redaction_epoch !== row.redaction_epoch) {
-          return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint epoch diverges");
-        }
         try {
           const state = JSON.parse(checkpoint.state_json) as { kind?: unknown; version?: unknown };
-          hasCodexModelCheckpoint = state.kind === "codex-model-metadata" && state.version === 1;
+          if (state.kind === "codex-model-metadata" && state.version === 1) {
+            if (checkpoint.source_version_id !== snapshot.version.id
+                || checkpoint.parser_format !== row.parser_format
+                || checkpoint.parser_version !== row.parser_version
+                || checkpoint.normalization_version !== row.normalization_version
+                || checkpoint.redaction_epoch !== row.redaction_epoch) {
+              return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint epoch diverges");
+            }
+            hasCodexModelCheckpoint = true;
+          }
         } catch {
-          return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "stale", "model metadata checkpoint is invalid");
+          // Historical parser state is intentionally disposable. A missing or
+          // malformed non-model checkpoint cannot invalidate native JSONL.
         }
       }
       const withCodexModel = hasCodexModelCheckpoint && conversation?.source === "codex"

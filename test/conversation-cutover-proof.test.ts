@@ -220,15 +220,16 @@ describe("conversation cutover compact rebuild", () => {
     const sourceDb = new Database(source);
     sourceDb.exec(`
       CREATE TABLE conversation_normalization_checkpoints (
-        id TEXT PRIMARY KEY
+        id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL
       );
       CREATE TABLE conversation_structural_blocks (
         id TEXT PRIMARY KEY,
         normalization_checkpoint_id TEXT REFERENCES conversation_normalization_checkpoints(id),
         body TEXT NOT NULL
       );
-      INSERT INTO conversation_normalization_checkpoints VALUES ('checkpoint-one');
-      INSERT INTO conversation_normalization_checkpoints VALUES ('orphaned-checkpoint');
+      INSERT INTO conversation_normalization_checkpoints VALUES ('checkpoint-one', '{"kind":"codex-model-metadata","version":1}');
+      INSERT INTO conversation_normalization_checkpoints VALUES ('orphaned-checkpoint', '{"strategy":"replay-prefix"}');
       INSERT INTO conversation_structural_blocks VALUES ('structural-one', 'checkpoint-one', 'exact body');
     `);
     sourceDb.close();

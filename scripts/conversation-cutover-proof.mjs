@@ -350,8 +350,15 @@ export function buildCompactDestination(options) {
     const retainedNames = new Set(retainedTables.map((table) => table.name));
     if (options.reclaimConversationCheckpoints && retainedNames.has("conversation_normalization_checkpoints")) {
       db.exec(`
+        UPDATE conversation_structural_blocks
+           SET normalization_checkpoint_id = NULL
+         WHERE normalization_checkpoint_id IN (
+           SELECT id FROM conversation_normalization_checkpoints
+            WHERE state_json <> '{"kind":"codex-model-metadata","version":1}'
+         );
         DELETE FROM conversation_normalization_checkpoints
-         WHERE NOT EXISTS (
+         WHERE state_json <> '{"kind":"codex-model-metadata","version":1}'
+            OR NOT EXISTS (
            SELECT 1 FROM conversation_structural_blocks
             WHERE normalization_checkpoint_id = conversation_normalization_checkpoints.id
          )
@@ -375,11 +382,19 @@ export function buildCompactDestination(options) {
     for (const table of retainedTables) {
       const transformedCheckpointTable = options.reclaimConversationCheckpoints
         && table.name === "conversation_normalization_checkpoints";
+      const transformedStructuralTable = options.reclaimConversationCheckpoints
+        && table.name === "conversation_structural_blocks";
       parity[table.name] = {
         source: transformedCheckpointTable
           ? projectedTableDigest(db, "source", table.name, {
-            where: "id IN (SELECT normalization_checkpoint_id FROM conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL)",
+            where: "state_json = '{\"kind\":\"codex-model-metadata\",\"version\":1}' AND id IN (SELECT normalization_checkpoint_id FROM source.conversation_structural_blocks WHERE normalization_checkpoint_id IS NOT NULL)",
           })
+          : transformedStructuralTable
+            ? projectedTableDigest(db, "source", table.name, {
+              columns: {
+                normalization_checkpoint_id: "CASE WHEN normalization_checkpoint_id IN (SELECT id FROM source.conversation_normalization_checkpoints WHERE state_json = '{\"kind\":\"codex-model-metadata\",\"version\":1}') THEN normalization_checkpoint_id ELSE NULL END",
+              },
+            })
           : tableDigest(db, "source", table.name),
         destination: tableDigest(db, "main", table.name),
       };
