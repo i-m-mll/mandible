@@ -24,12 +24,12 @@ describe("migration v143: artifact-backed Briefing rounds", () => {
     migrate(db);
     const transientRoundsSql = MIGRATIONS.find((entry) => entry.version === 143)?.statements
       .find((statement) => statement.startsWith("CREATE TABLE IF NOT EXISTS briefing_rounds"));
-    expect(BASELINE_SCHEMA_VERSION).toBe(150);
-    expect(CURRENT_SCHEMA_VERSION).toBe(150);
+    expect(BASELINE_SCHEMA_VERSION).toBe(151);
+    expect(CURRENT_SCHEMA_VERSION).toBe(151);
     expect(transientRoundsSql).toContain("CHECK(profile = 'mandible-briefing.v1')");
     expect(transientRoundsSql).not.toContain("mandible-briefing.v2");
     expect(transientRoundsSql).not.toContain("mandible-briefing.v3");
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "150" });
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "151" });
     expect(BRIEFING_SCHEMA_TABLES.every((table) => db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
     ).get(table))).toBe(true);

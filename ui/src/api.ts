@@ -499,6 +499,8 @@ export function invalidateApiGetCache(
 
 const BRIEFING_EVENTS = new Set([
   'briefing:created',
+  'briefing:bundle-created',
+  'briefing:bundle-member-added',
   'briefing:round-published',
   'briefing:answered',
   'briefing:annotated',
@@ -508,7 +510,7 @@ const BRIEFING_EVENTS = new Set([
 /** Exact cache families affected by a Briefing lifecycle event. */
 export function briefingApiCacheFamiliesForEvent(type: string): readonly string[] {
   if (BRIEFING_EVENTS.has(type)) {
-    return ['/api/briefings', '/api/dashboard/badges'];
+    return ['/api/briefings', '/api/briefing-bundles', '/api/dashboard/badges'];
   }
   return [];
 }
@@ -4476,6 +4478,39 @@ export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
 }
 
 const BRIEFINGS_PATH = '/api/briefings';
+const BRIEFING_BUNDLES_PATH = '/api/briefing-bundles';
+
+export type BriefingBundle = {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  members: Array<{ position: number; briefing: FeedbackCollection }>;
+};
+
+export function normalizeBriefingBundles(payload: unknown): BriefingBundle[] {
+  const root = briefingRecord(payload);
+  const rows = Array.isArray(root.bundles) ? root.bundles : [];
+  return rows.map((entry) => {
+    const bundle = briefingRecord(entry);
+    const id = briefingString(bundle.id);
+    const memberRows = Array.isArray(bundle.members) ? bundle.members : [];
+    const members = memberRows.map((memberEntry) => {
+      const member = briefingRecord(memberEntry);
+      const normalized = normalizeBriefings({ briefings: [member.briefing] })[0];
+      const position = briefingOptionalNumber(member.position);
+      return normalized && position !== undefined && position >= 0 ? { position, briefing: normalized } : null;
+    }).filter((member): member is { position: number; briefing: FeedbackCollection } => member !== null)
+      .sort((left, right) => left.position - right.position);
+    return {
+      id,
+      name: briefingString(bundle.name),
+      createdAt: briefingOptionalNumber(bundle.created_at) ?? 0,
+      updatedAt: briefingOptionalNumber(bundle.updated_at) ?? 0,
+      members,
+    };
+  }).filter((bundle) => Boolean(bundle.id && bundle.name));
+}
 
 export function getCachedBriefings(now: number = Date.now()): FeedbackCollection[] | null {
   const cached = getJsonCache.get(cacheKeyForGet(BRIEFINGS_PATH));
@@ -4489,6 +4524,20 @@ export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollec
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(BRIEFINGS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
   return normalizeBriefings(payload);
+}
+
+export function getCachedBriefingBundles(now: number = Date.now()): BriefingBundle[] | null {
+  const cached = getJsonCache.get(cacheKeyForGet(BRIEFING_BUNDLES_PATH));
+  if (!cached || now >= cached.staleUntil) return null;
+  return normalizeBriefingBundles(cached.value);
+}
+
+export async function getBriefingBundles(signal?: AbortSignal): Promise<BriefingBundle[]> {
+  const response = await apiGet(BRIEFING_BUNDLES_PATH, signal ? { signal } : {});
+  const payload = await parseMaybeJson(response);
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(BRIEFING_BUNDLES_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
+  return normalizeBriefingBundles(payload);
 }
 
 export function normalizeBriefingProjection(payload: unknown): BriefingProjection {

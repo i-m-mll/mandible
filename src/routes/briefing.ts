@@ -19,6 +19,12 @@ import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
 import { publisherMayIngest } from "../briefing.js";
 import { BRIEFING_EVENTS } from "../contracts.js";
+import {
+  addBriefingBundleMember,
+  createBriefingBundle,
+  listBriefingBundles,
+  readBriefingBundle,
+} from "../feedback/briefing-bundles.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
@@ -48,6 +54,78 @@ function body(req: RequestLike): Record<string, unknown> {
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+  server.post("/api/briefing-bundles", (req, res) => {
+    try {
+      const actor = activeHuman(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      if (!Array.isArray(requestBody.briefing_refs)
+          || !requestBody.briefing_refs.every((ref) => typeof ref === "string" && ref.trim())) {
+        throw new BriefingStoreError("briefing_refs must be an array of nonblank Briefing refs");
+      }
+      const bundle = createBriefingBundle(db, {
+        name: typeof requestBody.name === "string" ? requestBody.name : "",
+        briefingRefs: requestBody.briefing_refs,
+        viewer: { userId: actor.user.id, operator: actor.operator },
+      });
+      broadcast(BRIEFING_EVENTS.bundleCreated, { bundle_id: bundle.id });
+      sendJson(res, 201, { bundle });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-bundles/:bundleId/briefings", (req, res) => {
+    try {
+      const actor = activeHuman(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "briefing_ref");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      const result = addBriefingBundleMember(
+        db,
+        req.params.bundleId,
+        typeof requestBody.briefing_ref === "string" ? requestBody.briefing_ref : "",
+        { userId: actor.user.id, operator: actor.operator },
+      );
+      if (result.added) broadcast(BRIEFING_EVENTS.bundleMemberAdded, {
+        bundle_id: result.bundle.id,
+        briefing_id: result.bundle.members.at(-1)?.briefing.id,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-bundles", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, { bundles: listBriefingBundles(db, {
+        userId: identity.user_id,
+        operator: isOperator(db, identity),
+      }) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-bundles/:bundleId", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, { bundle: readBriefingBundle(db, req.params.bundleId, {
+        userId: identity.user_id,
+        operator: isOperator(db, identity),
+      }) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
   server.post("/api/briefings", (req, res) => {
     try {
       const actor = activeHuman(db, req);

@@ -13,6 +13,7 @@ import { tableExists } from "./db-introspection.js";
 import type { Db } from "./db.js";
 import { migrateLegacyFeedbackToBriefings, retireBriefingV1ToCustody } from "./feedback/migrate-legacy.js";
 import {
+  BRIEFING_BUNDLE_SCHEMA_SQL,
   BRIEFING_SCHEMA_SQL,
   BRIEFING_SCHEMA_TABLES,
   TRANSIENT_BRIEFING_V1_SCHEMA_SQL,
@@ -4807,6 +4808,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     version: 150,
     name: "briefing_round_comparison_base",
     statements: [],
+  },
+  {
+    version: 151,
+    name: "briefing_bundles",
+    statements: [...BRIEFING_BUNDLE_SCHEMA_SQL],
   },
 ];
 

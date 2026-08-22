@@ -71,6 +71,52 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("creates, appends to, and shows a named bundle without changing its Briefings", async () => {
+    const source = path.join(root, "bundle.md");
+    fs.writeFileSync(source, "# Bundle member\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "bundle.md", role: "review-document", media_type: "text/markdown" }).version;
+    const first = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: version.id, title: "First" } });
+    const second = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: version.id, title: "Second" } });
+    const firstId = (first.body as { briefing_id: string }).briefing_id;
+    const secondId = (second.body as { briefing_id: string }).briefing_id;
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-bundles",
+      body: { name: "Policy review", briefing_refs: [firstId] } })).toMatchObject({ status: 401 });
+    const created = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
+      body: { name: "Policy review", briefing_refs: [firstId] } });
+    expect(created).toMatchObject({ status: 201, body: { bundle: {
+      name: "Policy review",
+      members: [{ position: 0, briefing: { id: firstId, title: "First" } }],
+    } } });
+    const bundleId = (created.body as { bundle: { id: string } }).bundle.id;
+    const added = await router.invoke({ method: "POST",
+      url: `/api/briefing-bundles/${bundleId.slice(0, 8)}/briefings`, credential: "human",
+      body: { briefing_ref: secondId.slice(0, 8) } });
+    expect(added).toMatchObject({ status: 200, body: { added: true, bundle: { members: [
+      { position: 0, briefing: { id: firstId } },
+      { position: 1, briefing: { id: secondId } },
+    ] } } });
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefing-bundles/${bundleId}/briefings`, credential: "human",
+      body: { briefing_ref: secondId } })).toMatchObject({ status: 200, body: { added: false } });
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-bundles/${bundleId.slice(0, 8)}`,
+      credential: "human" })).toMatchObject({ status: 200, body: { bundle: {
+      id: bundleId,
+      members: [
+        { position: 0, briefing: { id: firstId } },
+        { position: 1, briefing: { id: secondId } },
+      ],
+    } } });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 2 });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-created", { bundle_id: bundleId });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-member-added", {
+      bundle_id: bundleId, briefing_id: secondId,
+    });
+  });
+
   it("creates distinct logical Briefings from one explicitly selected exact artifact version", async () => {
     const source = path.join(root, "AGENTS.review.md");
     fs.writeFileSync(source, "# Version one\n");

@@ -192,3 +192,24 @@ export function SidebarAddProjectIcon(): JSX.Element {
     </svg>
   );
 }
+
+export function SidebarBriefingBundleIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      data-sidebar-group-icon="briefing-bundle"
+    >
+      <path d="M7 3.5h10a2 2 0 0 1 2 2v12" />
+      <path d="M5 6.5h10a2 2 0 0 1 2 2v11" />
+      <rect x="3" y="9.5" width="12" height="11" rx="2" />
+    </svg>
+  );
+}

@@ -1068,8 +1068,21 @@ export type BriefingListEntry = {
   created_at: number;
   updated_at: number;
 };
+export type BriefingBundleMember = {
+  position: number;
+  briefing: BriefingListEntry;
+};
+export type BriefingBundle = {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  members: BriefingBundleMember[];
+};
 export const BRIEFING_EVENTS = Object.freeze({
   created: "briefing:created",
+  bundleCreated: "briefing:bundle-created",
+  bundleMemberAdded: "briefing:bundle-member-added",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",
   annotated: "briefing:annotated",

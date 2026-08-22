@@ -174,6 +174,10 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_submission_annotations",
   "briefing_legacy_audit",
   "briefing_legacy_custody",
+  // Loose named collections of otherwise independent Briefings. Bundle rows
+  // precede their manually ordered membership rows for FK-safe restoration.
+  "briefing_bundles",
+  "briefing_bundle_members",
   // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",
   // Executor task inventory receipts (issue 0bc2279, migration 124). Each row
