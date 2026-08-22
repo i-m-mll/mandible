@@ -448,7 +448,12 @@
 .briefing-markdown__entity--changed {
   border-radius: var(--radius-sm);
   background: var(--status-warning-bg-soft);
-  box-shadow: 0 0 0 .2rem var(--status-warning-bg-soft);
+}
+
+/* A changed parent list item already paints behind its nested list. Avoid a
+ * second translucent layer while retaining the nested target and focus ring. */
+.briefing-markdown__entity--changed .briefing-markdown__entity--changed {
+  background: transparent;
 }
 
 .briefing-markdown__entity--changed:focus-visible {
@@ -457,14 +462,29 @@
 }
 
 .briefing-document__change-navigation {
+  position: sticky;
+  z-index: 7;
+  inset-block-start: var(--space-2);
   display: flex;
+  width: max-content;
   min-height: 2rem;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--space-1);
-  margin-block-end: var(--space-2);
+  margin: 0 0 calc(-2rem - var(--space-2)) auto;
+  padding: var(--space-1);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--surface-popover);
+  box-shadow: var(--shadow-soft);
   color: var(--text-muted);
   font-size: var(--font-size-sm);
+  opacity: .76;
+  transition: opacity 120ms ease;
+}
+
+.briefing-document__change-navigation:hover,
+.briefing-document__change-navigation:focus-within {
+  opacity: 1;
 }
 
 .briefing-document__change-navigation svg {
