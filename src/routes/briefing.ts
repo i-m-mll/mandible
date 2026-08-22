@@ -45,31 +45,58 @@ function activeHuman(db: Db, req: RequestLike) {
   return { identity, user, operator: isOperator(db, identity) };
 }
 
+type PublicationPrincipal = {
+  publisherUserId: string;
+  kind: "human" | "agent";
+  operator: boolean;
+};
+
+function publicationPrincipal(
+  db: Db,
+  req: RequestLike,
+  messages: {
+    credentialCode: string;
+    credentialMessage: string;
+    agentCode: string;
+    agentMessage: string;
+  },
+): PublicationPrincipal {
+  const identity = requireIdentity(req);
+  const caller = getUserById(db, identity.user_id);
+  if (caller?.status === "active" && caller.kind === "human") {
+    return { publisherUserId: caller.id, kind: "human", operator: isOperator(db, identity) };
+  }
+  const publisher = requireDurableAgentPublisher(db, req, messages);
+  return { publisherUserId: publisher.userId, kind: "agent", operator: false };
+}
+
+function configuredHumanOperator(db: Db, code: string, message: string) {
+  const operator = getOperator(db);
+  if (!operator || operator.status !== "active" || operator.kind !== "human") {
+    throw new ClientAuthzError(403, code, message);
+  }
+  return operator;
+}
+
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
   publisherUserId: string;
   responderUserId: string;
 } {
-  const identity = requireIdentity(req);
-  const caller = getUserById(db, identity.user_id);
-  if (caller?.status === "active" && caller.kind === "human") {
-    return { publisherUserId: caller.id, responderUserId: caller.id };
-  }
-
-  const publisher = requireDurableAgentPublisher(db, req, {
+  const publisher = publicationPrincipal(db, req, {
     credentialCode: "briefing_publisher_credential_required",
     credentialMessage: "Exact-version Briefing publication requires a durable API token, not a session credential.",
     agentCode: "briefing_publisher_agent_required",
     agentMessage: "Exact-version Briefing publication requires an active agent identity.",
   });
-  const operator = getOperator(db);
-  if (!operator || operator.status !== "active" || operator.kind !== "human") {
-    throw new ClientAuthzError(
-      403,
-      "briefing_publication_operator_required",
-      "Exact-version Briefing publication by an agent requires a configured active human operator responder.",
-    );
+  if (publisher.kind === "human") {
+    return { publisherUserId: publisher.publisherUserId, responderUserId: publisher.publisherUserId };
   }
-  return { publisherUserId: publisher.userId, responderUserId: operator.id };
+  const operator = configuredHumanOperator(
+    db,
+    "briefing_publication_operator_required",
+    "Exact-version Briefing publication by an agent requires a configured active human operator responder.",
+  );
+  return { publisherUserId: publisher.publisherUserId, responderUserId: operator.id };
 }
 
 function body(req: RequestLike): Record<string, unknown> {
@@ -83,7 +110,19 @@ function body(req: RequestLike): Record<string, unknown> {
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
   server.post("/api/briefing-bundles", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
+      const publisher = publicationPrincipal(db, req, {
+        credentialCode: "briefing_bundle_publisher_credential_required",
+        credentialMessage: "Briefing bundle publication requires a durable API token, not a session credential.",
+        agentCode: "briefing_bundle_publisher_agent_required",
+        agentMessage: "Briefing bundle publication requires an active agent identity.",
+      });
+      const viewer = publisher.kind === "human"
+        ? { userId: publisher.publisherUserId, operator: publisher.operator }
+        : { userId: configuredHumanOperator(
+          db,
+          "briefing_bundle_publication_operator_required",
+          "Briefing bundle publication by an agent requires a configured active human operator.",
+        ).id, operator: true };
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs");
       if (unexpected.length > 0) {
@@ -96,7 +135,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const bundle = createBriefingBundle(db, {
         name: typeof requestBody.name === "string" ? requestBody.name : "",
         briefingRefs: requestBody.briefing_refs,
-        viewer: { userId: actor.user.id, operator: actor.operator },
+        viewer,
       });
       broadcast(BRIEFING_EVENTS.bundleCreated, { bundle_id: bundle.id });
       sendJson(res, 201, { bundle });

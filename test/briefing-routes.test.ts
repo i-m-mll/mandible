@@ -117,6 +117,54 @@ describe("plural Briefing routes", () => {
     });
   });
 
+  it("lets a durable agent publish an ordered bundle for the configured operator without changing members", async () => {
+    const source = path.join(root, "agent-bundle.md");
+    fs.writeFileSync(source, "# Bundle member\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "agent-bundle.md", role: "review-document", media_type: "text/markdown" }).version;
+    const briefingIds = ["Global", "Codex", "Claude"].map((title) => publishBriefingFromArtifactVersion(db, {
+      briefing_key: `agent-bundle:${title}`,
+      title,
+      artifact_version_ref: version.id,
+      profile: "mandible-briefing.v3",
+      responder_user_ids: [humanId],
+    }).briefing_id);
+    const briefingRowsBefore = db.prepare("SELECT * FROM briefings ORDER BY id").all();
+    const roundRowsBefore = db.prepare("SELECT * FROM briefing_rounds ORDER BY id").all();
+    const memberRowsBefore = db.prepare("SELECT * FROM briefing_members ORDER BY briefing_id, user_id").all();
+    const request = { name: "Sparse engineering policy review", briefing_refs: briefingIds };
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-bundles", body: request }))
+      .toMatchObject({ status: 401 });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-bundles", body: request,
+      credential: "session:agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_publisher_credential_required" },
+    });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-bundles", body: request,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_publication_operator_required" },
+    });
+
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-bundles",
+      credential: "agent-schedule", body: { ...request, actor_user_id: humanId } })).toMatchObject({
+      status: 400, body: { error: expect.stringContaining("unsupported field") },
+    });
+    const created = await router.invoke({ method: "POST", url: "/api/briefing-bundles",
+      credential: "agent-schedule", body: request });
+    expect(created).toMatchObject({ status: 201, body: { bundle: {
+      name: request.name,
+      members: briefingIds.map((id, position) => ({ position, briefing: { id } })),
+    } } });
+    expect(db.prepare("SELECT * FROM briefings ORDER BY id").all()).toEqual(briefingRowsBefore);
+    expect(db.prepare("SELECT * FROM briefing_rounds ORDER BY id").all()).toEqual(roundRowsBefore);
+    expect(db.prepare("SELECT * FROM briefing_members ORDER BY briefing_id, user_id").all()).toEqual(memberRowsBefore);
+
+    const humanCreated = await router.invoke({ method: "POST", url: "/api/briefing-bundles",
+      credential: "human", body: { name: "Human bundle", briefing_refs: briefingIds } });
+    expect(humanCreated).toMatchObject({ status: 201 });
+  });
+
   it("publishes an exact-version Briefing from a durable agent for the configured human operator", async () => {
     const source = path.join(root, "AGENTS.review.md");
     fs.writeFileSync(source, "# Version one\n");
