@@ -8,6 +8,7 @@ import {
   postBriefingAnswers,
   postBriefingAnnotations,
   postBriefingSubmission,
+  updateBriefingTitle,
   type BriefingAnswerOperation,
   type BriefingDirectiveItem,
   type BriefingProjection,
@@ -41,6 +42,7 @@ export type BriefingDocumentRendererProps = {
   roundId?: string | null;
   instance: InstanceInfo | null;
   onBriefingChange?(briefing: BriefingProjection | null): void;
+  onTitleChange?(title: string): void;
   onRoundChange?(roundId: string | null): void;
   keepSubmittedAnnotations?: boolean;
 };
@@ -120,6 +122,7 @@ export function BriefingDocumentRenderer({
   roundId = null,
   instance,
   onBriefingChange,
+  onTitleChange,
   onRoundChange,
   keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
@@ -136,6 +139,10 @@ export function BriefingDocumentRenderer({
   const [reload, setReload] = useState(0);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
@@ -506,6 +513,35 @@ export function BriefingDocumentRenderer({
 
   const title = round?.title || briefingTitle || 'Briefing';
 
+  const openRename = () => {
+    setActionsOpen(false);
+    setRenameTitle(title);
+    setRenameError(null);
+    setRenameOpen(true);
+  };
+
+  const renameBriefing = async (event: Event) => {
+    event.preventDefault();
+    const nextTitle = renameTitle.trim();
+    if (!nextTitle || nextTitle === title || renameBusy) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      const updated = await updateBriefingTitle(briefingId, nextTitle);
+      setLoad((current) => ({
+        ...current,
+        round: current.round ? { ...current.round, title: updated.title } : current.round,
+      }));
+      onTitleChange?.(updated.title);
+      setRenameOpen(false);
+      setStatus(updated.changed ? 'Briefing renamed.' : 'Briefing title unchanged.');
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const exportReviewedMarkdown = async () => {
     const submissionId = round?.latest_submission_for_actor?.id;
     if (!round || !submissionId || exportBusy) return;
@@ -620,6 +656,9 @@ export function BriefingDocumentRenderer({
                   popover="manual"
                   style={actionsMenuStyle}
                 >
+                  {userKind === 'human' ? (
+                    <button type="button" role="menuitem" onClick={openRename}>Rename Briefing</button>
+                  ) : null}
                   <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
                   {round.latest_submission_for_actor ? (
                     <button type="button" role="menuitem" disabled={exportBusy} onClick={() => void exportReviewedMarkdown()}>
@@ -721,6 +760,29 @@ export function BriefingDocumentRenderer({
       } : undefined}
       overlays={(
         <>
+          <DetailPaneModal
+            open={renameOpen}
+            onClose={() => { if (!renameBusy) setRenameOpen(false); }}
+            titleId="briefing-rename-title"
+            title="Rename Briefing"
+            closeLabel="Close Rename Briefing"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-detail__rename"
+          >
+            <form className="briefing-detail__rename-form" onSubmit={(event) => void renameBriefing(event)}>
+              <label htmlFor="briefing-rename-input">Briefing title</label>
+              <input id="briefing-rename-input" autoFocus value={renameTitle}
+                disabled={renameBusy} onInput={(event) => setRenameTitle(event.currentTarget.value)} />
+              {renameError ? <p className="briefing-error" role="alert">{renameError}</p> : null}
+              <div className="briefing-detail__rename-actions">
+                <button type="button" className="btn btn--ghost btn--sm" disabled={renameBusy} onClick={() => setRenameOpen(false)}>Cancel</button>
+                <button type="submit" className="briefing-primary" disabled={renameBusy || !renameTitle.trim() || renameTitle.trim() === title}>
+                  {renameBusy ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </DetailPaneModal>
           <DetailPaneModal
             open={metadataOpen}
             onClose={() => setMetadataOpen(false)}
