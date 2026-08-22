@@ -111,7 +111,7 @@ describe('Briefing sidebar row actions', () => {
     const toggle = screen.getByRole('button', { name: /Agent policy review/ });
     const group = toggle.closest('.sidebar-group-node');
     expect(group?.classList.contains('sidebar-group-node--folder')).toBe(true);
-    expect(group?.querySelector('[data-sidebar-group-icon="briefing-bundle"]')).toBeTruthy();
+    expect(group?.querySelector('[data-sidebar-group-icon="briefing-bundle"][data-sidebar-group-icon-state="layers"]')).toBeTruthy();
     expect(within(group as HTMLElement).getAllByRole('button', { name: /Select briefing/ })
       .map((button) => button.getAttribute('aria-label'))).toEqual([
       'Select briefing Second briefing',
@@ -126,6 +126,7 @@ describe('Briefing sidebar row actions', () => {
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(group?.querySelector('[data-sidebar-group-icon="briefing-bundle"][data-sidebar-group-icon-state="briefcase"]')).toBeTruthy();
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').collapsedBundleIds)
       .toEqual(['bundle-1']);
   });

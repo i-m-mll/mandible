@@ -349,7 +349,7 @@ export function CollectionsSidebar({
                   countVisibility="interaction"
                   expanded={expanded}
                   onToggle={() => toggleBundle(bundle.id)}
-                  leadingIcon={<SidebarBriefingBundleIcon />}
+                  leadingIcon={<SidebarBriefingBundleIcon expanded={expanded} />}
                 >
                   {bundle.members.map((member) => renderCollection(
                     { key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing },
