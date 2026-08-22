@@ -4114,6 +4114,10 @@ export type BriefingAnnotation = {
   body: string | null;
   replacement_text: string | null;
   created_at: number;
+  presentation?: {
+    source: 'current_draft' | 'annotation_set';
+    actor: { slug: string; display_name: string | null } | null;
+  };
 };
 
 export type BriefingAnnotationOperation =
@@ -4221,6 +4225,17 @@ function briefingAnnotation(value: unknown): BriefingAnnotation | null {
     replacement_text: replacement as string | null,
     created_at: row.created_at as number,
   };
+  const presentation = briefingRecord(row.presentation);
+  if (presentation.source === 'current_draft' || presentation.source === 'annotation_set') {
+    const actor = briefingRecord(presentation.actor);
+    annotation.presentation = {
+      source: presentation.source,
+      actor: briefingString(actor.slug) ? {
+        slug: briefingString(actor.slug),
+        display_name: briefingOptionalString(actor.display_name),
+      } : null,
+    };
+  }
   return annotation;
 }
 
@@ -4611,6 +4626,26 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
   });
   const selectedId = briefingString(selected.id);
   const latestSubmission = selected.latest_submission ?? null;
+  const frozenAnnotationIds = new Set(
+    Array.isArray(briefingRecord(selected.latest_frozen_membership).annotation_event_ids)
+      ? briefingRecord(selected.latest_frozen_membership).annotation_event_ids as string[]
+      : [],
+  );
+  const currentAnnotations = (Array.isArray(selected.annotations) ? selected.annotations : []).map((annotation) => ({
+    ...briefingRecord(annotation),
+    presentation: {
+      source: frozenAnnotationIds.has(briefingString(briefingRecord(annotation).annotation_event_id))
+        ? 'annotation_set'
+        : 'current_draft',
+      actor: null,
+    },
+  }));
+  const overlayAnnotations = Array.isArray(selectedOverlayRecord.annotations)
+    ? selectedOverlayRecord.annotations.map((annotation) => ({
+      ...briefingRecord(annotation),
+      presentation: { source: 'annotation_set', actor: selectedOverlayRecord.actor },
+    }))
+    : [];
   const projection = normalizeBriefingRoundProjection({
     round_id: selectedId,
     state: latestSubmission ? 'submitted' : 'open',
@@ -4621,9 +4656,12 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     document: selected.document ?? null,
     directive_binding: selected.binding ?? null,
     latest_frozen_membership: selected.latest_frozen_membership ?? null,
-    annotations: Array.isArray(selectedOverlayRecord.annotations)
-      ? selectedOverlayRecord.annotations
-      : selected.annotations ?? [],
+    annotations: rawSelectedOverlay == null
+      ? currentAnnotations
+      : [
+        ...overlayAnnotations,
+        ...currentAnnotations.filter((annotation) => annotation.presentation.source === 'current_draft'),
+      ],
     items,
   });
   const parseOverlaySummary = (entry: unknown): BriefingSubmissionOverlaySummary | null => {

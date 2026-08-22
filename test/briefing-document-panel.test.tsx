@@ -727,7 +727,7 @@ describe('Briefing document panel', () => {
     expect(screen.queryByText(':::spec-item{key="verdict" type="verdict" required="true"}')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Review plan' })).toBeNull();
     expect(screen.getByLabelText('Pinned briefing document').querySelector('img')).toBeNull();
-    expect(screen.getByRole('button', { name: /Body.*Comment.*Current actor note/ })).toBeTruthy();
+    expect(screen.queryByText('Current actor note.')).toBeNull();
     const region = screen.getByText('Body').closest('.briefing-directive') as HTMLElement;
     fireEvent.click(region);
     expect(region.className).toContain('briefing-directive--selected');
@@ -737,6 +737,7 @@ describe('Briefing document panel', () => {
     fireEvent.click(comment);
     expect(comment.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('dialog', { name: 'Add annotation' })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByText(/Current actor note/)).toBeTruthy();
   });
 
   it('creates an annotation from a profiled directive before refetching', async () => {
@@ -811,7 +812,8 @@ describe('Briefing document panel', () => {
 
     const keepButton = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
     await waitFor(() => expect(keepButton.disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Saved annotation.*Clarify this/ }));
     fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Revised note.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));
@@ -824,10 +826,44 @@ describe('Briefing document panel', () => {
     ]);
     await screen.findByText('Annotation updated.');
 
-    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Saved annotation.*Clarify this/ }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
+  });
+
+  it('keeps repeated comments out of Markdown flow and shows newest-first attributed history with a stable gutter count', async () => {
+    const older = annotation({
+      annotation_event_id: 'saved-annotation', body: 'Immutable policy note.', created_at: 10,
+      presentation: { source: 'annotation_set', actor: { slug: 'reviewer', display_name: 'Reviewer' } },
+    });
+    const newer = annotation({
+      annotation_event_id: 'draft-annotation', body: 'Current follow-up.', created_at: 20,
+      presentation: { source: 'current_draft', actor: null },
+    });
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1"
+      round={round({ annotations: [older, newer] as any })} canMutate={false} onRefresh={async () => null} />);
+
+    await screen.findByRole('button', { name: 'Keep' });
+    expect(screen.queryByText('Immutable policy note.')).toBeNull();
+    expect(screen.queryByText('Current follow-up.')).toBeNull();
+    const comment = screen.getByRole('button', { name: 'Comment' });
+    expect(comment.getAttribute('title')).toBe('Comment · 2');
+    expect(comment.parentElement?.querySelector('.briefing-annotation-action__count')?.textContent).toBe('2');
+    expect((comment as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(comment);
+
+    const history = within(screen.getByRole('dialog')).getByRole('region', { name: 'Comment history' });
+    const entries = within(history).getAllByRole('listitem');
+    expect(entries.map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining('Current draft'),
+      expect.stringContaining('Reviewer'),
+    ]);
+    expect(entries[0].textContent).toContain('Current follow-up.');
+    expect(entries[1].textContent).toContain('Immutable policy note.');
+    expect(entries[0].classList.contains('briefing-annotation-history__entry--draft')).toBe(true);
+    expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Save' })).toBeNull();
   });
 
   it('renders only the active text variant and stores bounded keyed choices without manufacturing an initial answer', async () => {

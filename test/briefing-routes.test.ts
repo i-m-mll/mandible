@@ -71,6 +71,39 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("lets only the configured human operator update a title and removes transient proposed-update prose", async () => {
+    const source = path.join(root, "policy.md");
+    fs.writeFileSync(source, "# Policy\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "policy.md", role: "review-document", media_type: "text/markdown" }).version;
+    setSetting(db, "user.operator_id", humanId);
+    const created = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: version.id, title: "Sparse engineering policy — proposed update" } });
+    const briefingId = (created.body as { briefing_id: string }).briefing_id;
+    expect(db.prepare("SELECT title FROM briefings WHERE id = ?").get(briefingId))
+      .toEqual({ title: "Sparse engineering policy" });
+
+    createUser(db, { slug: "reviewer", kind: "human", display_name: "Reviewer" });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
+      body: { title: "Updated policy" } })).toMatchObject({ status: 401 });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "reviewer",
+      body: { title: "Updated policy" } })).toMatchObject({
+      status: 403, body: { code: "briefing_title_operator_required" },
+    });
+    const updated = await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
+      body: { title: "Durable policy — proposed update" } });
+    expect(updated).toMatchObject({ status: 200, body: {
+      briefing_id: briefingId, title: "Durable policy", changed: true,
+    } });
+    expect(db.prepare("SELECT title FROM briefings WHERE id = ?").get(briefingId))
+      .toEqual({ title: "Durable policy" });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:title-updated", { briefing_id: briefingId });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
+      body: { title: "Durable policy", actor_user_id: humanId } })).toMatchObject({
+      status: 400, body: { error: expect.stringContaining("unsupported field") },
+    });
+  });
+
   it("creates, appends to, and shows a named bundle without changing its Briefings", async () => {
     const source = path.join(root, "bundle.md");
     fs.writeFileSync(source, "# Bundle member\n");
