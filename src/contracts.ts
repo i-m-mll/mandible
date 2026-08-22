@@ -1055,6 +1055,10 @@ export type BriefingRunReceipt = {
   artifact_version_id: string | null;
   quiet: boolean;
 };
+export type CreateBriefingFromArtifactVersionRequest = {
+  artifact_version_ref: string;
+  title: string;
+};
 export type BriefingListEntry = {
   id: string;
   briefing_key: string;

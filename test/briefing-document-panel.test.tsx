@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BriefingResponseValue, BriefingRoundProjection } from '../ui/src/api';
 
 import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
-import { buildBriefingMarkdownModel } from '../ui/src/views/feedback/briefingMarkdownModel';
+import { buildBriefingMarkdownModel, changedBriefingEntityIndexes, compareBriefingEntities } from '../ui/src/views/feedback/briefingMarkdownModel';
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
@@ -226,6 +226,63 @@ describe('Briefing document panel', () => {
     expect(model.markdown).not.toContain(':::spec-item');
   });
 
+  it('marks one modified proposed entity, preserves unchanged entities, and treats duplicate ambiguity as changed', () => {
+    const base = buildBriefingMarkdownModel('# Policy\n\nOriginal wording.\n\nUnchanged.\n', [], {});
+    const proposed = buildBriefingMarkdownModel('# Policy\n\nRevised wording.\n\nUnchanged.\n', [], {});
+    expect(changedBriefingEntityIndexes(proposed, base)).toEqual([1]);
+    expect(compareBriefingEntities(proposed, base)).toEqual([{ proposedIndex: 1, classification: 'modified' }]);
+    expect(changedBriefingEntityIndexes(base, base)).toEqual([]);
+    const added = buildBriefingMarkdownModel('# Policy\n\nOriginal wording.\n\nUnchanged.\n\nAdded.\n', [], {});
+    expect(compareBriefingEntities(added, base)).toEqual([{ proposedIndex: 3, classification: 'added' }]);
+
+    const ambiguousBase = buildBriefingMarkdownModel('# Policy\n\nSame.\n\nSame.\n', [], {});
+    const ambiguousProposed = buildBriefingMarkdownModel('# Policy\n\nSame.\n\nSame.\n', [], {});
+    expect(changedBriefingEntityIndexes(ambiguousProposed, ambiguousBase)).toEqual([1, 2]);
+
+    const sectionBase = buildBriefingMarkdownModel('## One\n\nShared.\n\n## Two\n\nOther.\n', [], {});
+    const sectionProposed = buildBriefingMarkdownModel('## One\n\nShared.\n\n## Two\n\nShared.\n', [], {});
+    expect(changedBriefingEntityIndexes(sectionProposed, sectionBase)).toEqual([3]);
+  });
+
+  it('renders directive-free comparison changes with keyboard-operable compact navigation and no-base parity', async () => {
+    const baseSource = '# Policy\n\nOriginal wording.\n\nUnchanged.\n';
+    const proposedSource = '# Policy\n\nRevised wording.\n\nUnchanged.\n';
+    const comparisonRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:proposed',
+        content_hash: createHash('sha256').update(proposedSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v3',
+        source: proposedSource,
+        comparison_base: {
+          artifact_version_id: 'artifact-version:base',
+          content_hash: createHash('sha256').update(baseSource).digest('hex'),
+          source: baseSource,
+        },
+      },
+      items: [],
+    });
+    const rendered = render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
+      round={comparisonRound} canMutate onRefresh={async () => null} />);
+    expect(await screen.findByText('1 changed')).toBeTruthy();
+    const changed = rendered.container.querySelector<HTMLElement>('.briefing-markdown__entity--changed');
+    expect(changed?.getAttribute('aria-label')).toContain('Changed paragraph: Revised wording.');
+    const next = screen.getByRole('button', { name: 'Next changed entity' });
+    expect(next.classList.contains('contextual-action--compact')).toBe(true);
+    next.focus();
+    fireEvent.keyDown(next, { key: 'Enter' });
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed);
+
+    cleanup();
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
+      round={round({ document: { ...comparisonRound.document!, comparison_base: null }, items: [] })}
+      canMutate onRefresh={async () => null} />);
+    await screen.findByText('Revised wording.');
+    expect(screen.queryByLabelText('Changed proposed entities')).toBeNull();
+    expect(globalThis.document.querySelector('.briefing-markdown__entity--changed')).toBeNull();
+  });
+
   it('keeps directive and ordinary list items in one rendered list with independent exact-range actions', async () => {
     const listSource = '- Before\n\n:::spec-item{key="typed" type="verdict" required="true"}\n- Typed\n:::\n\n- After\n';
     const directive = parseBriefingDirectives(listSource)[0];
@@ -327,7 +384,13 @@ describe('Briefing document panel', () => {
       { id: 'long', value: { text: 'Detailed' } },
       { id: 'rating', value: { rating: 5 } },
     ]));
-    expect(screen.getAllByLabelText('Required')).toHaveLength(6);
+    expect(screen.queryByText('Required')).toBeNull();
+    expect(verdict.getAttribute('aria-required')).toBe('true');
+    expect(single.getAttribute('aria-required')).toBe('true');
+    expect(multi.getAttribute('aria-required')).toBe('true');
+    expect(short.getAttribute('aria-required')).toBe('true');
+    expect(long.getAttribute('aria-required')).toBe('true');
+    expect(rating.getAttribute('aria-required')).toBe('true');
     const shortSection = short.closest('.briefing-directive__response-host') as HTMLElement;
     expect(shortSection.classList.contains('briefing-directive__response-host--flow')).toBe(true);
     expect(shortSection.previousElementSibling).toBe(screen.getByText('Give a short rationale').closest('.briefing-directive'));
@@ -405,12 +468,12 @@ describe('Briefing document panel', () => {
     expect(railX).toEqual([438, 438]);
     expect(owners).toHaveLength(2);
     expect(actions.style.getPropertyValue('--briefing-right-rail-action-offset')).toBe('488px');
-    expect(actions.style.getPropertyValue('--briefing-right-rail-center')).toBe('12px');
-    expect(responseHosts.map((host) => host.style.getPropertyValue('--briefing-right-rail-top'))).toEqual(['2px', '62px']);
+    expect(actions.style.getPropertyValue('--briefing-right-rail-top')).toBe('0px');
+    expect(responseHosts.map((host) => host.style.getPropertyValue('--briefing-right-rail-top'))).toEqual(['40px', '100px']);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
     expect(briefingStylesheet).toMatch(/\.briefing-document__source-tree \{[^}]*padding-inline-end: var\(--briefing-right-rail-width\)/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity \{[^}]*position: relative/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-block-start: var\(--briefing-right-rail-top, 0px\)[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \{[^}]*position: absolute[^}]*width: calc\(var\(--briefing-right-rail-width\) - var\(--briefing-right-action-slot-width\)\)[^}]*padding-inline-start: var\(--space-1\)[^}]*justify-items: start/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \.briefing-directive__response \{[^}]*justify-items: start/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive__compact-controls \{[^}]*grid-auto-columns: 2em[^}]*column-gap: var\(--space-1\)[^}]*white-space: nowrap/s);
@@ -418,6 +481,58 @@ describe('Briefing document panel', () => {
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
+  });
+
+  it('keeps heading, paragraph, list-item, and directive action gutters inside top-aligned owner hover geometry', async () => {
+    const geometrySource = [
+      '# Heading owner',
+      '',
+      'Paragraph owner.',
+      '',
+      '- List owner',
+      '',
+      ':::spec-item{key="decision" type="verdict" required="true"}',
+      'Directive owner',
+      ':::',
+    ].join('\n');
+    const [directive] = parseBriefingDirectives(geometrySource);
+    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Geometry" roundId="round-1" round={round({
+      document: {
+        artifact_version_id: 'artifact-version:geometry',
+        content_hash: createHash('sha256').update(geometrySource).digest('hex'),
+        previous_round_id: null, profile: 'mandible-briefing.v2', source: geometrySource,
+      },
+      items: [{
+        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
+        revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: directive.type, required: true, position: 0, options: [] },
+        effective_response: null, responseVisible: true, directive,
+      }],
+    })} canMutate onRefresh={async () => null} />);
+
+    await screen.findByRole('button', { name: 'Keep' });
+    const sourceTree = screen.getByLabelText('Pinned briefing document').querySelector('.briefing-document__source-tree') as HTMLElement;
+    const owners = [
+      screen.getByRole('heading', { name: 'Heading owner' }),
+      screen.getByText('Paragraph owner.'),
+      screen.getByText('List owner').closest('li') as HTMLElement,
+      screen.getByText('Directive owner').closest('.briefing-directive--owner') as HTMLElement,
+    ];
+    vi.spyOn(sourceTree, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 500, width: 640, height: 500, toJSON: () => ({}) });
+    owners.forEach((owner, index) => vi.spyOn(owner, 'getBoundingClientRect').mockReturnValue({
+      x: index === 2 ? 480 : 448, y: 20 + index * 60, left: index === 2 ? 480 : 448, right: 928,
+      top: 20 + index * 60, bottom: 60 + index * 60, width: index === 2 ? 448 : 480, height: 40, toJSON: () => ({}),
+    }));
+    sourceTree.style.paddingRight = '160px';
+    sourceTree.style.paddingBottom = '0px';
+    fireEvent(globalThis, new Event('resize'));
+
+    owners.forEach((owner) => {
+      const action = owner.querySelector<HTMLElement>('.briefing-markdown__action-rail');
+      expect(action?.style.getPropertyValue('--briefing-right-rail-top')).toBe('0px');
+      expect(owner.style.getPropertyValue('--briefing-right-rail-hover-width')).toBe('calc(8px + 1.3em)');
+    });
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity::after,\s*\.briefing-directive--owner::after \{[^}]*inset-inline-start: 100%[^}]*width: var\(--briefing-right-rail-hover-width, 0px\)[^}]*pointer-events: auto/s);
   });
 
   it('selects only non-interactive directive surfaces, switches one-at-a-time, and dismisses outside', async () => {
@@ -717,8 +832,8 @@ describe('Briefing document panel', () => {
       return { x: 960, y: top, left: 960, right: 1080, top, bottom: top + 24, width: 120, height: 24, toJSON: () => ({}) };
     });
     vi.spyOn(actionHost, 'getBoundingClientRect').mockImplementation(() => {
-      const center = owner.getBoundingClientRect().top + Number.parseFloat(actionHost.style.getPropertyValue('--briefing-right-rail-center') || '0');
-      return { x: 936, y: center - 10, left: 936, right: 956, top: center - 10, bottom: center + 10, width: 20, height: 20, toJSON: () => ({}) };
+      const top = owner.getBoundingClientRect().top + Number.parseFloat(actionHost.style.getPropertyValue('--briefing-right-rail-top') || '0');
+      return { x: 936, y: top, left: 936, right: 956, top, bottom: top + 20, width: 20, height: 20, toJSON: () => ({}) };
     });
     sourceTree.style.paddingRight = '160px';
     sourceTree.style.paddingBottom = '0px';
@@ -727,10 +842,9 @@ describe('Briefing document panel', () => {
     expect(responseHost.style.getPropertyValue('--briefing-right-rail-top')).toBe('40px');
     const responseControlRect = variantControls.getBoundingClientRect();
     const actionRect = actionHost.getBoundingClientRect();
-    const responseControlCenter = responseControlRect.top + responseControlRect.height / 2;
-    const actionCenter = actionRect.top + actionRect.height / 2;
-    expect(responseControlCenter).toBe(actionCenter);
-    expect(responseControlCenter).toBeLessThan(heading.getBoundingClientRect().top);
+    expect(responseControlRect.top).toBe(actionRect.top);
+    expect(responseControlRect.top).toBe(owner.getBoundingClientRect().top);
+    expect(responseControlRect.top).toBeLessThan(heading.getBoundingClientRect().top);
     expect(changes).toEqual([]);
     const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
     const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;

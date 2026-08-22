@@ -4803,7 +4803,22 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "briefing_v3_text_variants",
     statements: [],
   },
+  {
+    version: 150,
+    name: "briefing_round_comparison_base",
+    statements: [],
+  },
 ];
+
+function ensureBriefingComparisonBaseColumn(db: Db): void {
+  if (!tableExists(db, "briefing_rounds")) return;
+  if (!hasColumn(db, "briefing_rounds", "comparison_base_artifact_version_id")) {
+    db.exec(`ALTER TABLE briefing_rounds ADD COLUMN comparison_base_artifact_version_id
+      TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_briefing_rounds_comparison_base
+    ON briefing_rounds(comparison_base_artifact_version_id)`);
+}
 
 function migrateBriefingV3Schema(db: Db): void {
   if (!tableExists(db, "briefing_rounds")) return;
@@ -5353,6 +5368,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         verifySourceBackedPayloadStateSchema(db);
       }
       if (migration.version === 149) migrateBriefingV3Schema(db);
+      if (migration.version === 150) ensureBriefingComparisonBaseColumn(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
@@ -5391,6 +5407,7 @@ export function migrate(db: Db): void {
   const v144 = pending.filter((migration) => migration.version === 144);
   const afterV144 = pending.filter((migration) => migration.version > 144 && migration.version < 149);
   const v149 = pending.filter((migration) => migration.version === 149);
+  const afterV149 = pending.filter((migration) => migration.version > 149);
   applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
@@ -5685,6 +5702,7 @@ export function migrate(db: Db): void {
     finally { db.pragma("foreign_keys = ON"); }
     assertScopedForeignKeys(db, BRIEFING_SCHEMA_TABLES, "migration 149 verification");
   }
+  applySchemaMigrations(db, afterV149);
 
   // v133 was exercised by development daemons before release, under its
   // pre-integration number. Converge those head-version databases too: remove
