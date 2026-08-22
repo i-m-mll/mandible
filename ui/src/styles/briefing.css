@@ -289,13 +289,12 @@
 
 .briefing-detail__footer {
   display: block;
-  padding: var(--space-3) var(--space-5);
+  padding: 0;
   border-top: 1px solid var(--border-faint);
 }
 
 .briefing-footer-content {
   display: grid;
-  gap: var(--space-3);
   width: 100%;
 }
 
@@ -303,6 +302,7 @@
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
 }
 
 .briefing-copy-result {
@@ -326,20 +326,21 @@
 }
 
 .briefing-submission-shelf {
+  width: 100%;
   border-top: 1px solid var(--border-faint);
   color: var(--text-muted);
 }
 
 .briefing-submission-shelf > summary {
-  padding-block: var(--space-2) 0;
+  padding: var(--space-2) var(--space-5);
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  list-style-position: inside;
 }
 
 .briefing-submission-shelf__body {
   max-height: 12rem;
-  margin-top: var(--space-2);
   overflow: auto;
 }
 
@@ -356,8 +357,7 @@
   text-align: left;
 }
 
-.briefing-submission-shelf th button,
-.briefing-submission-shelf__select {
+.briefing-submission-shelf th button {
   padding: 0;
   border: 0;
   background: transparent;
@@ -370,9 +370,16 @@
   font-weight: 600;
 }
 
-.briefing-submission-shelf__select:hover,
-.briefing-submission-shelf__select:focus-visible {
+.briefing-submission-shelf tbody tr {
+  cursor: pointer;
+}
+
+.briefing-submission-shelf tbody tr:hover,
+.briefing-submission-shelf tbody tr:focus-visible {
+  background: var(--surface-card);
   color: var(--text-primary);
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
 }
 
 .briefing-submission-shelf__row--selected {
@@ -382,20 +389,14 @@
 
 .briefing-submission-shelf__empty {
   margin: 0;
-  padding: var(--space-2) 0;
+  padding: var(--space-2) var(--space-5);
 }
 
-.briefing-submission-overlay-notice {
+.briefing-clear-confirmation__actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-faint);
-  border-radius: var(--radius-sm);
-  background: var(--surface-card);
-  color: var(--text-muted);
-  font-size: 12px;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .briefing-document,
