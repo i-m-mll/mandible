@@ -89,6 +89,16 @@ function annotationKindLabel(kind: BriefingAnnotation['annotation_kind']): strin
   return kind === 'comment' ? 'Comment' : 'Suggested replacement';
 }
 
+function annotationActor(annotation: BriefingAnnotation): string {
+  if (annotation.presentation?.source === 'current_draft') return 'Current draft';
+  return annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug || 'Saved annotation';
+}
+
+function annotationTimestamp(value: number): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+}
+
 function excerpt(value: string, limit = 140): string {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
@@ -138,7 +148,6 @@ function usesCompactResponseRail(type: BriefingDirectiveItem['revision']['respon
 
 function renderSourceMappedMarkdown(
   model: BriefingMarkdownModel,
-  annotations: BriefingAnnotation[],
   changedEntityIndexes: readonly number[] = [],
 ): string {
   const document = new DOMParser().parseFromString(renderBriefingProse(model.markdown), 'text/html');
@@ -169,12 +178,6 @@ function renderSourceMappedMarkdown(
       element.setAttribute('aria-label', `Changed ${entity.kind}: ${entity.label}`);
     }
     actionHost(document, element, 'briefingEntityAction', entityIndex);
-    if (annotations.some((annotation) => annotation.start_offset < entity.end && annotation.end_offset > entity.start)) {
-      const annotationHost = document.createElement('div');
-      annotationHost.dataset.briefingEntityAnnotations = String(entityIndex);
-      if (element.tagName === 'LI') element.append(annotationHost);
-      else element.after(annotationHost);
-    }
   });
 
   model.directives.forEach((directive, directiveIndex) => {
@@ -381,8 +384,8 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     ? changedBriefingEntityIndexes(markdownModel, comparisonMarkdownModel)
     : [], [comparisonMarkdownModel, markdownModel]);
   const renderedMarkdown = useMemo(() => markdownModel
-    ? renderSourceMappedMarkdown(markdownModel, annotations, changedEntityIndexes)
-    : '', [annotations, changedEntityIndexes, markdownModel]);
+    ? renderSourceMappedMarkdown(markdownModel, changedEntityIndexes)
+    : '', [changedEntityIndexes, markdownModel]);
   useEffect(() => { setCurrentChangedIndex(0); }, [documentKey, changedEntityIndexes.length]);
   useLayoutEffect(() => {
     if (renderedMarkdown) setPortalRevision((revision) => revision + 1);
@@ -460,39 +463,24 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     ))?.quote,
   });
 
-  const openDirectiveComment = (itemId: string) => {
-    const item = round.items.find((candidate) => candidate.id === itemId);
-    const directive = markdownModel?.directives.find((candidate) => candidate.itemId === itemId);
-    if (!item || !directive || source === null) return;
-    openEditor({ annotation: null, directiveItemId: itemId, start: directive.start, end: directive.end, quote: directive.quote });
-  };
+  const annotationsForRange = (start: number, end: number) => annotations
+    .filter((annotation) => annotation.start_offset < end && annotation.end_offset > start)
+    .sort((left, right) => right.created_at - left.created_at
+      || right.annotation_event_id.localeCompare(left.annotation_event_id));
 
-  const openEntityComment = (entityIndex: number) => {
-    const entity = markdownModel?.entities[entityIndex];
-    if (!entity || source === null) return;
-    if (entity.kind === 'heading' && entity.sectionEnd) {
-      const rawQuote = source.slice(entity.start, entity.sectionEnd);
-      const quote = rawQuote.trim();
-      const start = entity.start + rawQuote.indexOf(quote);
-      openEditor({ annotation: null, sectionHeading: entity.label, start, end: start + quote.length, quote });
-      return;
-    }
-    openEditor({ annotation: null, start: entity.start, end: entity.end, quote: entity.quote });
-  };
-
-  const inlineAnnotations = (start: number, end: number) => {
-    const matches = annotations.filter((annotation) => annotation.start_offset < end && annotation.end_offset > start);
-    return matches.length > 0 ? (
-      <div className="briefing-document__inline-annotations" aria-label="Annotations for this passage">
-        {matches.map((annotation) => (
-          <button type="button" key={annotation.annotation_event_id} onClick={() => openExisting(annotation)}>
-            <strong>“{excerpt(annotation.quote)}”</strong>
-            <span>{annotationKindLabel(annotation.annotation_kind)}{annotation.body ? ` · ${excerpt(annotation.body, 80)}` : ''}</span>
-          </button>
-        ))}
-      </div>
-    ) : null;
-  };
+  const annotationAction = (
+    label: string,
+    title: string,
+    nextEditor: AnnotationEditor,
+    matches: BriefingAnnotation[],
+  ) => (
+    <span className={`briefing-annotation-action${matches.length > 0 ? ' briefing-annotation-action--populated' : ''}`}>
+      <ContextualAction aria-label={label} title={matches.length > 0 ? `${title} · ${matches.length}` : title}
+        aria-expanded={editor?.start === nextEditor.start && editor?.end === nextEditor.end}
+        disabled={!canInteract && matches.length === 0} onClick={() => openEditor(nextEditor)}><CommentIcon /></ContextualAction>
+      {matches.length > 0 ? <span className="briefing-annotation-action__count" aria-hidden="true">{matches.length}</span> : null}
+    </span>
+  );
 
   const responseControls = (item: BriefingDirectiveItem, current: BriefingResponseValue | null, promptId: string) => {
     const type = item.revision.response_type;
@@ -603,7 +591,6 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (source === null || documentIntegrityError || !markdownModel) return null;
     void portalRevision;
     const entityHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-entity-action]') ?? [];
-    const entityAnnotationHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-entity-annotations]') ?? [];
     const directiveActionHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-action]') ?? [];
     const directiveResponseHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-response]') ?? [];
     const navigateChanged = (delta: number) => {
@@ -642,15 +629,18 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         <div ref={renderedRef} className="briefing-document__source-tree briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderedMarkdown }} />
         {markdownModel.entities.map((entity, index) => {
           const host = Array.from(entityHosts).find((candidate) => candidate.dataset.briefingEntityAction === String(index));
-          const annotationHost = Array.from(entityAnnotationHosts).find((candidate) => candidate.dataset.briefingEntityAnnotations === String(index));
           const heading = entity.kind === 'heading';
-          return [host ? createPortal(
-            <ContextualAction aria-label={heading ? `Comment on section ${entity.label}` : `Comment on ${entity.kind}: ${entity.label}`}
-              title={heading ? 'Comment on whole section' : 'Comment on this Markdown block'}
-              aria-expanded={editor?.start === entity.start}
-              disabled={!canInteract} onClick={() => openEntityComment(index)}><CommentIcon /></ContextualAction>,
-            host,
-          ) : null, annotationHost ? createPortal(inlineAnnotations(entity.start, entity.end), annotationHost) : null];
+          const rawQuote = heading && entity.sectionEnd ? source.slice(entity.start, entity.sectionEnd) : entity.quote;
+          const quote = rawQuote.trim();
+          const start = heading && entity.sectionEnd ? entity.start + rawQuote.indexOf(quote) : entity.start;
+          const end = heading && entity.sectionEnd ? start + quote.length : entity.end;
+          const matches = annotationsForRange(start, end);
+          return host ? createPortal(annotationAction(
+            heading ? `Comment on section ${entity.label}` : `Comment on ${entity.kind}: ${entity.label}`,
+            heading ? 'Comment on whole section' : 'Comment on this Markdown block',
+            { annotation: null, ...(heading ? { sectionHeading: entity.label } : {}), start, end, quote },
+            matches,
+          ), host) : null;
         })}
         {directiveItems.map((item) => {
           const directiveIndex = markdownModel.directives.findIndex((directive) => directive.itemId === item.id);
@@ -658,15 +648,18 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const responseHost = Array.from(directiveResponseHosts).find((candidate) => candidate.dataset.briefingDirectiveResponse === String(directiveIndex));
           const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
           const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
+          const matches = annotationsForRange(item.directive!.start_offset, item.directive!.end_offset);
           return [
             actionHost ? createPortal(
-              <ContextualAction aria-label="Comment" title="Comment" aria-expanded={editor?.directiveItemId === item.id}
-                disabled={!canInteract} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>, actionHost,
+              annotationAction('Comment', 'Comment', {
+                annotation: null,
+                directiveItemId: item.id,
+                start: markdownModel.directives[directiveIndex].start,
+                end: markdownModel.directives[directiveIndex].end,
+                quote: markdownModel.directives[directiveIndex].quote,
+              }, matches), actionHost,
             ) : null,
-            responseHost ? createPortal(<>
-              {inlineAnnotations(item.directive!.start_offset, item.directive!.end_offset)}
-              {responseControls(item, current, promptId)}
-            </>, responseHost) : null,
+            responseHost ? createPortal(responseControls(item, current, promptId), responseHost) : null,
           ];
         })}
       </div>
@@ -731,6 +724,8 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     );
   };
 
+  const editorAnnotations = editor ? annotationsForRange(editor.start, editor.end) : [];
+
   return (
     <section ref={contentRef} className="briefing-document__content" aria-label="Briefing document">
       {currentContentError ? <p className="briefing-error" role="alert">{currentContentError}</p> : null}
@@ -772,11 +767,35 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
             <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canInteract || busy} />
           </label>
           <div className="briefing-document__popover-actions">
-            {editor.annotation && canInteract ? (
+            {editor.annotation?.presentation?.source !== 'annotation_set' && editor.annotation && canInteract ? (
               <button type="button" className="btn btn--ghost btn--sm" onClick={() => void remove(editor.annotation!)} disabled={busy}>Delete</button>
             ) : null}
             {canInteract ? <button type="button" className="btn btn--primary btn--sm" onClick={() => void save()} disabled={busy}>Save</button> : null}
           </div>
+          {editorAnnotations.length > 0 ? (
+            <section className="briefing-annotation-history" aria-label="Comment history">
+              <h3>{editorAnnotations.length} comment{editorAnnotations.length === 1 ? '' : 's'}</h3>
+              <ol>
+                {editorAnnotations.map((annotation) => {
+                  const editable = canInteract && annotation.presentation?.source !== 'annotation_set';
+                  const content = <>
+                    <span className="briefing-annotation-history__meta">
+                      <strong>{annotationActor(annotation)}</strong>
+                      {annotationTimestamp(annotation.created_at) ? <time>{annotationTimestamp(annotation.created_at)}</time> : null}
+                    </span>
+                    <span>{annotationKindLabel(annotation.annotation_kind)}{annotation.body ? ` · ${excerpt(annotation.body, 120)}` : ''}</span>
+                  </>;
+                  return (
+                    <li key={annotation.annotation_event_id} className={annotation.presentation?.source === 'current_draft'
+                      ? 'briefing-annotation-history__entry briefing-annotation-history__entry--draft'
+                      : 'briefing-annotation-history__entry'}>
+                      {editable ? <button type="button" onClick={() => openExisting(annotation)}>{content}</button> : <div>{content}</div>}
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          ) : null}
           </>
         ) : <></>}
       </DetailPaneModal>

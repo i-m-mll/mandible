@@ -13,6 +13,7 @@ import {
   publishBriefingRun,
   readBriefing,
   submitBriefingRound,
+  updateBriefingTitle,
 } from "../feedback/briefings.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
@@ -296,6 +297,25 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       handleError(res, error);
     }
   }, { fileRpc: "allow" });
+
+  server.patch("/api/briefings/:briefingId", (req, res) => {
+    try {
+      const actor = activeHuman(db, req);
+      if (!actor.operator) {
+        throw new ClientAuthzError(403, "briefing_title_operator_required", "Briefing title updates require the configured human operator.");
+      }
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "title");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      const result = updateBriefingTitle(db, req.params.briefingId, requestBody.title);
+      if (result.changed) broadcast(BRIEFING_EVENTS.titleUpdated, { briefing_id: result.briefing_id });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/answers", (req, res) => {
     try {

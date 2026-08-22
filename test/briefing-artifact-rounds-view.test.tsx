@@ -210,6 +210,33 @@ describe('artifact-backed Briefing rounds', () => {
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
+  it('unions one selected immutable annotation set with only current unsubmitted annotations', () => {
+    const payload = detail(ROUND_ONE) as any;
+    payload.selected_round.latest_frozen_membership = {
+      answer_event_ids: [], annotation_event_ids: ['current-frozen'],
+    };
+    payload.selected_round.annotations = [
+      { annotation_event_id: 'current-frozen', annotation_kind: 'comment', start_offset: 0, end_offset: 5,
+        quote: 'First', body: 'Already submitted current annotation.', replacement_text: null, created_at: 10 },
+      { annotation_event_id: 'current-draft', annotation_kind: 'comment', start_offset: 0, end_offset: 5,
+        quote: 'First', body: 'Unsubmitted current annotation.', replacement_text: null, created_at: 30 },
+    ];
+    payload.selected_round.selected_submission_overlay = {
+      id: 'selected-set', ordinal: 1, supersedes_submission_id: null, actor_user_id: 'reviewer-id',
+      actor: { slug: 'reviewer', display_name: 'Reviewer' }, created_at: 20, answer_count: 0, annotation_count: 1,
+      answers: [], annotations: [{ annotation_event_id: 'immutable-selected', annotation_kind: 'comment',
+        start_offset: 0, end_offset: 5, quote: 'First', body: 'Selected immutable annotation.',
+        replacement_text: null, created_at: 20 }],
+    };
+
+    const projection = normalizeBriefingProjection(payload);
+    expect(projection.annotations?.map((annotation) => [annotation.annotation_event_id,
+      annotation.presentation?.source, annotation.presentation?.actor?.display_name ?? null])).toEqual([
+      ['immutable-selected', 'annotation_set', 'Reviewer'],
+      ['current-draft', 'current_draft', null],
+    ]);
+  });
+
   it('keeps the annotation-set shelf folded, sorts rows, and clears a keyboard-selected frozen overlay', async () => {
     const older = {
       id: 'submission-old', ordinal: 1, supersedes_submission_id: null,
@@ -803,7 +830,9 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Copied-preview note.' } });
     fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts.some((post) => post.url.endsWith('/annotations'))).toBe(true));
-    await screen.findByRole('button', { name: /Keep this.*Comment.*Copied-preview note/ });
+    fireEvent.click(await screen.findByTitle('Comment · 1'));
+    expect(within(screen.getByRole('dialog')).getByText(/Copied-preview note/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
 
     const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -904,29 +933,41 @@ describe('artifact-backed Briefing rounds', () => {
       const dialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-      expect((await screen.findAllByRole('button', { name: /Annotation-only review note/ })).length).toBeGreaterThan(0);
+      const populatedPolicyAction = await screen.findByRole('button', { name: 'Comment on section Policy' });
+      await waitFor(() => expect(populatedPolicyAction.getAttribute('title')).toContain('· 1'));
+      fireEvent.click(populatedPolicyAction);
+      expect(within(screen.getByRole('dialog')).getByText(/Annotation-only review note/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Comment on section Policy' }));
       const secondDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(secondDialog).getByLabelText('Comment'), { target: { value: 'Second pending review note.' } });
       fireEvent.click(within(secondDialog).getByRole('button', { name: 'Save' }));
-      expect((await screen.findAllByRole('button', { name: /Second pending review note/ })).length).toBeGreaterThan(0);
+      const twicePopulatedPolicyAction = await screen.findByRole('button', { name: 'Comment on section Policy' });
+      await waitFor(() => expect(twicePopulatedPolicyAction.getAttribute('title')).toContain('· 2'));
+      fireEvent.click(twicePopulatedPolicyAction);
+      expect(within(screen.getByRole('dialog')).getByText(/Second pending review note/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
       fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
       const clearDialog = await screen.findByRole('dialog', { name: 'Clear 2 annotations?' });
       expect(within(clearDialog).getByText('This will permanently delete exactly 2 pending annotations. Submitted annotation sets remain unchanged.')).toBeTruthy();
       fireEvent.click(within(clearDialog).getByRole('button', { name: 'Cancel' }));
       expect(screen.queryByRole('dialog', { name: 'Clear 2 annotations?' })).toBeNull();
-      expect(screen.getAllByRole('button', { name: /Second pending review note/ }).length).toBeGreaterThan(0);
-      expect(screen.getAllByRole('button', { name: /Annotation-only review note/ }).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole('button', { name: 'Comment on section Policy' }));
+      expect(within(screen.getByRole('dialog')).getByText(/Second pending review note/)).toBeTruthy();
+      expect(within(screen.getByRole('dialog')).getByText(/Annotation-only review note/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
       fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
       fireEvent.click(within(await screen.findByRole('dialog', { name: 'Clear 2 annotations?' })).getByRole('button', { name: 'Delete 2 annotations' }));
-      await waitFor(() => expect(screen.queryByRole('button', { name: /pending review note|Annotation-only review note/ })).toBeNull());
+      await waitFor(() => expect(screen.queryByTitle(/Comment on whole section ·/)).toBeNull());
       expect(submit.getAttribute('aria-disabled')).toBe('true');
       fireEvent.click(await screen.findByRole('button', { name: 'Comment on section Policy' }));
       const replacementDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(replacementDialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
       fireEvent.click(within(replacementDialog).getByRole('button', { name: 'Save' }));
-      await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
-      fireEvent.click(submit);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
+      const currentSubmit = screen.getByRole('button', { name: 'Submit' });
+      await waitFor(() => expect(currentSubmit.getAttribute('aria-disabled')).toBe('false'));
+      fireEvent.click(currentSubmit);
       const copyResult = await screen.findByRole('button', { name: 'Copy result ID' });
       expect(copyResult.classList.contains('btn--success')).toBe(true);
       expect(copyResult.nextElementSibling).toBe(screen.getByRole('button', { name: 'Submit' }));
@@ -1051,7 +1092,9 @@ describe('artifact-backed Briefing rounds', () => {
       const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Persisted through the real route.' } });
       fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
-      await screen.findByRole('button', { name: /Keep this.*Persisted through the real route/ });
+      fireEvent.click(await screen.findByTitle('Comment · 1'));
+      expect(within(screen.getByRole('dialog')).getByText(/Persisted through the real route/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
 
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -1177,7 +1220,9 @@ describe('artifact-backed Briefing rounds', () => {
       fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Final IAB acceptance annotation.' } });
       fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
-      await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
+      fireEvent.click(await screen.findByTitle('Comment · 1'));
+      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
 
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -1224,7 +1269,8 @@ describe('artifact-backed Briefing rounds', () => {
       view.unmount();
       invalidateApiGetCache();
       const reloadedView = render(shell());
-      await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
+      fireEvent.click(await screen.findByTitle('Comment · 1'));
+      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
       expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true);
       expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);

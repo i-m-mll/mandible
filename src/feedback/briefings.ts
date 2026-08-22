@@ -64,6 +64,13 @@ function text(value: unknown, label: string): string {
   return value.trim();
 }
 
+/** Briefing titles name durable material; transient review status belongs in metadata, not identity chrome. */
+export function normalizeBriefingTitle(value: unknown, label = "title"): string {
+  const normalized = text(value, label).replace(/\s+[—–-]\s*proposed update\s*$/iu, "").trim();
+  if (!normalized) throw new BriefingStoreError(`${label} must contain a durable name`);
+  return normalized;
+}
+
 function exactNonblankText(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new BriefingStoreError(`${label} must be a nonblank string`);
   return value;
@@ -174,7 +181,7 @@ export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
   return {
     schema: BRIEFING_RUN_SCHEMA,
     briefing_key: text(body.briefing_key, "briefing_key"),
-    title: text(body.title, "title"),
+    title: normalizeBriefingTitle(body.title),
     task_identity: text(body.task_identity, "task_identity"),
     run_id: text(body.run_id, "run_id"),
     run_key: text(body.run_key, "run_key"),
@@ -363,6 +370,7 @@ export function publishBriefingFromArtifactVersion(
   db: Db, request: ExistingArtifactBriefingRequest, now = Date.now(),
 ): BriefingRunReceipt {
   if (request.profile !== BRIEFING_PROFILE_V3) throw new BriefingStoreError("existing artifact publication requires mandible-briefing.v3");
+  const title = normalizeBriefingTitle(request.title);
   const versionId = resolveExactArtifactVersion(db, request.artifact_version_ref, "artifact_version_ref");
   const comparisonBaseVersionId = request.comparison_base_artifact_version_ref
     ? resolveExactArtifactVersion(db, request.comparison_base_artifact_version_ref, "comparison_base_artifact_version_ref")
@@ -382,7 +390,7 @@ export function publishBriefingFromArtifactVersion(
     if (!briefing) {
       const id = randomUUID();
       db.prepare(`INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
-        VALUES (?, ?, ?, NULL, 0, ?, ?)`).run(id, request.briefing_key, request.title, now, now);
+        VALUES (?, ?, ?, NULL, 0, ?, ?)`).run(id, request.briefing_key, title, now, now);
       briefing = { id, latest_round_id: null, round_count: 0 };
     }
     for (const responder of request.responder_user_ids) db.prepare(
@@ -424,7 +432,7 @@ export function publishBriefingFromArtifactVersion(
     const verified = verifyBriefingRoundBinding(db, roundId);
     if (!verified.valid) throw new BriefingStoreError(`published round binding is invalid: ${verified.reason}`, 409, "invalid_round_binding");
     db.prepare("UPDATE briefings SET title = ?, latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?")
-      .run(request.title, roundId, now, briefing.id);
+      .run(title, roundId, now, briefing.id);
     return { receipt_id: roundId, briefing_id: briefing.id, run_id: `artifact:${versionId}`,
       round_id: roundId, artifact_version_id: versionId, quiet: false };
   }).immediate();
@@ -442,6 +450,17 @@ export function listBriefings(db: Db, viewer: { userId: string; operator: boolea
       WHERE ? = 1 OR EXISTS (SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?)
       ORDER BY b.updated_at DESC, b.id`,
   ).all(viewer.operator ? 1 : 0, viewer.userId);
+}
+
+export function updateBriefingTitle(db: Db, briefingId: string, title: unknown, now = Date.now()) {
+  const normalized = normalizeBriefingTitle(title);
+  const briefing = db.prepare("SELECT id, title FROM briefings WHERE id = ?")
+    .get(briefingId) as { id: string; title: string } | undefined;
+  if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
+  if (briefing.title !== normalized) {
+    db.prepare("UPDATE briefings SET title = ?, updated_at = ? WHERE id = ?").run(normalized, now, briefing.id);
+  }
+  return { briefing_id: briefing.id, title: normalized, changed: briefing.title !== normalized };
 }
 
 function pinnedRoundDocument(db: Db, artifactVersionId: string): { source: string; content_hash: string } {

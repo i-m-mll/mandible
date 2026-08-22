@@ -1087,6 +1087,7 @@ export const BRIEFING_EVENTS = Object.freeze({
   answered: "briefing:answered",
   annotated: "briefing:annotated",
   submitted: "briefing:submitted",
+  titleUpdated: "briefing:title-updated",
 } as const);
 export type BriefingEvent = (typeof BRIEFING_EVENTS)[keyof typeof BRIEFING_EVENTS];
 export const BRIEFING_EVENT_VALUES: readonly BriefingEvent[] = Object.freeze(Object.values(BRIEFING_EVENTS));
