@@ -16,7 +16,7 @@ import {
 } from "../feedback/briefings.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
-import { getUserById } from "../users/store.js";
+import { getOperator, getUserById } from "../users/store.js";
 import { publisherMayIngest } from "../briefing.js";
 import { BRIEFING_EVENTS } from "../contracts.js";
 import {
@@ -43,6 +43,33 @@ function activeHuman(db: Db, req: RequestLike) {
     throw new ClientAuthzError(403, "human_responder_required", "Briefing responses require an active human credential.");
   }
   return { identity, user, operator: isOperator(db, identity) };
+}
+
+function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
+  publisherUserId: string;
+  responderUserId: string;
+} {
+  const identity = requireIdentity(req);
+  const caller = getUserById(db, identity.user_id);
+  if (caller?.status === "active" && caller.kind === "human") {
+    return { publisherUserId: caller.id, responderUserId: caller.id };
+  }
+
+  const publisher = requireDurableAgentPublisher(db, req, {
+    credentialCode: "briefing_publisher_credential_required",
+    credentialMessage: "Exact-version Briefing publication requires a durable API token, not a session credential.",
+    agentCode: "briefing_publisher_agent_required",
+    agentMessage: "Exact-version Briefing publication requires an active agent identity.",
+  });
+  const operator = getOperator(db);
+  if (!operator || operator.status !== "active" || operator.kind !== "human") {
+    throw new ClientAuthzError(
+      403,
+      "briefing_publication_operator_required",
+      "Exact-version Briefing publication by an agent requires a configured active human operator responder.",
+    );
+  }
+  return { publisherUserId: publisher.userId, responderUserId: operator.id };
 }
 
 function body(req: RequestLike): Record<string, unknown> {
@@ -128,7 +155,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.post("/api/briefings", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
+      const publication = publicationPrincipalAndResponder(db, req);
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
         .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref" && key !== "title");
@@ -153,7 +180,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         artifact_version_ref: artifactVersionRef,
         comparison_base_artifact_version_ref: comparisonBaseArtifactVersionRef,
         profile: "mandible-briefing.v3",
-        responder_user_ids: [actor.user.id],
+        responder_user_ids: [publication.responderUserId],
       });
       broadcast(BRIEFING_EVENTS.created, { briefing_id: receipt.briefing_id });
       broadcast(BRIEFING_EVENTS.roundPublished, {
