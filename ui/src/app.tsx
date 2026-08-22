@@ -1031,6 +1031,14 @@ function App(): JSX.Element {
   }, [instanceInfo?.operational_mutations, refreshRailOrder]);
 
   useEffect(() => {
+    const reconcileVisibleRailOrder = () => {
+      if (document.visibilityState === 'visible') void refreshRailOrder();
+    };
+    document.addEventListener('visibilitychange', reconcileVisibleRailOrder);
+    return () => document.removeEventListener('visibilitychange', reconcileVisibleRailOrder);
+  }, [refreshRailOrder]);
+
+  useEffect(() => {
     // Start the visible view request before the small global aggregate.
     void loadVisibleRouteData(route.tab);
     void getSettings()
@@ -1439,10 +1447,11 @@ function App(): JSX.Element {
       }
       void loadVisibleRouteData(route.tab);
       void loadDashboardBadges();
+      void refreshRailOrder();
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
+  }, [route.tab, loadDashboardBadges, loadVisibleRouteData, refreshRailOrder]);
 
   // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
   // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off

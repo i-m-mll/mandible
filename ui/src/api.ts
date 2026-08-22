@@ -1729,7 +1729,12 @@ export async function spawnIssueAgent(
 export async function getSettings(): Promise<Record<string, string>> {
   const payload = await cachedApiGetJson<unknown>('/api/settings');
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    return payload as Record<string, string>;
+    const settings = { ...payload } as Record<string, string>;
+    // app_rail_order moved to the authenticated user-settings contract. Do not
+    // admit the legacy global row into app state, where stale browser-cache
+    // hydration could reintroduce a second authority for writable instances.
+    delete settings.app_rail_order;
+    return settings;
   }
   return {};
 }
