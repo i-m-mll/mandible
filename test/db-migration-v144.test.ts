@@ -173,7 +173,7 @@ describe("migration 144 typed Briefing cutover", () => {
 
       migrate(db);
 
-      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "149" });
+      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "150" });
       const columns = (db.prepare("PRAGMA table_info(briefing_directive_instances)").all() as Array<{ name: string }>)
         .map((column) => column.name);
       expect(columns).toEqual(expect.arrayContaining(["briefing_id", "artifact_version_id"]));

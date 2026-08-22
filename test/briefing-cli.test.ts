@@ -23,6 +23,7 @@ function runCreate(): Promise<{ status: number | null; stdout: string; requests:
     expect(request.path).toBe("/api/briefings");
     expect(request.body).toEqual({
       artifact_version_ref: "artifact-version:4c62bc989c2b7a6f48583eb9eca871e8",
+      comparison_base_artifact_version_ref: "artifact-version:11111111111111111111111111111111",
       title: "AGENTS review",
     });
     return { status: 201, body: {
@@ -32,7 +33,7 @@ function runCreate(): Promise<{ status: number | null; stdout: string; requests:
   });
   return new Promise((resolve) => {
     const child = spawn(CLI, ["briefing", "create", "artifact-version:4c62bc989c2b7a6f48583eb9eca871e8",
-      "--title", "AGENTS review", "--json"], {
+      "--title", "AGENTS review", "--comparison-base", "artifact-version:11111111111111111111111111111111", "--json"], {
       env: { ...process.env, MANDIBLE_BASE: `file://${spoolDir}`, MANDIBLE_FILE_RPC_TIMEOUT: "5",
         MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" },
     });
@@ -53,6 +54,10 @@ describe("briefing CLI", () => {
     const logical = runOffline(["briefing", "create", "artifact:logical", "--title", "Review"]);
     expect(logical.status).toBe(2);
     expect(logical.stderr).toContain("exact artifact-version");
+    const logicalBase = runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
+      "--comparison-base", "artifact:logical"]);
+    expect(logicalBase.status).toBe(2);
+    expect(logicalBase.stderr).toContain("--comparison-base requires one exact artifact-version");
   });
 
   it("posts the exact version and title through the supported API", async () => {

@@ -14,6 +14,7 @@ export type BriefingMarkdownEntity = {
   label: string;
   displayStart: number;
   displayEnd: number;
+  headingAncestry: string[];
   sectionEnd?: number;
 };
 
@@ -106,6 +107,10 @@ function semanticLabel(source: string, node: PositionedNode, kind: BriefingMarkd
   if (kind === 'heading') return nodeText(node).trim() || 'heading';
   const compact = source.replace(/\s+/g, ' ').trim();
   return compact.length > 64 ? `${compact.slice(0, 63)}…` : compact || kind;
+}
+
+export function normalizeBriefingEntityContent(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
 }
 
 function tableRanges(markdown: string): Array<{ start: number; end: number }> {
@@ -208,6 +213,7 @@ export function buildBriefingMarkdownModel(
         label: semanticLabel(range.quote, candidate.node, candidate.kind),
         displayStart: candidate.start,
         displayEnd: candidate.end,
+        headingAncestry: [],
       };
       if (candidate.kind === 'heading') {
         const depth = candidate.node.depth ?? 6;
@@ -219,10 +225,73 @@ export function buildBriefingMarkdownModel(
     })
     .filter((entity): entity is BriefingMarkdownEntity => entity !== null);
 
+  const headingStack: string[] = [];
+  for (const entity of entities) {
+    const candidate = candidates.find((entry) => entry.start === entity.displayStart && entry.end === entity.displayEnd
+      && entry.kind === entity.kind);
+    const depth = candidate?.node.depth ?? 1;
+    entity.headingAncestry = entity.kind === 'heading'
+      ? headingStack.slice(0, Math.max(0, depth - 1))
+      : [...headingStack];
+    if (entity.kind === 'heading') {
+      headingStack.length = Math.max(0, depth - 1);
+      headingStack[depth - 1] = normalizeBriefingEntityContent(entity.label);
+    }
+  }
+
   return {
     markdown: builder.value,
     entities,
     directives,
     blocks: candidates.map((candidate) => ({ kind: candidate.kind, displayStart: candidate.start, displayEnd: candidate.end })),
   };
+}
+
+export type BriefingProposedEntityChange = {
+  proposedIndex: number;
+  classification: 'modified' | 'added';
+};
+
+export function compareBriefingEntities(
+  proposed: BriefingMarkdownModel,
+  base: BriefingMarkdownModel,
+): BriefingProposedEntityChange[] {
+  const key = (entity: BriefingMarkdownEntity) => [
+    entity.kind,
+    entity.headingAncestry.join('\u001f'),
+    normalizeBriefingEntityContent(entity.quote),
+  ].join('\u001e');
+  const counts = (entities: BriefingMarkdownEntity[]) => {
+    const result = new Map<string, number>();
+    for (const entity of entities) result.set(key(entity), (result.get(key(entity)) ?? 0) + 1);
+    return result;
+  };
+  const proposedCounts = counts(proposed.entities);
+  const baseCounts = counts(base.entities);
+  const sectionKey = (entity: BriefingMarkdownEntity) => [entity.kind, ...entity.headingAncestry].join('\u001e');
+  const baseSections = new Map<string, BriefingMarkdownEntity[]>();
+  for (const entity of base.entities) {
+    const section = sectionKey(entity);
+    baseSections.set(section, [...(baseSections.get(section) ?? []), entity]);
+  }
+  const proposedOrdinals = new Map<string, number>();
+  const changes: BriefingProposedEntityChange[] = [];
+  proposed.entities.forEach((entity, proposedIndex) => {
+    const section = sectionKey(entity);
+    const ordinal = proposedOrdinals.get(section) ?? 0;
+    proposedOrdinals.set(section, ordinal + 1);
+    if (proposedCounts.get(key(entity)) === 1 && baseCounts.get(key(entity)) === 1) return;
+    changes.push({
+      proposedIndex,
+      classification: baseSections.get(section)?.[ordinal] ? 'modified' : 'added',
+    });
+  });
+  return changes;
+}
+
+export function changedBriefingEntityIndexes(
+  proposed: BriefingMarkdownModel,
+  base: BriefingMarkdownModel,
+): number[] {
+  return compareBriefingEntities(proposed, base).map((change) => change.proposedIndex);
 }

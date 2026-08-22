@@ -24,9 +24,9 @@ describe("migration v138: durable conversation tags", () => {
 
     migrate(db);
 
-expect(BASELINE_SCHEMA_VERSION).toBe(149);
+expect(BASELINE_SCHEMA_VERSION).toBe(150);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-.toEqual({ value: "149" });
+.toEqual({ value: "150" });
     const columns = db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toContain("tags");
     expect(columns.map((column) => column.name)).not.toContain("label");

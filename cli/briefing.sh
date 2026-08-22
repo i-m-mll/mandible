@@ -14,19 +14,21 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible briefing create <artifact-version-ref> --title <text> [--json]
+  mandible briefing create <artifact-version-ref> --title <text> [--comparison-base <artifact-version-ref>] [--json]
 
 Creates a new logical Briefing whose first round is bound to exactly the named
-artifact version. This command never resolves a logical artifact or series to
-latest and never adds a round to an existing Briefing.
+artifact version. An optional comparison base is also resolved and pinned
+exactly at creation time. This command never resolves a logical artifact or
+series to latest and never adds a round to an existing Briefing.
 EOF
 }
 
 cmd_create() {
-  local artifact_version_ref="" title="" json=0 response payload
+  local artifact_version_ref="" comparison_base="" title="" json=0 response payload
   while (( $# > 0 )); do
     case "$1" in
       --title) [[ $# -ge 2 ]] || die "--title requires a value" 2; title="$2"; shift 2 ;;
+      --comparison-base) [[ $# -ge 2 ]] || die "--comparison-base requires a value" 2; comparison_base="$2"; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$artifact_version_ref" ]] || die "Unexpected argument: $1" 2; artifact_version_ref="$1"; shift ;;
@@ -34,10 +36,13 @@ cmd_create() {
   done
   [[ "$artifact_version_ref" == artifact-version:* ]] \
     || die "create requires one exact artifact-version:<id> ref" 2
+  [[ -z "$comparison_base" || "$comparison_base" == artifact-version:* ]] \
+    || die "--comparison-base requires one exact artifact-version:<id> ref" 2
   [[ -n "${title//[[:space:]]/}" ]] || die "create requires --title <text>" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
-  payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg title "$title" \
-    '{artifact_version_ref:$artifact_version_ref,title:$title}')"
+  payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg comparison_base "$comparison_base" --arg title "$title" \
+    '{artifact_version_ref:$artifact_version_ref,title:$title}
+     + (if $comparison_base == "" then {} else {comparison_base_artifact_version_ref:$comparison_base} end)')"
   response="$(api_send POST "/api/briefings" "$payload")" || die "Failed to create Briefing from exact artifact version." 1
   if (( json )); then
     printf '%s\n' "$response" | jq .

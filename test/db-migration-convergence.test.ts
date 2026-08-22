@@ -56,7 +56,7 @@ describe("migration convergence: renumbered additive column hooks", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "149",
+value: "150",
     });
     expect(columnNames("branches")).toContain("has_upstream");
     expect(columnNames("branches")).toContain("upstream");
@@ -83,7 +83,7 @@ value: "149",
     db.exec("UPDATE meta SET value = '108' WHERE key = 'schema_version';");
     expect(() => migrate(db)).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "149",
+value: "150",
     });
     expect(
       columnNames("branches").filter((name) => name === "has_upstream"),
@@ -108,7 +108,7 @@ value: "149",
       ALTER TABLE branches DROP COLUMN upstream;
     `);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "149",
+value: "150",
     });
     expect(columnNames("work_units")).not.toContain("merge_scan_retired_at");
     expect(columnNames("branches")).not.toContain("upstream");
@@ -117,7 +117,7 @@ value: "149",
 
     // Version is unchanged (already at head) but the missing columns are repaired.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "149",
+value: "150",
     });
     expect(columnNames("work_units")).toContain("merge_scan_retired_at");
     expect(columnNames("branches")).toContain("upstream");

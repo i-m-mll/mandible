@@ -79,7 +79,8 @@ describe("plural Briefing routes", () => {
     fs.writeFileSync(source, "# Version two\n");
     const latestVersion = recordArtifactVersion(db, { source_kind: "local_only", path: source,
       logical_name: "AGENTS.review.md", role: "review-document", media_type: "text/markdown" }, 200);
-    const request = { artifact_version_ref: firstVersion.version.id, title: "AGENTS review" };
+    const request = { artifact_version_ref: latestVersion.version.id,
+      comparison_base_artifact_version_ref: firstVersion.version.id, title: "AGENTS review" };
 
     expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request }))
       .toMatchObject({ status: 401 });
@@ -94,14 +95,15 @@ describe("plural Briefing routes", () => {
       credential: "human" });
     const createdAgain = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
       credential: "human" });
-    expect(created).toMatchObject({ status: 201, body: { artifact_version_id: firstVersion.version.id } });
-    expect(createdAgain).toMatchObject({ status: 201, body: { artifact_version_id: firstVersion.version.id } });
+    expect(created).toMatchObject({ status: 201, body: { artifact_version_id: latestVersion.version.id } });
+    expect(createdAgain).toMatchObject({ status: 201, body: { artifact_version_id: latestVersion.version.id } });
     expect((created.body as { briefing_id: string }).briefing_id)
       .not.toBe((createdAgain.body as { briefing_id: string }).briefing_id);
     expect(firstVersion.version.id).not.toBe(latestVersion.version.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 2 });
-    expect(db.prepare("SELECT DISTINCT artifact_version_id FROM briefing_rounds").all())
-      .toEqual([{ artifact_version_id: firstVersion.version.id }]);
+    expect(db.prepare("SELECT DISTINCT artifact_version_id, comparison_base_artifact_version_id FROM briefing_rounds").all())
+      .toEqual([{ artifact_version_id: latestVersion.version.id,
+        comparison_base_artifact_version_id: firstVersion.version.id }]);
     expect(vi.mocked(broadcast).mock.calls.filter(([event]) => event === "briefing:created")).toHaveLength(2);
   });
 
@@ -112,6 +114,11 @@ describe("plural Briefing routes", () => {
       logical_name: "review.md", role: "review-document", media_type: "text/markdown" });
     expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
       body: { artifact_version_ref: artifact.artifact.id, title: "Review" } })).toMatchObject({
+      status: 404, body: { code: "artifact_version_not_found" },
+    });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: artifact.version.id,
+        comparison_base_artifact_version_ref: artifact.artifact.id, title: "Review" } })).toMatchObject({
       status: 404, body: { code: "artifact_version_not_found" },
     });
   });

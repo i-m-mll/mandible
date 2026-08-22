@@ -20,6 +20,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
     ordinal INTEGER NOT NULL CHECK(ordinal > 0),
     artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    comparison_base_artifact_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,
     previous_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
     profile TEXT NOT NULL CHECK(profile IN ('mandible-briefing.v2','mandible-briefing.v3')),
     binding_digest TEXT NOT NULL CHECK(length(binding_digest) = 64),
@@ -34,6 +35,8 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     ON briefing_rounds(briefing_id, ordinal DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_rounds_artifact_version
     ON briefing_rounds(artifact_version_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_rounds_comparison_base
+    ON briefing_rounds(comparison_base_artifact_version_id)`,
   `CREATE TABLE IF NOT EXISTS briefing_directive_definitions (
     id TEXT PRIMARY KEY,
     artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BriefingResponseValue, BriefingRoundProjection } from '../ui/src/api';
 
 import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
-import { buildBriefingMarkdownModel } from '../ui/src/views/feedback/briefingMarkdownModel';
+import { buildBriefingMarkdownModel, changedBriefingEntityIndexes, compareBriefingEntities } from '../ui/src/views/feedback/briefingMarkdownModel';
 import { parseBriefingDirectives } from '../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
@@ -224,6 +224,63 @@ describe('Briefing document panel', () => {
     expect(model.entities.filter((entity) => entity.kind === 'paragraph')).toHaveLength(1);
     expect(model.entities.some((entity) => entity.quote.includes('Typed list item'))).toBe(false);
     expect(model.markdown).not.toContain(':::spec-item');
+  });
+
+  it('marks one modified proposed entity, preserves unchanged entities, and treats duplicate ambiguity as changed', () => {
+    const base = buildBriefingMarkdownModel('# Policy\n\nOriginal wording.\n\nUnchanged.\n', [], {});
+    const proposed = buildBriefingMarkdownModel('# Policy\n\nRevised wording.\n\nUnchanged.\n', [], {});
+    expect(changedBriefingEntityIndexes(proposed, base)).toEqual([1]);
+    expect(compareBriefingEntities(proposed, base)).toEqual([{ proposedIndex: 1, classification: 'modified' }]);
+    expect(changedBriefingEntityIndexes(base, base)).toEqual([]);
+    const added = buildBriefingMarkdownModel('# Policy\n\nOriginal wording.\n\nUnchanged.\n\nAdded.\n', [], {});
+    expect(compareBriefingEntities(added, base)).toEqual([{ proposedIndex: 3, classification: 'added' }]);
+
+    const ambiguousBase = buildBriefingMarkdownModel('# Policy\n\nSame.\n\nSame.\n', [], {});
+    const ambiguousProposed = buildBriefingMarkdownModel('# Policy\n\nSame.\n\nSame.\n', [], {});
+    expect(changedBriefingEntityIndexes(ambiguousProposed, ambiguousBase)).toEqual([1, 2]);
+
+    const sectionBase = buildBriefingMarkdownModel('## One\n\nShared.\n\n## Two\n\nOther.\n', [], {});
+    const sectionProposed = buildBriefingMarkdownModel('## One\n\nShared.\n\n## Two\n\nShared.\n', [], {});
+    expect(changedBriefingEntityIndexes(sectionProposed, sectionBase)).toEqual([3]);
+  });
+
+  it('renders directive-free comparison changes with keyboard-operable compact navigation and no-base parity', async () => {
+    const baseSource = '# Policy\n\nOriginal wording.\n\nUnchanged.\n';
+    const proposedSource = '# Policy\n\nRevised wording.\n\nUnchanged.\n';
+    const comparisonRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:proposed',
+        content_hash: createHash('sha256').update(proposedSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v3',
+        source: proposedSource,
+        comparison_base: {
+          artifact_version_id: 'artifact-version:base',
+          content_hash: createHash('sha256').update(baseSource).digest('hex'),
+          source: baseSource,
+        },
+      },
+      items: [],
+    });
+    const rendered = render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
+      round={comparisonRound} canMutate onRefresh={async () => null} />);
+    expect(await screen.findByText('1 changed')).toBeTruthy();
+    const changed = rendered.container.querySelector<HTMLElement>('.briefing-markdown__entity--changed');
+    expect(changed?.getAttribute('aria-label')).toContain('Changed paragraph: Revised wording.');
+    const next = screen.getByRole('button', { name: 'Next changed entity' });
+    expect(next.classList.contains('contextual-action--compact')).toBe(true);
+    next.focus();
+    fireEvent.keyDown(next, { key: 'Enter' });
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed);
+
+    cleanup();
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
+      round={round({ document: { ...comparisonRound.document!, comparison_base: null }, items: [] })}
+      canMutate onRefresh={async () => null} />);
+    await screen.findByText('Revised wording.');
+    expect(screen.queryByLabelText('Changed proposed entities')).toBeNull();
+    expect(globalThis.document.querySelector('.briefing-markdown__entity--changed')).toBeNull();
   });
 
   it('keeps directive and ordinary list items in one rendered list with independent exact-range actions', async () => {
