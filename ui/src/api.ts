@@ -4747,6 +4747,26 @@ export async function getBriefing(
   return normalizeBriefingProjection(await parseMaybeJson(response));
 }
 
+export type BriefingTitleUpdate = {
+  briefing_id: string;
+  title: string;
+  changed: boolean;
+};
+
+export async function updateBriefingTitle(briefingId: string, title: string): Promise<BriefingTitleUpdate> {
+  const response = await apiPatch(`/api/briefings/${encodeURIComponent(briefingId)}`, { title });
+  const payload = briefingRecord(await parseMaybeJson(response));
+  const updated = {
+    briefing_id: briefingString(payload.briefing_id),
+    title: briefingString(payload.title),
+    changed: payload.changed === true,
+  };
+  if (updated.briefing_id !== briefingId || !updated.title || typeof payload.changed !== 'boolean') {
+    throw new Error('The Briefing title update response is invalid.');
+  }
+  return updated;
+}
+
 export async function getBriefingReviewedMarkdown(
   briefingId: string,
   roundId: string,
