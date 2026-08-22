@@ -13,6 +13,7 @@ import { evaluateInstanceMutation, resolveInstanceInfo } from '../src/instance-p
 import { registerBriefingRoutes } from '../src/routes/briefing';
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from '../src/server';
 import { createUser } from '../src/users/store';
+import { recordArtifactVersion } from '../src/provider-artifacts';
 import { AppShellProvider } from '../ui/src/app-shell';
 import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings, type InstanceInfo } from '../ui/src/api';
 import { BriefingView } from '../ui/src/views/briefing';
@@ -748,6 +749,92 @@ describe('artifact-backed Briefing rounds', () => {
       answers: TYPED_DIRECTIVES.map((directive) => ({ directive_key: directive.key, response_event_id: `answer-${directive.key}` })),
       annotation_event_ids: ['annotation-new'],
     });
+  });
+
+  it('renders and annotates directive-free v3 Markdown through the exact-version route while runs stay strict', async () => {
+    const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-annotation-only-ui-roundtrip-'));
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
+    try {
+      setSetting(privateDb, 'artifact_root', privateRoot);
+      createUser(privateDb, { slug: 'agent-schedule', kind: 'agent', display_name: 'Scheduled publisher' });
+      const humanId = createUser(privateDb, { slug: 'annotation-human', kind: 'human', display_name: 'Annotation human' }).id;
+      const markdown = '# Policy\n\nReview this paragraph.\n\n## Scope\n\nKeep exact custody.\n';
+      const sourcePath = path.join(privateRoot, 'AGENTS.review.md');
+      fs.writeFileSync(sourcePath, markdown);
+      const artifact = recordArtifactVersion(privateDb, {
+        source_kind: 'local_only', path: sourcePath, logical_name: 'AGENTS.review.md',
+        role: 'review-document', media_type: 'text/markdown',
+      });
+      const production = new Router({
+        clientAuth: new UiRoundTripGate(privateDb),
+        instance: resolveInstanceInfo({
+          env: { MANDIBLE_INSTANCE_ROLE: 'test', MANDIBLE_OPERATIONAL_MUTATIONS: 'allow' },
+          dbPath: privateDbPath,
+        }),
+      });
+      registerBriefingRoutes(production, privateDb);
+      const created = await production.invoke({
+        method: 'POST', url: '/api/briefings', credential: 'annotation-human', transport: 'http',
+        body: { artifact_version_ref: artifact.version.id, title: 'AGENTS review' },
+      });
+      expect(created).toMatchObject({ status: 201, body: { artifact_version_id: artifact.version.id } });
+      const ids = created.body as { briefing_id: string; round_id: string };
+      const strictRun = await production.invoke({
+        method: 'POST', url: '/api/briefings/runs', credential: 'agent-schedule', transport: 'http',
+        body: {
+          schema: 'mandible-briefing-run@1', briefing_key: 'strict-run', title: 'Strict run',
+          task_identity: 'agent-schedule/daily-digest', run_id: 'plain-run', run_key: 'plain-run-key',
+          responder_user_ids: [humanId], evidence: { series_ref: 'artifact-series:plain', version: 1, digest: 'a'.repeat(64) },
+          source_health: { source: 'arxiv-scan', status: 'healthy', detail: null, observed_at: 1 },
+          document: { markdown }, quiet_reason: null, occurrences: [],
+        },
+      });
+      expect(strictRun).toMatchObject({ status: 400, body: { error: expect.stringContaining('no spec-item directives') } });
+
+      const previewInstance = resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
+        dbPath: privateDbPath, sourceDbPath,
+      });
+      const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
+      registerBriefingRoutes(preview, privateDb);
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url === '/api/client-auth/whoami') {
+          return new Response(JSON.stringify({ authenticated: true, user: {
+            id: humanId, slug: 'annotation-human', kind: 'human', display_name: 'Annotation human',
+          } }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (!url.startsWith('/api/briefings')) throw new Error(`unexpected annotation-only request ${method} ${url}`);
+        const result = await preview.invoke({
+          method, url, credential: 'annotation-human', transport: 'http',
+          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+        });
+        return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
+      }));
+      render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+        <BriefingDocumentRenderer briefingId={ids.briefing_id} roundId={ids.round_id} instance={previewInstance} />
+      </AppShellProvider>);
+
+      expect((await screen.findByLabelText('Pinned briefing document')).textContent).toContain('Review this paragraph.');
+      const comment = await screen.findByRole('button', { name: 'Comment on section Policy' }) as HTMLButtonElement;
+      await waitFor(() => expect(comment.disabled).toBe(false));
+      fireEvent.click(comment);
+      const dialog = await screen.findByRole('dialog', { name: 'Add annotation' });
+      fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+      expect((await screen.findAllByRole('button', { name: /Annotation-only review note/ })).length).toBeGreaterThan(0);
+      const detail = await preview.invoke({
+        method: 'GET', url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`,
+        credential: 'annotation-human', transport: 'http',
+      });
+      expect((detail.body as any).selected_round).toMatchObject({
+        id: ids.round_id, items: [], annotations: [{ body: 'Annotation-only review note.' }],
+      });
+    } finally {
+      privateDb.close();
+      fs.rmSync(privateRoot, { recursive: true, force: true });
+    }
   });
 
   it('clicks all six controls through the production API/store and freezes only the selected actor round', async () => {
