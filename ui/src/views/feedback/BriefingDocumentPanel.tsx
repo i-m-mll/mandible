@@ -211,15 +211,9 @@ const DIRECTIVE_RAIL_GUTTER_OFFSET = 10;
 function alignBriefingRails(sourceTree: HTMLElement): void {
   const sourceRect = sourceTree.getBoundingClientRect();
   const gutterX = sourceRect.left - DIRECTIVE_RAIL_GUTTER_OFFSET;
+  const styles = globalThis.getComputedStyle(sourceTree);
+  const contentRight = sourceRect.right - Number.parseFloat(styles.paddingRight || '0');
   let responseRailBottom = 0;
-  const ownerAnchors = (owner: HTMLElement, ownerRect = owner.getBoundingClientRect()) => {
-    const lineHeight = Number.parseFloat(globalThis.getComputedStyle(owner).lineHeight || '0');
-    const firstLineHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : Math.min(ownerRect.height, 24);
-    return {
-      actionCenter: firstLineHeight / 2,
-      responseCenter: ownerRect.top - sourceRect.top + firstLineHeight / 2,
-    };
-  };
   sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
     const ownerRect = owner.getBoundingClientRect();
     owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerRect.left}px`);
@@ -227,29 +221,24 @@ function alignBriefingRails(sourceTree: HTMLElement): void {
       `[data-briefing-directive-response="${owner.dataset.briefingDirectiveIndex}"].briefing-directive__response-host--rail`,
     );
     if (responseHost) {
-      const { actionCenter, responseCenter } = ownerAnchors(owner, ownerRect);
       const responseRect = responseHost.getBoundingClientRect();
-      const compactControl = responseHost.querySelector<HTMLElement>('.briefing-directive__verdict, .briefing-directive__variant-controls');
-      const controlRect = compactControl?.getBoundingClientRect();
-      const controlCenterOffset = controlRect && controlRect.height > 0
-        ? controlRect.top - responseRect.top + controlRect.height / 2
-        : responseRect.height / 2;
-      const responseTop = responseCenter - controlCenterOffset;
+      const responseTop = ownerRect.top - sourceRect.top;
       responseHost.style.setProperty('--briefing-right-rail-top', `${responseTop}px`);
-      owner.querySelector<HTMLElement>('[data-briefing-directive-action]')
-        ?.style.setProperty('--briefing-right-rail-center', `${actionCenter}px`);
       responseRailBottom = Math.max(responseRailBottom, responseTop + responseRect.height);
     }
   });
-  const styles = globalThis.getComputedStyle(sourceTree);
-  const contentRight = sourceRect.right - Number.parseFloat(styles.paddingRight || '0');
   const baseHeight = sourceRect.height - Number.parseFloat(styles.paddingBottom || '0');
   sourceTree.style.setProperty('--briefing-right-rail-overflow', `${Math.max(0, responseRailBottom - baseHeight)}px`);
   sourceTree.querySelectorAll<HTMLElement>('[data-briefing-entity-action], [data-briefing-directive-action]').forEach((host) => {
-    const ownerRect = host.parentElement?.getBoundingClientRect();
-    if (ownerRect) {
+    const owner = host.parentElement;
+    const ownerRect = owner?.getBoundingClientRect();
+    if (owner && ownerRect) {
       host.style.setProperty('--briefing-right-rail-action-offset', `${contentRight + 8 - ownerRect.left}px`);
-      host.style.setProperty('--briefing-right-rail-center', `${ownerAnchors(host.parentElement!, ownerRect).actionCenter}px`);
+      host.style.setProperty('--briefing-right-rail-top', '0px');
+      owner.style.setProperty(
+        '--briefing-right-rail-hover-width',
+        `calc(${Math.max(0, contentRight + 8 - ownerRect.right)}px + 1.3em)`,
+      );
     }
   });
 }
@@ -521,7 +510,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (type === 'verdict') {
       const verdict = current && 'verdict' in current ? current.verdict : null;
       control = (
-        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-describedby={describedBy}>
+        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-required={item.revision.required} aria-describedby={describedBy}>
           <ContextualAction presentation="compact" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></ContextualAction>
           <ContextualAction presentation="compact" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></ContextualAction>
         </div>
@@ -531,7 +520,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         ? new Set(current && 'option_key' in current ? [current.option_key] : [])
         : new Set(current && 'option_keys' in current ? current.option_keys : []);
       control = (
-        <fieldset id={controlId} className="briefing-directive__choices" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
+        <fieldset id={controlId} className="briefing-directive__choices" aria-labelledby={promptId} aria-required={item.revision.required} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
           <legend className="sr-only">{type === 'single_choice' ? 'Choose one answer' : 'Choose one or more answers'}</legend>
           {item.revision.options.map((option) => (
             <label key={option.key}>
@@ -566,6 +555,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         maxLength: type === 'short_text' ? 240 : 4000,
         disabled: !canInteract,
         'aria-labelledby': promptId,
+        'aria-required': item.revision.required,
         'aria-invalid': Boolean(error),
         'aria-describedby': describedBy,
         onInput: (event: Event & { currentTarget: HTMLInputElement | HTMLTextAreaElement }) => {
@@ -578,7 +568,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     } else if (type === 'rating') {
       const rating = current && 'rating' in current ? current.rating : null;
       control = (
-        <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
+        <fieldset id={controlId} className="briefing-directive__rating" aria-labelledby={promptId} aria-required={item.revision.required} aria-invalid={Boolean(error)} aria-describedby={describedBy}>
           <legend className="sr-only">Rating from 1 to 5</legend>
           {[1, 2, 3, 4, 5].map((value) => (
             <label key={value}><input type="radio" name={`${radioGroupScope}-${controlId}-rating`} value={value} checked={rating === value} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { rating: value })} /><span>{value}</span></label>
@@ -591,7 +581,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const selectedIndex = Math.max(0, variants.findIndex((variant) => variant.key === selectedKey));
       const selectedVariant = variants[selectedIndex];
       control = selectedVariant ? (
-        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__variant-controls" role="group" aria-label={`Text variant: ${selectedVariant.label}`} aria-describedby={describedBy}>
+        <div id={controlId} className="briefing-directive__compact-controls briefing-directive__variant-controls" role="group" aria-label={`Text variant: ${selectedVariant.label}`} aria-required={item.revision.required} aria-describedby={describedBy}>
           <ContextualAction presentation="compact" aria-label="Previous text variant" disabled={!canInteract || selectedIndex === 0}
             onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><PreviousIcon /></ContextualAction>
           <span><small>{selectedIndex + 1} of {variants.length}</small></span>
@@ -674,7 +664,6 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
                 disabled={!canInteract} onClick={() => openDirectiveComment(item.id)}><CommentIcon /></ContextualAction>, actionHost,
             ) : null,
             responseHost ? createPortal(<>
-              {item.revision.required ? <span className="briefing-directive__required" aria-label="Required">Required</span> : null}
               {inlineAnnotations(item.directive!.start_offset, item.directive!.end_offset)}
               {responseControls(item, current, promptId)}
             </>, responseHost) : null,
