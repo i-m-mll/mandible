@@ -210,7 +210,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
-  it('keeps the submission shelf folded, sorts summaries, and renders a selected frozen overlay view-only', async () => {
+  it('keeps the annotation-set shelf folded, sorts rows, and clears a keyboard-selected frozen overlay', async () => {
     const older = {
       id: 'submission-old', ordinal: 1, supersedes_submission_id: null,
       actor_user_id: 'amy-id', actor: { slug: 'amy', display_name: 'Amy' }, created_at: 100,
@@ -252,21 +252,30 @@ describe('artifact-backed Briefing rounds', () => {
       <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
     await screen.findByText('First');
-    const shelf = screen.getByText('Submissions (2)').closest('details') as HTMLDetailsElement;
+    const shelf = screen.getByText('Annotation sets (2)').closest('details') as HTMLDetailsElement;
     expect(shelf.open).toBe(false);
-    fireEvent.click(within(shelf).getByText('Submissions (2)'));
-    expect(within(shelf).getAllByRole('button', { name: /^View submission/ }).map((button) => button.getAttribute('aria-label')))
-      .toEqual(['View submission by Zed', 'View submission by Amy']);
+    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
+    expect(css).toMatch(/\.briefing-detail__footer\s*\{[^}]*padding:\s*0;/s);
+    expect(css).toMatch(/\.briefing-submission-shelf\s*\{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.briefing-submission-shelf\s*>\s*summary\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-5\);/s);
+    fireEvent.click(within(shelf).getByText('Annotation sets (2)'));
+    expect(within(shelf).getAllByRole('row', { name: /^View annotation set/ }).map((row) => row.getAttribute('aria-label')))
+      .toEqual(['View annotation set by Zed', 'View annotation set by Amy']);
+    expect(within(shelf).queryByRole('button', { name: /^View annotation set/ })).toBeNull();
     fireEvent.click(within(shelf).getByRole('button', { name: 'Actor' }));
-    expect(within(shelf).getAllByRole('button', { name: /^View submission/ }).map((button) => button.getAttribute('aria-label')))
-      .toEqual(['View submission by Amy', 'View submission by Zed']);
-    fireEvent.click(within(shelf).getByRole('button', { name: 'View submission by Zed' }));
-    expect(await screen.findByText('Viewing immutable submission by Zed.')).toBeTruthy();
+    expect(within(shelf).getAllByRole('row', { name: /^View annotation set/ }).map((row) => row.getAttribute('aria-label')))
+      .toEqual(['View annotation set by Amy', 'View annotation set by Zed']);
+    fireEvent.keyDown(within(shelf).getByRole('row', { name: 'View annotation set by Zed' }), { key: 'Enter' });
+    await waitFor(() => expect(within(shelf).getByRole('row', { name: 'View annotation set by Zed' }).getAttribute('aria-selected')).toBe('true'));
     expect(requested).toContain(`/api/briefings/briefing-1?round=${ROUND_ONE}&submission=submission-new`);
     const dismiss = screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement;
-    expect(dismiss.disabled).toBe(true);
-    expect(dismiss.getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(screen.getByRole('button', { name: 'Return to draft' }));
+    await waitFor(() => {
+      expect(dismiss.disabled).toBe(true);
+      expect(dismiss.getAttribute('aria-pressed')).toBe('true');
+    });
+    expect(screen.queryByText(/Viewing immutable submission/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Return to draft' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
@@ -896,17 +905,39 @@ describe('artifact-backed Briefing rounds', () => {
       fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
       expect((await screen.findAllByRole('button', { name: /Annotation-only review note/ })).length).toBeGreaterThan(0);
+      fireEvent.click(await screen.findByRole('button', { name: 'Comment on section Policy' }));
+      const secondDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
+      fireEvent.input(within(secondDialog).getByLabelText('Comment'), { target: { value: 'Second pending review note.' } });
+      fireEvent.click(within(secondDialog).getByRole('button', { name: 'Save' }));
+      expect((await screen.findAllByRole('button', { name: /Second pending review note/ })).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      const clearDialog = await screen.findByRole('dialog', { name: 'Clear 2 annotations?' });
+      expect(within(clearDialog).getByText('This will permanently delete exactly 2 pending annotations. Submitted annotation sets remain unchanged.')).toBeTruthy();
+      fireEvent.click(within(clearDialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog', { name: 'Clear 2 annotations?' })).toBeNull();
+      expect(screen.getAllByRole('button', { name: /Second pending review note/ }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole('button', { name: /Annotation-only review note/ }).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      fireEvent.click(within(await screen.findByRole('dialog', { name: 'Clear 2 annotations?' })).getByRole('button', { name: 'Delete 2 annotations' }));
+      await waitFor(() => expect(screen.queryByRole('button', { name: /pending review note|Annotation-only review note/ })).toBeNull());
+      expect(submit.getAttribute('aria-disabled')).toBe('true');
+      fireEvent.click(await screen.findByRole('button', { name: 'Comment on section Policy' }));
+      const replacementDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
+      fireEvent.input(within(replacementDialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
+      fireEvent.click(within(replacementDialog).getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       const copyResult = await screen.findByRole('button', { name: 'Copy result ID' });
       expect(copyResult.classList.contains('btn--success')).toBe(true);
       expect(copyResult.nextElementSibling).toBe(screen.getByRole('button', { name: 'Submit' }));
-      expect((await screen.findByText('Submissions (1)')).closest('details')?.hasAttribute('open')).toBe(false);
+      expect((await screen.findByText('Annotation sets (1)')).closest('details')?.hasAttribute('open')).toBe(false);
       expect(screen.queryByRole('button', { name: /Annotation-only review note/ })).toBeNull();
       const writeText = vi.fn(async () => undefined);
       Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
       fireEvent.click(copyResult);
       await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.any(String)));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      expect(screen.queryByRole('dialog', { name: /Clear \d+ annotations?/ })).toBeNull();
       const detail = await preview.invoke({
         method: 'GET', url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`,
         credential: 'annotation-human', transport: 'http',

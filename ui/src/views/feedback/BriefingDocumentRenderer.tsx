@@ -6,6 +6,7 @@ import {
   getClientAuthWhoami,
   isApiErrorStatus,
   postBriefingAnswers,
+  postBriefingAnnotations,
   postBriefingSubmission,
   type BriefingAnswerOperation,
   type BriefingDirectiveItem,
@@ -142,6 +143,8 @@ export function BriefingDocumentRenderer({
   const [resultId, setResultId] = useState<string | null>(null);
   const [resultCopied, setResultCopied] = useState(false);
   const [submissionSort, setSubmissionSort] = useState<SubmissionSort>({ field: 'date', direction: 'desc' });
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
   const shelfBodyRef = useRef<HTMLDivElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -214,6 +217,8 @@ export function BriefingDocumentRenderer({
     setHideSubmittedAnnotations(false);
     setResultId(null);
     setResultCopied(false);
+    setClearConfirmOpen(false);
+    setClearBusy(false);
     currentSelection.current = selectionKey(null);
     onBriefingChange?.(null);
     void reconcile(null);
@@ -288,6 +293,10 @@ export function BriefingDocumentRenderer({
     && !responseValuesEqual(draft[item.id] ?? null, item.effective_response?.value ?? null)));
   const currentAnswerIds = (round?.items ?? []).flatMap((item) => item.effective_response ? [item.effective_response.response_event_id] : []);
   const currentAnnotationIds = (round?.annotations ?? []).map((annotation) => annotation.annotation_event_id);
+  const frozenAnnotationIds = new Set(round?.latest_frozen_membership?.annotation_event_ids ?? []);
+  const pendingAnnotations = (round?.annotations ?? []).filter(
+    (annotation) => !frozenAnnotationIds.has(annotation.annotation_event_id),
+  );
   const frozenMatches = Boolean(round?.latest_frozen_membership
     && currentAnswerIds.length === round.latest_frozen_membership.answer_event_ids.length
     && currentAnnotationIds.length === round.latest_frozen_membership.annotation_event_ids.length
@@ -300,14 +309,15 @@ export function BriefingDocumentRenderer({
       ? (round.directive_binding.reason || 'The directive binding is unavailable.')
       : contentGate === null ? 'Loading pinned document…'
       : contentGate ? contentGate
-      : busy ? 'Submitting changes…'
+      : clearBusy ? 'Clearing pending annotations…'
+        : busy ? 'Submitting changes…'
         : requiredIncomplete ? 'Complete the required directives before submitting.'
           : emptyNoChange ? 'Add an answer or annotation before submitting.'
           : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
             : null;
 
   const submit = async () => {
-    if (!round || !canMutate || busy || contentGate !== '') return;
+    if (!round || !canMutate || busy || clearBusy || contentGate !== '') return;
     const mutation = ++mutationSequence.current;
     const submittedRoundId = round.selected_round_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
@@ -438,6 +448,55 @@ export function BriefingDocumentRenderer({
     void reconcile(overlayId);
   };
 
+  const resetDraft = (projection: BriefingProjection) => {
+    const nextDraft = effectiveDraft(projection.items);
+    setDraft(nextDraft);
+    const scope = draftStorageScope(briefingId, projection);
+    if (scope) saveBriefingDraft(storageOrNull(), userId, scope, {});
+    setValidationErrors({});
+    setResultId(null);
+    setResultCopied(false);
+    setStatus('Draft cleared.');
+  };
+
+  const requestClear = () => {
+    if (!round || busy || clearBusy) return;
+    if (round.selected_submission_overlay) {
+      selectSubmissionOverlay(null);
+      return;
+    }
+    if (pendingAnnotations.length === 0) {
+      resetDraft(round);
+      return;
+    }
+    if (canMutate) setClearConfirmOpen(true);
+  };
+
+  const confirmClear = async () => {
+    if (!round || !canMutate || clearBusy || pendingAnnotations.length === 0) return;
+    const annotationIds = pendingAnnotations.map((annotation) => annotation.annotation_event_id);
+    setClearBusy(true);
+    setStatus(null);
+    try {
+      const result = await postBriefingAnnotations(briefingId, round.selected_round_id, annotationIds.map((annotationEventId) => ({
+        operation: 'retract' as const,
+        annotation_event_id: annotationEventId,
+      })));
+      if (result.annotation_event_ids.length !== annotationIds.length) {
+        throw new Error('The annotation service returned an ambiguous clear result.');
+      }
+      const refreshed = await reconcile(null);
+      resetDraft(refreshed ?? round);
+      setClearConfirmOpen(false);
+      setStatus(`${annotationIds.length} pending annotation${annotationIds.length === 1 ? '' : 's'} cleared.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+      await reconcile(null);
+    } finally {
+      setClearBusy(false);
+    }
+  };
+
   const copyResultId = async () => {
     if (!resultId || !navigator.clipboard?.writeText) return;
     await navigator.clipboard.writeText(resultId);
@@ -496,14 +555,8 @@ export function BriefingDocumentRenderer({
                   Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
                 </div>
               ) : null}
-              {round.selected_submission_overlay ? (
-                <div className="briefing-submission-overlay-notice" role="status">
-                  <span>Viewing immutable submission by {round.selected_submission_overlay.actor.display_name || round.selected_submission_overlay.actor.slug}.</span>
-                  <button type="button" className="btn btn--sm" onClick={() => selectSubmissionOverlay(null)}>Return to draft</button>
-                </div>
-              ) : null}
               {round.document ? (
-                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={displayedRound!} canMutate={canMutate && !busy && contentGate === ''} draftIdentity={draftScope} onRefresh={() => reconcile(selectedOverlayId)}
+                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={displayedRound!} canMutate={canMutate && !busy && !clearBusy && contentGate === ''} draftIdentity={draftScope} onRefresh={() => reconcile(selectedOverlayId)}
                   draft={draft}
                   validationErrors={validationErrors}
                   onDirectiveValue={setValue}
@@ -608,15 +661,23 @@ export function BriefingDocumentRenderer({
               >
                 Submit
               </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm briefing-clear"
+                disabled={busy || clearBusy || (!round.selected_submission_overlay && pendingAnnotations.length > 0 && !canMutate)}
+                onClick={requestClear}
+              >
+                Clear
+              </button>
               {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
             </div>
             <details className="briefing-submission-shelf">
-              <summary>Submissions ({round.submission_overlays.length})</summary>
+              <summary>Annotation sets ({round.submission_overlays.length})</summary>
               <div ref={shelfBodyRef} className="briefing-submission-shelf__body">
                 {sortedSubmissionOverlays.length === 0 ? (
-                  <p className="briefing-submission-shelf__empty">No submissions for this round.</p>
+                  <p className="briefing-submission-shelf__empty">No annotation sets for this round.</p>
                 ) : (
-                  <table>
+                  <table role="grid" aria-label="Annotation sets for this round">
                     <thead>
                       <tr>
                         <th aria-sort={submissionSort.field === 'date' ? (submissionSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
@@ -632,18 +693,20 @@ export function BriefingDocumentRenderer({
                     </thead>
                     <tbody>
                       {sortedSubmissionOverlays.map((submission) => (
-                        <tr key={submission.id} className={selectedOverlayId === submission.id ? 'briefing-submission-shelf__row--selected' : undefined}>
-                          <td>
-                            <button
-                              type="button"
-                              className="briefing-submission-shelf__select"
-                              aria-pressed={selectedOverlayId === submission.id}
-                              aria-label={`View submission by ${submission.actor.display_name || submission.actor.slug}`}
-                              onClick={() => selectSubmissionOverlay(submission)}
-                            >
-                              {occurrenceDateTimeFormatter.format(new Date(submission.created_at))}
-                            </button>
-                          </td>
+                        <tr
+                          key={submission.id}
+                          tabIndex={0}
+                          aria-selected={selectedOverlayId === submission.id}
+                          aria-label={`View annotation set by ${submission.actor.display_name || submission.actor.slug}`}
+                          className={selectedOverlayId === submission.id ? 'briefing-submission-shelf__row--selected' : undefined}
+                          onClick={() => selectSubmissionOverlay(submission)}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'Enter' && event.key !== ' ') return;
+                            event.preventDefault();
+                            selectSubmissionOverlay(submission);
+                          }}
+                        >
+                          <td>{occurrenceDateTimeFormatter.format(new Date(submission.created_at))}</td>
                           <td>{submission.actor.display_name || submission.actor.slug}</td>
                           <td>{submission.annotation_count}</td>
                         </tr>
@@ -657,22 +720,42 @@ export function BriefingDocumentRenderer({
         ),
       } : undefined}
       overlays={(
-        <DetailPaneModal
-          open={metadataOpen}
-          onClose={() => setMetadataOpen(false)}
-          titleId="briefing-metadata-title"
-          title="Briefing metadata"
-          closeLabel="Close Briefing metadata"
-          excludeAboveRef={headerRef}
-          scrollOwnerSelector=".feedback-collection-shell__content"
-          panelClassName="briefing-detail__metadata"
-        >
-          <dl>
-            <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
-            {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
-            {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /></dd></div> : null}
-          </dl>
-        </DetailPaneModal>
+        <>
+          <DetailPaneModal
+            open={metadataOpen}
+            onClose={() => setMetadataOpen(false)}
+            titleId="briefing-metadata-title"
+            title="Briefing metadata"
+            closeLabel="Close Briefing metadata"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-detail__metadata"
+          >
+            <dl>
+              <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
+              {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
+              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /></dd></div> : null}
+            </dl>
+          </DetailPaneModal>
+          <DetailPaneModal
+            open={clearConfirmOpen}
+            onClose={() => { if (!clearBusy) setClearConfirmOpen(false); }}
+            titleId="briefing-clear-annotations-title"
+            title={`Clear ${pendingAnnotations.length} annotation${pendingAnnotations.length === 1 ? '' : 's'}?`}
+            closeLabel="Cancel clearing annotations"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-clear-confirmation"
+          >
+            <p>This will permanently delete exactly {pendingAnnotations.length} pending annotation{pendingAnnotations.length === 1 ? '' : 's'}. Submitted annotation sets remain unchanged.</p>
+            <div className="briefing-clear-confirmation__actions">
+              <button type="button" className="btn btn--ghost btn--sm" disabled={clearBusy} onClick={() => setClearConfirmOpen(false)}>Cancel</button>
+              <button type="button" className="btn btn--danger btn--sm" disabled={clearBusy} onClick={() => void confirmClear()}>
+                {clearBusy ? 'Deleting…' : `Delete ${pendingAnnotations.length} annotation${pendingAnnotations.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </DetailPaneModal>
+        </>
       )}
     >
       {body}
