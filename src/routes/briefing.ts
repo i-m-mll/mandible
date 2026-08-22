@@ -16,9 +16,15 @@ import {
 } from "../feedback/briefings.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
-import { getUserById } from "../users/store.js";
+import { getOperator, getUserById } from "../users/store.js";
 import { publisherMayIngest } from "../briefing.js";
 import { BRIEFING_EVENTS } from "../contracts.js";
+import {
+  addBriefingBundleMember,
+  createBriefingBundle,
+  listBriefingBundles,
+  readBriefingBundle,
+} from "../feedback/briefing-bundles.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
@@ -39,6 +45,33 @@ function activeHuman(db: Db, req: RequestLike) {
   return { identity, user, operator: isOperator(db, identity) };
 }
 
+function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
+  publisherUserId: string;
+  responderUserId: string;
+} {
+  const identity = requireIdentity(req);
+  const caller = getUserById(db, identity.user_id);
+  if (caller?.status === "active" && caller.kind === "human") {
+    return { publisherUserId: caller.id, responderUserId: caller.id };
+  }
+
+  const publisher = requireDurableAgentPublisher(db, req, {
+    credentialCode: "briefing_publisher_credential_required",
+    credentialMessage: "Exact-version Briefing publication requires a durable API token, not a session credential.",
+    agentCode: "briefing_publisher_agent_required",
+    agentMessage: "Exact-version Briefing publication requires an active agent identity.",
+  });
+  const operator = getOperator(db);
+  if (!operator || operator.status !== "active" || operator.kind !== "human") {
+    throw new ClientAuthzError(
+      403,
+      "briefing_publication_operator_required",
+      "Exact-version Briefing publication by an agent requires a configured active human operator responder.",
+    );
+  }
+  return { publisherUserId: publisher.userId, responderUserId: operator.id };
+}
+
 function body(req: RequestLike): Record<string, unknown> {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
     throw new BriefingStoreError("request body must be an object");
@@ -48,9 +81,81 @@ function body(req: RequestLike): Record<string, unknown> {
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
-  server.post("/api/briefings", (req, res) => {
+  server.post("/api/briefing-bundles", (req, res) => {
     try {
       const actor = activeHuman(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      if (!Array.isArray(requestBody.briefing_refs)
+          || !requestBody.briefing_refs.every((ref) => typeof ref === "string" && ref.trim())) {
+        throw new BriefingStoreError("briefing_refs must be an array of nonblank Briefing refs");
+      }
+      const bundle = createBriefingBundle(db, {
+        name: typeof requestBody.name === "string" ? requestBody.name : "",
+        briefingRefs: requestBody.briefing_refs,
+        viewer: { userId: actor.user.id, operator: actor.operator },
+      });
+      broadcast(BRIEFING_EVENTS.bundleCreated, { bundle_id: bundle.id });
+      sendJson(res, 201, { bundle });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-bundles/:bundleId/briefings", (req, res) => {
+    try {
+      const actor = activeHuman(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "briefing_ref");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      const result = addBriefingBundleMember(
+        db,
+        req.params.bundleId,
+        typeof requestBody.briefing_ref === "string" ? requestBody.briefing_ref : "",
+        { userId: actor.user.id, operator: actor.operator },
+      );
+      if (result.added) broadcast(BRIEFING_EVENTS.bundleMemberAdded, {
+        bundle_id: result.bundle.id,
+        briefing_id: result.bundle.members.at(-1)?.briefing.id,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-bundles", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, { bundles: listBriefingBundles(db, {
+        userId: identity.user_id,
+        operator: isOperator(db, identity),
+      }) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-bundles/:bundleId", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, { bundle: readBriefingBundle(db, req.params.bundleId, {
+        userId: identity.user_id,
+        operator: isOperator(db, identity),
+      }) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefings", (req, res) => {
+    try {
+      const publication = publicationPrincipalAndResponder(db, req);
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
         .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref" && key !== "title");
@@ -75,7 +180,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         artifact_version_ref: artifactVersionRef,
         comparison_base_artifact_version_ref: comparisonBaseArtifactVersionRef,
         profile: "mandible-briefing.v3",
-        responder_user_ids: [actor.user.id],
+        responder_user_ids: [publication.responderUserId],
       });
       broadcast(BRIEFING_EVENTS.created, { briefing_id: receipt.briefing_id });
       broadcast(BRIEFING_EVENTS.roundPublished, {
@@ -133,11 +238,16 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     try {
       const actor = activeHuman(db, req);
       const values = new URL(req.url, "http://localhost").searchParams.getAll("round");
+      const submissionValues = new URL(req.url, "http://localhost").searchParams.getAll("submission");
       if (values.length > 1 || (values.length === 1 && !values[0])) {
         throw new BriefingStoreError("round must be one nonblank round id");
       }
+      if (submissionValues.length > 1 || (submissionValues.length === 1 && !submissionValues[0])) {
+        throw new BriefingStoreError("submission must be one nonblank submission id");
+      }
       const projection = readBriefing(db, req.params.briefingId, {
         ...(values[0] ? { roundId: values[0] } : {}),
+        ...(submissionValues[0] ? { submissionId: submissionValues[0] } : {}),
         actorUserId: actor.user.id,
         operator: actor.operator,
       });

@@ -175,6 +175,18 @@
       "description": "Create a new logical Briefing whose first round binds exactly the named artifact version and optional exact comparison base; never resolves latest or adds a round to an existing Briefing."
     },
     {
+      "name": "mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]",
+      "description": "Create a stable named Briefing bundle whose optional initial Briefing membership preserves the supplied order."
+    },
+    {
+      "name": "mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]",
+      "description": "Append one existing Briefing to a bundle without changing that Briefing or its rounds."
+    },
+    {
+      "name": "mandible briefing bundle show <bundle-ref> [--json]",
+      "description": "Show one Briefing bundle and its manually ordered Briefing membership."
+    },
+    {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",
       "description": "Refresh configured instruction targets, or update one explicit target. Configured targets support managed-block and standalone modes; tracked protected-branch writes are refused unless --force is explicit."
     },

@@ -31,7 +31,7 @@ describe('shared sidebar group presentation', () => {
       selectedCollectionId={briefing.id}
       viewState={{
         collectionSourceFilter: '', pinnedCollectionIds: [briefing.id],
-        pinnedSectionCollapsed: true, selectedCollectionId: briefing.id, selectedRoundIds: {},
+        pinnedSectionCollapsed: true, collapsedBundleIds: [], selectedCollectionId: briefing.id, selectedRoundIds: {},
       }}
       setViewState={() => undefined}
       onSelect={() => undefined}
@@ -216,5 +216,9 @@ describe('shared sidebar group presentation', () => {
     fireEvent.click(input.parentElement?.querySelector('button') as HTMLButtonElement);
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('conversations.sidebar_group_limit', '50'));
     expect(input.value).toBe('50');
+    const keepAnnotations = screen.getByRole('switch', { name: 'Toggle Keep submitted annotations displayed' });
+    expect(keepAnnotations.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(keepAnnotations);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('briefing.keep_submitted_annotations', 'true'));
   });
 });

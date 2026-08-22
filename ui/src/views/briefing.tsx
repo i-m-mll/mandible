@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { getBriefings, getCachedBriefings, isApiErrorStatus, type InstanceInfo } from '../api';
+import {
+  getBriefingBundles,
+  getBriefings,
+  getCachedBriefingBundles,
+  getCachedBriefings,
+  isApiErrorStatus,
+  type BriefingBundle,
+  type InstanceInfo,
+} from '../api';
 import { useAppShell } from '../app-shell';
 import { briefingRoute } from '../routing';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
@@ -15,16 +23,18 @@ export type BriefingViewProps = {
   initialRoundId?: string | null;
   sidebarHidden?: boolean;
   nowMs?: number;
+  keepSubmittedAnnotations?: boolean;
 };
 
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
   window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
 }
 
-export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs }: BriefingViewProps): JSX.Element {
+export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const [briefings, setBriefings] = useState<FeedbackCollection[]>(() => getCachedBriefings(nowMs) ?? []);
+  const [bundles, setBundles] = useState<BriefingBundle[]>(() => getCachedBriefingBundles(nowMs) ?? []);
   const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const sequence = useRef(0);
@@ -46,9 +56,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
   const load = useCallback(async (signal: AbortSignal) => {
     const request = ++sequence.current;
     try {
-      const next = await getBriefings(signal);
+      const [next, nextBundles] = await Promise.all([getBriefings(signal), getBriefingBundles(signal)]);
       if (!signal.aborted && request === sequence.current) {
         setBriefings(next);
+        setBundles(nextBundles);
         setError(null);
       }
     } catch (cause) {
@@ -103,7 +114,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
   };
 
   return (
-    <CollectionShell collections={briefings} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
+    <CollectionShell collections={briefings} bundles={bundles} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
       {error ? <p className="briefing-error" role="alert">{error}</p> : null}
       {!selected ? <p className="briefing-empty briefing-empty--selection">Select a Briefing.</p> : (
@@ -113,6 +124,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
           briefingTitle={selected.label}
           roundId={explicitRoundId}
           instance={instance}
+          keepSubmittedAnnotations={keepSubmittedAnnotations}
           onRoundChange={selectRound}
         />
       )}

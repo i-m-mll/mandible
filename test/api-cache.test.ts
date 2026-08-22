@@ -14,13 +14,16 @@ import {
 describe('Briefing SSE cache invalidation matrix', () => {
   it.each([
     'briefing:created',
+    'briefing:bundle-created',
+    'briefing:bundle-member-added',
     'briefing:round-published',
     'briefing:answered',
     'briefing:annotated',
     'briefing:submitted',
-  ])('%s invalidates logical Briefing and badge caches', (topic) => {
+  ])('%s invalidates Briefing, bundle, and badge caches', (topic) => {
     expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefings',
+      '/api/briefing-bundles',
       '/api/dashboard/badges',
     ]);
   });
@@ -40,6 +43,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
     ];
     const families = new Set(burst.flatMap((topic) => briefingApiCacheFamiliesForEvent(topic)));
     expect([...families].sort()).toEqual([
+      '/api/briefing-bundles',
       '/api/briefings',
       '/api/dashboard/badges',
     ]);

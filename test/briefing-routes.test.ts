@@ -71,7 +71,53 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
-  it("creates distinct logical Briefings from one explicitly selected exact artifact version", async () => {
+  it("creates, appends to, and shows a named bundle without changing its Briefings", async () => {
+    const source = path.join(root, "bundle.md");
+    fs.writeFileSync(source, "# Bundle member\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "bundle.md", role: "review-document", media_type: "text/markdown" }).version;
+    const first = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: version.id, title: "First" } });
+    const second = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: version.id, title: "Second" } });
+    const firstId = (first.body as { briefing_id: string }).briefing_id;
+    const secondId = (second.body as { briefing_id: string }).briefing_id;
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-bundles",
+      body: { name: "Policy review", briefing_refs: [firstId] } })).toMatchObject({ status: 401 });
+    const created = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
+      body: { name: "Policy review", briefing_refs: [firstId] } });
+    expect(created).toMatchObject({ status: 201, body: { bundle: {
+      name: "Policy review",
+      members: [{ position: 0, briefing: { id: firstId, title: "First" } }],
+    } } });
+    const bundleId = (created.body as { bundle: { id: string } }).bundle.id;
+    const added = await router.invoke({ method: "POST",
+      url: `/api/briefing-bundles/${bundleId.slice(0, 8)}/briefings`, credential: "human",
+      body: { briefing_ref: secondId.slice(0, 8) } });
+    expect(added).toMatchObject({ status: 200, body: { added: true, bundle: { members: [
+      { position: 0, briefing: { id: firstId } },
+      { position: 1, briefing: { id: secondId } },
+    ] } } });
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefing-bundles/${bundleId}/briefings`, credential: "human",
+      body: { briefing_ref: secondId } })).toMatchObject({ status: 200, body: { added: false } });
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-bundles/${bundleId.slice(0, 8)}`,
+      credential: "human" })).toMatchObject({ status: 200, body: { bundle: {
+      id: bundleId,
+      members: [
+        { position: 0, briefing: { id: firstId } },
+        { position: 1, briefing: { id: secondId } },
+      ],
+    } } });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 2 });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-created", { bundle_id: bundleId });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-member-added", {
+      bundle_id: bundleId, briefing_id: secondId,
+    });
+  });
+
+  it("publishes an exact-version Briefing from a durable agent for the configured human operator", async () => {
     const source = path.join(root, "AGENTS.review.md");
     fs.writeFileSync(source, "# Version one\n");
     const firstVersion = recordArtifactVersion(db, { source_kind: "local_only", path: source,
@@ -85,14 +131,29 @@ describe("plural Briefing routes", () => {
     expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request }))
       .toMatchObject({ status: 401 });
     expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
-      credential: "agent-schedule" })).toMatchObject({ status: 403 });
-    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      credential: "session:agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_publisher_credential_required" },
+    });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_publication_operator_required" },
+    });
+
+    const agentId = (db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").get() as { id: string }).id;
+    setSetting(db, "user.operator_id", agentId);
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_publication_operator_required" },
+    });
+
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "agent-schedule",
       body: { ...request, responder_user_ids: ["spoofed"] } })).toMatchObject({
       status: 400, body: { error: expect.stringContaining("unsupported field") },
     });
 
     const created = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
-      credential: "human" });
+      credential: "agent-schedule" });
     const createdAgain = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
       credential: "human" });
     expect(created).toMatchObject({ status: 201, body: { artifact_version_id: latestVersion.version.id } });
@@ -101,10 +162,48 @@ describe("plural Briefing routes", () => {
       .not.toBe((createdAgain.body as { briefing_id: string }).briefing_id);
     expect(firstVersion.version.id).not.toBe(latestVersion.version.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 2 });
+    expect(db.prepare(
+      "SELECT briefing_id, user_id FROM briefing_members ORDER BY briefing_id",
+    ).all()).toEqual([
+      { briefing_id: (created.body as { briefing_id: string }).briefing_id, user_id: humanId },
+      { briefing_id: (createdAgain.body as { briefing_id: string }).briefing_id, user_id: humanId },
+    ].sort((left, right) => left.briefing_id.localeCompare(right.briefing_id)));
     expect(db.prepare("SELECT DISTINCT artifact_version_id, comparison_base_artifact_version_id FROM briefing_rounds").all())
       .toEqual([{ artifact_version_id: latestVersion.version.id,
         comparison_base_artifact_version_id: firstVersion.version.id }]);
     expect(vi.mocked(broadcast).mock.calls.filter(([event]) => event === "briefing:created")).toHaveLength(2);
+
+    const ids = created.body as { briefing_id: string; round_id: string };
+    expect(await router.invoke({ method: "GET", url: `/api/briefings/${ids.briefing_id}`,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "human_responder_required" },
+    });
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
+      credential: "agent-schedule", body: { answers: [] } })).toMatchObject({
+      status: 403, body: { code: "human_responder_required" },
+    });
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/annotations`,
+      credential: "agent-schedule", body: { annotations: [] } })).toMatchObject({
+      status: 403, body: { code: "human_responder_required" },
+    });
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,
+      credential: "agent-schedule", body: {} })).toMatchObject({
+      status: 403, body: { code: "human_responder_required" },
+    });
+    expect(await router.invoke({ method: "GET",
+      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submissions/unknown/export`,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "human_responder_required" },
+    });
+
+    db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(humanId);
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_publication_operator_required" },
+    });
   });
 
   it("rejects logical artifact refs instead of silently selecting their latest version", async () => {
@@ -181,6 +280,24 @@ describe("plural Briefing routes", () => {
       credential: "human", body: { answers: [{ directive_key: "paper", response_event_id: responseEventId }],
         annotation_event_ids: [annotationEventId], supersedes_submission_id: null } });
     expect(submitted).toMatchObject({ status: 200, body: { ordinal: 1, actor_user_id: humanId } });
+    const submissionId = (submitted.body as { submission_id: string }).submission_id;
+    expect(await router.invoke({
+      method: "GET",
+      url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}&submission=${submissionId}`,
+      credential: "human",
+    })).toMatchObject({
+      status: 200,
+      body: { selected_round: {
+        id: ids.round_id,
+        submission_overlays: [{ id: submissionId, annotation_count: 1, answer_count: 1 }],
+        selected_submission_overlay: {
+          id: submissionId,
+          actor_user_id: humanId,
+          answers: [{ response_event_id: responseEventId }],
+          annotations: [{ annotation_event_id: annotationEventId }],
+        },
+      } },
+    });
     expect(vi.mocked(broadcast).mock.calls).toEqual(expect.arrayContaining([
       ["briefing:created", { briefing_id: ids.briefing_id }],
       ["briefing:round-published", { briefing_id: ids.briefing_id, round_id: ids.round_id }],

@@ -192,3 +192,35 @@ export function SidebarAddProjectIcon(): JSX.Element {
     </svg>
   );
 }
+
+export function SidebarBriefingBundleIcon({ expanded, size = 14 }: { expanded: boolean; size?: number }): JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      data-sidebar-group-icon="briefing-bundle"
+      data-sidebar-group-icon-state={expanded ? 'layers' : 'briefcase'}
+    >
+      {expanded ? (
+        <>
+          <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+          <path d="m3 12 9 5 9-5" />
+          <path d="m3 17 9 5 9-5" />
+        </>
+      ) : (
+        <>
+          <rect x="2" y="7" width="20" height="14" rx="2" />
+          <path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <path d="M2 12h20" />
+        </>
+      )}
+    </svg>
+  );
+}

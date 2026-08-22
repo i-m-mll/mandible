@@ -288,10 +288,25 @@
 }
 
 .briefing-detail__footer {
+  display: block;
+  padding: 0;
+  border-top: 1px solid var(--border-faint);
+}
+
+.briefing-footer-content {
+  display: grid;
+  width: 100%;
+}
+
+.briefing-footer-actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-5);
-  border-top: 1px solid var(--border-faint);
+}
+
+.briefing-copy-result {
+  border-color: var(--status-success-border);
 }
 
 .briefing-detail__footer .briefing-primary {
@@ -308,6 +323,80 @@
 .briefing-detail__footer .briefing-primary[aria-disabled='true'] {
   cursor: not-allowed;
   opacity: .6;
+}
+
+.briefing-submission-shelf {
+  width: 100%;
+  border-top: 1px solid var(--border-faint);
+  color: var(--text-muted);
+}
+
+.briefing-submission-shelf > summary {
+  padding: var(--space-2) var(--space-5);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.briefing-submission-shelf__body {
+  max-height: 12rem;
+  overflow: auto;
+}
+
+.briefing-submission-shelf table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.briefing-submission-shelf th,
+.briefing-submission-shelf td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-faint);
+  text-align: left;
+}
+
+.briefing-submission-shelf th button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.briefing-submission-shelf th button {
+  font-weight: 600;
+}
+
+.briefing-submission-shelf tbody tr {
+  cursor: pointer;
+}
+
+.briefing-submission-shelf tbody tr:hover,
+.briefing-submission-shelf tbody tr:focus-visible {
+  background: var(--surface-card);
+  color: var(--text-primary);
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+}
+
+.briefing-submission-shelf__row--selected {
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+
+.briefing-submission-shelf__empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+}
+
+.briefing-clear-confirmation__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .briefing-document,

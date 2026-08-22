@@ -4,6 +4,7 @@ import { useMemo, useState } from 'preact/hooks';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import { SidebarBriefingBundleIcon, SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
@@ -20,9 +21,16 @@ import {
   type FeedbackCollection,
 } from './collection-model';
 import type { BriefingCollectionViewState } from './collection-view-state';
+import type { BriefingBundle } from '../../api';
+
+type BriefingSidebarOccurrence = {
+  key: string;
+  collection: FeedbackCollection;
+};
 
 export type CollectionsSidebarProps = {
   collections: readonly FeedbackCollection[];
+  bundles?: readonly BriefingBundle[];
   loadError?: string | null;
   hidden?: boolean;
   selectedCollectionId: string | null;
@@ -33,6 +41,7 @@ export type CollectionsSidebarProps = {
 
 export function CollectionsSidebar({
   collections,
+  bundles = [],
   loadError = null,
   hidden = false,
   selectedCollectionId,
@@ -46,19 +55,40 @@ export function CollectionsSidebar({
     () => new Set(viewState.pinnedCollectionIds),
     [viewState.pinnedCollectionIds],
   );
-  const ordered = useMemo(() => orderFeedbackCollections(
+  const filtered = useMemo(() => (
     filterFeedbackCollections(collections, viewState.collectionSourceFilter)
-      .filter((collection) => !viewState.pinnedOnly || pinned.has(collection.id)),
+      .filter((collection) => !viewState.pinnedOnly || pinned.has(collection.id))
+  ), [collections, viewState.collectionSourceFilter, viewState.pinnedOnly, pinned]);
+  const ordered = useMemo(() => orderFeedbackCollections(
+    filtered,
     viewState.pinnedCollectionIds,
     viewState.collectionSort,
   ), [
-    collections,
-    viewState.collectionSourceFilter,
-    viewState.pinnedOnly,
+    filtered,
     viewState.collectionSort,
     viewState.pinnedCollectionIds,
-    pinned,
   ]);
+  const filteredIds = useMemo(() => new Set(filtered.map((collection) => collection.id)), [filtered]);
+  const bundledIds = useMemo(() => new Set(
+    bundles.flatMap((bundle) => bundle.members.map((member) => member.briefing.id)),
+  ), [bundles]);
+  const visibleBundles = useMemo(() => bundles.map((bundle) => ({
+    ...bundle,
+    members: bundle.members.filter((member) => filteredIds.has(member.briefing.id)),
+  })).filter((bundle) => bundle.members.length > 0 || !viewState.collectionSourceFilter.trim()), [
+    bundles,
+    filteredIds,
+    viewState.collectionSourceFilter,
+  ]);
+  const unbundled = useMemo(() => ordered.filter((collection) => !bundledIds.has(collection.id)), [ordered, bundledIds]);
+  const collapsedBundles = useMemo(() => new Set(viewState.collapsedBundleIds), [viewState.collapsedBundleIds]);
+  const bundleExpanded = (bundleId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedBundles.has(bundleId);
+  const navigationRows = useMemo(() => [
+    ...visibleBundles.flatMap((bundle) => bundleExpanded(bundle.id)
+      ? bundle.members.map((member) => ({ key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing }))
+      : []),
+    ...unbundled.map((collection) => ({ key: `briefing:${collection.id}`, collection })),
+  ], [visibleBundles, unbundled, collapsedBundles, viewState.collectionSourceFilter]);
   const visiblePinned = useMemo(
     () => ordered.filter((collection) => pinned.has(collection.id)),
     [ordered, pinned],
@@ -66,16 +96,14 @@ export function CollectionsSidebar({
   const visiblePinnedIndexes = new Map(
     visiblePinned.map((collection, index) => [collection.id, index]),
   );
-  const navigableIds = new Set(ordered.map((collection) => collection.id));
+  const selectedNavigationKey = navigationRows.find((row) => row.collection.id === selectedCollectionId)?.key ?? null;
   const listNavigation = useSidebarListNavigation({
-    items: ordered,
-    getKey: (collection) => collection.id,
-    selectedKey: selectedCollectionId && navigableIds.has(selectedCollectionId)
-      ? selectedCollectionId
-      : null,
-    onSelect,
+    items: navigationRows,
+    getKey: (row) => row.key,
+    selectedKey: selectedNavigationKey,
+    onSelect: (row) => onSelect(row.collection),
   });
-  const navigationIndex = new Map(ordered.map((collection, index) => [collection.id, index]));
+  const navigationIndex = new Map(navigationRows.map((row, index) => [row.key, index]));
   const activeFilterCount = Number(viewState.pinnedOnly) + Number(viewState.collectionSort !== 'activity');
 
   const togglePin = (collectionId: string) => {
@@ -105,15 +133,29 @@ export function CollectionsSidebar({
     });
   };
 
+  const toggleBundle = (bundleId: string) => {
+    setViewState((current) => ({
+      ...current,
+      collapsedBundleIds: current.collapsedBundleIds.includes(bundleId)
+        ? current.collapsedBundleIds.filter((id) => id !== bundleId)
+        : [...current.collapsedBundleIds, bundleId],
+    }));
+  };
+
   const copyBriefingLink = (briefingId: string) => {
     const target = new URL(briefingRoute(briefingId), window.location.origin).href;
     navigator.clipboard?.writeText(target).catch(() => {});
   };
 
-  const renderCollection = (collection: FeedbackCollection, pinnedIndex: number | null) => {
+  const renderCollection = (
+    occurrence: BriefingSidebarOccurrence,
+    pinnedIndex: number | null,
+    reorderable = true,
+  ) => {
+    const collection = occurrence.collection;
     const navigation = listNavigation.getItemNavigationProps(
-      collection,
-      navigationIndex.get(collection.id) ?? 0,
+      occurrence,
+      navigationIndex.get(occurrence.key) ?? 0,
     );
     const isPinned = pinnedIndex !== null;
     const overflowActions: SidebarItemOverflowAction[] = [{
@@ -122,7 +164,7 @@ export function CollectionsSidebar({
       ariaLabel: `Copy link to ${collection.label}`,
       onSelect: () => copyBriefingLink(collection.collectionId),
     }];
-    if (isPinned) {
+    if (isPinned && reorderable) {
       overflowActions.push(
         {
           id: 'move-up',
@@ -142,25 +184,25 @@ export function CollectionsSidebar({
     }
     return (
       <li
-        key={collection.id}
+        key={occurrence.key}
         className={`feedback-collection-row${isPinned ? ' feedback-collection-row--pinned' : ''}${draggedPinnedId === collection.id ? ' feedback-collection-row--dragging' : ''}`}
-        draggable={isPinned}
-        onDragStart={isPinned ? (event) => {
+        draggable={isPinned && reorderable}
+        onDragStart={isPinned && reorderable ? (event) => {
           setDraggedPinnedId(collection.id);
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', collection.id);
         } : undefined}
-        onDragOver={isPinned ? (event) => {
+        onDragOver={isPinned && reorderable ? (event) => {
           event.preventDefault();
           event.dataTransfer.dropEffect = 'move';
         } : undefined}
-        onDrop={isPinned ? (event) => {
+        onDrop={isPinned && reorderable ? (event) => {
           event.preventDefault();
           const movedId = draggedPinnedId || event.dataTransfer.getData('text/plain');
           if (movedId) movePinned(movedId, pinnedIndex);
           setDraggedPinnedId(null);
         } : undefined}
-        onDragEnd={isPinned ? () => setDraggedPinnedId(null) : undefined}
+        onDragEnd={isPinned && reorderable ? () => setDraggedPinnedId(null) : undefined}
       >
         <SidebarItemRow
           tabIndex={navigation.tabIndex}
@@ -282,7 +324,7 @@ export function CollectionsSidebar({
               {loadError}
             </p>
           </div>
-        ) : ordered.length === 0 ? (
+        ) : visibleBundles.length === 0 && unbundled.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="status">
               {collections.length === 0
@@ -291,12 +333,41 @@ export function CollectionsSidebar({
             </p>
           </div>
         ) : (
-          <ul className="feedback-collections-sidebar__list">
-            {ordered.map((collection) => {
-              const pinnedIndex = visiblePinnedIndexes.get(collection.id);
-              return renderCollection(collection, pinnedIndex ?? null);
+          <>
+            {visibleBundles.map((bundle) => {
+              const expanded = bundleExpanded(bundle.id);
+              return (
+                <SidebarGroupNode
+                  key={bundle.id}
+                  id={`briefing-bundle-${bundle.id}`}
+                  presentation="folder"
+                  bodyAs="ul"
+                  bodyClassName="feedback-collections-sidebar__list"
+                  label={bundle.name}
+                  count={bundle.members.length}
+                  countLabel={`${bundle.members.length} Briefing${bundle.members.length === 1 ? '' : 's'} in ${bundle.name}`}
+                  countVisibility="interaction"
+                  expanded={expanded}
+                  onToggle={() => toggleBundle(bundle.id)}
+                  leadingIcon={<SidebarBriefingBundleIcon expanded={expanded} />}
+                >
+                  {bundle.members.map((member) => renderCollection(
+                    { key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing },
+                    visiblePinnedIndexes.get(member.briefing.id) ?? null,
+                    false,
+                  ))}
+                </SidebarGroupNode>
+              );
             })}
-          </ul>
+            {unbundled.length > 0 ? (
+              <ul className="feedback-collections-sidebar__list">
+                {unbundled.map((collection) => renderCollection(
+                  { key: `briefing:${collection.id}`, collection },
+                  visiblePinnedIndexes.get(collection.id) ?? null,
+                ))}
+              </ul>
+            ) : null}
+          </>
         )}
       </div>
     </ViewSidebar>

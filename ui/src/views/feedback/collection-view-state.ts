@@ -9,11 +9,13 @@ export type BriefingCollectionViewState = {
   collectionSort: BriefingCollectionSort;
   pinnedCollectionIds: string[];
   pinnedSectionCollapsed: boolean;
+  collapsedBundleIds: string[];
   selectedCollectionId: string | null;
   selectedRoundIds: Record<string, string>;
 };
 export const DEFAULT_BRIEFING_COLLECTION_VIEW_STATE: BriefingCollectionViewState = {
   collectionSourceFilter: '', pinnedOnly: false, collectionSort: 'activity', pinnedCollectionIds: [], pinnedSectionCollapsed: false,
+  collapsedBundleIds: [],
   selectedCollectionId: null, selectedRoundIds: {},
 };
 export function normalizeBriefingCollectionViewState(value: unknown): BriefingCollectionViewState {
@@ -28,6 +30,7 @@ export function normalizeBriefingCollectionViewState(value: unknown): BriefingCo
       : 'activity',
     pinnedCollectionIds: normalizeOrderedPinIds(rawPins),
     pinnedSectionCollapsed: row.pinnedSectionCollapsed === true,
+    collapsedBundleIds: normalizeOrderedPinIds(Array.isArray(row.collapsedBundleIds) ? row.collapsedBundleIds : []),
     selectedCollectionId: typeof row.selectedCollectionId === 'string' && row.selectedCollectionId.trim() ? row.selectedCollectionId : null,
     selectedRoundIds: Object.fromEntries(Object.entries(rawRounds).filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === 'string' && Boolean(entry[1].trim())).slice(0, 1000)),
   };
