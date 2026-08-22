@@ -591,7 +591,7 @@ function effectiveAnnotations(db: Db, roundId: string, actorUserId: string) {
 export function readBriefing(
   db: Db,
   briefingId: string,
-  options: { roundId?: string; actorUserId: string; operator: boolean },
+  options: { roundId?: string; submissionId?: string; actorUserId: string; operator: boolean },
 ) {
   const briefing = db.prepare(
     `SELECT id, briefing_key, title, latest_round_id, round_count, created_at, updated_at
@@ -661,6 +661,67 @@ export function readBriefing(
       "SELECT annotation_event_id FROM briefing_submission_annotations WHERE submission_id = ? ORDER BY position",
     ).all(latestSubmission.id) as Array<{ annotation_event_id: string }>).map((row) => row.annotation_event_id),
   } : null;
+  const submissionOverlays = db.prepare(
+    `SELECT s.id, s.ordinal, s.supersedes_submission_id, s.actor_user_id, s.created_at,
+            u.slug AS actor_slug, u.display_name AS actor_display_name,
+            (SELECT COUNT(*) FROM briefing_submission_answers a WHERE a.submission_id = s.id) AS answer_count,
+            (SELECT COUNT(*) FROM briefing_submission_annotations a WHERE a.submission_id = s.id) AS annotation_count
+       FROM briefing_submissions s
+       JOIN users u ON u.id = s.actor_user_id
+      WHERE s.round_id = ? AND s.briefing_id = ?
+      ORDER BY s.created_at DESC, s.ordinal DESC, s.id`,
+  ).all(selected.id, briefingId) as Array<{
+    id: string; ordinal: number; supersedes_submission_id: string | null; actor_user_id: string; created_at: number;
+    actor_slug: string; actor_display_name: string | null; answer_count: number; annotation_count: number;
+  }>;
+  let selectedSubmissionOverlay: null | Record<string, unknown> = null;
+  if (options.submissionId) {
+    const summary = submissionOverlays.find((submission) => submission.id === options.submissionId);
+    if (!summary) {
+      throw new BriefingStoreError(
+        "submission overlay not found for selected round",
+        404,
+        "submission_overlay_not_found",
+      );
+    }
+    const frozenAnswers = db.prepare(
+      `SELECT a.directive_instance_id, a.response_event_id, i.directive_key,
+              e.value_json, e.created_at, d.response_type, d.options_json, d.variants_json
+         FROM briefing_submission_answers a
+         JOIN briefing_directive_instances i ON i.id = a.directive_instance_id
+         JOIN briefing_directive_definitions d ON d.id = i.definition_id
+         JOIN briefing_response_events e ON e.id = a.response_event_id
+        WHERE a.submission_id = ? AND a.round_id = ? AND a.actor_user_id = ?
+        ORDER BY a.position`,
+    ).all(summary.id, selected.id, summary.actor_user_id) as Array<{
+      directive_instance_id: string; response_event_id: string; directive_key: string; value_json: string;
+      created_at: number; response_type: FeedbackResponseType; options_json: string; variants_json: string;
+    }>;
+    const answers = frozenAnswers.map(({ value_json, response_type, options_json, variants_json, ...answer }) => ({
+      ...answer,
+      value: validateValue(response_type, JSON.parse(value_json), options_json, variants_json),
+    }));
+    const annotations = db.prepare(
+      `SELECT e.id AS annotation_event_id, e.annotation_kind, e.start_offset, e.end_offset,
+              e.quote, e.body, e.replacement_text, e.created_at
+         FROM briefing_submission_annotations a
+         JOIN briefing_annotation_events e ON e.id = a.annotation_event_id
+        WHERE a.submission_id = ? AND a.round_id = ? AND a.actor_user_id = ?
+        ORDER BY a.position`,
+    ).all(summary.id, selected.id, summary.actor_user_id);
+    selectedSubmissionOverlay = {
+      id: summary.id,
+      ordinal: summary.ordinal,
+      supersedes_submission_id: summary.supersedes_submission_id,
+      actor_user_id: summary.actor_user_id,
+      actor: { slug: summary.actor_slug, display_name: summary.actor_display_name },
+      created_at: summary.created_at,
+      answer_count: summary.answer_count,
+      annotation_count: summary.annotation_count,
+      answers,
+      annotations,
+    };
+  }
   let projectedAnswers: ReturnType<typeof validatedEffectiveAnswers> = [];
   let projectionError: string | null = null;
   if (verification.valid) {
@@ -689,6 +750,17 @@ export function readBriefing(
       annotations: projectionValid ? effectiveAnnotations(db, selected.id, options.actorUserId) : [],
       latest_submission: projectionValid ? latestSubmission ?? null : null,
       latest_frozen_membership: projectionValid ? latestFrozenMembership : null,
+      submission_overlays: projectionValid ? submissionOverlays.map((submission) => ({
+        id: submission.id,
+        ordinal: submission.ordinal,
+        supersedes_submission_id: submission.supersedes_submission_id,
+        actor_user_id: submission.actor_user_id,
+        actor: { slug: submission.actor_slug, display_name: submission.actor_display_name },
+        created_at: submission.created_at,
+        answer_count: submission.answer_count,
+        annotation_count: submission.annotation_count,
+      })) : [],
+      selected_submission_overlay: projectionValid ? selectedSubmissionOverlay : null,
     },
   };
 }
@@ -958,6 +1030,9 @@ export function submitBriefingRound(
     const suppliedAnnotationIds = [...new Set(body.annotation_event_ids as string[])].sort();
     if (canonical(currentAnnotationIds) !== canonical(suppliedAnnotationIds)) {
       throw new BriefingStoreError("submitted annotations must exactly match current effective annotations", 409, "stale_submission_annotations");
+    }
+    if (current.length === 0 && currentAnnotationIds.length === 0) {
+      throw new BriefingStoreError("submission must contain at least one answer or annotation", 409, "submission_empty");
     }
     const latest = db.prepare(
       `SELECT id FROM briefing_submissions WHERE round_id = ? AND actor_user_id = ? ORDER BY ordinal DESC LIMIT 1`,

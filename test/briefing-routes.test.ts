@@ -181,6 +181,24 @@ describe("plural Briefing routes", () => {
       credential: "human", body: { answers: [{ directive_key: "paper", response_event_id: responseEventId }],
         annotation_event_ids: [annotationEventId], supersedes_submission_id: null } });
     expect(submitted).toMatchObject({ status: 200, body: { ordinal: 1, actor_user_id: humanId } });
+    const submissionId = (submitted.body as { submission_id: string }).submission_id;
+    expect(await router.invoke({
+      method: "GET",
+      url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}&submission=${submissionId}`,
+      credential: "human",
+    })).toMatchObject({
+      status: 200,
+      body: { selected_round: {
+        id: ids.round_id,
+        submission_overlays: [{ id: submissionId, annotation_count: 1, answer_count: 1 }],
+        selected_submission_overlay: {
+          id: submissionId,
+          actor_user_id: humanId,
+          answers: [{ response_event_id: responseEventId }],
+          annotations: [{ annotation_event_id: annotationEventId }],
+        },
+      } },
+    });
     expect(vi.mocked(broadcast).mock.calls).toEqual(expect.arrayContaining([
       ["briefing:created", { briefing_id: ids.briefing_id }],
       ["briefing:round-published", { briefing_id: ids.briefing_id, round_id: ids.round_id }],

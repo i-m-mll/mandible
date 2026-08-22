@@ -111,6 +111,7 @@ function typedDetail(roundId: string, annotations: unknown[] = []) {
         body_start_offset: directive.body_start_offset, body_end_offset: directive.body_end_offset,
       })),
       answers: [], annotations, latest_submission: null, latest_frozen_membership: null,
+      submission_overlays: [], selected_submission_overlay: null,
     },
   };
 }
@@ -136,6 +137,12 @@ function selectedRound(roundId: string, artifactVersion: string, submitted = fal
       directive_key: 'decision', response_type: 'verdict', value: { verdict: 'keep' }, created_at: 1 }] : [],
     annotations: [], latest_submission: submitted ? { id: `submission-${roundId}`, ordinal: 1 } : null,
     latest_frozen_membership: submitted ? { answer_event_ids: ['answer-old'], annotation_event_ids: [] } : null,
+    submission_overlays: submitted ? [{
+      id: `submission-${roundId}`, ordinal: 1, supersedes_submission_id: null,
+      actor_user_id: 'human', actor: { slug: 'human', display_name: 'Human' }, created_at: 1,
+      answer_count: 1, annotation_count: 0,
+    }] : [],
+    selected_submission_overlay: null,
   };
 }
 
@@ -201,6 +208,66 @@ describe('artifact-backed Briefing rounds', () => {
       },
     });
     expect(projection).not.toHaveProperty('latest_submission');
+  });
+
+  it('keeps the submission shelf folded, sorts summaries, and renders a selected frozen overlay view-only', async () => {
+    const older = {
+      id: 'submission-old', ordinal: 1, supersedes_submission_id: null,
+      actor_user_id: 'amy-id', actor: { slug: 'amy', display_name: 'Amy' }, created_at: 100,
+      answer_count: 1, annotation_count: 3,
+    };
+    const newer = {
+      id: 'submission-new', ordinal: 2, supersedes_submission_id: 'submission-old',
+      actor_user_id: 'zed-id', actor: { slug: 'zed', display_name: 'Zed' }, created_at: 200,
+      answer_count: 1, annotation_count: 1,
+    };
+    const requested: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url.startsWith(`/api/briefings/briefing-1?round=${ROUND_ONE}`)) {
+        const payload = detail(ROUND_ONE) as any;
+        payload.selected_round.submission_overlays = [newer, older];
+        payload.selected_round.selected_submission_overlay = url.includes('submission=submission-new') ? {
+          ...newer,
+          answers: [{
+            directive_instance_id: `item-${ROUND_ONE}`, directive_key: 'decision',
+            response_event_id: 'answer-frozen-dismiss', value: { verdict: 'dismiss' }, created_at: 200,
+          }],
+          annotations: [],
+        } : null;
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: {
+        artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown',
+        size_bytes: new TextEncoder().encode(source.replace('Intro', 'First')).byteLength, source: null,
+        preview: { encoding: 'utf-8', text: source.replace('Intro', 'First'), raw_text: source.replace('Intro', 'First'), truncated: false },
+        download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' },
+      } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} />
+    </AppShellProvider>);
+    await screen.findByText('First');
+    const shelf = screen.getByText('Submissions (2)').closest('details') as HTMLDetailsElement;
+    expect(shelf.open).toBe(false);
+    fireEvent.click(within(shelf).getByText('Submissions (2)'));
+    expect(within(shelf).getAllByRole('button', { name: /^View submission/ }).map((button) => button.getAttribute('aria-label')))
+      .toEqual(['View submission by Zed', 'View submission by Amy']);
+    fireEvent.click(within(shelf).getByRole('button', { name: 'Actor' }));
+    expect(within(shelf).getAllByRole('button', { name: /^View submission/ }).map((button) => button.getAttribute('aria-label')))
+      .toEqual(['View submission by Amy', 'View submission by Zed']);
+    fireEvent.click(within(shelf).getByRole('button', { name: 'View submission by Zed' }));
+    expect(await screen.findByText('Viewing immutable submission by Zed.')).toBeTruthy();
+    expect(requested).toContain(`/api/briefings/briefing-1?round=${ROUND_ONE}&submission=submission-new`);
+    const dismiss = screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement;
+    expect(dismiss.disabled).toBe(true);
+    expect(dismiss.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Return to draft' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it('normalizes ordered v3 text variants with exact Markdown bodies and ranges', () => {
@@ -561,7 +628,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'Dismiss' }).getAttribute('aria-pressed')).toBe('false');
-    expect(screen.getByRole('button', { name: 'Submit correction' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
     expect(screen.getByText(/No answer or annotation changes/)).toBeTruthy();
     expect(screen.queryByText(/producer|finding/i)).toBeNull();
     expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE });
@@ -645,7 +712,7 @@ describe('artifact-backed Briefing rounds', () => {
     }));
     render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: action }));
-    const submit = screen.getByRole('button', { name: 'Submit correction' });
+    const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(submit);
     await waitFor(() => expect(posts.length).toBeGreaterThanOrEqual(2));
@@ -817,6 +884,9 @@ describe('artifact-backed Briefing rounds', () => {
       </AppShellProvider>);
 
       expect((await screen.findByLabelText('Pinned briefing document')).textContent).toContain('Review this paragraph.');
+      const submit = screen.getByRole('button', { name: 'Submit' });
+      expect(submit.getAttribute('aria-disabled')).toBe('true');
+      expect(submit.getAttribute('title')).toBe('Add an answer or annotation before submitting.');
       const comment = await screen.findByRole('button', { name: 'Comment on section Policy' }) as HTMLButtonElement;
       await waitFor(() => expect(comment.disabled).toBe(false));
       fireEvent.click(comment);
@@ -824,6 +894,17 @@ describe('artifact-backed Briefing rounds', () => {
       fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
       expect((await screen.findAllByRole('button', { name: /Annotation-only review note/ })).length).toBeGreaterThan(0);
+      await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
+      fireEvent.click(submit);
+      const copyResult = await screen.findByRole('button', { name: 'Copy result ID' });
+      expect(copyResult.classList.contains('btn--success')).toBe(true);
+      expect(copyResult.nextElementSibling).toBe(screen.getByRole('button', { name: 'Submit' }));
+      expect((await screen.findByText('Submissions (1)')).closest('details')?.hasAttribute('open')).toBe(false);
+      expect(screen.queryByRole('button', { name: /Annotation-only review note/ })).toBeNull();
+      const writeText = vi.fn(async () => undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      fireEvent.click(copyResult);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.any(String)));
       const detail = await preview.invoke({
         method: 'GET', url: `/api/briefings/${ids.briefing_id}?round=${ids.round_id}`,
         credential: 'annotation-human', transport: 'http',
@@ -942,7 +1023,7 @@ describe('artifact-backed Briefing rounds', () => {
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
-      await screen.findByRole('button', { name: 'Submit correction' });
+      await waitFor(() => expect(mutationResponses).toHaveLength(3));
       expect(mutationResponses).toEqual([
         { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/annotations`, status: 200 },
         { url: `/api/briefings/${firstIds.briefing_id}/rounds/${firstIds.round_id}/answers`, status: 200 },
@@ -1068,7 +1149,7 @@ describe('artifact-backed Briefing rounds', () => {
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
-      await screen.findByRole('button', { name: 'Submit correction' });
+      await waitFor(() => expect(mutationResponses).toHaveLength(3));
       expect(mutationResponses).toEqual([
         { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`, status: 200 },
         { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`, status: 200 },
@@ -1112,7 +1193,7 @@ describe('artifact-backed Briefing rounds', () => {
       const reloadedView = render(shell());
       await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
       expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true);
-      expect(screen.getByRole('button', { name: 'Submit correction' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);
       reloadedView.unmount();
 

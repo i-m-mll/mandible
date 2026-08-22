@@ -15,13 +15,14 @@ export type BriefingViewProps = {
   initialRoundId?: string | null;
   sidebarHidden?: boolean;
   nowMs?: number;
+  keepSubmittedAnnotations?: boolean;
 };
 
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
   window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
 }
 
-export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs }: BriefingViewProps): JSX.Element {
+export function BriefingView({ instance, initialBriefingId, initialRoundId, sidebarHidden = false, nowMs, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const [briefings, setBriefings] = useState<FeedbackCollection[]>(() => getCachedBriefings(nowMs) ?? []);
@@ -113,6 +114,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
           briefingTitle={selected.label}
           roundId={explicitRoundId}
           instance={instance}
+          keepSubmittedAnnotations={keepSubmittedAnnotations}
           onRoundChange={selectRound}
         />
       )}

@@ -51,6 +51,7 @@ import {
   installClientAuthFetch,
 } from './client-auth-token';
 import { recoverDesktopLoginAutomatically } from './desktop-login';
+import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
 import { DesktopLoginStatus } from './components/DesktopLoginStatus';
 import {
   daemonEpochChanged,
@@ -2647,6 +2648,7 @@ function App(): JSX.Element {
           return (
             <LazyBriefingView
               instance={instanceInfo}
+              keepSubmittedAnnotations={keepSubmittedBriefingAnnotations(state.settings)}
               initialBriefingId={tabRoute.params.briefing ?? null}
               initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
