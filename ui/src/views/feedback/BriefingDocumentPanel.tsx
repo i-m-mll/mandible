@@ -10,6 +10,7 @@ import {
   type BriefingRoundProjection,
 } from '../../api';
 import { renderMarkdown } from '../../lib/markdown';
+import { renderMarkdownFrontmatter } from '../../lib/markdownFrontmatter';
 import { ContextualAction } from '../../components/shared/ContextualAction';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import {
@@ -104,7 +105,8 @@ function renderBriefingProse(value: string): string {
 }
 
 function semanticElements(document: Document, kind: BriefingMarkdownEntityKind): HTMLElement[] {
-  const selector = kind === 'heading' ? 'h1, h2, h3, h4, h5, h6'
+  const selector = kind === 'frontmatter' ? '.markdown-frontmatter'
+    : kind === 'heading' ? 'h1, h2, h3, h4, h5, h6'
     : kind === 'paragraph' ? 'p'
       : kind === 'list-item' ? 'li'
         : kind === 'table' ? 'table'
@@ -142,6 +144,9 @@ function renderSourceMappedMarkdown(
   changedEntityIndexes: readonly number[] = [],
 ): string {
   const document = new DOMParser().parseFromString(renderBriefingProse(model.markdown), 'text/html');
+  if (model.frontmatter) {
+    document.body.insertAdjacentHTML('afterbegin', renderMarkdownFrontmatter(model.frontmatter));
+  }
   const elementsByKind = new Map<BriefingMarkdownEntityKind, HTMLElement[]>();
   const kindCursors = new Map<BriefingMarkdownEntityKind, number>();
   const blockElements = model.blocks.map((block) => {
@@ -166,7 +171,9 @@ function renderSourceMappedMarkdown(
       element.classList.add('briefing-markdown__entity--changed');
       element.dataset.briefingChangedOrder = String(changedOrder);
       element.tabIndex = -1;
-      element.setAttribute('aria-label', `Changed ${entity.kind}: ${entity.label}`);
+      element.setAttribute('aria-label', entity.kind === 'frontmatter'
+        ? 'Changed document metadata'
+        : `Changed ${entity.kind}: ${entity.label}`);
     }
     actionHost(document, element, 'briefingEntityAction', entityIndex);
     if (annotations.some((annotation) => annotation.start_offset < entity.end && annotation.end_offset > entity.start)) {
@@ -280,7 +287,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const [selectedDirectiveId, setSelectedDirectiveId] = useState<string | null>(null);
   const [textEdits, setTextEdits] = useState<Record<string, string>>({});
   const [portalRevision, setPortalRevision] = useState(0);
-  const [currentChangedIndex, setCurrentChangedIndex] = useState(0);
+  const [currentChangedIndex, setCurrentChangedIndex] = useState(-1);
   const contentRef = useRef<HTMLElement>(null);
   const renderedRef = useRef<HTMLDivElement>(null);
 
@@ -383,7 +390,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const renderedMarkdown = useMemo(() => markdownModel
     ? renderSourceMappedMarkdown(markdownModel, annotations, changedEntityIndexes)
     : '', [annotations, changedEntityIndexes, markdownModel]);
-  useEffect(() => { setCurrentChangedIndex(0); }, [documentKey, changedEntityIndexes.length]);
+  useEffect(() => { setCurrentChangedIndex(-1); }, [documentKey, changedEntityIndexes.length]);
   useLayoutEffect(() => {
     if (renderedMarkdown) setPortalRevision((revision) => revision + 1);
   }, [renderedMarkdown]);
@@ -608,7 +615,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     const directiveResponseHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-response]') ?? [];
     const navigateChanged = (delta: number) => {
       if (changedEntityIndexes.length === 0) return;
-      const next = (currentChangedIndex + delta + changedEntityIndexes.length) % changedEntityIndexes.length;
+      const next = currentChangedIndex < 0
+        ? (delta > 0 ? 0 : changedEntityIndexes.length - 1)
+        : (currentChangedIndex + delta + changedEntityIndexes.length) % changedEntityIndexes.length;
       setCurrentChangedIndex(next);
       const target = renderedRef.current?.querySelector<HTMLElement>(`[data-briefing-changed-order="${next}"]`);
       target?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
@@ -632,7 +641,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
         }}>
         {changedEntityIndexes.length > 0 ? (
           <nav className="briefing-document__change-navigation" aria-label="Changed proposed entities">
-            <span aria-live="polite">{changedEntityIndexes.length} changed</span>
+            <span aria-live="polite">{currentChangedIndex < 0
+              ? `${changedEntityIndexes.length} changed`
+              : `${currentChangedIndex + 1} of ${changedEntityIndexes.length} changed`}</span>
             <ContextualAction presentation="compact" aria-label="Previous changed entity" title="Previous changed entity"
               onClick={() => navigateChanged(-1)}><PreviousIcon /></ContextualAction>
             <ContextualAction presentation="compact" aria-label="Next changed entity" title="Next changed entity"
@@ -645,7 +656,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const annotationHost = Array.from(entityAnnotationHosts).find((candidate) => candidate.dataset.briefingEntityAnnotations === String(index));
           const heading = entity.kind === 'heading';
           return [host ? createPortal(
-            <ContextualAction aria-label={heading ? `Comment on section ${entity.label}` : `Comment on ${entity.kind}: ${entity.label}`}
+            <ContextualAction aria-label={heading ? `Comment on section ${entity.label}`
+              : entity.kind === 'frontmatter' ? 'Comment on document metadata'
+                : `Comment on ${entity.kind}: ${entity.label}`}
               title={heading ? 'Comment on whole section' : 'Comment on this Markdown block'}
               aria-expanded={editor?.start === entity.start}
               disabled={!canInteract} onClick={() => openEntityComment(index)}><CommentIcon /></ContextualAction>,

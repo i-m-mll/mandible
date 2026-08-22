@@ -202,6 +202,24 @@ describe('renderDocumentText (repo-authoritative doc path)', () => {
     expect(doc.isSpacesDoc).toBe(false);
   });
 
+  it('renders complete leading frontmatter as compact metadata without swallowing later rules', () => {
+    const doc = renderDocumentText('---\ntitle: Repo Doc\ntags:\n  - safe\n---\n\n# Body\n\n---\n\nAfter.');
+    render(<DocumentBody document={doc} />);
+
+    const metadata = screen.getByLabelText('Document metadata');
+    expect(metadata.textContent).toContain('title: Repo Doc');
+    expect(metadata.textContent).toContain('- safe');
+    expect(screen.getByRole('heading', { name: 'Body' })).toBeTruthy();
+    expect(screen.getByText('After.')).toBeTruthy();
+  });
+
+  it('does not reinterpret non-leading or unterminated fences as metadata', () => {
+    const nonLeading = renderDocumentText('# Body\n\n---\ntitle: prose\n---\n');
+    expect(nonLeading.html).not.toContain('markdown-frontmatter');
+    const unterminated = renderDocumentText('---\ntitle: prose\n');
+    expect(unterminated.html).not.toContain('markdown-frontmatter');
+  });
+
   it('renders spaces-doc.v1 text directly with block identity and the format marker', () => {
     const text = [
       '---',

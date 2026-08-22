@@ -54,6 +54,7 @@ import {
 import type { SpaceBlock } from '../../api';
 import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
+import { leadingMarkdownFrontmatter, renderMarkdownFrontmatter } from '../../lib/markdownFrontmatter';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import {
   documentStorageKey,
@@ -246,6 +247,7 @@ function linkifyLegacyArtifactHashRefs(html: string): string {
  */
 export function renderDocumentText(text: string): RenderedDocument {
   const parsed: ParsedDoc = parseSpacesDoc(text ?? '');
+  const frontmatter = leadingMarkdownFrontmatter(text ?? '');
   const blocks: RenderedBlock[] = parsed.blocks.map((b: ParsedDocBlock) => ({
     id: b.id,
     parentId: b.parentId,
@@ -257,7 +259,7 @@ export function renderDocumentText(text: string): RenderedDocument {
   return {
     format: parsed.format,
     blocks,
-    html: linkifyProse(parsed.html),
+    html: `${frontmatter ? renderMarkdownFrontmatter(frontmatter) : ''}${linkifyProse(parsed.html)}`,
     refs: parsed.refs,
     isSpacesDoc: parsed.format === SPACES_DOC_VERSION,
   };

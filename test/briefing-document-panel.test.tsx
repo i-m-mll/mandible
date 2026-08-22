@@ -226,6 +226,30 @@ describe('Briefing document panel', () => {
     expect(model.markdown).not.toContain(':::spec-item');
   });
 
+  it('source-maps only complete leading YAML frontmatter and keeps later rules as Markdown', () => {
+    const frontmatter = '---\ntitle: Review\ntags:\n  - markdown\n---\n';
+    const mappedSource = `${frontmatter}\n# Policy\n\nBody.\n\n---\n\nAfter rule.`;
+    const model = buildBriefingMarkdownModel(mappedSource, [], {});
+    const metadata = model.entities[0];
+
+    expect(metadata).toMatchObject({
+      kind: 'frontmatter',
+      start: 0,
+      end: frontmatter.length,
+      quote: frontmatter,
+      label: 'Metadata',
+    });
+    expect(model.markdown).toBe('\n# Policy\n\nBody.\n\n---\n\nAfter rule.');
+    expect(model.entities.filter((entity) => entity.kind === 'frontmatter')).toHaveLength(1);
+
+    const nonLeading = buildBriefingMarkdownModel('Intro.\n\n---\ntitle: Not metadata\n---\n', [], {});
+    expect(nonLeading.frontmatter).toBeNull();
+    expect(nonLeading.entities.some((entity) => entity.kind === 'frontmatter')).toBe(false);
+
+    const unterminated = buildBriefingMarkdownModel('---\ntitle: Still Markdown\n', [], {});
+    expect(unterminated.frontmatter).toBeNull();
+  });
+
   it('marks one modified proposed entity, preserves unchanged entities, and treats duplicate ambiguity as changed', () => {
     const base = buildBriefingMarkdownModel('# Policy\n\nOriginal wording.\n\nUnchanged.\n', [], {});
     const proposed = buildBriefingMarkdownModel('# Policy\n\nRevised wording.\n\nUnchanged.\n', [], {});
@@ -281,6 +305,56 @@ describe('Briefing document panel', () => {
     await screen.findByText('Revised wording.');
     expect(screen.queryByLabelText('Changed proposed entities')).toBeNull();
     expect(globalThis.document.querySelector('.briefing-markdown__entity--changed')).toBeNull();
+  });
+
+  it('renders frontmatter as metadata and navigates every comparison change sequentially', async () => {
+    const baseSource = '---\ntitle: Old\n---\n\n# Policy\n\nOne.\n\nTwo.\n';
+    const proposedSource = '---\ntitle: New\n---\n\n# Policy\n\nChanged one.\n\nChanged two.\n';
+    const comparisonRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:proposed-frontmatter',
+        content_hash: createHash('sha256').update(proposedSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v3',
+        source: proposedSource,
+        comparison_base: {
+          artifact_version_id: 'artifact-version:base-frontmatter',
+          content_hash: createHash('sha256').update(baseSource).digest('hex'),
+          source: baseSource,
+        },
+      },
+      items: [],
+    });
+    const rendered = render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
+      round={comparisonRound} canMutate onRefresh={async () => null} />);
+
+    const metadata = await screen.findByLabelText('Changed document metadata');
+    expect(metadata.textContent).toContain('title: New');
+    expect(metadata.textContent).not.toContain('---');
+    const changed = Array.from(rendered.container.querySelectorAll<HTMLElement>('[data-briefing-changed-order]'));
+    expect(changed).toHaveLength(3);
+
+    const next = screen.getByRole('button', { name: 'Next changed entity' });
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed[0]);
+    expect(screen.getByText('1 of 3 changed')).toBeTruthy();
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed[1]);
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed[2]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous changed entity' }));
+    expect(globalThis.document.activeElement).toBe(changed[1]);
+  });
+
+  it('keeps the change console persistent and list highlights non-additive', () => {
+    const navigationRule = briefingStylesheet.match(/\.briefing-document__change-navigation \{([^}]*)\}/)?.[1] ?? '';
+    const changedRule = briefingStylesheet.match(/\.briefing-markdown__entity--changed \{([^}]*)\}/)?.[1] ?? '';
+
+    expect(navigationRule).toContain('position: sticky');
+    expect(navigationRule).toContain('inset-block-start: var(--space-2)');
+    expect(changedRule).not.toContain('box-shadow');
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity--changed \.briefing-markdown__entity--changed \{[^}]*background: transparent/s);
   });
 
   it('keeps directive and ordinary list items in one rendered list with independent exact-range actions', async () => {
