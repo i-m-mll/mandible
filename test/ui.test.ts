@@ -11,12 +11,15 @@ import {
   selectBadgeCounts,
   parseAuthOutputEvent,
   parseAuthResolvedId,
+  loadCachedState,
+  saveCachedState,
   MAX_AUTH_OUTPUT_CHARS,
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
 import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
+  getSettings,
   invalidateApiGetCache,
   patchSession,
   updateConversation,
@@ -1014,6 +1017,127 @@ describe('app shell', () => {
     }));
     await act(async () => Promise.resolve());
     expect(settings.getCalls).toHaveBeenCalledTimes(2);
+  });
+
+  it('converges two simultaneous same-user clients on one event revision', async () => {
+    installMemoryLocalStorage();
+    const firstOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: [] },
+    });
+    const secondOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['graph', 'work'], secondary: [] },
+    });
+    const settings = stubRailSettingsFetch(firstOrder);
+    const events = stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h('div', {}, h(App, {}), h(App, {})));
+    const shells = Array.from(container.querySelectorAll<HTMLElement>('.app-shell'));
+    expect(shells).toHaveLength(2);
+
+    await waitFor(() => {
+      expect(railGroupLinks(shells[0]!, 'primary')[0]?.dataset.railItem).toBe('issues');
+      expect(railGroupLinks(shells[1]!, 'primary')[0]?.dataset.railItem).toBe('issues');
+    });
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+
+    settings.setRemote(secondOrder, 2);
+    act(() => events.emit({
+      type: 'user-setting:updated',
+      data: { version: 1, key: 'app_rail_order', revision: 2 },
+    }));
+    await waitFor(() => {
+      expect(railGroupLinks(shells[0]!, 'primary')[0]?.dataset.railItem).toBe('graph');
+      expect(railGroupLinks(shells[1]!, 'primary')[0]?.dataset.railItem).toBe('graph');
+    });
+    expect(settings.getCalls).toHaveBeenCalledTimes(4);
+  });
+
+  it('refetches the authenticated row when a missed-event client becomes visible again', async () => {
+    installMemoryLocalStorage();
+    const firstOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: [] },
+    });
+    const secondOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['tasks', 'spaces'], secondary: [] },
+    });
+    const settings = stubRailSettingsFetch(firstOrder);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
+    expect(settings.getCalls).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    settings.setRemote(secondOrder, 2);
+    fireEvent(document, new Event('visibilitychange'));
+    expect(settings.getCalls).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('tasks'));
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+  });
+
+  it('converges from the authenticated row during disconnected-stream recovery polling', async () => {
+    vi.useFakeTimers();
+    installMemoryLocalStorage();
+    const firstOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: [] },
+    });
+    const secondOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['tasks', 'spaces'], secondary: [] },
+    });
+    const settings = stubRailSettingsFetch(firstOrder);
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    const { container } = render(h(App, {}));
+
+    await vi.waitFor(() => {
+      expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues');
+    });
+    expect(settings.getCalls).toHaveBeenCalledTimes(1);
+
+    settings.setRemote(secondOrder, 2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('tasks');
+    expect(settings.getCalls).toHaveBeenCalledTimes(2);
+  });
+
+  it('quarantines legacy global and browser-cached rail order bytes', async () => {
+    const staleOrder = JSON.stringify({
+      version: 1,
+      groups: { primary: ['briefing'], secondary: [] },
+    });
+    installMemoryLocalStorage({
+      mandible_state_cache: JSON.stringify({
+        v: 2,
+        state: { settings: { app_theme: 'codex', app_rail_order: staleOrder } },
+      }),
+    });
+
+    expect(loadCachedState().settings).toEqual({ app_theme: 'codex' });
+    saveCachedState({
+      ...initialState,
+      settings: { app_theme: 'codex', app_rail_order: staleOrder },
+    });
+    expect(JSON.parse(window.localStorage.getItem('mandible_state_cache') ?? '{}')
+      .state.settings).toEqual({ app_theme: 'codex' });
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      app_theme: 'codex',
+      app_rail_order: staleOrder,
+    }), { headers: { 'content-type': 'application/json' } }))));
+    invalidateApiGetCache();
+    await expect(getSettings()).resolves.toEqual({ app_theme: 'codex' });
   });
 
   it('does not let a stale SSE refetch overwrite a newer local mutation', async () => {
