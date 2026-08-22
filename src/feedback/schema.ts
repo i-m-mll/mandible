@@ -1,3 +1,22 @@
+export const BRIEFING_BUNDLE_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS briefing_bundles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK(trim(name) != ''),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_bundle_members (
+    bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(bundle_id, briefing_id),
+    UNIQUE(bundle_id, position)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_bundle_members_briefing
+    ON briefing_bundle_members(briefing_id)`,
+];
+
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */
 export const BRIEFING_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefings (
@@ -279,6 +298,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     created_at INTEGER NOT NULL,
     UNIQUE(briefing_id, source_profile)
   )`,
+  ...BRIEFING_BUNDLE_SCHEMA_SQL,
 ];
 
 /** Historical v142 apply shape. It exists only long enough for v143 to seal and retire v1. */
@@ -321,7 +341,7 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_directive_instances", "briefing_runs", "briefing_run_occurrences",
   "briefing_response_events", "briefing_annotation_events", "briefing_submissions",
   "briefing_submission_answers", "briefing_submission_annotations", "briefing_legacy_audit",
-  "briefing_legacy_custody",
+  "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
 ];
 
 /** Child-first retirement of the pre-v142 kind-split feedback schema. */

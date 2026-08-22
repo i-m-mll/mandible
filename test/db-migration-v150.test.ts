@@ -13,8 +13,8 @@ describe("migration v150", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(150);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "150" });
+    expect(CURRENT_SCHEMA_VERSION).toBe(151);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "151" });
     expect(db.prepare("PRAGMA table_info(briefing_rounds)").all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "comparison_base_artifact_version_id", notnull: 0 }),
     ]));

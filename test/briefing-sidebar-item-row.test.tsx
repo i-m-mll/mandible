@@ -4,6 +4,7 @@ import { useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { briefingRoute } from '../ui/src/routing';
+import { normalizeBriefingBundles, type BriefingBundle } from '../ui/src/api';
 import { CollectionsSidebar } from '../ui/src/views/feedback/CollectionsSidebar';
 import {
   feedbackCollectionIdentity,
@@ -35,10 +36,12 @@ function Harness({
   initialViewState,
   selectedCollectionId = null,
   onSelect = () => undefined,
+  bundles = [],
 }: {
   initialViewState?: Partial<BriefingCollectionViewState>;
   selectedCollectionId?: string | null;
   onSelect?: (collection: FeedbackCollection) => void;
+  bundles?: BriefingBundle[];
 } = {}): JSX.Element {
   const [viewState, setViewState] = useState<BriefingCollectionViewState>({
     ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
@@ -49,6 +52,7 @@ function Harness({
     <>
       <CollectionsSidebar
         collections={collections}
+        bundles={bundles}
         selectedCollectionId={selectedCollectionId}
         viewState={viewState}
         setViewState={setViewState}
@@ -79,6 +83,53 @@ afterEach(() => {
 });
 
 describe('Briefing sidebar row actions', () => {
+  it('normalizes bundle membership by its stored manual position', () => {
+    const row = (id: string, title: string) => ({
+      id, title, briefing_key: id, latest_round_id: `round-${id}`, round_count: 1,
+      created_at: 1, updated_at: 1,
+    });
+    const normalized = normalizeBriefingBundles({ bundles: [{
+      id: 'bundle-1', name: 'Review set', created_at: 1, updated_at: 2,
+      members: [
+        { position: 1, briefing: row('second', 'Second') },
+        { position: 0, briefing: row('first', 'First') },
+      ],
+    }] });
+    expect(normalized[0].members.map((member) => member.briefing.label)).toEqual(['First', 'Second']);
+  });
+
+  it('renders ordered bundle members in the shared foldable folder presentation', () => {
+    const bundle: BriefingBundle = {
+      id: 'bundle-1', name: 'Agent policy review', createdAt: 1, updatedAt: 2,
+      members: [
+        { position: 0, briefing: collections[1] },
+        { position: 1, briefing: collections[0] },
+      ],
+    };
+    render(<Harness bundles={[bundle]} initialViewState={{ pinnedCollectionIds: [] }} />);
+
+    const toggle = screen.getByRole('button', { name: /Agent policy review/ });
+    const group = toggle.closest('.sidebar-group-node');
+    expect(group?.classList.contains('sidebar-group-node--folder')).toBe(true);
+    expect(group?.querySelector('[data-sidebar-group-icon="briefing-bundle"]')).toBeTruthy();
+    expect(within(group as HTMLElement).getAllByRole('button', { name: /Select briefing/ })
+      .map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Select briefing Second briefing',
+      'Select briefing First briefing',
+    ]);
+    expect(screen.getAllByRole('button', { name: /Select briefing/ })
+      .map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Select briefing Second briefing',
+      'Select briefing First briefing',
+      'Select briefing Third briefing',
+    ]);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').collapsedBundleIds)
+      .toEqual(['bundle-1']);
+  });
+
   it('normalizes persisted Briefing filters and sort to supported values', () => {
     expect(normalizeBriefingCollectionViewState({
       pinnedOnly: true,

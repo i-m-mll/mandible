@@ -31,7 +31,7 @@ describe('shared sidebar group presentation', () => {
       selectedCollectionId={briefing.id}
       viewState={{
         collectionSourceFilter: '', pinnedCollectionIds: [briefing.id],
-        pinnedSectionCollapsed: true, selectedCollectionId: briefing.id, selectedRoundIds: {},
+        pinnedSectionCollapsed: true, collapsedBundleIds: [], selectedCollectionId: briefing.id, selectedRoundIds: {},
       }}
       setViewState={() => undefined}
       onSelect={() => undefined}

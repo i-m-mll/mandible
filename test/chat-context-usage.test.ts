@@ -13,7 +13,7 @@ describe("chat context usage", () => {
       cache_read_input_tokens: 20,
       cache_creation_input_tokens: 30,
       output_tokens: 10,
-    })).toBe(150);
+    })).toBe(151);
   });
 
   it("prioritizes statusline over exact and approximate mirrors", () => {

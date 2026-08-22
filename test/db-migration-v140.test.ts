@@ -14,8 +14,8 @@ describe("migration v140: versioned conversation sources", () => {
   it("installs the additive durable schema and backfills legacy block aliases without deleting bodies", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(150);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "150" });
+    expect(BASELINE_SCHEMA_VERSION).toBe(151);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "151" });
     for (const table of [
       "conversation_sources",
       "conversation_source_aliases",

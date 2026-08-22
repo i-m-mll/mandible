@@ -211,7 +211,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
   it("completes v105 before applying a synthetic later migration", () => {
     const migrations = MIGRATIONS as Migration[];
     const realHead = migrations.pop();
-expect(realHead?.version).toBe(150);
+expect(realHead?.version).toBe(151);
     migrations.push({
       version: 150,
       name: "test_v105_ordering_boundary",
@@ -229,10 +229,10 @@ expect(realHead?.version).toBe(150);
         "SELECT value FROM meta WHERE key = 'test.v139.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "150",
+        value: "151",
       });
     } finally {
-      expect(migrations.pop()?.version).toBe(150);
+      expect(migrations.pop()?.version).toBe(151);
       if (realHead) migrations.push(realHead);
     }
   });
@@ -251,7 +251,7 @@ expect(realHead?.version).toBe(150);
     // migrations (v107-v111) and our additive v112, v113, and v114 columns,
     // advancing (never lowering) the schema version.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "150",
+value: "151",
     });
   });
 
@@ -318,7 +318,7 @@ value: "150",
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "150",
+value: "151",
     });
     expect(marker()).toEqual({ value: "done" });
 
