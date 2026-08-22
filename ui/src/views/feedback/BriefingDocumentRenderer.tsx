@@ -13,6 +13,7 @@ import {
   type BriefingResponseValue,
   type BriefingRoundSummary,
   type BriefingSubmissionAnswer,
+  type BriefingSubmissionOverlaySummary,
   type InstanceInfo,
 } from '../../api';
 import { useAppShell } from '../../app-shell';
@@ -40,9 +41,11 @@ export type BriefingDocumentRendererProps = {
   instance: InstanceInfo | null;
   onBriefingChange?(briefing: BriefingProjection | null): void;
   onRoundChange?(roundId: string | null): void;
+  keepSubmittedAnnotations?: boolean;
 };
 
 type LoadState = { round: BriefingProjection | null; loading: boolean; error: string | null };
+type SubmissionSort = { field: 'date' | 'actor' | 'annotations'; direction: 'asc' | 'desc' };
 
 function storageOrNull(): Storage | null {
   try {
@@ -117,6 +120,7 @@ export function BriefingDocumentRenderer({
   instance,
   onBriefingChange,
   onRoundChange,
+  keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
   const { active } = useAppShell();
   const [load, setLoad] = useState<LoadState>({ round: null, loading: true, error: null });
@@ -133,7 +137,13 @@ export function BriefingDocumentRenderer({
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+  const [hideSubmittedAnnotations, setHideSubmittedAnnotations] = useState(false);
+  const [resultId, setResultId] = useState<string | null>(null);
+  const [resultCopied, setResultCopied] = useState(false);
+  const [submissionSort, setSubmissionSort] = useState<SubmissionSort>({ field: 'date', direction: 'desc' });
   const headerRef = useRef<HTMLElement>(null);
+  const shelfBodyRef = useRef<HTMLDivElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const actionsMenuStyle = useAnchoredMenu({
@@ -144,15 +154,20 @@ export function BriefingDocumentRenderer({
   });
   const loadSequence = useRef(0);
   const mutationSequence = useRef(0);
-  const currentSelection = useRef(`${briefingId}:${roundId ?? 'latest'}`);
-  currentSelection.current = `${briefingId}:${roundId ?? 'latest'}`;
+  const selectionKey = (overlayId: string | null) => `${briefingId}:${roundId ?? 'latest'}:${overlayId ?? 'respond-now'}`;
+  const currentSelection = useRef(selectionKey(selectedOverlayId));
+  currentSelection.current = selectionKey(selectedOverlayId);
 
-  const reconcile = useCallback(async () => {
+  const reconcile = useCallback(async (overlayId: string | null = selectedOverlayId) => {
     const sequence = ++loadSequence.current;
+    const expectedSelection = selectionKey(overlayId);
     setLoad((current) => ({ ...current, loading: true, error: null }));
     try {
-      const [identity, round] = await Promise.all([getClientAuthWhoami(), getBriefing(briefingId, roundId)]);
-      if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
+      const [identity, round] = await Promise.all([
+        getClientAuthWhoami(),
+        getBriefing(briefingId, roundId, overlayId),
+      ]);
+      if (sequence !== loadSequence.current || currentSelection.current !== expectedSelection) return null;
       if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) throw new Error('The Briefing service returned a mismatched immutable round.');
       const nextUserId = identity.authenticated ? identity.user?.id ?? null : null;
       setUserId(nextUserId);
@@ -164,6 +179,7 @@ export function BriefingDocumentRenderer({
         ? `${nextUserId ?? 'memory'}:${storageScope.briefingId}:${storageScope.roundId}:${storageScope.artifactVersionId}:${storageScope.profile}`
         : null;
       setDraft((current) => {
+        if (round.selected_submission_overlay) return effectiveDraft(round.items);
         if (draftScope === nextDraftScope) return current;
         const stored = storageScope ? loadBriefingDraft(storageOrNull(), nextUserId, storageScope, round.items) : {};
         return Object.keys(stored).length > 0 ? stored : effectiveDraft(round.items);
@@ -171,7 +187,7 @@ export function BriefingDocumentRenderer({
       setDraftScope(nextDraftScope);
       return round;
     } catch (error) {
-      if (sequence !== loadSequence.current || currentSelection.current !== `${briefingId}:${roundId ?? 'latest'}`) return null;
+      if (sequence !== loadSequence.current || currentSelection.current !== expectedSelection) return null;
       const message = error instanceof Error ? error.message : String(error);
       setUserId(null);
       setUserKind(null);
@@ -179,7 +195,7 @@ export function BriefingDocumentRenderer({
       onBriefingChange?.(null);
       return null;
     }
-  }, [briefingId, draftScope, onBriefingChange, roundId]);
+  }, [briefingId, draftScope, onBriefingChange, roundId, selectedOverlayId]);
 
   useEffect(() => {
     loadSequence.current += 1;
@@ -194,8 +210,13 @@ export function BriefingDocumentRenderer({
     setStatus(null);
     setExportBusy(false);
     setExportError(null);
+    setSelectedOverlayId(null);
+    setHideSubmittedAnnotations(false);
+    setResultId(null);
+    setResultCopied(false);
+    currentSelection.current = selectionKey(null);
     onBriefingChange?.(null);
-    void reconcile();
+    void reconcile(null);
   }, [briefingId, roundId]);
 
   useEffect(() => {
@@ -224,11 +245,11 @@ export function BriefingDocumentRenderer({
 
   useEffect(() => {
     if (reload === 0 || !active) return;
-    void reconcile();
+    void reconcile(selectedOverlayId);
   }, [active, reload]);
 
   useEffect(() => {
-    if (!load.round) return;
+    if (!load.round || load.round.selected_submission_overlay) return;
     const scope = draftStorageScope(briefingId, load.round);
     const expected = scope ? `${userId ?? 'memory'}:${scope.briefingId}:${scope.roundId}:${scope.artifactVersionId}:${scope.profile}` : null;
     if (!scope || draftScope !== expected) return;
@@ -251,6 +272,7 @@ export function BriefingDocumentRenderer({
     !load.loading
     && load.error === null
     && round?.valid
+    && !round.selected_submission_overlay
     && round.briefing_id === briefingId
     && round.selected_round_id === round.round_id
     && (roundId ? round.selected_round_id.startsWith(roundId) : round.selected_round_id === round.latest_round_id)
@@ -271,6 +293,7 @@ export function BriefingDocumentRenderer({
     && currentAnnotationIds.length === round.latest_frozen_membership.annotation_event_ids.length
     && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
     && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
+  const emptyNoChange = !draftDiffers && currentAnswerIds.length === 0 && currentAnnotationIds.length === 0;
   const submitReason = !canMutate
     ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
     : round?.directive_binding?.status !== 'valid'
@@ -279,6 +302,7 @@ export function BriefingDocumentRenderer({
       : contentGate ? contentGate
       : busy ? 'Submitting changes…'
         : requiredIncomplete ? 'Complete the required directives before submitting.'
+          : emptyNoChange ? 'Add an answer or annotation before submitting.'
           : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
             : null;
 
@@ -287,7 +311,7 @@ export function BriefingDocumentRenderer({
     const mutation = ++mutationSequence.current;
     const submittedRoundId = round.selected_round_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
-      && currentSelection.current === `${briefingId}:${roundId ?? 'latest'}`;
+      && currentSelection.current === selectionKey(null);
     const invalid: Record<string, string> = {};
     for (const item of round.items) {
       if (item.item_kind !== 'item' || !item.revision.required) continue;
@@ -351,7 +375,7 @@ export function BriefingDocumentRenderer({
           });
         }
       }
-      await postBriefingSubmission(briefingId, submittedRoundId, {
+      const submission = await postBriefingSubmission(briefingId, submittedRoundId, {
         ...(round.latest_submission_for_actor
           ? { supersedes_submission_id: round.latest_submission_for_actor.id }
           : {}),
@@ -363,20 +387,62 @@ export function BriefingDocumentRenderer({
       const submittedScope = draftStorageScope(briefingId, round);
       if (submittedScope) saveBriefingDraft(storageOrNull(), userId, submittedScope, {});
       if (!mutationIsCurrent()) return;
-      const refreshed = await reconcile();
+      setSelectedOverlayId(null);
+      currentSelection.current = selectionKey(null);
+      setResultId(submission.submission_id);
+      setResultCopied(false);
+      setHideSubmittedAnnotations(!keepSubmittedAnnotations);
+      const refreshed = await reconcile(null);
       if (refreshed) setDraft(effectiveDraft(refreshed.items));
-      setStatus(round.state === 'submitted' ? 'Correction submitted.' : 'Answers submitted.');
+      window.requestAnimationFrame(() => shelfBodyRef.current?.scrollTo({ top: 0 }));
+      setStatus('Submitted.');
       setValidationErrors({});
     } catch (error) {
       if (!mutationIsCurrent()) return;
       setStatus(error instanceof Error ? error.message : String(error));
       // The answer batch may have landed even when submit failed. Refetch both
       // ordinary failures and 409s, preserving the unsaved local draft.
-      await reconcile();
+      await reconcile(selectedOverlayId);
       if (isApiErrorStatus(error, 409)) setStatus(`The round changed. ${error.message}`);
     } finally {
       if (mutationIsCurrent()) setBusy(false);
     }
+  };
+
+  const sortedSubmissionOverlays = useMemo(() => {
+    const rows = [...(round?.submission_overlays ?? [])];
+    const direction = submissionSort.direction === 'asc' ? 1 : -1;
+    return rows.sort((left, right) => {
+      let comparison = 0;
+      if (submissionSort.field === 'date') comparison = left.created_at - right.created_at;
+      else if (submissionSort.field === 'annotations') comparison = left.annotation_count - right.annotation_count;
+      else comparison = (left.actor.display_name || left.actor.slug).localeCompare(right.actor.display_name || right.actor.slug);
+      if (comparison === 0) comparison = left.ordinal - right.ordinal;
+      if (comparison === 0) comparison = left.id.localeCompare(right.id);
+      return comparison * direction;
+    });
+  }, [round?.submission_overlays, submissionSort]);
+
+  const toggleSubmissionSort = (field: SubmissionSort['field']) => {
+    setSubmissionSort((current) => current.field === field
+      ? { field, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+      : { field, direction: field === 'date' ? 'desc' : 'asc' });
+  };
+
+  const selectSubmissionOverlay = (submission: BriefingSubmissionOverlaySummary | null) => {
+    const overlayId = submission?.id ?? null;
+    setSelectedOverlayId(overlayId);
+    setHideSubmittedAnnotations(false);
+    setResultId(null);
+    currentSelection.current = selectionKey(overlayId);
+    void reconcile(overlayId);
+  };
+
+  const copyResultId = async () => {
+    if (!resultId || !navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(resultId);
+    setResultCopied(true);
+    window.setTimeout(() => setResultCopied(false), 1200);
   };
 
   const title = round?.title || briefingTitle || 'Briefing';
@@ -411,6 +477,9 @@ export function BriefingDocumentRenderer({
   const artifactVersionRef = artifactVersionId
     ? artifactVersionId.startsWith('artifact-version:') ? artifactVersionId : `artifact-version:${artifactVersionId}`
     : null;
+  const displayedRound = round && hideSubmittedAnnotations && !round.selected_submission_overlay
+    ? { ...round, annotations: [] }
+    : round;
   const body = load.loading && !round
     ? <div className="briefing-empty" role="status">Loading Briefing…</div>
     : load.error && !round
@@ -427,8 +496,14 @@ export function BriefingDocumentRenderer({
                   Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
                 </div>
               ) : null}
+              {round.selected_submission_overlay ? (
+                <div className="briefing-submission-overlay-notice" role="status">
+                  <span>Viewing immutable submission by {round.selected_submission_overlay.actor.display_name || round.selected_submission_overlay.actor.slug}.</span>
+                  <button type="button" className="btn btn--sm" onClick={() => selectSubmissionOverlay(null)}>Return to draft</button>
+                </div>
+              ) : null}
               {round.document ? (
-                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={round} canMutate={canMutate && !busy && contentGate === ''} draftIdentity={draftScope} onRefresh={reconcile}
+                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={displayedRound!} canMutate={canMutate && !busy && contentGate === ''} draftIdentity={draftScope} onRefresh={() => reconcile(selectedOverlayId)}
                   draft={draft}
                   validationErrors={validationErrors}
                   onDirectiveValue={setValue}
@@ -510,24 +585,75 @@ export function BriefingDocumentRenderer({
       )}
       footer={round?.valid ? {
         content: (
-          <>
-            <button
-              type="button"
-              className="briefing-primary"
-              aria-disabled={Boolean(submitReason)}
-              aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
-              title={submitReason ?? undefined}
-              onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
-              onKeyDown={(event) => {
-                if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
-                event.preventDefault();
-                void submit();
-              }}
-            >
-              {busy ? 'Submitting…' : round.latest_submission_for_actor ? 'Submit correction' : 'Submit'}
-            </button>
-            {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
-          </>
+          <div className="briefing-footer-content">
+            <div className="briefing-footer-actions">
+              {resultId ? (
+                <button type="button" className="btn btn--sm btn--success briefing-copy-result" onClick={() => void copyResultId()}>
+                  {resultCopied ? 'Copied result ID' : 'Copy result ID'}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="briefing-primary"
+                aria-disabled={Boolean(submitReason)}
+                aria-busy={busy}
+                aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
+                title={submitReason ?? undefined}
+                onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
+                onKeyDown={(event) => {
+                  if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  event.preventDefault();
+                  void submit();
+                }}
+              >
+                Submit
+              </button>
+              {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
+            </div>
+            <details className="briefing-submission-shelf">
+              <summary>Submissions ({round.submission_overlays.length})</summary>
+              <div ref={shelfBodyRef} className="briefing-submission-shelf__body">
+                {sortedSubmissionOverlays.length === 0 ? (
+                  <p className="briefing-submission-shelf__empty">No submissions for this round.</p>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th aria-sort={submissionSort.field === 'date' ? (submissionSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                          <button type="button" onClick={() => toggleSubmissionSort('date')}>Date</button>
+                        </th>
+                        <th aria-sort={submissionSort.field === 'actor' ? (submissionSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                          <button type="button" onClick={() => toggleSubmissionSort('actor')}>Actor</button>
+                        </th>
+                        <th aria-sort={submissionSort.field === 'annotations' ? (submissionSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                          <button type="button" onClick={() => toggleSubmissionSort('annotations')}>Annotations</button>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSubmissionOverlays.map((submission) => (
+                        <tr key={submission.id} className={selectedOverlayId === submission.id ? 'briefing-submission-shelf__row--selected' : undefined}>
+                          <td>
+                            <button
+                              type="button"
+                              className="briefing-submission-shelf__select"
+                              aria-pressed={selectedOverlayId === submission.id}
+                              aria-label={`View submission by ${submission.actor.display_name || submission.actor.slug}`}
+                              onClick={() => selectSubmissionOverlay(submission)}
+                            >
+                              {occurrenceDateTimeFormatter.format(new Date(submission.created_at))}
+                            </button>
+                          </td>
+                          <td>{submission.actor.display_name || submission.actor.slug}</td>
+                          <td>{submission.annotation_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </details>
+          </div>
         ),
       } : undefined}
       overlays={(

@@ -211,11 +211,16 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     try {
       const actor = activeHuman(db, req);
       const values = new URL(req.url, "http://localhost").searchParams.getAll("round");
+      const submissionValues = new URL(req.url, "http://localhost").searchParams.getAll("submission");
       if (values.length > 1 || (values.length === 1 && !values[0])) {
         throw new BriefingStoreError("round must be one nonblank round id");
       }
+      if (submissionValues.length > 1 || (submissionValues.length === 1 && !submissionValues[0])) {
+        throw new BriefingStoreError("submission must be one nonblank submission id");
+      }
       const projection = readBriefing(db, req.params.briefingId, {
         ...(values[0] ? { roundId: values[0] } : {}),
+        ...(submissionValues[0] ? { submissionId: submissionValues[0] } : {}),
         actorUserId: actor.user.id,
         operator: actor.operator,
       });

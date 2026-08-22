@@ -86,6 +86,9 @@ describe("artifact-backed Briefing rounds", () => {
       operator: false })).toMatchObject({ selected_round: { items: [], binding: { status: "valid" }, document: {
         comparison_base: { artifact_version_id: base.version.id, source: baseSource },
       } } });
+    expect(() => submitBriefingRound(db, receipt.briefing_id, receipt.round_id!, humanId, {
+      answers: [], annotation_event_ids: [], supersedes_submission_id: null,
+    })).toThrowError(expect.objectContaining({ code: "submission_empty" }));
     expect(() => publishBriefingRun(db, request("# Plain run\n"), publisherId)).toThrow(/no spec-item directives/);
   });
 
@@ -210,6 +213,27 @@ Review note prompt.
       supersedes_submission_id: submission.submission_id,
     }, 1_500);
     expect(corrected).toMatchObject({ ordinal: 2, supersedes_submission_id: submission.submission_id });
+    const history = readBriefing(db, first.briefing_id, {
+      roundId: first.round_id!, actorUserId: humanId, operator: false,
+    })!;
+    expect(history.selected_round.submission_overlays).toMatchObject([
+      { id: corrected.submission_id, ordinal: 2, actor: { display_name: "Human" }, answer_count: 1, annotation_count: 1 },
+      { id: submission.submission_id, ordinal: 1, actor: { display_name: "Human" }, answer_count: 1, annotation_count: 1 },
+    ]);
+    const frozen = readBriefing(db, first.briefing_id, {
+      roundId: first.round_id!, submissionId: submission.submission_id, actorUserId: humanId, operator: false,
+    })!;
+    expect(frozen.selected_round.selected_submission_overlay).toMatchObject({
+      id: submission.submission_id,
+      actor_user_id: humanId,
+      answers: [{ response_event_id: answer.response_event_id, value: { verdict: "keep" } }],
+      annotations: [{ annotation_event_id: annotations.annotation_event_ids[0], body: "Good framing" }],
+    });
+    const later = publishBriefingRun(db, request(undefined, { run_id: "run-2", run_key: "run-key-2" }), publisherId, 1_600);
+    expect(later.artifact_version_id).toBe(first.artifact_version_id);
+    expect(() => readBriefing(db, first.briefing_id, {
+      roundId: later.round_id!, submissionId: submission.submission_id, actorUserId: humanId, operator: false,
+    })).toThrowError(expect.objectContaining({ code: "submission_overlay_not_found" }));
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_response_events WHERE operation = 'set'").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 2 });
     expect(item.id).toBeTruthy();

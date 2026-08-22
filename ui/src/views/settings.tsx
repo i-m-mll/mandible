@@ -51,6 +51,7 @@ import {
   SIDEBAR_GROUP_LIMIT_MIN,
   normalizeSidebarGroupLimit,
 } from '../components/shared/sidebar-group-settings';
+import { BRIEFING_KEEP_SUBMITTED_ANNOTATIONS_SETTING } from './feedback/briefing-preferences';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -110,6 +111,7 @@ const SETTINGS_SECTIONS = {
   agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
   instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
   projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
+  briefings: { id: 'settings-briefings', title: 'Briefings' },
   conversations: { id: 'settings-conversations', title: 'Conversations' },
   conversationBranching: { id: 'settings-conversation-branching', title: 'Conversation Branching' },
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
@@ -1840,6 +1842,22 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <InstructionsDeliverySection section={SETTINGS_SECTIONS.instructionDelivery} settings={settings} onSave={onSave} />
 
       <ProjectPermissionsSection section={SETTINGS_SECTIONS.projectPermissions} />
+
+      <SettingsSectionShell section={SETTINGS_SECTIONS.briefings}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.briefings}
+          description="Submission display behavior for Briefing review rounds."
+        />
+        <div className="settings-view__section-body">
+          <ToggleRow
+            title="Keep submitted annotations displayed"
+            desc="Leave the annotations from a just-submitted Briefing visible instead of clearing the document overlay."
+            settingKey={BRIEFING_KEEP_SUBMITTED_ANNOTATIONS_SETTING}
+            settings={settings}
+            onSave={onSave}
+          />
+        </div>
+      </SettingsSectionShell>
 
       <SettingsSectionShell section={SETTINGS_SECTIONS.conversations}>
         <SettingsSectionHeader

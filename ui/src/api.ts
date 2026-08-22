@@ -4048,8 +4048,21 @@ export type BriefingRoundProjection = {
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: BriefingAnnotation[];
+  submission_overlays?: BriefingSubmissionOverlaySummary[];
+  selected_submission_overlay?: BriefingSubmissionOverlaySummary | null;
   items: BriefingDirectiveItem[];
   valid: boolean;
+};
+
+export type BriefingSubmissionOverlaySummary = {
+  id: string;
+  ordinal: number;
+  supersedes_submission_id: string | null;
+  actor_user_id: string;
+  actor: { slug: string; display_name: string | null };
+  created_at: number;
+  answer_count: number;
+  annotation_count: number;
 };
 
 export type BriefingRoundSummary = {
@@ -4066,6 +4079,8 @@ export type BriefingProjection = BriefingRoundProjection & {
   latest_round_id: string;
   selected_round_id: string;
   rounds: BriefingRoundSummary[];
+  submission_overlays: BriefingSubmissionOverlaySummary[];
+  selected_submission_overlay: BriefingSubmissionOverlaySummary | null;
 };
 
 export type ClientAuthWhoami = {
@@ -4544,7 +4559,11 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
   const root = briefingRecord(payload);
   const briefing = briefingRecord(root.briefing);
   const selected = briefingRecord(root.selected_round);
-  const answers = Array.isArray(selected.answers) ? selected.answers.map(briefingRecord) : [];
+  const rawSelectedOverlay = selected.selected_submission_overlay;
+  const selectedOverlayRecord = briefingRecord(rawSelectedOverlay);
+  const answers = Array.isArray(selectedOverlayRecord.answers)
+    ? selectedOverlayRecord.answers.map(briefingRecord)
+    : Array.isArray(selected.answers) ? selected.answers.map(briefingRecord) : [];
   const answerByInstance = new Map(answers.map((answer) => [
     briefingString(answer.directive_instance_id),
     answer,
@@ -4597,9 +4616,44 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     document: selected.document ?? null,
     directive_binding: selected.binding ?? null,
     latest_frozen_membership: selected.latest_frozen_membership ?? null,
-    annotations: selected.annotations ?? [],
+    annotations: Array.isArray(selectedOverlayRecord.annotations)
+      ? selectedOverlayRecord.annotations
+      : selected.annotations ?? [],
     items,
   });
+  const parseOverlaySummary = (entry: unknown): BriefingSubmissionOverlaySummary | null => {
+    const row = briefingRecord(entry);
+    const actor = briefingRecord(row.actor);
+    const id = briefingString(row.id);
+    const ordinal = briefingOptionalNumber(row.ordinal);
+    const actorUserId = briefingString(row.actor_user_id);
+    const actorSlug = briefingString(actor.slug);
+    const createdAt = briefingOptionalNumber(row.created_at);
+    const answerCount = briefingOptionalNumber(row.answer_count);
+    const annotationCount = briefingOptionalNumber(row.annotation_count);
+    if (!id || !ordinal || !actorUserId || !actorSlug || createdAt == null || answerCount == null || annotationCount == null
+        || answerCount < 0 || annotationCount < 0
+        || (row.supersedes_submission_id !== null && typeof row.supersedes_submission_id !== 'string')
+        || (actor.display_name !== null && typeof actor.display_name !== 'string')) return null;
+    return {
+      id,
+      ordinal,
+      supersedes_submission_id: briefingOptionalString(row.supersedes_submission_id),
+      actor_user_id: actorUserId,
+      actor: { slug: actorSlug, display_name: briefingOptionalString(actor.display_name) },
+      created_at: createdAt,
+      answer_count: answerCount,
+      annotation_count: annotationCount,
+    };
+  };
+  const rawOverlays = Array.isArray(selected.submission_overlays) ? selected.submission_overlays : [];
+  const submissionOverlays = rawOverlays.map(parseOverlaySummary)
+    .filter((overlay): overlay is BriefingSubmissionOverlaySummary => overlay !== null);
+  const selectedSubmissionOverlay = rawSelectedOverlay == null ? null : parseOverlaySummary(rawSelectedOverlay);
+  const overlaysValid = Array.isArray(selected.submission_overlays)
+    && submissionOverlays.length === rawOverlays.length
+    && (rawSelectedOverlay == null || Boolean(selectedSubmissionOverlay
+      && submissionOverlays.some((overlay) => overlay.id === selectedSubmissionOverlay.id)));
   const rounds = (Array.isArray(root.rounds) ? root.rounds : []).map((entry): BriefingRoundSummary => {
     const row = briefingRecord(entry);
     const origin = briefingRecord(row.origin);
@@ -4630,17 +4684,27 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
   );
   return {
     ...projection,
-    valid: projection.valid && identityValid,
+    valid: projection.valid && identityValid && overlaysValid,
     briefing_id: briefingId,
     title: briefingString(briefing.title),
     latest_round_id: latestRoundId,
     selected_round_id: selectedRoundId,
     rounds,
+    submission_overlays: submissionOverlays,
+    selected_submission_overlay: selectedSubmissionOverlay,
   };
 }
 
-export async function getBriefing(briefingId: string, roundId?: string | null, signal?: AbortSignal): Promise<BriefingProjection> {
-  const query = roundId ? `?round=${encodeURIComponent(roundId)}` : '';
+export async function getBriefing(
+  briefingId: string,
+  roundId?: string | null,
+  submissionId?: string | null,
+  signal?: AbortSignal,
+): Promise<BriefingProjection> {
+  const params = new URLSearchParams();
+  if (roundId) params.set('round', roundId);
+  if (submissionId) params.set('submission', submissionId);
+  const query = params.size > 0 ? `?${params}` : '';
   const response = await apiGet(`/api/briefings/${encodeURIComponent(briefingId)}${query}`, signal ? { signal } : {});
   return normalizeBriefingProjection(await parseMaybeJson(response));
 }
@@ -4713,7 +4777,13 @@ export async function postBriefingSubmission(
     answers: readonly BriefingSubmissionAnswer[];
     annotations?: ReadonlyArray<{ annotation_event_id: string }>;
   },
-): Promise<unknown> {
+): Promise<{
+  submission_id: string;
+  ordinal: number;
+  supersedes_submission_id: string | null;
+  actor_user_id: string;
+  created_at: number;
+}> {
   const response = await apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/rounds/${encodeURIComponent(roundId)}/submit`, {
     supersedes_submission_id: input.supersedes_submission_id ?? null,
     answers: input.answers.map((answer) => ({
@@ -4724,7 +4794,18 @@ export async function postBriefingSubmission(
   });
   invalidateApiGetCache(`/api/briefings/${encodeURIComponent(briefingId)}`);
   invalidateApiGetCache('/api/dashboard/badges');
-  return parseMaybeJson(response);
+  const root = briefingRecord(await parseMaybeJson(response));
+  const result = {
+    submission_id: briefingString(root.submission_id),
+    ordinal: briefingOptionalNumber(root.ordinal) ?? 0,
+    supersedes_submission_id: briefingOptionalString(root.supersedes_submission_id),
+    actor_user_id: briefingString(root.actor_user_id),
+    created_at: briefingOptionalNumber(root.created_at) ?? 0,
+  };
+  if (!result.submission_id || result.ordinal < 1 || !result.actor_user_id || result.created_at < 0) {
+    throw new Error('The Briefing submission response is invalid.');
+  }
+  return result;
 }
 
 // ===========================================================================
