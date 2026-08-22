@@ -4391,7 +4391,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
           || !item.client_item_key || !directive || directive.key !== item.client_item_key || keys.has(directive.key)) valid = false;
       if (directive) keys.add(directive.key);
     }
-    if (items.length === 0) valid = false;
+    if (items.length === 0 && document.profile !== 'mandible-briefing.v3') valid = false;
   }
   let annotations: BriefingAnnotation[] | undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {

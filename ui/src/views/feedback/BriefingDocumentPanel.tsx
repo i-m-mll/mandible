@@ -347,8 +347,10 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       }
       cursor = directive.end_offset;
     }
-    return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
-  }, [directiveItems, source]);
+    return directiveItems.length === 0 && document?.profile !== 'mandible-briefing.v3'
+      ? 'The pinned document has no valid response directives.'
+      : null;
+  }, [directiveItems, document?.profile, source]);
   const selectedVariantKeys = useMemo(() => Object.fromEntries(directiveItems.map((item) => {
     const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
     return [item.id, current && 'option_key' in current ? current.option_key : null];
