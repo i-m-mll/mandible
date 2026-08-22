@@ -356,6 +356,36 @@
   position: relative;
 }
 
+.briefing-markdown__entity--changed {
+  border-radius: var(--radius-sm);
+  background: var(--status-warning-bg-soft);
+  box-shadow: 0 0 0 .2rem var(--status-warning-bg-soft);
+}
+
+.briefing-markdown__entity--changed:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 3px;
+}
+
+.briefing-document__change-navigation {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin-block-end: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.briefing-document__change-navigation svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
 .briefing-markdown__action-rail {
   position: absolute;
   inset-block-start: var(--briefing-right-rail-center, 0px);

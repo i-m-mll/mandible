@@ -171,8 +171,8 @@
       "description": "Resolve an artifact identity and render its ambiguity-safe short ref by default, or an HTTP URL, Markdown hyperlink, full canonical id, or structured JSON."
     },
     {
-      "name": "mandible briefing create <artifact-version-ref> --title <text> [--json]",
-      "description": "Create a new logical Briefing whose first round binds exactly the named artifact version; never resolves latest or adds a round to an existing Briefing."
+      "name": "mandible briefing create <artifact-version-ref> --title <text> [--comparison-base <artifact-version-ref>] [--json]",
+      "description": "Create a new logical Briefing whose first round binds exactly the named artifact version and optional exact comparison base; never resolves latest or adds a round to an existing Briefing."
     },
     {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",

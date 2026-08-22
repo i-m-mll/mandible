@@ -14,6 +14,7 @@ import { ContextualAction } from '../../components/shared/ContextualAction';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import {
   buildBriefingMarkdownModel,
+  changedBriefingEntityIndexes,
   type BriefingMarkdownEntityKind,
   type BriefingMarkdownModel,
 } from './briefingMarkdownModel';
@@ -135,7 +136,11 @@ function usesCompactResponseRail(type: BriefingDirectiveItem['revision']['respon
   return type === 'verdict' || type === 'text_variant';
 }
 
-function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: BriefingAnnotation[]): string {
+function renderSourceMappedMarkdown(
+  model: BriefingMarkdownModel,
+  annotations: BriefingAnnotation[],
+  changedEntityIndexes: readonly number[] = [],
+): string {
   const document = new DOMParser().parseFromString(renderBriefingProse(model.markdown), 'text/html');
   const elementsByKind = new Map<BriefingMarkdownEntityKind, HTMLElement[]>();
   const kindCursors = new Map<BriefingMarkdownEntityKind, number>();
@@ -156,6 +161,13 @@ function renderSourceMappedMarkdown(model: BriefingMarkdownModel, annotations: B
     const element = blockElements[blockIndex];
     if (!element) return;
     element.classList.add('briefing-markdown__entity', 'contextual-action-owner');
+    const changedOrder = changedEntityIndexes.indexOf(entityIndex);
+    if (changedOrder >= 0) {
+      element.classList.add('briefing-markdown__entity--changed');
+      element.dataset.briefingChangedOrder = String(changedOrder);
+      element.tabIndex = -1;
+      element.setAttribute('aria-label', `Changed ${entity.kind}: ${entity.label}`);
+    }
     actionHost(document, element, 'briefingEntityAction', entityIndex);
     if (annotations.some((annotation) => annotation.start_offset < entity.end && annotation.end_offset > entity.start)) {
       const annotationHost = document.createElement('div');
@@ -264,7 +276,7 @@ async function sha256(value: string): Promise<string> {
 export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, draftIdentity = null, onRefresh, draft = {}, validationErrors = {}, onDirectiveValue, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
   const documentKey = document
-    ? `${document.artifact_version_id}\u0000${document.content_hash}\u0000${document.source}`
+    ? `${document.artifact_version_id}\u0000${document.content_hash}\u0000${document.source}\u0000${document.comparison_base?.artifact_version_id ?? ''}\u0000${document.comparison_base?.content_hash ?? ''}\u0000${document.comparison_base?.source ?? ''}`
     : null;
   const [radioGroupScope] = useState(() => `briefing-radio-${++radioGroupSequence}`);
   const [verifiedDocumentKey, setVerifiedDocumentKey] = useState<string | null>(null);
@@ -279,6 +291,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   const [selectedDirectiveId, setSelectedDirectiveId] = useState<string | null>(null);
   const [textEdits, setTextEdits] = useState<Record<string, string>>({});
   const [portalRevision, setPortalRevision] = useState(0);
+  const [currentChangedIndex, setCurrentChangedIndex] = useState(0);
   const contentRef = useRef<HTMLElement>(null);
   const renderedRef = useRef<HTMLDivElement>(null);
 
@@ -308,9 +321,15 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     setVerifiedBindingKey(null);
     setContentError(null);
     onContentGateChange?.('Verifying exact pinned document…');
-    void sha256(document.source)
-      .then((digest) => {
+    void Promise.all([
+      sha256(document.source),
+      document.comparison_base ? sha256(document.comparison_base.source) : Promise.resolve(null),
+    ])
+      .then(([digest, comparisonDigest]) => {
         if (digest !== document.content_hash) throw new Error('The pinned document content does not match its verified hash.');
+        if (document.comparison_base && comparisonDigest !== document.comparison_base.content_hash) {
+          throw new Error('The pinned comparison base does not match its verified hash.');
+        }
         if (!cancelled) setVerifiedDocumentKey(documentKey);
       })
       .catch((error) => {
@@ -347,8 +366,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       }
       cursor = directive.end_offset;
     }
-    return directiveItems.length === 0 ? 'The pinned document has no valid response directives.' : null;
-  }, [directiveItems, source]);
+    return directiveItems.length === 0 && document.profile !== 'mandible-briefing.v3'
+      ? 'The pinned document has no valid response directives.' : null;
+  }, [directiveItems, document.profile, source]);
   const selectedVariantKeys = useMemo(() => Object.fromEntries(directiveItems.map((item) => {
     const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
     return [item.id, current && 'option_key' in current ? current.option_key : null];
@@ -359,9 +379,21 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     selectedVariantKeys,
     source.length - suppressRepeatedLeadingHeading(source, briefingTitle).length,
   ), [briefingTitle, directiveItems, selectedVariantKeys, source]);
+  const comparisonMarkdownModel = useMemo(() => source === null || !document.comparison_base ? null
+    : buildBriefingMarkdownModel(
+      document.comparison_base.source,
+      [],
+      {},
+      document.comparison_base.source.length
+        - suppressRepeatedLeadingHeading(document.comparison_base.source, briefingTitle).length,
+    ), [briefingTitle, document.comparison_base, source]);
+  const changedEntityIndexes = useMemo(() => markdownModel && comparisonMarkdownModel
+    ? changedBriefingEntityIndexes(markdownModel, comparisonMarkdownModel)
+    : [], [comparisonMarkdownModel, markdownModel]);
   const renderedMarkdown = useMemo(() => markdownModel
-    ? renderSourceMappedMarkdown(markdownModel, annotations)
-    : '', [annotations, markdownModel]);
+    ? renderSourceMappedMarkdown(markdownModel, annotations, changedEntityIndexes)
+    : '', [annotations, changedEntityIndexes, markdownModel]);
+  useEffect(() => { setCurrentChangedIndex(0); }, [documentKey, changedEntityIndexes.length]);
   useLayoutEffect(() => {
     if (renderedMarkdown) setPortalRevision((revision) => revision + 1);
   }, [renderedMarkdown]);
@@ -583,6 +615,14 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     const entityAnnotationHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-entity-annotations]') ?? [];
     const directiveActionHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-action]') ?? [];
     const directiveResponseHosts = renderedRef.current?.querySelectorAll<HTMLElement>('[data-briefing-directive-response]') ?? [];
+    const navigateChanged = (delta: number) => {
+      if (changedEntityIndexes.length === 0) return;
+      const next = (currentChangedIndex + delta + changedEntityIndexes.length) % changedEntityIndexes.length;
+      setCurrentChangedIndex(next);
+      const target = renderedRef.current?.querySelector<HTMLElement>(`[data-briefing-changed-order="${next}"]`);
+      target?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+      target?.focus({ preventScroll: true });
+    };
     return (
       <div className="briefing-document__rendered rendered-markdown" aria-label="Pinned briefing document"
         onClick={(event) => {
@@ -599,6 +639,15 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const directive = markdownModel.directives[Number(event.target.dataset.briefingDirectiveIndex)];
           if (directive) setSelectedDirectiveId(directive.itemId);
         }}>
+        {changedEntityIndexes.length > 0 ? (
+          <nav className="briefing-document__change-navigation" aria-label="Changed proposed entities">
+            <span aria-live="polite">{changedEntityIndexes.length} changed</span>
+            <ContextualAction presentation="compact" aria-label="Previous changed entity" title="Previous changed entity"
+              onClick={() => navigateChanged(-1)}><PreviousIcon /></ContextualAction>
+            <ContextualAction presentation="compact" aria-label="Next changed entity" title="Next changed entity"
+              onClick={() => navigateChanged(1)}><NextIcon /></ContextualAction>
+          </nav>
+        ) : null}
         <div ref={renderedRef} className="briefing-document__source-tree briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderedMarkdown }} />
         {markdownModel.entities.map((entity, index) => {
           const host = Array.from(entityHosts).find((candidate) => candidate.dataset.briefingEntityAction === String(index));

@@ -346,20 +346,29 @@ export function publishBriefingRun(
 
 export type ExistingArtifactBriefingRequest = {
   briefing_key: string; title: string; artifact_version_ref: string;
+  comparison_base_artifact_version_ref?: string | null;
   profile: typeof BRIEFING_PROFILE_V3; responder_user_ids: string[];
 };
+
+function resolveExactArtifactVersion(db: Db, ref: string, field: string): string {
+  const resolved = resolveArtifactRefReadonlyFull(db, ref);
+  if (resolved.status !== "resolved" || resolved.target_type !== "artifact_version" || !resolved.target_id) {
+    throw new BriefingStoreError(`${field} must resolve to one exact artifact version`, 404, "artifact_version_not_found");
+  }
+  return resolved.target_id;
+}
 
 /** Bind an existing exact artifact version; this path never records or copies artifact bytes. */
 export function publishBriefingFromArtifactVersion(
   db: Db, request: ExistingArtifactBriefingRequest, now = Date.now(),
 ): BriefingRunReceipt {
   if (request.profile !== BRIEFING_PROFILE_V3) throw new BriefingStoreError("existing artifact publication requires mandible-briefing.v3");
-  const resolved = resolveArtifactRefReadonlyFull(db, request.artifact_version_ref);
-  if (resolved.status !== "resolved" || resolved.target_type !== "artifact_version" || !resolved.target_id) {
-    throw new BriefingStoreError("artifact_version_ref must resolve to one exact artifact version", 404, "artifact_version_not_found");
-  }
-  const versionId = resolved.target_id;
+  const versionId = resolveExactArtifactVersion(db, request.artifact_version_ref, "artifact_version_ref");
+  const comparisonBaseVersionId = request.comparison_base_artifact_version_ref
+    ? resolveExactArtifactVersion(db, request.comparison_base_artifact_version_ref, "comparison_base_artifact_version_ref")
+    : null;
   const document = pinnedRoundDocument(db, versionId);
+  if (comparisonBaseVersionId) pinnedRoundDocument(db, comparisonBaseVersionId);
   let directives: BriefingDirective[];
   try { directives = parseBriefingDirectives(document.source, request.profile, { allowEmpty: true }); }
   catch (error) { throw new BriefingStoreError(error instanceof Error ? error.message : String(error), 400, "invalid_briefing_document"); }
@@ -379,8 +388,10 @@ export function publishBriefingFromArtifactVersion(
     for (const responder of request.responder_user_ids) db.prepare(
       "INSERT OR IGNORE INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)",
     ).run(briefing.id, responder, now);
-    const existing = db.prepare("SELECT id FROM briefing_rounds WHERE briefing_id = ? AND artifact_version_id = ? AND profile = ?")
-      .get(briefing.id, versionId, request.profile) as { id: string } | undefined;
+    const existing = db.prepare(`SELECT id FROM briefing_rounds
+      WHERE briefing_id = ? AND artifact_version_id = ? AND profile = ?
+        AND comparison_base_artifact_version_id IS ?`)
+      .get(briefing.id, versionId, request.profile, comparisonBaseVersionId) as { id: string } | undefined;
     if (existing) {
       const replayVerification = verifyBriefingRoundBinding(db, existing.id);
       if (!replayVerification.valid) throw new BriefingStoreError(`stored round binding is invalid: ${replayVerification.reason}`, 409, "invalid_round_binding");
@@ -389,9 +400,10 @@ export function publishBriefingFromArtifactVersion(
     }
     const roundId = randomUUID();
     db.prepare(`INSERT INTO briefing_rounds
-      (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(roundId, briefing.id, briefing.round_count + 1, versionId,
-      briefing.latest_round_id, request.profile, roundBindingDigest(directives), now);
+      (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
+       previous_round_id, profile, binding_digest, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(roundId, briefing.id, briefing.round_count + 1, versionId,
+      comparisonBaseVersionId, briefing.latest_round_id, request.profile, roundBindingDigest(directives), now);
     directives.forEach((directive, position) => {
       let definition = db.prepare("SELECT id FROM briefing_directive_definitions WHERE artifact_version_id = ? AND directive_key = ?")
         .get(versionId, directive.key) as { id: string } | undefined;
@@ -587,7 +599,8 @@ export function readBriefing(
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;
   const roundRows = db.prepare(
-    `SELECT r.id, r.ordinal, r.artifact_version_id, r.previous_round_id, r.profile,
+    `SELECT r.id, r.ordinal, r.artifact_version_id, r.comparison_base_artifact_version_id,
+            r.previous_round_id, r.profile,
             r.binding_digest, r.created_at,
             (SELECT json_extract(run.source_health_json, '$.source')
                FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_source,
@@ -595,7 +608,8 @@ export function readBriefing(
             (SELECT run.task_identity FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_task_identity
        FROM briefing_rounds r WHERE r.briefing_id = ? ORDER BY r.ordinal DESC`,
   ).all(briefingId) as Array<{
-    id: string; ordinal: number; artifact_version_id: string; previous_round_id: string | null;
+    id: string; ordinal: number; artifact_version_id: string; comparison_base_artifact_version_id: string | null;
+    previous_round_id: string | null;
     profile: string; binding_digest: string; created_at: number; origin_source: string | null;
     origin_run_id: string | null; origin_task_identity: string | null;
   }>;
@@ -622,6 +636,11 @@ export function readBriefing(
   if (roundRef && !selected) throw new BriefingStoreError("round not found", 404, "not_found");
   if (!selected) return { briefing, rounds, selected_round: null };
   const verification = verifyBriefingRoundBinding(db, selected.id);
+  let comparisonBase: { artifact_version_id: string; content_hash: string; source: string } | null = null;
+  if (selected.comparison_base_artifact_version_id) {
+    const base = pinnedRoundDocument(db, selected.comparison_base_artifact_version_id);
+    comparisonBase = { artifact_version_id: selected.comparison_base_artifact_version_id, ...base };
+  }
   const items = db.prepare(
     `SELECT i.id, i.directive_key, i.position, d.definition_digest, d.response_type, d.required,
             d.prompt, d.options_json, d.variants_json, d.start_offset, d.end_offset, d.body_start_offset, d.body_end_offset
@@ -659,7 +678,8 @@ export function readBriefing(
     selected_round: {
       ...selected,
       document: { artifact_version_id: selected.artifact_version_id, content_hash: verification.content_hash,
-        previous_round_id: selected.previous_round_id, profile: selected.profile, source: verification.source },
+        previous_round_id: selected.previous_round_id, profile: selected.profile, source: verification.source,
+        comparison_base: comparisonBase },
       binding: projectionValid ? { status: "valid" as const } : {
         status: "invalid" as const, reason: projectionError ?? (verification.valid ? "invalid projection" : verification.reason),
       },

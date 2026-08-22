@@ -2933,6 +2933,7 @@ export type CreateBriefingFromArtifactVersionResult = {
 
 export async function createBriefingFromArtifactVersion(input: {
   artifact_version_ref: string;
+  comparison_base_artifact_version_ref?: string;
   title: string;
 }): Promise<CreateBriefingFromArtifactVersionResult> {
   const response = await apiPost('/api/briefings', input);
@@ -4036,6 +4037,11 @@ export type BriefingRoundProjection = {
     previous_round_id: string | null;
     profile: 'mandible-briefing.v2' | 'mandible-briefing.v3';
     source: string;
+    comparison_base?: null | {
+      artifact_version_id: string;
+      content_hash: string;
+      source: string;
+    };
   };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
@@ -4339,12 +4345,27 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
   const rawDocument = briefingRecord(root.document);
   const profile = rawDocument.profile;
   const documentShapeValid = exactBriefingValueKeys(rawDocument, [
+    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base',
+  ]) || exactBriefingValueKeys(rawDocument, [
     'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source',
   ]);
+  const rawComparisonBase = briefingRecord(rawDocument.comparison_base);
+  const comparisonBase = rawDocument.comparison_base == null ? null
+    : exactBriefingValueKeys(rawComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
+      && briefingString(rawComparisonBase.artifact_version_id)
+      && /^[0-9a-f]{64}$/.test(briefingString(rawComparisonBase.content_hash))
+      && typeof rawComparisonBase.source === 'string'
+      ? {
+        artifact_version_id: briefingString(rawComparisonBase.artifact_version_id),
+        content_hash: briefingString(rawComparisonBase.content_hash),
+        source: rawComparisonBase.source,
+      }
+      : undefined;
   const documentFieldsValid = briefingString(rawDocument.artifact_version_id)
     && /^[0-9a-f]{64}$/.test(briefingString(rawDocument.content_hash))
     && typeof rawDocument.source === 'string'
     && Boolean(rawDocument.source.trim())
+    && comparisonBase !== undefined
     && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
   const document = root.document !== null && documentShapeValid && documentFieldsValid
     && (profile === 'mandible-briefing.v2' || profile === 'mandible-briefing.v3') ? {
@@ -4353,6 +4374,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
     profile,
     source: typeof rawDocument.source === 'string' ? rawDocument.source : '',
+    comparison_base: comparisonBase,
   } : null;
   if (!document
       || !document.artifact_version_id) valid = false;
@@ -4391,7 +4413,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
           || !item.client_item_key || !directive || directive.key !== item.client_item_key || keys.has(directive.key)) valid = false;
       if (directive) keys.add(directive.key);
     }
-    if (items.length === 0) valid = false;
+    if (items.length === 0 && document.profile !== 'mandible-briefing.v3') valid = false;
   }
   let annotations: BriefingAnnotation[] | undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'annotations')) {

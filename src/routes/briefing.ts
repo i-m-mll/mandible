@@ -53,19 +53,27 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const actor = activeHuman(db, req);
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "artifact_version_ref" && key !== "title");
+        .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref" && key !== "title");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
       const artifactVersionRef = typeof requestBody.artifact_version_ref === "string"
         ? requestBody.artifact_version_ref.trim() : "";
       const title = typeof requestBody.title === "string" ? requestBody.title.trim() : "";
+      const comparisonBaseArtifactVersionRef = requestBody.comparison_base_artifact_version_ref === undefined
+        ? null
+        : typeof requestBody.comparison_base_artifact_version_ref === "string"
+          ? requestBody.comparison_base_artifact_version_ref.trim() : "";
       if (!artifactVersionRef) throw new BriefingStoreError("artifact_version_ref must be a nonblank exact artifact-version ref");
+      if (requestBody.comparison_base_artifact_version_ref !== undefined && !comparisonBaseArtifactVersionRef) {
+        throw new BriefingStoreError("comparison_base_artifact_version_ref must be a nonblank exact artifact-version ref");
+      }
       if (!title) throw new BriefingStoreError("title must be a nonblank string");
       const receipt = publishBriefingFromArtifactVersion(db, {
         briefing_key: `manual:${randomUUID()}`,
         title,
         artifact_version_ref: artifactVersionRef,
+        comparison_base_artifact_version_ref: comparisonBaseArtifactVersionRef,
         profile: "mandible-briefing.v3",
         responder_user_ids: [actor.user.id],
       });

@@ -63,6 +63,12 @@ afterEach(() => {
 describe("artifact-backed Briefing rounds", () => {
   it("binds directive-free exact Markdown as an annotation-only Briefing without weakening run ingestion", () => {
     const sourcePath = path.join(root, "AGENTS.review.md");
+    const baseSource = "# Agent instructions\n\nOriginal policy text.\n";
+    fs.writeFileSync(sourcePath, baseSource);
+    const base = recordArtifactVersion(db, {
+      source_kind: "local_only", path: sourcePath, logical_name: "AGENTS.review.md",
+      role: "review-document", media_type: "text/markdown",
+    });
     fs.writeFileSync(sourcePath, "# Agent instructions\n\nPlain policy text.\n");
     const artifact = recordArtifactVersion(db, {
       source_kind: "local_only", path: sourcePath, logical_name: "AGENTS.review.md",
@@ -70,11 +76,16 @@ describe("artifact-backed Briefing rounds", () => {
     });
     const receipt = publishBriefingFromArtifactVersion(db, {
       briefing_key: "plain-agents-review", title: "Agent instructions",
-      artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+      artifact_version_ref: artifact.version.id, comparison_base_artifact_version_ref: base.version.id,
+      profile: "mandible-briefing.v3", responder_user_ids: [humanId],
     });
     expect(receipt.artifact_version_id).toBe(artifact.version.id);
+    expect(db.prepare("SELECT comparison_base_artifact_version_id FROM briefing_rounds WHERE id = ?")
+      .get(receipt.round_id)).toEqual({ comparison_base_artifact_version_id: base.version.id });
     expect(readBriefing(db, receipt.briefing_id, { roundId: receipt.round_id!, actorUserId: humanId,
-      operator: false })).toMatchObject({ selected_round: { items: [], binding: { status: "valid" } } });
+      operator: false })).toMatchObject({ selected_round: { items: [], binding: { status: "valid" }, document: {
+        comparison_base: { artifact_version_id: base.version.id, source: baseSource },
+      } } });
     expect(() => publishBriefingRun(db, request("# Plain run\n"), publisherId)).toThrow(/no spec-item directives/);
   });
 
