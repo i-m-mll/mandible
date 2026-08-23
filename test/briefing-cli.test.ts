@@ -124,6 +124,41 @@ describe("briefing CLI", () => {
     expect(JSON.parse(replaced.stdout)).toMatchObject({ bundle: { id: "bundle-12345678" },
       membership_changed: true });
 
+    const structured = await runRpc(["briefing", "bundle", "replace", "bundle-12345678", "--layout",
+      JSON.stringify([
+        { kind: "briefing", briefing_ref: "briefing-global" },
+        { kind: "briefing", briefing_ref: "briefing-codex" },
+        { kind: "briefing", briefing_ref: "briefing-claude" },
+        { kind: "subgroup", name: "Skills", briefing_refs: ["reliability", "performance", "squeeze", "strict"] },
+      ])], (request) => {
+      expect(request).toMatchObject({ method: "PATCH", path: "/api/briefing-bundles/bundle-12345678",
+        body: { layout: [
+          { kind: "briefing", briefing_ref: "briefing-global" },
+          { kind: "briefing", briefing_ref: "briefing-codex" },
+          { kind: "briefing", briefing_ref: "briefing-claude" },
+          { kind: "subgroup", name: "Skills",
+            briefing_refs: ["reliability", "performance", "squeeze", "strict"] },
+        ] } });
+      const briefing = (id: string, title: string) => ({ id, title, briefing_key: id,
+        latest_round_id: null, round_count: 0, created_at: 1, updated_at: 1 });
+      return { status: 200, body: { bundle: { ...bundle, layout: [
+        { kind: "briefing", position: 0, briefing: briefing("briefing-global", "Global") },
+        { kind: "briefing", position: 1, briefing: briefing("briefing-codex", "Codex") },
+        { kind: "briefing", position: 2, briefing: briefing("briefing-claude", "Claude") },
+        { kind: "subgroup", position: 3, name: "Skills", briefings: [
+          { position: 0, briefing: briefing("reliability", "Reliability design") },
+          { position: 1, briefing: briefing("performance", "Performance") },
+          { position: 2, briefing: briefing("squeeze", "Squeeze") },
+          { position: 3, briefing: briefing("strict", "Strict engineering") },
+        ] },
+      ] }, changed: true, layout_changed: true } };
+    });
+    expect(structured.status).toBe(0);
+    expect(structured.stdout).toContain("Global");
+    expect(structured.stdout).toContain("Skills");
+    expect(structured.stdout).toContain("Strict engineering");
+    expect(structured.stdout).not.toContain("Policy\n");
+
     const renamedBundle = { ...bundle, name: "Sara’s skill, breakdown" };
     const renamed = await runRpc(["briefing", "bundle", "rename", "briefing-bundle:bundle-12345678",
       "--name", "Sara’s skill, breakdown", "--json"], (request) => {
@@ -142,5 +177,43 @@ describe("briefing CLI", () => {
     });
     expect(shown.status).toBe(0);
     expect(JSON.parse(shown.stdout).bundle.members).toHaveLength(1);
+  });
+
+  it("supports create, append, rename, and show for stable Briefing groups", async () => {
+    const bundle = { id: "bundle-one", name: "Proposal one", created_at: 1, updated_at: 1,
+      layout: [], members: [] };
+    const group = { id: "group-12345678", name: "Policy", created_at: 1, updated_at: 1, updates: [bundle] };
+    const created = await runRpc(["briefing", "group", "create", "--name", "Policy", "bundle-one", "--json"],
+      (request) => {
+        expect(request).toMatchObject({ method: "POST", path: "/api/briefing-groups",
+          body: { name: "Policy", bundle_refs: ["bundle-one"] } });
+        return { status: 201, body: { group } };
+      });
+    expect(created.status).toBe(0);
+    expect(JSON.parse(created.stdout)).toMatchObject({ group: { id: "group-12345678" } });
+
+    const added = await runRpc(["briefing", "group", "add", "briefing-group:group-12345678", "bundle-two", "--json"],
+      (request) => {
+        expect(request).toMatchObject({ method: "POST",
+          path: "/api/briefing-groups/briefing-group%3Agroup-12345678/updates",
+          body: { bundle_ref: "bundle-two" } });
+        return { status: 200, body: { group, added: true } };
+      });
+    expect(added.status).toBe(0);
+
+    const renamed = await runRpc(["briefing", "group", "rename", "group-12345678", "--name", "Policy review", "--json"],
+      (request) => {
+        expect(request).toMatchObject({ method: "PATCH", path: "/api/briefing-groups/group-12345678",
+          body: { name: "Policy review" } });
+        return { status: 200, body: { group: { ...group, name: "Policy review" }, changed: true } };
+      });
+    expect(renamed.status).toBe(0);
+
+    const shown = await runRpc(["briefing", "group", "show", "group-12345678", "--json"], (request) => {
+      expect(request).toMatchObject({ method: "GET", path: "/api/briefing-groups/group-12345678" });
+      return { status: 200, body: { group } };
+    });
+    expect(shown.status).toBe(0);
+    expect(JSON.parse(shown.stdout).group.updates).toHaveLength(1);
   });
 });

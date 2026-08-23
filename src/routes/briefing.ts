@@ -25,9 +25,16 @@ import {
   createBriefingBundle,
   listBriefingBundles,
   readBriefingBundle,
-  replaceBriefingBundleMembers,
+  replaceBriefingBundleLayout,
   updateBriefingBundleName,
 } from "../feedback/briefing-bundles.js";
+import {
+  addBriefingGroupUpdate,
+  createBriefingGroup,
+  listBriefingGroups,
+  readBriefingGroup,
+  updateBriefingGroupName,
+} from "../feedback/briefing-groups.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
@@ -84,9 +91,10 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
 function renameViewer(
   db: Db,
   req: RequestLike,
-  subject: "Briefing" | "Briefing bundle",
+  subject: "Briefing" | "Briefing bundle" | "Briefing group",
 ): { userId: string; operator: true } {
-  const prefix = subject === "Briefing" ? "briefing_title" : "briefing_bundle_name";
+  const prefix = subject === "Briefing" ? "briefing_title"
+    : subject === "Briefing bundle" ? "briefing_bundle_name" : "briefing_group_name";
   const principal = publicationPrincipal(db, req, {
     credentialCode: `${prefix}_publisher_credential_required`,
     credentialMessage: `${subject} renames by an agent require a durable API token, not a session credential.`,
@@ -105,6 +113,30 @@ function renameViewer(
     `${prefix}_operator_required`,
     `${subject} renames by an agent require a configured active human operator.`,
   ).id, operator: true };
+}
+
+function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(403, "briefing_group_update_publisher_credential_required",
+      "Briefing group updates require a durable API token, not a session credential.");
+  }
+  const caller = getUserById(db, identity.user_id);
+  if (caller?.status === "active" && caller.kind === "human") {
+    if (!isOperator(db, identity)) {
+      throw new ClientAuthzError(403, "briefing_group_update_operator_required",
+        "Briefing group updates require the configured human operator or a durable agent publisher.");
+    }
+    return { userId: caller.id, operator: true };
+  }
+  requireDurableAgentPublisher(db, req, {
+    credentialCode: "briefing_group_update_publisher_credential_required",
+    credentialMessage: "Briefing group updates require a durable API token, not a session credential.",
+    agentCode: "briefing_group_update_publisher_agent_required",
+    agentMessage: "Briefing group updates require an active agent identity.",
+  });
+  return { userId: configuredHumanOperator(db, "briefing_group_update_operator_required",
+    "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
 }
 
 function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
@@ -170,6 +202,71 @@ function body(req: RequestLike): Record<string, unknown> {
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+  server.post("/api/briefing-groups", (req, res) => {
+    try {
+      const publisher = publicationPrincipal(db, req, {
+        credentialCode: "briefing_group_publisher_credential_required",
+        credentialMessage: "Briefing group publication requires a durable API token, not a session credential.",
+        agentCode: "briefing_group_publisher_agent_required",
+        agentMessage: "Briefing group publication requires an active agent identity.",
+      });
+      const viewer = publisher.kind === "human"
+        ? { userId: publisher.publisherUserId, operator: publisher.operator }
+        : { userId: configuredHumanOperator(db, "briefing_group_publication_operator_required",
+          "Briefing group publication by an agent requires a configured active human operator.").id, operator: true };
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "bundle_refs");
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const group = createBriefingGroup(db, { name: typeof requestBody.name === "string" ? requestBody.name : "",
+        bundleRefs: requestBody.bundle_refs as string[], viewer });
+      broadcast(BRIEFING_EVENTS.groupCreated, { group_id: group.id });
+      sendJson(res, 201, { group });
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-groups/:groupId/updates", (req, res) => {
+    try {
+      const viewer = groupUpdateViewer(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "bundle_ref");
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const result = addBriefingGroupUpdate(db, req.params.groupId,
+        typeof requestBody.bundle_ref === "string" ? requestBody.bundle_ref : "", viewer);
+      if (result.added) broadcast(BRIEFING_EVENTS.groupUpdateAdded, {
+        group_id: result.group.id, bundle_id: result.group.updates.at(-1)?.id,
+      });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.patch("/api/briefing-groups/:groupId", (req, res) => {
+    try {
+      const viewer = renameViewer(db, req, "Briefing group");
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name");
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const result = updateBriefingGroupName(db, req.params.groupId, requestBody.name, viewer);
+      if (result.changed) broadcast(BRIEFING_EVENTS.groupNameUpdated, { group_id: result.group.id });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-groups", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, { groups: listBriefingGroups(db, { userId: identity.user_id,
+        operator: isOperator(db, identity) }) });
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-groups/:groupId", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, { userId: identity.user_id,
+        operator: isOperator(db, identity) }) });
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
   server.post("/api/briefing-bundles", (req, res) => {
     try {
       const publisher = publicationPrincipal(db, req, {
@@ -233,17 +330,21 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.patch("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
       const replacesMembership = !!req.body && typeof req.body === "object" && !Array.isArray(req.body)
-        && Object.hasOwn(req.body, "briefing_refs");
+        && (Object.hasOwn(req.body, "briefing_refs") || Object.hasOwn(req.body, "layout"));
       const viewer = replacesMembership
         ? bundleMembershipViewer(db, req)
         : renameViewer(db, req, "Briefing bundle");
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs");
+      const unexpected = Object.keys(requestBody)
+        .filter((key) => key !== "name" && key !== "briefing_refs" && key !== "layout");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
-      if (requestBody.name === undefined && requestBody.briefing_refs === undefined) {
-        throw new BriefingStoreError("request body must contain name or briefing_refs");
+      if (requestBody.name === undefined && requestBody.briefing_refs === undefined && requestBody.layout === undefined) {
+        throw new BriefingStoreError("request body must contain name, briefing_refs, or layout");
+      }
+      if (requestBody.briefing_refs !== undefined && requestBody.layout !== undefined) {
+        throw new BriefingStoreError("request body cannot contain both briefing_refs and layout");
       }
       if (requestBody.briefing_refs !== undefined
           && (!Array.isArray(requestBody.briefing_refs)
@@ -251,18 +352,20 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         throw new BriefingStoreError("briefing_refs must be an array of nonblank Briefing refs");
       }
       const briefingRefs = requestBody.briefing_refs as readonly string[] | undefined;
+      const layout = requestBody.layout;
       const result = db.transaction(() => {
         const renamed = requestBody.name === undefined
           ? { bundle: readBriefingBundle(db, req.params.bundleId, viewer), changed: false }
           : updateBriefingBundleName(db, req.params.bundleId, requestBody.name, viewer);
-        const replaced = briefingRefs === undefined
+        const replaced = briefingRefs === undefined && layout === undefined
           ? { bundle: renamed.bundle, changed: false }
-          : replaceBriefingBundleMembers(db, req.params.bundleId, briefingRefs, viewer);
+          : replaceBriefingBundleLayout(db, req.params.bundleId, { briefingRefs, layout }, viewer);
         return {
           bundle: replaced.bundle,
           changed: renamed.changed || replaced.changed,
           name_changed: renamed.changed,
           membership_changed: replaced.changed,
+          layout_changed: replaced.changed,
         };
       }).immediate();
       if (result.name_changed) broadcast(BRIEFING_EVENTS.bundleNameUpdated, { bundle_id: result.bundle.id });

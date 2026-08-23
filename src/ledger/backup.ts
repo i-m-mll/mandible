@@ -178,6 +178,8 @@ export const METADATA_BACKUP_TABLES = [
   // precede their manually ordered membership rows for FK-safe restoration.
   "briefing_bundles",
   "briefing_bundle_members",
+  "briefing_groups",
+  "briefing_group_updates",
   // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",
   // Executor task inventory receipts (issue 0bc2279, migration 124). Each row

@@ -10,8 +10,8 @@ describe("migration v147: lossless conversation source filesystem identity", () 
   it("keeps the fresh baseline and migration head converged", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(151);
-    expect(CURRENT_SCHEMA_VERSION).toBe(151);
+    expect(BASELINE_SCHEMA_VERSION).toBe(152);
+    expect(CURRENT_SCHEMA_VERSION).toBe(152);
     const columns = db.prepare("PRAGMA table_info(conversation_source_versions)").all() as Array<{
       name: string;
       type: string;
@@ -25,7 +25,7 @@ describe("migration v147: lossless conversation source filesystem identity", () 
         dflt_value: null,
       });
     }
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "151" });
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "152" });
     db.close();
   });
 
@@ -74,7 +74,7 @@ describe("migration v147: lossless conversation source filesystem identity", () 
     });
     db.prepare("UPDATE meta SET value = '146' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "151" });
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "152" });
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
     db.close();
   });
