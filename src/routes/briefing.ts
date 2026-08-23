@@ -12,6 +12,7 @@ import {
   publishBriefingFromArtifactVersion,
   publishBriefingRun,
   readBriefing,
+  setBriefingArchived,
   submitBriefingRound,
   updateBriefingTitle,
 } from "../feedback/briefings.js";
@@ -30,6 +31,7 @@ import {
 } from "../feedback/briefing-bundles.js";
 import {
   addBriefingGroupUpdate,
+  configureBriefingGroup,
   createBriefingGroup,
   listBriefingGroups,
   readBriefingGroup,
@@ -139,6 +141,30 @@ function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator
     "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
 }
 
+function briefingOrganizationViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(403, "briefing_organization_publisher_credential_required",
+      "Briefing Archive and Restore require a durable API token, not a session credential.");
+  }
+  const caller = getUserById(db, identity.user_id);
+  if (caller?.status === "active" && caller.kind === "human") {
+    if (!isOperator(db, identity)) {
+      throw new ClientAuthzError(403, "briefing_organization_operator_required",
+        "Briefing Archive and Restore require the configured human operator or a durable agent publisher.");
+    }
+    return { userId: caller.id, operator: true };
+  }
+  requireDurableAgentPublisher(db, req, {
+    credentialCode: "briefing_organization_publisher_credential_required",
+    credentialMessage: "Briefing Archive and Restore require a durable API token, not a session credential.",
+    agentCode: "briefing_organization_publisher_agent_required",
+    agentMessage: "Briefing Archive and Restore require an active agent identity.",
+  });
+  return { userId: configuredHumanOperator(db, "briefing_organization_operator_required",
+    "Briefing Archive and Restore by an agent require a configured active human operator.").id, operator: true };
+}
+
 function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
   const identity = requireIdentity(req);
   if (identity.method !== "api_token") {
@@ -215,12 +241,45 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         : { userId: configuredHumanOperator(db, "briefing_group_publication_operator_required",
           "Briefing group publication by an agent requires a configured active human operator.").id, operator: true };
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "bundle_refs");
+      const unexpected = Object.keys(requestBody)
+        .filter((key) => key !== "name" && key !== "current_bundle_ref" && key !== "bundle_refs");
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      if (requestBody.current_bundle_ref !== undefined && requestBody.current_bundle_ref !== null
+          && (typeof requestBody.current_bundle_ref !== "string" || !requestBody.current_bundle_ref.trim())) {
+        throw new BriefingStoreError("current_bundle_ref must be a nonblank Briefing bundle ref or null");
+      }
       const group = createBriefingGroup(db, { name: typeof requestBody.name === "string" ? requestBody.name : "",
+        currentBundleRef: requestBody.current_bundle_ref as string | null | undefined,
         bundleRefs: requestBody.bundle_refs as string[], viewer });
       broadcast(BRIEFING_EVENTS.groupCreated, { group_id: group.id });
       sendJson(res, 201, { group });
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.put("/api/briefing-groups/:groupId/configuration", (req, res) => {
+    try {
+      const viewer = groupUpdateViewer(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody)
+        .filter((key) => key !== "current_bundle_ref" && key !== "bundle_refs");
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      if (!Object.hasOwn(requestBody, "current_bundle_ref") || !Object.hasOwn(requestBody, "bundle_refs")) {
+        throw new BriefingStoreError("configuration requires current_bundle_ref and bundle_refs");
+      }
+      if (requestBody.current_bundle_ref !== null
+          && (typeof requestBody.current_bundle_ref !== "string" || !requestBody.current_bundle_ref.trim())) {
+        throw new BriefingStoreError("current_bundle_ref must be a nonblank Briefing bundle ref or null");
+      }
+      if (!Array.isArray(requestBody.bundle_refs)
+          || !requestBody.bundle_refs.every((ref) => typeof ref === "string" && ref.trim())) {
+        throw new BriefingStoreError("bundle_refs must be an array of nonblank Briefing bundle refs");
+      }
+      const result = configureBriefingGroup(db, req.params.groupId, {
+        currentBundleRef: requestBody.current_bundle_ref as string | null,
+        bundleRefs: requestBody.bundle_refs,
+      }, viewer);
+      if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group.id });
+      sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
@@ -522,6 +581,23 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       handleError(res, error);
     }
   }, { fileRpc: "allow" });
+
+  const setArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
+    try {
+      const viewer = briefingOrganizationViewer(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody);
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const result = setBriefingArchived(db, req.params.briefingId, archived, viewer);
+      if (result.changed) broadcast(archived ? BRIEFING_EVENTS.archived : BRIEFING_EVENTS.restored, {
+        briefing_id: result.briefing_id,
+      });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  };
+
+  server.post("/api/briefings/:briefingId/archive", setArchiveState(true), { fileRpc: "allow" });
+  server.post("/api/briefings/:briefingId/restore", setArchiveState(false), { fileRpc: "allow" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/answers", (req, res) => {
     try {
