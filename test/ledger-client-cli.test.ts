@@ -219,7 +219,8 @@ describe("ledger mechanism CLI client", () => {
       "mandible",
       "--branch",
       "feature/abc123",
-    ], port)).status).toBe(0);
+      "--worker",
+    ], port, process.cwd(), { CODEX_THREAD_ID: "thread-worker-cli" })).status).toBe(0);
     expect((await run([
       "work-unit",
       "find",
@@ -287,6 +288,16 @@ describe("ledger mechanism CLI client", () => {
       state: "resolved",
       auth_request_id: "auth-1",
     });
+    expect(requests.find((request) => request.url === "/api/work-units/activate")).toMatchObject({
+      ambientProvider: "codex",
+      ambientSession: "thread-worker-cli",
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+        branch: "feature/abc123",
+        worker_owner: true,
+      },
+    });
     expect(requests.find((request) => request.url === "/api/work-units/release")).toMatchObject({
       ambientProvider: "codex",
       ambientSession: "thread-release-cli",
@@ -299,7 +310,7 @@ describe("ledger mechanism CLI client", () => {
     });
   });
 
-  it("routes find and release through file RPC with ambient identity", async () => {
+  it("routes worker activation, find, and release through file RPC with ambient identity", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-client-rpc-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
@@ -308,10 +319,20 @@ describe("ledger mechanism CLI client", () => {
       if (request.method === "GET") {
         return { status: 200, body: { work_units: [{ id: "wu-rpc", state: "open" }] } };
       }
-      return { status: 200, body: { ok: true, released: 1 } };
+      return request.path === "/api/work-units/activate"
+        ? { status: 200, body: { id: "wu-rpc", state: "committed" } }
+        : { status: 200, body: { ok: true, released: 1 } };
     });
 
     try {
+      const activate = await run([
+        "work-unit", "activate", "--issue", "abc123", "--repo", "mandible", "--worker",
+      ], 9, process.cwd(), {
+        CODEX_THREAD_ID: "thread-file-worker",
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+      });
       const find = await run([
         "work-unit",
         "find",
@@ -332,15 +353,22 @@ describe("ledger mechanism CLI client", () => {
         MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
       });
 
+      expect(activate.status).toBe(0);
       expect(find.status).toBe(0);
       expect(find.stdout).toContain("wu-rpc");
       expect(release.status).toBe(0);
-      expect(seen).toHaveLength(2);
+      expect(seen).toHaveLength(3);
       expect(seen[0]).toMatchObject({
+        method: "POST",
+        path: "/api/work-units/activate",
+        body: { issue_id: "abc123", repo_id: "mandible", worker_owner: true },
+        ambient_identity: { provider: "codex", provider_session_id: "thread-file-worker" },
+      });
+      expect(seen[1]).toMatchObject({
         method: "GET",
         path: "/api/work-units?repo_id=mandible&issue_id=abc123&state=open",
       });
-      expect(seen[1]).toMatchObject({
+      expect(seen[2]).toMatchObject({
         method: "POST",
         path: "/api/work-units/release",
         body: { issue_id: "abc123", repo_id: "mandible" },

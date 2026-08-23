@@ -110,7 +110,7 @@ commits, or sessions:
 
 ```bash
 mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--session S] [--graceful]
-mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--graceful]
+mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU [--auth-request-id AR] [--graceful]
 mandible work-unit release --issue I --repo R [--graceful]
@@ -124,6 +124,12 @@ These commands take mechanism inputs and do not encode worktree layout, signing,
 attribution, provider/model profile, or local command naming. Callers that
 should continue when Mandible is unavailable can use `--graceful` or set
 `MANDIBLE_LEDGER_GRACEFUL=1`.
+
+`activate --worker` is an explicit worker-role assertion. It binds the caller's
+allowlisted ambient Codex thread to `worker_provider_session_id`, which is the
+only direct work-unit identity authorized for post-merge thread archival.
+Ordinary activation records ambient attribution only; coordinators, triage
+tasks, and requesters must not pass `--worker` for their own coordination units.
 
 ## Liveness
 

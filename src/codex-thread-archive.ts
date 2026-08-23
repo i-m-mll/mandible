@@ -114,8 +114,8 @@ function addDirectWorkUnitCandidate(
   row: DirectWorkUnitCandidateRow,
   parentRoleSessionIds: Set<string>,
 ): void {
-  const providerSessionId = stringOrNull(row.provider_session_id);
-  if (row.provider !== "codex" || !providerSessionId) return;
+  const providerSessionId = stringOrNull(row.worker_provider_session_id);
+  if (!providerSessionId) return;
   if (parentRoleSessionIds.has(providerSessionId) || isProviderSessionLive(db, providerSessionId)) return;
 
   addRankedCandidate(byProviderId, {
@@ -238,23 +238,25 @@ interface CandidateRow {
 }
 
 interface DirectWorkUnitCandidateRow {
-  provider: string | null;
-  provider_session_id: string | null;
+  worker_provider_session_id: string | null;
   issue_id: string;
   work_unit_id: string;
 }
 
 function directCandidateRowsFromRequestWorkUnits(db: Db, requestId: string): DirectWorkUnitCandidateRow[] {
-  if (!tableHasColumn(db, "work_units", "auth_request_id")) {
+  if (
+    !tableHasColumn(db, "work_units", "auth_request_id")
+    || !tableHasColumn(db, "work_units", "worker_provider_session_id")
+  ) {
     return [];
   }
   return db.prepare(
-    `SELECT id AS work_unit_id, COALESCE(ledger_issue_id, issue_id) AS issue_id, provider, provider_session_id
+    `SELECT id AS work_unit_id, COALESCE(ledger_issue_id, issue_id) AS issue_id,
+            worker_provider_session_id
      FROM work_units
      WHERE state = 'resolved'
        AND auth_request_id = ?
-       AND provider = 'codex'
-       AND provider_session_id IS NOT NULL`,
+       AND worker_provider_session_id IS NOT NULL`,
   ).all(requestId) as DirectWorkUnitCandidateRow[];
 }
 
