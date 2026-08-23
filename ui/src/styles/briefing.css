@@ -377,6 +377,12 @@
   list-style-position: inside;
 }
 
+.briefing-submission-shelf--inactive {
+  padding: var(--space-2) var(--space-5);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .briefing-submission-shelf__body {
   max-height: 12rem;
   overflow: auto;
@@ -423,11 +429,6 @@
 .briefing-submission-shelf__row--selected {
   background: var(--surface-card);
   color: var(--text-primary);
-}
-
-.briefing-submission-shelf__empty {
-  margin: 0;
-  padding: var(--space-2) var(--space-5);
 }
 
 .briefing-clear-confirmation__actions {
