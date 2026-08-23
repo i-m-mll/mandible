@@ -43,6 +43,11 @@
   gap: 2px;
 }
 
+.feedback-collections-sidebar__group-layout {
+  display: grid;
+  gap: 2px;
+}
+
 .feedback-collections-sidebar__body > [data-testid="feedback-collections-sidebar"] {
   min-height: 100%;
 }
@@ -236,6 +241,87 @@
   text-align: center;
 }
 .briefing-error { color: var(--status-danger-fg); }
+
+.briefing-group-detail {
+  flex: 1;
+  min-height: 0;
+}
+
+.briefing-group-detail__body {
+  padding: var(--space-6);
+}
+
+.briefing-group-detail__updates {
+  width: min(720px, 100%);
+  margin: 0 auto;
+}
+
+.briefing-group-detail__intro {
+  margin-bottom: var(--space-4);
+}
+
+.briefing-group-detail__intro h3,
+.briefing-group-detail__intro p {
+  margin: 0;
+}
+
+.briefing-group-detail__intro p {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.briefing-group-detail__update-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.briefing-group-detail__update {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.briefing-group-detail__update:hover {
+  background: var(--surface-hover);
+}
+
+.briefing-group-detail__update--selected {
+  border-color: var(--accent-border);
+  background: var(--surface-selected);
+}
+
+.briefing-group-detail__update:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.briefing-group-detail__update-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.briefing-group-detail__update-ref {
+  flex: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
 
 /* Common detail-pane composition. The shell owns the anchored regions; only
  * the artifact document scrolls. */
