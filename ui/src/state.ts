@@ -681,6 +681,14 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
 
 const CACHE_KEY = 'mandible_state_cache';
 const CACHE_VERSION = 2;
+const LEGACY_APP_RAIL_ORDER_KEY = 'app_rail_order';
+
+function withoutLegacyAppRailOrder(settings: Record<string, string> | undefined): Record<string, string> {
+  if (!settings) return {};
+  const sanitized = { ...settings };
+  delete sanitized[LEGACY_APP_RAIL_ORDER_KEY];
+  return sanitized;
+}
 
 // Bug: 7136f0d — starredChats removed from cache (Chats tab removed, starring via History tab)
 type CachedFields = Pick<
@@ -702,6 +710,9 @@ function loadCachedState(): Partial<AppState> {
     const parsed = JSON.parse(raw) as { v: number; state: Partial<AppState> };
     if (parsed.v !== CACHE_VERSION) return {};
     const cached = parsed.state;
+    // The authenticated user_settings row is the only writable-instance rail
+    // authority. Quarantine legacy global/browser cache bytes on hydration.
+    if (cached.settings) cached.settings = withoutLegacyAppRailOrder(cached.settings);
     const now = Date.now();
 
     // Filter authQueue: drop dismissed/rejected/expired items whose resolved_at
@@ -763,7 +774,7 @@ function saveCachedState(state: AppState): void {
       issueRepos: state.issueRepos,
       inboxData: state.inboxData,
       consoleSessions: state.consoleSessions,
-      settings: state.settings,
+      settings: withoutLegacyAppRailOrder(state.settings),
     };
     window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, state: toCache }));
   } catch {

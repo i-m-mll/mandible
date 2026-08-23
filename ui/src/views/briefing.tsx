@@ -113,6 +113,18 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
     replaceBriefingRoute(selected.collectionId, roundId);
   };
 
+  const updateSelectedTitle = (title: string) => {
+    if (!selected) return;
+    const updateCollection = (collection: FeedbackCollection): FeedbackCollection => collection.collectionId === selected.collectionId
+      ? { ...collection, label: title }
+      : collection;
+    setBriefings((current) => current.map(updateCollection));
+    setBundles((current) => current.map((bundle) => ({
+      ...bundle,
+      members: bundle.members.map((member) => ({ ...member, briefing: updateCollection(member.briefing) })),
+    })));
+  };
+
   return (
     <CollectionShell collections={briefings} bundles={bundles} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
@@ -126,6 +138,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, side
           instance={instance}
           keepSubmittedAnnotations={keepSubmittedAnnotations}
           onRoundChange={selectRound}
+          onTitleChange={updateSelectedTitle}
         />
       )}
     </CollectionShell>

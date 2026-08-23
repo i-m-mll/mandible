@@ -226,6 +226,30 @@ describe('Briefing document panel', () => {
     expect(model.markdown).not.toContain(':::spec-item');
   });
 
+  it('source-maps only complete leading YAML frontmatter and keeps later rules as Markdown', () => {
+    const frontmatter = '---\ntitle: Review\ntags:\n  - markdown\n---\n';
+    const mappedSource = `${frontmatter}\n# Policy\n\nBody.\n\n---\n\nAfter rule.`;
+    const model = buildBriefingMarkdownModel(mappedSource, [], {});
+    const metadata = model.entities[0];
+
+    expect(metadata).toMatchObject({
+      kind: 'frontmatter',
+      start: 0,
+      end: frontmatter.length,
+      quote: frontmatter,
+      label: 'Metadata',
+    });
+    expect(model.markdown).toBe('\n# Policy\n\nBody.\n\n---\n\nAfter rule.');
+    expect(model.entities.filter((entity) => entity.kind === 'frontmatter')).toHaveLength(1);
+
+    const nonLeading = buildBriefingMarkdownModel('Intro.\n\n---\ntitle: Not metadata\n---\n', [], {});
+    expect(nonLeading.frontmatter).toBeNull();
+    expect(nonLeading.entities.some((entity) => entity.kind === 'frontmatter')).toBe(false);
+
+    const unterminated = buildBriefingMarkdownModel('---\ntitle: Still Markdown\n', [], {});
+    expect(unterminated.frontmatter).toBeNull();
+  });
+
   it('marks one modified proposed entity, preserves unchanged entities, and treats duplicate ambiguity as changed', () => {
     const base = buildBriefingMarkdownModel('# Policy\n\nOriginal wording.\n\nUnchanged.\n', [], {});
     const proposed = buildBriefingMarkdownModel('# Policy\n\nRevised wording.\n\nUnchanged.\n', [], {});
@@ -281,6 +305,56 @@ describe('Briefing document panel', () => {
     await screen.findByText('Revised wording.');
     expect(screen.queryByLabelText('Changed proposed entities')).toBeNull();
     expect(globalThis.document.querySelector('.briefing-markdown__entity--changed')).toBeNull();
+  });
+
+  it('renders frontmatter as metadata and navigates every comparison change sequentially', async () => {
+    const baseSource = '---\ntitle: Old\n---\n\n# Policy\n\nOne.\n\nTwo.\n';
+    const proposedSource = '---\ntitle: New\n---\n\n# Policy\n\nChanged one.\n\nChanged two.\n';
+    const comparisonRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:proposed-frontmatter',
+        content_hash: createHash('sha256').update(proposedSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v3',
+        source: proposedSource,
+        comparison_base: {
+          artifact_version_id: 'artifact-version:base-frontmatter',
+          content_hash: createHash('sha256').update(baseSource).digest('hex'),
+          source: baseSource,
+        },
+      },
+      items: [],
+    });
+    const rendered = render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
+      round={comparisonRound} canMutate onRefresh={async () => null} />);
+
+    const metadata = await screen.findByLabelText('Changed document metadata');
+    expect(metadata.textContent).toContain('title: New');
+    expect(metadata.textContent).not.toContain('---');
+    const changed = Array.from(rendered.container.querySelectorAll<HTMLElement>('[data-briefing-changed-order]'));
+    expect(changed).toHaveLength(3);
+
+    const next = screen.getByRole('button', { name: 'Next changed entity' });
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed[0]);
+    expect(screen.getByText('1 of 3 changed')).toBeTruthy();
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed[1]);
+    fireEvent.click(next);
+    expect(globalThis.document.activeElement).toBe(changed[2]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous changed entity' }));
+    expect(globalThis.document.activeElement).toBe(changed[1]);
+  });
+
+  it('keeps the change console persistent and list highlights non-additive', () => {
+    const navigationRule = briefingStylesheet.match(/\.briefing-document__change-navigation \{([^}]*)\}/)?.[1] ?? '';
+    const changedRule = briefingStylesheet.match(/\.briefing-markdown__entity--changed \{([^}]*)\}/)?.[1] ?? '';
+
+    expect(navigationRule).toContain('position: sticky');
+    expect(navigationRule).toContain('inset-block-start: var(--space-2)');
+    expect(changedRule).not.toContain('box-shadow');
+    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity--changed \.briefing-markdown__entity--changed \{[^}]*background: transparent/s);
   });
 
   it('keeps directive and ordinary list items in one rendered list with independent exact-range actions', async () => {
@@ -653,7 +727,7 @@ describe('Briefing document panel', () => {
     expect(screen.queryByText(':::spec-item{key="verdict" type="verdict" required="true"}')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Review plan' })).toBeNull();
     expect(screen.getByLabelText('Pinned briefing document').querySelector('img')).toBeNull();
-    expect(screen.getByRole('button', { name: /Body.*Comment.*Current actor note/ })).toBeTruthy();
+    expect(screen.queryByText('Current actor note.')).toBeNull();
     const region = screen.getByText('Body').closest('.briefing-directive') as HTMLElement;
     fireEvent.click(region);
     expect(region.className).toContain('briefing-directive--selected');
@@ -663,6 +737,7 @@ describe('Briefing document panel', () => {
     fireEvent.click(comment);
     expect(comment.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('dialog', { name: 'Add annotation' })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByText(/Current actor note/)).toBeTruthy();
   });
 
   it('creates an annotation from a profiled directive before refetching', async () => {
@@ -679,8 +754,19 @@ describe('Briefing document panel', () => {
     const commentButton = await screen.findByRole('button', { name: 'Comment' }) as HTMLButtonElement;
     await waitFor(() => expect(commentButton.disabled).toBe(false));
     fireEvent.click(commentButton);
-    expect(screen.getByRole('tab', { name: 'Comment' }).getAttribute('aria-selected')).toBe('true');
-    fireEvent.click(screen.getByRole('tab', { name: 'Suggest replacement' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add annotation' });
+    const commentTab = within(dialog).getByRole('tab', { name: 'Comment' });
+    const replacementTab = within(dialog).getByRole('tab', { name: 'Suggest replacement' });
+    expect(commentTab.getAttribute('aria-selected')).toBe('true');
+    expect(commentTab.parentElement?.children).toHaveLength(2);
+    expect(briefingStylesheet).toMatch(/\.briefing-document__tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(within(dialog).getByRole('status').textContent).toBe('Comment text is required.');
+    fireEvent.keyDown(commentTab, { key: 'ArrowRight' });
+    expect(replacementTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(replacementTab);
+    expect(within(dialog).getByRole('button', { name: 'Save' }).classList.contains('btn--sm')).toBe(false);
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeTruthy();
     expect((screen.getByLabelText('Replacement') as HTMLTextAreaElement).value).toBe('Plan');
     fireEvent.input(screen.getByLabelText('Replacement'), { target: { value: 'Revised plan' } });
     fireEvent.input(screen.getByLabelText('Note (optional)'), { target: { value: 'Explain the premise.' } });
@@ -725,7 +811,7 @@ describe('Briefing document panel', () => {
     });
   });
 
-  it('opens a focusable annotation row, edits by retract+set, and deletes by retract', async () => {
+  it('edits and deletes a current-draft annotation only through its bare history action', async () => {
     const posts: any[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (!init?.method) return json(content());
@@ -733,11 +819,18 @@ describe('Briefing document panel', () => {
       posts.push(body);
       return json({ annotation_event_ids: body.annotations.map((_: unknown, index: number) => `event-${index}`) });
     }));
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation()] as any })} canMutate onRefresh={async () => round()} />);
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation({
+      presentation: { source: 'current_draft', actor: null },
+    })] as any })} canMutate onRefresh={async () => round()} />);
 
     const keepButton = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
     await waitFor(() => expect(keepButton.disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    const firstHistory = within(screen.getByRole('dialog')).getByRole('region', { name: 'Comment history' });
+    fireEvent.click(within(firstHistory).getByText('Clarify this.'));
+    expect(screen.getByRole('dialog', { name: 'Add annotation' })).toBeTruthy();
+    fireEvent.click(within(firstHistory).getByRole('button', { name: 'Edit annotation by You: Clarify this.' }));
+    expect(screen.getByRole('dialog', { name: 'Edit annotation' })).toBeTruthy();
     fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Revised note.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts).toHaveLength(1));
@@ -750,10 +843,95 @@ describe('Briefing document panel', () => {
     ]);
     await screen.findByText('Annotation updated.');
 
-    fireEvent.click(screen.getByRole('button', { name: /Plan.*Comment.*Clarify this/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Edit annotation by You: Clarify this.' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
+  });
+
+  it('keeps repeated comments out of Markdown flow and shows inert newest-first attributed history with draft-only edit', async () => {
+    const createdAt = Date.UTC(2026, 0, 2, 15, 4, 37);
+    const older = annotation({
+      annotation_event_id: 'saved-annotation', annotation_kind: 'suggest_replacement', body: 'Immutable policy note.',
+      replacement_text: 'Updated policy', created_at: createdAt - 60_000,
+      presentation: { source: 'annotation_set', actor: { slug: 'reviewer', display_name: 'Reviewer' } },
+    });
+    const newer = annotation({
+      annotation_event_id: 'draft-annotation', body: 'Current follow-up.', created_at: createdAt,
+      presentation: { source: 'current_draft', actor: null },
+    });
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1"
+      round={round({ annotations: [older, newer] as any })} canMutate onRefresh={async () => null} />);
+
+    const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
+    await waitFor(() => expect(keep.disabled).toBe(false));
+    expect(screen.queryByText('Immutable policy note.')).toBeNull();
+    expect(screen.queryByText('Current follow-up.')).toBeNull();
+    const comment = screen.getByRole('button', { name: 'Comment' });
+    expect(comment.getAttribute('title')).toBe('Comment · 2');
+    expect(comment.parentElement?.querySelector('.briefing-annotation-action__count')?.textContent).toBe('2');
+    expect((comment as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(comment);
+
+    const history = within(screen.getByRole('dialog')).getByRole('region', { name: 'Comment history' });
+    const entries = within(history).getAllByRole('listitem');
+    expect(entries[0].textContent).toContain('You');
+    expect(entries[1].textContent).toContain('Reviewer');
+    expect(entries[0].textContent).toContain('Current follow-up.');
+    expect(entries[1].textContent).toContain('Immutable policy note.');
+    expect(entries[1].textContent).toContain('Replace with “Updated policy”');
+    expect(within(history).queryByText('Current draft')).toBeNull();
+    expect(within(history).queryByText('Comment', { exact: true })).toBeNull();
+    expect(entries[0].textContent).not.toContain(':37');
+    expect(entries[0].classList.contains('briefing-annotation-history__entry--draft')).toBe(true);
+    expect(within(entries[0]).getByRole('button', { name: 'Edit annotation by You: Current follow-up.' })).toBeTruthy();
+    expect(within(entries[1]).queryByRole('button', { name: /Edit annotation/ })).toBeNull();
+    fireEvent.click(within(entries[0]).getByText('Current follow-up.'));
+    expect(screen.getByRole('dialog', { name: 'Add annotation' })).toBeTruthy();
+  });
+
+  it('keeps gutter counts on exact entity ranges across immutable and current-draft annotations', async () => {
+    const exactSource = '# Section\n\n- Parent\n  - Child\n';
+    const model = buildBriefingMarkdownModel(exactSource, [], {}, 0);
+    const heading = model.entities.find((entity) => entity.kind === 'heading')!;
+    const listItems = model.entities.filter((entity) => entity.kind === 'list-item');
+    const child = listItems.reduce((smallest, entity) => entity.end - entity.start < smallest.end - smallest.start ? entity : smallest);
+    const parent = listItems.find((entity) => entity !== child)!;
+    const headingRawQuote = exactSource.slice(heading.start, heading.sectionEnd);
+    const headingQuote = headingRawQuote.trim();
+    const headingStart = heading.start + headingRawQuote.indexOf(headingQuote);
+    const headingEnd = headingStart + headingQuote.length;
+    const exactRound = round({
+      document: {
+        artifact_version_id: 'artifact-version:exact-entity',
+        content_hash: createHash('sha256').update(exactSource).digest('hex'),
+        previous_round_id: null,
+        profile: 'mandible-briefing.v3',
+        source: exactSource,
+      },
+      items: [],
+      annotations: [
+        annotation({ annotation_event_id: 'child-saved', start_offset: child.start, end_offset: child.end, quote: child.quote,
+          presentation: { source: 'annotation_set', actor: { slug: 'reviewer', display_name: 'Reviewer' } } }),
+        annotation({ annotation_event_id: 'child-draft', start_offset: child.start, end_offset: child.end, quote: child.quote,
+          presentation: { source: 'current_draft', actor: null } }),
+        annotation({ annotation_event_id: 'heading-saved', start_offset: headingStart, end_offset: headingEnd, quote: headingQuote,
+          presentation: { source: 'annotation_set', actor: { slug: 'reviewer', display_name: 'Reviewer' } } }),
+      ] as any,
+    });
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Exact entities" roundId="round-1"
+      round={exactRound} canMutate onRefresh={async () => null} />);
+
+    const headingAction = await screen.findByRole('button', { name: `Comment on section ${heading.label}` });
+    const parentAction = screen.getByRole('button', { name: `Comment on list-item: ${parent.label}` });
+    const childAction = screen.getByRole('button', { name: `Comment on list-item: ${child.label}` });
+    expect(headingAction.getAttribute('title')).toContain('· 1');
+    expect(childAction.getAttribute('title')).toContain('· 2');
+    expect(parentAction.getAttribute('title')).not.toContain('·');
+    expect(headingAction.parentElement?.querySelector('.briefing-annotation-action__count')?.textContent).toBe('1');
+    expect(childAction.parentElement?.querySelector('.briefing-annotation-action__count')?.textContent).toBe('2');
+    expect(parentAction.parentElement?.querySelector('.briefing-annotation-action__count')).toBeNull();
   });
 
   it('renders only the active text variant and stores bounded keyed choices without manufacturing an initial answer', async () => {

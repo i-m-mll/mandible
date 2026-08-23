@@ -3,8 +3,9 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 
 import type { BriefingDirectiveItem } from '../../api';
+import { leadingMarkdownFrontmatter, type MarkdownFrontmatter } from '../../lib/markdownFrontmatter';
 
-export type BriefingMarkdownEntityKind = 'heading' | 'paragraph' | 'list-item' | 'table' | 'block-quote' | 'fenced-code';
+export type BriefingMarkdownEntityKind = 'frontmatter' | 'heading' | 'paragraph' | 'list-item' | 'table' | 'block-quote' | 'fenced-code';
 
 export type BriefingMarkdownEntity = {
   kind: BriefingMarkdownEntityKind;
@@ -32,6 +33,7 @@ export type BriefingDirectiveDisplayRange = {
 
 export type BriefingMarkdownModel = {
   markdown: string;
+  frontmatter: MarkdownFrontmatter | null;
   entities: BriefingMarkdownEntity[];
   directives: BriefingDirectiveDisplayRange[];
   blocks: Array<{ kind: BriefingMarkdownEntityKind; displayStart: number; displayEnd: number }>;
@@ -138,9 +140,11 @@ export function buildBriefingMarkdownModel(
 ): BriefingMarkdownModel {
   const builder: DisplayBuilder = { value: '', originalOffsets: [] };
   const directives: BriefingDirectiveDisplayRange[] = [];
-  let cursor = hiddenLeadingLength;
+  const frontmatter = hiddenLeadingLength === 0 ? leadingMarkdownFrontmatter(source) : null;
+  let cursor = Math.max(hiddenLeadingLength, frontmatter?.end ?? 0);
+  const contentStart = cursor;
   const ordered = directiveItems
-    .filter((item) => item.directive && item.directive.end_offset > hiddenLeadingLength)
+    .filter((item) => item.directive && item.directive.start_offset >= contentStart)
     .sort((left, right) => left.directive!.start_offset - right.directive!.start_offset);
 
   for (const item of ordered) {
@@ -225,6 +229,19 @@ export function buildBriefingMarkdownModel(
     })
     .filter((entity): entity is BriefingMarkdownEntity => entity !== null);
 
+  if (frontmatter) {
+    entities.unshift({
+      kind: 'frontmatter',
+      start: frontmatter.start,
+      end: frontmatter.end,
+      quote: frontmatter.raw,
+      label: 'Metadata',
+      displayStart: -1,
+      displayEnd: -1,
+      headingAncestry: [],
+    });
+  }
+
   const headingStack: string[] = [];
   for (const entity of entities) {
     const candidate = candidates.find((entry) => entry.start === entity.displayStart && entry.end === entity.displayEnd
@@ -241,9 +258,13 @@ export function buildBriefingMarkdownModel(
 
   return {
     markdown: builder.value,
+    frontmatter,
     entities,
     directives,
-    blocks: candidates.map((candidate) => ({ kind: candidate.kind, displayStart: candidate.start, displayEnd: candidate.end })),
+    blocks: [
+      ...(frontmatter ? [{ kind: 'frontmatter' as const, displayStart: -1, displayEnd: -1 }] : []),
+      ...candidates.map((candidate) => ({ kind: candidate.kind, displayStart: candidate.start, displayEnd: candidate.end })),
+    ],
   };
 }
 

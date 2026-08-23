@@ -210,6 +210,86 @@ describe('artifact-backed Briefing rounds', () => {
     expect(projection).not.toHaveProperty('latest_submission');
   });
 
+  it('renames the selected Briefing from the header menu and updates the header and sidebar from the PATCH result', async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url, method, body });
+      if (url === '/api/briefings' && method === 'GET') {
+        return new Response(JSON.stringify({ briefings: [detail().briefing] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefing-bundles') {
+        return new Response(JSON.stringify({ bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/client-auth/whoami') {
+        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefings/briefing-1' && method === 'GET') {
+        return new Response(JSON.stringify(detail()), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/briefings/briefing-1' && method === 'PATCH') {
+        return new Response(JSON.stringify({ briefing_id: 'briefing-1', title: 'Renamed policy', changed: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) {
+        const exactSource = source.replace('Intro', 'Later');
+        return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(exactSource).byteLength, source: null, preview: { encoding: 'utf-8', text: exactSource, raw_text: exactSource, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: exactSource.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`unexpected ${method} ${url}`);
+    }));
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
+      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+      selectedCollectionId: 'briefing:briefing-1',
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename Briefing' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Rename Briefing' });
+    const input = within(dialog).getByRole('textbox', { name: 'Briefing title' }) as HTMLInputElement;
+    expect(input.value).toBe('Recurring review');
+    fireEvent.input(input, { target: { value: 'Renamed policy' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename Briefing' })).toBeNull());
+    expect(screen.getByRole('heading', { name: 'Renamed policy' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Select briefing Renamed policy' })).toBeTruthy();
+    expect(calls.filter((call) => call.method === 'PATCH')).toEqual([{
+      url: '/api/briefings/briefing-1', method: 'PATCH', body: { title: 'Renamed policy' },
+    }]);
+  });
+
+  it('unions one selected immutable annotation set with only current unsubmitted annotations', () => {
+    const payload = detail(ROUND_ONE) as any;
+    payload.selected_round.latest_frozen_membership = {
+      answer_event_ids: [], annotation_event_ids: ['current-frozen'],
+    };
+    payload.selected_round.annotations = [
+      { annotation_event_id: 'current-frozen', annotation_kind: 'comment', start_offset: 0, end_offset: 5,
+        quote: 'First', body: 'Already submitted current annotation.', replacement_text: null, created_at: 10 },
+      { annotation_event_id: 'current-draft', annotation_kind: 'comment', start_offset: 0, end_offset: 5,
+        quote: 'First', body: 'Unsubmitted current annotation.', replacement_text: null, created_at: 30 },
+    ];
+    payload.selected_round.selected_submission_overlay = {
+      id: 'selected-set', ordinal: 1, supersedes_submission_id: null, actor_user_id: 'reviewer-id',
+      actor: { slug: 'reviewer', display_name: 'Reviewer' }, created_at: 20, answer_count: 0, annotation_count: 1,
+      answers: [], annotations: [{ annotation_event_id: 'immutable-selected', annotation_kind: 'comment',
+        start_offset: 0, end_offset: 5, quote: 'First', body: 'Selected immutable annotation.',
+        replacement_text: null, created_at: 20 }],
+    };
+
+    const projection = normalizeBriefingProjection(payload);
+    expect(projection.annotations?.map((annotation) => [annotation.annotation_event_id,
+      annotation.presentation?.source, annotation.presentation?.actor?.display_name ?? null])).toEqual([
+      ['immutable-selected', 'annotation_set', 'Reviewer'],
+      ['current-draft', 'current_draft', null],
+    ]);
+  });
+
   it('keeps the annotation-set shelf folded, sorts rows, and clears a keyboard-selected frozen overlay', async () => {
     const older = {
       id: 'submission-old', ordinal: 1, supersedes_submission_id: null,
@@ -277,6 +357,33 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.queryByRole('button', { name: 'Return to draft' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('renders a zero annotation-set count as inactive footer text without disclosure semantics', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) return new Response(JSON.stringify(detail(ROUND_TWO)), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={PRODUCTION_ALLOW_INSTANCE} />
+    </AppShellProvider>);
+    await screen.findByText('Later');
+    const inactive = screen.getByText('Annotation sets (0)');
+    expect(inactive.tagName).toBe('DIV');
+    expect(inactive.classList.contains('briefing-submission-shelf--inactive')).toBe(true);
+    expect(inactive.getAttribute('role')).toBeNull();
+    expect(inactive.tabIndex).toBe(-1);
+    expect(inactive.closest('details')).toBeNull();
+    fireEvent.click(inactive);
+    fireEvent.keyDown(inactive, { key: 'Enter' });
+    expect(screen.queryByText('No annotation sets for this round.')).toBeNull();
+    expect(screen.queryByRole('grid', { name: 'Annotation sets for this round' })).toBeNull();
+    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
+    expect(css).toMatch(/\.briefing-submission-shelf\s*\{[^}]*color:\s*var\(--text-muted\);/s);
+    expect(css).toMatch(/\.briefing-submission-shelf--inactive\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-5\);/s);
   });
 
   it('normalizes ordered v3 text variants with exact Markdown bodies and ranges', () => {
@@ -803,7 +910,9 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Copied-preview note.' } });
     fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(posts.some((post) => post.url.endsWith('/annotations'))).toBe(true));
-    await screen.findByRole('button', { name: /Keep this.*Comment.*Copied-preview note/ });
+    fireEvent.click(await screen.findByTitle('Comment · 1'));
+    expect(within(screen.getByRole('dialog')).getByText(/Copied-preview note/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
 
     const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -904,29 +1013,41 @@ describe('artifact-backed Briefing rounds', () => {
       const dialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-      expect((await screen.findAllByRole('button', { name: /Annotation-only review note/ })).length).toBeGreaterThan(0);
+      const populatedPolicyAction = await screen.findByRole('button', { name: 'Comment on section Policy' });
+      await waitFor(() => expect(populatedPolicyAction.getAttribute('title')).toContain('· 1'));
+      fireEvent.click(populatedPolicyAction);
+      expect(within(screen.getByRole('dialog')).getByText(/Annotation-only review note/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Comment on section Policy' }));
       const secondDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(secondDialog).getByLabelText('Comment'), { target: { value: 'Second pending review note.' } });
       fireEvent.click(within(secondDialog).getByRole('button', { name: 'Save' }));
-      expect((await screen.findAllByRole('button', { name: /Second pending review note/ })).length).toBeGreaterThan(0);
+      const twicePopulatedPolicyAction = await screen.findByRole('button', { name: 'Comment on section Policy' });
+      await waitFor(() => expect(twicePopulatedPolicyAction.getAttribute('title')).toContain('· 2'));
+      fireEvent.click(twicePopulatedPolicyAction);
+      expect(within(screen.getByRole('dialog')).getByText(/Second pending review note/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
       fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
       const clearDialog = await screen.findByRole('dialog', { name: 'Clear 2 annotations?' });
       expect(within(clearDialog).getByText('This will permanently delete exactly 2 pending annotations. Submitted annotation sets remain unchanged.')).toBeTruthy();
       fireEvent.click(within(clearDialog).getByRole('button', { name: 'Cancel' }));
       expect(screen.queryByRole('dialog', { name: 'Clear 2 annotations?' })).toBeNull();
-      expect(screen.getAllByRole('button', { name: /Second pending review note/ }).length).toBeGreaterThan(0);
-      expect(screen.getAllByRole('button', { name: /Annotation-only review note/ }).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole('button', { name: 'Comment on section Policy' }));
+      expect(within(screen.getByRole('dialog')).getByText(/Second pending review note/)).toBeTruthy();
+      expect(within(screen.getByRole('dialog')).getByText(/Annotation-only review note/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
       fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
       fireEvent.click(within(await screen.findByRole('dialog', { name: 'Clear 2 annotations?' })).getByRole('button', { name: 'Delete 2 annotations' }));
-      await waitFor(() => expect(screen.queryByRole('button', { name: /pending review note|Annotation-only review note/ })).toBeNull());
+      await waitFor(() => expect(screen.queryByTitle(/Comment on whole section ·/)).toBeNull());
       expect(submit.getAttribute('aria-disabled')).toBe('true');
       fireEvent.click(await screen.findByRole('button', { name: 'Comment on section Policy' }));
       const replacementDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(replacementDialog).getByLabelText('Comment'), { target: { value: 'Annotation-only review note.' } });
       fireEvent.click(within(replacementDialog).getByRole('button', { name: 'Save' }));
-      await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
-      fireEvent.click(submit);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
+      const currentSubmit = screen.getByRole('button', { name: 'Submit' });
+      await waitFor(() => expect(currentSubmit.getAttribute('aria-disabled')).toBe('false'));
+      fireEvent.click(currentSubmit);
       const copyResult = await screen.findByRole('button', { name: 'Copy result ID' });
       expect(copyResult.classList.contains('btn--success')).toBe(true);
       expect(copyResult.nextElementSibling).toBe(screen.getByRole('button', { name: 'Submit' }));
@@ -1051,7 +1172,9 @@ describe('artifact-backed Briefing rounds', () => {
       const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Persisted through the real route.' } });
       fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
-      await screen.findByRole('button', { name: /Keep this.*Persisted through the real route/ });
+      fireEvent.click(await screen.findByTitle('Comment · 1'));
+      expect(within(screen.getByRole('dialog')).getByText(/Persisted through the real route/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
 
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -1177,7 +1300,9 @@ describe('artifact-backed Briefing rounds', () => {
       fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Final IAB acceptance annotation.' } });
       fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
-      await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
+      fireEvent.click(await screen.findByTitle('Comment · 1'));
+      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
 
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -1224,7 +1349,8 @@ describe('artifact-backed Briefing rounds', () => {
       view.unmount();
       invalidateApiGetCache();
       const reloadedView = render(shell());
-      await screen.findByRole('button', { name: /Final IAB acceptance annotation/ });
+      fireEvent.click(await screen.findByTitle('Comment · 1'));
+      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
       expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true);
       expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);

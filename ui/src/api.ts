@@ -1729,7 +1729,12 @@ export async function spawnIssueAgent(
 export async function getSettings(): Promise<Record<string, string>> {
   const payload = await cachedApiGetJson<unknown>('/api/settings');
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    return payload as Record<string, string>;
+    const settings = { ...payload } as Record<string, string>;
+    // app_rail_order moved to the authenticated user-settings contract. Do not
+    // admit the legacy global row into app state, where stale browser-cache
+    // hydration could reintroduce a second authority for writable instances.
+    delete settings.app_rail_order;
+    return settings;
   }
   return {};
 }
@@ -4109,6 +4114,10 @@ export type BriefingAnnotation = {
   body: string | null;
   replacement_text: string | null;
   created_at: number;
+  presentation?: {
+    source: 'current_draft' | 'annotation_set';
+    actor: { slug: string; display_name: string | null } | null;
+  };
 };
 
 export type BriefingAnnotationOperation =
@@ -4216,6 +4225,17 @@ function briefingAnnotation(value: unknown): BriefingAnnotation | null {
     replacement_text: replacement as string | null,
     created_at: row.created_at as number,
   };
+  const presentation = briefingRecord(row.presentation);
+  if (presentation.source === 'current_draft' || presentation.source === 'annotation_set') {
+    const actor = briefingRecord(presentation.actor);
+    annotation.presentation = {
+      source: presentation.source,
+      actor: briefingString(actor.slug) ? {
+        slug: briefingString(actor.slug),
+        display_name: briefingOptionalString(actor.display_name),
+      } : null,
+    };
+  }
   return annotation;
 }
 
@@ -4606,6 +4626,26 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
   });
   const selectedId = briefingString(selected.id);
   const latestSubmission = selected.latest_submission ?? null;
+  const frozenAnnotationIds = new Set(
+    Array.isArray(briefingRecord(selected.latest_frozen_membership).annotation_event_ids)
+      ? briefingRecord(selected.latest_frozen_membership).annotation_event_ids as string[]
+      : [],
+  );
+  const currentAnnotations = (Array.isArray(selected.annotations) ? selected.annotations : []).map((annotation) => ({
+    ...briefingRecord(annotation),
+    presentation: {
+      source: frozenAnnotationIds.has(briefingString(briefingRecord(annotation).annotation_event_id))
+        ? 'annotation_set'
+        : 'current_draft',
+      actor: null,
+    },
+  }));
+  const overlayAnnotations = Array.isArray(selectedOverlayRecord.annotations)
+    ? selectedOverlayRecord.annotations.map((annotation) => ({
+      ...briefingRecord(annotation),
+      presentation: { source: 'annotation_set', actor: selectedOverlayRecord.actor },
+    }))
+    : [];
   const projection = normalizeBriefingRoundProjection({
     round_id: selectedId,
     state: latestSubmission ? 'submitted' : 'open',
@@ -4616,9 +4656,12 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     document: selected.document ?? null,
     directive_binding: selected.binding ?? null,
     latest_frozen_membership: selected.latest_frozen_membership ?? null,
-    annotations: Array.isArray(selectedOverlayRecord.annotations)
-      ? selectedOverlayRecord.annotations
-      : selected.annotations ?? [],
+    annotations: rawSelectedOverlay == null
+      ? currentAnnotations
+      : [
+        ...overlayAnnotations,
+        ...currentAnnotations.filter((annotation) => annotation.presentation.source === 'current_draft'),
+      ],
     items,
   });
   const parseOverlaySummary = (entry: unknown): BriefingSubmissionOverlaySummary | null => {
@@ -4707,6 +4750,26 @@ export async function getBriefing(
   const query = params.size > 0 ? `?${params}` : '';
   const response = await apiGet(`/api/briefings/${encodeURIComponent(briefingId)}${query}`, signal ? { signal } : {});
   return normalizeBriefingProjection(await parseMaybeJson(response));
+}
+
+export type BriefingTitleUpdate = {
+  briefing_id: string;
+  title: string;
+  changed: boolean;
+};
+
+export async function updateBriefingTitle(briefingId: string, title: string): Promise<BriefingTitleUpdate> {
+  const response = await apiPatch(`/api/briefings/${encodeURIComponent(briefingId)}`, { title });
+  const payload = briefingRecord(await parseMaybeJson(response));
+  const updated = {
+    briefing_id: briefingString(payload.briefing_id),
+    title: briefingString(payload.title),
+    changed: payload.changed === true,
+  };
+  if (updated.briefing_id !== briefingId || !updated.title || typeof payload.changed !== 'boolean') {
+    throw new Error('The Briefing title update response is invalid.');
+  }
+  return updated;
 }
 
 export async function getBriefingReviewedMarkdown(
