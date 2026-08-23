@@ -15,8 +15,10 @@ usage() {
   cat <<'EOF'
 Usage:
   mandible briefing create <artifact-version-ref> --title <text> [--comparison-base <artifact-version-ref>] [--json]
+  mandible briefing rename <briefing-ref> --title <text> [--json]
   mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]
   mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]
+  mandible briefing bundle rename <bundle-ref> --name <text> [--json]
   mandible briefing bundle show <bundle-ref> [--json]
 
 Creates a new logical Briefing whose first round is bound to exactly the named
@@ -27,6 +29,30 @@ series to latest and never adds a round to an existing Briefing.
 A Briefing bundle is only a named, manually ordered association. Creating or
 adding to one does not change member Briefings, rounds, artifacts, or review data.
 EOF
+}
+
+cmd_rename() {
+  local briefing_ref="" title="" json=0 response payload
+  while (( $# > 0 )); do
+    case "$1" in
+      --title) [[ $# -ge 2 ]] || die "--title requires a value" 2; title="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$briefing_ref" ]] || die "Unexpected argument: $1" 2; briefing_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$briefing_ref" && -n "${title//[[:space:]]/}" ]] \
+    || die "Usage: mandible briefing rename <briefing-ref> --title <text> [--json]" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(jq -n --arg title "$title" '{title:$title}')"
+  response="$(api_send PATCH "/api/briefings/$(urlencode "$briefing_ref")" "$payload")" \
+    || die "Failed to rename Briefing." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '"briefing:\(.briefing_id | mandible_short_id)  \(.title)"'
+  fi
 }
 
 emit_bundle() {
@@ -126,6 +152,25 @@ cmd_bundle_show() {
   emit_bundle "$response" "$json"
 }
 
+cmd_bundle_rename() {
+  local bundle_ref="" name="" json=0 response payload
+  while (( $# > 0 )); do
+    case "$1" in
+      --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$bundle_ref" && -n "${name//[[:space:]]/}" ]] \
+    || die "Usage: mandible briefing bundle rename <bundle-ref> --name <text> [--json]" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(jq -n --arg name "$name" '{name:$name}')"
+  response="$(api_send PATCH "/api/briefing-bundles/$(urlencode "$bundle_ref")" "$payload")" \
+    || die "Failed to rename Briefing bundle." 1
+  emit_bundle "$response" "$json"
+}
+
 cmd_bundle() {
   local subcommand="${1:-}"
   case "$subcommand" in
@@ -136,6 +181,7 @@ cmd_bundle() {
   case "$subcommand" in
     create) cmd_bundle_create "$@" ;;
     add) cmd_bundle_add "$@" ;;
+    rename) cmd_bundle_rename "$@" ;;
     show) cmd_bundle_show "$@" ;;
     *) die "Unknown briefing bundle subcommand: $subcommand" 2 ;;
   esac
@@ -150,6 +196,7 @@ subcommand="$1"
 shift
 case "$subcommand" in
   create) cmd_create "$@" ;;
+  rename) cmd_rename "$@" ;;
   bundle) cmd_bundle "$@" ;;
   *) die "Unknown briefing subcommand: $subcommand" 2 ;;
 esac

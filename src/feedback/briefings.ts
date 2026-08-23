@@ -452,13 +452,41 @@ export function listBriefings(db: Db, viewer: { userId: string; operator: boolea
   ).all(viewer.operator ? 1 : 0, viewer.userId);
 }
 
-export function updateBriefingTitle(db: Db, briefingId: string, title: unknown, now = Date.now()) {
+export type BriefingViewer = { userId: string; operator: boolean };
+
+export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer): string {
+  const trimmed = briefingRef.trim();
+  const ref = trimmed.startsWith("briefing:") ? trimmed.slice("briefing:".length) : trimmed;
+  if (!ref) throw new BriefingStoreError("Briefing reference must be nonblank");
+  const rows = db.prepare(
+    `SELECT b.id FROM briefings b
+      WHERE ? = 1 OR EXISTS (
+        SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
+      ) ORDER BY b.id`,
+  ).all(viewer.operator ? 1 : 0, viewer.userId) as Array<{ id: string }>;
+  const exact = rows.find((row) => row.id === ref);
+  if (exact) return exact.id;
+  const matches = rows.filter((row) => row.id.startsWith(ref));
+  if (matches.length === 1) return matches[0].id;
+  if (matches.length > 1) {
+    throw new BriefingStoreError("Briefing reference is ambiguous", 409, "ambiguous_ref");
+  }
+  throw new BriefingStoreError("briefing not found", 404, "not_found");
+}
+
+export function updateBriefingTitle(
+  db: Db,
+  briefingRef: string,
+  title: unknown,
+  viewer: BriefingViewer,
+) {
   const normalized = normalizeBriefingTitle(title);
+  const briefingId = resolveBriefingId(db, briefingRef, viewer);
   const briefing = db.prepare("SELECT id, title FROM briefings WHERE id = ?")
     .get(briefingId) as { id: string; title: string } | undefined;
   if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
   if (briefing.title !== normalized) {
-    db.prepare("UPDATE briefings SET title = ?, updated_at = ? WHERE id = ?").run(normalized, now, briefing.id);
+    db.prepare("UPDATE briefings SET title = ? WHERE id = ?").run(normalized, briefing.id);
   }
   return { briefing_id: briefing.id, title: normalized, changed: briefing.title !== normalized };
 }

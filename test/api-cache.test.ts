@@ -16,10 +16,12 @@ describe('Briefing SSE cache invalidation matrix', () => {
     'briefing:created',
     'briefing:bundle-created',
     'briefing:bundle-member-added',
+    'briefing:bundle-name-updated',
     'briefing:round-published',
     'briefing:answered',
     'briefing:annotated',
     'briefing:submitted',
+    'briefing:title-updated',
   ])('%s invalidates Briefing, bundle, and badge caches', (topic) => {
     expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefings',
