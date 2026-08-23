@@ -16,13 +16,16 @@ usage() {
 Usage:
   mandible briefing create <artifact-version-ref> --title <text> [--comparison-base <artifact-version-ref>] [--json]
   mandible briefing rename <briefing-ref> --title <text> [--json]
+  mandible briefing archive <briefing-ref> [--json]
+  mandible briefing restore <briefing-ref> [--json]
   mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]
   mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]
   mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--json]
   mandible briefing bundle rename <bundle-ref> --name <text> [--json]
   mandible briefing bundle show <bundle-ref> [--json]
-  mandible briefing group create --name <name> [<bundle-ref>...] [--json]
+  mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--json]
   mandible briefing group add <group-ref> <bundle-ref> [--json]
+  mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]
   mandible briefing group rename <group-ref> --name <text> [--json]
   mandible briefing group show <group-ref> [--json]
 
@@ -34,6 +37,27 @@ series to latest and never adds a round to an existing Briefing.
 A Briefing bundle is only a named, manually ordered association. Creating or
 adding to one does not change member Briefings, rounds, artifacts, or review data.
 EOF
+}
+
+cmd_archive_state() {
+  local action="$1" briefing_ref="" json=0 response
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$briefing_ref" ]] || die "Unexpected argument: $1" 2; briefing_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$briefing_ref" ]] || die "Usage: mandible briefing $action <briefing-ref> [--json]" 2
+  response="$(api_send POST "/api/briefings/$(urlencode "$briefing_ref")/$action" '{}')" \
+    || die "Failed to ${action} Briefing." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      "\"${action}d briefing \\(.briefing_id | mandible_short_id)\""
+  fi
 }
 
 cmd_rename() {
@@ -190,16 +214,19 @@ emit_group() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '.group | "briefing-group:\(.id | mandible_short_id)  \(.name)\n\([.updates[]? | "  \(.id | mandible_short_id)  \(.name)"] | join("\n"))"'
+      '.group | "briefing-group:\(.id | mandible_short_id)  \(.name)\n  current: \(
+        if .current == null then "none" else "\(.current.id | mandible_short_id)  \(.current.name)" end
+      )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))"'
   fi
 }
 
 cmd_group_create() {
-  local name="" json=0 response payload
+  local name="" current_bundle_ref="" json=0 response payload
   local -a bundle_refs=()
   while (( $# > 0 )); do
     case "$1" in
       --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
+      --current) [[ $# -ge 2 ]] || die "--current requires a value" 2; current_bundle_ref="$2"; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) bundle_refs+=("$1"); shift ;;
@@ -207,8 +234,34 @@ cmd_group_create() {
   done
   [[ -n "${name//[[:space:]]/}" ]] || die "group create requires --name <name>" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
-  payload="$(jq -n --arg name "$name" --args '{name:$name,bundle_refs:$ARGS.positional}' -- "${bundle_refs[@]}")"
+  payload="$(jq -n --arg name "$name" --arg current "$current_bundle_ref" --args \
+    '{name:$name,bundle_refs:$ARGS.positional} + (if $current == "" then {} else {current_bundle_ref:$current} end)' \
+    -- "${bundle_refs[@]}")"
   response="$(api_send POST "/api/briefing-groups" "$payload")" || die "Failed to create Briefing group." 1
+  emit_group "$response" "$json"
+}
+
+cmd_group_configure() {
+  local group_ref="" current_bundle_ref="" current_set=0 json=0 response payload
+  local -a bundle_refs=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --current) [[ $# -ge 2 ]] || die "--current requires a value" 2
+        current_bundle_ref="$2"; current_set=1; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; else bundle_refs+=("$1"); fi; shift ;;
+    esac
+  done
+  [[ -n "$group_ref" && $current_set -eq 1 ]] \
+    || die "Usage: mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]" 2
+  [[ -n "${current_bundle_ref//[[:space:]]/}" ]] || die "--current requires a nonblank bundle ref or none" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(jq -n --arg current "$current_bundle_ref" --args \
+    '{current_bundle_ref:(if $current == "none" then null else $current end),bundle_refs:$ARGS.positional}' \
+    -- "${bundle_refs[@]}")"
+  response="$(api_send PUT "/api/briefing-groups/$(urlencode "$group_ref")/configuration" "$payload")" \
+    || die "Failed to configure Briefing group." 1
   emit_group "$response" "$json"
 }
 
@@ -267,7 +320,8 @@ cmd_group() {
   case "$subcommand" in "" ) usage; exit 2 ;; -h|--help|help) usage; exit 0 ;; esac
   shift
   case "$subcommand" in
-    create) cmd_group_create "$@" ;; add) cmd_group_add "$@" ;; rename) cmd_group_rename "$@" ;;
+    create) cmd_group_create "$@" ;; add) cmd_group_add "$@" ;; configure) cmd_group_configure "$@" ;;
+    rename) cmd_group_rename "$@" ;;
     show) cmd_group_show "$@" ;; *) die "Unknown briefing group subcommand: $subcommand" 2 ;;
   esac
 }
@@ -334,6 +388,8 @@ shift
 case "$subcommand" in
   create) cmd_create "$@" ;;
   rename) cmd_rename "$@" ;;
+  archive) cmd_archive_state archive "$@" ;;
+  restore) cmd_archive_state restore "$@" ;;
   bundle) cmd_bundle "$@" ;;
   group) cmd_group "$@" ;;
   *) die "Unknown briefing subcommand: $subcommand" 2 ;;

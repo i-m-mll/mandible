@@ -1066,6 +1066,7 @@ export type BriefingListEntry = {
   title: string;
   latest_round_id: string | null;
   round_count: number;
+  archived_at: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -1093,6 +1094,7 @@ export type BriefingGroup = {
   name: string;
   created_at: number;
   updated_at: number;
+  current: BriefingBundle | null;
   updates: BriefingBundle[];
 };
 export const BRIEFING_EVENTS = Object.freeze({
@@ -1103,12 +1105,15 @@ export const BRIEFING_EVENTS = Object.freeze({
   bundleNameUpdated: "briefing:bundle-name-updated",
   groupCreated: "briefing:group-created",
   groupUpdateAdded: "briefing:group-update-added",
+  groupConfigurationUpdated: "briefing:group-configuration-updated",
   groupNameUpdated: "briefing:group-name-updated",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",
   annotated: "briefing:annotated",
   submitted: "briefing:submitted",
   titleUpdated: "briefing:title-updated",
+  archived: "briefing:archived",
+  restored: "briefing:restored",
 } as const);
 export type BriefingEvent = (typeof BRIEFING_EVENTS)[keyof typeof BRIEFING_EVENTS];
 export const BRIEFING_EVENT_VALUES: readonly BriefingEvent[] = Object.freeze(Object.values(BRIEFING_EVENTS));

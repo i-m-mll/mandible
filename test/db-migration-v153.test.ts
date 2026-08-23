@@ -1,53 +1,37 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-import { BASELINE_SCHEMA_VERSION } from "../src/db-baseline.js";
-import { CURRENT_SCHEMA_VERSION, migrate } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
 
-describe("migration v153: explicit work-unit worker ownership", () => {
-  it("keeps the fresh baseline and migration head converged", () => {
-    const db = new Database(":memory:");
-    migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(153);
-    expect(CURRENT_SCHEMA_VERSION).toBe(153);
-    expect(db.prepare("PRAGMA table_info(work_units)").all()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          name: "worker_provider_session_id",
-          type: "TEXT",
-          notnull: 0,
-          dflt_value: null,
-        }),
-      ]),
-    );
-    db.close();
-  });
-
-  it("upgrades v152 idempotently without backfilling ambient identity", () => {
-    const db = new Database(":memory:");
+describe("migration v153", () => {
+  it("adds nullable Briefing archive and group-current state without reinterpreting proposals", () => {
+    const db = new Database(":memory:") as Db;
     migrate(db);
     db.exec(`
-      ALTER TABLE work_units DROP COLUMN worker_provider_session_id;
-      INSERT INTO work_units (
-        id, issue_id, repo_id, kind, state, provider, provider_session_id, created_at
-      ) VALUES (
-        'ambient-only', 'issue-a', 'mandible', 'solo', 'resolved', 'codex',
-        'coordinator-thread', 1
-      );
+      DROP INDEX idx_briefing_groups_current_bundle;
+      ALTER TABLE briefing_groups DROP COLUMN current_bundle_id;
+      ALTER TABLE briefings DROP COLUMN archived_at;
       UPDATE meta SET value = '152' WHERE key = 'schema_version';
     `);
+    db.prepare("INSERT INTO briefing_bundles (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run("proposal", "Proposal", 1, 1);
+    db.prepare("INSERT INTO briefing_groups (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run("legacy-group", "Legacy", 1, 1);
+    db.prepare(`INSERT INTO briefing_group_updates
+      (group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?)`)
+      .run("legacy-group", "proposal", 0, 1);
 
     migrate(db);
-    expect(db.prepare(
-      "SELECT provider_session_id, worker_provider_session_id FROM work_units WHERE id = 'ambient-only'",
-    ).get()).toEqual({
-      provider_session_id: "coordinator-thread",
-      worker_provider_session_id: null,
-    });
-    db.prepare("UPDATE meta SET value = '152' WHERE key = 'schema_version'").run();
-    expect(() => migrate(db)).not.toThrow();
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "153" });
+
+    expect(CURRENT_SCHEMA_VERSION).toBe(154);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "154" });
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = 'legacy-group'").get())
+      .toEqual({ current_bundle_id: null });
+    expect(db.prepare("SELECT bundle_id, position FROM briefing_group_updates WHERE group_id = 'legacy-group'").all())
+      .toEqual([{ bundle_id: "proposal", position: 0 }]);
+    expect(db.prepare("PRAGMA table_info(briefings)").all()).toContainEqual(expect.objectContaining({
+      name: "archived_at", notnull: 0,
+    }));
     db.close();
   });
 });

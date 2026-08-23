@@ -78,6 +78,14 @@ const groupedUpdates: BriefingGroup = {
   name: 'Release review',
   createdAt: 1,
   updatedAt: 2,
+  current: {
+    id: '00000000-1234-4123-8123-123456789abc',
+    name: 'Accepted layout',
+    createdAt: 1,
+    updatedAt: 1,
+    members: [{ position: 0, briefing: collections[0] }],
+    layout: [{ kind: 'briefing', briefing: collections[0] }],
+  },
   updates: [
     {
       id: '11111111-1234-4123-8123-123456789abc',
@@ -104,7 +112,7 @@ const groupedUpdates: BriefingGroup = {
 function GroupHarness(): JSX.Element {
   const [viewState, setViewState] = useState<BriefingCollectionViewState>(DEFAULT_BRIEFING_COLLECTION_VIEW_STATE);
   const selectedUpdateId = groupedUpdates.updates.find((update) => update.id === viewState.selectedGroupUpdateIds[groupedUpdates.id])?.id
-    ?? groupedUpdates.updates[0].id;
+    ?? null;
   return (
     <>
       <CollectionsSidebar
@@ -121,10 +129,12 @@ function GroupHarness(): JSX.Element {
         <BriefingGroupDetail
           group={groupedUpdates}
           selectedUpdateId={selectedUpdateId}
-          onSelectUpdate={(updateId) => setViewState((current) => ({
-            ...current,
-            selectedGroupUpdateIds: { ...current.selectedGroupUpdateIds, [groupedUpdates.id]: updateId },
-          }))}
+          onSelectUpdate={(updateId) => setViewState((current) => {
+            const selectedGroupUpdateIds = { ...current.selectedGroupUpdateIds };
+            if (updateId) selectedGroupUpdateIds[groupedUpdates.id] = updateId;
+            else delete selectedGroupUpdateIds[groupedUpdates.id];
+            return { ...current, selectedGroupUpdateIds };
+          })}
         />
       ) : null}
       <output data-testid="view-state">{JSON.stringify(viewState)}</output>
@@ -166,12 +176,16 @@ describe('Briefing sidebar row actions', () => {
     expect(normalized[0].members.map((member) => member.briefing.label)).toEqual(['First', 'Second']);
   });
 
-  it('normalizes group proposals with exactly one canonical subgroup level', () => {
+  it('normalizes group Current separately from proposals with one canonical subgroup level', () => {
     const row = (id: string, title: string) => ({
       id, title, latest_round_id: `round-${id}`, round_count: 1, created_at: 1, updated_at: 1,
     });
     const groups = normalizeBriefingGroups({ groups: [{
       id: 'group-1', name: 'Review group', created_at: 1, updated_at: 2,
+      current: {
+        id: 'current-1', name: 'Current', created_at: 1, updated_at: 2,
+        layout: [{ kind: 'briefing', briefing: row('baseline', 'Baseline') }],
+      },
       updates: [{
         id: 'update-1', name: 'Proposal', created_at: 1, updated_at: 2,
         layout: [
@@ -186,6 +200,9 @@ describe('Briefing sidebar row actions', () => {
       }],
     }] });
 
+    expect(groups[0].current?.layout).toMatchObject([
+      { kind: 'briefing', briefing: { label: 'Baseline' } },
+    ]);
     expect(groups[0].updates[0].layout).toMatchObject([
       { kind: 'briefing', briefing: { label: 'First' } },
       { kind: 'subgroup', name: 'Research', briefings: [{ label: 'Second' }] },
@@ -193,7 +210,7 @@ describe('Briefing sidebar row actions', () => {
     expect(groups[0].updates[0].members.map((member) => member.briefing.label)).toEqual(['First', 'Second']);
   });
 
-  it('selects a group separately from its chevron and projects the chosen proposal layout', () => {
+  it('selects a group separately from its chevron and previews proposals without replacing Current', () => {
     render(<GroupHarness />);
 
     const groupSelect = screen.getByRole('button', { name: 'Select Briefing group Release review' });
@@ -205,16 +222,32 @@ describe('Briefing sidebar row actions', () => {
     fireEvent.click(groupSelect);
     expect(disclosure.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('heading', { name: 'Release review' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Current' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
     expect(screen.getByText('12345678', { selector: '.detail-pane-header__display-ref' })).toBeTruthy();
+    const currentLayout = screen.getByRole('button', { name: 'Show current layout Accepted layout' });
+    const proposedUpdates = screen.getByRole('heading', { name: 'Proposed updates' }).closest('section') as HTMLElement;
+    expect(proposedUpdates.contains(currentLayout)).toBe(false);
+    expect(currentLayout.getAttribute('aria-pressed')).toBe('true');
 
-    fireEvent.click(screen.getByRole('button', { name: /Second proposal/ }));
+    const secondProposal = screen.getByRole('button', { name: 'Preview proposed update Second proposal' });
+    fireEvent.click(secondProposal);
+    expect(currentLayout.getAttribute('aria-pressed')).toBe('false');
+    expect(secondProposal.getAttribute('aria-pressed')).toBe('true');
     expect(within(group).queryByRole('button', { name: 'Select briefing First briefing' })).toBeNull();
-    const subgroupToggle = within(group).getByRole('button', { name: /Research/ });
     expect(within(group).getAllByRole('button', { name: /Select briefing/ }).map((button) => button.getAttribute('aria-label')))
       .toEqual(['Select briefing Second briefing', 'Select briefing Third briefing']);
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').selectedGroupUpdateIds)
       .toEqual({ [groupedUpdates.id]: groupedUpdates.updates[1].id });
 
+    fireEvent.click(currentLayout);
+    expect(currentLayout.getAttribute('aria-pressed')).toBe('true');
+    expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
+    expect(within(group).queryByRole('button', { name: /Research/ })).toBeNull();
+    expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').selectedGroupUpdateIds).toEqual({});
+
+    fireEvent.click(secondProposal);
+    const subgroupToggle = within(group).getByRole('button', { name: /Research/ });
     fireEvent.click(subgroupToggle);
     expect(subgroupToggle.getAttribute('aria-expanded')).toBe('false');
     expect(within(group).queryByRole('button', { name: 'Select briefing Second briefing' })).toBeNull();
@@ -231,6 +264,17 @@ describe('Briefing sidebar row actions', () => {
       selectedCollectionId: collections[1].id,
       selectedGroupId: null,
     });
+  });
+
+  it('keeps Current distinct when a group has no proposed updates', () => {
+    const group = { ...groupedUpdates, updates: [] };
+    render(<BriefingGroupDetail group={group} selectedUpdateId={null} onSelectUpdate={() => undefined} />);
+
+    expect(screen.getByRole('heading', { name: 'Current' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show current layout Accepted layout' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
+    expect(screen.getByText('No proposed updates are available.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Preview proposed update/ })).toBeNull();
   });
 
   it('renders grouped proposal bundles only through their stable group', () => {
@@ -270,9 +314,9 @@ describe('Briefing sidebar row actions', () => {
       name: 'Sparse testing policy',
       createdAt: 1,
       updatedAt: 1,
-      updates: [{
-        id: 'sparse-policy-proposal',
-        name: 'Proposed organization',
+      current: {
+        id: 'sparse-policy-current',
+        name: 'Current organization',
         createdAt: 1,
         updatedAt: 1,
         members: [...direct, ...skills].map((entry, position) => ({ position, briefing: entry })),
@@ -280,12 +324,17 @@ describe('Briefing sidebar row actions', () => {
           ...direct.map((entry) => ({ kind: 'briefing' as const, briefing: entry })),
           { kind: 'subgroup', name: 'Skills', briefings: skills },
         ],
-      }],
+      },
+      updates: [],
     };
 
     render(<Harness groups={[policyGroup]} initialViewState={{ pinnedCollectionIds: [] }} />);
+    const sidebar = screen.getByTestId('feedback-collections-sidebar');
     const group = screen.getByRole('button', { name: 'Select Briefing group Sparse testing policy' })
       .closest('.sidebar-group-node') as HTMLElement;
+    const groupLayout = group.querySelector(':scope > .sidebar-disclosure-region > .feedback-collections-sidebar__group-layout');
+    expect(groupLayout).toBeTruthy();
+    expect(briefingStylesheet).toMatch(/\.feedback-collections-sidebar__group-layout \{[^}]*padding-inline-start: var\(--space-3\);/s);
     expect(within(group).getAllByRole('button', { name: /Select briefing/ }).map((button) => button.getAttribute('aria-label')))
       .toEqual([
         'Select briefing Global',
@@ -298,6 +347,9 @@ describe('Briefing sidebar row actions', () => {
       ]);
     expect(within(group).getByRole('button', { name: /Skills/ })).toBeTruthy();
     expect(within(group).queryByRole('button', { name: /Policy/ })).toBeNull();
+    const unrelatedTopLevelList = within(sidebar).getByRole('button', { name: 'Select briefing First briefing' }).closest('ul');
+    expect(group.contains(unrelatedTopLevelList)).toBe(false);
+    expect(unrelatedTopLevelList?.classList.contains('feedback-collections-sidebar__group-layout')).toBe(false);
   });
 
   it('renders ordered bundle members in the shared foldable folder presentation', () => {

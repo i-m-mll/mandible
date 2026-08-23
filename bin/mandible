@@ -23,6 +23,7 @@
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   briefing create <version-ref>    Create a Briefing from one exact artifact version
 #   briefing rename <briefing-ref>   Rename an existing Briefing in place
+#   briefing archive|restore <ref>   Hide or restore a Briefing organizationally
 #   briefing bundle <subcommand>     Create, add to, replace, rename, and show review bundles
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
@@ -72,6 +73,7 @@ Commands:
   artifact <subcommand>            Register, resolve, link, and check artifacts
   briefing create <version-ref>    Create a Briefing from one exact artifact version
   briefing rename <briefing-ref>   Rename an existing Briefing in place
+  briefing archive|restore <ref>   Hide or restore a Briefing organizationally
   briefing bundle <subcommand>     Create, add to, replace, rename, and show review bundles
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   project <subcommand>             Canonical project registry (list, show, add, audit, repair)

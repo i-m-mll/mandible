@@ -59,6 +59,7 @@ describe("briefing CLI", () => {
     expect(runOffline(["help"]).stdout).toContain("briefing create <version-ref>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing create");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing rename");
+    expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing archive");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle create");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle replace");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle rename");
@@ -90,6 +91,20 @@ describe("briefing CLI", () => {
     expect(result.status).toBe(0);
     expect(result.requests).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ briefing_id: "briefing-12345678", changed: true });
+  });
+
+  it("archives and restores an exact Briefing through the supported API", async () => {
+    for (const action of ["archive", "restore"]) {
+      const result = await runRpc(["briefing", action, "briefing:briefing-12345678", "--json"], (request) => {
+        expect(request).toMatchObject({ method: "POST",
+          path: `/api/briefings/briefing%3Abriefing-12345678/${action}`, body: {} });
+        return { status: 200, body: {
+          briefing_id: "briefing-12345678", archived_at: action === "archive" ? 123 : null, changed: true,
+        } };
+      });
+      expect(result.status).toBe(0);
+      expect(result.requests).toHaveLength(1);
+    }
   });
 
   it("supports create, append, and show for ordered Briefing bundles", async () => {
@@ -183,10 +198,11 @@ describe("briefing CLI", () => {
     const bundle = { id: "bundle-one", name: "Proposal one", created_at: 1, updated_at: 1,
       layout: [], members: [] };
     const group = { id: "group-12345678", name: "Policy", created_at: 1, updated_at: 1, updates: [bundle] };
-    const created = await runRpc(["briefing", "group", "create", "--name", "Policy", "bundle-one", "--json"],
+    const created = await runRpc(["briefing", "group", "create", "--name", "Policy", "--current", "bundle-current",
+      "bundle-one", "--json"],
       (request) => {
         expect(request).toMatchObject({ method: "POST", path: "/api/briefing-groups",
-          body: { name: "Policy", bundle_refs: ["bundle-one"] } });
+          body: { name: "Policy", current_bundle_ref: "bundle-current", bundle_refs: ["bundle-one"] } });
         return { status: 201, body: { group } };
       });
     expect(created.status).toBe(0);
@@ -200,6 +216,22 @@ describe("briefing CLI", () => {
         return { status: 200, body: { group, added: true } };
       });
     expect(added.status).toBe(0);
+
+    const configured = await runRpc(["briefing", "group", "configure", "briefing-group:group-12345678",
+      "--current", "bundle-current", "bundle-two", "bundle-one", "--json"], (request) => {
+      expect(request).toMatchObject({ method: "PUT",
+        path: "/api/briefing-groups/briefing-group%3Agroup-12345678/configuration",
+        body: { current_bundle_ref: "bundle-current", bundle_refs: ["bundle-two", "bundle-one"] } });
+      return { status: 200, body: { group: { ...group, current: bundle }, changed: true } };
+    });
+    expect(configured.status).toBe(0);
+
+    const noCurrent = await runRpc(["briefing", "group", "configure", "group-12345678",
+      "--current", "none", "--json"], (request) => {
+      expect(request.body).toEqual({ current_bundle_ref: null, bundle_refs: [] });
+      return { status: 200, body: { group: { ...group, current: null, updates: [] }, changed: true } };
+    });
+    expect(noCurrent.status).toBe(0);
 
     const renamed = await runRpc(["briefing", "group", "rename", "group-12345678", "--name", "Policy review", "--json"],
       (request) => {
