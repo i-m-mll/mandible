@@ -4825,6 +4825,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "briefing_group_current_and_archive_state",
     statements: [],
   },
+  {
+    version: 154,
+    name: "explicit_work_unit_worker_ownership",
+    statements: [],
+  },
 ];
 
 function ensureBriefingOrganizationColumns(db: Db): void {
@@ -4955,6 +4960,29 @@ function ensureConversationSourceFilesystemIdentityColumns(db: Db): void {
         || column.dflt_value !== null || column.pk !== 0) {
       throw new Error(`migration 147 verification: conversation_source_versions.${name} diverges`);
     }
+  }
+}
+
+function ensureWorkUnitWorkerOwnershipColumn(db: Db): void {
+  if (!tableExists(db, "work_units")) return;
+  const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  if (!columns.some((column) => column.name === "worker_provider_session_id")) {
+    db.exec("ALTER TABLE work_units ADD COLUMN worker_provider_session_id TEXT");
+  }
+  const column = (db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>).find((entry) => entry.name === "worker_provider_session_id");
+  if (!column || column.type.toUpperCase() !== "TEXT" || column.notnull !== 0
+      || column.dflt_value !== null) {
+    throw new Error("migration 154 verification: work_units.worker_provider_session_id diverges");
   }
 }
 
@@ -5428,6 +5456,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 150) ensureBriefingComparisonBaseColumn(db);
       if (migration.version === 152) migrateBriefingBundleLayoutV152(db);
       if (migration.version === 153) ensureBriefingOrganizationColumns(db);
+      if (migration.version === 154) ensureWorkUnitWorkerOwnershipColumn(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }

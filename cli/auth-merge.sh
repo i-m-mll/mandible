@@ -700,17 +700,19 @@ run_merge_preflight() {
   local head_branch="$2"
   local base_branch="$3"
 
-  if [[ "${MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT:-}" == "1" && -n "${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA:-}" ]]; then
+  if [[ -n "${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA:-}" ]]; then
     local current_base_sha
     current_base_sha=$(current_branch_sha "$base_branch")
-    if [[ -n "$current_base_sha" && "$current_base_sha" == "$MANDIBLE_AUTH_PREFLIGHT_BASE_SHA" ]]; then
+    if [[ -z "$current_base_sha" || "$current_base_sha" != "$MANDIBLE_AUTH_PREFLIGHT_BASE_SHA" ]]; then
+      err "${RED}Target ${base_branch} moved from reviewed base ${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA} to ${current_base_sha:-unknown}; requeue and reapprove. No ref or worktree was changed.${RESET}"
+      return 1
+    fi
+    if [[ "${MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT:-}" == "1" ]]; then
       auth_phase "reusing submit-time merge preflight; target ${base_branch} is still ${current_base_sha}."
       return 0
     fi
-    auth_phase "target ${base_branch} moved since submit; running merge preflight checks..."
-  else
-    auth_phase "running merge preflight checks..."
   fi
+  auth_phase "running merge preflight checks..."
 
   mandible_auth_merge_preflight "$cwd" "$head_branch" "$base_branch"
 }

@@ -237,7 +237,7 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("commit.gpgsign is set to false");
   });
 
-  it("runs the daemon merge preflight when recorded target head is stale", async () => {
+  it("fails closed when the reviewed target head is stale", async () => {
     const authCheck = await listenForAuthCheck();
 
     const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
@@ -248,8 +248,25 @@ describe("auth merge Mandible preflight", () => {
     });
 
     expect(result.status).toBe(1);
+    expect(authCheck.bodies).toHaveLength(0);
+    expect(result.stderr).toContain("Target main moved from reviewed base");
+    expect(result.stderr).toContain("requeue and reapprove");
+    expect(result.stderr).not.toContain("commit.gpgsign is set to false");
+  });
+
+  it("runs the full preflight while remaining bound to an unchanged reviewed base", async () => {
+    const authCheck = await listenForAuthCheck();
+    const baseSha = git(["rev-parse", "main"]);
+
+    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
+      MANDIBLE_PORT: String(authCheck.port),
+      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
+      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: baseSha,
+    });
+
+    expect(result.status).toBe(1);
     expect(authCheck.bodies).toHaveLength(1);
-    expect(result.stderr).toContain("target main moved since submit");
+    expect(result.stderr).toContain("running merge preflight checks");
     expect(result.stderr).toContain("commit.gpgsign is set to false");
   });
 

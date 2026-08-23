@@ -61,9 +61,10 @@ function insertCodexWorkUnit(
 ): void {
   db.prepare(
     `INSERT INTO work_units (
-      id, issue_id, repo_id, branch, kind, state, provider, provider_session_id, created_at, auth_request_id
-    ) VALUES (?, ?, 'finalizer-repo', NULL, 'solo', 'committed', 'codex', ?, 0, ?)`
-  ).run(id, `issue-${id}`, providerSessionId, authRequestId);
+      id, issue_id, repo_id, branch, kind, state, provider, provider_session_id,
+      worker_provider_session_id, created_at, auth_request_id
+    ) VALUES (?, ?, 'finalizer-repo', NULL, 'solo', 'committed', 'codex', ?, ?, 0, ?)`
+  ).run(id, `issue-${id}`, providerSessionId, providerSessionId, authRequestId);
 }
 
 function eventsFor(events: SseEvent[], requestId: string, name: string): SseEvent[] {
@@ -75,6 +76,48 @@ function eventsFor(events: SseEvent[], requestId: string, name: string): SseEven
 }
 
 describe("auth finalizer queue (Issue 75f52ac)", () => {
+  it("archives only explicit worker ownership when the ambient coordinator has no guards", async () => {
+    const db = createMigratedDb();
+    const archived: string[] = [];
+    const queue = new AuthQueue({
+      db,
+      broadcast: () => undefined,
+      codexThreadArchiver: {
+        archive: async (threadId) => { archived.push(threadId); },
+        unarchive: async () => undefined,
+      },
+    });
+    try {
+      const id = submitSuccessfulRequest(queue);
+      db.prepare(
+        `INSERT INTO work_units (
+          id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+          provider, provider_session_id, worker_provider_session_id, created_at,
+          resolved_at, auth_request_id
+        ) VALUES
+          (?, '66b3bda', 'finalizer-repo', NULL, 'solo', 'resolved', NULL,
+           'codex', ?, NULL, 0, ?, ?),
+          ('wu-explicit', 'issue-explicit', 'finalizer-repo', NULL, 'solo', 'resolved', NULL,
+           'codex', 'ambient-explicit', 'thread-explicit', 0, ?, ?)`,
+      ).run(
+        "53ac5b81-f6f2-4898-84b5-02e5b725a84b",
+        "01a01b97-bc06-7df0-ae37-2e287fdf4694",
+        Date.parse("2026-08-20T13:04:55Z"),
+        id,
+        Date.parse("2026-08-20T13:04:55Z"),
+        id,
+      );
+
+      queue.setResult(id, 0, "ok");
+      await queue.drainFinalizers();
+
+      expect(archived).toEqual(["thread-explicit"]);
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
   it("emits merged -> resolved -> finalized in order with the right payload shapes", async () => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];
@@ -319,8 +362,12 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       );
       db.prepare(
         `INSERT INTO work_units (
-          id, issue_id, repo_id, branch, kind, state, provider, provider_session_id, created_at, resolved_at, auth_request_id
-        ) VALUES ('wu-crash', 'issue-crash', 'finalizer-repo', NULL, 'solo', 'resolved', 'codex', 'thread-crash', 0, 100, ?)`
+          id, issue_id, repo_id, branch, kind, state, provider, provider_session_id,
+          worker_provider_session_id, created_at, resolved_at, auth_request_id
+        ) VALUES (
+          'wu-crash', 'issue-crash', 'finalizer-repo', NULL, 'solo', 'resolved',
+          'codex', 'thread-crash', 'thread-crash', 0, 100, ?
+        )`
       ).run(id);
 
       // Fresh queue: the startup sweep resumes only the archive step.

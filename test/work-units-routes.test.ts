@@ -127,8 +127,15 @@ describe("work unit routes", () => {
     expect(claim.status).toBe(201);
     const claimBody = claim.body as { id: string };
     expect(
-      db.prepare("SELECT provider, provider_session_id FROM work_units WHERE id = ?").get(claimBody.id),
-    ).toEqual({ provider: "codex", provider_session_id: "thread-claim" });
+      db.prepare(
+        `SELECT provider, provider_session_id, worker_provider_session_id
+         FROM work_units WHERE id = ?`,
+      ).get(claimBody.id),
+    ).toEqual({
+      provider: "codex",
+      provider_session_id: "thread-claim",
+      worker_provider_session_id: null,
+    });
 
     await router.invoke({
       method: "POST",
@@ -141,8 +148,37 @@ describe("work unit routes", () => {
       },
     });
     expect(
-      db.prepare("SELECT state, provider, provider_session_id FROM work_units WHERE id = ?").get(claimBody.id),
-    ).toEqual({ state: "committed", provider: "codex", provider_session_id: "thread-activate" });
+      db.prepare(
+        `SELECT state, provider, provider_session_id, worker_provider_session_id
+         FROM work_units WHERE id = ?`,
+      ).get(claimBody.id),
+    ).toEqual({
+      state: "committed",
+      provider: "codex",
+      provider_session_id: "thread-activate",
+      worker_provider_session_id: null,
+    });
+
+    const workerActivate = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+        branch: "feature/abc123-demo",
+        worker_owner: true,
+        ambient_identity: { provider: "codex", provider_session_id: "thread-worker" },
+      },
+    });
+    expect(workerActivate.status).toBe(200);
+    expect(db.prepare(
+      `SELECT provider, provider_session_id, worker_provider_session_id
+       FROM work_units WHERE id = ?`,
+    ).get(claimBody.id)).toEqual({
+      provider: "codex",
+      provider_session_id: "thread-worker",
+      worker_provider_session_id: "thread-worker",
+    });
 
     const patch = await router.invoke({
       method: "PATCH",
@@ -154,8 +190,75 @@ describe("work unit routes", () => {
     });
     expect(patch.status).toBe(200);
     expect(
-      db.prepare("SELECT provider, provider_session_id FROM work_units WHERE id = ?").get(claimBody.id),
-    ).toEqual({ provider: "codex", provider_session_id: "thread-patch" });
+      db.prepare(
+        `SELECT provider, provider_session_id, worker_provider_session_id
+         FROM work_units WHERE id = ?`,
+      ).get(claimBody.id),
+    ).toEqual({
+      provider: "codex",
+      provider_session_id: "thread-patch",
+      worker_provider_session_id: "thread-worker",
+    });
+  });
+
+  it("binds explicit worker ownership when activate auto-creates the work unit", async () => {
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "codex", provider_session_id: "thread-auto-worker" },
+      body: {
+        issue_id: "auto123",
+        repo_id: "mandible",
+        branch: "feature/auto123",
+        worker_owner: true,
+      },
+    });
+
+    expect(response.status).toBe(201);
+    const id = (response.body as { id: string }).id;
+    expect(db.prepare(
+      `SELECT state, provider, provider_session_id, worker_provider_session_id
+       FROM work_units WHERE id = ?`,
+    ).get(id)).toEqual({
+      state: "committed",
+      provider: "codex",
+      provider_session_id: "thread-auto-worker",
+      worker_provider_session_id: "thread-auto-worker",
+    });
+  });
+
+  it("rejects explicit worker ownership without ambient Codex identity", async () => {
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+        branch: "feature/abc123-demo",
+        worker_owner: true,
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "worker_owner requires an allowlisted ambient Codex provider identity",
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual({ count: 0 });
+
+    const nonCodex = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "claude", provider_session_id: "claude-coordinator" },
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+        branch: "feature/abc123-demo",
+        worker_owner: true,
+      },
+    });
+    expect(nonCodex.status).toBe(400);
+    expect(nonCodex.body).toEqual(response.body);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual({ count: 0 });
   });
 
   it("persists explicit ambient identity from release requests", async () => {
@@ -171,6 +274,19 @@ describe("work unit routes", () => {
     expect(claim.status).toBe(201);
     const claimBody = claim.body as { id: string };
 
+    const bindWorker = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "codex", provider_session_id: "thread-bound-worker" },
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+        branch: "feature/abc123-demo",
+        worker_owner: true,
+      },
+    });
+    expect(bindWorker.status).toBe(200);
+
     const release = await router.invoke({
       method: "POST",
       url: "/api/work-units/release",
@@ -184,12 +300,17 @@ describe("work unit routes", () => {
     expect(release.status).toBe(200);
     expect(release.body).toMatchObject({ ok: true, released: 1 });
     expect(
-      db.prepare("SELECT state, assigned_session_id, provider, provider_session_id FROM work_units WHERE id = ?").get(claimBody.id),
+      db.prepare(
+        `SELECT state, assigned_session_id, provider, provider_session_id,
+                worker_provider_session_id
+         FROM work_units WHERE id = ?`,
+      ).get(claimBody.id),
     ).toEqual({
       state: "open",
       assigned_session_id: null,
       provider: "codex",
       provider_session_id: "thread-release",
+      worker_provider_session_id: "thread-bound-worker",
     });
   });
 

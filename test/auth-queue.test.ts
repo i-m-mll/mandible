@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
-import type { AuthHookManager } from "../src/auth-hooks.js";
+import { AuthHookManager } from "../src/auth-hooks.js";
 import type { Db } from "../src/db.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
@@ -1091,10 +1091,10 @@ describe("auth queue", () => {
       db.prepare(
         `INSERT INTO work_units (
           id, issue_id, ledger_issue_id, repo_id, branch, kind, state, provider,
-          provider_session_id, created_at
+          provider_session_id, worker_provider_session_id, created_at
         ) VALUES (
           'wu-closed-child', 'child123', ?, ?, 'feature/closed-child', 'partition',
-          'abandoned', 'codex', 'thread-closed-child', ?
+          'abandoned', 'codex', 'thread-closed-child', 'thread-closed-child', ?
         )`
       ).run(issue.id, path.basename(repo), now);
 
@@ -2274,6 +2274,199 @@ describe("auth queue", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBe("1");
       expect(calls[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(request.merge_preflight_base_sha);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("re-establishes the exact original range after a reviewed-head update for a native-hook merge", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const rangeSnapshot = path.join(repo, "hook-range.txt");
+    try {
+      commitOnBranch(repo, "feature/reviewed-update", { "feature.txt": "first\n" });
+      registerWorkRepo(db, repo);
+
+      // An executable native hook keeps this request on the ordinary
+      // non-atomic merge path, matching the production lifecycle that exposed
+      // the missing original-range base.
+      const gitDir = git(repo, ["rev-parse", "--git-dir"]);
+      const nativeHook = path.join(repo, gitDir, "hooks", "post-merge");
+      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(nativeHook, 0o755);
+
+      const hookManager = new AuthHookManager(db);
+      hookManager.create({
+        repo_pattern: path.basename(repo),
+        auth_type: "merge",
+        command:
+          `test -n "$MANDIBLE_AUTH_MERGE_BASE_SHA" && ` +
+          `test -n "$MANDIBLE_AUTH_MERGE_HEAD_SHA" && ` +
+          `printf '%s\\n%s\\n' "$MANDIBLE_AUTH_MERGE_BASE_SHA" ` +
+          `"$MANDIBLE_AUTH_MERGE_HEAD_SHA" > "${rangeSnapshot}"`,
+        label: "Required original range",
+        required: true,
+      });
+      const queue = new AuthQueue({
+        db,
+        executor: async () => ({
+          exit_code: 0,
+          signal: null,
+          stdout: "ok\n",
+          stderr: "",
+          output: "ok\n",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        }),
+        hookManager,
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/reviewed-update --into main",
+        title: "Merge feature/reviewed-update",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/reviewed-update",
+        merge_head_sha: git(repo, ["rev-parse", "feature/reviewed-update"]),
+        cwd: repo,
+      });
+      const exactBase = git(repo, ["rev-parse", "main"]);
+
+      git(repo, ["checkout", "feature/reviewed-update"]);
+      writeFile(repo, "feature.txt", "reviewed final\n");
+      git(repo, ["add", "feature.txt"]);
+      git(repo, ["commit", "-m", "refresh reviewed head"]);
+      const reviewedHead = git(repo, ["rev-parse", "HEAD"]);
+      git(repo, ["checkout", "main"]);
+
+      // This is the production update path. It must keep invalidating every
+      // stale candidate field; approval is responsible for establishing a
+      // fresh, clean exact range for the updated identity.
+      const updated = queue.update(request.id, { merge_head_sha: reviewedHead });
+      expect(updated.merge_preflight_base_sha).toBeNull();
+      expect(updated.merge_candidate_pin_sha).toBeNull();
+
+      const approved = queue.approve(request.id);
+      expect(approved.merge_atomic_enabled).toBe(false);
+      await waitForStatus(queue, request.id, "completed");
+
+      expect(fs.readFileSync(rangeSnapshot, "utf8")).toBe(`${exactBase}\n${reviewedHead}\n`);
+      expect(queue.getRequest(request.id)).toMatchObject({
+        merge_preflight_base_sha: exactBase,
+        merge_head_sha: reviewedHead,
+      });
+      expect(hookManager.convergence(request.id).state).toBe("complete");
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a native-hook merge when its persisted reviewed base moved before approval", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/stale-reviewed-base", { "feature.txt": "feature\n" });
+      registerWorkRepo(db, repo);
+      const nativeHook = path.join(repo, ".git", "hooks", "post-merge");
+      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(nativeHook, 0o755);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return { exit_code: 0, output: "must not execute\n" };
+        },
+        hookManager: createNoopHookManager(),
+      });
+      // Omitting merge_head_sha reproduces a legitimate unpinned request: the
+      // submit-time base is persisted, while approval later resolves the
+      // strictly reviewed head from the live branch.
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/stale-reviewed-base --into main",
+        title: "Merge feature/stale-reviewed-base",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/stale-reviewed-base",
+        cwd: repo,
+      });
+      const reviewedBase = request.merge_preflight_base_sha!;
+      expect(request.merge_candidate_pin_sha).toBeNull();
+
+      writeFile(repo, "main-advance.txt", "advanced\n");
+      git(repo, ["add", "main-advance.txt"]);
+      git(repo, ["commit", "-m", "advance main before approval"]);
+      const advancedBase = git(repo, ["rev-parse", "main"]);
+      expect(advancedBase).not.toBe(reviewedBase);
+
+      expect(() => queue.approve(request.id)).toThrow(/moved from reviewed base/);
+      expect(calls).toHaveLength(0);
+      expect(git(repo, ["rev-parse", "main"])).toBe(advancedBase);
+      expect(queue.getRequest(request.id)).toMatchObject({
+        status: "pending",
+        merge_preflight_base_sha: reviewedBase,
+      });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("binds the reviewed base while rerunning preflight after queue fingerprint drift", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/fingerprint-first", { "first.txt": "first\n" });
+      commitOnBranch(repo, "feature/fingerprint-second", { "second.txt": "second\n" });
+      registerWorkRepo(db, repo);
+      const nativeHook = path.join(repo, ".git", "hooks", "post-merge");
+      writeFile(repo, path.relative(repo, nativeHook), "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(nativeHook, 0o755);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return { exit_code: 1, output: "fixture stop\n" };
+        },
+        hookManager: createNoopHookManager(),
+      });
+      const first = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/fingerprint-first --into main",
+        title: "Merge feature/fingerprint-first",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/fingerprint-first",
+        cwd: repo,
+      });
+      const reviewedBase = first.merge_preflight_base_sha!;
+      queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/fingerprint-second --into main",
+        title: "Merge feature/fingerprint-second",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/fingerprint-second",
+        cwd: repo,
+      });
+
+      queue.approve(first.id);
+      await waitForStatus(queue, first.id, "completed");
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(reviewedBase);
+      expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBeUndefined();
+      expect(git(repo, ["rev-parse", "main"])).toBe(reviewedBase);
       queue.dispose();
     } finally {
       db.close();

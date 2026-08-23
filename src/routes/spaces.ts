@@ -154,10 +154,41 @@ function requireRefType(value: unknown): SpaceItemRefType {
   return value as SpaceItemRefType;
 }
 
-function loadSpaceOr404(db: Db, id: string): SpaceRecord {
-  const space = getSpace(db, id);
-  if (!space) throw new HttpError(404, "space not found");
-  return space;
+function loadSpaceOr404(db: Db, ref: string): SpaceRecord {
+  const exact = getSpace(db, ref);
+  if (exact) return exact;
+  if (ref.length < 4) throw new HttpError(404, "space not found");
+
+  const rows = db.prepare(
+    "SELECT id FROM spaces WHERE substr(id, 1, length(?)) = ? ORDER BY id LIMIT 2",
+  ).all(ref, ref) as Array<{ id: string }>;
+  if (rows.length === 0) throw new HttpError(404, "space not found");
+  if (rows.length > 1) throw new HttpError(409, `ambiguous space ref '${ref}'`);
+  return getSpace(db, rows[0].id)!;
+}
+
+function resolveSpacesProjectFilter(db: Db, ref: string): string {
+  const exactId = db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(ref) as
+    | { id: string }
+    | undefined;
+  if (exactId) return exactId.id;
+
+  const exactKey = db.prepare("SELECT id FROM ledger_projects WHERE project_key = ?").get(ref) as
+    | { id: string }
+    | undefined;
+  if (exactKey) return exactKey.id;
+
+  if (!ref.startsWith("prj_") || ref.length < 4) {
+    throw new HttpError(404, "project not found");
+  }
+  const rows = db.prepare(
+    `SELECT id FROM ledger_projects
+      WHERE project_key = '' AND substr(id, 1, length(?)) = ?
+      ORDER BY id LIMIT 2`,
+  ).all(ref, ref) as Array<{ id: string }>;
+  if (rows.length === 0) throw new HttpError(404, "project not found");
+  if (rows.length > 1) throw new HttpError(409, `ambiguous project ref '${ref}'`);
+  return rows[0].id;
 }
 
 function projectExists(db: Db, projectId: string): boolean {
@@ -377,7 +408,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       const db = getDb();
       const projectId = queryString(req, "project_id");
       if (projectId) {
-        sendJson(res, 200, { spaces: listSpaces(db, projectId) });
+        sendJson(res, 200, { spaces: listSpaces(db, resolveSpacesProjectFilter(db, projectId)) });
         return;
       }
       if (queryString(req, "scope") === "top-level") {
@@ -441,9 +472,9 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.patch("/api/spaces/:id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
+      const resolved = loadSpaceOr404(db, req.params.id);
       const body = bodyRecord(req);
-      const space = updateSpace(db, req.params.id, {
+      const space = updateSpace(db, resolved.id, {
         title: optionalString(body, "title") ?? undefined,
         default_renderer: body.default_renderer === undefined
           ? undefined
@@ -451,7 +482,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
         description: optionalString(body, "description"),
         metadata: optionalMetadata(body),
       });
-      emit(SPACE_EVENTS.SPACE_UPDATED, req.params.id);
+      emit(SPACE_EVENTS.SPACE_UPDATED, resolved.id);
       sendJson(res, 200, { space });
     } catch (error) {
       handleError(res, error);
@@ -461,10 +492,10 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.delete("/api/spaces/:id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      deleteSpace(db, req.params.id);
-      emit(SPACE_EVENTS.SPACE_DELETED, req.params.id);
-      sendJson(res, 200, { ok: true, id: req.params.id });
+      const space = loadSpaceOr404(db, req.params.id);
+      deleteSpace(db, space.id);
+      emit(SPACE_EVENTS.SPACE_DELETED, space.id);
+      sendJson(res, 200, { ok: true, id: space.id });
     } catch (error) {
       handleError(res, error);
     }
@@ -501,20 +532,20 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.patch("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      const existing = getSpaceItem(db, req.params.id, req.params.item_id);
+      const space = loadSpaceOr404(db, req.params.id);
+      const existing = getSpaceItem(db, space.id, req.params.item_id);
       if (!existing) {
         throw new HttpError(404, "item not found");
       }
       const body = bodyRecord(req);
       const rawMetadata = optionalMetadata(body);
       const metadata = rawMetadata;
-      const item = updateSpaceItem(db, req.params.id, req.params.item_id, {
+      const item = updateSpaceItem(db, space.id, req.params.item_id, {
         ref_uri: optionalString(body, "ref_uri"),
         title: optionalString(body, "title"),
         metadata,
       });
-      emit(SPACE_EVENTS.SPACE_ITEM_UPDATED, req.params.id);
+      emit(SPACE_EVENTS.SPACE_ITEM_UPDATED, space.id);
       sendJson(res, 200, { item });
     } catch (error) {
       handleError(res, error);
@@ -524,11 +555,11 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.delete("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      if (!deleteSpaceItem(db, req.params.id, req.params.item_id)) {
+      const space = loadSpaceOr404(db, req.params.id);
+      if (!deleteSpaceItem(db, space.id, req.params.item_id)) {
         throw new HttpError(404, "item not found");
       }
-      emit(SPACE_EVENTS.SPACE_ITEM_REMOVED, req.params.id);
+      emit(SPACE_EVENTS.SPACE_ITEM_REMOVED, space.id);
       sendJson(res, 200, { ok: true, id: req.params.item_id });
     } catch (error) {
       handleError(res, error);
@@ -598,11 +629,11 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.delete("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      if (!deleteSpaceOccurrence(db, req.params.id, req.params.occurrence_id)) {
+      const space = loadSpaceOr404(db, req.params.id);
+      if (!deleteSpaceOccurrence(db, space.id, req.params.occurrence_id)) {
         throw new HttpError(404, "occurrence not found");
       }
-      emit(SPACE_EVENTS.SPACE_OCCURRENCE_REMOVED, req.params.id);
+      emit(SPACE_EVENTS.SPACE_OCCURRENCE_REMOVED, space.id);
       sendJson(res, 200, { ok: true, id: req.params.occurrence_id });
     } catch (error) {
       handleError(res, error);
@@ -662,11 +693,11 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.delete("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      if (!deleteSpaceEdge(db, req.params.id, req.params.edge_id)) {
+      const space = loadSpaceOr404(db, req.params.id);
+      if (!deleteSpaceEdge(db, space.id, req.params.edge_id)) {
         throw new HttpError(404, "edge not found");
       }
-      emit(SPACE_EVENTS.SPACE_EDGE_REMOVED, req.params.id);
+      emit(SPACE_EVENTS.SPACE_EDGE_REMOVED, space.id);
       sendJson(res, 200, { ok: true, id: req.params.edge_id });
     } catch (error) {
       handleError(res, error);
@@ -704,8 +735,8 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.get("/api/spaces/:id/blocks", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      sendJson(res, 200, { blocks: listSpaceBlocks(db, req.params.id) });
+      const space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, { blocks: listSpaceBlocks(db, space.id) });
     } catch (error) {
       handleError(res, error);
     }
@@ -744,11 +775,11 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
       const db = getDb();
-      loadSpaceOr404(db, req.params.id);
-      if (!deleteSpaceBlock(db, req.params.id, req.params.block_id)) {
+      const space = loadSpaceOr404(db, req.params.id);
+      if (!deleteSpaceBlock(db, space.id, req.params.block_id)) {
         throw new HttpError(404, "block not found");
       }
-      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, req.params.id);
+      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
       sendJson(res, 200, { ok: true, id: req.params.block_id });
     } catch (error) {
       handleError(res, error);

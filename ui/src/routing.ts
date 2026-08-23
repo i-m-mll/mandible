@@ -18,10 +18,40 @@ export const ARTIFACT_VERSION_QUERY_PARAM = 'version';
 export const SHORT_ROUTE_ID_LENGTH = 8;
 const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const TYPED_LONG_HEX_REF_RE = /^[a-z][a-z0-9-]*:[0-9a-f]{12,64}$/i;
+const FULL_PROJECT_ID_RE = /^prj_[a-z0-9_]{12,}$/i;
 
 export function shortRouteId(id: string): string {
   if (FULL_UUID_RE.test(id)) return id.slice(0, SHORT_ROUTE_ID_LENGTH);
+  if (FULL_PROJECT_ID_RE.test(id)) return id.slice(0, SHORT_ROUTE_ID_LENGTH);
   return TYPED_LONG_HEX_REF_RE.test(id) ? compactLongIdSegments(id) : id;
+}
+
+export type SpacesRouteTarget = {
+  projectId?: string | null;
+  projectKey?: string | null;
+  spaceId?: string | null;
+  renderer?: string | null;
+};
+
+/** Build a generated Spaces route while preserving all unrelated view state. */
+export function spacesRouteFromHash(hashValue: string, target: SpacesRouteTarget): string {
+  const queryPart = (hashValue || '#/spaces').replace(/^#/, '').split('?')[1] ?? '';
+  const params = new URLSearchParams(queryPart);
+  const setOrDelete = (key: string, value: string | null | undefined) => {
+    if (value === undefined) return;
+    if (value === null || value === '') params.delete(key);
+    else params.set(key, value);
+  };
+  const projectRef = target.projectKey?.trim() || (
+    target.projectId === undefined || target.projectId === null
+      ? target.projectId
+      : shortRouteId(target.projectId)
+  );
+  setOrDelete('project', projectRef);
+  setOrDelete('space', target.spaceId ? shortRouteId(target.spaceId) : target.spaceId);
+  setOrDelete('renderer', target.renderer);
+  const query = params.toString();
+  return `#/spaces${query ? `?${query}` : ''}`;
 }
 
 export function briefingRoute(briefingId: string, roundId?: string | null): string {
