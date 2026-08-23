@@ -15,14 +15,14 @@ let db: Db;
 let router: Router;
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
-const PROJECT_ID = "prj-spaces-test";
-const OTHER_PROJECT_ID = "prj-spaces-other";
+const PROJECT_ID = "prj_00spaces_test_unique";
+const OTHER_PROJECT_ID = "prj_00spaces_other_unique";
 
-function seedProject(id: string, name: string): void {
+function seedProject(id: string, name: string, projectKey = ""): void {
   db.prepare(
-    `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, name, `github.com/test/${id}`, Date.now(), Date.now());
+    `INSERT INTO ledger_projects (id, project_key, display_name, remote_identity, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, projectKey, name, `github.com/test/${id}`, Date.now(), Date.now());
 }
 
 function createIssue(projectId: string, title: string, opts: { labels?: string[] } = {}): string {
@@ -90,7 +90,7 @@ beforeEach(() => {
   setDb(db);
   router = new Router();
   registerSpacesRoutes(router);
-  seedProject(PROJECT_ID, "Spaces Test");
+  seedProject(PROJECT_ID, "Spaces Test", "spaces-test");
   seedProject(OTHER_PROJECT_ID, "Other Project");
 });
 
@@ -105,6 +105,43 @@ async function makeSpace(title = "My Space"): Promise<string> {
 }
 
 describe("spaces CRUD", () => {
+  it("resolves full and unique-short Space refs and rejects zero or many matches honestly", async () => {
+    const first = "7038d21f-b494-47fb-b9b8-d5fb93b3309a";
+    const second = "7038d21f-aaaa-47fb-b9b8-d5fb93b3309a";
+    const now = Date.now();
+    const insert = db.prepare(
+      `INSERT INTO spaces (id, project_id, title, default_renderer, metadata_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'canvas', '{}', ?, ?)`,
+    );
+    insert.run(first, PROJECT_ID, "First", now, now);
+
+    expect((await call("GET", `/api/spaces/${first}`)).status).toBe(200);
+    expect((await call("GET", "/api/spaces/7038d21f")).status).toBe(200);
+    expect((await call("PATCH", "/api/spaces/7038d21f", { title: "Short patched" })).body)
+      .toMatchObject({ space: { id: first, title: "Short patched" } });
+    expect((await call("GET", "/api/spaces/ffffffff")).status).toBe(404);
+
+    insert.run(second, PROJECT_ID, "Second", now, now);
+    const ambiguous = await call("GET", "/api/spaces/7038d21f");
+    expect(ambiguous.status).toBe(409);
+    expect((ambiguous.body as { error: string }).error).toMatch(/ambiguous/i);
+  });
+
+  it("filters by canonical project key or full id and rejects unknown or ambiguous keyless prefixes", async () => {
+    await makeSpace("Key parity");
+    expect((await call("GET", `/api/spaces?project_id=${PROJECT_ID}`)).body).toMatchObject({ spaces: [{ title: "Key parity" }] });
+    expect((await call("GET", "/api/spaces?project_id=spaces-test")).body).toMatchObject({ spaces: [{ title: "Key parity" }] });
+
+    seedProject("prj_00keyless_alpha", "Keyless Alpha");
+    expect((await call("GET", "/api/spaces?project_id=prj_00keyless_a")).status).toBe(200);
+    expect((await call("GET", "/api/spaces?project_id=prj_00missing")).status).toBe(404);
+
+    seedProject("prj_00keyless_alpine", "Keyless Alpine");
+    const ambiguous = await call("GET", "/api/spaces?project_id=prj_00keyless_al");
+    expect(ambiguous.status).toBe(409);
+    expect((ambiguous.body as { error: string }).error).toMatch(/ambiguous/i);
+  });
+
   it("creates, reads, lists, updates, and deletes a space", async () => {
     const created = await call("POST", "/api/spaces", {
       project_id: PROJECT_ID,

@@ -29,6 +29,7 @@ import {
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
+import type { SpacesRouteTarget } from '../../routing';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -94,7 +95,7 @@ export type SpacesViewShellProps = {
    * Navigate the URL hash to open a space or a legacy renderer override. The
    * host (app.tsx) rebuilds `#/spaces?...`, preserving `?sidebar=`.
    */
-  onNavigate?: (target: { projectId?: string | null; spaceId?: string | null; renderer?: string | null }) => void;
+  onNavigate?: (target: SpacesRouteTarget) => void;
   /** Injected selected-Space loader for tests; defaults to the real API client. */
   loadSpace?: typeof getSpace;
   /** Injected selected-Space fact packet loader for tests; defaults to the real API client. */
@@ -148,6 +149,10 @@ function loadCachedSelection(spaceId: string | null): SpaceSelectionSnapshot | n
   return null;
 }
 
+function isGeneratedShortSpaceRef(spaceRef: string): boolean {
+  return /^[0-9a-f]{8}$/i.test(spaceRef);
+}
+
 function persistCachedSelection(snapshot: SpaceSelectionSnapshot): void {
   if (typeof localStorage === 'undefined') return;
   try {
@@ -191,12 +196,12 @@ export function SpacesViewShell({
   );
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
   const [selectedFactPacket, setSelectedFactPacket] = useState<SpaceFactPacket | null>(() => (
-    spaceId
+    spaceId && !isGeneratedShortSpaceRef(spaceId)
       ? readPersistedDetail<SpaceFactPacket>('spaces', detailRequestKey('spaces', { spaceId }))
       : null
   ));
   const [selectedSnapshot, setSelectedSnapshot] = useState<SpaceSelectionSnapshot | null>(
-    () => loadCachedSelection(spaceId),
+    () => (spaceId && !isGeneratedShortSpaceRef(spaceId) ? loadCachedSelection(spaceId) : null),
   );
   const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
 
@@ -209,11 +214,19 @@ export function SpacesViewShell({
       return undefined;
     }
     let cancelled = false;
-    const requestKey = detailRequestKey('spaces', { spaceId });
-    const cachedPacket = readPersistedDetail<SpaceFactPacket>('spaces', requestKey);
+    const canUseCachedSelection = !isGeneratedShortSpaceRef(spaceId);
+    const cachedPacket = canUseCachedSelection
+      ? readPersistedDetail<SpaceFactPacket>('spaces', detailRequestKey('spaces', { spaceId }))
+      : null;
     setSelectedSpace((current) => (current?.id === spaceId ? current : null));
     setSelectedFactPacket((current) => (current?.space.id === spaceId ? current : cachedPacket));
-    setSelectedSnapshot((current) => (current?.id === spaceId ? current : loadCachedSelection(spaceId)));
+    setSelectedSnapshot((current) => (
+      canUseCachedSelection && current?.id === spaceId
+        ? current
+        : canUseCachedSelection
+          ? loadCachedSelection(spaceId)
+          : null
+    ));
     setSpaceLoadError(null);
     resolvedLoadSpaceFactPacket(spaceId)
       .then((packet) => {
@@ -222,7 +235,11 @@ export function SpacesViewShell({
           const snapshot = snapshotFromSpace(space);
           setSelectedSpace(space);
           setSelectedFactPacket(packet);
-          writePersistedDetail('spaces', requestKey, packet);
+          writePersistedDetail(
+            'spaces',
+            detailRequestKey('spaces', { spaceId: packet.space.id }),
+            packet,
+          );
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);
         }
@@ -236,7 +253,7 @@ export function SpacesViewShell({
   }, [spaceId, resolvedLoadSpaceFactPacket]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
-    if (space.id !== spaceId) return;
+    if (!spaceId || space.id !== spaceId) return;
     const snapshot = snapshotFromSpace(space);
     setSelectedSnapshot(snapshot);
     persistCachedSelection(snapshot);
@@ -255,14 +272,19 @@ export function SpacesViewShell({
     : selectedSnapshot
       ? (selectedSnapshot.project_id ?? '')
       : projectId;
+  const canonicalSpaceId = selectedSpace?.id
+    ?? selectedFactPacket?.space.id
+    ?? selectedSnapshot?.id
+    ?? spaceId;
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
   const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
+  const requiresAuthoritativeResolution = Boolean(spaceId && isGeneratedShortSpaceRef(spaceId));
   const waitingForFactPacket = Boolean(
     spaceId &&
     !selectedFactPacket &&
     !spaceLoadError &&
-    (!explicitRenderer || loadSpaceFactPacket),
+    (!explicitRenderer || loadSpaceFactPacket || requiresAuthoritativeResolution),
   );
 
   return (
@@ -277,10 +299,15 @@ export function SpacesViewShell({
           persistence (`sidebar-width:spaces`). The shell just threads hidden. */}
       <SpacesSidebar
         hidden={sidebarHidden}
-        selectedSpaceId={spaceId}
+        selectedSpaceId={canonicalSpaceId}
         onSelectedSpaceResolved={handleSidebarSpaceResolved}
         onSelectSpace={(args) =>
-          onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
+          onNavigate?.({
+            projectId: args.projectId,
+            projectKey: args.projectKey,
+            spaceId: args.spaceId,
+            renderer: args.renderer,
+          })
         }
       />
       <div className="spaces-shell__main">
@@ -331,7 +358,11 @@ export function SpacesViewShell({
                 Select a space, or create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
-          ) : spaceLoadError && !explicitRenderer && !selectedSpace && !selectedSnapshot && !selectedFactPacket ? (
+          ) : spaceLoadError &&
+              (!explicitRenderer || requiresAuthoritativeResolution) &&
+              !selectedSpace &&
+              !selectedSnapshot &&
+              !selectedFactPacket ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">{spaceLoadError}</p>
             </div>
@@ -342,7 +373,7 @@ export function SpacesViewShell({
           ) : MountPoint ? (
             <MountPoint
               projectId={effectiveProjectId}
-              spaceId={spaceId}
+              spaceId={canonicalSpaceId}
               renderer={activeRenderer}
               instance={instance}
               initialFactPacket={selectedFactPacket}
