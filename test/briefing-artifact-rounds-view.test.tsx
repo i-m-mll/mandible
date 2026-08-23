@@ -359,6 +359,33 @@ describe('artifact-backed Briefing rounds', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
+  it('renders a zero annotation-set count as inactive footer text without disclosure semantics', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === `/api/briefings/briefing-1?round=${ROUND_TWO}`) return new Response(JSON.stringify(detail(ROUND_TWO)), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={PRODUCTION_ALLOW_INSTANCE} />
+    </AppShellProvider>);
+    await screen.findByText('Later');
+    const inactive = screen.getByText('Annotation sets (0)');
+    expect(inactive.tagName).toBe('DIV');
+    expect(inactive.classList.contains('briefing-submission-shelf--inactive')).toBe(true);
+    expect(inactive.getAttribute('role')).toBeNull();
+    expect(inactive.tabIndex).toBe(-1);
+    expect(inactive.closest('details')).toBeNull();
+    fireEvent.click(inactive);
+    fireEvent.keyDown(inactive, { key: 'Enter' });
+    expect(screen.queryByText('No annotation sets for this round.')).toBeNull();
+    expect(screen.queryByRole('grid', { name: 'Annotation sets for this round' })).toBeNull();
+    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
+    expect(css).toMatch(/\.briefing-submission-shelf\s*\{[^}]*color:\s*var\(--text-muted\);/s);
+    expect(css).toMatch(/\.briefing-submission-shelf--inactive\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-5\);/s);
+  });
+
   it('normalizes ordered v3 text variants with exact Markdown bodies and ranges', () => {
     const variantSource = ':::spec-item{key="wording" type="text_variant"}\n::alternative[Short]{key="short"}\nShort.\n::alternative[Long]{key="long"}\nLonger wording.\n:::';
     const start = variantSource.indexOf(':::');

@@ -710,12 +710,12 @@ export function BriefingDocumentRenderer({
               </button>
               {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
             </div>
-            <details className="briefing-submission-shelf">
-              <summary>Annotation sets ({round.submission_overlays.length})</summary>
-              <div ref={shelfBodyRef} className="briefing-submission-shelf__body">
-                {sortedSubmissionOverlays.length === 0 ? (
-                  <p className="briefing-submission-shelf__empty">No annotation sets for this round.</p>
-                ) : (
+            {round.submission_overlays.length === 0 ? (
+              <div className="briefing-submission-shelf briefing-submission-shelf--inactive">Annotation sets (0)</div>
+            ) : (
+              <details className="briefing-submission-shelf">
+                <summary>Annotation sets ({round.submission_overlays.length})</summary>
+                <div ref={shelfBodyRef} className="briefing-submission-shelf__body">
                   <table role="grid" aria-label="Annotation sets for this round">
                     <thead>
                       <tr>
@@ -752,9 +752,9 @@ export function BriefingDocumentRenderer({
                       ))}
                     </tbody>
                   </table>
-                )}
-              </div>
-            </details>
+                </div>
+              </details>
+            )}
           </div>
         ),
       } : undefined}
