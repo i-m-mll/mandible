@@ -229,6 +229,21 @@ describe('Briefing sidebar row actions', () => {
     });
   });
 
+  it('renders grouped proposal bundles only through their stable group', () => {
+    render(
+      <Harness
+        bundles={[groupedUpdates.updates[0]]}
+        groups={[groupedUpdates]}
+        initialViewState={{ pinnedCollectionIds: [] }}
+      />,
+    );
+
+    const groupSelect = screen.getByRole('button', { name: 'Select Briefing group Release review' });
+    const group = groupSelect.closest('.sidebar-group-node') as HTMLElement;
+    expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /First proposal/ })).toBeNull();
+  });
+
   it('renders the sparse-policy proposal as direct policies plus one Skills subgroup', () => {
     const briefing = (id: string, label: string): FeedbackCollection => ({
       id: feedbackCollectionIdentity(id),
