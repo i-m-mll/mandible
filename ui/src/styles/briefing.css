@@ -253,9 +253,11 @@
   padding: var(--space-6);
 }
 
-.briefing-group-detail__updates {
+.briefing-group-detail__sections {
   width: min(720px, 100%);
   margin: 0 auto;
+  display: grid;
+  gap: var(--space-6);
 }
 
 .briefing-group-detail__intro {
