@@ -62,7 +62,12 @@ export type SpacesSidebarProps = {
    * selected Space's primary type resolves in the shell; explicit legacy
    * renderer links are owned by the route, not sidebar row clicks.
    */
-  onSelectSpace: (args: { projectId: string | null; spaceId: string; renderer?: string | null }) => void;
+  onSelectSpace: (args: {
+    projectId: string | null;
+    projectKey?: string | null;
+    spaceId: string;
+    renderer?: string | null;
+  }) => void;
   /**
    * Injected loader (defaults to the real grouped read). Lets tests supply a
    * deterministic grouping without a daemon.
@@ -82,7 +87,7 @@ export type SpacesSidebarProps = {
 };
 
 type CreateTarget =
-  | { kind: 'project'; projectId: string; projectName: string }
+  | { kind: 'project'; projectId: string; projectKey: string | null; projectName: string }
   | { kind: 'top-level' };
 
 type CreateMode = 'create' | 'seed';
@@ -94,6 +99,7 @@ type CreatePopover = {
   /** Space id created for the seed path (so SpaceSeedDialog can mount). */
   seedSpaceId?: string;
   seedProjectId?: string | null;
+  seedProjectKey?: string | null;
 };
 
 const SPACE_TYPE_OPTIONS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
@@ -273,6 +279,7 @@ export function SpacesSidebar({
   // are still enumerable. `chooserProjectId === null` means "top-level (no project)".
   const [chooserProjects, setChooserProjects] = useState<ProjectPickerItem[]>([]);
   const [chooserProjectId, setChooserProjectId] = useState<string | null>(null);
+  const chooserProjectKeyRef = useRef<string | null>(null);
 
   const containerRef = useRef<HTMLElement>(null);
 
@@ -305,10 +312,11 @@ export function SpacesSidebar({
   useEffect(() => {
     if (!selectedSpaceId || !onSelectedSpaceResolved) return;
     for (const group of groups) {
-      const match = group.spaces.find((space) => space.id === selectedSpaceId);
-      if (match) {
-        onSelectedSpaceResolved(match);
-        return;
+      for (const space of group.spaces) {
+        if (space.id === selectedSpaceId) {
+          onSelectedSpaceResolved(space);
+          return;
+        }
       }
     }
   }, [groups, selectedSpaceId, onSelectedSpaceResolved]);
@@ -427,6 +435,7 @@ export function SpacesSidebar({
       setBlankTitle('');
       setCreateError(null);
       setChooserProjectId(null);
+      chooserProjectKeyRef.current = null;
       setCreateRenderer('canvas');
       setSeedAfterCreate(false);
       setPopover({ target, mode: 'create' });
@@ -453,6 +462,9 @@ export function SpacesSidebar({
         // registry picker. A null chooserProjectId means "create as top-level".
         const projectId =
           target.kind === 'project' ? target.projectId : chooserProjectId;
+        const projectKey = target.kind === 'project'
+          ? target.projectKey
+          : chooserProjectKeyRef.current;
         const space = await createSpaceFn({ project_id: projectId, title: trimmed, default_renderer: renderer });
         if (shouldSeed && canSeedRenderer(renderer)) {
           setPopover({
@@ -460,12 +472,14 @@ export function SpacesSidebar({
             mode: 'seed',
             seedSpaceId: space.id,
             seedProjectId: space.project_id,
+            seedProjectKey: projectKey,
           });
         } else {
           setPopover(null);
           refresh();
           onSelectSpace({
             projectId: space.project_id,
+            projectKey,
             spaceId: space.id,
             renderer: null,
           });
@@ -487,6 +501,7 @@ export function SpacesSidebar({
       if (current?.seedSpaceId) {
         onSelectSpace({
           projectId: current.seedProjectId ?? null,
+          projectKey: current.seedProjectKey ?? null,
           spaceId: current.seedSpaceId,
           renderer: null,
         });
@@ -501,7 +516,7 @@ export function SpacesSidebar({
     refresh();
   }, [refresh]);
 
-  const renderSpaceRow = (space: Space): JSX.Element => {
+  const renderSpaceRow = (space: Space, projectKey: string | null = null): JSX.Element => {
     const active = selectedSpaceId === space.id;
     const title = space.title || 'Untitled space';
     return (
@@ -522,6 +537,7 @@ export function SpacesSidebar({
         onSelect={() =>
           onSelectSpace({
             projectId: space.project_id,
+            projectKey,
             spaceId: space.id,
             renderer: null,
           })
@@ -601,9 +617,11 @@ export function SpacesSidebar({
               className="spaces-tree__chooser-select"
               data-testid="space-create-project"
               value={chooserProjectId ?? ''}
-              onChange={(event) => {
+              onInput={(event) => {
                 const val = (event.currentTarget as HTMLSelectElement).value;
                 setChooserProjectId(val || null);
+                chooserProjectKeyRef.current =
+                  chooserProjects.find((project) => project.id === val)?.project_key ?? null;
               }}
             >
               <option value="">Top level (no project)</option>
@@ -741,7 +759,7 @@ export function SpacesSidebar({
           <div className="spaces-tree__group spaces-tree__group--top" data-testid="spaces-group-top-level">
             <div className="spaces-tree__group-label">Top level</div>
             <div className="spaces-tree__group-spaces">
-              {filteredTopLevel.map(renderSpaceRow)}
+              {filteredTopLevel.map((space) => renderSpaceRow(space))}
             </div>
           </div>
         ) : null}
@@ -771,7 +789,12 @@ export function SpacesSidebar({
               action={{
                 label: `Create space in ${projectName}`,
                 icon: <PlusIcon />,
-                onPress: () => openChooser({ kind: 'project', projectId: kg.key, projectName }),
+                onPress: () => openChooser({
+                  kind: 'project',
+                  projectId: kg.key,
+                  projectKey: kg.group.project_key,
+                  projectName,
+                }),
               }}
               drag={{
                 active: dragKey === kg.key,
@@ -784,7 +807,7 @@ export function SpacesSidebar({
                 onEnd: endDrag,
               }}
             >
-              {kg.group.spaces.map(renderSpaceRow)}
+              {kg.group.spaces.map((space) => renderSpaceRow(space, kg.group.project_key))}
             </SidebarGroupNode>
           );
         })}

@@ -10,7 +10,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]
-  mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--graceful]
+  mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--worker] [--graceful]
   mandible work-unit find --repo <repo> (--issue <id> | --branch <branch>) [--state <state>] [--graceful]
   mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]
   mandible work-unit release --issue <id> --repo <repo> [--graceful]
