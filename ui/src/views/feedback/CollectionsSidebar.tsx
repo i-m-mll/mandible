@@ -78,12 +78,16 @@ export function CollectionsSidebar({
   const bundledIds = useMemo(() => new Set(
     bundles.flatMap((bundle) => bundle.members.map((member) => member.briefing.id)),
   ), [bundles]);
-  const visibleBundles = useMemo(() => bundles.map((bundle) => ({
+  const groupedUpdateIds = useMemo(() => new Set(
+    groups.flatMap((group) => group.updates.map((update) => update.id)),
+  ), [groups]);
+  const visibleBundles = useMemo(() => bundles.filter((bundle) => !groupedUpdateIds.has(bundle.id)).map((bundle) => ({
     ...bundle,
     members: bundle.members.filter((member) => filteredIds.has(member.briefing.id)),
   })).filter((bundle) => bundle.members.length > 0 || !viewState.collectionSourceFilter.trim()), [
     bundles,
     filteredIds,
+    groupedUpdateIds,
     viewState.collectionSourceFilter,
   ]);
   const visibleGroups = useMemo(() => groups.map((group) => {
