@@ -18,6 +18,7 @@ Usage:
   mandible briefing rename <briefing-ref> --title <text> [--json]
   mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]
   mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]
+  mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--json]
   mandible briefing bundle rename <bundle-ref> --name <text> [--json]
   mandible briefing bundle show <bundle-ref> [--json]
 
@@ -136,6 +137,30 @@ cmd_bundle_add() {
   emit_bundle "$response" "$json"
 }
 
+cmd_bundle_replace() {
+  local bundle_ref="" json=0 response payload
+  local -a briefing_refs
+  briefing_refs=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$bundle_ref" ]]; then bundle_ref="$1"
+        else briefing_refs+=("$1")
+        fi
+        shift ;;
+    esac
+  done
+  [[ -n "$bundle_ref" ]] \
+    || die "Usage: mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--json]" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(jq -n --args '{briefing_refs:$ARGS.positional}' -- "${briefing_refs[@]}")"
+  response="$(api_send PATCH "/api/briefing-bundles/$(urlencode "$bundle_ref")" "$payload")" \
+    || die "Failed to replace Briefing bundle membership." 1
+  emit_bundle "$response" "$json"
+}
+
 cmd_bundle_show() {
   local bundle_ref="" json=0 response
   while (( $# > 0 )); do
@@ -181,6 +206,7 @@ cmd_bundle() {
   case "$subcommand" in
     create) cmd_bundle_create "$@" ;;
     add) cmd_bundle_add "$@" ;;
+    replace) cmd_bundle_replace "$@" ;;
     rename) cmd_bundle_rename "$@" ;;
     show) cmd_bundle_show "$@" ;;
     *) die "Unknown briefing bundle subcommand: $subcommand" 2 ;;

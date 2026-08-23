@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 7,
+  "version": 8,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -185,6 +185,10 @@
     {
       "name": "mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]",
       "description": "Append one existing Briefing to a bundle without changing that Briefing or its rounds."
+    },
+    {
+      "name": "mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--json]",
+      "description": "Atomically replace an existing Briefing bundle's full ordered membership while preserving its identity, name, and all Briefing review data. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
     },
     {
       "name": "mandible briefing bundle rename <bundle-ref> --name <text> [--json]",

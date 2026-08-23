@@ -244,6 +244,61 @@ describe("plural Briefing routes", () => {
     expect(db.prepare("SELECT * FROM briefing_bundle_members ORDER BY position").all()).toEqual(bundleMembersBefore);
     expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-name-updated", { bundle_id: bundleId });
 
+    const reviewerId = createUser(db, { slug: "reviewer", kind: "human", display_name: "Reviewer" }).id;
+    const replacement = [...briefingIds].reverse();
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      body: { briefing_refs: replacement } })).toMatchObject({ status: 401 });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "session:agent-schedule", body: { briefing_refs: replacement } })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_membership_publisher_credential_required" },
+    });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "session:human", body: { briefing_refs: replacement } })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_membership_publisher_credential_required" },
+    });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "reviewer", body: { briefing_refs: replacement } })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_membership_operator_required" },
+    });
+    expect(reviewerId).toBeTruthy();
+    setSetting(db, "user.operator_id", "");
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { briefing_refs: replacement } })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_membership_operator_required" },
+    });
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { briefing_refs: replacement, actor_user_id: humanId } }))
+      .toMatchObject({ status: 400, body: { error: expect.stringContaining("unsupported field") } });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { briefing_refs: [briefingIds[0], " "] } }))
+      .toMatchObject({ status: 400, body: { error: expect.stringContaining("nonblank") } });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { briefing_refs: [briefingIds[0], briefingIds[0]] } }))
+      .toMatchObject({ status: 400, body: { error: expect.stringContaining("duplicates") } });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { name: "Must roll back", briefing_refs: ["missing"] } }))
+      .toMatchObject({ status: 404 });
+    expect(db.prepare("SELECT name FROM briefing_bundles WHERE id = ?").get(bundleId))
+      .toEqual({ name: "Sara’s skill, breakdown" });
+
+    const replaced = await router.invoke({ method: "PATCH",
+      url: `/api/briefing-bundles/briefing-bundle:${bundleId.slice(0, 8)}`,
+      credential: "agent-schedule", body: { briefing_refs: replacement } });
+    expect(replaced).toMatchObject({ status: 200, body: {
+      changed: true, name_changed: false, membership_changed: true,
+      bundle: {
+        id: bundleId, name: "Sara’s skill, breakdown",
+        members: replacement.map((id, position) => ({ position, briefing: { id } })),
+      },
+    } });
+    expect(db.prepare("SELECT * FROM briefings ORDER BY id").all()).toEqual(briefingRowsBefore);
+    expect(db.prepare("SELECT * FROM briefing_rounds ORDER BY id").all()).toEqual(roundRowsBefore);
+    expect(db.prepare("SELECT * FROM briefing_members ORDER BY briefing_id, user_id").all()).toEqual(memberRowsBefore);
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-members-replaced", {
+      bundle_id: bundleId,
+    });
+
     const humanCreated = await router.invoke({ method: "POST", url: "/api/briefing-bundles",
       credential: "human", body: { name: "Human bundle", briefing_refs: briefingIds } });
     expect(humanCreated).toMatchObject({ status: 201 });

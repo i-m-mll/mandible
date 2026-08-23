@@ -116,6 +116,41 @@ export function updateBriefingBundleName(
   return { bundle: readBriefingBundle(db, bundleId, viewer), changed };
 }
 
+export function replaceBriefingBundleMembers(
+  db: Db,
+  bundleRef: string,
+  briefingRefs: readonly string[],
+  viewer: BriefingBundleViewer,
+  now = Date.now(),
+): { bundle: BriefingBundle; changed: boolean } {
+  const bundleId = resolveBundleId(db, bundleRef);
+  if (!Array.isArray(briefingRefs)
+      || !briefingRefs.every((ref) => typeof ref === "string" && ref.trim())) {
+    throw new BriefingStoreError("briefing_refs must be an array of nonblank Briefing refs");
+  }
+  const briefingIds = briefingRefs.map((ref) => resolveBriefingId(db, ref, viewer));
+  if (new Set(briefingIds).size !== briefingIds.length) {
+    throw new BriefingStoreError("briefing_refs must not contain duplicates");
+  }
+  const changed = db.transaction(() => {
+    const currentIds = db.prepare(
+      "SELECT briefing_id FROM briefing_bundle_members WHERE bundle_id = ? ORDER BY position",
+    ).all(bundleId) as Array<{ briefing_id: string }>;
+    const membershipChanged = currentIds.length !== briefingIds.length
+      || currentIds.some((row, position) => row.briefing_id !== briefingIds[position]);
+    if (membershipChanged) {
+      db.prepare("DELETE FROM briefing_bundle_members WHERE bundle_id = ?").run(bundleId);
+      const insert = db.prepare(
+        "INSERT INTO briefing_bundle_members (bundle_id, briefing_id, position, created_at) VALUES (?, ?, ?, ?)",
+      );
+      briefingIds.forEach((briefingId, position) => insert.run(bundleId, briefingId, position, now));
+      db.prepare("UPDATE briefing_bundles SET updated_at = ? WHERE id = ?").run(now, bundleId);
+    }
+    return membershipChanged;
+  }).immediate();
+  return { bundle: readBriefingBundle(db, bundleId, viewer), changed };
+}
+
 export function addBriefingBundleMember(
   db: Db,
   bundleRef: string,

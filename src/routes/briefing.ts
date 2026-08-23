@@ -25,6 +25,7 @@ import {
   createBriefingBundle,
   listBriefingBundles,
   readBriefingBundle,
+  replaceBriefingBundleMembers,
   updateBriefingBundleName,
 } from "../feedback/briefing-bundles.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
@@ -103,6 +104,39 @@ function renameViewer(
     db,
     `${prefix}_operator_required`,
     `${subject} renames by an agent require a configured active human operator.`,
+  ).id, operator: true };
+}
+
+function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(
+      403,
+      "briefing_bundle_membership_publisher_credential_required",
+      "Briefing bundle membership replacement requires a durable API token, not a session credential.",
+    );
+  }
+  const caller = getUserById(db, identity.user_id);
+  if (caller?.status === "active" && caller.kind === "human") {
+    if (!isOperator(db, identity)) {
+      throw new ClientAuthzError(
+        403,
+        "briefing_bundle_membership_operator_required",
+        "Briefing bundle membership replacement requires the configured human operator or a durable agent publisher.",
+      );
+    }
+    return { userId: caller.id, operator: true };
+  }
+  const publisher = requireDurableAgentPublisher(db, req, {
+    credentialCode: "briefing_bundle_membership_publisher_credential_required",
+    credentialMessage: "Briefing bundle membership replacement requires a durable API token, not a session credential.",
+    agentCode: "briefing_bundle_membership_publisher_agent_required",
+    agentMessage: "Briefing bundle membership replacement requires an active agent identity.",
+  });
+  return { userId: configuredHumanOperator(
+    db,
+    "briefing_bundle_membership_operator_required",
+    "Briefing bundle membership replacement by an agent requires a configured active human operator.",
   ).id, operator: true };
 }
 
@@ -198,14 +232,43 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.patch("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
-      const viewer = renameViewer(db, req, "Briefing bundle");
+      const replacesMembership = !!req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        && Object.hasOwn(req.body, "briefing_refs");
+      const viewer = replacesMembership
+        ? bundleMembershipViewer(db, req)
+        : renameViewer(db, req, "Briefing bundle");
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "name");
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
-      const result = updateBriefingBundleName(db, req.params.bundleId, requestBody.name, viewer);
-      if (result.changed) broadcast(BRIEFING_EVENTS.bundleNameUpdated, { bundle_id: result.bundle.id });
+      if (requestBody.name === undefined && requestBody.briefing_refs === undefined) {
+        throw new BriefingStoreError("request body must contain name or briefing_refs");
+      }
+      if (requestBody.briefing_refs !== undefined
+          && (!Array.isArray(requestBody.briefing_refs)
+            || !requestBody.briefing_refs.every((ref) => typeof ref === "string" && ref.trim()))) {
+        throw new BriefingStoreError("briefing_refs must be an array of nonblank Briefing refs");
+      }
+      const briefingRefs = requestBody.briefing_refs as readonly string[] | undefined;
+      const result = db.transaction(() => {
+        const renamed = requestBody.name === undefined
+          ? { bundle: readBriefingBundle(db, req.params.bundleId, viewer), changed: false }
+          : updateBriefingBundleName(db, req.params.bundleId, requestBody.name, viewer);
+        const replaced = briefingRefs === undefined
+          ? { bundle: renamed.bundle, changed: false }
+          : replaceBriefingBundleMembers(db, req.params.bundleId, briefingRefs, viewer);
+        return {
+          bundle: replaced.bundle,
+          changed: renamed.changed || replaced.changed,
+          name_changed: renamed.changed,
+          membership_changed: replaced.changed,
+        };
+      }).immediate();
+      if (result.name_changed) broadcast(BRIEFING_EVENTS.bundleNameUpdated, { bundle_id: result.bundle.id });
+      if (result.membership_changed) {
+        broadcast(BRIEFING_EVENTS.bundleMembersReplaced, { bundle_id: result.bundle.id });
+      }
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);

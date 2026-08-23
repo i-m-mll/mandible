@@ -16,6 +16,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
     'briefing:created',
     'briefing:bundle-created',
     'briefing:bundle-member-added',
+    'briefing:bundle-members-replaced',
     'briefing:bundle-name-updated',
     'briefing:round-published',
     'briefing:answered',
