@@ -445,9 +445,12 @@ export function briefingMemberAllows(db: Db, briefingId: string, actorUserId: st
 
 export function listBriefings(db: Db, viewer: { userId: string; operator: boolean }) {
   return db.prepare(
-    `SELECT b.id, b.briefing_key, b.title, b.latest_round_id, b.round_count, b.created_at, b.updated_at
+    `SELECT b.id, b.briefing_key, b.title, b.latest_round_id, b.round_count, b.archived_at,
+            b.created_at, b.updated_at
        FROM briefings b
-      WHERE ? = 1 OR EXISTS (SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?)
+      WHERE b.archived_at IS NULL AND (? = 1 OR EXISTS (
+        SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
+      ))
       ORDER BY b.updated_at DESC, b.id`,
   ).all(viewer.operator ? 1 : 0, viewer.userId);
 }
@@ -489,6 +492,23 @@ export function updateBriefingTitle(
     db.prepare("UPDATE briefings SET title = ? WHERE id = ?").run(normalized, briefing.id);
   }
   return { briefing_id: briefing.id, title: normalized, changed: briefing.title !== normalized };
+}
+
+export function setBriefingArchived(
+  db: Db,
+  briefingRef: string,
+  archived: boolean,
+  viewer: BriefingViewer,
+  now = Date.now(),
+) {
+  const briefingId = resolveBriefingId(db, briefingRef, viewer);
+  const briefing = db.prepare("SELECT archived_at FROM briefings WHERE id = ?")
+    .get(briefingId) as { archived_at: number | null } | undefined;
+  if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
+  const changed = archived ? briefing.archived_at === null : briefing.archived_at !== null;
+  if (changed) db.prepare("UPDATE briefings SET archived_at = ? WHERE id = ?")
+    .run(archived ? now : null, briefingId);
+  return { briefing_id: briefingId, archived_at: archived ? (briefing.archived_at ?? now) : null, changed };
 }
 
 function pinnedRoundDocument(db: Db, artifactVersionId: string): { source: string; content_hash: string } {
@@ -641,7 +661,7 @@ export function readBriefing(
   options: { roundId?: string; submissionId?: string; actorUserId: string; operator: boolean },
 ) {
   const briefing = db.prepare(
-    `SELECT id, briefing_key, title, latest_round_id, round_count, created_at, updated_at
+    `SELECT id, briefing_key, title, latest_round_id, round_count, archived_at, created_at, updated_at
        FROM briefings WHERE id = ?`,
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;

@@ -179,6 +179,14 @@
       "description": "Rename one existing Briefing in place without changing its identity, membership, rounds, responses, annotations, or submissions. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
     },
     {
+      "name": "mandible briefing archive <briefing-ref> [--json]",
+      "description": "Hide one Briefing from default collection and bundle projections without deleting its identity, rounds, artifacts, responses, annotations, or submissions. Human use requires the configured operator; agent use requires a durable active-agent token."
+    },
+    {
+      "name": "mandible briefing restore <briefing-ref> [--json]",
+      "description": "Restore one archived Briefing to default collection and bundle projections with its identity and review history unchanged. Human use requires the configured operator; agent use requires a durable active-agent token."
+    },
+    {
       "name": "mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]",
       "description": "Create a stable named Briefing bundle whose optional initial Briefing membership preserves the supplied order."
     },
@@ -199,12 +207,16 @@
       "description": "Show one Briefing bundle and its manually ordered Briefing membership."
     },
     {
-      "name": "mandible briefing group create --name <name> [<bundle-ref>...] [--json]",
-      "description": "Create a stable Briefing group whose optional ordered update membership contains existing Briefing bundles."
+      "name": "mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--json]",
+      "description": "Create a stable Briefing group with an optional explicit current bundle and ordered active proposals. Omitting --current preserves proposal-only compatibility and does not infer a current bundle."
     },
     {
       "name": "mandible briefing group add <group-ref> <bundle-ref> [--json]",
       "description": "Append one existing Briefing bundle as a proposed update; a bundle belongs to at most one group."
+    },
+    {
+      "name": "mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]",
+      "description": "Atomically set a group's distinct current bundle and complete ordered active-proposal list. Current cannot also be a proposal, duplicates are rejected, and a bundle cannot belong to another group in either role."
     },
     {
       "name": "mandible briefing group rename <group-ref> --name <text> [--json]",
@@ -212,7 +224,7 @@
     },
     {
       "name": "mandible briefing group show <group-ref> [--json]",
-      "description": "Show one stable Briefing group with its ordered full Briefing bundle objects as updates."
+      "description": "Show one stable Briefing group with its distinct current bundle and ordered active-proposal bundle objects."
     },
     {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",

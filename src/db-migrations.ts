@@ -4820,7 +4820,23 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "briefing_groups_and_bundle_layout",
     statements: [...BRIEFING_GROUP_SCHEMA_SQL],
   },
+  {
+    version: 153,
+    name: "briefing_group_current_and_archive_state",
+    statements: [],
+  },
 ];
+
+function ensureBriefingOrganizationColumns(db: Db): void {
+  if (tableExists(db, "briefings") && !hasColumn(db, "briefings", "archived_at")) {
+    db.exec("ALTER TABLE briefings ADD COLUMN archived_at INTEGER");
+  }
+  if (tableExists(db, "briefing_groups") && !hasColumn(db, "briefing_groups", "current_bundle_id")) {
+    db.exec("ALTER TABLE briefing_groups ADD COLUMN current_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT");
+  }
+  if (tableExists(db, "briefing_groups")) db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_briefing_groups_current_bundle
+    ON briefing_groups(current_bundle_id) WHERE current_bundle_id IS NOT NULL`);
+}
 
 function migrateBriefingBundleLayoutV152(db: Db): void {
   if (!tableExists(db, "briefing_bundle_members")) {
@@ -5411,6 +5427,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 149) migrateBriefingV3Schema(db);
       if (migration.version === 150) ensureBriefingComparisonBaseColumn(db);
       if (migration.version === 152) migrateBriefingBundleLayoutV152(db);
+      if (migration.version === 153) ensureBriefingOrganizationColumns(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
