@@ -86,18 +86,17 @@ function isInteractiveDirectiveTarget(target: EventTarget | null, directive: HTM
   return interactive !== null && interactive !== directive && directive.contains(interactive);
 }
 
-function annotationKindLabel(kind: BriefingAnnotation['annotation_kind']): string {
-  return kind === 'comment' ? 'Comment' : 'Suggested replacement';
-}
-
 function annotationActor(annotation: BriefingAnnotation): string {
-  if (annotation.presentation?.source === 'current_draft') return 'Current draft';
-  return annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug || 'Saved annotation';
+  return annotation.presentation?.actor?.display_name
+    || annotation.presentation?.actor?.slug
+    || (annotation.presentation?.source === 'current_draft' ? 'You' : 'Unknown user');
 }
 
 function annotationTimestamp(value: number): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  }).format(date);
 }
 
 function excerpt(value: string, limit = 140): string {
@@ -471,7 +470,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
   });
 
   const annotationsForRange = (start: number, end: number) => annotations
-    .filter((annotation) => annotation.start_offset < end && annotation.end_offset > start)
+    .filter((annotation) => annotation.start_offset === start && annotation.end_offset === end)
     .sort((left, right) => right.created_at - left.created_at
       || right.annotation_event_id.localeCompare(left.annotation_event_id));
 
@@ -661,15 +660,16 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const responseHost = Array.from(directiveResponseHosts).find((candidate) => candidate.dataset.briefingDirectiveResponse === String(directiveIndex));
           const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
           const promptId = `briefing-directive-prompt-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
-          const matches = annotationsForRange(item.directive!.start_offset, item.directive!.end_offset);
+          const mappedDirective = markdownModel.directives[directiveIndex];
+          const matches = annotationsForRange(mappedDirective.start, mappedDirective.end);
           return [
             actionHost ? createPortal(
               annotationAction('Comment', 'Comment', {
                 annotation: null,
                 directiveItemId: item.id,
-                start: markdownModel.directives[directiveIndex].start,
-                end: markdownModel.directives[directiveIndex].end,
-                quote: markdownModel.directives[directiveIndex].quote,
+                start: mappedDirective.start,
+                end: mappedDirective.end,
+                quote: mappedDirective.quote,
               }, matches), actionHost,
             ) : null,
             responseHost ? createPortal(responseControls(item, current, promptId), responseHost) : null,
@@ -760,60 +760,92 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       >
         {editor ? (
           <>
-          {editor.sectionHeading
-            ? <p className="briefing-document__section-intent">Whole section: <strong>{editor.sectionHeading}</strong></p>
-            : <blockquote>{editor.displayQuote ?? editor.quote}</blockquote>}
-          {!editor.sectionHeading ? (
-            <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
-              <button type="button" role="tab" aria-selected={kind === 'comment'} onClick={() => setKind('comment')}>Comment</button>
-              <button type="button" role="tab" aria-selected={kind === 'suggest_replacement'} onClick={() => setKind('suggest_replacement')}>Suggest replacement</button>
+            <div className="briefing-document__popover-content">
+              {editor.sectionHeading
+                ? <p className="briefing-document__section-intent">Whole section: <strong>{editor.sectionHeading}</strong></p>
+                : <blockquote>{editor.displayQuote ?? editor.quote}</blockquote>}
+              {!editor.sectionHeading ? (
+                <div className="briefing-document__tabs" role="tablist" aria-label="Annotation type">
+                  {(['comment', 'suggest_replacement'] as const).map((option) => (
+                    <button key={option} type="button" role="tab" data-annotation-kind={option}
+                      aria-selected={kind === option}
+                      tabIndex={kind === option ? 0 : -1}
+                      onClick={() => setKind(option)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+                        event.preventDefault();
+                        const next = event.key === 'ArrowLeft' || event.key === 'Home' ? 'comment' : 'suggest_replacement';
+                        setKind(next);
+                        event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-annotation-kind="${next}"]`)?.focus();
+                      }}>
+                      {option === 'comment' ? 'Comment' : 'Suggest replacement'}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {kind === 'suggest_replacement' && !editor.sectionHeading ? (
+                <label>
+                  <span>Replacement</span>
+                  <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canInteract || busy} />
+                </label>
+              ) : null}
+              <label>
+                <span className={kind === 'comment' ? 'sr-only' : ''}>{kind === 'comment' ? 'Comment' : 'Note (optional)'}</span>
+                <textarea aria-label={kind === 'comment' ? 'Comment' : undefined} value={body}
+                  onInput={(event) => setBody(event.currentTarget.value)} disabled={!canInteract || busy} />
+              </label>
+              {editor && status ? <p className="briefing-document__popover-status" role="status" aria-live="polite">{status}</p> : null}
+              <div className="briefing-document__popover-actions">
+                <div>
+                  {editor.annotation?.presentation?.source === 'current_draft' && canInteract ? (
+                    <button type="button" className="btn btn--ghost btn--sm" onClick={() => void remove(editor.annotation!)} disabled={busy}>Delete</button>
+                  ) : null}
+                </div>
+                <div className="briefing-document__popover-primary-actions">
+                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => setEditor(null)}>Cancel</button>
+                  {canInteract ? <button type="button" className="btn btn--primary" onClick={() => void save()} disabled={busy}>Save</button> : null}
+                </div>
+              </div>
+              {editorAnnotations.length > 0 ? (
+                <section className="briefing-annotation-history" aria-label="Comment history">
+                  <h3>{editorAnnotations.length} comment{editorAnnotations.length === 1 ? '' : 's'}</h3>
+                  <ol>
+                    {editorAnnotations.map((annotation) => {
+                      const editable = canInteract && annotation.presentation?.source === 'current_draft';
+                      const timestamp = annotationTimestamp(annotation.created_at);
+                      const summary = annotation.annotation_kind === 'suggest_replacement'
+                        ? `Replace with “${excerpt(annotation.replacement_text || annotation.quote, 120)}”`
+                        : excerpt(annotation.body || '', 120);
+                      return (
+                        <li key={annotation.annotation_event_id} className={`briefing-annotation-history__entry contextual-action-owner${annotation.presentation?.source === 'current_draft'
+                          ? ' briefing-annotation-history__entry--draft'
+                          : ''}`}>
+                          <div className="briefing-annotation-history__content">
+                            <span className="briefing-annotation-history__meta">
+                              <strong>{annotationActor(annotation)}</strong>
+                              {timestamp ? <time dateTime={new Date(annotation.created_at).toISOString()}>{timestamp}</time> : null}
+                            </span>
+                            <span>{summary}</span>
+                            {annotation.annotation_kind === 'suggest_replacement' && annotation.body ? <span>{excerpt(annotation.body, 120)}</span> : null}
+                          </div>
+                          {editable ? (
+                            <span className="briefing-annotation-history__actions contextual-action-group">
+                              <ContextualAction aria-label={`Edit annotation by ${annotationActor(annotation)}: ${summary}`}
+                                title="Edit annotation" onClick={() => openExisting(annotation)}><EditIcon /></ContextualAction>
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </section>
+              ) : null}
             </div>
-          ) : null}
-          {kind === 'suggest_replacement' && !editor.sectionHeading ? (
-            <label>
-              Replacement
-              <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canInteract || busy} />
-            </label>
-          ) : null}
-          <label>
-            {kind === 'comment' ? 'Comment' : 'Note (optional)'}
-            <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canInteract || busy} />
-          </label>
-          <div className="briefing-document__popover-actions">
-            {editor.annotation?.presentation?.source !== 'annotation_set' && editor.annotation && canInteract ? (
-              <button type="button" className="btn btn--ghost btn--sm" onClick={() => void remove(editor.annotation!)} disabled={busy}>Delete</button>
-            ) : null}
-            {canInteract ? <button type="button" className="btn btn--primary btn--sm" onClick={() => void save()} disabled={busy}>Save</button> : null}
-          </div>
-          {editorAnnotations.length > 0 ? (
-            <section className="briefing-annotation-history" aria-label="Comment history">
-              <h3>{editorAnnotations.length} comment{editorAnnotations.length === 1 ? '' : 's'}</h3>
-              <ol>
-                {editorAnnotations.map((annotation) => {
-                  const editable = canInteract && annotation.presentation?.source !== 'annotation_set';
-                  const content = <>
-                    <span className="briefing-annotation-history__meta">
-                      <strong>{annotationActor(annotation)}</strong>
-                      {annotationTimestamp(annotation.created_at) ? <time>{annotationTimestamp(annotation.created_at)}</time> : null}
-                    </span>
-                    <span>{annotationKindLabel(annotation.annotation_kind)}{annotation.body ? ` · ${excerpt(annotation.body, 120)}` : ''}</span>
-                  </>;
-                  return (
-                    <li key={annotation.annotation_event_id} className={annotation.presentation?.source === 'current_draft'
-                      ? 'briefing-annotation-history__entry briefing-annotation-history__entry--draft'
-                      : 'briefing-annotation-history__entry'}>
-                      {editable ? <button type="button" onClick={() => openExisting(annotation)}>{content}</button> : <div>{content}</div>}
-                    </li>
-                  );
-                })}
-              </ol>
-            </section>
-          ) : null}
           </>
         ) : <></>}
       </DetailPaneModal>
 
-      <div className="briefing-document__status" role="status" aria-live="polite">{status}</div>
+      <div className="briefing-document__status" role="status" aria-live="polite">{editor ? '' : status}</div>
     </section>
   );
 }
@@ -828,6 +860,10 @@ function DismissIcon(): JSX.Element {
 
 function CommentIcon(): JSX.Element {
   return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" /></svg>;
+}
+
+function EditIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 11.5-.5 2 2-.5 7.75-7.75-1.5-1.5zM9.75 4.75l1.5 1.5" /></svg>;
 }
 
 function PreviousIcon(): JSX.Element {
