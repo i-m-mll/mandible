@@ -4561,7 +4561,10 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
     if (row.kind === 'subgroup') {
       const name = briefingString(row.name);
       const briefings = (Array.isArray(row.briefings) ? row.briefings : [])
-        .map((briefing) => normalizeBriefings({ briefings: [briefing] })[0])
+        .map((entry) => {
+          const member = briefingRecord(entry);
+          return normalizeBriefings({ briefings: [member.briefing ?? entry] })[0];
+        })
         .filter((briefing): briefing is FeedbackCollection => Boolean(briefing));
       return name ? { kind: 'subgroup', name, briefings } : null;
     }

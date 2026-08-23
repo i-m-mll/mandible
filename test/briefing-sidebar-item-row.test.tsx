@@ -176,8 +176,12 @@ describe('Briefing sidebar row actions', () => {
         id: 'update-1', name: 'Proposal', created_at: 1, updated_at: 2,
         layout: [
           { kind: 'briefing', briefing: row('first', 'First') },
-          { kind: 'subgroup', name: 'Research', briefings: [row('second', 'Second')] },
-          { kind: 'subgroup', name: '', briefings: [row('ignored', 'Ignored')] },
+          { kind: 'subgroup', name: 'Research', briefings: [
+            { position: 0, briefing: row('second', 'Second') },
+          ] },
+          { kind: 'subgroup', name: '', briefings: [
+            { position: 0, briefing: row('ignored', 'Ignored') },
+          ] },
         ],
       }],
     }] });
