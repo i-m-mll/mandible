@@ -26,9 +26,12 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefing_groups (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL CHECK(trim(name) != ''),
+    current_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_briefing_groups_current_bundle
+    ON briefing_groups(current_bundle_id) WHERE current_bundle_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS briefing_group_updates (
     group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
     bundle_id TEXT NOT NULL UNIQUE REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
@@ -47,6 +50,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     title TEXT NOT NULL CHECK(trim(title) != ''),
     latest_round_id TEXT,
     round_count INTEGER NOT NULL DEFAULT 0 CHECK(round_count >= 0),
+    archived_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,

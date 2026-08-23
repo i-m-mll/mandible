@@ -12,18 +12,22 @@ import {
   applyBriefingAnswers,
   BriefingStoreError,
   exportBriefingSubmissionMarkdown,
+  listBriefings,
   parseBriefingRunRequest,
   publishBriefingRun,
   publishBriefingFromArtifactVersion,
   readBriefing,
+  setBriefingArchived,
   submitBriefingRound,
   updateBriefingTitle,
 } from "../src/feedback/briefings.js";
 import {
   createBriefingBundle,
+  readBriefingBundle,
   replaceBriefingBundleMembers,
   updateBriefingBundleName,
 } from "../src/feedback/briefing-bundles.js";
+import { configureBriefingGroup, createBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
@@ -67,6 +71,62 @@ afterEach(() => {
 });
 
 describe("artifact-backed Briefing rounds", () => {
+  it("keeps group current separate from proposals and archives Briefings without deleting review state", () => {
+    const first = publishBriefingRun(db, request(), publisherId, 1_000);
+    const second = publishBriefingRun(db, request(request().document!.markdown, {
+      briefing_key: "second", run_id: "run-2", run_key: "run-key-2",
+    }), publisherId, 1_010);
+    const viewer = { userId: humanId, operator: true };
+    const bundles = [first.briefing_id, second.briefing_id, first.briefing_id].map((briefingId, index) =>
+      createBriefingBundle(db, { name: `Bundle ${index}`, briefingRefs: [briefingId], viewer }, 1_100 + index));
+    const group = createBriefingGroup(db, {
+      name: "Policy", bundleRefs: [bundles[1].id], viewer,
+    }, 1_200);
+    expect(group).toMatchObject({ current: null, updates: [{ id: bundles[1].id }] });
+    expect(() => configureBriefingGroup(db, group.id, {
+      currentBundleRef: bundles[0].id, bundleRefs: [bundles[0].id],
+    }, viewer)).toThrowError(/must not also appear/);
+    expect(() => configureBriefingGroup(db, group.id, {
+      currentBundleRef: bundles[0].id, bundleRefs: [bundles[1].id, bundles[1].id],
+    }, viewer)).toThrowError(/duplicates/);
+    expect(configureBriefingGroup(db, group.id, {
+      currentBundleRef: bundles[0].id, bundleRefs: [bundles[1].id, bundles[2].id],
+    }, viewer, 1_300)).toMatchObject({ changed: true, group: {
+      current: { id: bundles[0].id }, updates: [{ id: bundles[1].id }, { id: bundles[2].id }],
+    } });
+    expect(createBriefingGroup(db, { name: "Empty", bundleRefs: [], viewer }, 1_350).current).toBeNull();
+    expect(() => createBriefingGroup(db, {
+      name: "Conflict", currentBundleRef: bundles[1].id, bundleRefs: [], viewer,
+    }, 1_400)).toThrowError(/already belongs/);
+
+    const preserved = {
+      rounds: db.prepare("SELECT * FROM briefing_rounds WHERE briefing_id = ? ORDER BY id").all(first.briefing_id),
+      members: db.prepare("SELECT * FROM briefing_members WHERE briefing_id = ? ORDER BY user_id").all(first.briefing_id),
+      bundleMembers: db.prepare("SELECT * FROM briefing_bundle_members WHERE briefing_id = ? ORDER BY bundle_id")
+        .all(first.briefing_id),
+    };
+    expect(setBriefingArchived(db, first.briefing_id, true, viewer, 1_500)).toEqual({
+      briefing_id: first.briefing_id, archived_at: 1_500, changed: true,
+    });
+    expect(listBriefings(db, viewer).map((entry) => entry.id)).not.toContain(first.briefing_id);
+    expect(readBriefingBundle(db, bundles[0].id, viewer).members).toEqual([]);
+    expect(readBriefing(db, first.briefing_id, { actorUserId: humanId, operator: true }))
+      .toMatchObject({ briefing: { id: first.briefing_id, archived_at: 1_500 } });
+    expect(db.prepare("SELECT * FROM briefing_rounds WHERE briefing_id = ? ORDER BY id").all(first.briefing_id))
+      .toEqual(preserved.rounds);
+    expect(db.prepare("SELECT * FROM briefing_members WHERE briefing_id = ? ORDER BY user_id").all(first.briefing_id))
+      .toEqual(preserved.members);
+    expect(db.prepare("SELECT * FROM briefing_bundle_members WHERE briefing_id = ? ORDER BY bundle_id")
+      .all(first.briefing_id)).toEqual(preserved.bundleMembers);
+    expect(setBriefingArchived(db, first.briefing_id, false, viewer)).toEqual({
+      briefing_id: first.briefing_id, archived_at: null, changed: true,
+    });
+    expect(listBriefings(db, viewer).map((entry) => entry.id)).toContain(first.briefing_id);
+    expect(readBriefingBundle(db, bundles[0].id, viewer).members).toMatchObject([
+      { briefing: { id: first.briefing_id, archived_at: null } },
+    ]);
+  });
+
   it("renames populated Briefings and bundles without changing any other stored byte", () => {
     const receipt = publishBriefingRun(db, request(), publisherId, 1_000);
     const markdown = request().document!.markdown;

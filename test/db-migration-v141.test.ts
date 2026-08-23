@@ -58,7 +58,7 @@ describe("migration v141: canonical work-unit repo ids", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(152);
+    expect(CURRENT_SCHEMA_VERSION).toBe(153);
     expect(db.prepare(
       `SELECT id, repo_id, state, created_at, activated_at, last_commit_at,
               resolved_at, auth_request_id

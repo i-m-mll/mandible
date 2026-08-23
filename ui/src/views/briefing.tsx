@@ -119,7 +119,6 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   const selectedGroup = useMemo(() => groups.find((group) => group.id === viewState.selectedGroupId) ?? null, [groups, viewState.selectedGroupId]);
   const selectedGroupUpdateId = selectedGroup
     ? selectedGroup.updates.find((update) => update.id === viewState.selectedGroupUpdateIds[selectedGroup.id])?.id
-      ?? selectedGroup.updates[0]?.id
       ?? null
     : null;
   const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
@@ -134,12 +133,14 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     window.history.replaceState(null, '', briefingGroupRoute(group.id));
   };
 
-  const selectGroupUpdate = (updateId: string) => {
+  const selectGroupUpdate = (updateId: string | null) => {
     if (!selectedGroup) return;
-    setViewState((current) => ({
-      ...current,
-      selectedGroupUpdateIds: { ...current.selectedGroupUpdateIds, [selectedGroup.id]: updateId },
-    }));
+    setViewState((current) => {
+      const selectedGroupUpdateIds = { ...current.selectedGroupUpdateIds };
+      if (updateId) selectedGroupUpdateIds[selectedGroup.id] = updateId;
+      else delete selectedGroupUpdateIds[selectedGroup.id];
+      return { ...current, selectedGroupUpdateIds };
+    });
   };
 
   const selectRound = (roundId: string | null) => {
@@ -158,23 +159,19 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     const updateCollection = (collection: FeedbackCollection): FeedbackCollection => collection.collectionId === selected.collectionId
       ? { ...collection, label: title }
       : collection;
-    setBriefings((current) => current.map(updateCollection));
-    setBundles((current) => current.map((bundle) => ({
+    const updateBundle = (bundle: BriefingBundle): BriefingBundle => ({
       ...bundle,
       members: bundle.members.map((member) => ({ ...member, briefing: updateCollection(member.briefing) })),
       layout: bundle.layout.map((entry) => entry.kind === 'briefing'
         ? { ...entry, briefing: updateCollection(entry.briefing) }
         : { ...entry, briefings: entry.briefings.map(updateCollection) }),
-    })));
+    });
+    setBriefings((current) => current.map(updateCollection));
+    setBundles((current) => current.map(updateBundle));
     setGroups((current) => current.map((group) => ({
       ...group,
-      updates: group.updates.map((update) => ({
-        ...update,
-        members: update.members.map((member) => ({ ...member, briefing: updateCollection(member.briefing) })),
-        layout: update.layout.map((entry) => entry.kind === 'briefing'
-          ? { ...entry, briefing: updateCollection(entry.briefing) }
-          : { ...entry, briefings: entry.briefings.map(updateCollection) }),
-      })),
+      current: group.current ? updateBundle(group.current) : null,
+      updates: group.updates.map(updateBundle),
     })));
   };
 

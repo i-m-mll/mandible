@@ -46,6 +46,8 @@
 .feedback-collections-sidebar__group-layout {
   display: grid;
   gap: 2px;
+  min-width: 0;
+  padding-inline-start: var(--space-3);
 }
 
 .feedback-collections-sidebar__body > [data-testid="feedback-collections-sidebar"] {
@@ -251,9 +253,11 @@
   padding: var(--space-6);
 }
 
-.briefing-group-detail__updates {
+.briefing-group-detail__sections {
   width: min(720px, 100%);
   margin: 0 auto;
+  display: grid;
+  gap: var(--space-6);
 }
 
 .briefing-group-detail__intro {

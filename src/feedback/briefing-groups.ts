@@ -25,9 +25,14 @@ function updateIds(db: Db, groupId: string): string[] {
 
 export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBundleViewer): BriefingGroup {
   const id = resolveGroupId(db, groupRef);
-  const group = db.prepare("SELECT id, name, created_at, updated_at FROM briefing_groups WHERE id = ?")
-    .get(id) as Omit<BriefingGroup, "updates">;
-  return { ...group, updates: updateIds(db, id).map((bundleId) => readBriefingBundle(db, bundleId, viewer)) };
+  const group = db.prepare("SELECT id, name, current_bundle_id, created_at, updated_at FROM briefing_groups WHERE id = ?")
+    .get(id) as Omit<BriefingGroup, "current" | "updates"> & { current_bundle_id: string | null };
+  const { current_bundle_id: currentBundleId, ...projection } = group;
+  return {
+    ...projection,
+    current: currentBundleId === null ? null : readBriefingBundle(db, currentBundleId, viewer),
+    updates: updateIds(db, id).map((bundleId) => readBriefingBundle(db, bundleId, viewer)),
+  };
 }
 
 export function listBriefingGroups(db: Db, viewer: BriefingBundleViewer): BriefingGroup[] {
@@ -46,7 +51,8 @@ function resolveDistinctBundles(db: Db, bundleRefs: readonly string[]): string[]
 
 function assertUngrouped(db: Db, bundleIds: readonly string[]): void {
   for (const bundleId of bundleIds) {
-    if (db.prepare("SELECT 1 FROM briefing_group_updates WHERE bundle_id = ?").get(bundleId)) {
+    if (db.prepare("SELECT 1 FROM briefing_group_updates WHERE bundle_id = ?").get(bundleId)
+        || db.prepare("SELECT 1 FROM briefing_groups WHERE current_bundle_id = ?").get(bundleId)) {
       throw new BriefingStoreError("Briefing bundle already belongs to a group", 409, "briefing_bundle_already_grouped");
     }
   }
@@ -54,23 +60,71 @@ function assertUngrouped(db: Db, bundleIds: readonly string[]): void {
 
 export function createBriefingGroup(
   db: Db,
-  input: { name: string; bundleRefs: readonly string[]; viewer: BriefingBundleViewer },
+  input: { name: string; currentBundleRef?: string | null; bundleRefs: readonly string[]; viewer: BriefingBundleViewer },
   now = Date.now(),
 ): BriefingGroup {
   const name = input.name.trim();
   if (!name) throw new BriefingStoreError("name must be a nonblank string");
   const bundleIds = resolveDistinctBundles(db, input.bundleRefs);
+  const currentBundleId = input.currentBundleRef == null ? null : resolveBundleId(db, input.currentBundleRef);
+  if (currentBundleId !== null && bundleIds.includes(currentBundleId)) {
+    throw new BriefingStoreError("current_bundle_ref must not also appear in bundle_refs");
+  }
   const groupId = randomUUID();
   db.transaction(() => {
-    assertUngrouped(db, bundleIds);
-    db.prepare("INSERT INTO briefing_groups (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-      .run(groupId, name, now, now);
+    assertUngrouped(db, currentBundleId === null ? bundleIds : [currentBundleId, ...bundleIds]);
+    db.prepare(`INSERT INTO briefing_groups
+      (id, name, current_bundle_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(groupId, name, currentBundleId, now, now);
     const insert = db.prepare(
       "INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?)",
     );
     bundleIds.forEach((bundleId, position) => insert.run(groupId, bundleId, position, now));
   }).immediate();
   return readBriefingGroup(db, groupId, input.viewer);
+}
+
+function assertAvailableToGroup(db: Db, groupId: string, bundleIds: readonly string[]): void {
+  for (const bundleId of bundleIds) {
+    const proposal = db.prepare("SELECT group_id FROM briefing_group_updates WHERE bundle_id = ?")
+      .get(bundleId) as { group_id: string } | undefined;
+    const current = db.prepare("SELECT id FROM briefing_groups WHERE current_bundle_id = ?")
+      .get(bundleId) as { id: string } | undefined;
+    if ((proposal && proposal.group_id !== groupId) || (current && current.id !== groupId)) {
+      throw new BriefingStoreError("Briefing bundle already belongs to a group", 409,
+        "briefing_bundle_already_grouped");
+    }
+  }
+}
+
+export function configureBriefingGroup(
+  db: Db, groupRef: string,
+  input: { currentBundleRef: string | null; bundleRefs: readonly string[] },
+  viewer: BriefingBundleViewer, now = Date.now(),
+): { group: BriefingGroup; changed: boolean } {
+  const groupId = resolveGroupId(db, groupRef);
+  const bundleIds = resolveDistinctBundles(db, input.bundleRefs);
+  const currentBundleId = input.currentBundleRef === null ? null : resolveBundleId(db, input.currentBundleRef);
+  if (currentBundleId !== null && bundleIds.includes(currentBundleId)) {
+    throw new BriefingStoreError("current_bundle_ref must not also appear in bundle_refs");
+  }
+  const changed = db.transaction(() => {
+    const allBundleIds = currentBundleId === null ? bundleIds : [currentBundleId, ...bundleIds];
+    assertAvailableToGroup(db, groupId, allBundleIds);
+    const current = db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?")
+      .get(groupId) as { current_bundle_id: string | null };
+    if (current.current_bundle_id === currentBundleId
+        && JSON.stringify(updateIds(db, groupId)) === JSON.stringify(bundleIds)) return false;
+    db.prepare("DELETE FROM briefing_group_updates WHERE group_id = ?").run(groupId);
+    db.prepare("UPDATE briefing_groups SET current_bundle_id = ?, updated_at = ? WHERE id = ?")
+      .run(currentBundleId, now, groupId);
+    const insert = db.prepare(
+      "INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at) VALUES (?, ?, ?, ?)",
+    );
+    bundleIds.forEach((bundleId, position) => insert.run(groupId, bundleId, position, now));
+    return true;
+  }).immediate();
+  return { group: readBriefingGroup(db, groupId, viewer), changed };
 }
 
 export function addBriefingGroupUpdate(
@@ -84,6 +138,10 @@ export function addBriefingGroupUpdate(
     if (current?.group_id === groupId) return false;
     if (current) throw new BriefingStoreError("Briefing bundle already belongs to a group", 409,
       "briefing_bundle_already_grouped");
+    if (db.prepare("SELECT 1 FROM briefing_groups WHERE current_bundle_id = ?").get(bundleId)) {
+      throw new BriefingStoreError("Briefing bundle already belongs to a group", 409,
+        "briefing_bundle_already_grouped");
+    }
     const row = db.prepare(
       "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM briefing_group_updates WHERE group_id = ?",
     ).get(groupId) as { position: number };
