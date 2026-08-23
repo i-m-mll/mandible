@@ -1072,12 +1072,27 @@ export type BriefingBundleMember = {
   position: number;
   briefing: BriefingListEntry;
 };
+export type BriefingBundleLayoutEntry =
+  | { kind: "briefing"; position: number; briefing: BriefingListEntry }
+  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[] };
+export type BriefingBundleLayoutInputEntry =
+  | { kind: "briefing"; briefing_ref: string }
+  | { kind: "subgroup"; name: string; briefing_refs: string[] };
 export type BriefingBundle = {
   id: string;
   name: string;
   created_at: number;
   updated_at: number;
+  /** Flattened compatibility projection. `layout` is the canonical ordered representation. */
   members: BriefingBundleMember[];
+  layout: BriefingBundleLayoutEntry[];
+};
+export type BriefingGroup = {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  updates: BriefingBundle[];
 };
 export const BRIEFING_EVENTS = Object.freeze({
   created: "briefing:created",
@@ -1085,6 +1100,9 @@ export const BRIEFING_EVENTS = Object.freeze({
   bundleMemberAdded: "briefing:bundle-member-added",
   bundleMembersReplaced: "briefing:bundle-members-replaced",
   bundleNameUpdated: "briefing:bundle-name-updated",
+  groupCreated: "briefing:group-created",
+  groupUpdateAdded: "briefing:group-update-added",
+  groupNameUpdated: "briefing:group-name-updated",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",
   annotated: "briefing:annotated",

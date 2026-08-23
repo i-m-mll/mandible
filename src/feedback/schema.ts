@@ -8,13 +8,35 @@ export const BRIEFING_BUNDLE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefing_bundle_members (
     bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
-    position INTEGER NOT NULL CHECK(position >= 0),
+    layout_position INTEGER NOT NULL CHECK(layout_position >= 0),
+    entry_kind TEXT NOT NULL CHECK(entry_kind IN ('briefing','subgroup')),
+    subgroup_name TEXT,
+    subgroup_position INTEGER NOT NULL CHECK(subgroup_position >= 0),
     created_at INTEGER NOT NULL,
     PRIMARY KEY(bundle_id, briefing_id),
-    UNIQUE(bundle_id, position)
+    UNIQUE(bundle_id, layout_position, subgroup_position),
+    CHECK((entry_kind = 'briefing' AND subgroup_name IS NULL AND subgroup_position = 0)
+      OR (entry_kind = 'subgroup' AND subgroup_name IS NOT NULL AND trim(subgroup_name) != ''))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_bundle_members_briefing
     ON briefing_bundle_members(briefing_id)`,
+];
+
+export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS briefing_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK(trim(name) != ''),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_updates (
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    bundle_id TEXT NOT NULL UNIQUE REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(group_id, bundle_id),
+    UNIQUE(group_id, position)
+  )`,
 ];
 
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */
@@ -299,6 +321,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     UNIQUE(briefing_id, source_profile)
   )`,
   ...BRIEFING_BUNDLE_SCHEMA_SQL,
+  ...BRIEFING_GROUP_SCHEMA_SQL,
 ];
 
 /** Historical v142 apply shape. It exists only long enough for v143 to seal and retire v1. */
@@ -342,6 +365,7 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_response_events", "briefing_annotation_events", "briefing_submissions",
   "briefing_submission_answers", "briefing_submission_annotations", "briefing_legacy_audit",
   "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
+  "briefing_groups", "briefing_group_updates",
 ];
 
 /** Child-first retirement of the pre-v142 kind-split feedback schema. */
