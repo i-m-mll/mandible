@@ -4537,6 +4537,7 @@ export type BriefingGroup = {
   name: string;
   createdAt: number;
   updatedAt: number;
+  current: BriefingBundle | null;
   updates: BriefingBundle[];
 };
 
@@ -4600,6 +4601,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
     const group = briefingRecord(entry);
     const id = briefingString(group.id);
     const name = briefingString(group.name);
+    const current = group.current == null ? null : normalizeBriefingBundle(group.current);
     const updates = (Array.isArray(group.updates) ? group.updates : [])
       .map(normalizeBriefingBundle)
       .filter((update): update is BriefingBundle => update !== null);
@@ -4608,6 +4610,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       name,
       createdAt: briefingOptionalNumber(group.created_at) ?? 0,
       updatedAt: briefingOptionalNumber(group.updated_at) ?? 0,
+      current,
       updates,
     } : null;
   }).filter((group): group is BriefingGroup => group !== null);
