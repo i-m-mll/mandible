@@ -14,6 +14,7 @@ import type { Db } from "./db.js";
 import { migrateLegacyFeedbackToBriefings, retireBriefingV1ToCustody } from "./feedback/migrate-legacy.js";
 import {
   BRIEFING_BUNDLE_SCHEMA_SQL,
+  BRIEFING_GROUP_SCHEMA_SQL,
   BRIEFING_SCHEMA_SQL,
   BRIEFING_SCHEMA_TABLES,
   TRANSIENT_BRIEFING_V1_SCHEMA_SQL,
@@ -4814,7 +4815,41 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "briefing_bundles",
     statements: [...BRIEFING_BUNDLE_SCHEMA_SQL],
   },
+  {
+    version: 152,
+    name: "briefing_groups_and_bundle_layout",
+    statements: [...BRIEFING_GROUP_SCHEMA_SQL],
+  },
 ];
+
+function migrateBriefingBundleLayoutV152(db: Db): void {
+  if (!tableExists(db, "briefing_bundle_members")) {
+    for (const statement of BRIEFING_BUNDLE_SCHEMA_SQL) db.exec(statement);
+    return;
+  }
+  if (hasColumn(db, "briefing_bundle_members", "layout_position")) return;
+  db.exec(`ALTER TABLE briefing_bundle_members RENAME TO briefing_bundle_members_v151`);
+  db.exec(`CREATE TABLE briefing_bundle_members (
+    bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
+    layout_position INTEGER NOT NULL CHECK(layout_position >= 0),
+    entry_kind TEXT NOT NULL CHECK(entry_kind IN ('briefing','subgroup')),
+    subgroup_name TEXT,
+    subgroup_position INTEGER NOT NULL CHECK(subgroup_position >= 0),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(bundle_id, briefing_id),
+    UNIQUE(bundle_id, layout_position, subgroup_position),
+    CHECK((entry_kind = 'briefing' AND subgroup_name IS NULL AND subgroup_position = 0)
+      OR (entry_kind = 'subgroup' AND subgroup_name IS NOT NULL AND trim(subgroup_name) != ''))
+  )`);
+  db.exec(`INSERT INTO briefing_bundle_members
+    (bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at)
+    SELECT bundle_id, briefing_id, position, 'briefing', NULL, 0, created_at
+      FROM briefing_bundle_members_v151 ORDER BY bundle_id, position`);
+  db.exec("DROP TABLE briefing_bundle_members_v151");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_briefing_bundle_members_briefing
+    ON briefing_bundle_members(briefing_id)`);
+}
 
 function ensureBriefingComparisonBaseColumn(db: Db): void {
   if (!tableExists(db, "briefing_rounds")) return;
@@ -5375,6 +5410,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 149) migrateBriefingV3Schema(db);
       if (migration.version === 150) ensureBriefingComparisonBaseColumn(db);
+      if (migration.version === 152) migrateBriefingBundleLayoutV152(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }

@@ -17,7 +17,7 @@ describe("migrations v145-v146: authenticated user settings", () => {
 
       migrate(db);
 
-      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "151" });
+      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "152" });
       expect(db.prepare("SELECT COUNT(*) AS count FROM user_settings").get()).toEqual({ count: 0 });
       expect(db.prepare("SELECT value FROM settings WHERE key = 'app_rail_order'").get()).toEqual({ value: "global" });
       expect(() => db.prepare(

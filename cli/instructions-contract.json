@@ -187,8 +187,8 @@
       "description": "Append one existing Briefing to a bundle without changing that Briefing or its rounds."
     },
     {
-      "name": "mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--json]",
-      "description": "Atomically replace an existing Briefing bundle's full ordered membership while preserving its identity, name, and all Briefing review data. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
+      "name": "mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--json]",
+      "description": "Atomically replace an existing Briefing bundle's canonical ordered layout. Flat Briefing refs remain supported; --layout accepts direct Briefings and one-level named subgroups. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
     },
     {
       "name": "mandible briefing bundle rename <bundle-ref> --name <text> [--json]",
@@ -197,6 +197,22 @@
     {
       "name": "mandible briefing bundle show <bundle-ref> [--json]",
       "description": "Show one Briefing bundle and its manually ordered Briefing membership."
+    },
+    {
+      "name": "mandible briefing group create --name <name> [<bundle-ref>...] [--json]",
+      "description": "Create a stable Briefing group whose optional ordered update membership contains existing Briefing bundles."
+    },
+    {
+      "name": "mandible briefing group add <group-ref> <bundle-ref> [--json]",
+      "description": "Append one existing Briefing bundle as a proposed update; a bundle belongs to at most one group."
+    },
+    {
+      "name": "mandible briefing group rename <group-ref> --name <text> [--json]",
+      "description": "Rename one stable Briefing group without changing its ordered proposed updates. Human use requires the configured operator; agent use requires a durable active-agent token."
+    },
+    {
+      "name": "mandible briefing group show <group-ref> [--json]",
+      "description": "Show one stable Briefing group with its ordered full Briefing bundle objects as updates."
     },
     {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",

@@ -918,6 +918,7 @@ api_operational_mutation_category() {
     /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
     /api/backup|/api/backup/*) printf 'backup'; return 0 ;;
     /api/briefing-bundles|/api/briefing-bundles/*) printf 'briefing'; return 0 ;;
+    /api/briefing-groups|/api/briefing-groups/*) printf 'briefing'; return 0 ;;
     /api/briefings|/api/briefings/*) printf 'briefing'; return 0 ;;
     /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;

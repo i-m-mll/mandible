@@ -2662,6 +2662,7 @@ function App(): JSX.Element {
               instance={instanceInfo}
               keepSubmittedAnnotations={keepSubmittedBriefingAnnotations(state.settings)}
               initialBriefingId={tabRoute.params.briefing ?? null}
+              initialGroupId={tabRoute.params.group ?? null}
               initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
