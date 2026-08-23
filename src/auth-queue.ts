@@ -2660,7 +2660,6 @@ export class AuthQueue {
         );
       request = this.requireRequest(id);
     }
-
     // Manual approval is always the direct interactive signing path. Automated
     // callers pass their delegated approval context explicitly.
     const effectiveApproval = approval;
@@ -2712,6 +2711,7 @@ export class AuthQueue {
         );
       }
     }
+    request = this.ensureOriginalMergeRangeForApproval(request);
     // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
     // already refused every non-canonical (including hierarchical-shaped)
     // merge command earlier in this same synchronous approval.
@@ -2870,12 +2870,86 @@ export class AuthQueue {
     if (request.commit_message_digest) {
       env.MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST = request.commit_message_digest;
     }
-    if (this.canReuseSubmitPreflight(request)) {
-      env.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT = "1";
+    if (
+      request.execution_mode !== "remote" &&
+      isAuthMergeCommand(request) &&
+      request.merge_preflight_base_sha
+    ) {
       env.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA = request.merge_preflight_base_sha!;
-      env.MANDIBLE_AUTH_PREFLIGHT_QUEUE_FINGERPRINT = request.merge_preflight_queue_fingerprint ?? "";
+      if (this.canReuseSubmitPreflight(request)) {
+        env.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT = "1";
+        env.MANDIBLE_AUTH_PREFLIGHT_QUEUE_FINGERPRINT = request.merge_preflight_queue_fingerprint ?? "";
+      }
     }
     return env;
+  }
+
+  /**
+   * Issue 6947631 — an update to reviewed merge identity deliberately clears
+   * every retained candidate field. Native-hook/non-atomic requests may have
+   * no candidate pin to drive the stale-candidate refresh path, but their
+   * post-success hooks still require the exact base/head range used by the
+   * merge. Re-run the authoritative independence check after approval has
+   * resolved and strictly validated the reviewed head, then persist that
+   * exact base before execution. Conflicts, stale queue entries, and check
+   * errors all fail closed; no later merge-parent inference is permitted.
+   */
+  private ensureOriginalMergeRangeForApproval(request: AuthRequest): AuthRequest {
+    if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) {
+      return request;
+    }
+    if (request.merge_preflight_base_sha) {
+      const currentBase = request.cwd && request.base_branch
+        ? this.resolveBranchHeadForCheck(request.cwd, request.base_branch)
+        : null;
+      if (currentBase !== request.merge_preflight_base_sha) {
+        throw new AuthQueueError(
+          "merge_check_failed",
+          `Target ${request.base_branch ?? "branch"} moved from reviewed base ` +
+            `${request.merge_preflight_base_sha} to ${currentBase ?? "unknown"}; ` +
+            "requeue and reapprove before merging.",
+        );
+      }
+      return request;
+    }
+    if (!request.merge_head_sha) {
+      throw new AuthQueueError(
+        "merge_check_failed",
+        "Reviewed merge range is incomplete: the reviewed head revision is unavailable.",
+      );
+    }
+
+    const report = this.checkMergeIndependence({
+      request_id: request.id,
+      repo: request.repo ?? null,
+      base_branch: request.base_branch,
+      head_branch: request.head_branch,
+      cwd: request.cwd,
+    });
+    if (report.status !== "clean" || !report.target_head_sha) {
+      const conflict = report.conflicts[0];
+      const files = conflict?.files.length ? ` (${conflict.files.join(", ")})` : "";
+      const reason = report.status === "conflict"
+        ? `conflicts with ${conflict?.scope === "queue" ? `pending request ${conflict.request_id?.slice(0, 8)}` : "the target branch"}${files}`
+        : report.reason ?? `merge check returned ${report.status}`;
+      throw new AuthQueueError(
+        "merge_check_failed",
+        `Reviewed merge range could not be established: ${reason}. Requeue and reapprove after resolving the merge check.`,
+        undefined,
+        report,
+      );
+    }
+
+    this.db.prepare(
+      `UPDATE auth_requests SET merge_preflight_base_sha = ?,
+        merge_preflight_queue_fingerprint = ?, updated_at = ? WHERE id = ?`,
+    ).run(
+      report.target_head_sha,
+      report.queue_fingerprint ?? null,
+      this.now(),
+      request.id,
+    );
+    return this.requireRequest(request.id);
   }
 
   private mergeCandidatePinIsValid(request: AuthRequest): boolean {
