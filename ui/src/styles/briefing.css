@@ -46,6 +46,8 @@
 .feedback-collections-sidebar__group-layout {
   display: grid;
   gap: 2px;
+  min-width: 0;
+  padding-inline-start: var(--space-3);
 }
 
 .feedback-collections-sidebar__body > [data-testid="feedback-collections-sidebar"] {
