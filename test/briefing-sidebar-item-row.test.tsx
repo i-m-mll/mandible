@@ -284,8 +284,12 @@ describe('Briefing sidebar row actions', () => {
     };
 
     render(<Harness groups={[policyGroup]} initialViewState={{ pinnedCollectionIds: [] }} />);
+    const sidebar = screen.getByTestId('feedback-collections-sidebar');
     const group = screen.getByRole('button', { name: 'Select Briefing group Sparse testing policy' })
       .closest('.sidebar-group-node') as HTMLElement;
+    const groupLayout = group.querySelector(':scope > .sidebar-disclosure-region > .feedback-collections-sidebar__group-layout');
+    expect(groupLayout).toBeTruthy();
+    expect(briefingStylesheet).toMatch(/\.feedback-collections-sidebar__group-layout \{[^}]*padding-inline-start: var\(--space-3\);/s);
     expect(within(group).getAllByRole('button', { name: /Select briefing/ }).map((button) => button.getAttribute('aria-label')))
       .toEqual([
         'Select briefing Global',
@@ -298,6 +302,9 @@ describe('Briefing sidebar row actions', () => {
       ]);
     expect(within(group).getByRole('button', { name: /Skills/ })).toBeTruthy();
     expect(within(group).queryByRole('button', { name: /Policy/ })).toBeNull();
+    const unrelatedTopLevelList = within(sidebar).getByRole('button', { name: 'Select briefing First briefing' }).closest('ul');
+    expect(group.contains(unrelatedTopLevelList)).toBe(false);
+    expect(unrelatedTopLevelList?.classList.contains('feedback-collections-sidebar__group-layout')).toBe(false);
   });
 
   it('renders ordered bundle members in the shared foldable folder presentation', () => {
