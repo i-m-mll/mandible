@@ -17,7 +17,9 @@ import {
   publishBriefingFromArtifactVersion,
   readBriefing,
   submitBriefingRound,
+  updateBriefingTitle,
 } from "../src/feedback/briefings.js";
+import { createBriefingBundle, updateBriefingBundleName } from "../src/feedback/briefing-bundles.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
@@ -61,6 +63,55 @@ afterEach(() => {
 });
 
 describe("artifact-backed Briefing rounds", () => {
+  it("renames populated Briefings and bundles without changing any other stored byte", () => {
+    const receipt = publishBriefingRun(db, request(), publisherId, 1_000);
+    const markdown = request().document!.markdown;
+    const quote = "Daily";
+    const annotation = applyBriefingAnnotations(db, receipt.briefing_id, receipt.round_id!, humanId, [{
+      operation: "set", kind: "comment", start_offset: markdown.indexOf(quote),
+      end_offset: markdown.indexOf(quote) + quote.length, quote, body: "Keep the heading",
+      replacement_text: null,
+    }], 1_100);
+    const answer = applyBriefingAnswers(db, receipt.briefing_id, receipt.round_id!, humanId, [{
+      directive_key: "paper", operation: "set", expected_response_event_id: null, value: { verdict: "keep" },
+    }], 1_200);
+    submitBriefingRound(db, receipt.briefing_id, receipt.round_id!, humanId, {
+      answers: [{ directive_key: "paper", response_event_id: answer.answer_event_ids[0] }],
+      annotation_event_ids: annotation.annotation_event_ids, supersedes_submission_id: null,
+    }, 1_300);
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, {
+      name: "Original software-engineering source — partitioned review",
+      briefingRefs: [receipt.briefing_id], viewer,
+    }, 1_400);
+    const tables = [
+      "briefings", "briefing_members", "briefing_rounds", "briefing_response_events",
+      "briefing_annotation_events", "briefing_submissions", "briefing_submission_answers",
+      "briefing_submission_annotations", "briefing_bundles", "briefing_bundle_members",
+    ] as const;
+    const rows = () => Object.fromEntries(tables.map((table) => [table,
+      db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    const before = rows();
+
+    expect(updateBriefingTitle(db, `briefing:${receipt.briefing_id.slice(0, 8)}`,
+      "Skill", viewer)).toEqual({ briefing_id: receipt.briefing_id, title: "Skill", changed: true });
+    const afterBriefingRename = rows();
+    expect(afterBriefingRename).toEqual({
+      ...before,
+      briefings: before.briefings.map((row: Record<string, unknown>) => ({ ...row, title: "Skill" })),
+    });
+
+    expect(updateBriefingBundleName(db, `briefing-bundle:${bundle.id.slice(0, 8)}`,
+      "Sara’s skill, breakdown", viewer)).toMatchObject({
+      changed: true, bundle: { id: bundle.id, name: "Sara’s skill, breakdown" },
+    });
+    expect(rows()).toEqual({
+      ...afterBriefingRename,
+      briefing_bundles: afterBriefingRename.briefing_bundles
+        .map((row: Record<string, unknown>) => ({ ...row, name: "Sara’s skill, breakdown" })),
+    });
+  });
+
   it("binds directive-free exact Markdown as an annotation-only Briefing without weakening run ingestion", () => {
     const sourcePath = path.join(root, "AGENTS.review.md");
     const baseSource = "# Agent instructions\n\nOriginal policy text.\n";

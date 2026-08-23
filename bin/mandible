@@ -22,7 +22,8 @@
 #   conversation-cutover <command>   Build and audit source-backed cutover proof
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   briefing create <version-ref>    Create a Briefing from one exact artifact version
-#   briefing bundle <subcommand>     Create, add to, and show review bundles
+#   briefing rename <briefing-ref>   Rename an existing Briefing in place
+#   briefing bundle <subcommand>     Create, add to, rename, and show review bundles
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
 #   user <subcommand>                User registry (setup, list, show, credential, token, binding)
@@ -70,7 +71,8 @@ Commands:
   conversation-cutover <command>   Build and audit source-backed cutover proof
   artifact <subcommand>            Register, resolve, link, and check artifacts
   briefing create <version-ref>    Create a Briefing from one exact artifact version
-  briefing bundle <subcommand>     Create, add to, and show review bundles
+  briefing rename <briefing-ref>   Rename an existing Briefing in place
+  briefing bundle <subcommand>     Create, add to, rename, and show review bundles
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
   user <subcommand>                User registry (setup, list, show, credential, token, binding)

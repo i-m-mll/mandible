@@ -25,6 +25,7 @@ import {
   createBriefingBundle,
   listBriefingBundles,
   readBriefingBundle,
+  updateBriefingBundleName,
 } from "../feedback/briefing-bundles.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
@@ -77,6 +78,32 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
     throw new ClientAuthzError(403, code, message);
   }
   return operator;
+}
+
+function renameViewer(
+  db: Db,
+  req: RequestLike,
+  subject: "Briefing" | "Briefing bundle",
+): { userId: string; operator: true } {
+  const prefix = subject === "Briefing" ? "briefing_title" : "briefing_bundle_name";
+  const principal = publicationPrincipal(db, req, {
+    credentialCode: `${prefix}_publisher_credential_required`,
+    credentialMessage: `${subject} renames by an agent require a durable API token, not a session credential.`,
+    agentCode: `${prefix}_publisher_agent_required`,
+    agentMessage: `${subject} renames by an agent require an active agent identity.`,
+  });
+  if (principal.kind === "human") {
+    if (!principal.operator) {
+      throw new ClientAuthzError(403, `${prefix}_operator_required`,
+        `${subject} renames require the configured human operator or a durable agent publisher.`);
+    }
+    return { userId: principal.publisherUserId, operator: true };
+  }
+  return { userId: configuredHumanOperator(
+    db,
+    `${prefix}_operator_required`,
+    `${subject} renames by an agent require a configured active human operator.`,
+  ).id, operator: true };
 }
 
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
@@ -163,6 +190,22 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         bundle_id: result.bundle.id,
         briefing_id: result.bundle.members.at(-1)?.briefing.id,
       });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.patch("/api/briefing-bundles/:bundleId", (req, res) => {
+    try {
+      const viewer = renameViewer(db, req, "Briefing bundle");
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name");
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      const result = updateBriefingBundleName(db, req.params.bundleId, requestBody.name, viewer);
+      if (result.changed) broadcast(BRIEFING_EVENTS.bundleNameUpdated, { bundle_id: result.bundle.id });
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
@@ -300,22 +343,19 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.patch("/api/briefings/:briefingId", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
-      if (!actor.operator) {
-        throw new ClientAuthzError(403, "briefing_title_operator_required", "Briefing title updates require the configured human operator.");
-      }
+      const viewer = renameViewer(db, req, "Briefing");
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody).filter((key) => key !== "title");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
-      const result = updateBriefingTitle(db, req.params.briefingId, requestBody.title);
+      const result = updateBriefingTitle(db, req.params.briefingId, requestBody.title, viewer);
       if (result.changed) broadcast(BRIEFING_EVENTS.titleUpdated, { briefing_id: result.briefing_id });
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/answers", (req, res) => {
     try {

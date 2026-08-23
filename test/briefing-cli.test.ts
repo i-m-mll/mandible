@@ -58,7 +58,9 @@ describe("briefing CLI", () => {
   it("documents and validates exact-version creation", () => {
     expect(runOffline(["help"]).stdout).toContain("briefing create <version-ref>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing create");
+    expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing rename");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle create");
+    expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle rename");
     const logical = runOffline(["briefing", "create", "artifact:logical", "--title", "Review"]);
     expect(logical.status).toBe(2);
     expect(logical.stderr).toContain("exact artifact-version");
@@ -73,6 +75,20 @@ describe("briefing CLI", () => {
     expect(result.status).toBe(0);
     expect(result.requests).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ briefing_id: "briefing-1", round_id: "round-1" });
+  });
+
+  it("renames an individual Briefing through the supported API", async () => {
+    const result = await runRpc(["briefing", "rename", "briefing:briefing-12345678",
+      "--title", "Container-relative name", "--json"], (request) => {
+      expect(request).toMatchObject({ method: "PATCH", path: "/api/briefings/briefing%3Abriefing-12345678",
+        body: { title: "Container-relative name" } });
+      return { status: 200, body: {
+        briefing_id: "briefing-12345678", title: "Container-relative name", changed: true,
+      } };
+    });
+    expect(result.status).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ briefing_id: "briefing-12345678", changed: true });
   });
 
   it("supports create, append, and show for ordered Briefing bundles", async () => {
@@ -95,6 +111,18 @@ describe("briefing CLI", () => {
         return { status: 200, body: { bundle, added: true } };
       });
     expect(added.status).toBe(0);
+
+    const renamedBundle = { ...bundle, name: "Sara’s skill, breakdown" };
+    const renamed = await runRpc(["briefing", "bundle", "rename", "briefing-bundle:bundle-12345678",
+      "--name", "Sara’s skill, breakdown", "--json"], (request) => {
+      expect(request).toMatchObject({ method: "PATCH",
+        path: "/api/briefing-bundles/briefing-bundle%3Abundle-12345678",
+        body: { name: "Sara’s skill, breakdown" } });
+      return { status: 200, body: { bundle: renamedBundle, changed: true } };
+    });
+    expect(renamed.status).toBe(0);
+    expect(JSON.parse(renamed.stdout)).toMatchObject({ bundle: { id: "bundle-12345678",
+      name: "Sara’s skill, breakdown" }, changed: true });
 
     const shown = await runRpc(["briefing", "bundle", "show", "bundle-12345678", "--json"], (request) => {
       expect(request).toMatchObject({ method: "GET", path: "/api/briefing-bundles/bundle-12345678" });

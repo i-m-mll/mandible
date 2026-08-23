@@ -501,10 +501,12 @@ const BRIEFING_EVENTS = new Set([
   'briefing:created',
   'briefing:bundle-created',
   'briefing:bundle-member-added',
+  'briefing:bundle-name-updated',
   'briefing:round-published',
   'briefing:answered',
   'briefing:annotated',
   'briefing:submitted',
+  'briefing:title-updated',
 ]);
 
 /** Exact cache families affected by a Briefing lifecycle event. */

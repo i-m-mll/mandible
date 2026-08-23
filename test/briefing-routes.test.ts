@@ -90,7 +90,24 @@ describe("plural Briefing routes", () => {
       body: { title: "Updated policy" } })).toMatchObject({
       status: 403, body: { code: "briefing_title_operator_required" },
     });
-    const updated = await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
+      credential: "session:agent-schedule", body: { title: "Updated policy" } })).toMatchObject({
+      status: 403, body: { code: "briefing_title_publisher_credential_required" },
+    });
+    setSetting(db, "user.operator_id", "");
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
+      credential: "agent-schedule", body: { title: "Updated policy" } })).toMatchObject({
+      status: 403, body: { code: "briefing_title_operator_required" },
+    });
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
+      credential: "agent-schedule", body: { title: "Updated policy", actor_user_id: humanId } })).toMatchObject({
+      status: 400, body: { error: expect.stringContaining("unsupported field") },
+    });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
+      credential: "agent-schedule", body: { title: "  " } })).toMatchObject({ status: 400 });
+    const updated = await router.invoke({ method: "PATCH",
+      url: `/api/briefings/briefing:${briefingId.slice(0, 8)}`, credential: "agent-schedule",
       body: { title: "Durable policy — proposed update" } });
     expect(updated).toMatchObject({ status: 200, body: {
       briefing_id: briefingId, title: "Durable policy", changed: true,
@@ -192,6 +209,40 @@ describe("plural Briefing routes", () => {
     expect(db.prepare("SELECT * FROM briefings ORDER BY id").all()).toEqual(briefingRowsBefore);
     expect(db.prepare("SELECT * FROM briefing_rounds ORDER BY id").all()).toEqual(roundRowsBefore);
     expect(db.prepare("SELECT * FROM briefing_members ORDER BY briefing_id, user_id").all()).toEqual(memberRowsBefore);
+
+    const bundleBefore = db.prepare("SELECT * FROM briefing_bundles").get() as Record<string, unknown>;
+    const bundleId = String(bundleBefore.id);
+    const bundleMembersBefore = db.prepare(
+      "SELECT * FROM briefing_bundle_members ORDER BY position",
+    ).all();
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "session:agent-schedule", body: { name: "Renamed" } })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_name_publisher_credential_required" },
+    });
+    setSetting(db, "user.operator_id", "");
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { name: "Renamed" } })).toMatchObject({
+      status: 403, body: { code: "briefing_bundle_name_operator_required" },
+    });
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { name: "Renamed", owner_user_id: humanId } })).toMatchObject({
+      status: 400, body: { error: expect.stringContaining("unsupported field") },
+    });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule", body: { name: "\t" } })).toMatchObject({ status: 400 });
+    const renamed = await router.invoke({ method: "PATCH",
+      url: `/api/briefing-bundles/briefing-bundle:${bundleId.slice(0, 8)}`,
+      credential: "agent-schedule", body: { name: "  Sara’s skill, breakdown  " } });
+    expect(renamed).toMatchObject({ status: 200, body: { changed: true, bundle: {
+      id: bundleId, name: "Sara’s skill, breakdown",
+      members: briefingIds.map((id, position) => ({ position, briefing: { id } })),
+    } } });
+    expect(db.prepare("SELECT * FROM briefing_bundles WHERE id = ?").get(bundleId)).toEqual({
+      ...bundleBefore, name: "Sara’s skill, breakdown",
+    });
+    expect(db.prepare("SELECT * FROM briefing_bundle_members ORDER BY position").all()).toEqual(bundleMembersBefore);
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-name-updated", { bundle_id: bundleId });
 
     const humanCreated = await router.invoke({ method: "POST", url: "/api/briefing-bundles",
       credential: "human", body: { name: "Human bundle", briefing_refs: briefingIds } });

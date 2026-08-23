@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { BriefingBundle, BriefingListEntry } from "../contracts.js";
 import type { Db } from "../db.js";
-import { BriefingStoreError } from "./briefings.js";
+import { BriefingStoreError, resolveBriefingId } from "./briefings.js";
 
 export type BriefingBundleViewer = { userId: string; operator: boolean };
 
@@ -24,18 +24,6 @@ function resolveUniqueId(
     throw new BriefingStoreError(`${kind} reference is ambiguous`, 409, "ambiguous_ref");
   }
   throw new BriefingStoreError(`${kind} not found`, 404, "not_found");
-}
-
-function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingBundleViewer): string {
-  const ref = untypedRef(briefingRef, "briefing:");
-  if (!ref) throw new BriefingStoreError("briefing_ref must be nonblank");
-  const rows = db.prepare(
-    `SELECT b.id FROM briefings b
-      WHERE ? = 1 OR EXISTS (
-        SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
-      ) ORDER BY b.id`,
-  ).all(viewer.operator ? 1 : 0, viewer.userId) as Array<{ id: string }>;
-  return resolveUniqueId(rows, ref, "Briefing");
 }
 
 function resolveBundleId(db: Db, bundleRef: string): string {
@@ -108,6 +96,24 @@ export function createBriefingBundle(
     briefingIds.forEach((briefingId, position) => insert.run(bundleId, briefingId, position, now));
   }).immediate();
   return readBriefingBundle(db, bundleId, input.viewer);
+}
+
+export function updateBriefingBundleName(
+  db: Db,
+  bundleRef: string,
+  name: unknown,
+  viewer: BriefingBundleViewer,
+): { bundle: BriefingBundle; changed: boolean } {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new BriefingStoreError("name must be a nonblank string");
+  }
+  const normalized = name.trim();
+  const bundleId = resolveBundleId(db, bundleRef);
+  const current = db.prepare("SELECT name FROM briefing_bundles WHERE id = ?")
+    .get(bundleId) as { name: string };
+  const changed = current.name !== normalized;
+  if (changed) db.prepare("UPDATE briefing_bundles SET name = ? WHERE id = ?").run(normalized, bundleId);
+  return { bundle: readBriefingBundle(db, bundleId, viewer), changed };
 }
 
 export function addBriefingBundleMember(
