@@ -19,7 +19,11 @@ import {
   submitBriefingRound,
   updateBriefingTitle,
 } from "../src/feedback/briefings.js";
-import { createBriefingBundle, updateBriefingBundleName } from "../src/feedback/briefing-bundles.js";
+import {
+  createBriefingBundle,
+  replaceBriefingBundleMembers,
+  updateBriefingBundleName,
+} from "../src/feedback/briefing-bundles.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
@@ -79,10 +83,13 @@ describe("artifact-backed Briefing rounds", () => {
       answers: [{ directive_key: "paper", response_event_id: answer.answer_event_ids[0] }],
       annotation_event_ids: annotation.annotation_event_ids, supersedes_submission_id: null,
     }, 1_300);
+    const second = publishBriefingRun(db, request(request().document!.markdown, {
+      briefing_key: "second-review", run_id: "run-2", run_key: "run-key-2",
+    }), publisherId, 1_350);
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, {
       name: "Original software-engineering source — partitioned review",
-      briefingRefs: [receipt.briefing_id], viewer,
+      briefingRefs: [receipt.briefing_id, second.briefing_id], viewer,
     }, 1_400);
     const tables = [
       "briefings", "briefing_members", "briefing_rounds", "briefing_response_events",
@@ -98,7 +105,9 @@ describe("artifact-backed Briefing rounds", () => {
     const afterBriefingRename = rows();
     expect(afterBriefingRename).toEqual({
       ...before,
-      briefings: before.briefings.map((row: Record<string, unknown>) => ({ ...row, title: "Skill" })),
+      briefings: before.briefings.map((row: Record<string, unknown>) => row.id === receipt.briefing_id
+        ? { ...row, title: "Skill" }
+        : row),
     });
 
     expect(updateBriefingBundleName(db, `briefing-bundle:${bundle.id.slice(0, 8)}`,
@@ -109,6 +118,38 @@ describe("artifact-backed Briefing rounds", () => {
       ...afterBriefingRename,
       briefing_bundles: afterBriefingRename.briefing_bundles
         .map((row: Record<string, unknown>) => ({ ...row, name: "Sara’s skill, breakdown" })),
+    });
+
+    const afterBundleRename = rows();
+    expect(() => replaceBriefingBundleMembers(db, bundle.id, [receipt.briefing_id, "  "], viewer, 1_500))
+      .toThrowError(/nonblank/);
+    expect(() => replaceBriefingBundleMembers(db, bundle.id,
+      [receipt.briefing_id, `briefing:${receipt.briefing_id}`], viewer, 1_500))
+      .toThrowError(/duplicates/);
+    const outsiderId = createUser(db, { slug: "outsider", kind: "human", display_name: "Outsider" }).id;
+    expect(() => replaceBriefingBundleMembers(db, bundle.id, [receipt.briefing_id], {
+      userId: outsiderId, operator: false,
+    }, 1_500)).toThrowError(/not found/);
+    expect(rows()).toEqual(afterBundleRename);
+
+    expect(replaceBriefingBundleMembers(db, `briefing-bundle:${bundle.id.slice(0, 8)}`,
+      [second.briefing_id, receipt.briefing_id], viewer, 1_500)).toMatchObject({
+      changed: true,
+      bundle: {
+        id: bundle.id,
+        name: "Sara’s skill, breakdown",
+        members: [
+          { position: 0, briefing: { id: second.briefing_id } },
+          { position: 1, briefing: { id: receipt.briefing_id } },
+        ],
+      },
+    });
+    expect(rows()).toEqual({
+      ...afterBundleRename,
+      briefing_bundles: afterBundleRename.briefing_bundles
+        .map((row: Record<string, unknown>) => ({ ...row, updated_at: 1_500 })),
+      briefing_bundle_members: [second.briefing_id, receipt.briefing_id]
+        .map((briefing_id, position) => ({ bundle_id: bundle.id, briefing_id, position, created_at: 1_500 })),
     });
   });
 

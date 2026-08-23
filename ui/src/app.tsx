@@ -1314,6 +1314,7 @@ function App(): JSX.Element {
       client.on('user-setting:updated', userSettingHandler),
       client.on('briefing:created', briefingHandler),
       client.on('briefing:bundle-name-updated', briefingHandler),
+      client.on('briefing:bundle-members-replaced', briefingHandler),
       client.on('briefing:round-published', briefingHandler),
       client.on('briefing:answered', briefingHandler),
       client.on('briefing:annotated', briefingHandler),

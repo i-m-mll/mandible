@@ -1083,6 +1083,7 @@ export const BRIEFING_EVENTS = Object.freeze({
   created: "briefing:created",
   bundleCreated: "briefing:bundle-created",
   bundleMemberAdded: "briefing:bundle-member-added",
+  bundleMembersReplaced: "briefing:bundle-members-replaced",
   bundleNameUpdated: "briefing:bundle-name-updated",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",
