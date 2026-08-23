@@ -22,6 +22,11 @@
   min-width: 0;
 }
 
+.sidebar-group-node__header--selected {
+  border-radius: var(--radius-sm);
+  background: var(--surface-selected);
+}
+
 .sidebar-group-node--draggable > .sidebar-group-node__header {
   cursor: grab;
 }
@@ -116,6 +121,31 @@
   align-items: center;
   justify-content: center;
   margin-right: 4px;
+}
+
+.sidebar-group-node__disclosure {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: inline-grid;
+  margin-right: 4px;
+  padding: 5px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebar-group-node__disclosure:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-group-node__disclosure:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 
 .sidebar-group-node__action {

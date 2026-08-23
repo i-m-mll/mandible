@@ -27,6 +27,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
     expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefings',
       '/api/briefing-bundles',
+      '/api/briefing-groups',
       '/api/dashboard/badges',
     ]);
   });
@@ -47,6 +48,7 @@ describe('Briefing SSE cache invalidation matrix', () => {
     const families = new Set(burst.flatMap((topic) => briefingApiCacheFamiliesForEvent(topic)));
     expect([...families].sort()).toEqual([
       '/api/briefing-bundles',
+      '/api/briefing-groups',
       '/api/briefings',
       '/api/dashboard/badges',
     ]);

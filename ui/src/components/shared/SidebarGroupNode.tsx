@@ -8,6 +8,11 @@ type SidebarGroupNodeCommonProps = {
   headingDescription?: string;
   expanded: boolean;
   onToggle(): void;
+  selection?: {
+    selected: boolean;
+    label: string;
+    onSelect(): void;
+  };
   children: ComponentChildren;
   bodyAs?: 'div' | 'ul';
   className?: string;
@@ -62,6 +67,7 @@ export function SidebarGroupNode({
   presentation,
   expanded,
   onToggle,
+  selection,
   leadingIcon,
   children,
   bodyAs = 'div',
@@ -75,7 +81,9 @@ export function SidebarGroupNode({
   drag,
 }: SidebarGroupNodeProps): JSX.Element {
   const headingId = `${id}-heading`;
+  const disclosureId = `${id}-disclosure`;
   const bodyId = `${id}-body`;
+  const controllerId = selection ? disclosureId : headingId;
   const showMore = canShowMore && onShowMore ? (
     <button
       type="button"
@@ -105,7 +113,7 @@ export function SidebarGroupNode({
       data-testid={testIds?.root}
     >
       <div
-        className="sidebar-group-node__header contextual-action-owner"
+        className={`sidebar-group-node__header contextual-action-owner${selection?.selected ? ' sidebar-group-node__header--selected' : ''}`}
         draggable={drag ? true : undefined}
         data-testid={testIds?.dragHandle}
         onDragStart={drag?.onStart}
@@ -117,16 +125,31 @@ export function SidebarGroupNode({
           id={headingId}
           type="button"
           className="sidebar-group-node__heading"
-          aria-expanded={expanded}
-          aria-controls={bodyId}
+          aria-expanded={selection ? undefined : expanded}
+          aria-controls={selection ? undefined : bodyId}
+          aria-current={selection?.selected ? 'page' : undefined}
+          aria-label={selection?.label}
           aria-description={headingDescription}
           data-testid={testIds?.heading}
-          onClick={onToggle}
+          onClick={selection?.onSelect ?? onToggle}
         >
           {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
           <strong>{label}</strong>
           {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
         </button>
+        {selection ? (
+          <button
+            id={disclosureId}
+            type="button"
+            className="sidebar-group-node__disclosure"
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            onClick={onToggle}
+          >
+            <SidebarDisclosureChevronIcon expanded={expanded} />
+          </button>
+        ) : null}
         {action ? (
           <span className="sidebar-group-node__action-slot contextual-action-group">
             <ContextualAction
@@ -143,7 +166,7 @@ export function SidebarGroupNode({
       </div>
       <SidebarDisclosureRegion
         id={bodyId}
-        controllerId={headingId}
+        controllerId={controllerId}
         expanded={expanded}
         contentAs={bodyAs}
         contentClassName={bodyClassName}
@@ -151,6 +174,25 @@ export function SidebarGroupNode({
         {body}
       </SidebarDisclosureRegion>
     </section>
+  );
+}
+
+export function SidebarDisclosureChevronIcon({ expanded, size = 14 }: { expanded: boolean; size?: number }): JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      data-sidebar-disclosure-chevron={expanded ? 'down' : 'right'}
+    >
+      <path d={expanded ? 'm6 9 6 6 6-6' : 'm9 18 6-6-6-6'} />
+    </svg>
   );
 }
 
