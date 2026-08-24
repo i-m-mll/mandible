@@ -965,36 +965,19 @@ export async function dismissAuthRequest(requestId: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
 }
 
-export type AuthAutoApproveStatus = {
-  enabled: boolean;
-  lease_id: string | null;
-  enabled_until: number | null;
-  remaining_ms: number;
-  duration_minutes: number;
-  signing: {
-    provider: string;
-    configured: boolean;
-    public_key: string | null;
-    public_key_path: string;
-    encrypted_passphrase_path: string;
-    recipient_path: string;
-    missing_tools: string[];
-  };
+export type DelegatedSigningStatus = {
+  provider: string;
+  configured: boolean;
+  public_key: string | null;
+  public_key_path: string;
+  encrypted_passphrase_path: string;
+  recipient_path: string;
+  missing_tools: string[];
 };
 
-export async function getAuthAutoApproveStatus(): Promise<AuthAutoApproveStatus> {
-  const response = await apiGet('/api/auth/auto-approve');
-  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
-}
-
-export async function enableAuthAutoApprove(): Promise<AuthAutoApproveStatus> {
-  const response = await apiPost('/api/auth/auto-approve/enable');
-  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
-}
-
-export async function disableAuthAutoApprove(): Promise<AuthAutoApproveStatus> {
-  const response = await apiPost('/api/auth/auto-approve/disable');
-  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+export async function getDelegatedSigningStatus(): Promise<DelegatedSigningStatus> {
+  const response = await apiGet('/api/auth/clearances/signing');
+  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
 }
 
 export async function setupDelegatedSigning(input: {
@@ -1002,14 +985,59 @@ export async function setupDelegatedSigning(input: {
   email?: string;
   age_recipient?: string;
   overwrite?: boolean;
-}): Promise<AuthAutoApproveStatus['signing']> {
-  const response = await apiPost('/api/auth/auto-approve/setup', input);
-  return (await parseMaybeJson(response)) as AuthAutoApproveStatus['signing'];
+}): Promise<DelegatedSigningStatus> {
+  const response = await apiPost('/api/auth/clearances/signing/setup', input);
+  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
 }
 
-export async function removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
-  const response = await apiDelete('/api/auth/auto-approve/signing');
-  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+export async function removeDelegatedSigning(): Promise<DelegatedSigningStatus> {
+  const response = await apiDelete('/api/auth/clearances/signing');
+  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
+}
+
+export type AuthClearance = {
+  id: string;
+  issuer_user_id: string;
+  grantee_user_id: string;
+  grantee_credential_id: string;
+  project_id: string;
+  base_branch: string;
+  issue_id: string | null;
+  head_branch: string | null;
+  action: 'merge';
+  issued_at: number;
+  expires_at: number;
+  max_uses: number;
+  consumed_uses: number;
+  revoked_at: number | null;
+  runtime_epoch: string;
+};
+
+export async function getAuthClearances(requestId: string): Promise<AuthClearance[]> {
+  const response = await apiGet(`/api/auth/clearances?request_id=${encodeURIComponent(requestId)}`);
+  const body = await parseMaybeJson(response) as { clearances?: AuthClearance[] };
+  return body.clearances ?? [];
+}
+
+export async function createAuthClearance(input: {
+  request_id?: string;
+  grantee: string;
+  grantee_credential_id?: string;
+  project?: string;
+  base?: string;
+  issue?: string;
+  head?: string;
+  action?: 'merge';
+  duration_minutes?: number;
+  max_uses?: number;
+}): Promise<AuthClearance> {
+  const response = await apiPost('/api/auth/clearances', input);
+  return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
+}
+
+export async function revokeAuthClearance(id: string): Promise<AuthClearance> {
+  const response = await apiPost(`/api/auth/clearances/${encodeURIComponent(id)}/revoke`);
+  return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
 }
 
 // Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)

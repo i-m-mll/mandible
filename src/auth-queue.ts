@@ -25,6 +25,7 @@ import {
   updateAuthRequestAction,
 } from "./auth-actions.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
+import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
 import {
   AuthExecutionContextError,
   canonicalAuthMergeCommands,
@@ -136,9 +137,8 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // `GET /api/auth/history` feeds the summary straight into
   // `authAttributionReadFields`, which reads exactly these three ids. They are
   // small scalar id columns, so projecting them costs nothing.
-  "requested_by_user_id",
-  "approved_by_user_id",
-  "execution_evidence_id",
+  "requested_by_user_id", "requester_evidence_method", "requester_credential_id",
+  "approved_by_user_id", "execution_evidence_id", "clearance_use_id",
 ].join(", ");
 
 // Issue 75f52ac — off-loop git spawns for the background finalizer queue.
@@ -374,6 +374,7 @@ export interface AuthQueueOptions {
   executor?: typeof executeAuthCommand;
   hookManager?: AuthHookManager;
   autoApprover?: AuthAutoApprover;
+  clearanceManager?: AuthClearanceManager;
   codexThreadArchiver?: CodexThreadArchiver;
   // Issue 93d978e — override the abandoned-work-unit merge-scan retention
   // window (default 30 days) so tests can exercise the retirement sweep.
@@ -542,6 +543,7 @@ export class AuthQueue {
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
+  private readonly clearanceManager?: AuthClearanceManager;
   private readonly codexThreadArchiver: CodexThreadArchiver;
   // Issue 93d978e — abandoned work units older than this window are retired
   // from merge-side ancestry scans (reversible tombstone, not deletion).
@@ -596,6 +598,7 @@ export class AuthQueue {
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
+    this.clearanceManager = options.clearanceManager;
     this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
@@ -1591,6 +1594,8 @@ export class AuthQueue {
       id: randomUUID(),
       session_id: payload.session_id ?? null,
       requested_by_user_id: requesterUserId,
+      requester_evidence_method: payload.requester_evidence_method ?? null,
+      requester_credential_id: payload.requester_credential_id ?? null,
       approved_by_user_id: null,
       execution_evidence_id: null,
       type: payload.type ?? "merge",
@@ -1641,7 +1646,8 @@ export class AuthQueue {
       // Bug: 6d7411b — conversation_id persists across Claude Code resumes
       conversation_id: payload.conversation_id ?? null,
       approval_source: "manual",
-      approval_lease_id: null
+      approval_lease_id: null,
+      clearance_use_id: null,
     };
 
     const stmt = this.db.prepare(
@@ -1649,6 +1655,8 @@ export class AuthQueue {
         id,
         session_id,
         requested_by_user_id,
+        requester_evidence_method,
+        requester_credential_id,
         approved_by_user_id,
         execution_evidence_id,
         type,
@@ -1696,11 +1704,14 @@ export class AuthQueue {
         delivered_at,
         conversation_id,
         approval_source,
-        approval_lease_id
+        approval_lease_id,
+        clearance_use_id
       ) VALUES (
         @id,
         @session_id,
         @requested_by_user_id,
+        @requester_evidence_method,
+        @requester_credential_id,
         @approved_by_user_id,
         @execution_evidence_id,
         @type,
@@ -1748,7 +1759,8 @@ export class AuthQueue {
         @delivered_at,
         @conversation_id,
         @approval_source,
-        @approval_lease_id
+        @approval_lease_id,
+        @clearance_use_id
       )`
     );
 
@@ -1790,19 +1802,6 @@ export class AuthQueue {
       event: "auth:new",
       data: { request }
     });
-
-    const approval = this.autoApprover?.getActiveApprovalContext() ?? null;
-    if (approval) {
-      try {
-        return this.approve(request.id, approval);
-      } catch (error) {
-        authLog("warn", "auth_auto_approval_failed", {
-          subsystem: "auth",
-          auth_request_id: request.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
 
     return request;
   }
@@ -2754,6 +2753,103 @@ export class AuthQueue {
       this.executionEnvs.set(executing.id, executionEnv);
     }
     this.broadcast({ event: "auth:updated", data: { request: executing } });
+    this.executeInBackground(executing);
+    return executing;
+  }
+
+  /** Consume one exact scoped clearance and begin the protected merge. */
+  approveWithClearance(id: string): AuthRequest {
+    if (!this.clearanceManager) {
+      throw new AuthQueueError("invalid_command", "Scoped merge clearance is unavailable in this runtime.");
+    }
+    this.expireStale();
+    let request = this.requireRequest(id);
+    if (request.status !== "pending") {
+      throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
+    }
+    if (!request.command?.trim()) {
+      throw new AuthQueueError("invalid_command", "Auth request has no command set.");
+    }
+    this.enforceCanonicalMergeCommand(request);
+    const now = this.now();
+    const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
+    if (executionContextUpdate) {
+      this.db.prepare(
+        "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
+      ).run(
+        executionContextUpdate.cwd, executionContextUpdate.target_repo_root,
+        executionContextUpdate.repo, executionContextUpdate.merge_head_sha, now, id,
+      );
+      request = this.requireRequest(id);
+    }
+    let candidateExact = this.mergeCandidateExact(request);
+    if (request.merge_candidate_pin_sha && !candidateExact) {
+      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
+      const recomputed = this.recomputeStaleCandidateForApproval(request, refusalSink);
+      if (recomputed) {
+        request = recomputed;
+        candidateExact = this.mergeCandidateExact(request);
+      }
+      if (request.merge_candidate_pin_sha && !candidateExact) {
+        throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
+      }
+    }
+    request = this.ensureOriginalMergeRangeForApproval(request);
+    let consumed: ClearanceConsumption;
+    try {
+      consumed = this.clearanceManager.consume(id, (authorization) => {
+        const lease = getDelegatedSigningLease(this.db, authorization.approval.leaseId);
+        if (!lease || lease.owner_user_id !== authorization.clearance.issuer_user_id) {
+          throw new AuthQueueError("invalid_command", "Clearance delegated signing lease is invalid.");
+        }
+        const signerLines = authorizedMergeSignerLines(
+          this.db,
+          authorization.clearance.issuer_user_id,
+          lease.credential_id,
+        );
+        if (signerLines.length === 0) {
+          throw new AuthQueueError("invalid_command", "Clearance has no active authorized signing credential.");
+        }
+        const atomicEnabled = Boolean(
+          request.execution_mode !== "remote" && isAuthMergeCommand(request) && candidateExact &&
+          !this.hasNativeMergeHooks(request.cwd) && signerLines.length > 0
+        );
+        const update = this.db.prepare(
+          `UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?,
+           approval_source = 'clearance', approval_lease_id = ?, approved_by_user_id = ?,
+           execution_evidence_id = ?, clearance_use_id = ?, merge_atomic_enabled = ?
+           WHERE id = ? AND status = 'pending' AND clearance_use_id IS NULL`,
+        ).run(
+          now, now, authorization.approval.leaseId, authorization.clearance.issuer_user_id,
+          authorization.use.evidence_id, authorization.use.id, atomicEnabled ? 1 : 0, id,
+        );
+        if (update.changes !== 1) {
+          throw new AuthQueueError("invalid_status", "Auth request changed before clearance execution began.");
+        }
+        const executing = this.requireRequest(id);
+        const identity = this.gitCommitIdentity(executing.cwd);
+        this.executionEnvs.set(id, {
+          ...authorization.approval.env,
+          ...this.approveTimePreflightEnv(executing),
+          ...(atomicEnabled ? {
+            MANDIBLE_AUTH_ATOMIC: "1",
+            MANDIBLE_AUTH_ALLOWED_SIGNERS: signerLines.join("\n"),
+            GIT_AUTHOR_NAME: identity.name,
+            GIT_AUTHOR_EMAIL: identity.email,
+            GIT_COMMITTER_NAME: identity.name,
+            GIT_COMMITTER_EMAIL: identity.email,
+          } : {}),
+        });
+      });
+    } catch (error) {
+      if (error instanceof AuthQueueError) throw error;
+      throw new AuthQueueError(
+        "invalid_command",
+        error instanceof Error ? error.message : "Clearance execution was refused.",
+      );
+    }
+    const executing = this.requireRequest(id);
+    this.broadcast({ event: "auth:updated", data: { request: executing, clearance_use_id: consumed.use.id } });
     this.executeInBackground(executing);
     return executing;
   }
@@ -3780,23 +3876,6 @@ export class AuthQueue {
     return request.approval_source === "presence_challenge" &&
       !this.executionEnvs.get(request.id)?.SSH_AUTH_SOCK &&
       Boolean(this.autoApprover?.presenceChallenge);
-  }
-
-  autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {
-    const approved: AuthRequest[] = [];
-    for (const request of this.listPending()) {
-      try {
-        approved.push(this.approve(request.id, approval));
-      } catch (error) {
-        authLog("warn", "auth_auto_approval_failed", {
-          subsystem: "auth",
-          auth_request_id: request.id,
-          pending: true,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    return approved;
   }
 
   reject(id: string, reason = "Rejected by user."): AuthRequest {
@@ -6706,6 +6785,8 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     id: String(row.id),
     session_id: row.session_id == null ? null : String(row.session_id),
     requested_by_user_id: row.requested_by_user_id == null ? null : String(row.requested_by_user_id),
+    requester_evidence_method: row.requester_evidence_method == null ? null : String(row.requester_evidence_method),
+    requester_credential_id: row.requester_credential_id == null ? null : String(row.requester_credential_id),
     approved_by_user_id: row.approved_by_user_id == null ? null : String(row.approved_by_user_id),
     execution_evidence_id: row.execution_evidence_id == null ? null : String(row.execution_evidence_id),
     type,
@@ -6770,6 +6851,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     // Bug: 6d7411b — conversation_id for cross-resume matching
     conversation_id: row.conversation_id == null ? null : String(row.conversation_id),
     approval_source: row.approval_source == null ? "manual" : String(row.approval_source),
-    approval_lease_id: row.approval_lease_id == null ? null : String(row.approval_lease_id)
+    approval_lease_id: row.approval_lease_id == null ? null : String(row.approval_lease_id),
+    clearance_use_id: row.clearance_use_id == null ? null : String(row.clearance_use_id),
   };
 }

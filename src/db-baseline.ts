@@ -1,4 +1,5 @@
 import type { Db } from "./db.js";
+import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 
 /**
@@ -10,7 +11,7 @@ import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEM
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 154;
+export const BASELINE_SCHEMA_VERSION = 155;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -974,6 +975,14 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of HEAD_SCHEMA_STATEMENTS) {
       db.exec(statement);
     }
+    db.exec("ALTER TABLE auth_requests ADD COLUMN requester_evidence_method TEXT");
+    db.exec("ALTER TABLE auth_requests ADD COLUMN requester_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT");
+    for (const statement of AUTH_CLEARANCE_SCHEMA_SQL.filter((sql) => !sql.includes("auth_requests_clearance_review_frozen"))) {
+      db.exec(statement);
+    }
+    db.exec("ALTER TABLE auth_requests ADD COLUMN clearance_use_id TEXT REFERENCES auth_clearance_uses(id) ON DELETE RESTRICT");
+    const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
+    if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
     // v142 removes the retired finding reference kind. The generated baseline
     // still contains its historical DDL above so old migration snapshots stay
     // readable; converge the empty fresh table to the canonical head shape.

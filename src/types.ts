@@ -206,6 +206,8 @@ export interface AuthRequest {
   id: string;
   session_id: string | null;
   requested_by_user_id: string | null;
+  requester_evidence_method?: string | null;
+  requester_credential_id?: string | null;
   approved_by_user_id: string | null;
   execution_evidence_id: string | null;
   type: AuthRequestType;
@@ -269,6 +271,7 @@ export interface AuthRequest {
   conversation_id: string | null;
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
+  clearance_use_id?: string | null;
 }
 
 /**
@@ -325,6 +328,9 @@ export interface AuthRequestInput {
   // Bug: 6d7411b — conversation_id persists across Claude Code resumes
   conversation_id?: string | null;
   actions?: AuthRequestActionInput[];
+  /** Verified request-boundary provenance; route-owned, never caller-authored. */
+  requester_evidence_method?: string | null;
+  requester_credential_id?: string | null;
 }
 
 export interface AuthOutputChunk {

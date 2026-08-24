@@ -4,7 +4,7 @@ import { formatRelativeTime } from '../lib/format';
 import {
   bootstrapRuntime,
   getBackupStatus,
-  getAuthAutoApproveStatus,
+  getDelegatedSigningStatus,
   getDesktopDaemonStatus,
   getRuntimeStatus,
   isDesktopShell,
@@ -26,7 +26,7 @@ import {
   listProjectsForPicker,
   updateProjectAccessSettings,
   type BackupStatus,
-  type AuthAutoApproveStatus,
+  type DelegatedSigningStatus,
   type DesktopDaemonLaunchMode,
   type InstructionDeliverySettings,
   type InstructionTarget,
@@ -730,14 +730,14 @@ function formatBytes(bytes: number): string {
 }
 
 export function DelegatedSigningSection(): JSX.Element {
-  const [status, setStatus] = useState<AuthAutoApproveStatus | null>(null);
+  const [signing, setSigning] = useState<DelegatedSigningStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
 
   const load = useCallback(() => {
-    getAuthAutoApproveStatus()
-      .then(setStatus)
+    getDelegatedSigningStatus()
+      .then(setSigning)
       .catch((err) => setFeedback({
         type: 'error',
         message: err instanceof Error ? err.message : 'Failed to load auth status',
@@ -753,7 +753,7 @@ export function DelegatedSigningSection(): JSX.Element {
     setFeedback(null);
     try {
       const removed = await removeDelegatedSigning();
-      setStatus(removed);
+      setSigning(removed);
       setConfirmRemove(false);
       setFeedback({ type: 'success', message: 'Delegated signing material removed' });
     } catch (err) {
@@ -777,8 +777,6 @@ export function DelegatedSigningSection(): JSX.Element {
     }
   }, [load]);
 
-  const signing = status?.signing;
-
   return (
     <div className="settings-view__delegated-signing">
       <div className="settings-view__number-row">
@@ -786,7 +784,7 @@ export function DelegatedSigningSection(): JSX.Element {
           <span className="settings-view__number-label">Delegated signing key</span>
           <span className="settings-view__number-desc">
             {signing?.configured
-              ? 'Ready for temporary auto-approve leases.'
+              ? 'Ready to issue scoped protected-merge clearances.'
               : 'Create a local signing key wrapped by a YubiKey age identity.'}
           </span>
         </div>
@@ -820,7 +818,7 @@ export function DelegatedSigningSection(): JSX.Element {
         <div className="settings-view__confirm" role="alertdialog" aria-labelledby="delegated-signing-remove-title">
           <div className="settings-view__confirm-body">
             <strong id="delegated-signing-remove-title">Remove delegated signing material?</strong>
-            <span>This disables any active auto-approve lease and deletes the local delegated key files. Manual YubiKey approval remains available.</span>
+            <span>This revokes the runtime signer handles and deletes the local delegated key files. Existing clearance audit rows remain, but cannot execute.</span>
           </div>
           <div className="settings-view__confirm-actions">
             <button type="button" className="btn btn--sm" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</button>
@@ -2142,19 +2140,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
-          description="Temporary approval windows for protected operations."
+          description="Hardware-backed delegated signing for scoped protected-merge clearances."
         />
         <div className="settings-view__section-body">
-          <NumberInput
-            label="Auto-approve lease"
-            desc="How long the Auth tab switch stays active after YubiKey unlock."
-            settingKey="auth_auto_approve_duration_minutes"
-            settings={settings}
-            onSave={onSave}
-            min={1}
-            max={480}
-            suffix="min"
-          />
           <DelegatedSigningSection />
         </div>
       </SettingsSectionShell>

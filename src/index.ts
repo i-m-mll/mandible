@@ -21,6 +21,8 @@ import {
 } from "./operational-log-db.js";
 import { allowsOperationalMutations, resolveInstanceInfo } from "./instance-policy.js";
 import { AuthAutoApproveManager } from "./auth-auto-approve.js";
+import { AuthClearanceManager } from "./auth-clearance.js";
+import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 import { AuthQueue } from "./auth-queue.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
@@ -235,12 +237,18 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const autoApproveManager = new AuthAutoApproveManager({
     seedDefaultDurationSetting: operationalMutationsAllowed,
   });
+  const clearanceManager = new AuthClearanceManager(
+    db,
+    new DelegatedSigningResource(autoApproveManager),
+    startupEpoch,
+  );
   const authQueue = new AuthQueue({
     autoApprover: autoApproveManager,
+    clearanceManager,
     backgroundMaintenance: operationalMutationsAllowed,
     restartAvailability: restartAvailability ?? undefined,
   });
-  registerAuthRoutes(router, authQueue, autoApproveManager);
+  registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
   registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     on_event: (event) => {

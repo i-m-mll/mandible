@@ -2769,7 +2769,7 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("auto-approves new requests while a lease is active and passes scoped env", async () => {
+  it("does not globally auto-approve new requests while a delegated lease is active", () => {
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
     const db = createMigratedDb();
     const approverUserId = registerTestDelegatedLease(db, "lease-1");
@@ -2808,70 +2808,36 @@ describe("auth queue", () => {
       execution_mode: "daemon",
     });
 
-    expect(request.status).toBe("executing");
-    expect(request.approval_source).toBe("auto_lease");
-    expect(request.approval_lease_id).toBe("lease-1");
-    await waitForStatus(queue, request.id, "completed");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.SSH_AUTH_SOCK).toBe("/tmp/mandible-agent.sock");
-    expect(calls[0]?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+    expect(request.status).toBe("pending");
+    expect(request.approval_source).toBe("manual");
+    expect(request.approval_lease_id).toBeNull();
+    expect(calls).toHaveLength(0);
     queue.dispose();
     db.close();
   });
 
-  it("auto-approves pending requests when a lease is enabled", () => {
-    const db = createMigratedDb();
-    const approverUserId = registerTestDelegatedLease(db, "lease-2");
-    const queue = new AuthQueue({
-      db,
-      executor: async () => ({
-        exit_code: 0,
-        signal: null,
-        stdout: "",
-        stderr: "",
-        output: "",
-        started_at: Date.now(),
-        finished_at: Date.now(),
-      }),
-    });
-    const first = queue.submit({ command: "echo one", title: "One" });
-    const second = queue.submit({ command: "echo two", title: "Two" });
-
-    const approved = queue.autoApprovePending({
-      source: "auto_lease",
-      leaseId: "lease-2",
-      approverUserId,
-      env: { SSH_AUTH_SOCK: "/tmp/agent.sock" },
-    });
-
-    expect(approved.map((r) => r.id)).toEqual([first.id, second.id]);
-    expect(queue.getRequest(first.id)?.approval_source).toBe("auto_lease");
-    expect(queue.getRequest(second.id)?.approval_lease_id).toBe("lease-2");
-    queue.dispose();
-    db.close();
-  });
-
-  it("records delegated_lease execution evidence when an active lease is reused", async () => {
+  it("records delegated_lease execution evidence for an explicit delegated approval", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const approverUserId = registerTestDelegatedLease(db, "lease-reuse");
     try {
       commitOnBranch(repo, "feature/lease-reuse", { "reuse.txt": "reuse\n" });
       registerWorkRepo(db, repo);
+      const delegatedApproval = {
+        source: "auto_lease" as const,
+        leaseId: "lease-reuse",
+        approverUserId,
+        env: {
+          SSH_AUTH_SOCK: "/tmp/reused.sock",
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "user.signingkey",
+          GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
+        },
+      };
       const queue = new AuthQueue({
         db,
         autoApprover: {
-          getActiveApprovalContext: () => ({
-            source: "auto_lease",
-            leaseId: "lease-reuse",
-            approverUserId,
-            env: {
-              SSH_AUTH_SOCK: "/tmp/reused.sock",
-              GIT_CONFIG_COUNT: "1",
-              GIT_CONFIG_KEY_0: "user.signingkey",
-              GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
-            },
-          }),
+          getActiveApprovalContext: () => delegatedApproval,
         },
         executor: async (options) => {
           expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
@@ -2897,7 +2863,8 @@ describe("auth queue", () => {
         head_branch: "feature/lease-reuse",
         cwd: repo,
       });
-      expect(submitted.status).toBe("executing");
+      expect(submitted.status).toBe("pending");
+      queue.approve(submitted.id, delegatedApproval);
       const resolved = await waitForStatus(queue, submitted.id, "completed");
       const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
       expect(evidence.signature.evidence_method).toBe("credential_signature");
