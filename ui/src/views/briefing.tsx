@@ -19,6 +19,11 @@ import { BriefingGroupDetail } from './feedback/BriefingGroupDetail';
 import { CollectionShell } from './feedback/CollectionShell';
 import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
+import {
+  briefingGroupOwnsUpdate,
+  indexBriefingGroupBundleOwners,
+  resolveBriefingGroupProjection,
+} from './feedback/briefing-group-projection';
 import { OperationalIncidentsRegion } from './operational-incidents';
 
 export type BriefingViewProps = {
@@ -117,9 +122,13 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
   const selected = useMemo(() => briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null, [briefings, viewState.selectedCollectionId]);
   const selectedGroup = useMemo(() => groups.find((group) => group.id === viewState.selectedGroupId) ?? null, [groups, viewState.selectedGroupId]);
+  const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);
   const selectedGroupUpdateId = selectedGroup
-    ? selectedGroup.updates.find((update) => update.id === viewState.selectedGroupUpdateIds[selectedGroup.id])?.id
-      ?? null
+    ? resolveBriefingGroupProjection(
+      selectedGroup,
+      viewState.selectedGroupUpdateIds[selectedGroup.id],
+      groupBundleOwners,
+    ).selectedUpdate?.id ?? null
     : null;
   const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
 
@@ -133,12 +142,16 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     window.history.replaceState(null, '', briefingGroupRoute(group.id));
   };
 
-  const selectGroupUpdate = (updateId: string | null) => {
-    if (!selectedGroup) return;
+  const selectGroupUpdate = (ownerGroupId: string, updateId: string | null) => {
+    const ownerGroup = groups.find((group) => group.id === ownerGroupId);
+    if (!ownerGroup) return;
     setViewState((current) => {
       const selectedGroupUpdateIds = { ...current.selectedGroupUpdateIds };
-      if (updateId) selectedGroupUpdateIds[selectedGroup.id] = updateId;
-      else delete selectedGroupUpdateIds[selectedGroup.id];
+      if (updateId && briefingGroupOwnsUpdate(ownerGroup, updateId, groupBundleOwners)) {
+        selectedGroupUpdateIds[ownerGroupId] = updateId;
+      } else {
+        delete selectedGroupUpdateIds[ownerGroupId];
+      }
       return { ...current, selectedGroupUpdateIds };
     });
   };
@@ -181,9 +194,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
       {error ? <p className="briefing-error" role="alert">{error}</p> : null}
       {selectedGroup ? (
         <BriefingGroupDetail
+          key={selectedGroup.id}
           group={selectedGroup}
           selectedUpdateId={selectedGroupUpdateId}
-          onSelectUpdate={selectGroupUpdate}
+          onSelectUpdate={(updateId) => selectGroupUpdate(selectedGroup.id, updateId)}
         />
       ) : !selected ? <p className="briefing-empty briefing-empty--selection">Select a Briefing or group.</p> : (
         <BriefingDocumentRenderer
