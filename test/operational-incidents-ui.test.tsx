@@ -9,7 +9,7 @@
 //
 //   - Incidents render BEFORE the recurring briefing collections.
 //   - The red navigation badge counts active AND unacknowledged only, and the
-//     existing briefing badge is untouched by it in either direction.
+//     dashboard's Briefing count never becomes a navigation badge.
 //   - An acknowledged-but-still-active incident stays discoverable in its own
 //     permanent row without becoming an undismissable red warning.
 //   - Acknowledgement is DURABLE SERVER STATE: a refetch, an SSE
@@ -437,8 +437,8 @@ describe('incident_badge_counts_only_active_unacknowledged', () => {
   });
 });
 
-describe('briefing_badge_remains_independent', () => {
-  it('renders the pending-finding count and the incident count as separate badges', async () => {
+describe('briefing_navigation_badge_is_suppressed', () => {
+  it('ignores the dashboard Briefing count while preserving the incident badge', async () => {
     prepareAppEnvironment();
     const requests = stubAppFetch({
       badges: { auth: 0, inbox: 0, work: 0, briefing: 4, incidents: 1 },
@@ -448,15 +448,15 @@ describe('briefing_badge_remains_independent', () => {
     await waitFor(() => expect(requests).toContain('/api/dashboard/badges'));
 
     await waitFor(() => {
-      expect(container.querySelector('.tab-badge--briefing')?.textContent).toBe('4');
+      expect(container.querySelector('.tab-badge--incidents')?.textContent).toBe('1');
     });
-    expect(container.querySelector('.tab-badge--incidents')?.textContent).toBe('1');
+    expect(container.querySelector('.tab-badge--briefing')).toBeNull();
 
-    // Never summed, and neither substitutes for the other.
+    // The incident obligation remains visible without projecting the unrelated
+    // dashboard Briefing count into the rail.
     const briefingNav = screen.getByLabelText('Briefing');
-    expect(briefingNav.textContent).toContain('4');
     expect(briefingNav.textContent).toContain('1');
-    expect(briefingNav.textContent).not.toContain('5');
+    expect(briefingNav.textContent).not.toContain('4');
   });
 });
 
