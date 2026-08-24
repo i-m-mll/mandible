@@ -4080,6 +4080,11 @@ export type BriefingRoundProjection = {
       content_hash: string;
       source: string;
     };
+    original_comparison_base?: null | {
+      artifact_version_id: string;
+      content_hash: string;
+      source: string;
+    };
   };
   directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
@@ -4413,11 +4418,11 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
   const profile = rawDocument.profile;
-  const documentShapeValid = exactBriefingValueKeys(rawDocument, [
-    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base',
-  ]) || exactBriefingValueKeys(rawDocument, [
-    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source',
-  ]);
+  const documentShapeValid = [
+    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base', 'original_comparison_base'],
+    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base'],
+    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source'],
+  ].some((keys) => exactBriefingValueKeys(rawDocument, keys));
   const rawComparisonBase = briefingRecord(rawDocument.comparison_base);
   const comparisonBase = rawDocument.comparison_base == null ? null
     : exactBriefingValueKeys(rawComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
@@ -4430,11 +4435,24 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
         source: rawComparisonBase.source,
       }
       : undefined;
+  const rawOriginalComparisonBase = briefingRecord(rawDocument.original_comparison_base);
+  const originalComparisonBase = rawDocument.original_comparison_base == null ? null
+    : exactBriefingValueKeys(rawOriginalComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
+      && briefingString(rawOriginalComparisonBase.artifact_version_id)
+      && /^[0-9a-f]{64}$/.test(briefingString(rawOriginalComparisonBase.content_hash))
+      && typeof rawOriginalComparisonBase.source === 'string'
+      ? {
+        artifact_version_id: briefingString(rawOriginalComparisonBase.artifact_version_id),
+        content_hash: briefingString(rawOriginalComparisonBase.content_hash),
+        source: rawOriginalComparisonBase.source,
+      }
+      : undefined;
   const documentFieldsValid = briefingString(rawDocument.artifact_version_id)
     && /^[0-9a-f]{64}$/.test(briefingString(rawDocument.content_hash))
     && typeof rawDocument.source === 'string'
     && Boolean(rawDocument.source.trim())
     && comparisonBase !== undefined
+    && originalComparisonBase !== undefined
     && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
   const document = root.document !== null && documentShapeValid && documentFieldsValid
     && (profile === 'mandible-briefing.v2' || profile === 'mandible-briefing.v3') ? {
@@ -4444,6 +4462,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     profile,
     source: typeof rawDocument.source === 'string' ? rawDocument.source : '',
     comparison_base: comparisonBase,
+    original_comparison_base: originalComparisonBase,
   } : null;
   if (!document
       || !document.artifact_version_id) valid = false;
@@ -4569,6 +4588,18 @@ export type BriefingGroup = {
   updatedAt: number;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  history?: BriefingGroupDisposition[];
+};
+
+export type BriefingGroupDisposition = {
+  id: string;
+  kind: 'promoted' | 'dismissed';
+  priorBase: BriefingBundle | null;
+  proposal: BriefingBundle;
+  resultingBase: BriefingBundle | null;
+  authRequestId: string | null;
+  mergeHeadSha: string | null;
+  createdAt: number;
 };
 
 export type BriefingSidebarSnapshot = {
@@ -4641,6 +4672,24 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
     const updates = (Array.isArray(group.updates) ? group.updates : [])
       .map(normalizeBriefingBundle)
       .filter((update): update is BriefingBundle => update !== null);
+    const history = (Array.isArray(group.history) ? group.history : []).map((entry): BriefingGroupDisposition | null => {
+      const row = briefingRecord(entry);
+      const dispositionId = briefingString(row.id);
+      const priorBase = row.prior_base == null ? null : normalizeBriefingBundle(row.prior_base);
+      const proposal = normalizeBriefingBundle(row.proposal);
+      const resultingBase = row.resulting_base == null ? null : normalizeBriefingBundle(row.resulting_base);
+      const kind = row.kind === 'promoted' || row.kind === 'dismissed' ? row.kind : null;
+      return dispositionId && kind && proposal ? {
+        id: dispositionId,
+        kind,
+        priorBase,
+        proposal,
+        resultingBase,
+        authRequestId: briefingOptionalString(row.auth_request_id),
+        mergeHeadSha: briefingOptionalString(row.merge_head_sha),
+        createdAt: briefingOptionalNumber(row.created_at) ?? 0,
+      } : null;
+    }).filter((entry): entry is BriefingGroupDisposition => entry !== null);
     return id && name ? {
       id,
       name,
@@ -4648,6 +4697,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       updatedAt: briefingOptionalNumber(group.updated_at) ?? 0,
       current,
       updates,
+      history,
     } : null;
   }).filter((group): group is BriefingGroup => group !== null);
 }
@@ -4892,10 +4942,15 @@ export async function getBriefing(
   roundId?: string | null,
   submissionId?: string | null,
   signal?: AbortSignal,
+  displayContext?: { groupId: string; proposalBundleId: string | null },
 ): Promise<BriefingProjection> {
   const params = new URLSearchParams();
   if (roundId) params.set('round', roundId);
   if (submissionId) params.set('submission', submissionId);
+  if (displayContext) {
+    params.set('group', displayContext.groupId);
+    if (displayContext.proposalBundleId) params.set('proposal', displayContext.proposalBundleId);
+  }
   const query = params.size > 0 ? `?${params}` : '';
   const response = await apiGet(`/api/briefings/${encodeURIComponent(briefingId)}${query}`, signal ? { signal } : {});
   return normalizeBriefingProjection(await parseMaybeJson(response));

@@ -41,6 +41,7 @@ export type BriefingDocumentRendererProps = {
   briefingTitle?: string;
   briefingDescription?: string | null;
   roundId?: string | null;
+  displayContext?: { groupId: string; proposalBundleId: string | null };
   instance: InstanceInfo | null;
   onBriefingChange?(briefing: BriefingProjection | null): void;
   onTitleChange?(title: string): void;
@@ -122,6 +123,7 @@ export function BriefingDocumentRenderer({
   briefingTitle,
   briefingDescription = null,
   roundId = null,
+  displayContext,
   instance,
   onBriefingChange,
   onTitleChange,
@@ -177,7 +179,7 @@ export function BriefingDocumentRenderer({
     try {
       const [identity, round] = await Promise.all([
         getClientAuthWhoami(),
-        getBriefing(briefingId, roundId, overlayId),
+        getBriefing(briefingId, roundId, overlayId, undefined, displayContext),
       ]);
       if (sequence !== loadSequence.current || currentSelection.current !== expectedSelection) return null;
       if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) throw new Error('The Briefing service returned a mismatched immutable round.');
@@ -207,7 +209,8 @@ export function BriefingDocumentRenderer({
       onBriefingChange?.(null);
       return null;
     }
-  }, [briefingId, draftScope, onBriefingChange, roundId, selectedOverlayId]);
+  }, [briefingId, displayContext?.groupId, displayContext?.proposalBundleId, draftScope,
+    onBriefingChange, roundId, selectedOverlayId]);
 
   useEffect(() => {
     loadSequence.current += 1;
@@ -231,7 +234,7 @@ export function BriefingDocumentRenderer({
     currentSelection.current = selectionKey(null);
     onBriefingChange?.(null);
     void reconcile(null);
-  }, [briefingId, roundId]);
+  }, [briefingId, displayContext?.groupId, displayContext?.proposalBundleId, roundId]);
 
   useEffect(() => {
     if (!active) return undefined;

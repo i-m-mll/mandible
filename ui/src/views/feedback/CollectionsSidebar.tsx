@@ -72,12 +72,22 @@ export function CollectionsSidebar({
     ...groups.flatMap((group) => [
       ...(group.current ? [group.current] : []),
       ...group.updates,
+      ...(group.history ?? []).flatMap((entry) => [
+        ...(entry.priorBase ? [entry.priorBase] : []),
+        entry.proposal,
+        ...(entry.resultingBase ? [entry.resultingBase] : []),
+      ]),
     ]),
   ].flatMap((bundle) => bundle.members.map((member) => member.briefing.id))), [bundles, groups]);
   const groupedBundleIds = useMemo(() => new Set(
     groups.flatMap((group) => [
       ...(group.current ? [group.current.id] : []),
       ...group.updates.map((update) => update.id),
+      ...(group.history ?? []).flatMap((entry) => [
+        ...(entry.priorBase ? [entry.priorBase.id] : []),
+        entry.proposal.id,
+        ...(entry.resultingBase ? [entry.resultingBase.id] : []),
+      ]),
     ]),
   ), [groups]);
   const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);

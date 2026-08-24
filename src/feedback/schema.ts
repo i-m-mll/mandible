@@ -40,6 +40,23 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     PRIMARY KEY(group_id, bundle_id),
     UNIQUE(group_id, position)
   )`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_dispositions (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK(kind IN ('promoted','dismissed')),
+    prior_base_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    proposal_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    resulting_base_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    auth_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+    merge_head_sha TEXT,
+    created_at INTEGER NOT NULL,
+    CHECK((kind = 'promoted' AND resulting_base_bundle_id = proposal_bundle_id
+      AND auth_request_id IS NOT NULL AND length(merge_head_sha) = 40)
+      OR (kind = 'dismissed' AND resulting_base_bundle_id IS NULL)),
+    UNIQUE(auth_request_id, group_id, proposal_bundle_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_group_dispositions_group
+    ON briefing_group_dispositions(group_id, created_at DESC, id DESC)`,
 ];
 
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */

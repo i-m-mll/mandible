@@ -151,7 +151,8 @@ export type AuthRequestActionKind =
   | "label_add"
   | "label_rm"
   | "checkpoint_add"
-  | "link_add";
+  | "link_add"
+  | "briefing_group_promote";
 export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
 
 export type AuthRequestActionInput = {
@@ -1099,6 +1100,17 @@ export type BriefingGroup = {
   updated_at: number;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  history: BriefingGroupDisposition[];
+};
+export type BriefingGroupDisposition = {
+  id: string;
+  kind: "promoted" | "dismissed";
+  prior_base: BriefingBundle | null;
+  proposal: BriefingBundle;
+  resulting_base: BriefingBundle | null;
+  auth_request_id: string | null;
+  merge_head_sha: string | null;
+  created_at: number;
 };
 export const BRIEFING_EVENTS = Object.freeze({
   created: "briefing:created",
@@ -1109,6 +1121,7 @@ export const BRIEFING_EVENTS = Object.freeze({
   groupCreated: "briefing:group-created",
   groupUpdateAdded: "briefing:group-update-added",
   groupConfigurationUpdated: "briefing:group-configuration-updated",
+  groupProposalPromoted: "briefing:group-proposal-promoted",
   groupNameUpdated: "briefing:group-name-updated",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",

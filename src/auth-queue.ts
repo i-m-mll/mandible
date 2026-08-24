@@ -87,6 +87,7 @@ import type {
   LedgerWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
+import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 // Issue 1624ee9 — shared Mandible-Issue trailer parsing.
 import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
@@ -5455,11 +5456,10 @@ export class AuthQueue {
       : [];
     const hasPersistedActions = persistedActions.length > 0;
     const actions = hasPersistedActions ? persistedActions : this.legacyIssueCloseActions(request);
-    // Issue 27241e6 — issue closure is the one deferred action that asserts
-    // the delivery is done. While convergence is pending or failed it stays
-    // staged, and `releaseWithheldClosures` applies it once the hooks
-    // converge. Every other deferred action (comments, worker status, labels)
-    // is a record of what happened and still runs.
+    // Delivery transitions stay staged while convergence is pending or failed;
+    // `releaseWithheldClosures` applies them once the hooks converge. The other
+    // deferred actions (comments, worker status, labels) record what happened
+    // and still run before convergence completes.
     const withholdClosures = this.convergenceWithholdsClosures(request.id);
     for (const action of actions) {
       if (action.state === "vetoed") {
@@ -5469,7 +5469,7 @@ export class AuthQueue {
       if (action.state !== "staged") {
         continue;
       }
-      if (withholdClosures && action.kind === "issue_close") {
+      if (withholdClosures && (action.kind === "issue_close" || action.kind === "briefing_group_promote")) {
         authLog("info", "auth_issue_closure_withheld", {
           subsystem: "auth",
           auth_request_id: request.id,
@@ -5624,6 +5624,24 @@ export class AuthQueue {
           created_at: now,
         });
         break;
+      }
+      case "briefing_group_promote": {
+        if (!request.merge_head_sha) {
+          throw new Error("Completed merge request is missing its exact merge head");
+        }
+        const operator = getOperator(this.db);
+        const result = promoteBriefingGroupProposal(this.db, {
+          groupRef: stringPayload(action.payload, "group_ref"),
+          expectedBaseBundleRef: stringPayload(action.payload, "expected_base_bundle_ref"),
+          proposalBundleRef: stringPayload(action.payload, "proposal_bundle_ref"),
+          authRequestRef: request.id,
+          mergeHeadSha: request.merge_head_sha,
+        }, { userId: operator?.id ?? "", operator: true }, now);
+        return {
+          state: "applied",
+          detail: result.changed ? `Promoted Briefing proposal ${result.disposition.proposal.id}` : "Promotion already applied",
+          appliedAt: now,
+        };
       }
     }
     return { state: "applied", detail, appliedAt: now };

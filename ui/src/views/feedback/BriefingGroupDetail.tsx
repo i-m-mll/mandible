@@ -14,6 +14,7 @@ export function BriefingGroupDetail({
   selectedUpdateId,
   onSelectUpdate,
 }: BriefingGroupDetailProps): JSX.Element {
+  const baseName = group.current?.name === 'Original' ? 'Base' : group.current?.name;
   return (
     <DetailPaneShell
       className="briefing-group-detail"
@@ -33,22 +34,22 @@ export function BriefingGroupDetail({
       <div className="briefing-group-detail__sections">
         <section className="briefing-group-detail__current" aria-labelledby="briefing-group-current-title">
           <div className="briefing-group-detail__intro">
-            <h3 id="briefing-group-current-title">Current</h3>
-            <p>The current sidebar layout for this group.</p>
+            <h3 id="briefing-group-current-title">Base</h3>
+            <p>The accepted layout and comparison base for this group.</p>
           </div>
           {group.current ? (
             <button
               type="button"
               className={`briefing-group-detail__update briefing-group-detail__current-card${selectedUpdateId === null ? ' briefing-group-detail__update--selected' : ''}`}
-              aria-label={`Show current layout ${group.current.name}`}
+              aria-label={`Show Base layout ${baseName}`}
               aria-pressed={selectedUpdateId === null}
               onClick={() => onSelectUpdate(null)}
             >
-              <span className="briefing-group-detail__update-name">{group.current.name}</span>
+              <span className="briefing-group-detail__update-name">{baseName}</span>
               <span className="briefing-group-detail__update-ref">{shortIdentityRef(group.current.id)}</span>
             </button>
           ) : (
-            <p className="briefing-empty">No current layout is available.</p>
+            <p className="briefing-empty">No Base layout is available.</p>
           )}
         </section>
         <section className="briefing-group-detail__updates" aria-labelledby="briefing-group-updates-title">
@@ -80,6 +81,23 @@ export function BriefingGroupDetail({
             </ul>
           )}
         </section>
+        {(group.history?.length ?? 0) > 0 ? (
+          <section className="briefing-group-detail__history" aria-label="History">
+            <details>
+              <summary>History ({group.history?.length ?? 0})</summary>
+              <ul className="briefing-group-detail__history-list">
+                {(group.history ?? []).map((entry) => (
+                  <li key={entry.id}>
+                    <span>{entry.kind === 'promoted' ? 'Promoted to Base' : 'Dismissed'}</span>
+                    <strong>{entry.proposal.name}</strong>
+                    <span>{new Date(entry.createdAt).toLocaleString()}</span>
+                    {entry.priorBase ? <span>Previous Base: {entry.priorBase.name === 'Original' ? 'Base' : entry.priorBase.name}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </section>
+        ) : null}
       </div>
     </DetailPaneShell>
   );

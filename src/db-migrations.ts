@@ -4846,7 +4846,50 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "delegated_signer_runtime_reconnect",
     statements: [],
   },
+  {
+    version: 158,
+    name: "briefing_group_promotion_history",
+    statements: [],
+  },
 ];
+
+function migrateBriefingGroupPromotionV158(db: Db): void {
+  if (tableExists(db, "briefing_groups")) {
+    for (const statement of BRIEFING_GROUP_SCHEMA_SQL) db.exec(statement);
+  }
+  if (!tableExists(db, "auth_request_actions")) return;
+  const tableSql = (db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'auth_request_actions'",
+  ).get() as { sql?: string } | undefined)?.sql ?? "";
+  if (tableSql.includes("briefing_group_promote")) return;
+  db.exec(`CREATE TABLE auth_request_actions_v158 (
+    id TEXT PRIMARY KEY,
+    auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('comment_add','issue_close','worker_status_set','label_add','label_rm','checkpoint_add','link_add','briefing_group_promote')),
+    target_issue_ref TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'staged'
+      CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale')),
+    target_digest TEXT,
+    staged_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    applied_at INTEGER,
+    outcome_detail TEXT
+  );
+  INSERT INTO auth_request_actions_v158 (
+    id, auth_request_id, ordinal, kind, target_issue_ref, payload,
+    state, target_digest, staged_at, updated_at, applied_at, outcome_detail
+  ) SELECT id, auth_request_id, ordinal, kind, target_issue_ref, payload,
+    state, target_digest, staged_at, updated_at, applied_at, outcome_detail
+    FROM auth_request_actions;
+  DROP TABLE auth_request_actions;
+  ALTER TABLE auth_request_actions_v158 RENAME TO auth_request_actions;
+  CREATE INDEX idx_auth_request_actions_request_ordinal
+    ON auth_request_actions(auth_request_id, ordinal);
+  CREATE INDEX idx_auth_request_actions_state
+    ON auth_request_actions(state, auth_request_id);`);
+}
 
 function ensureBriefingDescriptionColumn(db: Db): void {
   if (!tableExists(db, "briefings") || hasColumn(db, "briefings", "description")) return;
@@ -5482,6 +5525,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 155) ensureAuthClearanceSchema(db);
       if (migration.version === 156) ensureBriefingDescriptionColumn(db);
       if (migration.version === 157) ensureAuthClearanceSchema(db);
+      if (migration.version === 158) migrateBriefingGroupPromotionV158(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }

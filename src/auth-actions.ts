@@ -18,6 +18,7 @@ const VALID_ACTION_KINDS: AuthRequestActionKind[] = [
   "label_rm",
   "checkpoint_add",
   "link_add",
+  "briefing_group_promote",
 ];
 const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "skipped_stale", "vetoed"];
 const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
@@ -229,6 +230,23 @@ function normalizePayload(kind: AuthRequestActionKind, payload: unknown): Record
       if (record.note !== undefined) normalized.note = optionalMarkdownBody(record.note, "note");
       return normalized;
     }
+    case "briefing_group_promote":
+      rejectUnexpectedKeys(record, ["group_ref", "expected_base_bundle_ref", "proposal_bundle_ref"], kind);
+      return {
+        group_ref: requireNonEmptyString(record.group_ref, "group_ref"),
+        expected_base_bundle_ref: requireNonEmptyString(
+          record.expected_base_bundle_ref,
+          "expected_base_bundle_ref",
+        ),
+        proposal_bundle_ref: requireNonEmptyString(record.proposal_bundle_ref, "proposal_bundle_ref"),
+      };
+  }
+}
+
+function rejectUnexpectedKeys(record: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const unexpected = Object.keys(record).filter((key) => !allowed.includes(key));
+  if (unexpected.length > 0) {
+    throw new AuthActionValidationError(`${label} payload contains unsupported field '${unexpected[0]}'`);
   }
 }
 
