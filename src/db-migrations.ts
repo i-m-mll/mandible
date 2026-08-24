@@ -4836,6 +4836,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "scoped_protected_merge_clearances",
     statements: [],
   },
+  {
+    version: 156,
+    name: "delegated_signer_runtime_reconnect",
+    statements: [],
+  },
 ];
 
 function ensureBriefingOrganizationColumns(db: Db): void {
@@ -5464,6 +5469,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 153) ensureBriefingOrganizationColumns(db);
       if (migration.version === 154) ensureWorkUnitWorkerOwnershipColumn(db);
       if (migration.version === 155) ensureAuthClearanceSchema(db);
+      if (migration.version === 156) ensureAuthClearanceSchema(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }

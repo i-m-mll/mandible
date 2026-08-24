@@ -9,9 +9,9 @@ describe("migration v155: scoped protected-merge clearances", () => {
   it("converges the baseline, migration, and backup contract", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(155);
-    expect(CURRENT_SCHEMA_VERSION).toBe(155);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "155" });
+    expect(BASELINE_SCHEMA_VERSION).toBe(156);
+    expect(CURRENT_SCHEMA_VERSION).toBe(156);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
     expect(db.prepare("PRAGMA table_info(auth_requests)").all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "requester_evidence_method", type: "TEXT" }),
       expect.objectContaining({ name: "requester_credential_id", type: "TEXT" }),
@@ -25,6 +25,7 @@ describe("migration v155: scoped protected-merge clearances", () => {
     expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining(["auth_clearances", "auth_clearance_uses"]));
     expect(METADATA_BACKUP_TABLES.indexOf("auth_clearances"))
       .toBeLessThan(METADATA_BACKUP_TABLES.indexOf("auth_clearance_uses"));
+    expect(METADATA_BACKUP_TABLES).not.toContain("delegated_signing_runtime_bindings");
     db.close();
   });
 
@@ -46,7 +47,24 @@ describe("migration v155: scoped protected-merge clearances", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM auth_clearances").get()).toEqual({ count: 0 });
     db.prepare("UPDATE meta SET value = '154' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "155" });
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
+    db.close();
+  });
+
+  it("upgrades v155 with an empty local-only reconnect binding table", () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    db.exec(`
+      DROP INDEX idx_delegated_signing_runtime_owner;
+      DROP TABLE delegated_signing_runtime_bindings;
+      UPDATE meta SET value = '155' WHERE key = 'schema_version';
+    `);
+    migrate(db);
+    expect(db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'delegated_signing_runtime_bindings'",
+    ).get()).toEqual({ name: "delegated_signing_runtime_bindings" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM delegated_signing_runtime_bindings").get())
+      .toEqual({ count: 0 });
     db.close();
   });
 });

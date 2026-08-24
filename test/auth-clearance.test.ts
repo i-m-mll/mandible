@@ -75,6 +75,19 @@ function fixture() {
   }, 4);
   let clock = 10_000;
   const released: string[] = [];
+  const contexts = new Map<string, AuthApprovalContext>();
+  const borrowCounts = new Map<string, number>();
+  const draining = new Map<string, Array<() => void>>();
+  const finishDrain = (leaseId: string) => {
+    if ((borrowCounts.get(leaseId) ?? 0) > 0) return;
+    contexts.delete(leaseId);
+    released.push(leaseId);
+    db.prepare(
+      "UPDATE delegated_signing_runtime_bindings SET state = 'retired', retired_at = ?, retired_reason = 'test' WHERE lease_id = ?",
+    ).run(clock, leaseId);
+    for (const resolve of draining.get(leaseId) ?? []) resolve();
+    draining.delete(leaseId);
+  };
   const signer = {
     status: () => ({ configured: true }),
     setup: async () => ({ configured: true }),
@@ -89,23 +102,58 @@ function fixture() {
         expires_at: clock + ttlSeconds * 1000,
         mint_method: "fresh_presence",
       });
-      return {
+      const context: AuthApprovalContext = {
         source: "clearance",
         leaseId,
         approverUserId: operator.id,
         env: { SSH_AUTH_SOCK: `/tmp/${leaseId}.sock` },
       };
+      contexts.set(leaseId, context);
+      db.prepare(
+        `INSERT INTO delegated_signing_runtime_bindings (
+          lease_id, agent_pid, agent_uid, agent_process_start, agent_executable,
+          socket_path, socket_dev, socket_ino, socket_uid, socket_mode,
+          credential_fingerprint, public_key_path, issued_runtime_epoch,
+          owner_runtime_epoch, owner_pid, owner_uid, owner_process_start, owner_executable, attached_at,
+          last_validated_at, state
+        ) VALUES (?, 101, 1, 'agent-start', '/usr/bin/ssh-agent', ?, '1', '2', 1, 384,
+          ?, '/tmp/key.pub', 'runtime-a', 'runtime-a', 100, 1, 'daemon-start', '/usr/bin/node', ?, ?, 'available')`,
+      ).run(leaseId, context.env.SSH_AUTH_SOCK, delegated.fingerprint, clock, clock);
+      return context;
     },
-    release: async (context: AuthApprovalContext) => { released.push(context.leaseId); },
+    borrow: (leaseId: string) => {
+      const context = contexts.get(leaseId);
+      if (!context) throw new Error("signer unavailable");
+      borrowCounts.set(leaseId, (borrowCounts.get(leaseId) ?? 0) + 1);
+      return {
+        approval: context,
+        settle: async () => {
+          borrowCounts.set(leaseId, (borrowCounts.get(leaseId) ?? 1) - 1);
+          if (draining.has(leaseId)) finishDrain(leaseId);
+        },
+      };
+    },
+    drain: async (leaseId: string) => {
+      if ((borrowCounts.get(leaseId) ?? 0) === 0) {
+        finishDrain(leaseId);
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const waiters = draining.get(leaseId) ?? [];
+        waiters.push(resolve);
+        draining.set(leaseId, waiters);
+      });
+    },
+    release: async (context: AuthApprovalContext) => { await signer.drain(context.leaseId); },
   };
   const manager = new AuthClearanceManager(db, signer as never, "runtime-a", { now: () => clock });
-  const executions: Array<{ request_id: string; env?: NodeJS.ProcessEnv }> = [];
+  const executions: Array<{ request_id: string; env?: NodeJS.ProcessEnv; released_at_start: number }> = [];
   const queue = new AuthQueue({
     db,
     clearanceManager: manager,
     backgroundMaintenance: false,
     executor: async (options) => {
-      executions.push({ request_id: options.request_id, env: options.env });
+      executions.push({ request_id: options.request_id, env: options.env, released_at_start: released.length });
       return {
         exit_code: 0, signal: null, stdout: "merged\n", stderr: "", output: "merged\n",
         started_at: clock, finished_at: clock + 1,
@@ -148,7 +196,9 @@ describe("scoped protected-merge clearance", () => {
       await vi.waitFor(() => expect(f.queue.getRequest(request.id)?.status).toBe("completed"));
       expect(f.executions).toHaveLength(1);
       expect(f.executions[0]).toMatchObject({ request_id: request.id });
+      expect(f.executions[0].released_at_start).toBe(0);
       expect(f.executions[0].env?.SSH_AUTH_SOCK).toContain("/tmp/lease-");
+      expect(f.released).toEqual([clearance.signing_lease_id]);
       expect(f.manager.uses(clearance.id)).toEqual([
         expect.objectContaining({ auth_request_id: request.id, use_ordinal: 1 }),
       ]);
@@ -302,7 +352,7 @@ describe("scoped protected-merge clearance", () => {
       expect(() => f.manager.consume(third.id, () => undefined)).toThrow(/Multiple active/);
 
       const restarted = new AuthClearanceManager(f.db, f.signer as never, "runtime-b", { now: () => 10_000 });
-      expect(() => restarted.consume(third.id, () => undefined)).toThrow(/No active/);
+      expect(() => restarted.consume(third.id, () => undefined)).toThrow(/Multiple active/);
       await f.manager.revoke(ambiguousIssue.id, f.operator.id);
       await f.manager.revoke(ambiguousHead.id, f.operator.id);
 
