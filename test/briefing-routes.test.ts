@@ -800,6 +800,29 @@ describe("plural Briefing routes", () => {
     expect(createdGroup).toMatchObject({ status: 201, body: { group: { name: "Sparse policy",
       updates: [{ id: bundleId, layout: expect.any(Array) }] } } });
     const groupId = (createdGroup.body as { group: { id: string } }).group.id;
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "session:agent-schedule" })).toMatchObject({ status: 200, body: { bundle: { layout: [] } } });
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule" })).toMatchObject({ status: 200, body: { bundle: {
+      layout: [
+        { kind: "briefing", briefing: { id: ids[0] } },
+        { kind: "briefing", briefing: { id: ids[1] } },
+        { kind: "briefing", briefing: { id: ids[2] } },
+        { kind: "subgroup", name: "Skills", briefings: ids.slice(3)
+          .map((id) => ({ briefing: { id } })) },
+      ],
+    } } });
+    setSetting(db, "user.operator_id", "");
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-bundles/${bundleId}`,
+      credential: "agent-schedule" })).toMatchObject({
+      status: 403, body: { code: "briefing_layout_operator_required" },
+    });
+    setSetting(db, "user.operator_id", humanId);
+    const agentGroupRead = await router.invoke({ method: "GET", url: `/api/briefing-groups/${groupId}`,
+      credential: "agent-schedule" });
+    expect(agentGroupRead).toMatchObject({ status: 200, body: { group: {
+      updates: [{ id: bundleId, members: ids.map((id) => ({ briefing: { id } })) }],
+    } } });
     expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${groupId}/updates`,
       credential: "session:human", body: { bundle_ref: secondBundleId } })).toMatchObject({
       status: 403, body: { code: "briefing_group_update_publisher_credential_required" },

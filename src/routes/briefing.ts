@@ -199,6 +199,25 @@ function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; ope
   ).id, operator: true };
 }
 
+function briefingLayoutViewer(db: Db, req: RequestLike): { userId: string; operator: boolean } {
+  const identity = requireIdentity(req);
+  const caller = getUserById(db, identity.user_id);
+  if (identity.method === "api_token" && caller?.status === "active" && caller.kind === "agent") {
+    requireDurableAgentPublisher(db, req, {
+      credentialCode: "briefing_layout_publisher_credential_required",
+      credentialMessage: "Operator-visible Briefing layout reads require a durable API token.",
+      agentCode: "briefing_layout_publisher_agent_required",
+      agentMessage: "Operator-visible Briefing layout reads require an active agent identity.",
+    });
+    return { userId: configuredHumanOperator(
+      db,
+      "briefing_layout_operator_required",
+      "Operator-visible Briefing layout reads require a configured active human operator.",
+    ).id, operator: true };
+  }
+  return { userId: identity.user_id, operator: isOperator(db, identity) };
+}
+
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
   publisherUserId: string;
   responderUserId: string;
@@ -313,17 +332,13 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.get("/api/briefing-groups", (req, res) => {
     try {
-      const identity = requireIdentity(req);
-      sendJson(res, 200, { groups: listBriefingGroups(db, { userId: identity.user_id,
-        operator: isOperator(db, identity) }) });
+      sendJson(res, 200, { groups: listBriefingGroups(db, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
   server.get("/api/briefing-groups/:groupId", (req, res) => {
     try {
-      const identity = requireIdentity(req);
-      sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, { userId: identity.user_id,
-        operator: isOperator(db, identity) }) });
+      sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
@@ -440,11 +455,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.get("/api/briefing-bundles", (req, res) => {
     try {
-      const identity = requireIdentity(req);
-      sendJson(res, 200, { bundles: listBriefingBundles(db, {
-        userId: identity.user_id,
-        operator: isOperator(db, identity),
-      }) });
+      sendJson(res, 200, { bundles: listBriefingBundles(db, briefingLayoutViewer(db, req)) });
     } catch (error) {
       handleError(res, error);
     }
@@ -452,11 +463,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.get("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
-      const identity = requireIdentity(req);
-      sendJson(res, 200, { bundle: readBriefingBundle(db, req.params.bundleId, {
-        userId: identity.user_id,
-        operator: isOperator(db, identity),
-      }) });
+      sendJson(res, 200, { bundle: readBriefingBundle(db, req.params.bundleId, briefingLayoutViewer(db, req)) });
     } catch (error) {
       handleError(res, error);
     }
