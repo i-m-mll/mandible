@@ -23,15 +23,16 @@ afterEach(() => {
 describe('shared sidebar group presentation', () => {
   it('keeps Briefing as the flat-list exception while reusing shared rows', () => {
     const briefing: FeedbackCollection = {
-      id: 'briefing:one', collectionId: 'one', label: 'One', itemCount: 2,
+      id: 'briefing:one', collectionId: 'one', label: 'One', unansweredDirectiveCount: 2,
       latestRoundId: 'round-1', createdAt: 1, updatedAt: 2,
     };
     render(<CollectionsSidebar
       collections={[briefing]}
       selectedCollectionId={briefing.id}
       viewState={{
-        collectionSourceFilter: '', pinnedCollectionIds: [briefing.id],
-        pinnedSectionCollapsed: true, collapsedBundleIds: [], selectedCollectionId: briefing.id, selectedRoundIds: {},
+        collectionSourceFilter: '', pinnedOnly: true, collectionSort: 'activity', pinnedCollectionIds: [briefing.id],
+        pinnedSectionCollapsed: true, collapsedBundleIds: [], collapsedGroupIds: [], collapsedGroupSubgroupKeys: [],
+        selectedGroupUpdateIds: {}, selectedGroupId: null, selectedCollectionId: briefing.id, selectedRoundIds: {},
       }}
       setViewState={() => undefined}
       onSelect={() => undefined}
@@ -43,9 +44,9 @@ describe('shared sidebar group presentation', () => {
     expect(sidebar.querySelectorAll('ul.feedback-collections-sidebar__list')).toHaveLength(1);
     const row = screen.getByRole('button', { name: 'Select briefing One' })
       .closest('.feedback-collection-row');
-    expect(row?.classList.contains('feedback-collection-row--pinned')).toBe(true);
+    expect(row?.classList.contains('feedback-collection-row--pinned')).toBe(false);
     expect(row?.querySelector('.sidebar-item-row')).not.toBeNull();
-    expect(screen.getByRole('button', { name: 'Unpin One' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByRole('button', { name: /^(?:Pin|Unpin) One$/ })).toBeNull();
   });
 
   it('supports count-free aggregate headings and stable interaction-only leaf counts', () => {

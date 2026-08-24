@@ -4507,7 +4507,7 @@ export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
       id: feedbackCollectionIdentity(id),
       collectionId: id,
       label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
-      itemCount: briefingOptionalNumber(row.round_count) ?? 0,
+      unansweredDirectiveCount: briefingOptionalNumber(row.unanswered_directive_count) ?? 0,
       latestRoundId: briefingString(row.latest_round_id),
       createdAt: briefingOptionalNumber(row.created_at) ?? 0,
       updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,

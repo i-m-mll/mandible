@@ -8,7 +8,6 @@ import { SidebarBriefingBundleIcon, SidebarGroupNode } from '../../components/sh
 import {
   SidebarItemBadge,
   SidebarItemOverflowMenu,
-  SidebarItemPinAction,
   SidebarItemRow,
   type SidebarItemOverflowAction,
 } from '../../components/shared/SidebarItemRow';
@@ -16,7 +15,6 @@ import { useSidebarListNavigation } from '../../hooks/useSidebarListNavigation';
 import { briefingRoute } from '../../routing';
 import {
   filterFeedbackCollections,
-  moveVisiblePinnedCollection,
   orderFeedbackCollections,
   type FeedbackCollection,
 } from './collection-model';
@@ -55,24 +53,17 @@ export function CollectionsSidebar({
   onSelect,
   onSelectGroup,
 }: CollectionsSidebarProps): JSX.Element {
-  const [draggedPinnedId, setDraggedPinnedId] = useState<string | null>(null);
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
-  const pinned = useMemo(
-    () => new Set(viewState.pinnedCollectionIds),
-    [viewState.pinnedCollectionIds],
+  const filtered = useMemo(
+    () => filterFeedbackCollections(collections, viewState.collectionSourceFilter),
+    [collections, viewState.collectionSourceFilter],
   );
-  const filtered = useMemo(() => (
-    filterFeedbackCollections(collections, viewState.collectionSourceFilter)
-      .filter((collection) => !viewState.pinnedOnly || pinned.has(collection.id))
-  ), [collections, viewState.collectionSourceFilter, viewState.pinnedOnly, pinned]);
   const ordered = useMemo(() => orderFeedbackCollections(
     filtered,
-    viewState.pinnedCollectionIds,
     viewState.collectionSort,
   ), [
     filtered,
     viewState.collectionSort,
-    viewState.pinnedCollectionIds,
   ]);
   const filteredIds = useMemo(() => new Set(filtered.map((collection) => collection.id)), [filtered]);
   const bundledIds = useMemo(() => new Set(
@@ -87,7 +78,7 @@ export function CollectionsSidebar({
   const visibleBundles = useMemo(() => bundles.filter((bundle) => !groupedBundleIds.has(bundle.id)).map((bundle) => ({
     ...bundle,
     members: bundle.members.filter((member) => filteredIds.has(member.briefing.id)),
-  })).filter((bundle) => bundle.members.length > 0 || !viewState.collectionSourceFilter.trim()), [
+  })).filter((bundle) => bundle.members.length > 0), [
     bundles,
     filteredIds,
     groupedBundleIds,
@@ -134,13 +125,6 @@ export function CollectionsSidebar({
       : []),
     ...unbundled.map((collection) => ({ key: `briefing:${collection.id}`, collection })),
   ], [visibleGroups, visibleBundles, unbundled, collapsedBundles, collapsedGroups, collapsedSubgroups, viewState.collectionSourceFilter]);
-  const visiblePinned = useMemo(
-    () => ordered.filter((collection) => pinned.has(collection.id)),
-    [ordered, pinned],
-  );
-  const visiblePinnedIndexes = new Map(
-    visiblePinned.map((collection, index) => [collection.id, index]),
-  );
   const selectedNavigationKey = navigationRows.find((row) => row.collection.id === selectedCollectionId)?.key ?? null;
   const listNavigation = useSidebarListNavigation({
     items: navigationRows,
@@ -149,34 +133,7 @@ export function CollectionsSidebar({
     onSelect: (row) => onSelect(row.collection),
   });
   const navigationIndex = new Map(navigationRows.map((row, index) => [row.key, index]));
-  const activeFilterCount = Number(viewState.pinnedOnly) + Number(viewState.collectionSort !== 'activity');
-
-  const togglePin = (collectionId: string) => {
-    setViewState((current) => {
-      const exists = current.pinnedCollectionIds.includes(collectionId);
-      return {
-        ...current,
-        pinnedCollectionIds: exists
-          ? current.pinnedCollectionIds.filter((id) => id !== collectionId)
-          : [...current.pinnedCollectionIds, collectionId],
-      };
-    });
-  };
-
-  const movePinned = (collectionId: string, targetIndex: number) => {
-    const visibleIds = visiblePinned.map((collection) => collection.id);
-    setViewState((current) => {
-      const next = moveVisiblePinnedCollection(
-        current.pinnedCollectionIds,
-        visibleIds,
-        collectionId,
-        targetIndex,
-      );
-      return next.every((id, index) => id === current.pinnedCollectionIds[index])
-        ? current
-        : { ...current, pinnedCollectionIds: next };
-    });
-  };
+  const activeFilterCount = Number(viewState.collectionSort !== 'activity');
 
   const toggleBundle = (bundleId: string) => {
     setViewState((current) => ({
@@ -210,95 +167,50 @@ export function CollectionsSidebar({
     navigator.clipboard?.writeText(target).catch(() => {});
   };
 
-  const renderCollection = (
-    occurrence: BriefingSidebarOccurrence,
-    pinnedIndex: number | null,
-    reorderable = true,
-  ) => {
+  const renderCollection = (occurrence: BriefingSidebarOccurrence) => {
     const collection = occurrence.collection;
     const navigation = listNavigation.getItemNavigationProps(
       occurrence,
       navigationIndex.get(occurrence.key) ?? 0,
     );
-    const isPinned = pinnedIndex !== null;
     const overflowActions: SidebarItemOverflowAction[] = [{
       id: 'copy-link',
       label: 'Copy link',
       ariaLabel: `Copy link to ${collection.label}`,
       onSelect: () => copyBriefingLink(collection.collectionId),
     }];
-    if (isPinned && reorderable) {
-      overflowActions.push(
-        {
-          id: 'move-up',
-          label: 'Move up',
-          ariaLabel: `Move ${collection.label} up`,
-          disabled: pinnedIndex === 0,
-          onSelect: () => movePinned(collection.id, pinnedIndex - 1),
-        },
-        {
-          id: 'move-down',
-          label: 'Move down',
-          ariaLabel: `Move ${collection.label} down`,
-          disabled: pinnedIndex === visiblePinned.length - 1,
-          onSelect: () => movePinned(collection.id, pinnedIndex + 1),
-        },
-      );
-    }
     return (
       <li
         key={occurrence.key}
-        className={`feedback-collection-row${isPinned ? ' feedback-collection-row--pinned' : ''}${draggedPinnedId === collection.id ? ' feedback-collection-row--dragging' : ''}`}
-        draggable={isPinned && reorderable}
-        onDragStart={isPinned && reorderable ? (event) => {
-          setDraggedPinnedId(collection.id);
-          event.dataTransfer.effectAllowed = 'move';
-          event.dataTransfer.setData('text/plain', collection.id);
-        } : undefined}
-        onDragOver={isPinned && reorderable ? (event) => {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'move';
-        } : undefined}
-        onDrop={isPinned && reorderable ? (event) => {
-          event.preventDefault();
-          const movedId = draggedPinnedId || event.dataTransfer.getData('text/plain');
-          if (movedId) movePinned(movedId, pinnedIndex);
-          setDraggedPinnedId(null);
-        } : undefined}
-        onDragEnd={isPinned && reorderable ? () => setDraggedPinnedId(null) : undefined}
+        className="feedback-collection-row"
       >
         <SidebarItemRow
           tabIndex={navigation.tabIndex}
           selectRef={navigation.ref}
           label={collection.label}
           selectionLabel={`Select briefing ${collection.label}`}
-          selectionDescription={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
+          selectionDescription={collection.unansweredDirectiveCount > 0
+            ? `${collection.unansweredDirectiveCount} unanswered directive${collection.unansweredDirectiveCount === 1 ? '' : 's'}`
+            : 'No unanswered directives'}
           selected={selectedCollectionId === collection.id}
-          trailingReveal={isPinned ? 'persistent-pin' : 'interaction'}
+          trailingReveal="interaction"
           ariaCurrent={navigation['aria-current']}
           onKeyDown={navigation.onKeyDown}
           onSelect={() => onSelect(collection)}
-          badges={(
+          badges={collection.unansweredDirectiveCount > 0 ? (
             <SidebarItemBadge
               className="feedback-collection-row__count"
-              ariaLabel={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
-              title={`${collection.itemCount} round${collection.itemCount === 1 ? '' : 's'}`}
+              ariaLabel={`${collection.unansweredDirectiveCount} unanswered directive${collection.unansweredDirectiveCount === 1 ? '' : 's'}`}
+              title={`${collection.unansweredDirectiveCount} unanswered directive${collection.unansweredDirectiveCount === 1 ? '' : 's'}`}
             >
-              {collection.itemCount}
+              {collection.unansweredDirectiveCount}
             </SidebarItemBadge>
-          )}
+          ) : undefined}
           actions={(
-            <>
-              <SidebarItemPinAction
-                label={collection.label}
-                pressed={isPinned}
-                onPress={() => togglePin(collection.id)}
-              />
-              <SidebarItemOverflowMenu
-                label={`Briefing actions for ${collection.label}`}
-                actions={overflowActions}
-              />
-            </>
+            <SidebarItemOverflowMenu
+              label={`Briefing actions for ${collection.label}`}
+              actions={overflowActions}
+            />
           )}
         />
       </li>
@@ -332,9 +244,8 @@ export function CollectionsSidebar({
           }}
           summarySlot={activeFilterCount > 0 ? (
             <>
-              {viewState.pinnedOnly ? <span>Pinned only</span> : null}
               {viewState.collectionSort === 'name' ? <span>By name</span> : null}
-              {viewState.collectionSort === 'round-count' ? <span>By round count</span> : null}
+              {viewState.collectionSort === 'unanswered-count' ? <span>Needs response</span> : null}
             </>
           ) : undefined}
           panel={filterPanelOpen ? {
@@ -344,19 +255,6 @@ export function CollectionsSidebar({
             onDismiss: () => setFilterPanelOpen(false),
             children: (
               <>
-                <div className="sidebar-search-filter__section">
-                  <label className="sidebar-search-filter__option">
-                    <input
-                      type="checkbox"
-                      checked={viewState.pinnedOnly}
-                      onInput={(event) => setViewState((current) => ({
-                        ...current,
-                        pinnedOnly: event.currentTarget.checked,
-                      }))}
-                    />
-                    <span>Pinned only</span>
-                  </label>
-                </div>
                 <div className="sidebar-search-filter__section">
                   <label className="sidebar-search-filter__label" for="briefing-sort">Sort</label>
                   <select
@@ -370,7 +268,7 @@ export function CollectionsSidebar({
                   >
                     <option value="activity">Recent activity</option>
                     <option value="name">Name</option>
-                    <option value="round-count">Round count</option>
+                    <option value="unanswered-count">Needs response</option>
                   </select>
                 </div>
               </>
@@ -405,6 +303,7 @@ export function CollectionsSidebar({
                   key={group.id}
                   id={`briefing-group-${group.id}`}
                   presentation="category"
+                  className="feedback-collections-sidebar__group"
                   bodyClassName="feedback-collections-sidebar__group-layout"
                   label={group.name}
                   count={undefined}
@@ -423,8 +322,6 @@ export function CollectionsSidebar({
                         <ul className="feedback-collections-sidebar__list" key={`briefing:${index}:${entry.briefing.id}`}>
                           {renderCollection(
                             { key: `group:${group.id}:${layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing },
-                            visiblePinnedIndexes.get(entry.briefing.id) ?? null,
-                            false,
                           )}
                         </ul>
                       );
@@ -448,8 +345,6 @@ export function CollectionsSidebar({
                       >
                         {entry.briefings.map((briefing) => renderCollection(
                           { key: `group:${group.id}:${layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing },
-                          visiblePinnedIndexes.get(briefing.id) ?? null,
-                          false,
                         ))}
                       </SidebarGroupNode>
                     );
@@ -476,8 +371,6 @@ export function CollectionsSidebar({
                 >
                   {bundle.members.map((member) => renderCollection(
                     { key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing },
-                    visiblePinnedIndexes.get(member.briefing.id) ?? null,
-                    false,
                   ))}
                 </SidebarGroupNode>
               );
@@ -486,7 +379,6 @@ export function CollectionsSidebar({
               <ul className="feedback-collections-sidebar__list">
                 {unbundled.map((collection) => renderCollection(
                   { key: `briefing:${collection.id}`, collection },
-                  visiblePinnedIndexes.get(collection.id) ?? null,
                 ))}
               </ul>
             ) : null}

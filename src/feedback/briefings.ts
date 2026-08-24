@@ -446,13 +446,30 @@ export function briefingMemberAllows(db: Db, briefingId: string, actorUserId: st
 export function listBriefings(db: Db, viewer: { userId: string; operator: boolean }) {
   return db.prepare(
     `SELECT b.id, b.briefing_key, b.title, b.latest_round_id, b.round_count, b.archived_at,
-            b.created_at, b.updated_at
+            b.created_at, b.updated_at,
+            CASE WHEN EXISTS (
+              SELECT 1 FROM users actor
+               WHERE actor.id = ? AND actor.kind = 'human' AND actor.status = 'active'
+            ) THEN (SELECT COUNT(*)
+               FROM briefing_directive_instances i
+              WHERE i.round_id = b.latest_round_id
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM briefing_response_events e
+                   WHERE e.directive_instance_id = i.id
+                     AND e.round_id = i.round_id
+                     AND e.actor_user_id = ?
+                     AND e.operation = 'set'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM briefing_response_events r WHERE r.retracts_event_id = e.id
+                     )
+                )) ELSE 0 END AS unanswered_directive_count
        FROM briefings b
       WHERE b.archived_at IS NULL AND (? = 1 OR EXISTS (
         SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
       ))
       ORDER BY b.updated_at DESC, b.id`,
-  ).all(viewer.operator ? 1 : 0, viewer.userId);
+  ).all(viewer.userId, viewer.userId, viewer.operator ? 1 : 0, viewer.userId);
 }
 
 export type BriefingViewer = { userId: string; operator: boolean };

@@ -532,10 +532,10 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.get("/api/briefings", (req, res) => {
     try {
-      const identity = requireIdentity(req);
+      const actor = activeHuman(db, req);
       sendJson(res, 200, { briefings: listBriefings(db, {
-        userId: identity.user_id,
-        operator: isOperator(db, identity),
+        userId: actor.user.id,
+        operator: actor.operator,
       }) });
     } catch (error) {
       handleError(res, error);
