@@ -14,6 +14,7 @@
 #   auth list [opts]                 List active auth requests
 #   auth action <subcommand>         Manage staged auth request actions
 #   auth check [opts]                Check queued merge independence
+#   auth clearance <subcommand>      Manage scoped protected-merge clearances
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth merge <branch> [opts]       Execute authenticated merge
@@ -64,6 +65,7 @@ Commands:
   auth list [opts]                 List active auth requests
   auth action <subcommand>         Manage staged auth request actions
   auth check [opts]                Check queued merge independence
+  auth clearance <subcommand>      Manage scoped protected-merge clearances
   auth request <branch> [opts]     Submit auth merge request
   auth replay-archives <id>        Replay Codex archive attempts
   auth merge <branch> [opts]       Execute authenticated merge
@@ -100,6 +102,7 @@ Subcommands:
   list [opts]                 List active auth requests
   action <subcommand>         Manage staged auth request actions
   check [opts]                Check queued merge independence
+  clearance <subcommand>      Manage scoped protected-merge clearances
   request <branch> [opts]     Submit auth merge request
   replay-archives <id>        Replay Codex archive attempts
   merge <branch> [opts]       Execute authenticated merge
@@ -121,6 +124,7 @@ case "${1:-}" in
       list)    shift; exec "$MANDIBLE_CLI_DIR/auth-list.sh" "$@" ;;
       action)  shift; exec "$MANDIBLE_CLI_DIR/auth-action.sh" "$@" ;;
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
+      clearance) shift; exec "$MANDIBLE_CLI_DIR/auth-clearance.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
       merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;

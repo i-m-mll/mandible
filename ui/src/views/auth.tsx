@@ -21,20 +21,20 @@ import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
-  disableAuthAutoApprove,
-  enableAuthAutoApprove,
+  createAuthClearance,
   fetchAuthHooks,
   findIssue,
-  getAuthAutoApproveStatus,
+  getAuthClearances,
   getAuthRequestActions,
   getAuthRequestDetail,
   isApiErrorStatus,
   createAuthHook,
+  revokeAuthClearance,
   setAuthRequestActionVeto,
   updateAuthHook,
   deleteAuthHook,
   type AuthRequestAction,
-  type AuthAutoApproveStatus,
+  type AuthClearance,
   type AuthHook,
   type AttributionReadProjection,
   type InstanceInfo,
@@ -95,8 +95,11 @@ export type AuthRequest = {
   approval_source?: string;
   approval_lease_id?: string | null;
   requested_by_user_id?: string | null;
+  requester_evidence_method?: string | null;
+  requester_credential_id?: string | null;
   approved_by_user_id?: string | null;
   execution_evidence_id?: string | null;
+  clearance_use_id?: string | null;
   requester?: ReadUserIdentity | null;
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
@@ -708,6 +711,65 @@ function MetadataRow({ label, value }: { label: string; value: string | JSX.Elem
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
+  );
+}
+
+function AuthClearancePanel({
+  request,
+  clearances,
+  busy,
+  mutationsAllowed,
+  onCreate,
+  onRevoke,
+}: {
+  request: AuthRequest;
+  clearances: AuthClearance[];
+  busy: boolean;
+  mutationsAllowed: boolean;
+  onCreate: () => void;
+  onRevoke: (id: string) => void;
+}): JSX.Element {
+  const eligible = getAuthStatus(request) === 'pending'
+    && getAuthType(request) === 'merge'
+    && request.requester_evidence_method === 'api_token'
+    && Boolean(request.requester_credential_id);
+  return (
+    <section className="panel auth-clearance-panel" aria-label="Protected merge clearances">
+      <div className="panel__header">
+        <strong>Scoped clearance</strong>
+        {eligible && (
+          <button type="button" className="btn btn--active" disabled={busy || !mutationsAllowed} onClick={onCreate}>
+            {busy ? 'Waiting for YubiKey…' : 'Issue clearance'}
+          </button>
+        )}
+      </div>
+      <div className="panel__body">
+        <p className="text-muted">
+          Requester provenance: {request.requester_evidence_method ?? 'unverified'}
+          {request.requester_credential_id ? ` · ${request.requester_credential_id.slice(0, 12)}` : ''}
+        </p>
+        {!eligible && getAuthStatus(request) === 'pending' && (
+          <p className="text-muted">This request is not eligible for autonomous clearance execution.</p>
+        )}
+        {clearances.length === 0 ? (
+          <p className="text-muted">No clearance history for this request.</p>
+        ) : clearances.map((clearance) => {
+          const active = clearance.revoked_at == null
+            && clearance.expires_at > Date.now()
+            && clearance.consumed_uses < clearance.max_uses;
+          return (
+            <div className="auth-clearance-panel__row" key={clearance.id}>
+              <span>{clearance.id.slice(0, 8)} · {clearance.consumed_uses}/{clearance.max_uses} uses · {clearance.issue_id ? `issue ${clearance.issue_id.slice(0, 8)}` : clearance.head_branch}</span>
+              {active && (
+                <button type="button" className="btn btn--ghost" disabled={busy || !mutationsAllowed} onClick={() => onRevoke(clearance.id)}>
+                  Revoke
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1470,6 +1532,9 @@ function AuthRequestDetail({
         <MetadataRow label="Resolved" value={resolvedAt} />
         <MetadataRow label="Approval source" value={request.approval_source ?? null} />
         <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
+        <MetadataRow label="Clearance use" value={request.clearance_use_id ?? null} />
+        <MetadataRow label="Requester evidence" value={request.requester_evidence_method ?? null} />
+        <MetadataRow label="Requester credential" value={request.requester_credential_id ?? null} />
         <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />
         <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
         <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
@@ -2575,10 +2640,6 @@ export function AuthQueueView({
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [autoApproveStatus, setAutoApproveStatus] = useState<AuthAutoApproveStatus | null>(null);
-  const [autoApproveBusy, setAutoApproveBusy] = useState(false);
-  const [showAutoApproveSetupModal, setShowAutoApproveSetupModal] = useState(false);
-  const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
   const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
   const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
   const instanceLabel = instance?.role ?? 'main';
@@ -2615,45 +2676,6 @@ export function AuthQueueView({
       }
     };
   }, []);
-
-  useEffect(() => {
-    let active = true;
-    const load = () => {
-      getAuthAutoApproveStatus()
-        .then((status) => {
-          if (active) setAutoApproveStatus(status);
-        })
-        .catch(() => undefined);
-    };
-    load();
-    const interval = setInterval(load, 10_000);
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, []);
-
-  const handleAutoApproveToggle = useCallback(async () => {
-    if (!operationalMutationsAllowed) {
-      showToast('Auth mutations are disabled on this Mandible preview instance.');
-      return;
-    }
-    if (!autoApproveStatus?.enabled && !autoApproveSigningConfigured) {
-      setShowAutoApproveSetupModal(true);
-      return;
-    }
-    setAutoApproveBusy(true);
-    try {
-      const next = autoApproveStatus?.enabled
-        ? await disableAuthAutoApprove()
-        : await enableAuthAutoApprove();
-      setAutoApproveStatus(next);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Auto-approve toggle failed');
-    } finally {
-      setAutoApproveBusy(false);
-    }
-  }, [autoApproveSigningConfigured, autoApproveStatus?.enabled, operationalMutationsAllowed, showToast]);
 
   const runAction = useCallback(
     (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
@@ -3110,6 +3132,61 @@ export function AuthQueueView({
     return hydration ? { ...selectedRequestRaw, ...hydration } : selectedRequestRaw;
   }, [selectedRequestRaw, hydratedBodies]);
 
+  const [clearances, setClearances] = useState<AuthClearance[]>([]);
+  const [clearanceBusy, setClearanceBusy] = useState(false);
+  const refreshClearances = useCallback((requestId: string) => {
+    getAuthClearances(requestId)
+      .then(setClearances)
+      .catch(() => setClearances([]));
+  }, []);
+  useEffect(() => {
+    if (!selectedRequest) {
+      setClearances([]);
+      return;
+    }
+    refreshClearances(getAuthId(selectedRequest));
+  }, [selectedRequest, refreshClearances]);
+
+  const handleCreateClearance = useCallback(async () => {
+    if (!selectedRequest?.requested_by_user_id || !operationalMutationsAllowed) return;
+    const requestId = getAuthId(selectedRequest);
+    const issue = selectedRequest.issue_closures?.[0]
+      ?? selectedRequest.issue_references?.[0]
+      ?? selectedRequest.issue_ids?.[0];
+    const head = selectedRequest.head_branch ?? selectedRequest.head;
+    if (!issue && !head) {
+      showToast('The selected request has no exact issue or head scope.');
+      return;
+    }
+    setClearanceBusy(true);
+    try {
+      await createAuthClearance({
+        request_id: requestId,
+        grantee: selectedRequest.requested_by_user_id,
+        ...(issue ? { issue } : {}),
+        ...(head ? { head } : {}),
+      });
+      refreshClearances(requestId);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Clearance issuance failed.');
+    } finally {
+      setClearanceBusy(false);
+    }
+  }, [operationalMutationsAllowed, refreshClearances, selectedRequest, showToast]);
+
+  const handleRevokeClearance = useCallback(async (clearanceId: string) => {
+    if (!selectedRequest || !operationalMutationsAllowed) return;
+    setClearanceBusy(true);
+    try {
+      await revokeAuthClearance(clearanceId);
+      refreshClearances(getAuthId(selectedRequest));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Clearance revocation failed.');
+    } finally {
+      setClearanceBusy(false);
+    }
+  }, [operationalMutationsAllowed, refreshClearances, selectedRequest, showToast]);
+
   useEffect(() => {
     if (!selectedRequest) return;
     const requestId = getAuthId(selectedRequest);
@@ -3333,34 +3410,6 @@ export function AuthQueueView({
           {toastMessage}
         </div>
       )}
-      {showAutoApproveSetupModal && (
-        <div className="auth-dep-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-auto-approve-setup-title">
-          <div className="auth-dep-modal">
-            <h3 className="auth-dep-modal__title" id="auth-auto-approve-setup-title">
-              Auto-approve is not configured
-            </h3>
-            <p className="auth-dep-modal__body">
-              Auto-approve needs delegated signing setup before it can create temporary approval leases.
-            </p>
-            <div className="auth-dep-modal__actions">
-              <button type="button" className="btn btn--ghost" onClick={() => setShowAutoApproveSetupModal(false)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn--active"
-                onClick={() => {
-                  setShowAutoApproveSetupModal(false);
-                  window.location.hash = '#/settings?section=auth';
-                }}
-              >
-                Go to Settings
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <ViewSidebar
         {...VIEW_SIDEBAR_GEOMETRY.auth}
         className="auth-sidebar"
@@ -3519,29 +3568,6 @@ export function AuthQueueView({
           />
         }
         bodyClassName="auth-sidebar__list"
-        footer={
-            <div className="auth-auto-approve">
-              <div className="auth-auto-approve__text">
-                <span className="auth-auto-approve__label">Auto-approve</span>
-                <span className="auth-auto-approve__status">
-                  {instanceMutationBlocked
-                    ? `Disabled on ${instanceLabel}`
-                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
-                </span>
-              </div>
-              <button
-                type="button"
-                className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
-                role="switch"
-                aria-checked={Boolean(autoApproveStatus?.enabled)}
-                aria-label="Toggle auth auto-approve"
-                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
-                onClick={() => void handleAutoApproveToggle()}
-              >
-                <span className="auth-auto-approve__knob" />
-              </button>
-            </div>
-        }
       >
               {filteredSidebarItems.length === 0 ? (
                 <div className="auth-sidebar__empty">
@@ -3616,15 +3642,25 @@ export function AuthQueueView({
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
               actionBundle={
-                requestActions.length > 0 ? (
-                  <AuthActionBundle
+                <div>
+                  <AuthClearancePanel
                     request={request}
-                    actions={requestActions}
-                    inFlightActionIds={inFlightActionIds}
+                    clearances={clearances}
+                    busy={clearanceBusy}
                     mutationsAllowed={operationalMutationsAllowed}
-                    onToggleVeto={handleToggleActionVeto}
+                    onCreate={() => void handleCreateClearance()}
+                    onRevoke={(clearanceId) => void handleRevokeClearance(clearanceId)}
                   />
-                ) : null
+                  {requestActions.length > 0 && (
+                    <AuthActionBundle
+                      request={request}
+                      actions={requestActions}
+                      inFlightActionIds={inFlightActionIds}
+                      mutationsAllowed={operationalMutationsAllowed}
+                      onToggleVeto={handleToggleActionVeto}
+                    />
+                  )}
+                </div>
               }
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}

@@ -143,6 +143,10 @@ export const METADATA_BACKUP_TABLES = [
   "user_bindings",
   "delegated_signing_leases",
   "attribution_evidence",
+  // Scoped merge clearances are durable audit metadata. Runtime signer handles
+  // are deliberately absent and therefore every restored grant fails closed.
+  "auth_clearances",
+  "auth_clearance_uses",
   // User groups, group membership, and permission grants (issue a0379a3 /
   // umbrella 8e2e8b2, migration 111). Canonical registry data describing who
   // belongs to which group and what each subject may do — deliberately enrolled,

@@ -243,6 +243,31 @@ Approve a pending auth request. Transitions status to `executing`.
 { "request_id": "...", "status": "executing" }
 ```
 
+### Scoped protected-merge clearances
+
+`GET /api/auth/clearances`, `GET /api/auth/clearances/:id`,
+`POST /api/auth/clearances`, and `POST /api/auth/clearances/:id/revoke` are
+operator-only. `POST /api/auth/request/:id/clearance/execute` is available only
+to the exact active API-token credential recorded when that request was
+submitted. Clearance execution is merge-only, daemon-only, runtime-bound, and
+atomically consumes one use while freezing the reviewed request and recording
+the clearance, signer lease, requester credential, and snapshot digest.
+
+```json
+{
+  "request_id": "optional-auth-request-id",
+  "grantee": "agent-user-or-slug",
+  "grantee_credential_id": "credential-id",
+  "project": "canonical-project-key",
+  "base": "main",
+  "action": "merge",
+  "issue": "exact-issue-ref",
+  "head": "feature/exact-head",
+  "duration_minutes": 60,
+  "max_uses": 1
+}
+```
+
 ### POST /api/auth/request/:id/reject
 
 Reject an auth request.

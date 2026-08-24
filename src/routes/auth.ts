@@ -1,6 +1,8 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
+import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
+import { DelegatedSigningResource } from "../delegated-signing-resource.js";
 import {
   classifyGitFailure,
   computeAuthMergeReviewMetadata,
@@ -26,6 +28,7 @@ import {
 } from "../identity/read-projection.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { readBody } from "./http.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
@@ -36,9 +39,16 @@ export function registerAuthRoutes(
   app: RouteRegistrar,
   queue?: AuthQueue,
   autoApprove?: AuthAutoApproveManager,
+  clearance?: AuthClearanceManager,
 ): AuthQueue {
   const autoApproveManager = autoApprove ?? new AuthAutoApproveManager();
-  const authQueue = queue ?? new AuthQueue({ autoApprover: autoApproveManager });
+  const clearanceManager = clearance ?? new AuthClearanceManager(
+    getDb(), new DelegatedSigningResource(autoApproveManager), randomUUID(),
+  );
+  const authQueue = queue ?? new AuthQueue({
+    autoApprover: autoApproveManager,
+    clearanceManager,
+  });
   app.post("/api/auth/check", (req, res) => {
     const payload = parseAuthCheckPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
@@ -201,6 +211,8 @@ export function registerAuthRoutes(
     }
 
     try {
+      payload.requester_evidence_method = requester.evidenceMethod;
+      payload.requester_credential_id = requester.credentialId;
       const request = authQueue.submit(payload, requester.userId);
       res.status(201).json({ request_id: request.id });
     } catch (error) {
@@ -522,15 +534,94 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.get("/api/auth/auto-approve", (_req, res) => {
-    res.json(autoApproveManager.getStatus());
+  app.get("/api/auth/clearances", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      const requestId = typeof req.query.request_id === "string" ? req.query.request_id : null;
+      res.json({ clearances: clearanceManager.list(requestId) });
+    } catch (error) {
+      handleClearanceError(error, res);
+    }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/auto-approve/setup", async (req, res) => {
+  // Keep this static path ahead of /:id so "signing" is never interpreted as
+  // a clearance reference by order-sensitive HTTP routers.
+  app.get("/api/auth/clearances/signing", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      res.json(clearanceManager.signingStatus());
+    } catch (error) {
+      handleClearanceError(error, res);
+    }
+  }, { fileRpc: "deny" });
+
+  app.get("/api/auth/clearances/:id", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      const clearance = clearanceManager.show(req.params.id);
+      res.json({ clearance, uses: clearanceManager.uses(clearance.id) });
+    } catch (error) {
+      handleClearanceError(error, res);
+    }
+  }, { fileRpc: "deny" });
+
+  app.post("/api/auth/clearances", async (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    try {
+      if (body.action !== undefined && body.action !== "merge") {
+        throw new AuthClearanceError("unsupported_action", "Clearance action is fixed to merge.");
+      }
+      const operator = requireOperator(getDb(), req);
+      const clearance = await clearanceManager.issue({
+        requestId: typeof body.request_id === "string" ? body.request_id : null,
+        grantee: String(body.grantee ?? ""),
+        granteeCredentialId: typeof body.grantee_credential_id === "string" ? body.grantee_credential_id : null,
+        project: typeof body.project === "string" ? body.project : null,
+        baseBranch: typeof body.base === "string" ? body.base : null,
+        issueRef: typeof body.issue === "string" ? body.issue : null,
+        headBranch: typeof body.head === "string" ? body.head : null,
+        action: "merge",
+        durationMinutes: typeof body.duration_minutes === "number" ? body.duration_minutes : undefined,
+        maxUses: typeof body.max_uses === "number" ? body.max_uses : undefined,
+      }, operator.user_id);
+      res.status(201).json({ clearance });
+    } catch (error) {
+      handleClearanceError(error, res);
+    }
+  }, { fileRpc: "deny" });
+
+  app.post("/api/auth/clearances/:id/revoke", async (req, res) => {
+    try {
+      const operator = requireOperator(getDb(), req);
+      res.json({ clearance: await clearanceManager.revoke(req.params.id, operator.user_id) });
+    } catch (error) {
+      handleClearanceError(error, res);
+    }
+  }, { fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/clearance/execute", (req, res) => {
+    try {
+      const identity = req.client_identity;
+      const request = authQueue.getRequest(req.params.id);
+      if (!identity || identity.method !== "api_token" || !identity.credential_id || !request
+          || request.requested_by_user_id !== identity.user_id
+          || request.requester_credential_id !== identity.credential_id) {
+        res.status(403).json({ error: "Verified requester provenance does not match this auth request." });
+        return;
+      }
+      const executing = authQueue.approveWithClearance(request.id);
+      res.status(202).json({ request_id: executing.id, status: executing.status, clearance_use_id: executing.clearance_use_id });
+    } catch (error) {
+      if (error instanceof AuthClearanceError) handleClearanceError(error, res);
+      else handleQueueError(error, res);
+    }
+  }, { fileRpc: "deny" });
+
+  app.post("/api/auth/clearances/signing/setup", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
       requireOperator(getDb(), req);
-      const status = await autoApproveManager.setupDelegatedSigning({
+      const status = await clearanceManager.setupSigning({
         name: typeof body.name === "string" ? body.name : undefined,
         email: typeof body.email === "string" ? body.email : undefined,
         ageRecipient: typeof body.age_recipient === "string" ? body.age_recipient : undefined,
@@ -542,36 +633,12 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/auto-approve/enable", async (req, res) => {
-    const body = readBody<Record<string, unknown>>(req);
-    const duration =
-      typeof body.duration_minutes === "number" ? body.duration_minutes : undefined;
+  app.delete("/api/auth/clearances/signing", async (req, res) => {
     try {
       requireOperator(getDb(), req);
-      const status = await autoApproveManager.enable(duration);
-      const approval = autoApproveManager.getActiveApprovalContext();
-      const approved = approval ? authQueue.autoApprovePending(approval) : [];
-      res.status(202).json({ ...status, approved_request_ids: approved.map((r) => r.id) });
+      res.json(await clearanceManager.removeSigning());
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-    }
-  }, { fileRpc: "deny" });
-
-  app.post("/api/auth/auto-approve/disable", (req, res) => {
-    try {
-      requireOperator(getDb(), req);
-      res.json(autoApproveManager.disable());
-    } catch (error) {
-      handleQueueError(error, res);
-    }
-  }, { fileRpc: "deny" });
-
-  app.delete("/api/auth/auto-approve/signing", async (req, res) => {
-    try {
-      requireOperator(getDb(), req);
-      res.json(await autoApproveManager.removeDelegatedSigning());
-    } catch (error) {
-      handleQueueError(error, res);
+      handleClearanceError(error, res);
     }
   }, { fileRpc: "deny" });
 
@@ -581,7 +648,8 @@ export function registerAuthRoutes(
 function resolveAuthRequester(
   req: RequestLike,
   payload: AuthRequestInput,
-): { ok: true; userId: string } | { ok: false; status: number; code: string; error: string } {
+): { ok: true; userId: string; evidenceMethod: string; credentialId: string | null }
+  | { ok: false; status: number; code: string; error: string } {
   const authenticatedUserId = req.client_identity?.user_id ?? null;
   const ambientIdentity = req.ambient_identity ?? null;
   const sessionResolution = payload.session_id
@@ -623,7 +691,14 @@ function resolveAuthRequester(
       error: "Auth request submission requires an authenticated client or an unambiguous session binding.",
     };
   }
-  return { ok: true, userId };
+  return {
+    ok: true,
+    userId,
+    evidenceMethod: req.client_identity?.method === "api_token" ? "api_token" : "session_claim",
+    credentialId: req.client_identity?.method === "api_token"
+      ? req.client_identity.credential_id
+      : null,
+  };
 }
 
 // Bug: dd21c1e — valid auth request types for input validation
@@ -1011,6 +1086,25 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
   }
 
   res.status(500).json({ error: "Unexpected auth queue error." });
+}
+
+function handleClearanceError(error: unknown, res: ResponseLike): void {
+  if (error instanceof ClientAuthzError) {
+    res.status(error.status).json({ error: error.message, code: error.code });
+    return;
+  }
+  if (error instanceof AuthClearanceError) {
+    const status = error.code === "not_found" || error.code === "request_not_found"
+      ? 404
+      : error.code.includes("ambiguous") || error.code.endsWith("_mismatch")
+        ? 409
+        : error.code === "operator_required"
+          ? 403
+          : 422;
+    res.status(status).json({ error: error.message, code: error.code });
+    return;
+  }
+  res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.

@@ -41,6 +41,10 @@ const pendingRequest: AuthRequest = {
   created_at: 1,
   updated_at: 1,
   actions: [],
+  requested_by_user_id: 'agent-1',
+  requester_evidence_method: 'api_token',
+  requester_credential_id: 'credential-1234567890',
+  issue_references: ['issue-1'],
 };
 
 const executingRequest: AuthRequest = {
@@ -138,6 +142,52 @@ describe('AuthQueueView daemon readiness gate', () => {
     fireEvent.click(approve);
     expect(onApprove).toHaveBeenCalledTimes(1);
     expect(onApprove).toHaveBeenCalledWith('req-1');
+  });
+
+  it('creates, lists, and revokes scoped clearance from the selected request', async () => {
+    const clearance = {
+      id: 'clearance-12345678', issuer_user_id: 'operator-1', grantee_user_id: 'agent-1',
+      grantee_credential_id: 'credential-1234567890', project_id: 'project-1', base_branch: 'main',
+      issue_id: 'issue-1', head_branch: 'feature/x', action: 'merge' as const,
+      issued_at: Date.now(), expires_at: Date.now() + 60_000, max_uses: 1, consumed_uses: 0,
+      revoked_at: null, runtime_epoch: 'runtime-a',
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.startsWith('/api/auth/clearances?') && method === 'GET') {
+        return Promise.resolve(new Response(JSON.stringify({ clearances: [clearance] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/auth/clearances' && method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ clearance }), {
+          status: 201, headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === `/api/auth/clearances/${clearance.id}/revoke` && method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ clearance: { ...clearance, revoked_at: Date.now() } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderView(true, vi.fn());
+
+    expect(await screen.findByText(/clearanc.*0\/1 uses/i)).toBeTruthy();
+    expect(screen.getByText(/Requester provenance: api_token/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Issue clearance' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) =>
+      String(url) === '/api/auth/clearances' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true));
+    const createCall = fetchMock.mock.calls.find(([url, init]) =>
+      String(url) === '/api/auth/clearances' && (init as RequestInit | undefined)?.method === 'POST');
+    expect(JSON.parse(String((createCall?.[1] as RequestInit).body))).toMatchObject({
+      request_id: 'req-1', grantee: 'agent-1', issue: 'issue-1', head: 'feature/x',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) =>
+      String(url) === `/api/auth/clearances/${clearance.id}/revoke`)).toBe(true));
   });
 
   it('shows preview instance diagnostics and blocks approval actions', () => {

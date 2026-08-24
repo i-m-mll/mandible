@@ -35,10 +35,10 @@ afterEach(() => {
 describe("delegated signing settings", () => {
   it("requires confirmation, removes key material, and refreshes visible status", async () => {
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toBe("/api/auth/auto-approve" + (init?.method === "DELETE" ? "/signing" : ""));
+      expect(String(input)).toBe("/api/auth/clearances/signing");
       return response(init?.method === "DELETE"
-        ? { ...configured, signing: { ...configured.signing, configured: false, public_key: null } }
-        : configured);
+        ? { ...configured.signing, configured: false, public_key: null }
+        : configured.signing);
     });
     vi.stubGlobal("fetch", fetch);
 

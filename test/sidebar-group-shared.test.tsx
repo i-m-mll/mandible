@@ -202,7 +202,10 @@ describe('shared sidebar group presentation', () => {
     vi.spyOn(api, 'listProjectsForPicker').mockResolvedValue([]);
     vi.spyOn(api, 'getBackupStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getBackupStatus>>);
     vi.spyOn(api, 'getRuntimeStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getRuntimeStatus>>);
-    vi.spyOn(api, 'getAuthAutoApproveStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getAuthAutoApproveStatus>>);
+    vi.spyOn(api, 'getDelegatedSigningStatus').mockResolvedValue({
+      provider: 'test', configured: false, public_key: null, public_key_path: '',
+      encrypted_passphrase_path: '', recipient_path: '', missing_tools: [],
+    });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

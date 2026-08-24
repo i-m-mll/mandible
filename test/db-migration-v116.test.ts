@@ -33,7 +33,7 @@ describe("migration v116: session identity mismatch flag", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "154",
+value: "155",
     });
     const columns = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{
       name: string;
@@ -63,7 +63,7 @@ value: "154",
     expect(() => migrate(db)).not.toThrow();
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "154",
+value: "155",
     });
     // A replay must not clear a recorded flag.
     expect(

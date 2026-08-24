@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { compressContent } from "./compression.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import {
@@ -4830,6 +4831,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "explicit_work_unit_worker_ownership",
     statements: [],
   },
+  {
+    version: 155,
+    name: "scoped_protected_merge_clearances",
+    statements: [],
+  },
 ];
 
 function ensureBriefingOrganizationColumns(db: Db): void {
@@ -5457,12 +5463,36 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 152) migrateBriefingBundleLayoutV152(db);
       if (migration.version === 153) ensureBriefingOrganizationColumns(db);
       if (migration.version === 154) ensureWorkUnitWorkerOwnershipColumn(db);
+      if (migration.version === 155) ensureAuthClearanceSchema(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
       setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
     }
   })();
+}
+
+function ensureAuthClearanceSchema(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns: ReadonlyArray<readonly [string, string]> = [
+    ["requester_evidence_method", "TEXT"],
+    ["requester_credential_id", "TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT"],
+    ["clearance_use_id", "TEXT REFERENCES auth_clearance_uses(id) ON DELETE RESTRICT"],
+  ];
+  // clearance_use_id points at a table created below, so add the two requester
+  // provenance columns first, create clearance tables, then add that FK column.
+  for (const [name, type] of columns.slice(0, 2)) {
+    if (!hasColumn(db, "auth_requests", name)) db.exec(`ALTER TABLE auth_requests ADD COLUMN ${name} ${type}`);
+  }
+  for (const statement of AUTH_CLEARANCE_SCHEMA_SQL.filter((sql) => !sql.includes("auth_requests_clearance_review_frozen"))) {
+    db.exec(statement);
+  }
+  const [clearanceUseName, clearanceUseType] = columns[2];
+  if (!hasColumn(db, "auth_requests", clearanceUseName)) {
+    db.exec(`ALTER TABLE auth_requests ADD COLUMN ${clearanceUseName} ${clearanceUseType}`);
+  }
+  const trigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
+  if (trigger) db.exec(trigger);
 }
 
 export function migrate(db: Db): void {

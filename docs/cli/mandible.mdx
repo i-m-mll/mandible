@@ -252,6 +252,30 @@ in-progress merge state would be disturbed, then uses Git's merge-tree
 machinery without writing to the worktree. It reports target conflicts first,
 then the queued request that makes the candidate conflict in queue order.
 
+### mandible auth clearance
+
+Issue, inspect, revoke, or consume a narrowly scoped protected-merge clearance.
+Creation, reads, and revocation are operator-only; creation requires one fresh
+hardware touch.
+Execution succeeds only for the exact durable agent credential, canonical
+project, protected base, merge request, issue and/or head scope, active runtime,
+expiry, revocation state, and remaining use count recorded by the grant.
+
+```bash
+mandible auth clearance create --grantee <agent> [--request <request-id>] \
+  [--project <project> --base <protected-branch>] [--credential <credential-id>] \
+  [--issue <issue-ref>] [--head <branch>] \
+  [--duration-minutes <n>] [--max-uses <n>] [--json]
+mandible auth clearance list [--request <request-id>] [--json]
+mandible auth clearance show <clearance-id> [--json]
+mandible auth clearance revoke <clearance-id> [--json]
+mandible auth clearance execute <request-id> [--json]
+```
+
+Creation is prospective; `--request` is optional provenance and scope prefill.
+The defaults are one use and 60 minutes. Skill, prompt, session, and ambient
+provider claims are never clearance authorization.
+
 ### mandible auth request
 
 Submit an auth request and optionally watch for resolution.

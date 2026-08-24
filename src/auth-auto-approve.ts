@@ -26,7 +26,7 @@ const DEFAULT_PRESENCE_COMMAND_TIMEOUT_MS = 15_000;
 const PROVIDER = "yubikey-age";
 
 export interface AuthApprovalContext {
-  source: "auto_lease" | "presence_challenge";
+  source: "auto_lease" | "presence_challenge" | "clearance";
   leaseId: string;
   approverUserId: string;
   env: NodeJS.ProcessEnv;
@@ -92,6 +92,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   private readonly configDir: string;
   private readonly presenceCommandTimeoutMs: number;
   private activeLease: ActiveLease | null = null;
+  private readonly scopedLeases = new Map<string, ActiveLease>();
 
   constructor(options: AuthAutoApproveOptions = {}) {
     this.db = options.db ?? getDb();
@@ -233,6 +234,43 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
         GIT_CONFIG_VALUE_0: lease.publicKeyPath,
       },
     };
+  }
+
+  /**
+   * Mint a new hardware-presence-backed signer even when another signer is
+   * active. Scoped clearance issuance must always consume a fresh YubiKey
+   * touch; it must never inherit the historical global auto-approve lease.
+   */
+  async freshPresenceChallenge(ttlSeconds = 60): Promise<AuthApprovalContext> {
+    const durationSeconds = Math.min(24 * 60 * 60, Math.max(30, Math.round(ttlSeconds)));
+    const lease = await this.createDelegatedSigningLease(durationSeconds);
+    const timer = setTimeout(() => {
+      this.scopedLeases.delete(lease.id);
+      void stopSshAgent(lease.sshAgentPid).catch(() => undefined);
+    }, durationSeconds * 1000);
+    timer.unref();
+    lease.timer = timer;
+    this.scopedLeases.set(lease.id, lease);
+    return {
+      source: "clearance",
+      leaseId: lease.id,
+      approverUserId: lease.ownerUserId,
+      env: {
+        SSH_AUTH_SOCK: lease.sshAuthSock,
+        MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "user.signingkey",
+        GIT_CONFIG_VALUE_0: lease.publicKeyPath,
+      },
+    };
+  }
+
+  async releaseApprovalContext(context: AuthApprovalContext): Promise<void> {
+    const lease = this.scopedLeases.get(context.leaseId);
+    if (!lease) return;
+    this.scopedLeases.delete(context.leaseId);
+    if (lease.timer) clearTimeout(lease.timer);
+    await stopSshAgent(lease.sshAgentPid);
   }
 
   private async createDelegatedSigningLease(durationSeconds: number): Promise<ActiveLease> {
