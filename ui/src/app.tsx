@@ -1963,16 +1963,10 @@ function App(): JSX.Element {
       href: '#/briefing',
       label: 'Briefing',
       title: 'Briefing',
-      // Umbrella 99b74d6 — the pending-candidate count is server-authoritative
-      // (contract v1 §4). There is no client-derived fallback, so an absent
-      // count renders no badge rather than a fabricated zero.
-      badge: badges.briefing,
-      badgeClass: 'tab-badge--briefing',
       // Issue 5308097 §8 — a SECOND, independent badge for active and
       // unacknowledged operational incidents. It is deliberately not folded
-      // into the briefing count: an unattended executor failure and a Briefing
-      // awaiting review are different obligations, and adding them together
-      // would let either one hide the other.
+      // into any Briefing lifecycle signal: an unattended executor failure and
+      // a Briefing awaiting review are different obligations.
       secondaryBadge: badges.incidents,
       secondaryBadgeClass: 'tab-badge--incidents',
       icon: BriefingIcon,

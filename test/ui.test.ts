@@ -999,8 +999,10 @@ describe('app shell', () => {
     expect(css).not.toContain('.app-rail__group--secondary');
     expect(css).toContain('.app-rail__group {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;');
     expect(screen.getByRole('link', { name: 'Spaces' }).getAttribute('aria-current')).toBe('page');
-    await waitFor(() => expect(screen.getByRole('link', { name: 'Briefing' })
-      .querySelector('.app-rail__badge')?.textContent).toBe('2'));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls
+      .some(([input]) => String(input) === '/api/dashboard/badges')).toBe(true));
+    expect(screen.getByRole('link', { name: 'Briefing' })
+      .querySelector('.app-rail__badge')).toBeNull();
   });
 
   it('refetches a same-user SSE revision and ignores an already-applied echo', async () => {
