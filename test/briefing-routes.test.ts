@@ -121,10 +121,12 @@ describe("plural Briefing routes", () => {
       logical_name: "policy.md", role: "review-document", media_type: "text/markdown" }).version;
     setSetting(db, "user.operator_id", humanId);
     const created = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
-      body: { artifact_version_ref: version.id, title: "Sparse engineering policy — proposed update" } });
+      body: { artifact_version_ref: version.id, title: "Sparse engineering policy — proposed update",
+        description: "  Explains why this policy review exists. It represents an approval-ready fixture.  " } });
     const briefingId = (created.body as { briefing_id: string }).briefing_id;
-    expect(db.prepare("SELECT title FROM briefings WHERE id = ?").get(briefingId))
-      .toEqual({ title: "Sparse engineering policy" });
+    expect(db.prepare("SELECT title, description FROM briefings WHERE id = ?").get(briefingId))
+      .toEqual({ title: "Sparse engineering policy",
+        description: "Explains why this policy review exists. It represents an approval-ready fixture." });
 
     createUser(db, { slug: "reviewer", kind: "human", display_name: "Reviewer" });
     expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
@@ -158,6 +160,19 @@ describe("plural Briefing routes", () => {
     expect(db.prepare("SELECT title FROM briefings WHERE id = ?").get(briefingId))
       .toEqual({ title: "Durable policy" });
     expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:title-updated", { briefing_id: briefingId });
+    const roundRowsBeforeDescription = db.prepare("SELECT * FROM briefing_rounds WHERE briefing_id = ?").all(briefingId);
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
+      body: { description: "  Durable source snapshot for future comparison.  " } })).toMatchObject({
+      status: 200, body: { briefing_id: briefingId,
+        description: "Durable source snapshot for future comparison.", changed: true },
+    });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:description-updated", { briefing_id: briefingId });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
+      body: { description: "   " } })).toMatchObject({ status: 400 });
+    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
+      body: { description: null } })).toMatchObject({ status: 200, body: { description: null, changed: true } });
+    expect(db.prepare("SELECT * FROM briefing_rounds WHERE briefing_id = ?").all(briefingId))
+      .toEqual(roundRowsBeforeDescription);
     expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "human",
       body: { title: "Durable policy", actor_user_id: humanId } })).toMatchObject({
       status: 400, body: { error: expect.stringContaining("unsupported field") },

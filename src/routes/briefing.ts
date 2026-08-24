@@ -14,6 +14,7 @@ import {
   readBriefing,
   setBriefingArchived,
   submitBriefingRound,
+  updateBriefingDescription,
   updateBriefingTitle,
 } from "../feedback/briefings.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -466,7 +467,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const publication = publicationPrincipalAndResponder(db, req);
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref" && key !== "title");
+        .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref"
+          && key !== "title" && key !== "description");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
@@ -485,6 +487,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const receipt = publishBriefingFromArtifactVersion(db, {
         briefing_key: `manual:${randomUUID()}`,
         title,
+        ...(Object.hasOwn(requestBody, "description") ? { description: requestBody.description } : {}),
         artifact_version_ref: artifactVersionRef,
         comparison_base_artifact_version_ref: comparisonBaseArtifactVersionRef,
         profile: "mandible-briefing.v3",
@@ -570,13 +573,28 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     try {
       const viewer = renameViewer(db, req, "Briefing");
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "title");
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "title" && key !== "description");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
-      const result = updateBriefingTitle(db, req.params.briefingId, requestBody.title, viewer);
-      if (result.changed) broadcast(BRIEFING_EVENTS.titleUpdated, { briefing_id: result.briefing_id });
-      sendJson(res, 200, result);
+      if (!Object.hasOwn(requestBody, "title") && !Object.hasOwn(requestBody, "description")) {
+        throw new BriefingStoreError("request body must contain title or description");
+      }
+      const titleResult = Object.hasOwn(requestBody, "title")
+        ? updateBriefingTitle(db, req.params.briefingId, requestBody.title, viewer)
+        : null;
+      const descriptionResult = Object.hasOwn(requestBody, "description")
+        ? updateBriefingDescription(db, req.params.briefingId, requestBody.description, viewer)
+        : null;
+      const briefingId = titleResult?.briefing_id ?? descriptionResult!.briefing_id;
+      if (titleResult?.changed) broadcast(BRIEFING_EVENTS.titleUpdated, { briefing_id: briefingId });
+      if (descriptionResult?.changed) broadcast(BRIEFING_EVENTS.descriptionUpdated, { briefing_id: briefingId });
+      sendJson(res, 200, {
+        briefing_id: briefingId,
+        ...(titleResult ? { title: titleResult.title } : {}),
+        ...(descriptionResult ? { description: descriptionResult.description } : {}),
+        changed: Boolean(titleResult?.changed || descriptionResult?.changed),
+      });
     } catch (error) {
       handleError(res, error);
     }

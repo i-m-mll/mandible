@@ -15,7 +15,7 @@ describe("migration v140: versioned conversation sources", () => {
     const db = new Database(":memory:");
     migrate(db);
     expect(BASELINE_SCHEMA_VERSION).toBe(155);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "155" });
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
     for (const table of [
       "conversation_sources",
       "conversation_source_aliases",

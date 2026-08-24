@@ -149,6 +149,7 @@ function selectedRound(roundId: string, artifactVersion: string, submitted = fal
 function detail(roundId = ROUND_TWO) {
   return {
     briefing: { id: 'briefing-1', briefing_key: 'recurring-review', title: 'Recurring review',
+      description: 'Explains why this review exists. It represents a durable source snapshot.',
       latest_round_id: ROUND_TWO, round_count: 2, created_at: 1, updated_at: 2 },
     rounds: [
       { id: ROUND_ONE, ordinal: 1, artifact_version_id: ARTIFACT_VERSION, created_at: 1, origin: { source: 'scheduled-review', run_id: 'run-1', task_identity: 'task-1' } },
@@ -193,8 +194,11 @@ describe('artifact-backed Briefing rounds', () => {
   });
 
   it('normalizes stable logical rows and exact immutable selected-round bindings', () => {
-    expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', unanswered_directive_count: 1, created_at: 1, updated_at: 2 }] })[0])
-      .toMatchObject({ collectionId: 'briefing-1', latestRoundId: 'round-2', unansweredDirectiveCount: 1 });
+    expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review',
+      description: 'Durable source snapshot.', latest_round_id: 'round-2', unanswered_directive_count: 1,
+      created_at: 1, updated_at: 2 }] })[0])
+      .toMatchObject({ collectionId: 'briefing-1', description: 'Durable source snapshot.',
+        latestRoundId: 'round-2', unansweredDirectiveCount: 1 });
     const projection = normalizeBriefingProjection(detail(ROUND_ONE));
     expect(projection).toMatchObject({
       briefing_id: 'briefing-1',
@@ -586,6 +590,7 @@ describe('artifact-backed Briefing rounds', () => {
       calls.push({ url, method });
       if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [payload.briefing] }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (url === '/api/briefing-bundles') return new Response(JSON.stringify({ bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefing-groups') return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (method === 'GET' && url === `/api/briefings/${encodeURIComponent(FULL_BRIEFING_ID)}`) return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
       if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, source: null, preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -609,6 +614,11 @@ describe('artifact-backed Briefing rounds', () => {
     expect(composition.querySelector('.detail-pane-header__main')?.children).toHaveLength(2);
     expect(within(composition).getByText('65db040')).toBeTruthy();
     expect(within(composition).getByRole('heading', { name: 'arxiv-scan' })).toBeTruthy();
+    const description = within(composition).getByText(
+      'Explains why this review exists. It represents a durable source snapshot.',
+    );
+    expect(description.classList.contains('briefing-detail__description')).toBe(true);
+    expect(description.closest('.detail-pane-header__title-block')).toBeTruthy();
     expect(within(composition).getByRole('button', { name: 'Briefing actions' })).toBeTruthy();
     expect(within(composition).getByRole('group', { name: 'Round occurrence' })).toBeTruthy();
     const roundSelect = within(composition).getByRole('combobox', { name: 'Round occurrence' });

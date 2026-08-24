@@ -15,8 +15,8 @@ describe("migration v151", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(155);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "155" });
+    expect(CURRENT_SCHEMA_VERSION).toBe(156);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'briefing_bundle%'").all())
       .toEqual([{ name: "briefing_bundles" }, { name: "briefing_bundle_members" }]);
     expect((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'briefing_bundle_members'")

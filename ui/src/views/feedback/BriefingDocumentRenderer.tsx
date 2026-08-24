@@ -39,6 +39,7 @@ import { BriefingDocumentPanel } from './BriefingDocumentPanel';
 export type BriefingDocumentRendererProps = {
   briefingId: string;
   briefingTitle?: string;
+  briefingDescription?: string | null;
   roundId?: string | null;
   instance: InstanceInfo | null;
   onBriefingChange?(briefing: BriefingProjection | null): void;
@@ -119,6 +120,7 @@ export function briefingRoundOptions(rounds: readonly BriefingRoundSummary[]): A
 export function BriefingDocumentRenderer({
   briefingId,
   briefingTitle,
+  briefingDescription = null,
   roundId = null,
   instance,
   onBriefingChange,
@@ -512,6 +514,7 @@ export function BriefingDocumentRenderer({
   };
 
   const title = round?.title || briefingTitle || 'Briefing';
+  const description = round?.description ?? briefingDescription;
 
   const openRename = () => {
     setActionsOpen(false);
@@ -620,6 +623,7 @@ export function BriefingDocumentRenderer({
           }}
           title={title}
           titleTooltip={title}
+          supportingMetadata={description ? <p className="briefing-detail__description">{description}</p> : undefined}
           state={round && selectedIsNewest ? 'Latest' : undefined}
           selector={round ? {
             label: 'Round occurrence',

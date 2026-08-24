@@ -4836,7 +4836,18 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "scoped_protected_merge_clearances",
     statements: [],
   },
+  {
+    version: 156,
+    name: "briefing_descriptions",
+    statements: [],
+  },
 ];
+
+function ensureBriefingDescriptionColumn(db: Db): void {
+  if (!tableExists(db, "briefings") || hasColumn(db, "briefings", "description")) return;
+  db.exec(`ALTER TABLE briefings ADD COLUMN description TEXT
+    CHECK(description IS NULL OR (trim(description) != '' AND length(description) <= 1000))`);
+}
 
 function ensureBriefingOrganizationColumns(db: Db): void {
   if (tableExists(db, "briefings") && !hasColumn(db, "briefings", "archived_at")) {
@@ -5464,6 +5475,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 153) ensureBriefingOrganizationColumns(db);
       if (migration.version === 154) ensureWorkUnitWorkerOwnershipColumn(db);
       if (migration.version === 155) ensureAuthClearanceSchema(db);
+      if (migration.version === 156) ensureBriefingDescriptionColumn(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }

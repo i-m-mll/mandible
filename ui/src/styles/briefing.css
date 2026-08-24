@@ -344,6 +344,14 @@
   z-index: 8;
 }
 
+.briefing-detail__description {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
 .briefing-detail__actions-trigger {
   display: grid;
   width: 30px;

@@ -4,6 +4,7 @@ export type FeedbackCollection = {
   id: string;
   collectionId: string;
   label: string;
+  description: string | null;
   unansweredDirectiveCount: number;
   latestRoundId: string;
   createdAt: number;

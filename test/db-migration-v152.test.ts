@@ -31,8 +31,8 @@ describe("migration v152", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(155);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "155" });
+    expect(CURRENT_SCHEMA_VERSION).toBe(156);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
     expect(db.prepare(`SELECT briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position
       FROM briefing_bundle_members`).get()).toEqual({
       briefing_id: "briefing-a", layout_position: 0, entry_kind: "briefing", subgroup_name: null,
