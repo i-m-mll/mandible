@@ -229,7 +229,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
         "SELECT value FROM meta WHERE key = 'test.v139.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "156",
+        value: "157",
       });
     } finally {
       expect(migrations.pop()?.version).toBe(155);
@@ -251,7 +251,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     // migrations (v107-v111) and our additive v112, v113, and v114 columns,
     // advancing (never lowering) the schema version.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "156",
+value: "157",
     });
   });
 
@@ -318,7 +318,7 @@ value: "156",
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "156",
+value: "157",
     });
     expect(marker()).toEqual({ value: "done" });
 

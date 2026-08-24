@@ -42,8 +42,11 @@ export function registerAuthRoutes(
   clearance?: AuthClearanceManager,
 ): AuthQueue {
   const autoApproveManager = autoApprove ?? new AuthAutoApproveManager();
+  const fallbackRuntimeEpoch = randomUUID();
   const clearanceManager = clearance ?? new AuthClearanceManager(
-    getDb(), new DelegatedSigningResource(autoApproveManager), randomUUID(),
+    getDb(), new DelegatedSigningResource(autoApproveManager, {
+      db: getDb(), runtimeEpoch: fallbackRuntimeEpoch,
+    }), fallbackRuntimeEpoch,
   );
   const authQueue = queue ?? new AuthQueue({
     autoApprover: autoApproveManager,

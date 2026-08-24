@@ -28,7 +28,7 @@ describe("migration v148: source-backed conversation payload state", () => {
       SELECT content, metadata_json, payload_state FROM conversation_blocks WHERE id = 'block'
     `).get()).toEqual({ content: "kept", metadata_json: '{"kept":true}', payload_state: "legacy" });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "156" });
+      .toEqual({ value: "157" });
     db.close();
   });
 
@@ -40,7 +40,7 @@ describe("migration v148: source-backed conversation payload state", () => {
     const columns = db.pragma("table_info(conversation_blocks)") as Array<{ name: string }>;
     expect(columns.filter((column) => column.name === "payload_state")).toHaveLength(1);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "156" });
+      .toEqual({ value: "157" });
     db.close();
   });
 

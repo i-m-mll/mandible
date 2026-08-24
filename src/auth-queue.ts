@@ -2850,7 +2850,7 @@ export class AuthQueue {
     }
     const executing = this.requireRequest(id);
     this.broadcast({ event: "auth:updated", data: { request: executing, clearance_use_id: consumed.use.id } });
-    this.executeInBackground(executing);
+    this.executeInBackground(executing, consumed.settle);
     return executing;
   }
 
@@ -4095,14 +4095,16 @@ export class AuthQueue {
     }
   }
 
-  private executeInBackground(request: AuthRequest): void {
+  private executeInBackground(request: AuthRequest, settleClearance?: () => Promise<void>): void {
     // Remote-mode requests are executed by an external process — the daemon
     // only manages state transitions. Do not spawn a local executor.
     if (request.execution_mode === "remote") {
+      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
     if (this.inFlight.has(request.id)) {
+      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
@@ -4111,6 +4113,7 @@ export class AuthQueue {
     // process.exit would kill mid-merge.
     if (this._rebuilding) {
       this.parkExecutionForRestart(request);
+      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
@@ -4195,6 +4198,7 @@ export class AuthQueue {
             this.storeExecutionResult(request.id, null, message);
           }
         } finally {
+          if (settleClearance) await settleClearance().catch(() => undefined);
           this.inFlight.delete(request.id);
           this.executionEnvs.delete(request.id);
         }

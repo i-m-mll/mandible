@@ -9,7 +9,7 @@ describe("migration v154: explicit work-unit worker ownership", () => {
     const db = new Database(":memory:");
     migrate(db);
     expect(BASELINE_SCHEMA_VERSION).toBe(155);
-    expect(CURRENT_SCHEMA_VERSION).toBe(156);
+    expect(CURRENT_SCHEMA_VERSION).toBe(157);
     expect(db.prepare("PRAGMA table_info(work_units)").all()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -47,7 +47,7 @@ describe("migration v154: explicit work-unit worker ownership", () => {
     db.prepare("UPDATE meta SET value = '153' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "156" });
+      .toEqual({ value: "157" });
     db.close();
   });
 });

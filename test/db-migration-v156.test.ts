@@ -14,8 +14,8 @@ describe("migration v156", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(156);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
+    expect(CURRENT_SCHEMA_VERSION).toBe(157);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "157" });
     expect(db.prepare("SELECT id, title, description FROM briefings").all()).toEqual([
       { id: "briefing-1", title: "Existing Briefing", description: null },
     ]);

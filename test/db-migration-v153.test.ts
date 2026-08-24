@@ -23,8 +23,8 @@ describe("migration v153", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(156);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "156" });
+    expect(CURRENT_SCHEMA_VERSION).toBe(157);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "157" });
     expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = 'legacy-group'").get())
       .toEqual({ current_bundle_id: null });
     expect(db.prepare("SELECT bundle_id, position FROM briefing_group_updates WHERE group_id = 'legacy-group'").all())

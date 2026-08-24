@@ -4841,6 +4841,11 @@ if [ -z "$sched" ]; then echo "agent-schedule deploy hook: agent-schedule execut
     name: "briefing_descriptions",
     statements: [],
   },
+  {
+    version: 157,
+    name: "delegated_signer_runtime_reconnect",
+    statements: [],
+  },
 ];
 
 function ensureBriefingDescriptionColumn(db: Db): void {
@@ -5476,6 +5481,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 154) ensureWorkUnitWorkerOwnershipColumn(db);
       if (migration.version === 155) ensureAuthClearanceSchema(db);
       if (migration.version === 156) ensureBriefingDescriptionColumn(db);
+      if (migration.version === 157) ensureAuthClearanceSchema(db);
       if (migration.name === "operational_incidents") {
         verifyOperationalIncidentV136Schema(db);
       }
