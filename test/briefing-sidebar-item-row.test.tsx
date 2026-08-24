@@ -290,6 +290,62 @@ describe('Briefing sidebar row actions', () => {
     expect(screen.queryByRole('button', { name: /First proposal/ })).toBeNull();
   });
 
+  it('fails closed across adjacent groups while stale proposal ownership reconciles', () => {
+    const saraGroup: BriefingGroup = {
+      id: 'aaaaaaaa-1234-4123-8123-123456789abc',
+      name: "Sara's skill, breakdown",
+      createdAt: 1,
+      updatedAt: 2,
+      current: {
+        id: 'bbbbbbbb-1234-4123-8123-123456789abc',
+        name: 'Sara current layout',
+        createdAt: 1,
+        updatedAt: 1,
+        members: [{ position: 0, briefing: collections[2] }],
+        layout: [{ kind: 'briefing', briefing: collections[2] }],
+      },
+      updates: [],
+    };
+    const selectedGroupUpdateIds = {
+      [groupedUpdates.id]: groupedUpdates.updates[1].id,
+      [saraGroup.id]: groupedUpdates.updates[1].id,
+    };
+    const staleSaraGroup = { ...saraGroup, updates: [groupedUpdates.updates[1]] };
+    const view = render(
+      <Harness
+        groups={[staleSaraGroup, groupedUpdates]}
+        initialViewState={{ selectedGroupUpdateIds }}
+      />,
+    );
+
+    const agentPolicy = () => screen.getByRole('button', { name: 'Select Briefing group Release review' })
+      .closest('.sidebar-group-node') as HTMLElement;
+    const sara = () => screen.getByRole('button', { name: "Select Briefing group Sara's skill, breakdown" })
+      .closest('.sidebar-group-node') as HTMLElement;
+
+    expect(within(agentPolicy()).queryByRole('button', { name: /Research/ })).toBeNull();
+    expect(within(agentPolicy()).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
+    expect(within(sara()).queryByRole('button', { name: /Research/ })).toBeNull();
+    expect(within(sara()).getByRole('button', { name: 'Select briefing Third briefing' })).toBeTruthy();
+
+    view.rerender(
+      <Harness
+        groups={[groupedUpdates, saraGroup]}
+        initialViewState={{ selectedGroupUpdateIds }}
+      />,
+    );
+
+    expect(within(agentPolicy()).getByRole('button', { name: /Research/ })).toBeTruthy();
+    expect(within(agentPolicy()).getAllByRole('button', { name: /Select briefing/ })
+      .map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Select briefing Second briefing',
+      'Select briefing Third briefing',
+    ]);
+    expect(within(sara()).queryByRole('button', { name: /Research/ })).toBeNull();
+    expect(within(sara()).getAllByRole('button', { name: /Select briefing/ })
+      .map((button) => button.getAttribute('aria-label'))).toEqual(['Select briefing Third briefing']);
+  });
+
   it('renders the sparse-policy proposal as direct policies plus one Skills subgroup', () => {
     const briefing = (id: string, label: string): FeedbackCollection => ({
       id: feedbackCollectionIdentity(id),

@@ -20,6 +20,7 @@ import {
 } from './collection-model';
 import type { BriefingCollectionViewState } from './collection-view-state';
 import type { BriefingBundle, BriefingBundleLayoutEntry, BriefingGroup } from '../../api';
+import { indexBriefingGroupBundleOwners, resolveBriefingGroupProjection } from './briefing-group-projection';
 
 type BriefingSidebarOccurrence = {
   key: string;
@@ -75,6 +76,7 @@ export function CollectionsSidebar({
       ...group.updates.map((update) => update.id),
     ]),
   ), [groups]);
+  const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);
   const visibleBundles = useMemo(() => bundles.filter((bundle) => !groupedBundleIds.has(bundle.id)).map((bundle) => ({
     ...bundle,
     members: bundle.members.filter((member) => filteredIds.has(member.briefing.id)),
@@ -85,8 +87,12 @@ export function CollectionsSidebar({
     viewState.collectionSourceFilter,
   ]);
   const visibleGroups = useMemo(() => groups.map((group) => {
-    const selectedUpdate = group.updates.find((candidate) => candidate.id === viewState.selectedGroupUpdateIds[group.id]) ?? null;
-    const layoutSource = selectedUpdate ?? group.current;
+    const projection = resolveBriefingGroupProjection(
+      group,
+      viewState.selectedGroupUpdateIds[group.id],
+      groupBundleOwners,
+    );
+    const { layoutSource } = projection;
     const groupMatches = group.name.toLocaleLowerCase().includes(viewState.collectionSourceFilter.trim().toLocaleLowerCase());
     const layout = (layoutSource?.layout ?? []).map((entry): BriefingBundleLayoutEntry | null => {
       if (entry.kind === 'briefing') {
@@ -99,12 +105,13 @@ export function CollectionsSidebar({
         ? { ...entry, briefings }
         : null;
     }).filter((entry): entry is BriefingBundleLayoutEntry => entry !== null);
-    return { group, layoutSource, selectedUpdate, layout };
+    return { group, projection, layout };
   }).filter((entry) => entry.layout.length > 0 || !viewState.collectionSourceFilter.trim()), [
     groups,
     filteredIds,
     viewState.collectionSourceFilter,
     viewState.selectedGroupUpdateIds,
+    groupBundleOwners,
   ]);
   const unbundled = useMemo(() => ordered.filter((collection) => !bundledIds.has(collection.id)), [ordered, bundledIds]);
   const collapsedBundles = useMemo(() => new Set(viewState.collapsedBundleIds), [viewState.collapsedBundleIds]);
@@ -113,12 +120,12 @@ export function CollectionsSidebar({
   const bundleExpanded = (bundleId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedBundles.has(bundleId);
   const groupExpanded = (groupId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedGroups.has(groupId);
   const navigationRows = useMemo(() => [
-    ...visibleGroups.flatMap(({ group, layoutSource, layout }) => groupExpanded(group.id)
+    ...visibleGroups.flatMap(({ group, projection, layout }) => groupExpanded(group.id)
       ? layout.flatMap((entry, index) => entry.kind === 'briefing'
-        ? [{ key: `group:${group.id}:${layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing }]
-        : collapsedSubgroups.has(`${group.id}:${layoutSource?.id ?? 'empty'}:${index}`) && !viewState.collectionSourceFilter.trim()
+        ? [{ key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing }]
+        : collapsedSubgroups.has(`${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}`) && !viewState.collectionSourceFilter.trim()
           ? []
-          : entry.briefings.map((briefing) => ({ key: `group:${group.id}:${layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing })))
+          : entry.briefings.map((briefing) => ({ key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing })))
       : []),
     ...visibleBundles.flatMap((bundle) => bundleExpanded(bundle.id)
       ? bundle.members.map((member) => ({ key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing }))
@@ -295,7 +302,7 @@ export function CollectionsSidebar({
           </div>
         ) : (
           <>
-            {visibleGroups.map(({ group, layoutSource, selectedUpdate, layout }) => {
+            {visibleGroups.map(({ group, projection, layout }) => {
               const expanded = groupExpanded(group.id);
               const count = layout.reduce((total, entry) => total + (entry.kind === 'briefing' ? 1 : entry.briefings.length), 0);
               return (
@@ -314,19 +321,22 @@ export function CollectionsSidebar({
                     label: `Select Briefing group ${group.name}`,
                     onSelect: () => onSelectGroup?.(group),
                   }}
-                  headingDescription={`${count} Briefing${count === 1 ? '' : 's'} in ${selectedUpdate ? 'selected proposed update' : 'current layout'}`}
+                  headingDescription={`${count} Briefing${count === 1 ? '' : 's'} in ${projection.selectedUpdate ? 'selected proposed update' : 'current layout'}`}
                 >
                   {layout.map((entry, index) => {
                     if (entry.kind === 'briefing') {
                       return (
-                        <ul className="feedback-collections-sidebar__list" key={`briefing:${index}:${entry.briefing.id}`}>
+                        <ul
+                          className="feedback-collections-sidebar__list"
+                          key={`briefing:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`}
+                        >
                           {renderCollection(
-                            { key: `group:${group.id}:${layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing },
+                            { key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing },
                           )}
                         </ul>
                       );
                     }
-                    const subgroupKey = `${group.id}:${layoutSource?.id ?? 'empty'}:${index}`;
+                    const subgroupKey = `${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}`;
                     const subgroupExpanded = Boolean(viewState.collectionSourceFilter.trim()) || !collapsedSubgroups.has(subgroupKey);
                     return (
                       <SidebarGroupNode
@@ -344,7 +354,7 @@ export function CollectionsSidebar({
                         leadingIcon={<SidebarBriefingBundleIcon expanded={subgroupExpanded} />}
                       >
                         {entry.briefings.map((briefing) => renderCollection(
-                          { key: `group:${group.id}:${layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing },
+                          { key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing },
                         ))}
                       </SidebarGroupNode>
                     );
