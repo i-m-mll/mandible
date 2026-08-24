@@ -67,9 +67,13 @@ export function CollectionsSidebar({
     viewState.collectionSort,
   ]);
   const filteredIds = useMemo(() => new Set(filtered.map((collection) => collection.id)), [filtered]);
-  const bundledIds = useMemo(() => new Set(
-    bundles.flatMap((bundle) => bundle.members.map((member) => member.briefing.id)),
-  ), [bundles]);
+  const containedBriefingIds = useMemo(() => new Set([
+    ...bundles,
+    ...groups.flatMap((group) => [
+      ...(group.current ? [group.current] : []),
+      ...group.updates,
+    ]),
+  ].flatMap((bundle) => bundle.members.map((member) => member.briefing.id))), [bundles, groups]);
   const groupedBundleIds = useMemo(() => new Set(
     groups.flatMap((group) => [
       ...(group.current ? [group.current.id] : []),
@@ -113,7 +117,7 @@ export function CollectionsSidebar({
     viewState.selectedGroupUpdateIds,
     groupBundleOwners,
   ]);
-  const unbundled = useMemo(() => ordered.filter((collection) => !bundledIds.has(collection.id)), [ordered, bundledIds]);
+  const unbundled = useMemo(() => ordered.filter((collection) => !containedBriefingIds.has(collection.id)), [ordered, containedBriefingIds]);
   const collapsedBundles = useMemo(() => new Set(viewState.collapsedBundleIds), [viewState.collapsedBundleIds]);
   const collapsedGroups = useMemo(() => new Set(viewState.collapsedGroupIds), [viewState.collapsedGroupIds]);
   const collapsedSubgroups = useMemo(() => new Set(viewState.collapsedGroupSubgroupKeys), [viewState.collapsedGroupSubgroupKeys]);

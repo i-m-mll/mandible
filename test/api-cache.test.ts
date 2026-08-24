@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addSpaceItem,
   briefingApiCacheFamiliesForEvent,
+  getBriefingSidebarSnapshot,
   getBriefings,
+  getCachedBriefingSidebarSnapshot,
   getCachedBriefings,
   getSpace,
   getSpaceFactPacket,
@@ -128,6 +130,33 @@ describe('dashboard API GET cache', () => {
 
     invalidateApiGetCache('/api/briefings');
     expect(getCachedBriefings()).toBeNull();
+  });
+
+  it('publishes cached Briefing containment only after all three reads succeed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === '/api/briefings') return jsonResponse({ briefings: [] });
+      if (path === '/api/briefing-bundles') return jsonResponse({ bundles: [] });
+      if (path === '/api/briefing-groups') return new Response('unavailable', { status: 503 });
+      return new Response('unexpected request', { status: 500 });
+    }));
+
+    await expect(getBriefingSidebarSnapshot()).rejects.toThrow(/503/);
+    expect(getCachedBriefings()).toEqual([]);
+    expect(getCachedBriefingSidebarSnapshot()).toBeNull();
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === '/api/briefings') return jsonResponse({ briefings: [] });
+      if (path === '/api/briefing-bundles') return jsonResponse({ bundles: [] });
+      if (path === '/api/briefing-groups') return jsonResponse({ groups: [] });
+      return new Response('unexpected request', { status: 500 });
+    }));
+    await expect(getBriefingSidebarSnapshot()).resolves.toEqual({ briefings: [], bundles: [], groups: [] });
+    expect(getCachedBriefingSidebarSnapshot()).toEqual({ briefings: [], bundles: [], groups: [] });
+
+    invalidateApiGetCache('/api/briefing-groups');
+    expect(getCachedBriefingSidebarSnapshot()).toBeNull();
   });
 
   it('invalidates a cached Space fact packet after a Space mutation', async () => {

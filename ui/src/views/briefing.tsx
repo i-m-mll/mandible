@@ -1,15 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
-  getBriefingBundles,
-  getBriefingGroups,
-  getBriefings,
-  getCachedBriefingBundles,
-  getCachedBriefingGroups,
-  getCachedBriefings,
+  getBriefingSidebarSnapshot,
+  getCachedBriefingSidebarSnapshot,
   isApiErrorStatus,
-  type BriefingBundle,
   type BriefingGroup,
+  type BriefingSidebarSnapshot,
   type InstanceInfo,
 } from '../api';
 import { useAppShell } from '../app-shell';
@@ -43,9 +39,9 @@ function replaceBriefingRoute(briefingId: string, roundId?: string | null): void
 export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, nowMs, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const [viewState, setViewState] = useBriefingCollectionViewState();
-  const [briefings, setBriefings] = useState<FeedbackCollection[]>(() => getCachedBriefings(nowMs) ?? []);
-  const [bundles, setBundles] = useState<BriefingBundle[]>(() => getCachedBriefingBundles(nowMs) ?? []);
-  const [groups, setGroups] = useState<BriefingGroup[]>(() => getCachedBriefingGroups(nowMs) ?? []);
+  const [sidebar, setSidebar] = useState<BriefingSidebarSnapshot>(() =>
+    getCachedBriefingSidebarSnapshot(nowMs) ?? { briefings: [], bundles: [], groups: [] });
+  const { briefings, bundles, groups } = sidebar;
   const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const sequence = useRef(0);
@@ -77,15 +73,9 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   const load = useCallback(async (signal: AbortSignal) => {
     const request = ++sequence.current;
     try {
-      const [next, nextBundles, nextGroups] = await Promise.all([
-        getBriefings(signal),
-        getBriefingBundles(signal),
-        getBriefingGroups(signal),
-      ]);
+      const next = await getBriefingSidebarSnapshot(signal);
       if (!signal.aborted && request === sequence.current) {
-        setBriefings(next);
-        setBundles(nextBundles);
-        setGroups(nextGroups);
+        setSidebar(next);
         setError(null);
       }
     } catch (cause) {
@@ -179,13 +169,15 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
         ? { ...entry, briefing: updateCollection(entry.briefing) }
         : { ...entry, briefings: entry.briefings.map(updateCollection) }),
     });
-    setBriefings((current) => current.map(updateCollection));
-    setBundles((current) => current.map(updateBundle));
-    setGroups((current) => current.map((group) => ({
-      ...group,
-      current: group.current ? updateBundle(group.current) : null,
-      updates: group.updates.map(updateBundle),
-    })));
+    setSidebar((current) => ({
+      briefings: current.briefings.map(updateCollection),
+      bundles: current.bundles.map(updateBundle),
+      groups: current.groups.map((group) => ({
+        ...group,
+        current: group.current ? updateBundle(group.current) : null,
+        updates: group.updates.map(updateBundle),
+      })),
+    }));
   };
 
   return (

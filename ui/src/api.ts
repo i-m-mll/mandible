@@ -4571,6 +4571,12 @@ export type BriefingGroup = {
   updates: BriefingBundle[];
 };
 
+export type BriefingSidebarSnapshot = {
+  briefings: FeedbackCollection[];
+  bundles: BriefingBundle[];
+  groups: BriefingGroup[];
+};
+
 function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
   const bundle = briefingRecord(entry);
   const id = briefingString(bundle.id);
@@ -4686,6 +4692,35 @@ export async function getBriefingGroups(signal?: AbortSignal): Promise<BriefingG
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(BRIEFING_GROUPS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
   return normalizeBriefingGroups(payload);
+}
+
+const BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY = cacheKeyForGet(
+  `${BRIEFINGS_PATH}|${BRIEFING_BUNDLES_PATH}|${BRIEFING_GROUPS_PATH}`,
+);
+
+export function getCachedBriefingSidebarSnapshot(now: number = Date.now()): BriefingSidebarSnapshot | null {
+  const cached = getJsonCache.get(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY);
+  if (!cached || now >= cached.staleUntil) return null;
+  const snapshot = cached.value as Partial<BriefingSidebarSnapshot>;
+  return Array.isArray(snapshot.briefings) && Array.isArray(snapshot.bundles) && Array.isArray(snapshot.groups)
+    ? snapshot as BriefingSidebarSnapshot
+    : null;
+}
+
+export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<BriefingSidebarSnapshot> {
+  const [briefings, bundles, groups] = await Promise.all([
+    getBriefings(signal),
+    getBriefingBundles(signal),
+    getBriefingGroups(signal),
+  ]);
+  const snapshot = { briefings, bundles, groups };
+  const now = Date.now();
+  getJsonCache.set(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY, {
+    value: snapshot,
+    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
+    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
+  });
+  return snapshot;
 }
 
 export function normalizeBriefingProjection(payload: unknown): BriefingProjection {
