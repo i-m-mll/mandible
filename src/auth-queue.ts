@@ -2191,10 +2191,21 @@ export class AuthQueue {
     fields: Partial<AuthRequestInput> & { status?: "pending" | "dismissed" }
   ): AuthRequest {
     this.expireStale();
-    const request = this.getRequest(id);
+    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    if (!resolved.ok && resolved.error === "ambiguous") {
+      throw {
+        status: 409,
+        message: `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+      };
+    }
+    if (!resolved.ok) {
+      throw { status: 404, message: "Not found" };
+    }
+    const request = this.readRequestByExactId(resolved.id);
     if (!request) {
       throw { status: 404, message: "Not found" };
     }
+    const requestId = request.id;
 
     const isFailed = this.isFailedLike(request);
     // Bug: 68aa754 — also allow modifications from "approved"/"executing" status
@@ -2372,16 +2383,22 @@ export class AuthQueue {
 
     updates.push("updated_at = ?");
     values.push(this.now());
-    values.push(id);
+    values.push(requestId);
 
-    this.db
+    const result = this.db
       .prepare(`UPDATE auth_requests SET ${updates.join(", ")} WHERE id = ?`)
       .run(...values);
+    if (result.changes !== 1) {
+      throw {
+        status: 409,
+        message: "Auth request changed before the update could be applied; retry.",
+      };
+    }
     if (invalidatesMergeCandidate || dismissFromApproved) {
       this.dropMergeCandidate(request);
     }
 
-    const updated = this.getRequest(id)!;
+    const updated = this.readRequestByExactId(requestId)!;
     this.syncLedgerLinksForRequest(updated, false);
     const eventType = resetToPending ? "auth:new"
       : dismissFromApproved ? "auth:resolved"
