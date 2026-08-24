@@ -15,7 +15,14 @@ import { Router, type ClientAuthGate, type ResolvedClientIdentity } from '../src
 import { createUser } from '../src/users/store';
 import { recordArtifactVersion } from '../src/provider-artifacts';
 import { AppShellProvider } from '../ui/src/app-shell';
-import { invalidateApiGetCache, normalizeBriefingProjection, normalizeBriefings, type InstanceInfo } from '../ui/src/api';
+import {
+  getBriefingBundles,
+  getBriefings,
+  invalidateApiGetCache,
+  normalizeBriefingProjection,
+  normalizeBriefings,
+  type InstanceInfo,
+} from '../ui/src/api';
 import { BriefingView } from '../ui/src/views/briefing';
 import { briefingRoundOptions, BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../ui/src/views/feedback/collection-view-state';
@@ -170,6 +177,42 @@ beforeEach(() => { installStorage(); invalidateApiGetCache(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('artifact-backed Briefing rounds', () => {
+  it('does not hydrate root rows from a partial Briefing containment cache', async () => {
+    const row = { id: 'claude-policy', title: 'Claude policy', latest_round_id: 'round-1', round_count: 1,
+      created_at: 1, updated_at: 1 };
+    let warming = true;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (warming) {
+        if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [row] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+        if (url === '/api/briefing-bundles') return new Response(JSON.stringify({ bundles: [{
+          id: 'proposal', name: 'Agent policy proposal', created_at: 1, updated_at: 1,
+          members: [{ position: 0, briefing: row }],
+          layout: [{ kind: 'briefing', position: 0, briefing: row }],
+        }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (!['/api/briefings', '/api/briefing-bundles', '/api/briefing-groups'].includes(url)) {
+        return new Response(JSON.stringify({ incidents: [], counts: {} }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    }));
+
+    await Promise.all([getBriefings(), getBriefingBundles()]);
+    warming = false;
+    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined,
+      setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+
+    expect(screen.getByText('No Briefings have been reported yet.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Select briefing Claude policy' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Agent policy proposal/ })).toBeNull();
+  });
+
   it('composes the no-selection prompt inside the detail body without round jargon', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/briefings') {

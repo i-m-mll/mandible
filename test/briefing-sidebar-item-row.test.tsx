@@ -278,7 +278,6 @@ describe('Briefing sidebar row actions', () => {
   it('renders grouped proposal bundles only through their stable group', () => {
     render(
       <Harness
-        bundles={[groupedUpdates.updates[0]]}
         groups={[groupedUpdates]}
         initialViewState={{ pinnedCollectionIds: [] }}
       />,
@@ -287,6 +286,7 @@ describe('Briefing sidebar row actions', () => {
     const groupSelect = screen.getByRole('button', { name: 'Select Briefing group Release review' });
     const group = groupSelect.closest('.sidebar-group-node') as HTMLElement;
     expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Select briefing First briefing' })).toHaveLength(1);
     expect(screen.queryByRole('button', { name: /First proposal/ })).toBeNull();
   });
 
