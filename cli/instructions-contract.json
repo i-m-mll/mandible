@@ -95,8 +95,8 @@
       "description": "Manage immutable operator-issued protected-merge clearances. Prospective creation requires an exact durable agent, canonical project, protected base, issue and/or head, expiry, and bounded use count; a selected request is optional provenance and prefill. Execution requires the requester's exact verified credential provenance."
     },
     {
-      "name": "mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--message <text> | --message-file <file>] [--verification <text>] [--spec <text>] [--no-watch]",
-      "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure. --message/--message-file supply the agent-authored canonical change message the merge commits verbatim; --verification fills its machine-owned Verification section (default \"Not recorded\") and is validated against the message at the daemon boundary."
+      "name": "mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--promote-briefing <group> <expected-base> <proposal>] [--message <text> | --message-file <file>] [--verification <text>] [--spec <text>] [--no-watch]",
+      "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure. --promote-briefing atomically stages one exact active Briefing proposal to become its group's Base after successful merge convergence. --message/--message-file supply the agent-authored canonical change message the merge commits verbatim; --verification fills its machine-owned Verification section (default \"Not recorded\") and is validated against the message at the daemon boundary."
     },
     {
       "name": "mandible auth replay-archives <request-id> [--json]",

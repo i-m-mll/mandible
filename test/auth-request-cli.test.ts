@@ -276,6 +276,53 @@ describe("auth request staged close action sugar", () => {
     }
   });
 
+  it("stages one exact Briefing promotion in the request payload", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync([
+        "auth",
+        "request",
+        "feature/demo",
+        "--title",
+        "Merge reviewed policy",
+        "--issue",
+        "policy123",
+        "--promote-briefing",
+        "group123",
+        "base123",
+        "proposal123",
+        "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(server.bodies).toHaveLength(1);
+      expect(server.bodies[0].actions).toEqual([{
+        kind: "briefing_group_promote",
+        target_issue_ref: "policy123",
+        payload: {
+          group_ref: "group123",
+          expected_base_bundle_ref: "base123",
+          proposal_bundle_ref: "proposal123",
+        },
+      }]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects Briefing promotion on a non-merge request before submission", () => {
+    const result = run([
+      "auth", "request", "feature/demo", "--title", "Not a merge", "--issue", "policy123",
+      "--type", "config-change", "--promote-briefing", "group123", "base123", "proposal123",
+      "--no-watch",
+    ]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--promote-briefing requires --type merge");
+  });
+
   it("keeps requester attribution separate from notification scoping", async () => {
     const server = await listenForAuthRequest();
     try {

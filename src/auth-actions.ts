@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import { getLedgerIssueHead } from "./ledger/issue-heads.js";
 import { resolveOperationalIssueRef } from "./ledger/operational-links.js";
+import { validateBriefingGroupPromotionCandidate } from "./feedback/briefing-groups.js";
+import { BriefingStoreError } from "./feedback/briefings.js";
 import type {
   AuthRequest,
   AuthRequestAction,
@@ -75,7 +77,7 @@ export function insertAuthRequestActions(
   );
   const staged: AuthRequestAction[] = [];
   for (const [index, action] of actions.entries()) {
-    const normalized = normalizeAuthActionInput(action);
+    const normalized = validateAuthActionForRequest(db, request, normalizeAuthActionInput(action));
     const row: AuthRequestAction = {
       id: randomUUID(),
       auth_request_id: request.id,
@@ -147,7 +149,7 @@ export function updateAuthRequestAction(
   now: number,
 ): AuthRequestAction {
   const existing = requireAuthAction(db, request.id, actionId);
-  const action = normalizeAuthActionInput(input);
+  const action = validateAuthActionForRequest(db, request, normalizeAuthActionInput(input));
   db.prepare(
     `UPDATE auth_request_actions
      SET kind = ?, target_issue_ref = ?, payload = ?, target_digest = ?, updated_at = ?
@@ -162,6 +164,37 @@ export function updateAuthRequestAction(
     request.id,
   );
   return requireAuthAction(db, request.id, existing.id);
+}
+
+function validateAuthActionForRequest(
+  db: Db,
+  request: AuthRequest,
+  action: AuthRequestActionInput,
+): AuthRequestActionInput {
+  if (action.kind !== "briefing_group_promote") return action;
+  if (request.type !== "merge") {
+    throw new AuthActionValidationError("briefing_group_promote requires a merge auth request");
+  }
+  try {
+    const resolved = validateBriefingGroupPromotionCandidate(db, {
+      groupRef: String(action.payload.group_ref),
+      expectedBaseBundleRef: String(action.payload.expected_base_bundle_ref),
+      proposalBundleRef: String(action.payload.proposal_bundle_ref),
+    });
+    return {
+      ...action,
+      payload: {
+        group_ref: resolved.groupId,
+        expected_base_bundle_ref: resolved.expectedBaseBundleId,
+        proposal_bundle_ref: resolved.proposalBundleId,
+      },
+    };
+  } catch (error) {
+    if (error instanceof BriefingStoreError) {
+      throw new AuthActionValidationError(error.message, error.status);
+    }
+    throw error;
+  }
 }
 
 export function deleteAuthRequestAction(db: Db, requestId: string, actionId: string): AuthRequestAction {

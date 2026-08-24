@@ -59,6 +59,9 @@
 #   --issue <id>            Issue ID to reference for context (repeatable; does not close)
 #   --ref-issue <id>        Alias for --issue
 #   --closes-issue <id>     Issue ID to close on successful merge (repeatable)
+#   --promote-briefing <group> <expected-base> <proposal>
+#                           After successful convergence, promote the exact
+#                           active proposal to this Briefing group's Base
 #   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, preset-promote, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
 #   --dirty-policy <policy> Protected-root dirty policy: block, allow-untracked, stash, branch-off
@@ -126,6 +129,9 @@ no_watch=0
 force=false
 dirty_policy=""
 dirty_branch_prefix=""
+promote_briefing_group=""
+promote_briefing_expected_base=""
+promote_briefing_proposal=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -143,6 +149,20 @@ while [[ $# -gt 0 ]]; do
     --depends-on)     depends_on_id="$2"; shift 2 ;;
     --issue|--ref-issue|--references-issue) ISSUE_REFERENCES+=("$2"); shift 2 ;;
     --closes-issue|--close-issue) ISSUE_CLOSURES+=("$2"); shift 2 ;;
+    --promote-briefing)
+      if [[ $# -lt 4 ]]; then
+        echo "Error: --promote-briefing requires <group> <expected-base> <proposal>" >&2
+        exit 2
+      fi
+      if [[ -n "$promote_briefing_group" ]]; then
+        echo "Error: --promote-briefing may be specified only once" >&2
+        exit 2
+      fi
+      promote_briefing_group="$2"
+      promote_briefing_expected_base="$3"
+      promote_briefing_proposal="$4"
+      shift 4
+      ;;
     --repo)           repo="$2"; shift 2 ;;
     --cwd)            cwd_override="$2"; shift 2 ;;
     --target)         target_override="$2"; shift 2 ;;
@@ -196,6 +216,10 @@ fi
 valid_types="merge commit force-push branch-delete config-change preset-promote data-delete"
 if ! echo "$valid_types" | grep -qw "$auth_type"; then
   echo "Error: invalid --type '$auth_type'. Must be one of: $valid_types" >&2
+  exit 2
+fi
+if [[ -n "$promote_briefing_group" && "$auth_type" != "merge" ]]; then
+  echo "Error: --promote-briefing requires --type merge" >&2
   exit 2
 fi
 
@@ -844,6 +868,30 @@ actions_json=$(jq -nc --argjson closures "$issue_closures_json" '
     payload: {}
   })
 ')
+if [[ -n "$promote_briefing_group" ]]; then
+  promotion_target_issue=""
+  if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
+    promotion_target_issue="${ISSUE_REFERENCES[0]}"
+  else
+    promotion_target_issue="${ISSUE_CLOSURES[0]}"
+  fi
+  actions_json=$(jq -nc \
+    --argjson actions "$actions_json" \
+    --arg target_issue_ref "$promotion_target_issue" \
+    --arg group_ref "$promote_briefing_group" \
+    --arg expected_base_bundle_ref "$promote_briefing_expected_base" \
+    --arg proposal_bundle_ref "$promote_briefing_proposal" '
+      $actions + [{
+        kind: "briefing_group_promote",
+        target_issue_ref: $target_issue_ref,
+        payload: {
+          group_ref: $group_ref,
+          expected_base_bundle_ref: $expected_base_bundle_ref,
+          proposal_bundle_ref: $proposal_bundle_ref
+        }
+      }]
+    ')
+fi
 
 # --- Submit to Mandible ---
 
