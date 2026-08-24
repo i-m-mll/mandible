@@ -239,10 +239,42 @@ describe("artifact-backed Briefing rounds", () => {
       operator: false })).toMatchObject({ selected_round: { items: [], binding: { status: "valid" }, document: {
         comparison_base: { artifact_version_id: base.version.id, source: baseSource },
       } } });
+    expect(listBriefings(db, { userId: humanId, operator: false })).toMatchObject([
+      { id: receipt.briefing_id, unanswered_directive_count: 0 },
+    ]);
     expect(() => submitBriefingRound(db, receipt.briefing_id, receipt.round_id!, humanId, {
       answers: [], annotation_event_ids: [], supersedes_submission_id: null,
     })).toThrowError(expect.objectContaining({ code: "submission_empty" }));
     expect(() => publishBriefingRun(db, request("# Plain run\n"), publisherId)).toThrow(/no spec-item directives/);
+  });
+
+  it("lists only latest-round directives without an active response from the current actor", () => {
+    const receipt = publishBriefingRun(db, request(), publisherId, 1_000);
+    const viewer = { userId: humanId, operator: false };
+    expect(listBriefings(db, viewer)).toMatchObject([
+      { id: receipt.briefing_id, unanswered_directive_count: 1 },
+    ]);
+    expect(listBriefings(db, { userId: publisherId, operator: true })).toMatchObject([
+      { id: receipt.briefing_id, unanswered_directive_count: 0 },
+    ]);
+
+    const source = request().document!.markdown;
+    const quote = "Daily";
+    applyBriefingAnnotations(db, receipt.briefing_id, receipt.round_id!, humanId, [{
+      operation: "set", kind: "comment", start_offset: source.indexOf(quote),
+      end_offset: source.indexOf(quote) + quote.length, quote, body: "Annotation is not a response",
+      replacement_text: null,
+    }], 1_100);
+    expect(listBriefings(db, viewer)).toMatchObject([
+      { id: receipt.briefing_id, unanswered_directive_count: 1 },
+    ]);
+
+    applyBriefingAnswers(db, receipt.briefing_id, receipt.round_id!, humanId, [{
+      directive_key: "paper", operation: "set", expected_response_event_id: null, value: { verdict: "keep" },
+    }], 1_200);
+    expect(listBriefings(db, viewer)).toMatchObject([
+      { id: receipt.briefing_id, unanswered_directive_count: 0 },
+    ]);
   });
 
   it("reuses one exact v3 artifact version and exports only current frozen text choices", () => {

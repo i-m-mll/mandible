@@ -2,7 +2,7 @@ import { normalizeOrderedPinIds } from '../../components/shared/orderedPins';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 
 export const BRIEFING_VIEW_STATE_KEY = 'mandible.briefing.viewState:v1';
-export type BriefingCollectionSort = 'activity' | 'name' | 'round-count';
+export type BriefingCollectionSort = 'activity' | 'name' | 'unanswered-count';
 export type BriefingCollectionViewState = {
   collectionSourceFilter: string;
   pinnedOnly: boolean;
@@ -32,7 +32,7 @@ export function normalizeBriefingCollectionViewState(value: unknown): BriefingCo
   return {
     collectionSourceFilter: typeof row.collectionSourceFilter === 'string' ? row.collectionSourceFilter : '',
     pinnedOnly: row.pinnedOnly === true,
-    collectionSort: row.collectionSort === 'name' || row.collectionSort === 'round-count'
+    collectionSort: row.collectionSort === 'name' || row.collectionSort === 'unanswered-count'
       ? row.collectionSort
       : 'activity',
     pinnedCollectionIds: normalizeOrderedPinIds(rawPins),

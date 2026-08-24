@@ -111,7 +111,7 @@ describe('dashboard API GET cache', () => {
 
   it('exposes a warm logical Briefing list synchronously and clears it through the shared cache', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({
-      briefings: [{ id: 'briefing-1', title: 'Daily briefing', latest_round_id: 'round-1', round_count: 1, created_at: 1, updated_at: 2 }],
+      briefings: [{ id: 'briefing-1', title: 'Daily briefing', latest_round_id: 'round-1', unanswered_directive_count: 1, created_at: 1, updated_at: 2 }],
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -122,7 +122,7 @@ describe('dashboard API GET cache', () => {
       collectionId: 'briefing-1',
       label: 'Daily briefing',
       latestRoundId: 'round-1',
-      itemCount: 1,
+      unansweredDirectiveCount: 1,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
 

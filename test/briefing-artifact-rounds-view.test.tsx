@@ -193,8 +193,8 @@ describe('artifact-backed Briefing rounds', () => {
   });
 
   it('normalizes stable logical rows and exact immutable selected-round bindings', () => {
-    expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', round_count: 2, created_at: 1, updated_at: 2 }] })[0])
-      .toMatchObject({ collectionId: 'briefing-1', latestRoundId: 'round-2', itemCount: 2 });
+    expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', unanswered_directive_count: 1, created_at: 1, updated_at: 2 }] })[0])
+      .toMatchObject({ collectionId: 'briefing-1', latestRoundId: 'round-2', unansweredDirectiveCount: 1 });
     const projection = normalizeBriefingProjection(detail(ROUND_ONE));
     expect(projection).toMatchObject({
       briefing_id: 'briefing-1',
@@ -677,8 +677,9 @@ describe('artifact-backed Briefing rounds', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); const method = init?.method ?? 'GET'; const body = init?.body ? JSON.parse(String(init.body)) : null;
       calls.push({ url, method, body });
-      if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', round_count: 2, created_at: 1, updated_at: 2 }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [{ id: 'briefing-1', title: 'Recurring review', latest_round_id: 'round-2', unanswered_directive_count: 1, created_at: 1, updated_at: 2 }] }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (url === '/api/briefing-bundles') return new Response(JSON.stringify({ bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefing-groups') return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (method === 'GET' && url.startsWith('/api/briefings/briefing-1')) return new Response(JSON.stringify(detail(new URL(url, 'http://x').searchParams.get('round') ?? ROUND_TWO)), { status: 200, headers: { 'content-type': 'application/json' } });
       if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, source: null, preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -691,8 +692,7 @@ describe('artifact-backed Briefing rounds', () => {
     const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
     expect((sidebar as HTMLElement).style.width).toBe('360px');
     expect(screen.getByRole('searchbox', { name: 'Search briefings' })).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'Pin Recurring review' }));
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').pinnedCollectionIds).toEqual(['briefing:briefing-1']));
+    expect(screen.queryByRole('button', { name: /Pin Recurring review/ })).toBeNull();
     const roundOptions = await screen.findAllByRole('option');
     expect(roundOptions.map((option) => option.getAttribute('value'))).toEqual([ROUND_TWO, ROUND_ONE]);
     expect(roundOptions.every((option) => !option.textContent?.includes('Latest') && !option.textContent?.includes('UTC'))).toBe(true);
