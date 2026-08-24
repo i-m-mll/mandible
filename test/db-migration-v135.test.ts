@@ -228,7 +228,7 @@ describe("migration v135: task-command v2", () => {
 expect(BASELINE_SCHEMA_VERSION).toBe(155);
     expect(schemaProjection(upgraded)).toEqual(schemaProjection(fresh));
     expect(upgraded.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-.toEqual({ value: "155" });
+.toEqual({ value: "156" });
     fresh.close();
     upgraded.close();
   });

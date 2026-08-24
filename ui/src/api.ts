@@ -4112,6 +4112,7 @@ export type BriefingRoundSummary = {
 export type BriefingProjection = BriefingRoundProjection & {
   briefing_id: string;
   title: string;
+  description: string | null;
   latest_round_id: string;
   selected_round_id: string;
   rounds: BriefingRoundSummary[];
@@ -4535,6 +4536,7 @@ export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
       id: feedbackCollectionIdentity(id),
       collectionId: id,
       label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
+      description: briefingOptionalString(row.description),
       unansweredDirectiveCount: briefingOptionalNumber(row.unanswered_directive_count) ?? 0,
       latestRoundId: briefingString(row.latest_round_id),
       createdAt: briefingOptionalNumber(row.created_at) ?? 0,
@@ -4841,6 +4843,7 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     valid: projection.valid && identityValid && overlaysValid,
     briefing_id: briefingId,
     title: briefingString(briefing.title),
+    description: briefingOptionalString(briefing.description),
     latest_round_id: latestRoundId,
     selected_round_id: selectedRoundId,
     rounds,

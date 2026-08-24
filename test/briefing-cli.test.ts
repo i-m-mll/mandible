@@ -39,13 +39,15 @@ function runRpc(
 
 function runCreate(): Promise<{ status: number | null; stdout: string; requests: FileRpcRequest[] }> {
   return runRpc(["briefing", "create", "artifact-version:4c62bc989c2b7a6f48583eb9eca871e8",
-    "--title", "AGENTS review", "--comparison-base", "artifact-version:11111111111111111111111111111111", "--json"], (request) => {
+    "--title", "AGENTS review", "--description", "Approval-ready policy fixture.",
+    "--comparison-base", "artifact-version:11111111111111111111111111111111", "--json"], (request) => {
     expect(request.method).toBe("POST");
     expect(request.path).toBe("/api/briefings");
     expect(request.body).toEqual({
       artifact_version_ref: "artifact-version:4c62bc989c2b7a6f48583eb9eca871e8",
       comparison_base_artifact_version_ref: "artifact-version:11111111111111111111111111111111",
       title: "AGENTS review",
+      description: "Approval-ready policy fixture.",
     });
     return { status: 201, body: {
       receipt_id: "round-1", briefing_id: "briefing-1", run_id: "artifact:v1",
@@ -59,6 +61,7 @@ describe("briefing CLI", () => {
     expect(runOffline(["help"]).stdout).toContain("briefing create <version-ref>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing create");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing rename");
+    expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing describe");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing archive");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle create");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle replace");
@@ -91,6 +94,27 @@ describe("briefing CLI", () => {
     expect(result.status).toBe(0);
     expect(result.requests).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ briefing_id: "briefing-12345678", changed: true });
+  });
+
+  it("sets and clears an individual Briefing description through the supported API", async () => {
+    for (const args of [
+      ["--description", "Durable source snapshot."],
+      ["--clear"],
+    ]) {
+      const expected = args[0] === "--clear" ? null : args[1];
+      const result = await runRpc(["briefing", "describe", "briefing:briefing-12345678", ...args, "--json"],
+        (request) => {
+          expect(request).toMatchObject({ method: "PATCH", path: "/api/briefings/briefing%3Abriefing-12345678",
+            body: { description: expected } });
+          return { status: 200, body: {
+            briefing_id: "briefing-12345678", description: expected, changed: true,
+          } };
+        });
+      expect(result.status).toBe(0);
+      expect(result.requests).toHaveLength(1);
+    }
+    expect(runOffline(["briefing", "describe", "briefing:one", "--description", "  "]).stderr)
+      .toContain("nonblank");
   });
 
   it("archives and restores an exact Briefing through the supported API", async () => {

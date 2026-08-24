@@ -175,12 +175,16 @@
       "description": "Resolve an artifact identity and render its ambiguity-safe short ref by default, or an HTTP URL, Markdown hyperlink, full canonical id, or structured JSON."
     },
     {
-      "name": "mandible briefing create <artifact-version-ref> --title <text> [--comparison-base <artifact-version-ref>] [--json]",
-      "description": "Create a new logical Briefing whose first round binds exactly the named artifact version and optional exact comparison base; never resolves latest or adds a round to an existing Briefing."
+      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--json]",
+      "description": "Create a new logical Briefing with an optional purpose/result description whose first round binds exactly the named artifact version and optional exact comparison base; never resolves latest or adds a round to an existing Briefing."
     },
     {
       "name": "mandible briefing rename <briefing-ref> --title <text> [--json]",
       "description": "Rename one existing Briefing in place without changing its identity, membership, rounds, responses, annotations, or submissions. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
+    },
+    {
+      "name": "mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]",
+      "description": "Set or clear one Briefing purpose/result description without changing its identity, title, membership, rounds, responses, annotations, or submissions."
     },
     {
       "name": "mandible briefing archive <briefing-ref> [--json]",

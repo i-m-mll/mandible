@@ -1038,6 +1038,7 @@ export type BriefingRunRequest = {
   schema: typeof BRIEFING_RUN_SCHEMA;
   briefing_key: string;
   title: string;
+  description?: string | null;
   task_identity: string;
   run_id: string;
   run_key: string;
@@ -1059,11 +1060,13 @@ export type BriefingRunReceipt = {
 export type CreateBriefingFromArtifactVersionRequest = {
   artifact_version_ref: string;
   title: string;
+  description?: string | null;
 };
 export type BriefingListEntry = {
   id: string;
   briefing_key: string;
   title: string;
+  description: string | null;
   latest_round_id: string | null;
   round_count: number;
   archived_at: number | null;
@@ -1112,6 +1115,7 @@ export const BRIEFING_EVENTS = Object.freeze({
   annotated: "briefing:annotated",
   submitted: "briefing:submitted",
   titleUpdated: "briefing:title-updated",
+  descriptionUpdated: "briefing:description-updated",
   archived: "briefing:archived",
   restored: "briefing:restored",
 } as const);

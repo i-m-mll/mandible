@@ -14,8 +14,9 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible briefing create <artifact-version-ref> --title <text> [--comparison-base <artifact-version-ref>] [--json]
+  mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--json]
   mandible briefing rename <briefing-ref> --title <text> [--json]
+  mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]
   mandible briefing archive <briefing-ref> [--json]
   mandible briefing restore <briefing-ref> [--json]
   mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]
@@ -84,6 +85,35 @@ cmd_rename() {
   fi
 }
 
+cmd_describe() {
+  local briefing_ref="" description="" has_description=0 clear=0 json=0 response payload
+  while (( $# > 0 )); do
+    case "$1" in
+      --description) [[ $# -ge 2 ]] || die "--description requires a value" 2; description="$2"; has_description=1; shift 2 ;;
+      --clear) clear=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$briefing_ref" ]] || die "Unexpected argument: $1" 2; briefing_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$briefing_ref" && $((has_description + clear)) -eq 1 ]] \
+    || die "Usage: mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]" 2
+  [[ $clear -eq 1 || -n "${description//[[:space:]]/}" ]] \
+    || die "--description requires nonblank text" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  if (( clear )); then payload='{"description":null}'
+  else payload="$(jq -n --arg description "$description" '{description:$description}')"
+  fi
+  response="$(api_send PATCH "/api/briefings/$(urlencode "$briefing_ref")" "$payload")" \
+    || die "Failed to update Briefing description." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '"briefing:\(.briefing_id | mandible_short_id)  \(if .description == null then "description cleared" else .description end)"'
+  fi
+}
+
 emit_bundle() {
   local response="$1" json="$2"
   if (( json )); then
@@ -106,10 +136,11 @@ emit_bundle() {
 }
 
 cmd_create() {
-  local artifact_version_ref="" comparison_base="" title="" json=0 response payload
+  local artifact_version_ref="" comparison_base="" title="" description="" has_description=0 json=0 response payload
   while (( $# > 0 )); do
     case "$1" in
       --title) [[ $# -ge 2 ]] || die "--title requires a value" 2; title="$2"; shift 2 ;;
+      --description) [[ $# -ge 2 ]] || die "--description requires a value" 2; description="$2"; has_description=1; shift 2 ;;
       --comparison-base) [[ $# -ge 2 ]] || die "--comparison-base requires a value" 2; comparison_base="$2"; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
@@ -121,9 +152,11 @@ cmd_create() {
   [[ -z "$comparison_base" || "$comparison_base" == artifact-version:* ]] \
     || die "--comparison-base requires one exact artifact-version:<id> ref" 2
   [[ -n "${title//[[:space:]]/}" ]] || die "create requires --title <text>" 2
+  [[ $has_description -eq 0 || -n "${description//[[:space:]]/}" ]] || die "--description requires nonblank text" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
-  payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg comparison_base "$comparison_base" --arg title "$title" \
+  payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg comparison_base "$comparison_base" --arg title "$title" --arg description "$description" \
     '{artifact_version_ref:$artifact_version_ref,title:$title}
+     + (if $description == "" then {} else {description:$description} end)
      + (if $comparison_base == "" then {} else {comparison_base_artifact_version_ref:$comparison_base} end)')"
   response="$(api_send POST "/api/briefings" "$payload")" || die "Failed to create Briefing from exact artifact version." 1
   if (( json )); then
@@ -388,6 +421,7 @@ shift
 case "$subcommand" in
   create) cmd_create "$@" ;;
   rename) cmd_rename "$@" ;;
+  describe) cmd_describe "$@" ;;
   archive) cmd_archive_state archive "$@" ;;
   restore) cmd_archive_state restore "$@" ;;
   bundle) cmd_bundle "$@" ;;
