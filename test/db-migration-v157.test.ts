@@ -15,8 +15,8 @@ describe("migration v157: delegated signer runtime reconnect", () => {
 
     migrate(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(157);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "157" });
+    expect(CURRENT_SCHEMA_VERSION).toBe(158);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "158" });
     expect(db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'delegated_signing_runtime_bindings'",
     ).get()).toEqual({ name: "delegated_signing_runtime_bindings" });

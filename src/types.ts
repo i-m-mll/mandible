@@ -181,7 +181,8 @@ export type AuthRequestActionKind =
   | "label_add"
   | "label_rm"
   | "checkpoint_add"
-  | "link_add";
+  | "link_add"
+  | "briefing_group_promote";
 export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
 
 export interface AuthRequestActionInput {

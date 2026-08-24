@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
@@ -63,6 +64,32 @@ function createLedgerIssue(db: Db, alias = "act123") {
 }
 
 describe("auth request action schema", () => {
+  it("normalizes one declarative exact Briefing promotion action", () => {
+    expect(normalizeAuthActionInput({
+      kind: "briefing_group_promote",
+      target_issue_ref: "policy-issue",
+      payload: {
+        group_ref: "group-12345678",
+        expected_base_bundle_ref: "base-12345678",
+        proposal_bundle_ref: "proposal-12345678",
+      },
+    })).toEqual({
+      kind: "briefing_group_promote",
+      target_issue_ref: "policy-issue",
+      payload: {
+        group_ref: "group-12345678",
+        expected_base_bundle_ref: "base-12345678",
+        proposal_bundle_ref: "proposal-12345678",
+      },
+    });
+    expect(() => normalizeAuthActionInput({
+      kind: "briefing_group_promote",
+      target_issue_ref: "policy-issue",
+      payload: { group_ref: "group", expected_base_bundle_ref: "base", proposal_bundle_ref: "proposal",
+        command: "rm -rf /" },
+    })).toThrow(/unsupported field 'command'/);
+  });
+
   it("creates auth_request_actions on fresh databases", () => {
     const db = createMigratedDb();
     try {

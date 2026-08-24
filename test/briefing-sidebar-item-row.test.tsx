@@ -220,10 +220,10 @@ describe('Briefing sidebar row actions', () => {
     fireEvent.click(groupSelect);
     expect(disclosure.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('heading', { name: 'Release review' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Current' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Base' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
     expect(screen.getByText('12345678', { selector: '.detail-pane-header__display-ref' })).toBeTruthy();
-    const currentLayout = screen.getByRole('button', { name: 'Show current layout Accepted layout' });
+    const currentLayout = screen.getByRole('button', { name: 'Show Base layout Accepted layout' });
     const proposedUpdates = screen.getByRole('heading', { name: 'Proposed updates' }).closest('section') as HTMLElement;
     expect(proposedUpdates.contains(currentLayout)).toBe(false);
     expect(currentLayout.getAttribute('aria-pressed')).toBe('true');
@@ -264,15 +264,42 @@ describe('Briefing sidebar row actions', () => {
     });
   });
 
-  it('keeps Current distinct when a group has no proposed updates', () => {
+  it('keeps Base distinct when a group has no proposed updates', () => {
     const group = { ...groupedUpdates, updates: [] };
     render(<BriefingGroupDetail group={group} selectedUpdateId={null} onSelectUpdate={() => undefined} />);
 
-    expect(screen.getByRole('heading', { name: 'Current' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Show current layout Accepted layout' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Base' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show Base layout Accepted layout' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
     expect(screen.getByText('No proposed updates are available.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Preview proposed update/ })).toBeNull();
+  });
+
+  it('keeps promotion history collapsed but visibly available', () => {
+    const priorBase = { ...groupedUpdates.current!, id: '33333333-1234-4123-8123-123456789abc', name: 'Original' };
+    const group: BriefingGroup = {
+      ...groupedUpdates,
+      updates: [],
+      history: [{
+        id: 'history-1',
+        kind: 'promoted',
+        priorBase,
+        proposal: groupedUpdates.current!,
+        resultingBase: groupedUpdates.current!,
+        authRequestId: 'auth-1',
+        mergeHeadSha: 'a'.repeat(40),
+        createdAt: 1,
+      }],
+    };
+    render(<BriefingGroupDetail group={group} selectedUpdateId={null} onSelectUpdate={() => undefined} />);
+
+    const summary = screen.getByText('History (1)');
+    const details = summary.closest('details') as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
+    expect(screen.getByText('Promoted to Base')).toBeTruthy();
+    expect(screen.getByText('Previous Base: Base')).toBeTruthy();
   });
 
   it('renders grouped proposal bundles only through their stable group', () => {

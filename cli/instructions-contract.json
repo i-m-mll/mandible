@@ -216,7 +216,7 @@
     },
     {
       "name": "mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--json]",
-      "description": "Create a stable Briefing group with an optional explicit current bundle and ordered active proposals. Omitting --current preserves proposal-only compatibility and does not infer a current bundle."
+      "description": "Create a stable Briefing group with an optional explicit Base bundle and ordered active proposals. Omitting --current preserves proposal-only compatibility and does not infer a Base bundle."
     },
     {
       "name": "mandible briefing group add <group-ref> <bundle-ref> [--json]",
@@ -224,7 +224,11 @@
     },
     {
       "name": "mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]",
-      "description": "Atomically set a group's distinct current bundle and complete ordered active-proposal list. Current cannot also be a proposal, duplicates are rejected, and a bundle cannot belong to another group in either role."
+      "description": "Atomically set a group's distinct Base bundle and complete ordered active-proposal list. Base cannot also be a proposal, duplicates are rejected, and a bundle cannot belong to another group in either role."
+    },
+    {
+      "name": "mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]",
+      "description": "Guardedly apply or replay one completed successful merge transition. The exact auth request, merge head, expected prior Base, group, and active proposal must match; convergence must have succeeded. Retries are no-ops and drift fails closed."
     },
     {
       "name": "mandible briefing group rename <group-ref> --name <text> [--json]",
@@ -232,7 +236,7 @@
     },
     {
       "name": "mandible briefing group show <group-ref> [--json]",
-      "description": "Show one stable Briefing group with its distinct current bundle and ordered active-proposal bundle objects."
+      "description": "Show one stable Briefing group with its distinct Base, ordered active proposals, and retained disposition history."
     },
     {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",

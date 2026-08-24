@@ -121,6 +121,20 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     ).selectedUpdate?.id ?? null
     : null;
   const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
+  const selectedDisplayContext = useMemo(() => {
+    if (!selected) return undefined;
+    for (const group of groups) {
+      const projection = resolveBriefingGroupProjection(
+        group,
+        viewState.selectedGroupUpdateIds[group.id],
+        groupBundleOwners,
+      );
+      if (projection.layoutSource?.members.some((member) => member.briefing.id === selected.id)) {
+        return { groupId: group.id, proposalBundleId: projection.selectedUpdate?.id ?? null };
+      }
+    }
+    return undefined;
+  }, [groupBundleOwners, groups, selected, viewState.selectedGroupUpdateIds]);
 
   const selectBriefing = (briefing: FeedbackCollection) => {
     setViewState((current) => ({ ...current, selectedCollectionId: briefing.id, selectedGroupId: null }));
@@ -198,6 +212,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
           briefingTitle={selected.label}
           briefingDescription={selected.description}
           roundId={explicitRoundId}
+          displayContext={selectedDisplayContext}
           instance={instance}
           keepSubmittedAnnotations={keepSubmittedAnnotations}
           onRoundChange={selectRound}

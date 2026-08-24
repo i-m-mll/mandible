@@ -27,6 +27,7 @@ Usage:
   mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--json]
   mandible briefing group add <group-ref> <bundle-ref> [--json]
   mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]
+  mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]
   mandible briefing group rename <group-ref> --name <text> [--json]
   mandible briefing group show <group-ref> [--json]
 
@@ -247,9 +248,9 @@ emit_group() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '.group | "briefing-group:\(.id | mandible_short_id)  \(.name)\n  current: \(
-        if .current == null then "none" else "\(.current.id | mandible_short_id)  \(.current.name)" end
-      )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))"'
+      '.group | "briefing-group:\(.id | mandible_short_id)  \(.name)\n  Base: \(
+        if .current == null then "none" else "\(.current.id | mandible_short_id)  \(if .current.name == \"Original\" then \"Base\" else .current.name end)" end
+      )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))\n  history: \((.history // []) | length)"'
   fi
 }
 
@@ -334,6 +335,37 @@ cmd_group_rename() {
   emit_group "$response" "$json"
 }
 
+cmd_group_promote() {
+  local group_ref="" expected_base="" proposal="" auth_request="" merge_head="" json=0 response payload
+  while (( $# > 0 )); do
+    case "$1" in
+      --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
+      --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
+      --auth-request) [[ $# -ge 2 ]] || die "--auth-request requires a value" 2; auth_request="$2"; shift 2 ;;
+      --merge-head) [[ $# -ge 2 ]] || die "--merge-head requires a value" 2; merge_head="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" && -n "$auth_request" ]] \
+    || die "Usage: mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]" 2
+  [[ "$merge_head" =~ '^[0-9a-fA-F]{40}$' ]] \
+    || die "--merge-head requires one exact 40-character Git commit id" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(jq -n --arg expected "$expected_base" --arg proposal "$proposal" \
+    --arg auth "$auth_request" --arg head "$merge_head" \
+    '{expected_base_bundle_ref:$expected,proposal_bundle_ref:$proposal,auth_request_ref:$auth,merge_head_sha:$head}')"
+  response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/promotions/apply" "$payload")" \
+    || die "Failed to apply guarded Briefing group promotion." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '"briefing-group:\(.group.id | mandible_short_id)  Base=\(.group.current.id | mandible_short_id)  \(if .changed then "promoted" else "already applied" end)"'
+  fi
+}
+
 cmd_group_show() {
   local group_ref="" json=0 response
   while (( $# > 0 )); do
@@ -354,6 +386,7 @@ cmd_group() {
   shift
   case "$subcommand" in
     create) cmd_group_create "$@" ;; add) cmd_group_add "$@" ;; configure) cmd_group_configure "$@" ;;
+    promote) cmd_group_promote "$@" ;;
     rename) cmd_group_rename "$@" ;;
     show) cmd_group_show "$@" ;; *) die "Unknown briefing group subcommand: $subcommand" 2 ;;
   esac

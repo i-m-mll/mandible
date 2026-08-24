@@ -847,6 +847,34 @@ describe("plural Briefing routes", () => {
     expect(configured).toMatchObject({ status: 200, body: { changed: true, group: {
       current: { id: bundleId }, updates: [{ id: secondBundleId }],
     } } });
+    const authId = "route-auth-0000000000000000000000000";
+    const mergeHead = "d".repeat(40);
+    db.prepare(`INSERT INTO auth_requests (
+      id, command, title, status, created_at, updated_at, resolved_at, expires_at,
+      exit_code, output, repo, base_branch, head_branch, type, merge_head_sha
+    ) VALUES (?, 'git merge', 'Merge proposal', 'completed', 1, 2, 2, 999999,
+      0, '', 'dotfiles', 'main', 'feature/policy', 'merge', ?)`)
+      .run(authId, mergeHead);
+    const promoted = await router.invoke({ method: "POST",
+      url: `/api/briefing-groups/${groupId}/promotions/apply`, credential: "human", body: {
+        expected_base_bundle_ref: bundleId,
+        proposal_bundle_ref: secondBundleId,
+        auth_request_ref: authId,
+        merge_head_sha: mergeHead,
+      } });
+    expect(promoted).toMatchObject({ status: 200, body: {
+      changed: true,
+      group: { current: { id: secondBundleId }, updates: [], history: [{
+        kind: "promoted", prior_base: { id: bundleId }, proposal: { id: secondBundleId },
+      }] },
+    } });
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefing-groups/${groupId}/promotions/apply`, credential: "human", body: {
+        expected_base_bundle_ref: bundleId,
+        proposal_bundle_ref: secondBundleId,
+        auth_request_ref: authId,
+        merge_head_sha: mergeHead,
+      } })).toMatchObject({ status: 200, body: { changed: false } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
       body: { name: "Other", bundle_refs: [bundleId] } })).toMatchObject({
       status: 409, body: { code: "briefing_bundle_already_grouped" },
@@ -871,6 +899,9 @@ describe("plural Briefing routes", () => {
       group_id: groupId,
     });
     expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:group-name-updated", { group_id: groupId });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:group-proposal-promoted", {
+      group_id: groupId, proposal_bundle_id: secondBundleId, prior_base_bundle_id: bundleId,
+    });
   });
 
 });

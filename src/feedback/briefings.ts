@@ -13,6 +13,7 @@ import {
   type BriefingDirective,
   type BriefingProfile,
 } from "./briefing-directives.js";
+import { resolveGroupDisplayComparisonBase } from "./briefing-groups.js";
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 
@@ -725,7 +726,13 @@ function effectiveAnnotations(db: Db, roundId: string, actorUserId: string) {
 export function readBriefing(
   db: Db,
   briefingId: string,
-  options: { roundId?: string; submissionId?: string; actorUserId: string; operator: boolean },
+  options: {
+    roundId?: string;
+    submissionId?: string;
+    actorUserId: string;
+    operator: boolean;
+    displayGroup?: { groupRef: string; proposalBundleRef: string | null };
+  },
 ) {
   const briefing = db.prepare(
     `SELECT id, briefing_key, title, description, latest_round_id, round_count, archived_at, created_at, updated_at
@@ -770,10 +777,23 @@ export function readBriefing(
   if (roundRef && !selected) throw new BriefingStoreError("round not found", 404, "not_found");
   if (!selected) return { briefing, rounds, selected_round: null };
   const verification = verifyBriefingRoundBinding(db, selected.id);
-  let comparisonBase: { artifact_version_id: string; content_hash: string; source: string } | null = null;
+  let originalComparisonBase: { artifact_version_id: string; content_hash: string; source: string } | null = null;
   if (selected.comparison_base_artifact_version_id) {
     const base = pinnedRoundDocument(db, selected.comparison_base_artifact_version_id);
-    comparisonBase = { artifact_version_id: selected.comparison_base_artifact_version_id, ...base };
+    originalComparisonBase = { artifact_version_id: selected.comparison_base_artifact_version_id, ...base };
+  }
+  let comparisonBase = originalComparisonBase;
+  if (options.displayGroup) {
+    const displayBaseId = resolveGroupDisplayComparisonBase(db, {
+      groupRef: options.displayGroup.groupRef,
+      proposalBundleRef: options.displayGroup.proposalBundleRef,
+      briefingId,
+      artifactVersionId: selected.artifact_version_id,
+    });
+    comparisonBase = displayBaseId === null ? null : {
+      artifact_version_id: displayBaseId,
+      ...pinnedRoundDocument(db, displayBaseId),
+    };
   }
   const items = db.prepare(
     `SELECT i.id, i.directive_key, i.position, d.definition_digest, d.response_type, d.required,
@@ -874,7 +894,8 @@ export function readBriefing(
       ...selected,
       document: { artifact_version_id: selected.artifact_version_id, content_hash: verification.content_hash,
         previous_round_id: selected.previous_round_id, profile: selected.profile, source: verification.source,
-        comparison_base: comparisonBase },
+        comparison_base: comparisonBase,
+        original_comparison_base: originalComparisonBase },
       binding: projectionValid ? { status: "valid" as const } : {
         status: "invalid" as const, reason: projectionError ?? (verification.valid ? "invalid projection" : verification.reason),
       },

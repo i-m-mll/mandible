@@ -257,6 +257,27 @@ describe("briefing CLI", () => {
     });
     expect(noCurrent.status).toBe(0);
 
+    const mergeHead = "a".repeat(40);
+    const promoted = await runRpc(["briefing", "group", "promote", "group-12345678",
+      "--expected-base", "bundle-current", "--proposal", "bundle-one",
+      "--auth-request", "auth-12345678", "--merge-head", mergeHead, "--json"], (request) => {
+      expect(request).toMatchObject({ method: "POST",
+        path: "/api/briefing-groups/group-12345678/promotions/apply",
+        body: {
+          expected_base_bundle_ref: "bundle-current",
+          proposal_bundle_ref: "bundle-one",
+          auth_request_ref: "auth-12345678",
+          merge_head_sha: mergeHead,
+        } });
+      return { status: 200, body: { group: { ...group, current: bundle, updates: [], history: [] },
+        disposition: {}, changed: true } };
+    });
+    expect(promoted.status).toBe(0);
+    expect(JSON.parse(promoted.stdout)).toMatchObject({ changed: true });
+    expect(runOffline(["briefing", "group", "promote", "group", "--expected-base", "base",
+      "--proposal", "proposal", "--auth-request", "auth", "--merge-head", "main"]).stderr)
+      .toContain("40-character");
+
     const renamed = await runRpc(["briefing", "group", "rename", "group-12345678", "--name", "Policy review", "--json"],
       (request) => {
         expect(request).toMatchObject({ method: "PATCH", path: "/api/briefing-groups/group-12345678",

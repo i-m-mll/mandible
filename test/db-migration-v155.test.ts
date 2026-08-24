@@ -9,9 +9,9 @@ describe("migration v155: scoped protected-merge clearances", () => {
   it("converges the baseline, migration, and backup contract", () => {
     const db = new Database(":memory:");
     migrate(db);
-    expect(BASELINE_SCHEMA_VERSION).toBe(157);
-    expect(CURRENT_SCHEMA_VERSION).toBe(157);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "157" });
+    expect(BASELINE_SCHEMA_VERSION).toBe(158);
+    expect(CURRENT_SCHEMA_VERSION).toBe(158);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "158" });
     expect(db.prepare("PRAGMA table_info(auth_requests)").all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "requester_evidence_method", type: "TEXT" }),
       expect.objectContaining({ name: "requester_credential_id", type: "TEXT" }),
@@ -47,7 +47,7 @@ describe("migration v155: scoped protected-merge clearances", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM auth_clearances").get()).toEqual({ count: 0 });
     db.prepare("UPDATE meta SET value = '154' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "157" });
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "158" });
     db.close();
   });
 });

@@ -36,6 +36,7 @@ import {
   createBriefingGroup,
   listBriefingGroups,
   readBriefingGroup,
+  promoteBriefingGroupProposal,
   updateBriefingGroupName,
 } from "../feedback/briefing-groups.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
@@ -318,6 +319,31 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
+  server.post("/api/briefing-groups/:groupId/promotions/apply", (req, res) => {
+    try {
+      const viewer = groupUpdateViewer(db, req);
+      const requestBody = body(req);
+      const allowed = ["expected_base_bundle_ref", "proposal_bundle_ref", "auth_request_ref", "merge_head_sha"];
+      const unexpected = Object.keys(requestBody).filter((key) => !allowed.includes(key));
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const result = promoteBriefingGroupProposal(db, {
+        groupRef: req.params.groupId,
+        expectedBaseBundleRef: typeof requestBody.expected_base_bundle_ref === "string"
+          ? requestBody.expected_base_bundle_ref : "",
+        proposalBundleRef: typeof requestBody.proposal_bundle_ref === "string"
+          ? requestBody.proposal_bundle_ref : "",
+        authRequestRef: typeof requestBody.auth_request_ref === "string" ? requestBody.auth_request_ref : "",
+        mergeHeadSha: typeof requestBody.merge_head_sha === "string" ? requestBody.merge_head_sha : "",
+      }, viewer);
+      if (result.changed) broadcast(BRIEFING_EVENTS.groupProposalPromoted, {
+        group_id: result.group.id,
+        proposal_bundle_id: result.disposition.proposal.id,
+        prior_base_bundle_id: result.disposition.prior_base?.id ?? null,
+      });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
   server.patch("/api/briefing-groups/:groupId", (req, res) => {
     try {
       const viewer = renameViewer(db, req, "Briefing group");
@@ -557,15 +583,30 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const actor = activeHuman(db, req);
       const values = new URL(req.url, "http://localhost").searchParams.getAll("round");
       const submissionValues = new URL(req.url, "http://localhost").searchParams.getAll("submission");
+      const groupValues = new URL(req.url, "http://localhost").searchParams.getAll("group");
+      const proposalValues = new URL(req.url, "http://localhost").searchParams.getAll("proposal");
       if (values.length > 1 || (values.length === 1 && !values[0])) {
         throw new BriefingStoreError("round must be one nonblank round id");
       }
       if (submissionValues.length > 1 || (submissionValues.length === 1 && !submissionValues[0])) {
         throw new BriefingStoreError("submission must be one nonblank submission id");
       }
+      if (groupValues.length > 1 || (groupValues.length === 1 && !groupValues[0])) {
+        throw new BriefingStoreError("group must be one nonblank Briefing group id");
+      }
+      if (proposalValues.length > 1 || (proposalValues.length === 1 && !proposalValues[0])) {
+        throw new BriefingStoreError("proposal must be one nonblank Briefing bundle id");
+      }
+      if (proposalValues.length > 0 && groupValues.length === 0) {
+        throw new BriefingStoreError("proposal display context requires group");
+      }
       const projection = readBriefing(db, req.params.briefingId, {
         ...(values[0] ? { roundId: values[0] } : {}),
         ...(submissionValues[0] ? { submissionId: submissionValues[0] } : {}),
+        ...(groupValues[0] ? { displayGroup: {
+          groupRef: groupValues[0],
+          proposalBundleRef: proposalValues[0] ?? null,
+        } } : {}),
         actorUserId: actor.user.id,
         operator: actor.operator,
       });
