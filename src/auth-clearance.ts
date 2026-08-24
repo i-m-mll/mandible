@@ -8,7 +8,7 @@ import { LedgerStore } from "./ledger/store.js";
 import { resolveProjectRef, type RegistryProject } from "./ledger/project-registry.js";
 import type { AuthRequest } from "./types.js";
 import { getOperator, getUserById, listCredentials, resolveUser } from "./users/store.js";
-import type { AuthApprovalContext } from "./delegated-signing-resource.js";
+import type { AuthApprovalContext, DelegatedSignerBorrow } from "./delegated-signing-resource.js";
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 
 const DEFAULT_DURATION_MINUTES = 60;
@@ -68,6 +68,7 @@ export interface ClearanceConsumption {
   clearance: AuthClearance;
   use: AuthClearanceUse;
   approval: AuthApprovalContext;
+  settle: DelegatedSignerBorrow["settle"];
 }
 
 export class AuthClearanceError extends Error {
@@ -80,7 +81,6 @@ export class AuthClearanceError extends Error {
 export class AuthClearanceManager {
   private readonly db: Db;
   private readonly now: () => number;
-  private readonly signerContexts = new Map<string, AuthApprovalContext>();
 
   constructor(
     db: InstanceType<typeof Database>,
@@ -101,7 +101,6 @@ export class AuthClearanceManager {
   }
 
   removeSigning() {
-    this.signerContexts.clear();
     return this.signer.remove();
   }
 
@@ -171,7 +170,6 @@ export class AuthClearanceManager {
       await this.signer.release(approval).catch(() => undefined);
       throw error;
     }
-    this.signerContexts.set(id, approval);
     return this.show(id);
   }
 
@@ -220,14 +218,15 @@ export class AuthClearanceManager {
       throw new AuthClearanceError("operator_required", "Only the configured active operator can revoke a clearance.");
     }
     const clearance = this.show(id);
-    if (clearance.revoked_at !== null) return clearance;
+    if (clearance.revoked_at !== null) {
+      await this.signer.drain(clearance.signing_lease_id, "clearance_revoked");
+      return clearance;
+    }
     this.db.prepare(
       `UPDATE auth_clearances SET revoked_at = COALESCE(revoked_at, ?),
        revoked_by_user_id = COALESCE(revoked_by_user_id, ?) WHERE id = ?`,
     ).run(this.now(), operator.id, clearance.id);
-    const context = this.signerContexts.get(clearance.id);
-    this.signerContexts.delete(clearance.id);
-    if (context) await this.signer.release(context);
+    await this.signer.drain(clearance.signing_lease_id, "clearance_revoked");
     return this.show(clearance.id);
   }
 
@@ -235,6 +234,25 @@ export class AuthClearanceManager {
     requestId: string,
     transition: (input: ClearanceConsumption) => void,
   ): ClearanceConsumption {
+    const initialRequest = this.readRequest(requestId);
+    const initialMatches = this.matchingClearances(initialRequest, this.now());
+    if (initialMatches.length !== 1) {
+      throw new AuthClearanceError(
+        initialMatches.length === 0 ? "no_matching_clearance" : "ambiguous_clearance",
+        initialMatches.length === 0
+          ? "No active unambiguous clearance matches this exact request and verified requester provenance."
+          : "Multiple active clearances match this request; revoke or narrow them before execution.",
+      );
+    }
+    let borrow: DelegatedSignerBorrow;
+    try {
+      borrow = this.signer.borrow(initialMatches[0].signing_lease_id);
+    } catch (error) {
+      throw new AuthClearanceError(
+        "runtime_invalidated",
+        error instanceof Error ? error.message : "Clearance signer is unavailable.",
+      );
+    }
     const run = this.db.transaction(() => {
       const request = this.readRequest(requestId);
       const now = this.now();
@@ -248,9 +266,8 @@ export class AuthClearanceManager {
         );
       }
       const clearance = matches[0];
-      const approval = this.signerContexts.get(clearance.id);
-      if (!approval || approval.leaseId !== clearance.signing_lease_id) {
-        throw new AuthClearanceError("runtime_invalidated", "Clearance signer is unavailable in this daemon runtime.");
+      if (clearance.id !== initialMatches[0].id || borrow.approval.leaseId !== clearance.signing_lease_id) {
+        throw new AuthClearanceError("runtime_invalidated", "Clearance signer or matching scope changed before consumption.");
       }
       const snapshot = requestSnapshot(request);
       const snapshotJson = canonicalJson(snapshot);
@@ -319,16 +336,21 @@ export class AuthClearanceManager {
           request_snapshot_digest: snapshotDigest,
           consumed_at: now,
         },
-        approval: { ...approval, source: "clearance" },
+        approval: { ...borrow.approval, source: "clearance" },
+        settle: borrow.settle,
       };
       transition(result);
       return result;
     });
-    const result = run.immediate();
+    let result: ClearanceConsumption;
+    try {
+      result = run.immediate();
+    } catch (error) {
+      void borrow.settle().catch(() => undefined);
+      throw error;
+    }
     if (result.use.use_ordinal >= result.clearance.max_uses) {
-      const context = this.signerContexts.get(result.clearance.id);
-      this.signerContexts.delete(result.clearance.id);
-      if (context) void this.signer.release(context).catch(() => undefined);
+      void this.signer.drain(result.clearance.signing_lease_id, "clearance_exhausted").catch(() => undefined);
     }
     return result;
   }
@@ -347,15 +369,20 @@ export class AuthClearanceManager {
          AND credential.user_id = c.grantee_user_id AND credential.type = 'api_token' AND credential.status = 'active'
        JOIN delegated_signing_leases lease ON lease.id = c.signing_lease_id
          AND lease.owner_user_id = c.issuer_user_id AND lease.expires_at > ?
+       JOIN user_credentials signing_credential ON signing_credential.id = lease.credential_id
+         AND signing_credential.user_id = c.issuer_user_id
+         AND signing_credential.type = 'delegated_ssh_key' AND signing_credential.status = 'active'
+       JOIN delegated_signing_runtime_bindings binding ON binding.lease_id = lease.id
+         AND binding.state = 'available' AND binding.retired_at IS NULL
        WHERE c.project_id = ? AND c.base_branch = ? AND c.action = 'merge'
          AND c.issuer_user_id = ?
          AND c.grantee_user_id = ? AND c.grantee_credential_id = ?
-         AND c.runtime_epoch = ? AND c.revoked_at IS NULL AND c.expires_at > ?
+         AND c.revoked_at IS NULL AND c.expires_at > ?
          AND (SELECT COUNT(*) FROM auth_clearance_uses used WHERE used.clearance_id = c.id) < c.max_uses
        ORDER BY c.issued_at, c.id`,
     ).all(
       now, project.id, request.base_branch, operator.id, request.requested_by_user_id,
-      request.requester_credential_id, this.runtimeEpoch, now,
+      request.requester_credential_id, now,
     ) as AuthClearance[];
     return rows.filter((clearance) => {
       if (clearance.head_branch && clearance.head_branch !== request.head_branch) return false;

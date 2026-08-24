@@ -19,6 +19,7 @@ import {
   readBriefing,
   setBriefingArchived,
   submitBriefingRound,
+  updateBriefingDescription,
   updateBriefingTitle,
 } from "../src/feedback/briefings.js";
 import {
@@ -212,6 +213,37 @@ describe("artifact-backed Briefing rounds", () => {
         .map((briefing_id, layout_position) => ({ bundle_id: bundle.id, briefing_id, layout_position,
           entry_kind: "briefing", subgroup_name: null, subgroup_position: 0, created_at: 1_500 })),
     });
+  });
+
+  it("persists, trims, updates, and clears a Briefing description without changing round bindings", () => {
+    const receipt = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "described-review", title: "Described review",
+      description: "  Explains why this review exists. It represents an approval-ready policy fixture.  ",
+      artifact_version_ref: recordArtifactVersion(db, {
+        source_kind: "managed", content: "# Policy\n", series_key: "described-review",
+        logical_name: "policy.md", role: "review-document", media_type: "text/markdown",
+      }).version.id,
+      profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    }, 1_000);
+    const viewer = { userId: humanId, operator: true };
+    const roundBefore = db.prepare("SELECT * FROM briefing_rounds WHERE id = ?").get(receipt.round_id);
+
+    expect(listBriefings(db, viewer)).toMatchObject([{ description:
+      "Explains why this review exists. It represents an approval-ready policy fixture." }]);
+    expect(readBriefing(db, receipt.briefing_id, { actorUserId: humanId, operator: true }))
+      .toMatchObject({ briefing: { description:
+        "Explains why this review exists. It represents an approval-ready policy fixture." } });
+    expect(updateBriefingDescription(db, receipt.briefing_id,
+      "  Durable source snapshot for later comparison.  ", viewer, 1_100)).toEqual({
+      briefing_id: receipt.briefing_id,
+      description: "Durable source snapshot for later comparison.",
+      changed: true,
+    });
+    expect(() => updateBriefingDescription(db, receipt.briefing_id, "  ", viewer)).toThrow(/nonblank/);
+    expect(() => updateBriefingDescription(db, receipt.briefing_id, "x".repeat(1_001), viewer)).toThrow(/1000/);
+    expect(updateBriefingDescription(db, receipt.briefing_id, null, viewer, 1_200))
+      .toMatchObject({ description: null, changed: true });
+    expect(db.prepare("SELECT * FROM briefing_rounds WHERE id = ?").get(receipt.round_id)).toEqual(roundBefore);
   });
 
   it("binds directive-free exact Markdown as an annotation-only Briefing without weakening run ingestion", () => {

@@ -36,7 +36,7 @@ type LayoutRow = BriefingListEntry & {
 function layoutRows(db: Db, bundleId: string, viewer: BriefingBundleViewer): LayoutRow[] {
   return db.prepare(
     `SELECT bm.layout_position, bm.entry_kind, bm.subgroup_name, bm.subgroup_position,
-            b.id, b.briefing_key, b.title, b.latest_round_id, b.round_count, b.archived_at,
+            b.id, b.briefing_key, b.title, b.description, b.latest_round_id, b.round_count, b.archived_at,
             b.created_at, b.updated_at
        FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
       WHERE bm.bundle_id = ? AND b.archived_at IS NULL AND (? = 1 OR EXISTS (

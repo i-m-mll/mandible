@@ -30,6 +30,12 @@ export interface AuthApprovalContext {
   leaseId: string;
   approverUserId: string;
   env: NodeJS.ProcessEnv;
+  /** Opaque process facts consumed only by DelegatedSigningResource. */
+  runtime?: {
+    sshAgentPid: string;
+    sshAuthSock: string;
+    publicKeyPath: string;
+  };
 }
 
 export interface AuthAutoApprover {
@@ -92,7 +98,6 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   private readonly configDir: string;
   private readonly presenceCommandTimeoutMs: number;
   private activeLease: ActiveLease | null = null;
-  private readonly scopedLeases = new Map<string, ActiveLease>();
 
   constructor(options: AuthAutoApproveOptions = {}) {
     this.db = options.db ?? getDb();
@@ -244,13 +249,6 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   async freshPresenceChallenge(ttlSeconds = 60): Promise<AuthApprovalContext> {
     const durationSeconds = Math.min(24 * 60 * 60, Math.max(30, Math.round(ttlSeconds)));
     const lease = await this.createDelegatedSigningLease(durationSeconds);
-    const timer = setTimeout(() => {
-      this.scopedLeases.delete(lease.id);
-      void stopSshAgent(lease.sshAgentPid).catch(() => undefined);
-    }, durationSeconds * 1000);
-    timer.unref();
-    lease.timer = timer;
-    this.scopedLeases.set(lease.id, lease);
     return {
       source: "clearance",
       leaseId: lease.id,
@@ -262,15 +260,17 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
         GIT_CONFIG_KEY_0: "user.signingkey",
         GIT_CONFIG_VALUE_0: lease.publicKeyPath,
       },
+      runtime: {
+        sshAgentPid: lease.sshAgentPid,
+        sshAuthSock: lease.sshAuthSock,
+        publicKeyPath: lease.publicKeyPath,
+      },
     };
   }
 
-  async releaseApprovalContext(context: AuthApprovalContext): Promise<void> {
-    const lease = this.scopedLeases.get(context.leaseId);
-    if (!lease) return;
-    this.scopedLeases.delete(context.leaseId);
-    if (lease.timer) clearTimeout(lease.timer);
-    await stopSshAgent(lease.sshAgentPid);
+  async stopApprovalRuntime(context: AuthApprovalContext): Promise<void> {
+    if (!context.runtime) return;
+    await stopSshAgent(context.runtime.sshAgentPid);
   }
 
   private async createDelegatedSigningLease(durationSeconds: number): Promise<ActiveLease> {
@@ -500,7 +500,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   }
 
   private getMissingTools(): string[] {
-    return ["age", "age-plugin-yubikey", "ssh-keygen", "ssh-agent", "ssh-add"].filter(
+    return ["age", "age-plugin-yubikey", "ssh-keygen", "ssh-agent", "ssh-add", "lsof"].filter(
       (tool) => !hasCommand(tool),
     );
   }

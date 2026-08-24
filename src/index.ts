@@ -237,11 +237,20 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const autoApproveManager = new AuthAutoApproveManager({
     seedDefaultDurationSetting: operationalMutationsAllowed,
   });
+  const delegatedSigningResource = new DelegatedSigningResource(autoApproveManager, {
+    db,
+    runtimeEpoch: startupEpoch,
+    allowRuntimeAuthority: instance.role === "main" && operationalMutationsAllowed,
+  });
   const clearanceManager = new AuthClearanceManager(
     db,
-    new DelegatedSigningResource(autoApproveManager),
+    delegatedSigningResource,
     startupEpoch,
   );
+  const reconnect = delegatedSigningResource.attachAvailable();
+  if (reconnect.attached > 0 || reconnect.refused > 0) {
+    logger(reconnect.refused > 0 ? "warn" : "info", "delegated_signer_reconnect", reconnect);
+  }
   const authQueue = new AuthQueue({
     autoApprover: autoApproveManager,
     clearanceManager,

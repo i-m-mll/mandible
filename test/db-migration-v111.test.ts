@@ -33,7 +33,7 @@ describe("migration v111: user groups and project permissions", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-value: "155",
+value: "157",
     });
     expect(db.prepare("SELECT project_key, restricted FROM ledger_projects").get()).toEqual({
       project_key: "legacy",

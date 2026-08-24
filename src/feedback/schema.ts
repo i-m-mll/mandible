@@ -48,6 +48,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     id TEXT PRIMARY KEY,
     briefing_key TEXT NOT NULL UNIQUE CHECK(trim(briefing_key) != ''),
     title TEXT NOT NULL CHECK(trim(title) != ''),
+    description TEXT CHECK(description IS NULL OR (trim(description) != '' AND length(description) <= 1000)),
     latest_round_id TEXT,
     round_count INTEGER NOT NULL DEFAULT 0 CHECK(round_count >= 0),
     archived_at INTEGER,

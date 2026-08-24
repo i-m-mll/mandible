@@ -27,6 +27,7 @@ export type BriefingRunRequest = {
   schema: typeof BRIEFING_RUN_SCHEMA;
   briefing_key: string;
   title: string;
+  description?: string | null;
   task_identity: string;
   run_id: string;
   run_key: string;
@@ -68,6 +69,20 @@ function text(value: unknown, label: string): string {
 export function normalizeBriefingTitle(value: unknown, label = "title"): string {
   const normalized = text(value, label).replace(/\s+[—–-]\s*proposed update\s*$/iu, "").trim();
   if (!normalized) throw new BriefingStoreError(`${label} must contain a durable name`);
+  return normalized;
+}
+
+export const BRIEFING_DESCRIPTION_MAX_LENGTH = 1_000;
+
+export function normalizeBriefingDescription(value: unknown, label = "description"): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new BriefingStoreError(`${label} must be a nonblank string or null`);
+  }
+  const normalized = value.trim();
+  if (normalized.length > BRIEFING_DESCRIPTION_MAX_LENGTH) {
+    throw new BriefingStoreError(`${label} must be at most ${BRIEFING_DESCRIPTION_MAX_LENGTH} characters`);
+  }
   return normalized;
 }
 
@@ -119,7 +134,7 @@ function roundBindingDigest(directives: BriefingDirective[]): string {
 
 export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
   const body = record(value, "request body");
-  only(body, ["schema", "briefing_key", "title", "task_identity", "run_id", "run_key", "responder_user_ids",
+  only(body, ["schema", "briefing_key", "title", "description", "task_identity", "run_id", "run_key", "responder_user_ids",
     "evidence", "source_health", "document", "quiet_reason", "occurrences"], "request body");
   if (body.schema !== BRIEFING_RUN_SCHEMA) {
     throw new BriefingStoreError(`schema must be '${BRIEFING_RUN_SCHEMA}'`);
@@ -182,6 +197,9 @@ export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
     schema: BRIEFING_RUN_SCHEMA,
     briefing_key: text(body.briefing_key, "briefing_key"),
     title: normalizeBriefingTitle(body.title),
+    ...(Object.hasOwn(body, "description")
+      ? { description: normalizeBriefingDescription(body.description) }
+      : {}),
     task_identity: text(body.task_identity, "task_identity"),
     run_id: text(body.run_id, "run_id"),
     run_key: text(body.run_key, "run_key"),
@@ -254,13 +272,18 @@ export function publishBriefingRun(
     if (!briefing) {
       const id = randomUUID();
       db.prepare(
-        `INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, 0, ?, ?)`,
-      ).run(id, request.briefing_key, request.title, now, now);
+        `INSERT INTO briefings (id, briefing_key, title, description, latest_round_id, round_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, 0, ?, ?)`,
+      ).run(id, request.briefing_key, request.title, request.description ?? null, now, now);
       briefing = { id, latest_round_id: null, round_count: 0 };
     } else {
-      db.prepare("UPDATE briefings SET title = ?, updated_at = ? WHERE id = ?")
-        .run(request.title, now, briefing.id);
+      if (request.description === undefined) {
+        db.prepare("UPDATE briefings SET title = ?, updated_at = ? WHERE id = ?")
+          .run(request.title, now, briefing.id);
+      } else {
+        db.prepare("UPDATE briefings SET title = ?, description = ?, updated_at = ? WHERE id = ?")
+          .run(request.title, request.description, now, briefing.id);
+      }
     }
     for (const responder of request.responder_user_ids) {
       db.prepare("INSERT OR IGNORE INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)")
@@ -352,7 +375,7 @@ export function publishBriefingRun(
 }
 
 export type ExistingArtifactBriefingRequest = {
-  briefing_key: string; title: string; artifact_version_ref: string;
+  briefing_key: string; title: string; description?: unknown; artifact_version_ref: string;
   comparison_base_artifact_version_ref?: string | null;
   profile: typeof BRIEFING_PROFILE_V3; responder_user_ids: string[];
 };
@@ -371,6 +394,8 @@ export function publishBriefingFromArtifactVersion(
 ): BriefingRunReceipt {
   if (request.profile !== BRIEFING_PROFILE_V3) throw new BriefingStoreError("existing artifact publication requires mandible-briefing.v3");
   const title = normalizeBriefingTitle(request.title);
+  const descriptionProvided = Object.hasOwn(request, "description");
+  const description = normalizeBriefingDescription(request.description);
   const versionId = resolveExactArtifactVersion(db, request.artifact_version_ref, "artifact_version_ref");
   const comparisonBaseVersionId = request.comparison_base_artifact_version_ref
     ? resolveExactArtifactVersion(db, request.comparison_base_artifact_version_ref, "comparison_base_artifact_version_ref")
@@ -389,8 +414,8 @@ export function publishBriefingFromArtifactVersion(
       .get(request.briefing_key) as { id: string; latest_round_id: string | null; round_count: number } | undefined;
     if (!briefing) {
       const id = randomUUID();
-      db.prepare(`INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
-        VALUES (?, ?, ?, NULL, 0, ?, ?)`).run(id, request.briefing_key, title, now, now);
+      db.prepare(`INSERT INTO briefings (id, briefing_key, title, description, latest_round_id, round_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, NULL, 0, ?, ?)`).run(id, request.briefing_key, title, description, now, now);
       briefing = { id, latest_round_id: null, round_count: 0 };
     }
     for (const responder of request.responder_user_ids) db.prepare(
@@ -431,8 +456,13 @@ export function publishBriefingFromArtifactVersion(
     });
     const verified = verifyBriefingRoundBinding(db, roundId);
     if (!verified.valid) throw new BriefingStoreError(`published round binding is invalid: ${verified.reason}`, 409, "invalid_round_binding");
-    db.prepare("UPDATE briefings SET title = ?, latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?")
-      .run(title, roundId, now, briefing.id);
+    if (descriptionProvided) {
+      db.prepare("UPDATE briefings SET title = ?, description = ?, latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?")
+        .run(title, description, roundId, now, briefing.id);
+    } else {
+      db.prepare("UPDATE briefings SET title = ?, latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?")
+        .run(title, roundId, now, briefing.id);
+    }
     return { receipt_id: roundId, briefing_id: briefing.id, run_id: `artifact:${versionId}`,
       round_id: roundId, artifact_version_id: versionId, quiet: false };
   }).immediate();
@@ -445,7 +475,7 @@ export function briefingMemberAllows(db: Db, briefingId: string, actorUserId: st
 
 export function listBriefings(db: Db, viewer: { userId: string; operator: boolean }) {
   return db.prepare(
-    `SELECT b.id, b.briefing_key, b.title, b.latest_round_id, b.round_count, b.archived_at,
+    `SELECT b.id, b.briefing_key, b.title, b.description, b.latest_round_id, b.round_count, b.archived_at,
             b.created_at, b.updated_at,
             CASE WHEN EXISTS (
               SELECT 1 FROM users actor
@@ -509,6 +539,26 @@ export function updateBriefingTitle(
     db.prepare("UPDATE briefings SET title = ? WHERE id = ?").run(normalized, briefing.id);
   }
   return { briefing_id: briefing.id, title: normalized, changed: briefing.title !== normalized };
+}
+
+export function updateBriefingDescription(
+  db: Db,
+  briefingRef: string,
+  description: unknown,
+  viewer: BriefingViewer,
+  now = Date.now(),
+) {
+  const normalized = normalizeBriefingDescription(description);
+  const briefingId = resolveBriefingId(db, briefingRef, viewer);
+  const briefing = db.prepare("SELECT id, description FROM briefings WHERE id = ?")
+    .get(briefingId) as { id: string; description: string | null } | undefined;
+  if (!briefing) throw new BriefingStoreError("briefing not found", 404, "not_found");
+  const changed = briefing.description !== normalized;
+  if (changed) {
+    db.prepare("UPDATE briefings SET description = ?, updated_at = ? WHERE id = ?")
+      .run(normalized, now, briefing.id);
+  }
+  return { briefing_id: briefing.id, description: normalized, changed };
 }
 
 export function setBriefingArchived(
@@ -678,7 +728,7 @@ export function readBriefing(
   options: { roundId?: string; submissionId?: string; actorUserId: string; operator: boolean },
 ) {
   const briefing = db.prepare(
-    `SELECT id, briefing_key, title, latest_round_id, round_count, archived_at, created_at, updated_at
+    `SELECT id, briefing_key, title, description, latest_round_id, round_count, archived_at, created_at, updated_at
        FROM briefings WHERE id = ?`,
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;

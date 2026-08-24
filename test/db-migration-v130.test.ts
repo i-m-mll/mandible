@@ -8,7 +8,7 @@ describe("migration v130-v131 managed reminder core and Inbox acknowledgement", 
     const db = new Database(":memory:");
     try {
       migrate(db);
-expect(CURRENT_SCHEMA_VERSION).toBe(155);
+expect(CURRENT_SCHEMA_VERSION).toBe(157);
       const tables = db.prepare(
         `SELECT name FROM sqlite_master
           WHERE type = 'table' AND name LIKE 'managed_task%'
@@ -70,7 +70,7 @@ expect(CURRENT_SCHEMA_VERSION).toBe(155);
       `);
       migrate(db);
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-.toEqual({ value: "155" });
+.toEqual({ value: "157" });
       expect(db.prepare(
         "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE 'managed_task%'",
       ).get()).toEqual({ count: 5 });

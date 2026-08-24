@@ -1,4 +1,33 @@
 export const AUTH_CLEARANCE_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS delegated_signing_runtime_bindings (
+    lease_id TEXT PRIMARY KEY REFERENCES delegated_signing_leases(id) ON DELETE CASCADE,
+    agent_pid INTEGER NOT NULL CHECK(agent_pid > 0),
+    agent_uid INTEGER NOT NULL CHECK(agent_uid >= 0),
+    agent_process_start TEXT NOT NULL CHECK(trim(agent_process_start) != ''),
+    agent_executable TEXT NOT NULL CHECK(trim(agent_executable) != ''),
+    socket_path TEXT NOT NULL CHECK(trim(socket_path) != ''),
+    socket_dev TEXT NOT NULL CHECK(trim(socket_dev) != ''),
+    socket_ino TEXT NOT NULL CHECK(trim(socket_ino) != ''),
+    socket_uid INTEGER NOT NULL CHECK(socket_uid >= 0),
+    socket_mode INTEGER NOT NULL CHECK(socket_mode >= 0),
+    credential_fingerprint TEXT NOT NULL CHECK(trim(credential_fingerprint) != ''),
+    public_key_path TEXT NOT NULL CHECK(trim(public_key_path) != ''),
+    issued_runtime_epoch TEXT NOT NULL CHECK(trim(issued_runtime_epoch) != ''),
+    owner_runtime_epoch TEXT NOT NULL CHECK(trim(owner_runtime_epoch) != ''),
+    owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
+    owner_uid INTEGER NOT NULL CHECK(owner_uid >= 0),
+    owner_process_start TEXT NOT NULL CHECK(trim(owner_process_start) != ''),
+    owner_executable TEXT NOT NULL CHECK(trim(owner_executable) != ''),
+    attached_at INTEGER NOT NULL,
+    last_validated_at INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('available','draining','retired','lost')),
+    retired_at INTEGER,
+    retired_reason TEXT,
+    CHECK((state IN ('available','draining') AND retired_at IS NULL)
+       OR (state IN ('retired','lost') AND retired_at IS NOT NULL))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_delegated_signing_runtime_owner
+     ON delegated_signing_runtime_bindings(owner_runtime_epoch, state)`,
   `CREATE TABLE IF NOT EXISTS auth_clearances (
     id TEXT PRIMARY KEY,
     issuer_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,

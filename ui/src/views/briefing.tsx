@@ -190,6 +190,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
           key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`}
           briefingId={selected.collectionId}
           briefingTitle={selected.label}
+          briefingDescription={selected.description}
           roundId={explicitRoundId}
           instance={instance}
           keepSubmittedAnnotations={keepSubmittedAnnotations}
