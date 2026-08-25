@@ -11,6 +11,7 @@ import type {
   AuthRequestActionKind,
   AuthRequestActionState,
 } from "./types.js";
+import { parseJsonObject } from "./row-coerce.js";
 
 const VALID_ACTION_KINDS: AuthRequestActionKind[] = [
   "comment_add",
@@ -349,7 +350,7 @@ function mapAuthActionRow(row: Record<string, unknown>): AuthRequestAction {
     ordinal: Number(row.ordinal ?? 0),
     kind: String(row.kind) as AuthRequestActionKind,
     target_issue_ref: String(row.target_issue_ref ?? ""),
-    payload: parsePayload(row.payload),
+    payload: parseJsonObject(row.payload),
     state: VALID_ACTION_STATES.includes(state) ? state : "failed",
     target_digest: typeof row.target_digest === "string" ? row.target_digest : null,
     staged_at: Number(row.staged_at ?? 0),
@@ -359,14 +360,3 @@ function mapAuthActionRow(row: Record<string, unknown>): AuthRequestAction {
   };
 }
 
-function parsePayload(value: unknown): Record<string, unknown> {
-  if (typeof value !== "string") return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}

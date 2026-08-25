@@ -17,6 +17,7 @@ import type {
 import { extractMandibleIssueRefs } from "../utils/bug-refs.js";
 import { graphSpecForMode, parseSince } from "./spec.js";
 import { selectGraphForDisplay } from "./selection.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 // Bug: 7a141c3 — graph API implementation
 // Bug: 50c4afb — typed graph modes for the React Flow graph workspace
@@ -35,23 +36,12 @@ function upsertEdge(edges: Map<string, GraphEdge>, edge: GraphEdge): void {
   edges.set(edge.id, edge);
 }
 
-function parseMetadataJson(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function issueNodeIdFromOperationalMetadata(
   issueNodeIds: Set<string>,
   metadataJson: string | null | undefined,
 ): string | null {
-  const metadata = parseMetadataJson(metadataJson);
+  const metadata = parseJsonObject(metadataJson);
   const repoId = typeof metadata.repo_id === "string" ? metadata.repo_id : "";
   const issueRef = typeof metadata.legacy_issue_id === "string" ? metadata.legacy_issue_id : "";
   if (!issueRef) return null;
