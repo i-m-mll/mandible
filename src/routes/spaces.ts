@@ -68,14 +68,7 @@ import { checkExportDrift, checkSpaceDrift } from "../spaces/drift.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
-import { sendJson } from "./http.js";
-
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>)
-    : {};
-}
-
+import { bodyRecord, sendJson } from "./http.js";
 function queryString(req: RequestLike, key: string): string | undefined {
   const value = req.query?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;

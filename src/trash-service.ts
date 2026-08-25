@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import type { Db } from "./db.js";
 import { resolveProjectRef, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
+import { parseJsonObject } from "./row-coerce.js";
 
 export const TRASH_RETENTION_POLICY = "trash-retention.v1";
 export const DEFAULT_TRASH_RETENTION_DAYS = 30;
@@ -409,16 +410,6 @@ function linkedIssueRefs(db: Db, projectId: string, branch: string, explicit: st
     .sort();
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function mapRow(row: TrashRow): TrashEntry {
   const { issue_refs_json: issueRefsJson, outcome_json: outcomeJson, ...entry } = row;

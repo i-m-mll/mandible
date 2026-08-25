@@ -1,7 +1,7 @@
 import { getDb } from "../db.js";
 import { redactCredential } from "../credential-redaction.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { ResponseLike, RouteRegistrar } from "../server.js";
 import {
   addBinding,
   addCredential,
@@ -29,7 +29,7 @@ import {
   requireOperator,
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
-import { sendJson } from "./http.js";
+import { bodyRecord, sendJson } from "./http.js";
 import {
   addGrant,
   addGroup,
@@ -48,11 +48,6 @@ import {
 } from "../permissions/store.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>)
-    : {};
-}
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];

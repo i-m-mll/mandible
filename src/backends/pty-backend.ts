@@ -37,6 +37,7 @@ import type {
   ConsoleStreamEvent,
   Logger,
 } from "../types.js";
+import { extractModel } from "./cli-args.js";
 
 const STREAM_EVENTS_LIMIT = 2000;
 const MAX_RESTART_ATTEMPTS = 5;
@@ -711,15 +712,6 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
     return "Claude";
   }
 
-  private extractModel(args: string[]): string | null {
-    for (let i = args.length - 2; i >= 0; i -= 1) {
-      const arg = args[i];
-      if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
-        return args[i + 1].trim();
-      }
-    }
-    return null;
-  }
 
   private stripArgValue(args: string[], flags: string[]): string[] {
     const sanitized: string[] = [];
@@ -740,7 +732,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
     if (this.meta.command === "claude") {
       const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model", "--append-system-prompt", "--settings"]);
       const sanitized = args.filter((arg) => arg !== "--verbose");
-      const model = this.extractModel(this.meta.args);
+      const model = extractModel(this.meta.args);
       if (model) {
         sanitized.push("--model", model);
       }
@@ -774,7 +766,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
     }
     if (this.meta.command === "gemini") {
       const args = this.stripArgValue(this.meta.args, ["-p", "--prompt", "--resume", "--output-format", "--model"]);
-      const model = this.extractModel(this.meta.args);
+      const model = extractModel(this.meta.args);
       if (model) {
         args.push("--model", model);
       }
@@ -785,7 +777,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
     }
     if (this.meta.command === "codex") {
       const args = this.stripArgValue(this.meta.args, ["-m", "--model"]);
-      const model = this.extractModel(this.meta.args);
+      const model = extractModel(this.meta.args);
       if (this.meta.provider_session_id) {
         const resumeArgs = ["resume", this.meta.provider_session_id, ...args];
         if (model) {

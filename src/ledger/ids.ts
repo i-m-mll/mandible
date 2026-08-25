@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { canonicalJson } from "../canonical-json.js";
 
 export const LEDGER_ID_PREFIXES = [
   "prj",
@@ -153,15 +154,6 @@ export function shortestUniquePrefix(id: string, ids: Iterable<string>, minimum 
 }
 
 function sha256Hex(record: Record<string, unknown>): string {
-  return createHash("sha256").update(stableJson(record)).digest("hex");
+  return createHash("sha256").update(canonicalJson(record)).digest("hex");
 }
 
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
-    .join(",")}}`;
-}

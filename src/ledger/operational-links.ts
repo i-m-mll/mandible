@@ -10,6 +10,7 @@ import {
   extractMandibleIssueRefs as extractMandibleIssueRefsFromCommitMessage,
   extractMandibleClosingIssueRefs as extractMandibleClosingIssueRefsFromCommitMessage,
 } from "../utils/bug-refs.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -1047,16 +1048,6 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function parseJsonNumberRecord(value: string): Record<string, number> {
   const parsed = parseJsonObject(value);
