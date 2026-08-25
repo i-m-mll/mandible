@@ -85,15 +85,21 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
         .ok_or_else(|| "failed to resolve daemon working directory".to_string())?;
     let repo_root = repo_root.to_path_buf();
     let port = daemon_port();
+    let log_file = log_file_path();
+    let (log_stdout, log_stderr) = open_daemon_log(&log_file)?;
 
     let mut command = Command::new(node);
     command
         .arg(&entry)
         .current_dir(repo_root)
         .env("MANDIBLE_PORT", port.to_string())
+        // The daemon rotates this file on a timer. Naming it explicitly makes
+        // the rotation target and the actual stderr destination the same path
+        // by construction rather than by both defaulting to the same constant.
+        .env("MANDIBLE_STDERR_LOG_PATH", &log_file)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(log_stdout)
+        .stderr(log_stderr);
 
     command
         .spawn()
@@ -977,6 +983,37 @@ fn pid_file_path() -> PathBuf {
 
 fn log_file_path() -> PathBuf {
     cache_dir().join("launchd-stderr.log")
+}
+
+/// Open the daemon log for an app-launched daemon and return append handles for
+/// its stdout and stderr.
+///
+/// Both handles are `O_APPEND`. That is load-bearing twice over: two handles on
+/// one file only interleave safely when every write seeks to end-of-file first,
+/// and the daemon's own rotation truncates this file in place, which an
+/// append-mode writer follows back to offset 0 while a fixed-offset writer would
+/// turn into a sparse hole.
+///
+/// A log that cannot be opened is a hard error rather than a fall back to
+/// `Stdio::null()`. A daemon nobody can diagnose is the defect this path exists
+/// to fix, and the same unwritable directory would fail the daemon's pid file
+/// moments later anyway — so failing here reports the real cause instead of
+/// hiding it behind a silent, logless start.
+fn open_daemon_log(path: &Path) -> Result<(Stdio, Stdio), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("failed to create daemon log directory {}: {error}", parent.display())
+        })?;
+    }
+    let stdout = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("failed to open daemon log {}: {error}", path.display()))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|error| format!("failed to open daemon log {}: {error}", path.display()))?;
+    Ok((Stdio::from(stdout), Stdio::from(stderr)))
 }
 
 fn cache_dir() -> PathBuf {
