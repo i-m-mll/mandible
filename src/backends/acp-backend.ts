@@ -40,6 +40,7 @@ import {
   type SessionRunOptionsSnapshot,
   type SessionRunOptionsUpdateResult,
 } from "../session-run-options.js";
+import { extractModel } from "./cli-args.js";
 
 const EVENT_LOG_LIMIT = 2000;
 export const ACP_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
@@ -230,7 +231,7 @@ implements
     this.runOptionsSnapshot = declaredRunOptionsSnapshot(this.runOptionDeclaration, "discovering");
     this.mapper = createAcpMapperState({
       sessionId: meta.provider_session_id,
-      model: this.extractModel(meta.args),
+      model: extractModel(meta.args),
     });
     if (Object.keys(meta.run_options ?? {}).length > 0) {
       this.initialPatch = { values: { ...meta.run_options } };
@@ -1068,7 +1069,7 @@ implements
 
   private buildGeminiLaunchArgs(flag: string): string[] {
     const args = [flag];
-    const model = this.extractModel(this.meta.args);
+    const model = extractModel(this.meta.args);
     if (model) {
       args.push("--model", model);
     }
@@ -1093,15 +1094,6 @@ implements
     return cleaned;
   }
 
-  private extractModel(args: string[]): string | null {
-    for (let i = args.length - 2; i >= 0; i -= 1) {
-      const arg = args[i];
-      if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
-        return args[i + 1].trim();
-      }
-    }
-    return null;
-  }
 
   private emitMetaUpdate(fields: BackendMetaUpdate): void {
     this.emit("meta_update", fields);

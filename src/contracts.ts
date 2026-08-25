@@ -141,6 +141,49 @@ export type AuthRequestOutcome =
   | "expired"
   | null;
 
+/**
+ * Bug 93c57c4 — derive the terminal outcome from lifecycle status plus exit
+ * code at read time. `status` is the lifecycle; `outcome` is the result.
+ *
+ * This lived as two byte-equivalent private copies, in `auth-queue.ts` (which
+ * fills the `auth:resolved` SSE payload agents wait on) and `routes/inbox.ts`
+ * (which fills the session inbox). Both ended in a silent `default: return
+ * null`, and `null` means "still in lifecycle" — so a new terminal
+ * `AuthRequestStatus` would have made a finished request report as in-flight
+ * forever, through both surfaces, with no compile error in either. Verified:
+ * adding a status variant produced zero `tsc` errors repo-wide.
+ *
+ * One definition, and the `default` now binds `status` to `never`, so the next
+ * variant is a compile error here instead of a hang there.
+ */
+export function computeAuthRequestOutcome(
+  status: AuthRequestStatus,
+  exitCode: number | null,
+): AuthRequestOutcome {
+  switch (status) {
+    case "rejected":
+      return "rejected";
+    case "dismissed":
+      return "dismissed";
+    case "expired":
+      return "expired";
+    case "needs_rebase":
+      return "needs_rebase";
+    case "completed":
+      return exitCode != null && exitCode !== 0 ? "failed" : "succeeded";
+    case "pending":
+    case "executing":
+    case "approved":
+      // Genuinely still in lifecycle — the one honest `null`.
+      return null;
+    default: {
+      const _never: never = status;
+      void _never;
+      return null;
+    }
+  }
+}
+
 export type AuthExecutionMode = "daemon" | "remote";
 export type AuthRequestType =
   | "merge"
@@ -149,15 +192,29 @@ export type AuthRequestType =
   | "branch-delete"
   | "config-change"
   | "data-delete";
-export type AuthRequestActionKind =
-  | "comment_add"
-  | "issue_close"
-  | "worker_status_set"
-  | "label_add"
-  | "label_rm"
-  | "checkpoint_add"
-  | "link_add"
-  | "briefing_group_promote";
+/**
+ * The staged auth-action vocabulary, declared once as a value.
+ *
+ * `AuthRequestActionKind` is derived from this array, so the runtime validator
+ * (`auth-actions.ts`) and the type cannot disagree about which kinds exist —
+ * previously they were two hand-maintained lists in three files. The SQL
+ * `CHECK(kind IN (...))` in `db-baseline.ts` is a fourth representation that
+ * cannot import a TypeScript value; `test/auth-action-kind-contract.test.ts`
+ * pins it to this array instead.
+ *
+ * This module is deliberately dependency-light so the UI can import it.
+ */
+export const AUTH_REQUEST_ACTION_KINDS = [
+  "comment_add",
+  "issue_close",
+  "worker_status_set",
+  "label_add",
+  "label_rm",
+  "checkpoint_add",
+  "link_add",
+  "briefing_group_promote",
+] as const;
+export type AuthRequestActionKind = (typeof AUTH_REQUEST_ACTION_KINDS)[number];
 export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
 
 export type AuthRequestActionInput = {

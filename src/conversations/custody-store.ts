@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getMandibleHomePath } from "../platform-paths.js";
+import { canonicalJson } from "../canonical-json.js";
 import type {
   CustodyCaptureOptions,
   CustodyCaptureResult,
@@ -32,17 +33,9 @@ function sha256(data: Buffer | string): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 function versionDigest(files: CustodyFileRecord[]): string {
-  return sha256(stableJson(files.map(({ path: archivePath, size, sha256: digest }) => ({ path: archivePath, size, sha256: digest }))));
+  return sha256(canonicalJson(files.map(({ path: archivePath, size, sha256: digest }) => ({ path: archivePath, size, sha256: digest }))));
 }
 
 function custodyVersionDigest(
@@ -51,7 +44,7 @@ function custodyVersionDigest(
   sourceSha256?: string,
 ): string {
   if (!sourceVersionId && !sourceSha256) return sourceVersion;
-  return sha256(stableJson({ source_version: sourceVersion, source_version_id: sourceVersionId, source_sha256: sourceSha256 }));
+  return sha256(canonicalJson({ source_version: sourceVersion, source_version_id: sourceVersionId, source_sha256: sourceSha256 }));
 }
 
 function assertSafeComponent(value: string, label: string): void {

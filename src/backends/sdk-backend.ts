@@ -58,6 +58,7 @@ import {
   type SessionRunOptionsSnapshot,
   type SessionRunOptionsUpdateResult,
 } from "../session-run-options.js";
+import { extractModel } from "./cli-args.js";
 
 const EVENT_LOG_LIMIT = 2000;
 export const SDK_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
@@ -212,7 +213,7 @@ implements
     this.runOptionDeclaration = getSdkRunOptionDeclaration(meta.command);
     this.runOptionsSnapshot = declaredRunOptionsSnapshot(this.runOptionDeclaration, "ready");
     this.options = {
-      model: this.extractModel(meta.args) ?? undefined,
+      model: extractModel(meta.args) ?? undefined,
       allowedTools: meta.allowed_tools ?? undefined,
     };
   }
@@ -711,7 +712,7 @@ implements
       abortController,
       cwd,
       env: this.buildClientEnv(),
-      model: this.options.model ?? this.extractModel(this.meta.args) ?? undefined,
+      model: this.options.model ?? extractModel(this.meta.args) ?? undefined,
       systemPrompt,
       permissionMode,
       ...(permissionMode === "bypassPermissions"
@@ -1342,7 +1343,7 @@ implements
   private snapshotMessageParams(): void {
     try {
       const db = getDb();
-      const model = this.options.model ?? this.extractModel(this.meta.args) ?? null;
+      const model = this.options.model ?? extractModel(this.meta.args) ?? null;
       const thinkingEffort = this.options.thinkingEffort ?? null;
       const permissionMode = this.options.permissionMode ?? DEFAULT_SDK_PERMISSION_MODE;
       const maxTurns = this.options.maxTurns ?? null;
@@ -1443,15 +1444,6 @@ implements
     }
   }
 
-  private extractModel(args: string[]): string | null {
-    for (let i = args.length - 2; i >= 0; i -= 1) {
-      const arg = args[i];
-      if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
-        return args[i + 1].trim();
-      }
-    }
-    return null;
-  }
 
   private asRecord(value: unknown): Record<string, unknown> | null {
     return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;

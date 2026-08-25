@@ -26,6 +26,7 @@ import { decompressContent } from "./compression.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { revokeCredential } from "./users/store.js";
+import { parseJsonObject } from "./row-coerce.js";
 
 /** Webhook-event vocabulary used for the dashboard alert (reuses webhook_events). */
 export const CREDENTIAL_LEAK_EVENT_SOURCE = "mandible";
@@ -146,17 +147,6 @@ export function isSessionScopedCredential(credential: {
   return false;
 }
 
-function parseMetadata(raw: string | null): Record<string, unknown> {
-  if (!raw) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 /** True when the install has any active api_token credential worth scanning for. */
 export function hasActiveApiTokenCredentials(db: Db): boolean {
@@ -197,7 +187,7 @@ export function matchActiveCredential(
     label: row.label,
     session_scoped: isSessionScopedCredential({
       type: row.type,
-      metadata: parseMetadata(row.metadata_json),
+      metadata: parseJsonObject(row.metadata_json),
     }),
   };
 }
@@ -387,7 +377,7 @@ export function replaceAllCounted(
  */
 function leakEventId(credentialId: string, conversationId: string | null): string {
   const digest = createHash("sha256")
-    .update(`${CREDENTIAL_LEAK_EVENT_TYPE} ${credentialId} ${conversationId ?? ""}`)
+    .update(`${CREDENTIAL_LEAK_EVENT_TYPE}\u0000${credentialId}\u0000${conversationId ?? ""}`)
     .digest("hex")
     .slice(0, 24);
   return `leak_${digest}`;
@@ -1135,7 +1125,7 @@ export function backfillCredentialLeakScan(
       for (const candidate of candidates) {
         const leak = matchActiveCredential(db, pepper, candidate);
         if (!leak) continue;
-        const key = `${leak.credential_id} ${row.conversation_id}`;
+        const key = `${leak.credential_id}\u0000${row.conversation_id}`;
         if (seen.has(key)) continue;
         seen.add(key);
         const location: CredentialLeakLocation = {

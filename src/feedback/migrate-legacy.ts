@@ -8,6 +8,7 @@ import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { getCanonicalArtifactVersion } from "../provider-artifacts.js";
 import { BRIEFING_SCHEMA_SQL } from "./schema.js";
+import { canonicalJson } from "../canonical-json.js";
 
 const RETIRED_BRIEFING_V1_PROFILE = "mandible-briefing.v1";
 type RetiredV1Directive = {
@@ -88,12 +89,6 @@ function stableId(prefix: string, ...parts: Array<string | number>): string {
   return `${prefix}:${createHash("sha256").update(parts.join("\0")).digest("hex")}`;
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
-}
 
 function rowsForIds(db: Db, table: string, column: string, ids: string[]): unknown[] {
   if (ids.length === 0 || !tableExists(db, table)) return [];
@@ -301,7 +296,7 @@ export function retireBriefingV1ToCustody(db: Db, now = Date.now()): void {
     };
     const errors = rounds.flatMap((round) => verifyRetiredV1Round(db, round));
     const componentDigests = Object.fromEntries(Object.entries(components)
-      .map(([key, value]) => [key, createHash("sha256").update(canonical(value)).digest("hex")]));
+      .map(([key, value]) => [key, createHash("sha256").update(canonicalJson(value)).digest("hex")]));
     const packet = {
       schema: "mandible-briefing-v1-custody.v1",
       source_profile: RETIRED_BRIEFING_V1_PROFILE,
@@ -310,7 +305,7 @@ export function retireBriefingV1ToCustody(db: Db, now = Date.now()): void {
       component_digests: componentDigests,
       verification_errors: errors,
     };
-    const packetJson = canonical(packet);
+    const packetJson = canonicalJson(packet);
     const packetDigest = createHash("sha256").update(packetJson).digest("hex");
     const existing = db.prepare(
       "SELECT packet_digest FROM briefing_legacy_custody WHERE briefing_id = ? AND source_profile = ?",

@@ -15,6 +15,7 @@ import {
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
 import {
+  WITHHOLD_UNTIL_CONVERGED,
   addAuthRequestAction,
   countAuthRequestActions,
   deleteAuthRequestAction,
@@ -24,11 +25,16 @@ import {
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
+import { computeAuthRequestOutcome } from "./contracts.js";
+import { assertNever } from "./exhaustive.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
 import {
   AuthExecutionContextError,
+  authReviewDiffRange,
   canonicalAuthMergeCommands,
+  classifyGitFailure,
+  describeGitFailure,
   isAuthMergeCommand,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
@@ -2511,17 +2517,17 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-          "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
-          "approval_source = 'manual', approval_lease_id = NULL, " +
-          "exit_code = NULL, error = NULL, output = '', " +
-          "updated_at = ?, expires_at = ? WHERE id = ?"
-      )
-      .run(now, now + this.ttlMs, id);
+    this.writeResolvedRequest(
+      request,
+      "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
+        "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
+        "approval_source = 'manual', approval_lease_id = NULL, " +
+        "exit_code = NULL, error = NULL, output = '', " +
+        "updated_at = ?, expires_at = ? WHERE id = ?",
+      [now, now + this.ttlMs]
+    );
 
-    const retried = this.requireRequest(id);
+    const retried = this.requireRequest(request.id);
     this.broadcast({
       event: "auth:new",
       data: { request: retried }
@@ -2542,18 +2548,18 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-          "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
-          "approval_source = 'manual', approval_lease_id = NULL, " +
-          "exit_code = NULL, error = NULL, output = '', " +
-          "updated_at = ?, expires_at = ? WHERE id = ?"
-      )
-      .run(now, now + this.ttlMs, id);
+    this.writeResolvedRequest(
+      request,
+      "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
+        "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
+        "approval_source = 'manual', approval_lease_id = NULL, " +
+        "exit_code = NULL, error = NULL, output = '', " +
+        "updated_at = ?, expires_at = ? WHERE id = ?",
+      [now, now + this.ttlMs]
+    );
     this.dropMergeCandidate(request);
 
-    const requeued = this.requireRequest(id);
+    const requeued = this.requireRequest(request.id);
     this.broadcast({
       event: "auth:new",
       data: { request: requeued }
@@ -2576,14 +2582,14 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'dismissed', resolved_at = ?, updated_at = ? WHERE id = ?"
-      )
-      .run(now, now, id);
+    this.writeResolvedRequest(
+      request,
+      "UPDATE auth_requests SET status = 'dismissed', resolved_at = ?, updated_at = ? WHERE id = ?",
+      [now, now]
+    );
     this.dropMergeCandidate(request);
 
-    const dismissed = this.requireRequest(id);
+    const dismissed = this.requireRequest(request.id);
     this.broadcast({
       event: "auth:resolved",
       data: this.buildResolvedPayload(dismissed)
@@ -2623,15 +2629,35 @@ export class AuthQueue {
     return true;
   }
 
-  delete(id: string, reason: string): void {
+  /**
+   * Issue 22ace1c — delete the resolved row, and say so only if a row went away.
+   *
+   * `requireRequest` resolves a short prefix to the canonical row, but every
+   * write, log, and event below used to re-use the caller's raw `id`. A short
+   * id therefore matched no row, deleted nothing, and still reported success.
+   * The resolved `request.id` is now the only identifier that reaches the
+   * database, the audit log, the SSE payload, or the caller, and a zero-row
+   * delete is a not-found rather than a false claim.
+   */
+  delete(id: string, reason: string): AuthRequest {
     const request = this.requireRequest(id);
-    this.db.prepare("DELETE FROM auth_requests WHERE id = ?").run(id);
+    const result = this.db
+      .prepare("DELETE FROM auth_requests WHERE id = ?")
+      .run(request.id);
+    if (result.changes !== 1) {
+      throw new AuthQueueError("not_found", "Request not found.");
+    }
     this.dropMergeCandidate(request);
-    authLog("info", "auth_request_deleted", { subsystem: "auth", auth_request_id: id, reason });
+    authLog("info", "auth_request_deleted", {
+      subsystem: "auth",
+      auth_request_id: request.id,
+      reason
+    });
     this.broadcast({
       event: "auth:deleted",
-      data: { request_id: id }
+      data: { request_id: request.id }
     });
+    return request;
   }
 
   approve(id: string, approval?: AuthApprovalContext, approvedByUserId?: string): AuthRequest {
@@ -2663,19 +2689,18 @@ export class AuthQueue {
     const now = this.now();
     const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
     if (executionContextUpdate) {
-      this.db
-        .prepare(
-          "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?"
-        )
-        .run(
+      this.writeResolvedRequest(
+        request,
+        "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
+        [
           executionContextUpdate.cwd,
           executionContextUpdate.target_repo_root,
           executionContextUpdate.repo,
           executionContextUpdate.merge_head_sha,
           now,
-          id
-        );
-      request = this.requireRequest(id);
+        ]
+      );
+      request = this.requireRequest(request.id);
     }
     // Manual approval is always the direct interactive signing path. Automated
     // callers pass their delegated approval context explicitly.
@@ -2739,21 +2764,20 @@ export class AuthQueue {
       !this.hasNativeMergeHooks(request.cwd) &&
       signerLines.length > 0
     );
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?"
-      )
-      .run(
+    this.writeResolvedRequest(
+      request,
+      "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
+      [
         now,
         now,
         effectiveApproval?.source ?? "manual",
         effectiveApproval?.leaseId ?? null,
         approverUserId,
         atomicEnabled ? 1 : 0,
-        id,
-      );
+      ]
+    );
 
-    const executing = this.requireRequest(id);
+    const executing = this.requireRequest(request.id);
     const executionEnv = {
       ...(effectiveApproval?.env ?? {}),
       ...this.approveTimePreflightEnv(executing),
@@ -2792,13 +2816,15 @@ export class AuthQueue {
     const now = this.now();
     const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
     if (executionContextUpdate) {
-      this.db.prepare(
+      this.writeResolvedRequest(
+        request,
         "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
-      ).run(
-        executionContextUpdate.cwd, executionContextUpdate.target_repo_root,
-        executionContextUpdate.repo, executionContextUpdate.merge_head_sha, now, id,
+        [
+          executionContextUpdate.cwd, executionContextUpdate.target_repo_root,
+          executionContextUpdate.repo, executionContextUpdate.merge_head_sha, now,
+        ]
       );
-      request = this.requireRequest(id);
+      request = this.requireRequest(request.id);
     }
     let candidateExact = this.mergeCandidateExact(request);
     if (request.merge_candidate_pin_sha && !candidateExact) {
@@ -3908,14 +3934,14 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'rejected', resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
-      )
-      .run(now, now, reason, id);
+    this.writeResolvedRequest(
+      request,
+      "UPDATE auth_requests SET status = 'rejected', resolved_at = ?, updated_at = ?, error = ? WHERE id = ?",
+      [now, now, reason]
+    );
     this.dropMergeCandidate(request);
 
-    const rejected = this.requireRequest(id);
+    const rejected = this.requireRequest(request.id);
     this.broadcast({
       event: "auth:resolved",
       data: this.buildResolvedPayload(rejected)
@@ -3936,11 +3962,13 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.db
-      .prepare("UPDATE auth_requests SET skipped_at = ?, updated_at = ? WHERE id = ?")
-      .run(now, now, id);
+    this.writeResolvedRequest(
+      request,
+      "UPDATE auth_requests SET skipped_at = ?, updated_at = ? WHERE id = ?",
+      [now, now]
+    );
 
-    return this.requireRequest(id);
+    return this.requireRequest(request.id);
   }
 
   appendOutput(id: string, chunk: string): AuthRequest {
@@ -3959,12 +3987,14 @@ export class AuthQueue {
     }
     const timestamp = this.now();
     this.handleOutput({
-      request_id: id,
+      // Issue 22ace1c — handleOutput writes `WHERE id = chunk.request_id`, so
+      // the chunk must carry the resolved row id, not the caller's prefix.
+      request_id: request.id,
       stream: "stdout",
       text: chunk,
       timestamp
     });
-    return this.requireRequest(id);
+    return this.requireRequest(request.id);
   }
 
   setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest {
@@ -4000,12 +4030,12 @@ export class AuthQueue {
     // Record completion atomically with execution-signature evidence, then run
     // the staged lifecycle (Issue 75f52ac): merged → Stage 2 → resolved → Stage 3.
     const completed = this.db.transaction(() => {
-      this.db
-        .prepare(
-          "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?"
-        )
-        .run(now, now, exitCode, output, error ?? null, id);
-      const stored = this.requireRequest(id);
+      this.writeResolvedRequest(
+        request,
+        "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
+        [now, now, exitCode, output, error ?? null]
+      );
+      const stored = this.requireRequest(request.id);
       return exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
     })();
     if (exitCode === 0) {
@@ -4017,7 +4047,7 @@ export class AuthQueue {
       });
     }
     this.dropMergeCandidate(completed);
-    return this.requireRequest(id);
+    return this.requireRequest(request.id);
   }
 
   expireStale(): AuthRequest[] {
@@ -4272,14 +4302,38 @@ export class AuthQueue {
         this.broadcast({ event: "auth:updated", data: { request: requeued } });
         return;
       }
-      const detail = "detail" in inspection ? inspection.detail : inspection.outcome;
+      // The three remaining outcomes used to share one message, "Atomic merge
+      // applied and needs recovery". For `failed` that is the opposite claim
+      // about whether the merge landed — and `failed` covers cases like "target
+      // ref does not match the pinned atomic merge commit" and "atomic merge
+      // signature is not authorized", where asserting a routine recovery
+      // actively misdirects the operator. Report what the inspection found.
       const now = this.now();
+      const message = ((): string => {
+        switch (inspection.outcome) {
+          case "atomic_needs_recovery":
+            return `Atomic merge applied and needs recovery: ${inspection.detail}`;
+          case "failed":
+            return `Atomic merge recovery could not prove the merge landed correctly: ${inspection.detail}`;
+          case "completed":
+            // Already finalized by another pass; nothing to recover or report.
+            return "";
+          default:
+            return assertNever(inspection, `atomic recovery for ${request.id}`);
+        }
+      })();
+      if (!message) return;
       this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-        .run(`Atomic merge applied and needs recovery: ${detail}`, now, request.id);
+        .run(message, now, request.id);
     }).catch((error) => {
       const now = this.now();
+      // A thrown recovery pass proves nothing about the merge either.
       this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-        .run(`Atomic merge applied and needs recovery: ${errorMessage(error) ?? String(error)}`, now, request.id);
+        .run(
+          `Atomic merge recovery failed before reaching a verdict: ${errorMessage(error) ?? String(error)}`,
+          now,
+          request.id,
+        );
     })
       .finally(() => {
         this.inFlight.delete(request.id);
@@ -5166,17 +5220,28 @@ export class AuthQueue {
       return { status: "clean", tree, files: [], message: "clean" };
     } catch (error) {
       const output = outputFromExecError(error);
-      if (isMergeTreeInfrastructureError(error)) {
+      const failure = classifyGitFailure(error);
+      // `git merge-tree --write-tree` exits 1 for a conflicted merge and 128
+      // for a fatal: bad revision, not a repository, corrupt object database,
+      // index.lock contention. Only exit 1 is evidence about the merge.
+      //
+      // The previous test asked whether the SPAWN errno was ENOENT/EACCES/
+      // ENOTDIR, so every fatal — none of which sets those — was classified as
+      // a conflict. Since a fatal never prints `CONFLICT (...)`, the result was
+      // `conflict` with an empty file list: an infrastructure failure reported
+      // to `mandible auth check` as a clean-looking merge conflict, which is
+      // exactly the distinction policy requires be preserved.
+      if (failure.kind === "exit" && failure.status === 1) {
         return {
-          status: "error",
-          files: [],
-          message: output.trim() || errorMessage(error) || "git merge-tree infrastructure error"
+          status: "conflict",
+          files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
+          message: output.trim() || "git merge-tree reported a conflict"
         };
       }
       return {
-        status: "conflict",
-        files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
-        message: output.trim() || "git merge-tree reported a conflict"
+        status: "error",
+        files: [],
+        message: describeGitFailure(failure, "merge check"),
       };
     }
   }
@@ -5407,6 +5472,13 @@ export class AuthQueue {
   }
 
   private syncLedgerLinksForRequest(request: AuthRequest, recordEvent: boolean): void {
+    // The stated reason for swallowing here was that ledger tables are optional
+    // in staged migrations and lightweight test DBs. That is a precondition,
+    // not an error handler, so state it as one — the pattern this file already
+    // uses at `removeActionResolveLink`. What remains in the catch is a real
+    // failure to write the durable merge-to-issue linkage, which must be
+    // visible rather than silently absent while the merge reports delivered.
+    if (!this.tableExists("ledger_auth_issue_links")) return;
     try {
       syncAuthRequestLedgerLinks(this.db, {
         auth_request_id: request.id,
@@ -5419,8 +5491,12 @@ export class AuthQueue {
         merge_output: request.output,
         recordEvent,
       });
-    } catch {
-      // Ledger tables are optional during staged migration and in fallback test DBs.
+    } catch (error) {
+      authLog("error", "auth_ledger_link_sync_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -5486,7 +5562,7 @@ export class AuthQueue {
       if (action.state !== "staged") {
         continue;
       }
-      if (withholdClosures && (action.kind === "issue_close" || action.kind === "briefing_group_promote")) {
+      if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
         authLog("info", "auth_issue_closure_withheld", {
           subsystem: "auth",
           auth_request_id: request.id,
@@ -5660,6 +5736,16 @@ export class AuthQueue {
           appliedAt: now,
         };
       }
+      default:
+        // This switch is statement-shaped — the cases `break` and control falls
+        // through to the unconditional `return { state: "applied" }` below — so
+        // TypeScript could not catch a new `AuthRequestActionKind` here. Before
+        // this guard, an unhandled kind did nothing and was then recorded as
+        // `applied` with `applied_at` set: a durable false attestation that a
+        // post-merge ledger action ran, on the protected-merge path, terminal
+        // and not replayable. Throwing hands it to the caller's catch, which
+        // records `failed` and logs `auth_deferred_action_failed`.
+        return assertNever(action.kind, `auth deferred ledger action ${action.id}`);
     }
     return { state: "applied", detail, appliedAt: now };
   }
@@ -6453,25 +6539,12 @@ export class AuthQueue {
     return Boolean(row);
   }
 
-  // Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
   // Consumers should use `outcome` to determine the terminal result of a request;
   // `status` is reserved for lifecycle state (pending → executing → completed, etc.).
+  // The mapping itself is canonical in contracts.ts — routes/inbox.ts derives the
+  // same fact and previously carried its own copy.
   private computeOutcome(request: AuthRequest): AuthRequestOutcome {
-    switch (request.status) {
-      case "rejected":
-        return "rejected";
-      case "dismissed":
-        return "dismissed";
-      case "expired":
-        return "expired";
-      case "needs_rebase":
-        return "needs_rebase";
-      case "completed":
-        return (request.exit_code != null && request.exit_code !== 0) ? "failed" : "succeeded";
-      default:
-        // pending, executing, approved — still in lifecycle
-        return null;
-    }
+    return computeAuthRequestOutcome(request.status, request.exit_code);
   }
 
   private buildResolvedPayload(request: AuthRequest): Record<string, unknown> {
@@ -6588,6 +6661,40 @@ export class AuthQueue {
     return request;
   }
 
+  /**
+   * Issue 22ace1c — the single write path for a request row that a caller
+   * addressed by id.
+   *
+   * Every mutator in this class begins by resolving a possibly-short caller id
+   * to a canonical row, and then has to remember to write against the resolved
+   * `request.id` rather than the raw parameter still in scope. Nine of them did
+   * not, so a short id silently matched no row: the request kept its old state
+   * while the method re-read it, broadcast it, and returned it as though the
+   * change had landed.
+   *
+   * Taking the resolved `AuthRequest` rather than a string makes the raw
+   * parameter unusable here, and the row-count check turns any future zero-row
+   * write into a visible failure instead of a false claim.
+   */
+  private writeResolvedRequest(
+    request: AuthRequest,
+    sql: string,
+    params: unknown[] = []
+  ): void {
+    if (!/\bWHERE id = \?$/.test(sql)) {
+      throw new Error(
+        `writeResolvedRequest requires a statement ending in "WHERE id = ?": ${sql}`
+      );
+    }
+    const result = this.db.prepare(sql).run(...params, request.id);
+    if (result.changes !== 1) {
+      throw new AuthQueueError(
+        "not_found",
+        `Auth request ${request.id} changed before the write could be applied.`
+      );
+    }
+  }
+
   private requireRequest(id: string): AuthRequest {
     // Bug: caa157e — surface ambiguous prefix errors before falling through to getRequest
     const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
@@ -6660,14 +6767,6 @@ function outputFromExecError(error: unknown): string {
   const stderr = Buffer.isBuffer(maybe.stderr) ? maybe.stderr.toString("utf8") : String(maybe.stderr ?? "");
   const message = typeof maybe.message === "string" ? maybe.message : "";
   return [stdout, stderr, message].filter(Boolean).join("\n");
-}
-
-function isMergeTreeInfrastructureError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const code = (error as { code?: unknown }).code;
-  return code === "ENOENT" || code === "EACCES" || code === "ENOTDIR";
 }
 
 function errorMessage(error: unknown): string | null {
@@ -6745,7 +6844,7 @@ function conflictFilesFromMergeTreeOutput(
   }
   if (files.size === 0) {
     try {
-      const diff = execFileSync("git", ["diff", "--name-only", `${base}...${head}`], {
+      const diff = execFileSync("git", ["diff", "--name-only", authReviewDiffRange(base, head)], {
         cwd,
         encoding: "utf8",
       });

@@ -14,6 +14,7 @@ import {
   type BriefingProfile,
 } from "./briefing-directives.js";
 import { resolveGroupDisplayComparisonBase } from "./briefing-groups.js";
+import { canonicalJson } from "../canonical-json.js";
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 
@@ -105,12 +106,6 @@ function integer(value: unknown, label: string, minimum = 0): number {
   return value as number;
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
-}
 
 function directiveBinding(directive: BriefingDirective, position: number) {
   return {
@@ -130,7 +125,7 @@ function directiveBinding(directive: BriefingDirective, position: number) {
 }
 
 function roundBindingDigest(directives: BriefingDirective[]): string {
-  return createHash("sha256").update(canonical(directives.map(directiveBinding))).digest("hex");
+  return createHash("sha256").update(canonicalJson(directives.map(directiveBinding))).digest("hex");
 }
 
 export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
@@ -223,7 +218,7 @@ export function parseBriefingRunRequest(value: unknown): BriefingRunRequest {
 }
 
 export function briefingRunRequestDigest(request: BriefingRunRequest): string {
-  return createHash("sha256").update(canonical(request)).digest("hex");
+  return createHash("sha256").update(canonicalJson(request)).digest("hex");
 }
 
 function receipt(row: {
@@ -330,7 +325,7 @@ export function publishBriefingRun(
                options_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(definition.id, artifactVersionId, directive.key, directive.definition_digest,
-            directive.type, directive.required ? 1 : 0, directive.body, canonical(directive.options),
+            directive.type, directive.required ? 1 : 0, directive.body, canonicalJson(directive.options),
             directive.start_offset, directive.end_offset,
             directive.body_start_offset, directive.body_end_offset, now);
         }
@@ -448,7 +443,7 @@ export function publishBriefingFromArtifactVersion(
            options_json, variants_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(definition.id, versionId, directive.key,
           directive.definition_digest, directive.type, directive.required ? 1 : 0, directive.body,
-          canonical(directive.options), canonical(directive.variants), directive.start_offset, directive.end_offset,
+          canonicalJson(directive.options), canonicalJson(directive.variants), directive.start_offset, directive.end_offset,
           directive.body_start_offset, directive.body_end_offset, now);
       }
       db.prepare(`INSERT INTO briefing_directive_instances
@@ -664,7 +659,7 @@ export function verifyBriefingRoundBinding(db: Db, roundId: string): BriefingBin
     };
     if (row.briefing_id !== round.briefing_id || row.artifact_version_id !== round.artifact_version_id
         || row.definition_artifact_version_id !== round.artifact_version_id
-        || canonical(stored) !== canonical(expected)) {
+        || canonicalJson(stored) !== canonicalJson(expected)) {
       return { valid: false, reason: `stored definition '${directive.key}' does not match artifact`, ...document };
     }
   }
@@ -705,7 +700,7 @@ function validatedEffectiveAnswers(db: Db, roundId: string, actorUserId: string)
       throw new BriefingStoreError("stored answer is not valid JSON", 409, "invalid_stored_answer");
     }
     const value = validateValue(answer.response_type, parsed, answer.options_json, answer.variants_json);
-    if (canonical(value) !== answer.value_json) {
+    if (canonicalJson(value) !== answer.value_json) {
       throw new BriefingStoreError("stored answer is not canonical for its directive", 409, "invalid_stored_answer");
     }
     return { ...answer, value };
@@ -1023,7 +1018,7 @@ export function applyBriefingAnswers(
         try { parsed = JSON.parse(current.value_json); } catch {
           throw new BriefingStoreError("stored answer is not valid JSON", 409, "invalid_stored_answer");
         }
-        if (canonical(validateValue(directive.response_type, parsed, directive.options_json, directive.variants_json)) !== current.value_json) {
+        if (canonicalJson(validateValue(directive.response_type, parsed, directive.options_json, directive.variants_json)) !== current.value_json) {
           throw new BriefingStoreError("stored answer is not canonical for its directive", 409, "invalid_stored_answer");
         }
       }
@@ -1047,8 +1042,8 @@ export function applyBriefingAnswers(
       }
       if (!Object.hasOwn(answer, "value")) throw new BriefingStoreError("set requires value");
       const value = validateValue(directive.response_type, answer.value, directive.options_json, directive.variants_json);
-      const serialized = canonical(value);
-      if (current && canonical(JSON.parse(current.value_json)) === serialized) {
+      const serialized = canonicalJson(value);
+      if (current && canonicalJson(JSON.parse(current.value_json)) === serialized) {
         throw new BriefingStoreError("answer is unchanged", 409, "answer_noop");
       }
       if (current) db.prepare(
@@ -1170,7 +1165,7 @@ export function submitBriefingRound(
     const current = validatedEffectiveAnswers(db, roundId, actorUserId);
     const currentKeys = current.map((answer) => `${answer.directive_key}\0${answer.response_event_id}`).sort();
     const suppliedKeys = supplied.map((answer) => `${answer.directive_key}\0${answer.response_event_id}`).sort();
-    if (canonical(currentKeys) !== canonical(suppliedKeys)) {
+    if (canonicalJson(currentKeys) !== canonicalJson(suppliedKeys)) {
       throw new BriefingStoreError("submitted answers must exactly match current effective answers", 409, "stale_submission_answers");
     }
     const required = db.prepare(
@@ -1183,7 +1178,7 @@ export function submitBriefingRound(
     const currentAnnotations = effectiveAnnotations(db, roundId, actorUserId) as Array<{ annotation_event_id: string }>;
     const currentAnnotationIds = currentAnnotations.map((entry) => entry.annotation_event_id).sort();
     const suppliedAnnotationIds = [...new Set(body.annotation_event_ids as string[])].sort();
-    if (canonical(currentAnnotationIds) !== canonical(suppliedAnnotationIds)) {
+    if (canonicalJson(currentAnnotationIds) !== canonicalJson(suppliedAnnotationIds)) {
       throw new BriefingStoreError("submitted annotations must exactly match current effective annotations", 409, "stale_submission_annotations");
     }
     if (current.length === 0 && currentAnnotationIds.length === 0) {
@@ -1204,8 +1199,8 @@ export function submitBriefingRound(
       const priorAnnotations = db.prepare(
         `SELECT a.annotation_event_id FROM briefing_submission_annotations a WHERE a.submission_id = ? ORDER BY a.position`,
       ).all(latest.id) as Array<{ annotation_event_id: string }>;
-      if (canonical(priorAnswers.map((entry) => entry.response_event_id).sort()) === canonical(current.map((entry) => entry.response_event_id).sort())
-          && canonical(priorAnnotations.map((entry) => entry.annotation_event_id).sort()) === canonical(currentAnnotationIds)) {
+      if (canonicalJson(priorAnswers.map((entry) => entry.response_event_id).sort()) === canonicalJson(current.map((entry) => entry.response_event_id).sort())
+          && canonicalJson(priorAnnotations.map((entry) => entry.annotation_event_id).sort()) === canonicalJson(currentAnnotationIds)) {
         throw new BriefingStoreError("submission is unchanged", 409, "submission_noop");
       }
     }

@@ -6,6 +6,7 @@ import {
   type BlockType,
   type DocBlock,
 } from "../spaces/serialize.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 /**
  * `space_blocks` data + logic helpers (issue d2a8e77, umbrella de56ffa).
@@ -68,17 +69,6 @@ interface SpaceBlockRow {
   updated_at: number;
 }
 
-function parseObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function parseSnapshot(value: string | null | undefined): BlockItemSnapshot | null {
   if (value === null || value === undefined) return null;
@@ -122,7 +112,7 @@ function mapBlock(row: SpaceBlockRow): SpaceBlockRecord {
     item_snapshot: parseSnapshot(row.item_snapshot_json),
     sort_key: row.sort_key,
     markdown: row.markdown,
-    metadata: parseObject(row.metadata_json),
+    metadata: parseJsonObject(row.metadata_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

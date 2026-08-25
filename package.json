@@ -19,6 +19,7 @@
     "demo:briefing": "node scripts/demo-briefing.mjs",
     "preview-db-snapshot": "node scripts/project-db-snapshot.mjs",
     "conversation-cutover": "node scripts/conversation-cutover-proof.mjs",
+    "scan:duplication": "node scripts/ncd-scan.mjs",
     "test:iab-preview-cleanup": "node scripts/test-iab-preview-cleanup.mjs",
     "test:briefing-rating-browser": "node scripts/test-briefing-rating-browser.mjs",
     "test:timeline-layout-browser": "node scripts/test-timeline-layout-browser.mjs",

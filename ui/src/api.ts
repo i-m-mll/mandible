@@ -315,9 +315,14 @@ async function throwOnError(response: Response, method: string, path: string): P
   throw new ApiError(message, response.status);
 }
 
-async function apiPost(path: string, body?: unknown): Promise<Response> {
+
+
+
+type JsonWriteMethod = 'POST' | 'PATCH' | 'PUT';
+
+async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown): Promise<Response> {
   const response = await fetch(path, {
-    method: 'POST',
+    method,
     headers: {
       ...DEFAULT_HEADERS,
       'Content-Type': 'application/json',
@@ -325,40 +330,14 @@ async function apiPost(path: string, body?: unknown): Promise<Response> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    await throwOnError(response, 'POST', path);
+    await throwOnError(response, method, path);
   }
   return response;
 }
 
-async function apiPatch(path: string, body?: unknown): Promise<Response> {
-  const response = await fetch(path, {
-    method: 'PATCH',
-    headers: {
-      ...DEFAULT_HEADERS,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!response.ok) {
-    await throwOnError(response, 'PATCH', path);
-  }
-  return response;
-}
-
-async function apiPut(path: string, body?: unknown): Promise<Response> {
-  const response = await fetch(path, {
-    method: 'PUT',
-    headers: {
-      ...DEFAULT_HEADERS,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!response.ok) {
-    await throwOnError(response, 'PUT', path);
-  }
-  return response;
-}
+const apiPost = (path: string, body?: unknown): Promise<Response> => apiWrite('POST', path, body);
+const apiPatch = (path: string, body?: unknown): Promise<Response> => apiWrite('PATCH', path, body);
+const apiPut = (path: string, body?: unknown): Promise<Response> => apiWrite('PUT', path, body);
 
 async function apiDelete(path: string): Promise<Response> {
   const response = await fetch(path, {
@@ -1278,6 +1257,16 @@ export type ReadUserIdentity = {
   display_name: string;
   kind: 'human' | 'agent' | 'system' | 'external';
 };
+
+/**
+ * Mirrors `MergeSignatureClaim` in src/identity/read-projection.ts. Three
+ * mutually exclusive states, so "verification failed" cannot render as
+ * "verified" the way the previous `verified_signature: boolean` allowed.
+ */
+export type MergeSignatureClaim =
+  | { state: 'none' }
+  | { state: 'verified'; fingerprint: string | null }
+  | { state: 'unverified'; reason: string | null };
 
 export type AttributionReadProjection = {
   user: ReadUserIdentity | null;
