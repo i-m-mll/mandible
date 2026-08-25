@@ -49,6 +49,77 @@ There is no global coverage threshold. A line-coverage floor is a proxy metric
 that contradicts a whitelist: it rewards adding tests for whatever is cheapest
 to reach, which is exactly the pressure this directory exists to resist.
 
+## The timing contract
+
+`npm test` prints a timing packet at the end of every run: wall time, worker
+count, per-file occupancy, their sum, the slowest two files, the true lower
+bound `max(sum / workers, slowest file)`, and the ratio of wall time to that
+bound. `test/helpers/timing-reporter.ts` owns it, and it is registered on the
+default suite only.
+
+Read the bound, not the throughput floor. Files are indivisible: Vitest runs
+each in its own fork and never parallelises within one. `sum / workers` alone
+is what the gate could cost if work could be divided arbitrarily, and
+differencing against it produced the claim that a 102.7s run was "3.1x the
+floor" when it was in fact within 1% of optimal for the task graph it had. One
+6,122-line file was 98.9% of the wall clock; the scheduler had twelve idle
+forks and nothing it was allowed to give them.
+
+The run fails when the slowest file is over 30 seconds and more than twice the
+second-slowest — the shape of that failure, and hardware-independent, so it
+holds on CI's variable runners. With `MANDIBLE_TIMING_GATE=1` on a controlled
+machine it also fails over a 60-second wall clock or a 45-second file.
+
+The fix for a violation is to split the file. Raising a timeout or capping
+workers hides it.
+
+### If you beat the throughput floor, you have changed the regime
+
+Today the slowest file is the binding term: it is around 39s against a
+throughput floor near 34s, so wall time tracks that one file. Two things follow
+from that and *both* stop being true together.
+
+First, the gate is roughly insensitive to other load on the machine, because its
+critical path is a single fork and foreign work lands on the other cores.
+Second, making any file other than the slowest one faster does nothing to wall
+time.
+
+Drive the slowest file below the floor and `sum / workers` binds instead. Every
+fork joins the critical path, total occupancy starts to matter more than any
+single file, and the gate becomes load-sensitive — timings will scatter under
+contention in a way they do not now.
+
+### The bound holds within a worker count, never across them
+
+`max(sum / workers, slowest file)` is a lower bound only when `sum` was measured
+*at that worker count*. It is not a formula you can evaluate at other counts,
+because occupancy is not invariant: forks contend with each other for subprocess
+spawning, so adding workers inflates every file's occupancy and removing them
+deflates it.
+
+Measured here, across the same suite:
+
+| workers | sum of occupancies | floor | slowest file | wall |
+|---------|--------------------|-------|--------------|------|
+| 13      | ~443s              | ~34s  | ~38.6s       | ~38.7s |
+| 10      | ~360s              | ~36s  | ~31.9s       | ~36.5s |
+| 8       | 335s               | 41.8s | 28.2s        | 43.1s |
+
+Fewer workers made the binding file *faster* — 38.6s to 28.2s — while raising
+the floor. Roughly 30% of total occupancy at 13 workers is contention the
+parallelism inflicts on itself. Note also that the binding term changes: at 13
+the slowest file binds, at 10 and below the floor does.
+
+Taking the 13-worker sum and dividing by 10 predicts 44.7s. The measured
+10-worker run was 39.7s — below a number derived as a lower bound. The
+prediction was not merely imprecise; it was invalid, because it evaluated the
+formula outside the conditions its inputs came from.
+
+So do not extrapolate from the numbers in this file after such a change.
+Re-derive them at the worker count you actually intend to run. The reporter
+prints both terms on every run so the crossover is visible when it happens
+rather than inferred afterwards.
+
 ## Readmissions
 
 A test returns from `test/extended/` only when it names a defect that actually
