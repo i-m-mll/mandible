@@ -31,7 +31,8 @@
     "test:quarantine": "node scripts/run-vitest.js run --config vitest.quarantine.config.ts",
     "test:coverage": "node scripts/run-vitest.js run --coverage",
     "tauri": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "fleet": "node scripts/mandible-fleet.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.0.2",

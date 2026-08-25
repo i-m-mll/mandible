@@ -19,6 +19,10 @@ const DEFAULT_DB_PATH = liveDbPath();
 const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
+// Labels a previous version of this launcher submitted to launchd. Previews are
+// plain child processes now; any surviving job under this namespace is a leak to
+// be removed. Deliberately anchored so no label outside it can ever match.
+const LEGACY_PREVIEW_LABEL_PATTERN = /^bio\.mll\.mandible\.preview\./;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
 
 if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url))) {
@@ -57,6 +61,15 @@ async function runCli() {
 }
 
 async function main(options) {
+  // Runs before any reuse decision. A surviving legacy job is a supervised
+  // preview: booting it out frees its port and makes the reuse check see the
+  // truth, so the next start is an ordinary unsupervised child process.
+  const legacyLaunchdCleanup = deregisterLegacyPreviewJobs({ apply: !options.dryRun });
+  const result = await createOrReusePreview(options);
+  return { ...result, legacyLaunchdCleanup };
+}
+
+async function createOrReusePreview(options) {
   const cwd = process.cwd();
   const repoRoot = git(["rev-parse", "--show-toplevel"], { cwd }).stdout.trim();
   const worktreeHostRoot = resolveWorktreeHostRoot(repoRoot);
@@ -193,7 +206,6 @@ async function main(options) {
   const stdoutLog = path.join(preview.root, "stdout.log");
   const stderrLog = path.join(preview.root, "stderr.log");
   const pidFile = path.join(preview.root, "mandible.pid");
-  const launchLabel = previewLaunchLabel(port, branch);
   const runScript = path.join(preview.root, "run.sh");
   writeRunScript(runScript, {
     worktree,
@@ -209,7 +221,6 @@ async function main(options) {
   fs.writeFileSync(stdoutLog, "");
   fs.writeFileSync(stderrLog, "");
   await startPreviewProcess({
-    launchLabel,
     runScript,
     worktree,
     port,
@@ -238,7 +249,6 @@ async function main(options) {
     preStartCleanup,
     instanceEnv: previewInstanceEnv({ port, dbCopy, sourceDb, pidFile }),
     previewRoot: preview.root,
-    launchLabel,
     pidFile,
     stdoutLog,
     stderrLog,
@@ -486,11 +496,13 @@ function buildServer(worktree) {
 
 async function cleanupPreviewCache(options) {
   const root = previewBaseDir(options.previewBaseDir);
+  const legacyLaunchdCleanup = deregisterLegacyPreviewJobs({ apply: options.apply });
   const report = {
     ok: true,
     status: options.apply ? "applied" : "dry-run",
     previewBaseDir: root,
     apply: options.apply,
+    legacyLaunchdCleanup,
     reclaimedBytes: 0,
     reclaimableBytes: 0,
     entries: [],
@@ -766,7 +778,6 @@ function printResult(result, json) {
   console.log(`Worktree: ${result.worktree}`);
   console.log(`DB: ${result.db ?? result.previewRoot}`);
   if (result.port) console.log(`Port: ${result.port}`);
-  if (result.launchLabel) console.log(`Launch label: ${result.launchLabel}`);
   if (result.stderrLog) console.log(`Logs: ${result.stderrLog}`);
 }
 
@@ -845,6 +856,32 @@ function branchExists(repoRoot, branch) {
   }).status === 0;
 }
 
+/**
+ * Which preview-contract environment variables a recorded instance is missing or
+ * has wrong.
+ *
+ * One comparison used two ways: as a reuse gate, where drift means the running
+ * instance predates the current isolation contract and must be replaced rather
+ * than refreshed, and as the refresh assertion. Keeping it in one place is what
+ * makes "an isolated preview" a single definition instead of two that can drift
+ * apart — which is how the conversations index came to be shared in the first
+ * place.
+ */
+function previewInstanceEnvDrift(metadata, previewRoot) {
+  if (!metadata?.db || !metadata?.sourceDb || !Number.isInteger(metadata.port)) {
+    return ["<incomplete preview metadata>"];
+  }
+  const expected = previewInstanceEnv({
+    port: metadata.port,
+    dbCopy: metadata.db,
+    sourceDb: metadata.sourceDb,
+    pidFile: path.join(previewRoot, "mandible.pid"),
+  });
+  return Object.entries(expected)
+    .filter(([key, value]) => metadata.instanceEnv?.[key] !== value)
+    .map(([key]) => key);
+}
+
 async function healthyExistingPreview(branch, expected = {}) {
   const preview = previewPaths(branch);
   if (!fs.existsSync(preview.metadata)) return null;
@@ -856,6 +893,11 @@ async function healthyExistingPreview(branch, expected = {}) {
   if (!health) return null;
   if (!hasExpectedPreviewPolicy(health)) return null;
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
+  // An instance started before the current isolation contract is not reusable:
+  // it is sharing the live conversations index or log file. Report it as absent
+  // so the caller replaces it, rather than refreshing a preview that is still
+  // writing to the live daemon's resources.
+  if (previewInstanceEnvDrift(metadata, preview.root).length > 0) return null;
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
 
   return {
@@ -891,7 +933,6 @@ async function refreshExistingPreview(existing, details) {
   });
 
   const restartLifecycle = await restartPreviewProcess({
-    launchLabel: validated.launchLabel,
     runScript: validated.runScript,
     worktree: details.worktree,
     port: validated.port,
@@ -925,7 +966,6 @@ async function refreshExistingPreview(existing, details) {
     db: validated.dbCopy,
     sourceDb: validated.sourceDb,
     previewRoot: preview.root,
-    launchLabel: validated.launchLabel,
     pidFile: validated.pidFile,
     stdoutLog: validated.stdoutLog,
     stderrLog: validated.stderrLog,
@@ -970,11 +1010,6 @@ function validateRefreshContract(existing, preview, details) {
   if (!Number.isInteger(port) || port <= 0) {
     throw new Error("Cannot refresh preview because metadata.port is invalid.");
   }
-  const expectedLabel = previewLaunchLabel(port, details.branch);
-  if (existing.launchLabel !== expectedLabel) {
-    throw new Error(`Refusing preview refresh: launch label ${existing.launchLabel ?? "<missing>"} does not match ${expectedLabel}.`);
-  }
-
   const expectedPaths = {
     dbCopy: path.join(preview.root, path.basename(existing.db ?? "")),
     pidFile: path.join(preview.root, "mandible.pid"),
@@ -999,24 +1034,24 @@ function validateRefreshContract(existing, preview, details) {
     throw new Error("Refusing preview refresh: metadata sourceDb is missing or unreadable.");
   }
 
+  const drift = previewInstanceEnvDrift(existing, preview.root);
+  if (drift.length > 0) {
+    throw new Error(
+      `Refusing preview refresh: persisted ${drift.join(", ")} does not match the required preview contract.`,
+    );
+  }
   const instanceEnv = previewInstanceEnv({
     port,
     dbCopy: existing.db,
     sourceDb: existing.sourceDb,
     pidFile: expectedPaths.pidFile,
   });
-  for (const [key, value] of Object.entries(instanceEnv)) {
-    if (existing.instanceEnv?.[key] !== value) {
-      throw new Error(`Refusing preview refresh: persisted ${key} does not match the required preview contract.`);
-    }
-  }
   if (!hasExpectedPreviewFileRpc(existing, existing.health, preview.root)) {
     throw new Error("Refusing preview refresh: preview file-RPC custody is not isolated to the selected preview root.");
   }
 
   return {
     port,
-    launchLabel: expectedLabel,
     ...expectedPaths,
     sourceDb: existing.sourceDb,
     instanceEnv,
@@ -1335,106 +1370,141 @@ export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
   return { ...projection, briefingDemo };
 }
 
+/**
+ * Start a preview daemon as an ordinary detached child process.
+ *
+ * A preview is deliberately unsupervised. It used to be submitted to launchd,
+ * which made it a KeepAlive job: it survived being killed, survived deletion of
+ * the worktree whose code it was executing, and was never deregistered by any
+ * teardown path, because the only `launchctl remove` fired immediately before
+ * re-submitting the same label. Eleven such jobs accumulated on one machine,
+ * nine of them still running, four relaunch-looping on exit 127 for up to two
+ * weeks against scripts that no longer existed.
+ *
+ * An ephemeral preview that dies should stay dead. `detached` puts it in its
+ * own process group so interrupting the launcher's terminal does not take the
+ * preview with it, and `unref` lets the launcher exit; neither gives anything
+ * the authority to restart it.
+ */
 async function startPreviewProcess(details) {
-  const launchctl = launchctlCommand();
-  if (launchctl) {
-    run(launchctl, ["remove", details.launchLabel], { allowFailure: true });
-    run(launchctl, ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript]);
-    return;
-  }
-
-  const stdout = fs.openSync(details.stdoutLog, "a");
-  const stderr = fs.openSync(details.stderrLog, "a");
-  const child = spawn(process.execPath, ["dist/index.js"], {
+  // run.sh is the single definition of how a preview daemon is launched: it
+  // pins the full instance env and its own log redirection. Executing it —
+  // rather than re-deriving the same spawn inline — keeps one launch contract
+  // and leaves a human-runnable artifact for reproducing a preview by hand.
+  const child = spawn("/bin/zsh", [details.runScript], {
     cwd: details.worktree,
     detached: true,
-    env: previewProcessEnv(details),
-    stdio: ["ignore", stdout, stderr],
+    env: sanitizedLauncherEnv(),
+    stdio: "ignore",
   });
   child.unref();
+  return { mechanism: "detached-child", launcherPid: child.pid ?? null };
 }
 
+/**
+ * Stop the running preview daemon and start a replacement child process.
+ *
+ * There is no supervisor to hand this to any more, and that removes the whole
+ * class of failure the old launchd `kickstart` path was written to work around:
+ * no registration to lose, no race between deregistration and re-submission,
+ * and no way for a replacement to be resurrected behind the launcher's back.
+ */
 async function restartPreviewProcess(details) {
+  const stopped = await stopPreviewProcess(details.pidFile);
+  const started = await startPreviewProcess(details);
+  return { ...started, stopped };
+}
+
+/**
+ * Terminate whatever the preview's pid file points at and wait for it to go.
+ *
+ * SIGTERM is sufficient precisely because nothing supervises a preview any
+ * more. Under launchd it was not: KeepAlive respawned three of nine terminated
+ * preview daemons within fourteen seconds, which made a successful-looking kill
+ * actively misleading. SIGKILL remains as a bounded escalation for a daemon
+ * that will not exit on its own.
+ */
+async function stopPreviewProcess(pidFile, timeoutMs = 10_000) {
+  const pid = readPidFile(pidFile);
+  if (pid === null || !isProcessAlive(pid)) {
+    return { pid, outcome: pid === null ? "no-pid-file" : "already-stopped" };
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    return { pid, outcome: "already-stopped" };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return { pid, outcome: "terminated" };
+    await delay(100);
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    return { pid, outcome: "terminated" };
+  }
+  const killDeadline = Date.now() + 5_000;
+  while (Date.now() < killDeadline) {
+    if (!isProcessAlive(pid)) return { pid, outcome: "killed" };
+    await delay(100);
+  }
+  throw new Error(`Preview daemon ${pid} did not exit after SIGTERM and SIGKILL.`);
+}
+
+/**
+ * Remove every launchd job a previous version of this launcher registered.
+ *
+ * Previews were submitted as `bio.mll.mandible.preview.<port>.<branch-slug>`
+ * KeepAlive jobs and nothing ever deregistered them, so anyone who has run a
+ * preview still carries their own set. They write no plist, existing only in
+ * launchd's in-memory registry, which is why they are invisible to anyone
+ * inspecting ~/Library/LaunchAgents and why this has to be done by label.
+ *
+ * `bootout` rather than `remove`: removal leaves a window in which KeepAlive
+ * can still respawn the job, and observed cleanup on a real machine needed
+ * bootout to make the daemons stay down. Labels outside the preview namespace
+ * are never touched — in particular `com.mll.mandible`, which supervises the
+ * live daemon and is supposed to.
+ */
+function deregisterLegacyPreviewJobs({ apply = true } = {}) {
   const launchctl = launchctlCommand();
-  if (!launchctl) {
-    return startPreviewProcess(details);
+  if (!launchctl) return { supported: false, labels: [], booted: [] };
+
+  const listed = run(launchctl, ["list"], { allowFailure: true });
+  if (listed.status !== 0) {
+    return { supported: true, labels: [], booted: [], error: "launchctl list failed" };
   }
 
-  // `launchctl remove` returns while a submitted job may still be SIGTERMed and
-  // registered. An immediate `submit` can therefore race deregistration after
-  // the old daemon is already down (and can also sever the session carrying
-  // this command). Kickstart keeps launchd registration intact throughout.
-  const serviceTarget = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/${details.launchLabel}`;
-  const before = run(launchctl, ["print", serviceTarget], { allowFailure: true });
-  if (before.status !== 0) {
-    throw new Error(
-      `Refusing preview restart because launchd service ${serviceTarget} is not registered.\n` +
-      describeCommandResult(launchctl, ["print", serviceTarget], before),
-    );
+  const labels = [];
+  for (const line of String(listed.stdout ?? "").split(/\r?\n/)) {
+    const label = line.trim().split(/\s+/).pop();
+    if (label && LEGACY_PREVIEW_LABEL_PATTERN.test(label)) labels.push(label);
   }
+  if (!apply || labels.length === 0) return { supported: true, labels, booted: [] };
 
-  const replacementArgs = ["kickstart", "-kp", serviceTarget];
-  const replacement = run(launchctl, replacementArgs, { allowFailure: true });
-  if (replacement.status === 0) {
-    const confirmed = run(launchctl, ["print", serviceTarget], { allowFailure: true });
-    if (confirmed.status === 0) {
-      return {
-        mechanism: "launchctl-kickstart",
-        serviceTarget,
-        replacementPid: parseLaunchctlPid(replacement.stdout),
-        recovery: "not-needed",
-      };
-    }
-    return recoverLaunchdPreview(details, launchctl, serviceTarget, {
-      reason: "replacement command succeeded but service registration could not be confirmed",
-      evidence: describeCommandResult(launchctl, ["print", serviceTarget], confirmed),
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const booted = [];
+  for (const label of labels) {
+    const target = `gui/${uid}/${label}`;
+    const result = run(launchctl, ["bootout", target], { allowFailure: true });
+    // `remove` is the fallback for a job that was submitted but never bootstrapped
+    // into a domain, which `bootout` reports as not-found.
+    const fallback = result.status === 0
+      ? null
+      : run(launchctl, ["remove", label], { allowFailure: true });
+    booted.push({
+      label,
+      mechanism: result.status === 0 ? "bootout" : "remove",
+      ok: result.status === 0 || fallback?.status === 0,
     });
   }
-
-  return recoverLaunchdPreview(details, launchctl, serviceTarget, {
-    reason: "replacement kickstart failed",
-    evidence: describeCommandResult(launchctl, replacementArgs, replacement),
-  });
-}
-
-function recoverLaunchdPreview(details, launchctl, serviceTarget, failure) {
-  const registration = run(launchctl, ["print", serviceTarget], { allowFailure: true });
-  let recoveryArgs;
-  if (registration.status === 0) {
-    recoveryArgs = ["kickstart", "-p", serviceTarget];
-  } else {
-    recoveryArgs = ["submit", "-l", details.launchLabel, "--", "/bin/zsh", details.runScript];
-  }
-  const recovery = run(launchctl, recoveryArgs, { allowFailure: true });
-  const confirmed = run(launchctl, ["print", serviceTarget], { allowFailure: true });
-  if (recovery.status === 0 && confirmed.status === 0) {
-    return {
-      mechanism: "launchctl-kickstart",
-      serviceTarget,
-      replacementPid: parseLaunchctlPid(recovery.stdout),
-      recovery: registration.status === 0 ? "kickstart-registered-service" : "resubmit-missing-service",
-      initialFailure: failure,
-    };
-  }
-
-  throw new Error([
-    `Preview restart failed and recovery could not confirm launchd service ${serviceTarget}.`,
-    failure.reason,
-    failure.evidence,
-    describeCommandResult(launchctl, recoveryArgs, recovery),
-    describeCommandResult(launchctl, ["print", serviceTarget], confirmed),
-    `Recovery command: ${[launchctl, ...recoveryArgs].join(" ")}`,
-  ].join("\n"));
-}
-
-function launchctlCommand() {
-  return process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
-    (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
-}
-
-function parseLaunchctlPid(stdout) {
-  const value = Number.parseInt(String(stdout ?? "").trim(), 10);
-  return Number.isInteger(value) && value > 0 ? value : null;
+  return { supported: true, labels, booted };
 }
 
 function describeCommandResult(command, args, result) {
@@ -1455,8 +1525,10 @@ ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value)
 }
 
 function previewInstanceEnv(details) {
-  const fileRpcDir = path.join(path.dirname(details.dbCopy), "agent-rpc");
-  const configDir = path.join(path.dirname(details.dbCopy), "config");
+  const previewRoot = path.dirname(details.dbCopy);
+  const fileRpcDir = path.join(previewRoot, "agent-rpc");
+  const configDir = path.join(previewRoot, "config");
+  const conversationsDir = path.join(previewRoot, "conversations");
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.dbCopy,
@@ -1467,14 +1539,28 @@ function previewInstanceEnv(details) {
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
     MANDIBLE_FILE_RPC_DIR: fileRpcDir,
     MANDIBLE_CONFIG_DIR: configDir,
+    // Every writable file the preview daemon opens has to live under the
+    // preview root. The ledger copy was isolated from the start; these three
+    // were missed, so a preview opened the live conversations index read-write
+    // on the same inode as the live daemon and rotated the live daemon's log
+    // file on its own five-second timer. Derived from previewRoot rather than
+    // taken from `details` so every caller gets the identical contract.
+    MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversationsDir, "structure.db"),
+    MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversationsDir, "search-cache.db"),
+    MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
   };
 }
 
-function previewProcessEnv(details) {
-  return {
-    ...process.env,
-    ...previewInstanceEnv(details),
-  };
+/**
+ * The launcher's own environment with every ambient MANDIBLE_* variable
+ * stripped. run.sh sets the full preview contract explicitly; anything else
+ * inherited from the invoking shell can only point the preview back at a shared
+ * resource, which is the failure this whole path exists to prevent.
+ */
+function sanitizedLauncherEnv() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("MANDIBLE_")),
+  );
 }
 
 async function waitForHealth(port, timeoutMs, stderrLog) {
@@ -1744,10 +1830,6 @@ function slugify(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
-}
-
-function previewLaunchLabel(port, branch) {
-  return `bio.mll.mandible.preview.${port}.${slugify(branch)}`.slice(0, 240);
 }
 
 function shortHash(value) {
