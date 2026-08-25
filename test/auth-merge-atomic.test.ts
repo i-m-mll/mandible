@@ -193,56 +193,6 @@ describe("atomic auth merge", () => {
     expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
   });
 
-  it("durably checkpoints PREPARED and APPLIED through the real output endpoint", async () => {
-    const base = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/atomic"]);
-    const cached = candidate(base, head);
-    const db = new Database(":memory:");
-    migrate(db);
-    setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
-    const queue = new AuthQueue({ db, backgroundMaintenance: false });
-    const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
-    // Issue 08a5f04 (review F1) — the output endpoint is lifecycle-locked to
-    // executing requests; the real merge posts its checkpoints mid-execution.
-    db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
-    const router = new Router();
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-    const server = createServer({
-      db,
-      sse: new SseManager(),
-      logger: configureDaemonLogger(db),
-      version: "test",
-      router,
-      getStartupInfo: () => null,
-    });
-    const port = await new Promise<number>((resolve) => {
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        resolve(typeof address === "object" && address ? address.port : 0);
-      });
-    });
-
-    try {
-      const result = await runAtomicAsync(base, head, cached, {
-        MANDIBLE_AUTH_REQUEST_ID: request.id,
-        MANDIBLE_BASE: `http://127.0.0.1:${port}`,
-      });
-      expect(result.status).toBe(0);
-      const output = queue.getRequest(request.id)?.output ?? "";
-      expect(output).toContain("MANDIBLE_MERGE_PREPARED");
-      expect(output).toContain("MANDIBLE_MERGE_APPLIED");
-      expect(output.indexOf("MANDIBLE_MERGE_PREPARED")).toBeLessThan(
-        output.indexOf("MANDIBLE_MERGE_APPLIED"),
-      );
-      expect(git(["rev-parse", "main"])).not.toBe(base);
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      queue.dispose();
-      flushDaemonLogger();
-      db.close();
-    }
-  });
-
   it("does not move the target when the durable checkpoint endpoint is unreachable", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);

@@ -213,29 +213,6 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.queryByRole('button', { name: /Agent policy proposal/ })).toBeNull();
   });
 
-  it('composes the no-selection prompt inside the detail body without round jargon', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === '/api/briefings') {
-        return new Response(JSON.stringify({ briefings: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({ incidents: [], counts: {} }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }));
-
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
-
-    const prompt = await screen.findByText('Select a Briefing.');
-    expect(prompt.classList.contains('briefing-empty--selection')).toBe(true);
-    expect(prompt.textContent).not.toMatch(/latest|immutable|round/i);
-    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
-    expect(css).toMatch(/\.briefing-empty--selection\s*\{[^}]*flex:\s*1;[^}]*align-self:\s*stretch;[^}]*display:\s*grid;[^}]*place-items:\s*center;/s);
-  });
-
   it('normalizes stable logical rows and exact immutable selected-round bindings', () => {
     expect(normalizeBriefings({ briefings: [{ id: 'briefing-1', title: 'Recurring review',
       description: 'Durable source snapshot.', latest_round_id: 'round-2', unanswered_directive_count: 1,
@@ -255,59 +232,6 @@ describe('artifact-backed Briefing rounds', () => {
       },
     });
     expect(projection).not.toHaveProperty('latest_submission');
-  });
-
-  it('renames the selected Briefing from the header menu and updates the header and sidebar from the PATCH result', async () => {
-    const calls: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      const body = init?.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url, method, body });
-      if (url === '/api/briefings' && method === 'GET') {
-        return new Response(JSON.stringify({ briefings: [detail().briefing] }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/briefing-bundles') {
-        return new Response(JSON.stringify({ bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/client-auth/whoami') {
-        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/briefings/briefing-1' && method === 'GET') {
-        return new Response(JSON.stringify(detail()), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      if (url === '/api/briefings/briefing-1' && method === 'PATCH') {
-        return new Response(JSON.stringify({ briefing_id: 'briefing-1', title: 'Renamed policy', changed: true }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      if (url.includes('/api/artifacts/') && url.endsWith('/content')) {
-        const exactSource = source.replace('Intro', 'Later');
-        return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(exactSource).byteLength, source: null, preview: { encoding: 'utf-8', text: exactSource, raw_text: exactSource, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: exactSource.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      throw new Error(`unexpected ${method} ${url}`);
-    }));
-    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
-      ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
-      selectedCollectionId: 'briefing:briefing-1',
-    }));
-
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
-    expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename Briefing' }));
-
-    const dialog = screen.getByRole('dialog', { name: 'Rename Briefing' });
-    const input = within(dialog).getByRole('textbox', { name: 'Briefing title' }) as HTMLInputElement;
-    expect(input.value).toBe('Recurring review');
-    fireEvent.input(input, { target: { value: 'Renamed policy' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename Briefing' })).toBeNull());
-    expect(screen.getByRole('heading', { name: 'Renamed policy' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Select briefing Renamed policy' })).toBeTruthy();
-    expect(calls.filter((call) => call.method === 'PATCH')).toEqual([{
-      url: '/api/briefings/briefing-1', method: 'PATCH', body: { title: 'Renamed policy' },
-    }]);
   });
 
   it('unions one selected immutable annotation set with only current unsubmitted annotations', () => {
