@@ -43,7 +43,7 @@ import {
   snapshotArtifactBytesAsync,
 } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
-import { sendJson } from "./http.js";
+import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
 import {
@@ -52,11 +52,6 @@ import {
   sendPermissionError,
 } from "../permissions/store.js";
 
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>)
-    : {};
-}
 
 function handleError(res: ResponseLike, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
