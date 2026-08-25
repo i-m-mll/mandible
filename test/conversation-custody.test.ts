@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -147,7 +148,15 @@ describe("conversation custody", () => {
   it("round-trips a fresh Mandible custody store through an archive", () => {
     const fixture = claudeFixture();
     const store = new ConversationCustodyStore(custodyRoot);
-    const captured = store.capture({ conversation_id: "conv-roundtrip", provider: "claude_code", session_id: fixture.sessionId, source_path: fixture.source });
+    const sourceSha256 = crypto.createHash("sha256").update(fs.readFileSync(fixture.source)).digest("hex");
+    const captured = store.capture({
+      conversation_id: "conv-roundtrip",
+      provider: "claude_code",
+      session_id: fixture.sessionId,
+      source_path: fixture.source,
+      expected_source_version_id: "source-version-1",
+      expected_source_sha256: sourceSha256,
+    });
     const archive = store.exportArchive("conv-roundtrip", path.join(tempRoot, "archive"), { tags: ["preserved"] });
     expect(store.verifyArchive(archive).ok).toBe(true);
 

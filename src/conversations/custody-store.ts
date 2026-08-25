@@ -601,8 +601,13 @@ export class ConversationCustodyStore {
     const manifest = this.readManifest(root);
     const errors: string[] = [];
     const computedVersion = versionDigest(manifest.files);
+    const computedCustodyVersion = custodyVersionDigest(
+      computedVersion,
+      manifest.source_version_id,
+      manifest.source_sha256,
+    );
     if (manifest.source_version !== computedVersion) errors.push("manifest source_version does not match its file records");
-    if (manifest.custody_version !== computedVersion) errors.push("manifest custody_version does not match its file records");
+    if (manifest.custody_version !== computedCustodyVersion) errors.push("manifest custody_version does not match its file records and source binding");
     const annotationPath = `annotations/${manifest.canonical_conversation_id}.json`;
     const required = new Set(["manifest.json", "metadata.json", annotationPath, ...manifest.files.map((file) => file.path)]);
     const checksummed = new Set<string>();
