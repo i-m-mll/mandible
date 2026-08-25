@@ -322,23 +322,9 @@ export class SessionDiscovery {
   }
 }
 
-// --- Reaper status types ---
-
-export interface ReaperStatus {
-  running: boolean;
-  interval_ms: number;
-  last_run_at: string | null;
-  last_run_duration_ms: number | null;
-  last_run_reaped: number | null;
-  next_run_at: string | null;
-  total_reaped: number;
-  total_runs: number;
-}
-
 /**
  * Periodic reaper that automatically marks dead sessions.
- * Runs on a configurable interval (default 60s) and exposes status
- * for the GET /api/reaper/status endpoint.
+ * Runs on a configurable interval (default 60s).
  */
 export class ReaperTimer {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -350,10 +336,7 @@ export class ReaperTimer {
   private readonly discoveryIntervalMs: number;
   private discovering = false;
 
-  // Tracked state for the status endpoint
-  private _lastRunAt: string | null = null;
-  private _lastRunDurationMs: number | null = null;
-  private _lastRunReaped: number | null = null;
+  // Cumulative counters reported on the reaper:tick broadcast.
   private _totalReaped = 0;
   private _totalRuns = 0;
 
@@ -398,34 +381,11 @@ export class ReaperTimer {
     }
   }
 
-  /** Get current reaper status for the API endpoint. */
-  getStatus(): ReaperStatus {
-    const nextRunAt = this.timer && this._lastRunAt
-      ? new Date(new Date(this._lastRunAt).getTime() + this.intervalMs).toISOString()
-      : this.timer
-        ? new Date(Date.now() + this.intervalMs).toISOString()
-        : null;
-
-    return {
-      running: this.timer !== null,
-      interval_ms: this.intervalMs,
-      last_run_at: this._lastRunAt,
-      last_run_duration_ms: this._lastRunDurationMs,
-      last_run_reaped: this._lastRunReaped,
-      next_run_at: nextRunAt,
-      total_reaped: this._totalReaped,
-      total_runs: this._totalRuns,
-    };
-  }
-
   private tick(): void {
     const start = Date.now();
     try {
       const reaped = this.discovery.reapDeadSessions();
       const duration = Date.now() - start;
-      this._lastRunAt = new Date().toISOString();
-      this._lastRunDurationMs = duration;
-      this._lastRunReaped = reaped;
       this._totalReaped += reaped;
       this._totalRuns++;
 

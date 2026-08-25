@@ -40,7 +40,6 @@ import {
 } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
-import { registerChatRoutes } from "./routes/chats.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
@@ -102,7 +101,6 @@ import {
 } from "./restart-availability.js";
 
 const DEFAULT_PORT = 19420;
-const DOTFILES_ROOT = resolveDotfilesRoot();
 const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
@@ -258,7 +256,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     restartAvailability: restartAvailability ?? undefined,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
-  registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     on_event: (event) => {
       broadcast(event);
@@ -348,11 +345,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   } catch (error) {
     logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
   }
-
-  // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
-  router.get("/api/reaper/status", (_req, res) => {
-    res.json(reaperTimer.getStatus());
-  }, { fileRpc: "deny" });
 
   const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
   if (operationalMutationsAllowed) {
@@ -743,15 +735,6 @@ function resolveVersion(): string {
   } catch {
     return "0.0.0";
   }
-}
-
-function resolveDotfilesRoot(): string {
-  const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidate = path.resolve(currentDir, "../../..");
-  if (fs.existsSync(path.join(candidate, ".git"))) {
-    return candidate;
-  }
-  return path.resolve(currentDir, "../../../..");
 }
 
 function resolveMandibleRoot(): string {
