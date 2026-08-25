@@ -722,6 +722,11 @@ fi
 
 # --- Verify branch has unique commits ---
 
+# Two dots on purpose (unlike the diff range below, issue 1512471): the
+# question here is "does this branch carry commits the base does not have",
+# which is exactly `base..branch`. Three dots would add the base's own new
+# commits to the count and this guard would stop refusing already-merged
+# branches.
 unique_commits=$(git log --oneline "${base_branch}..${branch}" 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$unique_commits" -eq 0 ]]; then
   echo "Error: branch '${branch}' has no unique commits vs '${base_branch}' -- already merged?" >&2
@@ -744,7 +749,17 @@ mandible_auth_merge_preflight "$target_cwd" "$branch" "$base_branch" "$repo"
 
 # --- Auto-detect diff stats ---
 
-shortstat=$(git diff --shortstat "${base_branch}..${branch}" 2>/dev/null || echo "")
+# Issue 1512471 — the reviewer-facing range is three-dot, and is spelled once.
+# `base...branch` is the change from the merge base, which is what the merge
+# applies. `base..branch` is tip-to-tip, so anything that landed on the base
+# after this branch was cut shows up inverted: another lane's merged work is
+# rendered as this branch deleting it. That error is silent and grows as the
+# base advances. The daemon's own derivation is `authReviewDiffRange` in
+# src/auth-context.ts; test/auth-review-diff-range.test.ts pins the two to the
+# same numbers so this copy cannot drift away from it again.
+review_range="${base_branch}...${branch}"
+
+shortstat=$(git diff --shortstat "$review_range" 2>/dev/null || echo "")
 files_changed=0
 additions=0
 deletions=0
@@ -766,7 +781,7 @@ fi
 MAX_DIFF_BYTES=102400  # 100KB truncation limit
 
 if [[ -z "$diff_summary" ]]; then
-  full_diff=$(git diff "${base_branch}..${branch}" 2>/dev/null) || full_diff=""
+  full_diff=$(git diff "$review_range" 2>/dev/null) || full_diff=""
   diff_bytes=${#full_diff}
   if [[ "$diff_bytes" -gt "$MAX_DIFF_BYTES" ]]; then
     diff_summary="${full_diff:0:$MAX_DIFF_BYTES}
@@ -1031,6 +1046,12 @@ if [[ "$http_status" == "409" ]]; then
     echo ""
     echo "If that request is the same work, update it:"
     echo "  PUT /api/auth/request/$(api_short_id "$existing_id")"
+    # Issue 1512471 — the stored diff stats are NOT recomputed on update, so a
+    # prose-only PUT leaves whatever numbers the request was born with in front
+    # of the approver. They are accepted in the update payload; name them, with
+    # this run's freshly computed values, so the correction is one copy away.
+    echo "  Include the diff stats or the approver keeps the old ones:"
+    echo "    {\"files_changed\": ${files_changed}, \"additions\": ${additions}, \"deletions\": ${deletions}}"
     echo "If it is different work that merely shares a branch name, rename this"
     echo "branch or resolve the existing request first, then resubmit."
   } >&2
