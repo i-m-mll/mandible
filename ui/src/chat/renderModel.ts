@@ -3,7 +3,6 @@ import type {
   AssistantEvent,
   ContentBlock,
   DisplayGroup,
-  PresetViolationEvent,
   RenderNode,
   RenderNodeAssistantTurn,
   RenderedTurn,
@@ -110,15 +109,6 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
   for (const event of events) {
     if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
       initEvent = event as SystemInitEvent;
-    } else if (event.type === 'preset:violation') {
-      const violationEvent = event as PresetViolationEvent;
-      flushPendingTurn();
-      nodes.push({
-        kind: 'violation',
-        key: violationEvent.localId ?? `violation-${nodes.length}`,
-        entity: 'system',
-        event: violationEvent,
-      });
     } else if (event.type === 'transcript:semantic') {
       flushPendingTurn();
       const semanticEvent = event as TranscriptSemanticEvent;
@@ -304,10 +294,6 @@ function contentBlockToMarkdown(block: ContentBlock, toolResults?: Map<string, T
 export function renderNodeToMarkdown(node: RenderNode): string {
   if (node.kind === 'user_message') {
     return `## User\n\n${node.text.trim()}`;
-  }
-  if (node.kind === 'violation') {
-    const preset = node.event.preset_id ? ` for ${node.event.preset_id}` : '';
-    return `## System\n\nPreset violation${preset}${node.event.analyzing ? ' is being analyzed.' : '.'}`;
   }
   if (node.kind === 'semantic_event') {
     return `## ${node.event.semantic_kind === 'system' ? 'System' : 'Event'}\n\n${node.event.content.trim()}`;

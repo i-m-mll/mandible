@@ -1803,7 +1803,6 @@ function App(): JSX.Element {
     backend_type,
     transport_lane,
     channel_enabled,
-    presetIds,
     runOptions,
     cwd,
   }: {
@@ -1813,7 +1812,6 @@ function App(): JSX.Element {
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
-    presetIds?: string[];
     runOptions?: Record<string, import('./api').SessionRunOptionValue>;
     cwd?: string;
   }) => {
@@ -1821,7 +1819,6 @@ function App(): JSX.Element {
       const result = await createConsoleSession(label, backend, kind, backend_type, {
         channel_enabled,
         transport_lane,
-        presetIds,
         runOptions,
         cwd,
       });
@@ -2588,7 +2585,6 @@ function App(): JSX.Element {
               consoleSessions={state.consoleSessions}
               initialConversationId={tabRoute.params.conversation ?? null}
               initialSessionId={tabRoute.params.session ?? null}
-              initialPresetId={tabRoute.params.preset ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
               instance={instanceInfo}

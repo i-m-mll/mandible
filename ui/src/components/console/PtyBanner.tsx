@@ -5,7 +5,7 @@ export function PtyBanner(): JSX.Element {
   return (
     <div className="pty-banner">
       PTY sessions have limited integration with Mandible. For full features
-      (permissions, cost tracking, presets, conversation history), use an SDK
+      (permissions, cost tracking, conversation history), use an SDK
       agent session instead.
     </div>
   );

@@ -11,7 +11,6 @@ export type ComposerUsage = {
   outputTokens?: number;
   cacheTokens?: number;
   totalTokens?: number;
-  contextTokens?: number;
   costUsd?: number;
 };
 
@@ -49,9 +48,6 @@ function usageSummary(usage: ComposerUsage | undefined): string | null {
   const parts: string[] = [];
   if (usage.totalTokens !== undefined && usage.totalTokens > 0) {
     parts.push(`${usage.totalTokens.toLocaleString()} tokens`);
-  }
-  if (usage.contextTokens !== undefined && usage.contextTokens > 0) {
-    parts.push(`${usage.contextTokens.toLocaleString()} context`);
   }
   return parts.length > 0 ? parts.join(' / ') : null;
 }
@@ -128,7 +124,6 @@ export function Composer({
                   {usage?.inputTokens !== undefined && <span>Input: {usage.inputTokens.toLocaleString()}</span>}
                   {usage?.outputTokens !== undefined && <span>Output: {usage.outputTokens.toLocaleString()}</span>}
                   {usage?.cacheTokens !== undefined && <span>Cache: {usage.cacheTokens.toLocaleString()}</span>}
-                  {usage?.contextTokens !== undefined && <span>Context: {usage.contextTokens.toLocaleString()}</span>}
                   {usage?.costUsd !== undefined && usage.costUsd > 0 && <span>Cost: ${usage.costUsd.toFixed(4)}</span>}
                 </div>
               </details>

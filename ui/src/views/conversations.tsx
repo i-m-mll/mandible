@@ -43,7 +43,6 @@ import {
   getConversationSidebar,
   getConversations,
   getSessionIssues,
-  getSessionPresets,
   listWorkflows,
   listCanonicalProjects,
   navigateSession,
@@ -52,7 +51,6 @@ import {
   updateConsoleSession,
   updateConsoleSessionOptions,
   updateConversation,
-  type SessionPreset,
   type SessionRunOptionsSnapshot,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
@@ -461,7 +459,6 @@ export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
   initialConversationId: string | null;
   initialSessionId: string | null;
-  initialPresetId?: string | null;
   sidebarHidden?: boolean;
   sidebarGroupLimit?: number;
   instance?: InstanceInfo | null;
@@ -473,7 +470,6 @@ export type ConversationsViewProps = {
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
-    presetIds?: string[];
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
     cwd?: string;
   }) => void;
@@ -881,7 +877,6 @@ function ConversationMetadataModal({
   conversation,
   linkedConsoleSession,
   issueLinks,
-  presets,
   headerRef,
   onClose,
 }: {
@@ -889,7 +884,6 @@ function ConversationMetadataModal({
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
-  presets: SessionPreset[];
   headerRef: { current: HTMLElement | null };
   onClose: () => void;
 }): JSX.Element {
@@ -944,7 +938,7 @@ function ConversationMetadataModal({
             <span className="conv-info-grid__mono">{conversation.session_id || linkedConsoleSession?.id || 'none'}</span>
           </div>
       </div>
-      {(issueLinks.length > 0 || presets.length > 0) && (
+      {issueLinks.length > 0 && (
         <div className="conv-modal__section">
             {issueLinks.length > 0 && (
               <div className="conv-modal__chips">
@@ -955,21 +949,6 @@ function ConversationMetadataModal({
                     id={link.issue_id}
                     repoId={link.repo_id}
                   />
-                ))}
-              </div>
-            )}
-            {presets.length > 0 && (
-              <div className="conv-modal__chips">
-                {presets.map((preset) => (
-                  <button
-                    key={preset.preset_id}
-                    type="button"
-                    className="session-preset-badge"
-                    onClick={() => { window.location.hash = `#/artifacts?role=instructions&series=${encodeURIComponent(preset.preset_id)}`; }}
-                  >
-                    {preset.preset_name}
-                    <span className="session-preset-badge__version">v{preset.version}</span>
-                  </button>
                 ))}
               </div>
             )}
@@ -1036,8 +1015,6 @@ function ConversationDetail({
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
-  // Bug: 11f4f47 — preset provenance in conversation history
-  const [sessionPresets, setSessionPresets] = useState<SessionPreset[]>([]);
 
   // Fork/resume state
   const [toast, setToast] = useState<ToastState>(null);
@@ -1187,23 +1164,6 @@ function ConversationDetail({
       })
       .catch(() => {
         if (active) setSessionIssueLinks([]);
-      });
-    return () => { active = false; };
-  }, [conversation?.session_id]);
-
-  // Bug: 11f4f47 — fetch preset provenance for the conversation's session
-  useEffect(() => {
-    if (!conversation?.session_id) {
-      setSessionPresets([]);
-      return;
-    }
-    let active = true;
-    getSessionPresets(conversation.session_id)
-      .then((data) => {
-        if (active) setSessionPresets(data);
-      })
-      .catch(() => {
-        if (active) setSessionPresets([]);
       });
     return () => { active = false; };
   }, [conversation?.session_id]);
@@ -2071,7 +2031,6 @@ function ConversationDetail({
         conversation={conversation}
         linkedConsoleSession={linkedConsoleSession}
         issueLinks={sessionIssueLinks}
-        presets={sessionPresets}
         headerRef={headerRef}
         onClose={() => setInfoOpen(false)}
       />
@@ -2398,7 +2357,6 @@ export function ConversationsView({
   consoleSessions,
   initialConversationId,
   initialSessionId,
-  initialPresetId,
   sidebarHidden = false,
   sidebarGroupLimit: rawSidebarGroupLimit,
   instance = null,
@@ -2406,7 +2364,7 @@ export function ConversationsView({
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
-  const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
   const [projectChooserSelection, setProjectChooserSelection] = useState('');
@@ -2492,12 +2450,6 @@ export function ConversationsView({
         return (b.started_at ?? b.created_at) - (a.started_at ?? a.created_at);
       });
   }, [consoleSessions]);
-
-  useEffect(() => {
-    if (initialPresetId) {
-      setDialogOpen(true);
-    }
-  }, [initialPresetId]);
 
   useEffect(() => {
     if (!initialConversationId) return;
@@ -3087,7 +3039,6 @@ export function ConversationsView({
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
     transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
-    presetIds?: string[];
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
     cwd?: string;
   }) => {
@@ -3422,7 +3373,6 @@ export function ConversationsView({
         cwd={newSessionCwd}
         onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
         onSubmit={handleNewSession}
-        initialPresetId={initialPresetId}
       />
     </div>
   );

@@ -139,7 +139,6 @@ function mockConversationDetail(
   });
   vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
   vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-  vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
   return scopedConversation;
 }
 

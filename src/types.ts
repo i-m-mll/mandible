@@ -780,8 +780,6 @@ export interface ConsoleSessionInput {
   resume_at_message?: string | null;
   /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
   channel_enabled?: boolean;
-  /** Bug: 61bee4e — Preset IDs to associate with this console session */
-  presetIds?: string[];
 }
 
 export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';

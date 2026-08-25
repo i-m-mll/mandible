@@ -106,10 +106,6 @@ export interface ToolPolicyBackend {
   setAllowedTools(tools: readonly string[]): Promise<void> | void;
 }
 
-export interface PresetAwareBackend {
-  setPresetIds(ids: readonly string[]): Promise<void> | void;
-}
-
 export interface UsageAwareBackend<TUsage> {
   getUsage(): TUsage[];
 }

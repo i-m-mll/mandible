@@ -13,7 +13,6 @@ import {
 } from '../../chat';
 import { PtyBanner } from './PtyBanner';
 import { SessionControls, SessionModelControl } from './SessionControls';
-import { LivePresetPills } from './LivePresetPills';
 import { MessageInfoPanel } from './MessageInfoPanel';
 import { Composer, type ComposerUsage, type QueuedPrompt } from './Composer';
 import { PermissionApprovalCard } from './PermissionApprovalCard';
@@ -42,7 +41,6 @@ export function RichChatPane({
   onPermissionRespond,
   selectedMessageId,
   onSelectMessageInfo,
-  presetTokenCount,
   usage,
   queuedPrompts,
   transportLabel,
@@ -51,7 +49,6 @@ export function RichChatPane({
   stopBusy,
   attentionSlot,
   onModelSaved,
-  onPresetTokenCount,
   prompt,
   interactionMode,
   onPromptChange,
@@ -79,7 +76,6 @@ export function RichChatPane({
   onPermissionRespond: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
   selectedMessageId: string | null;
   onSelectMessageInfo: (turnId: string) => void;
-  presetTokenCount: number;
   usage?: ComposerUsage;
   queuedPrompts: QueuedPrompt[];
   transportLabel: string;
@@ -88,7 +84,6 @@ export function RichChatPane({
   stopBusy?: boolean;
   attentionSlot?: JSX.Element | null;
   onModelSaved: (model: string | undefined) => void;
-  onPresetTokenCount: (value: number) => void;
   prompt: string;
   interactionMode: ConsoleSession['interaction_mode'];
   onPromptChange: (value: string) => void;
@@ -254,22 +249,13 @@ export function RichChatPane({
             </button>
           </div>
           {sidebarTab === 'settings' && (
-            <>
-              <SessionControls
-                sessionId={sessionId}
-                allowedTools={allowedTools}
-                availableTools={availableTools}
-                onModelSaved={onModelSaved}
-                hideModel={backendType === 'sdk'}
-              />
-              {(backendType === 'sdk' || backendType === 'pty') && (
-                <LivePresetPills
-                  sessionId={sessionId}
-                  readOnly={backendType !== 'sdk'}
-                  onUnionUpdate={({ totalTokens }) => onPresetTokenCount(totalTokens)}
-                />
-              )}
-            </>
+            <SessionControls
+              sessionId={sessionId}
+              allowedTools={allowedTools}
+              availableTools={availableTools}
+              onModelSaved={onModelSaved}
+              hideModel={backendType === 'sdk'}
+            />
           )}
           {sidebarTab === 'info' && (
             <MessageInfoPanel

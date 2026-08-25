@@ -140,24 +140,12 @@ export type SyntheticPromptEvent = {
   localId: string;
 };
 
-/** Bug: 11f4f47 — Preset violation event emitted by the backend when
- *  a workflow rule is violated. Rendered as an inline callout block. */
-export type PresetViolationEvent = {
-  type: 'preset:violation';
-  preset_id?: string;
-  subagent_session_id?: string;
-  analyzing: boolean;
-  /** Unique key for reconciliation. */
-  localId?: string;
-};
-
 export type StreamEvent =
   | SystemInitEvent
   | AssistantEvent
   | UserEvent
   | ResultEvent
   | SyntheticPromptEvent
-  | PresetViolationEvent
   | TranscriptSemanticEvent
   | { type: string; [key: string]: unknown };
 
@@ -207,14 +195,7 @@ export type RenderNodeUnmatchedToolResult = {
   result: ToolResultContentBlock;
 };
 
-export type RenderNodeViolation = {
-  kind: 'violation';
-  key: string;
-  entity: 'system';
-  event: PresetViolationEvent;
-};
-
-export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult;
+export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult;
 
 export type DisplayGroupMeta = {
   totalTokens?: number;

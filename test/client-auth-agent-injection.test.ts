@@ -5,10 +5,6 @@ import type { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { migrate, setDb } from "../src/db.js";
 import { resolveSessionClientIdentity, SessionManager } from "../src/session-manager.js";
 import {
-  computePresetUnion,
-  ensureInstructionArtifactForPreset,
-} from "../src/presets.js";
-import {
   addBinding,
   createUser,
   removeBinding,
@@ -77,62 +73,6 @@ describe("agent client-auth provisioning", () => {
 
     manager.delete(session.id);
     expect(auth.revoked).toEqual(["token-for-claude-agent"]);
-  });
-
-  it("pins creation and runtime prompt options to the selected artifact version", () => {
-    const now = Date.now();
-    db.prepare(
-      `INSERT INTO presets (
-        id, name, description, source, source_path, content_hash, version, created_at, updated_at
-      ) VALUES (?, ?, '', 'manual', NULL, '', 1, ?, ?)`,
-    ).run("credential-preset", "Credential preset", now, now);
-    db.prepare(
-      `INSERT INTO preset_nodes (
-        id, preset_id, parent_id, position, title, body, level, created_at, updated_at
-      ) VALUES (?, ?, NULL, 0, ?, ?, 1, ?, ?)`,
-    ).run(
-      "credential-preset-node",
-      "credential-preset",
-      "Pinned rule",
-      "Use only the original instruction.",
-      now,
-      now,
-    );
-    const initial = ensureInstructionArtifactForPreset(db, "credential-preset")!;
-    const agent = createUser(db, {
-      slug: "preset-agent",
-      kind: "agent",
-      display_name: "Preset Agent",
-    });
-    addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
-    const auth = fakeAuthenticator();
-    const manager = new SessionManager(db, () => undefined, undefined, undefined, auth.value);
-    const session = manager.create({
-      label: "Pinned preset session",
-      command: "claude",
-      backend_type: "sdk",
-      presetIds: [initial.series_id],
-    });
-    const backend = manager.get(session.id) as unknown as {
-      options: { presetIds?: string[] };
-    };
-    expect(backend.options.presetIds).toEqual([initial.version_id]);
-    manager.updateOptions(session.id, { presetIds: [initial.series_id] });
-    expect(backend.options.presetIds).toEqual([initial.version_id]);
-
-    db.prepare(
-      "UPDATE preset_nodes SET body = ?, updated_at = ? WHERE id = ?",
-    ).run("Attacker-controlled replacement.", now + 1, "credential-preset-node");
-    db.prepare(
-      "UPDATE presets SET version = version + 1, updated_at = ? WHERE id = ?",
-    ).run(now + 1, "credential-preset");
-    const updated = ensureInstructionArtifactForPreset(db, "credential-preset")!;
-    expect(updated.version_id).not.toBe(initial.version_id);
-
-    const effective = computePresetUnion(backend.options.presetIds ?? [], db);
-    expect(effective.text).toContain("Use only the original instruction.");
-    expect(effective.text).not.toContain("Attacker-controlled replacement.");
-    expect(manager.isCredentialBearing(session.id)).toBe(true);
   });
 
   it("never falls back to the operator when an agent binding is missing", () => {

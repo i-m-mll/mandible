@@ -52,7 +52,6 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/issues", category: "issues" },
   { prefix: "/api/knowledge-backrefs", category: "artifacts" },
   { prefix: "/api/ledger", category: "ledger" },
-  { prefix: "/api/presets", category: "presets" },
   { prefix: "/api/projects", category: "projects" },
   { prefix: "/api/provider-manifests", category: "providers" },
   { prefix: "/api/providers", category: "providers" },

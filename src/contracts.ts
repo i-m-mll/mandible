@@ -19,9 +19,6 @@ export type LegacyListEnvelope<T> = Partial<ApiListEnvelope<T>> & {
   artifacts?: T[];
   conversations?: T[];
   templates?: T[];
-  presets?: T[];
-  nodes?: T[];
-  diffs?: T[];
 };
 
 export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
@@ -56,12 +53,6 @@ export type MandibleEventType =
   | "daemon:reloaded"
   | "heartbeat"
   | "mandible:rebuilding"
-  | "preset:created"
-  | "preset:updated"
-  | "preset:deleted"
-  | "preset:diff:created"
-  | "preset:diff:resolved"
-  | "preset:violation"
   | "push:auth:pending"
   | "push:auth:complete"
   | "push:started"

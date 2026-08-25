@@ -57,8 +57,6 @@ const legacyRootTokens = [
   '--inbox-handoff-bg',
   '--inbox-issue',
   '--inbox-issue-bg',
-  '--inbox-preset-diff',
-  '--inbox-preset-diff-bg',
   '--auth-result-completed',
   '--auth-result-completed-bg',
   '--auth-result-problem',

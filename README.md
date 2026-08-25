@@ -1,6 +1,6 @@
 # Mandible
 
-A local-first agent control plane for AI coding agents. Mandible runs as a daemon on your workstation, providing an async auth queue for protected-branch operations, a web dashboard for managing sessions and conversations, configurable instruction presets, and a split-runtime architecture that supports safe self-modification.
+A local-first agent control plane for AI coding agents. Mandible runs as a daemon on your workstation, providing an async auth queue for protected-branch operations, a web dashboard for managing sessions and conversations, a split-runtime architecture that supports safe self-modification.
 
 ## Features
 
@@ -83,18 +83,6 @@ and the daemon logs a warning at spawn. Otherwise the session runs on the local
 Claude Code credentials and their subscription limits. The posture is surfaced
 on the session as `anthropic_billing` so it is never a silent inheritance.
 - **Token/context indicators**: real-time token usage and context-window fill displayed per session, with model-aware context window sizes
-
-### Presets (Convention Management)
-
-A tree-structured editor for managing agent instruction sets:
-
-- **Tree editor**: presets are composed of hierarchical nodes (sections/subsections), editable with drag-and-drop reordering
-- **Convention library**: browse and search all convention nodes across presets
-- **CLAUDE.md import**: import presets from global, project, or local CLAUDE.md files, parsed into structured nodes
-- **Union composition**: compose multiple presets into a single instruction set, with token estimation
-- **Preset diffs**: track proposed changes (add/remove/modify) with accept/reject/promote workflow
-- **Convention-setting links**: nodes can reference dashboard settings, creating bidirectional traceability between conventions and configuration
-- **Session assignment**: presets are assigned to sessions and versions are tracked
 
 ### Issue Tracking
 
@@ -211,14 +199,14 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |             Tauri Shell (optional)                |
 |  +--------------------------------------------+  |
 |  |     Preact SPA (esbuild, xterm.js)         |  |
-|  |  Sessions | Auth | Console | Presets | ...  |  |
+|  |  Sessions | Auth | Console | Artifacts | ...  |  |
 |  +-------------------+------------------------+  |
 |                      | HTTP / SSE / WebSocket    |
 |  +-------------------+------------------------+  |
 |  |        Node.js Daemon (TypeScript)          |  |
 |  |                                             |  |
 |  |  Router -> Route modules:                   |  |
-|  |    auth, auth-hooks, sessions, presets,     |  |
+|  |    auth, auth-hooks, sessions, artifacts,   |  |
 |  |    console, conversations, chats, inbox,    |  |
 |  |    issues, work-units, work, graph, review, |  |
 |  |    runtime, settings, system, backup,       |  |
@@ -230,7 +218,6 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  |    Session Registry - lifecycle tracking    |  |
 |  |    Auth Queue      - request state machine  |  |
 |  |    Auth Hooks      - post-action pipeline   |  |
-|  |    Preset Manager  - convention trees       |  |
 |  |    Runtime Manager - Zone 2 patches         |  |
 |  |    Channel Registry - MCP channel sessions  |  |
 |  |    Work Scanner    - git repo/branch scan   |  |
@@ -323,21 +310,6 @@ DELETE /api/auth/hooks/<id>       Delete hook
 GET    /api/sessions              List sessions
 PATCH  /api/sessions/<id>         Update session
 DELETE /api/sessions/<id>         Remove session
-```
-
-### Presets
-
-```
-GET    /api/presets                List presets
-POST   /api/presets                Create preset
-GET    /api/presets/<id>           Get preset with nodes
-PUT    /api/presets/<id>           Update preset
-DELETE /api/presets/<id>           Delete preset
-GET    /api/presets/union          Compute union of active presets
-GET    /api/presets/library        Convention library (all nodes)
-POST   /api/presets/import         Import from CLAUDE.md
-GET    /api/presets/diffs          List preset diffs
-GET    /api/presets/violations     Preset violation checks
 ```
 
 ### Runtime (Zone 2)

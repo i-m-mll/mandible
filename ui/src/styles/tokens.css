@@ -190,8 +190,6 @@
   --inbox-handoff-bg: #f59e0b22;
   --inbox-issue: #a78bfa;
   --inbox-issue-bg: #a78bfa22;
-  --inbox-preset-diff: var(--status-warning-fg);
-  --inbox-preset-diff-bg: var(--status-warning-bg);
 
   --auth-result-completed: #34d399;
   --auth-result-completed-bg: #34d39922;
