@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
-    "build": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json && node ui/esbuild.config.js",
+    "build": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json && node scripts/run-tsc.js -p ui/tsconfig.json && node ui/esbuild.config.js",
+    "typecheck": "node scripts/run-tsc.js --noEmit && node scripts/run-tsc.js -p channel-server/tsconfig.json --noEmit && node scripts/run-tsc.js -p ui/tsconfig.json",
     "build:server": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json",
     "build:channel-server": "node scripts/run-tsc.js -p channel-server/tsconfig.json",
     "channel-server": "node dist/channel-server/index.js",
