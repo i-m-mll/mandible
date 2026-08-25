@@ -30,17 +30,16 @@
   "minTokens": 40,
   "maxTokens": 20000,
   "shingleK": 5,
-  "minHashes": 128,
-  "lshBands": 32,
   "jaccardMin": 0.35,
   "ncdMax": 0.55,
   "literals": "erase",
   "compressLevel": 9,
+  "maxCandidatePairs": 3000000,
 
   "$comment_kinds": "Unit kinds to extract. function covers declarations, methods, arrows and function expressions bound to a name; type covers interface and type-alias declarations; sql covers string and template literals that look like SQL.",
   "kinds": ["function", "type", "sql"],
 
-  "$comment_reject": "Pairs whose two units both fall inside one of these named regions are annotated with the binding rejection from docs/88e6aeb-post-consolidation-design-review.md. Annotation never removes a pair from the list; it marks it so a reviewer does not re-litigate a settled decision.",
+  "$comment_reject": "Region-level advisory annotation, not a verdict. When both units of a pair fall inside one of these paths, the pair is marked with the id of a binding rejection recorded in docs/88e6aeb-post-consolidation-design-review.md. The match is by path, so it says only that the pair lies in a region where a large abstraction was rejected on semantic grounds; it does NOT establish that this particular pair IS that abstraction. A reviewer must check which before proposing or dismissing a unification. Annotation never removes a pair from the ranked list. R2 (the AuthQueue recovery service) is deliberately absent: it was reopened on 2026-08-24 because src/auth-queue.ts grew from 2,939 to roughly 6,900 lines.",
   "bindingRejections": [
     {
       "id": "R1",

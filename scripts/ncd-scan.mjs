@@ -13,7 +13,7 @@
 //   1. extract   TypeScript AST -> comparable units (functions, types, SQL)
 //   2. normalize alpha-rename bound identifiers, erase locally arbitrary
 //                literals, keep operators, control flow, call targets, types
-//   3. prefilter token 5-shingles -> MinHash -> LSH banding -> Jaccard
+//   3. prefilter token 5-shingles -> exact prefix filter -> exact Jaccard
 //   4. score     deterministic deflate NCD over the surviving candidate pairs
 //   5. report    ranked JSON and Markdown with paired locations and context
 //
@@ -32,7 +32,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -66,7 +66,11 @@ function loadConfig(configPath) {
   return parsed;
 }
 
-const flags = parseArgs(process.argv.slice(2));
+// Only read argv when run as a script. Importing this module for its
+// extraction and normalization functions must not parse a caller's arguments.
+const IS_MAIN = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+const flags = IS_MAIN ? parseArgs(process.argv.slice(2)) : {};
 if (flags.help) {
   console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n')
     .filter((l) => l.startsWith('//')).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
@@ -82,8 +86,6 @@ const settings = {
   minTokens: num(flags['min-tokens'], config.minTokens ?? 40),
   maxTokens: num(flags['max-tokens'], config.maxTokens ?? 20000),
   shingleK: num(flags['shingle-k'], config.shingleK ?? 5),
-  minHashes: num(flags['min-hashes'], config.minHashes ?? 128),
-  lshBands: num(flags['lsh-bands'], config.lshBands ?? 32),
   jaccardMin: num(flags.jaccard, config.jaccardMin ?? 0.45),
   ncdMax: num(flags['ncd-max'], config.ncdMax ?? 0.6),
   literals: String(flags.literals ?? config.literals ?? 'erase'),
@@ -335,7 +337,7 @@ function extractUnits(rel, text) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Prefilter: shingles, MinHash, LSH
+// 3. Prefilter: token shingles + exact Jaccard, with an exact prefix filter
 // ---------------------------------------------------------------------------
 
 function hash32(str) {
@@ -359,30 +361,66 @@ function shingleSet(tokens, k) {
   return arr;
 }
 
-function mixSeeds(count) {
-  const a = new Uint32Array(count);
-  const b = new Uint32Array(count);
-  let s = 0x9e3779b9;
-  for (let i = 0; i < count; i += 1) {
-    s = (Math.imul(s ^ (s >>> 15), 0x2545f491) + 0x6d2b79f5) >>> 0;
-    a[i] = (s | 1) >>> 0;
-    s = (Math.imul(s ^ (s >>> 13), 0x27d4eb2f) + 0x165667b1) >>> 0;
-    b[i] = s >>> 0;
-  }
-  return { a, b };
-}
-
-function minHash(shingles, seeds) {
-  const n = seeds.a.length;
-  const sig = new Uint32Array(n).fill(0xffffffff);
-  for (let j = 0; j < shingles.length; j += 1) {
-    const x = shingles[j] >>> 0;
-    for (let i = 0; i < n; i += 1) {
-      const v = (Math.imul(x, seeds.a[i]) + seeds.b[i]) >>> 0;
-      if (v < sig[i]) sig[i] = v;
+/**
+ * Exact prefix filter for a Jaccard threshold.
+ *
+ * Order every shingle by ascending global document frequency. For a unit with
+ * n distinct shingles, index only its p = n - ceil(t*n) + 1 rarest shingles.
+ * Two units whose Jaccard is at least t must share at least
+ * o = ceil(t/(1+t) * (|x|+|y|)) shingles, and t*|x| <= o under the size filter
+ * t*|x| <= |y| <= |x|/t, so their prefixes must intersect. The filter therefore
+ * has no false negatives: unlike MinHash/LSH banding it cannot silently drop a
+ * pair above the threshold. Candidates are still verified with exact Jaccard.
+ */
+function prefixFilterCandidates(units, threshold, maxPairs, stats) {
+  const freq = new Map();
+  for (const u of units) {
+    for (let i = 0; i < u.shingles.length; i += 1) {
+      const s = u.shingles[i];
+      freq.set(s, (freq.get(s) ?? 0) + 1);
     }
   }
-  return sig;
+  const ordered = [...freq.entries()].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const rank = new Map();
+  for (let i = 0; i < ordered.length; i += 1) rank.set(ordered[i][0], i);
+  stats.distinctShingles = ordered.length;
+
+  const bySize = units.map((u, idx) => idx).sort((a, b) => units[a].shingles.length - units[b].shingles.length);
+  const postings = new Map();
+  const pairKeys = new Set();
+  const n = units.length;
+
+  for (const idx of bySize) {
+    const u = units[idx];
+    const len = u.shingles.length;
+    const ranked = Array.from(u.shingles).map((s) => rank.get(s)).sort((a, b) => a - b);
+    const prefix = Math.max(1, len - Math.ceil(threshold * len) + 1);
+    const minSize = threshold * len;
+    const seen = new Set();
+    for (let i = 0; i < prefix; i += 1) {
+      const list = postings.get(ranked[i]);
+      if (!list) continue;
+      for (const other of list) {
+        if (other === idx || seen.has(other)) continue;
+        seen.add(other);
+        // Units are visited shortest-first, so `other` is never longer.
+        if (units[other].shingles.length < minSize) continue;
+        const lo = Math.min(idx, other);
+        const hi = Math.max(idx, other);
+        pairKeys.add(lo * n + hi);
+      }
+    }
+    if (pairKeys.size > maxPairs) { stats.overflow = true; break; }
+    for (let i = 0; i < prefix; i += 1) {
+      const r = ranked[i];
+      let list = postings.get(r);
+      if (!list) { list = []; postings.set(r, list); }
+      list.push(idx);
+    }
+  }
+  stats.postingLists = postings.size;
+  stats.candidatePairs = pairKeys.size;
+  return pairKeys;
 }
 
 function jaccardSorted(a, b) {
@@ -452,50 +490,15 @@ function main() {
     }
   });
 
-  const seeds = mixSeeds(settings.minHashes);
-  const sigs = timed('minhash', () => units.map((u) => minHash(u.shingles, seeds)));
-
-  const rows = Math.max(1, Math.floor(settings.minHashes / settings.lshBands));
-  const stats = { buckets: 0, largestBucket: 0, candidatePairs: 0, overflow: false };
-  const candidates = timed('lsh', () => {
-    const pairKeys = new Set();
-    const n = units.length;
-    for (let band = 0; band < settings.lshBands; band += 1) {
-      const buckets = new Map();
-      for (let i = 0; i < n; i += 1) {
-        let h = 0x811c9dc5;
-        for (let r = 0; r < rows; r += 1) {
-          const v = sigs[i][band * rows + r];
-          h = Math.imul(h ^ (v & 0xffff), 0x01000193);
-          h = Math.imul(h ^ (v >>> 16), 0x01000193);
-        }
-        const key = h >>> 0;
-        let list = buckets.get(key);
-        if (!list) { list = []; buckets.set(key, list); }
-        list.push(i);
-      }
-      for (const list of buckets.values()) {
-        if (list.length < 2) continue;
-        stats.buckets += 1;
-        if (list.length > stats.largestBucket) stats.largestBucket = list.length;
-        for (let a = 0; a < list.length; a += 1) {
-          for (let b = a + 1; b < list.length; b += 1) {
-            pairKeys.add(list[a] * n + list[b]);
-            if (pairKeys.size > settings.maxCandidatePairs) { stats.overflow = true; }
-          }
-        }
-        if (stats.overflow) break;
-      }
-      if (stats.overflow) break;
-    }
-    stats.candidatePairs = pairKeys.size;
-    return pairKeys;
-  });
+  const stats = { candidatePairs: 0, overflow: false };
+  const candidates = timed('prefilter', () => prefixFilterCandidates(
+    units, settings.jaccardMin, settings.maxCandidatePairs, stats,
+  ));
 
   if (stats.overflow) {
     console.error(`[ncd] FAILED: candidate pairs exceeded ${settings.maxCandidatePairs}. `
-      + 'The prefilter is too permissive for this tree. Raise --jaccard, raise --min-tokens, '
-      + 'or lower --lsh-bands, then rerun. Refusing to emit a partial ranking.');
+      + 'The prefilter is too permissive for this tree. Raise --jaccard or --min-tokens, '
+      + 'or raise --max-candidate-pairs, then rerun. Refusing to emit a partial ranking.');
     process.exit(2);
   }
 
@@ -572,9 +575,6 @@ function main() {
       settings: {
         minTokens: settings.minTokens,
         shingleK: settings.shingleK,
-        minHashes: settings.minHashes,
-        lshBands: settings.lshBands,
-        lshRows: rows,
         jaccardMin: settings.jaccardMin,
         ncdMax: settings.ncdMax,
         literals: settings.literals,
@@ -584,8 +584,8 @@ function main() {
         files: files.length,
         units: units.length,
         unitsByKind: units.reduce((acc, u) => { acc[u.kind] = (acc[u.kind] ?? 0) + 1; return acc; }, {}),
-        buckets: stats.buckets,
-        largestBucket: stats.largestBucket,
+        distinctShingles: stats.distinctShingles,
+        postingLists: stats.postingLists,
         candidatePairs: stats.candidatePairs,
         ncdEvaluated: stats.ncdEvaluated,
         retained: scored.length,
@@ -674,4 +674,6 @@ function renderMarkdown(report) {
   return lines.join('\n');
 }
 
-main();
+export { extractUnits, normalizeUnit, normalizeSql, shingleSet, jaccardSorted, ncdPair };
+
+if (IS_MAIN) main();
