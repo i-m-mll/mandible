@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { openDb, type Db } from "../src/db.js";
-import { systemAction } from "../src/identity/resolver.js";
-import { resolveProjectForCheckout } from "../src/ledger/projects.js";
-import { LedgerStore } from "../src/ledger/store.js";
-import type { LedgerIssue } from "../src/ledger/types.js";
+import { openDb, type Db } from "../../src/db.js";
+import { systemAction } from "../../src/identity/resolver.js";
+import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
+import { LedgerStore } from "../../src/ledger/store.js";
+import type { LedgerIssue } from "../../src/ledger/types.js";
 
 export interface TimelineFixture {
   db: Db;
