@@ -57,6 +57,29 @@ Uses SQLite via better-sqlite3. Schema migrations live in `src/db.ts` in the `MI
 
 **Always add new columns/tables via a new migration entry** — never via ad-hoc `CREATE TABLE IF NOT EXISTS` in individual modules. The `ensureSchema()` functions are fallbacks for fresh databases only; they do NOT alter existing tables.
 
+### Reading the ledger directly
+
+For counts, joins, and other queries the structured commands do not cover, use
+`mandible db`:
+
+```bash
+mandible db tables                      # tables and views
+mandible db schema ledger_issues        # exact CREATE statements
+mandible db query "select count(*) from ledger_issues"
+mandible db info                        # path, journal mode, WAL bytes
+```
+
+`src/db-read.ts` opens the database `SQLITE_OPEN_READONLY` with `query_only`,
+refuses any statement SQLite does not classify as both read-only and
+row-returning, and
+imports no migration code. It reads the write-ahead log, so its answers are
+current.
+
+The database is in WAL mode, so a `sqlite3 'file:...mandible.db?immutable=1'`
+open answers from the main file alone and returns rows that are behind — or
+missing entirely — with no error (issue 78163ba). `mandible db` cannot be
+pointed at a URI filename, which is the only way to spell that.
+
 ## Work units
 
 The `work_units` table tracks the dispatch state of issues through their lifecycle: open → committed → resolved (+ abandoned). Work units join the issue ledger, branch tree (git worktrees), and session tree (agent sessions) into a single reconciliation layer. The work-unit table was designed as part of umbrella issue f3dbb3e ("Inbox redesign: work-queue dispatch model") — its body contains the full design, not just the inbox UI.
