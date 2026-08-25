@@ -39,6 +39,7 @@ import {
   type PredicateEvalContext,
 } from "./issue-predicate.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
+import { parseJsonObject } from "../row-coerce.js";
 type ProjectRow = {
   id: string;
   display_name: string;
@@ -1552,16 +1553,6 @@ function compareStateEvents(a: StateEventRow, b: StateEventRow): number {
   return a.id.localeCompare(b.id);
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 export type {
   LedgerIssueKind,

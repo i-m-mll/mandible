@@ -3,6 +3,7 @@ import type { Db } from "../db.js";
 import { columnExists, tableExists } from "../db-introspection.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import type { GraphEdge, GraphNode, GraphQueryParams } from "../types.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 interface ProjectInfo {
   project_id: string;
@@ -71,17 +72,6 @@ export interface LedgerIssueProjection {
   issueNodeIdByLedgerId: Map<string, string>;
 }
 
-function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function parseTimestamp(value: unknown): number | null {
   if (typeof value === "number") {

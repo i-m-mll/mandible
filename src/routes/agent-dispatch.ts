@@ -39,8 +39,7 @@ import {
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
-import { sendJson } from "./http.js";
-
+import { bodyRecord, sendJson } from "./http.js";
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof ClientAuthzError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
@@ -80,11 +79,6 @@ function requireHumanDispatcher(db: Db, req: RequestLike): string {
   return user.id;
 }
 
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>)
-    : {};
-}
 
 /** Parse the subject strictly; an unrecognized shape never becomes a default. */
 function parseSubject(value: unknown): AgentDispatchSubjectInput {

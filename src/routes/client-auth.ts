@@ -27,15 +27,8 @@ import {
   resolveUserOrThrow,
   UserRegistryError,
 } from "../users/store.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import { sendJson } from "./http.js";
-
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>)
-    : {};
-}
-
+import type { ResponseLike, RouteRegistrar } from "../server.js";
+import { bodyRecord, sendJson } from "./http.js";
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
   return typeof value === "string" ? value : undefined;

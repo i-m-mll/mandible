@@ -19,6 +19,7 @@ import {
   sourceFilesystemIdentity,
   type SourceFilesystemIdentity,
 } from "./source-observer.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 interface RecordRange {
   ordinal: number;
@@ -199,16 +200,6 @@ async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
   }
 }
 
-function parseMetadata(raw: string): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function numericMetadata(metadata: Record<string, unknown>, key: string): number | null {
   const value = metadata[key];
@@ -752,7 +743,7 @@ export class ConversationSourceStore {
     const codexModelPositions = new Set(
       input.provider === "codex"
         ? blocks.filter((block) => {
-          const metadata = parseMetadata(block.metadata_json);
+          const metadata = parseJsonObject(block.metadata_json);
           return (block.type === "assistant_message" || block.type === "thinking")
             && typeof metadata.model === "string" && metadata.model.length > 0;
         }).map((block) => block.position)
@@ -905,7 +896,7 @@ export class ConversationSourceStore {
       const pendingParents: Array<{ blockId: string; parentPosition: number | null }> = [];
       const providerKeyOccurrences = new Map<string, number>();
       for (const block of blocks) {
-        const metadata = parseMetadata(block.metadata_json);
+        const metadata = parseJsonObject(block.metadata_json);
         // Gemini's legacy JSON and JSONL parser normalizes the whole session at
         // once and does not expose per-message record ordinals. Its files are
         // bounded, so seal the complete provider file as one exact record.

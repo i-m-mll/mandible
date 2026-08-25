@@ -10,6 +10,7 @@ import type { AuthRequest } from "./types.js";
 import { getOperator, listCredentials, resolveUser } from "./users/store.js";
 import type { AuthApprovalContext, DelegatedSignerBorrow } from "./delegated-signing-resource.js";
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
+import { canonicalJson } from "./canonical-json.js";
 
 const DEFAULT_DURATION_MINUTES = 60;
 const DEFAULT_MAX_USES = 1;
@@ -529,12 +530,6 @@ function requestSnapshot(request: AuthRequest): Record<string, unknown> {
   };
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-}
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
   const resolved = value ?? fallback;

@@ -7,6 +7,7 @@ import {
   evaluatePredicate,
   type IssueRow,
 } from "./issue-predicate.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 /**
  * Spaces data + query helpers (issue f108bba, umbrella de56ffa).
@@ -163,17 +164,6 @@ interface SpaceEdgeRow {
   updated_at: number;
 }
 
-function parseMetadata(value: string | null | undefined): Record<string, unknown> {
-  if (!value) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function serializeMetadata(value: unknown): string {
   if (value === undefined || value === null) return "{}";
@@ -194,7 +184,7 @@ function mapSpace(row: SpaceRow): SpaceRecord {
     title: row.title,
     default_renderer: row.default_renderer,
     description: row.description,
-    metadata: parseMetadata(row.metadata_json),
+    metadata: parseJsonObject(row.metadata_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -208,7 +198,7 @@ function mapItem(row: SpaceItemRow): SpaceItemRecord {
     ref_id: row.ref_id,
     ref_uri: row.ref_uri,
     title: row.title,
-    metadata: parseMetadata(row.metadata_json),
+    metadata: parseJsonObject(row.metadata_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -229,7 +219,7 @@ function mapOccurrence(row: SpaceOccurrenceRow): SpaceOccurrenceRecord {
     sort_key: row.sort_key,
     section_id: row.section_id,
     note: row.note,
-    metadata: parseMetadata(row.metadata_json),
+    metadata: parseJsonObject(row.metadata_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -243,7 +233,7 @@ function mapEdge(row: SpaceEdgeRow): SpaceEdgeRecord {
     target: row.target,
     label: row.label,
     style: row.style,
-    metadata: parseMetadata(row.metadata_json),
+    metadata: parseJsonObject(row.metadata_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
