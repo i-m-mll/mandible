@@ -167,14 +167,10 @@ async function createOrReusePreview(options) {
         conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
         conversationTitleConvergence: "parser-backed convergence on the private copy before daemon start",
       },
-      instanceEnv: {
-        MANDIBLE_INSTANCE_ROLE: "preview",
-        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
-        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
-        MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
-        MANDIBLE_FILE_RPC_DIR: path.join(preview.root, "agent-rpc"),
-        MANDIBLE_CONFIG_DIR: path.join(preview.root, "config"),
-      },
+      // Port, database copy, and pid file are not chosen until the preview
+      // actually starts, so the dry run reports exactly the root-derived part
+      // of the contract — from the same definition the launcher pins.
+      instanceEnv: previewIsolationEnv(preview.root, sourceDb),
     };
   }
 
@@ -1472,6 +1468,16 @@ async function stopPreviewProcess(pidFile, timeoutMs = 10_000) {
  * are never touched — in particular `com.mll.mandible`, which supervises the
  * live daemon and is supposed to.
  */
+/**
+ * Previews no longer register with launchd, but deregistration still needs to
+ * find it. `MANDIBLE_IAB_PREVIEW_LAUNCHCTL` lets the tests point this at a
+ * stand-in rather than the real service registry.
+ */
+function launchctlCommand() {
+  return process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
+    (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
+}
+
 function deregisterLegacyPreviewJobs({ apply = true } = {}) {
   const launchctl = launchctlCommand();
   if (!launchctl) return { supported: false, labels: [], booted: [] };
@@ -1524,21 +1530,22 @@ ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value)
   fs.writeFileSync(runScript, content, { mode: 0o755 });
 }
 
-function previewInstanceEnv(details) {
-  const previewRoot = path.dirname(details.dbCopy);
-  const fileRpcDir = path.join(previewRoot, "agent-rpc");
-  const configDir = path.join(previewRoot, "config");
+/**
+ * Every part of the preview contract that follows from the preview root alone.
+ * Split out because the dry run has to report the same contract before a port
+ * or database copy exists: it used to hand-roll its own copy of this object,
+ * which is how it came to advertise a contract missing exactly the three keys
+ * whose absence was the leak.
+ */
+function previewIsolationEnv(previewRoot, sourceDb) {
   const conversationsDir = path.join(previewRoot, "conversations");
   return {
-    MANDIBLE_PORT: String(details.port),
-    MANDIBLE_DB: details.dbCopy,
-    MANDIBLE_PID_FILE: details.pidFile,
     MANDIBLE_INSTANCE_ROLE: "preview",
     MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
-    MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
-    MANDIBLE_FILE_RPC_DIR: fileRpcDir,
-    MANDIBLE_CONFIG_DIR: configDir,
+    MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
+    MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
+    MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
     // Every writable file the preview daemon opens has to live under the
     // preview root. The ledger copy was isolated from the start; these three
     // were missed, so a preview opened the live conversations index read-write
@@ -1548,6 +1555,15 @@ function previewInstanceEnv(details) {
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversationsDir, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversationsDir, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
+  };
+}
+
+function previewInstanceEnv(details) {
+  return {
+    MANDIBLE_PORT: String(details.port),
+    MANDIBLE_DB: details.dbCopy,
+    MANDIBLE_PID_FILE: details.pidFile,
+    ...previewIsolationEnv(path.dirname(details.dbCopy), details.sourceDb),
   };
 }
 
