@@ -123,8 +123,6 @@ type DepthGeometry = {
   spineLeft: string;
   spineWidth: string;
   spineBackground: string;
-  subgroupNesting: string | null;
-  ungroupedNesting: string | null;
 };
 
 function measure(markup: string): DepthGeometry {
@@ -150,8 +148,6 @@ function measure(markup: string): DepthGeometry {
         if (!node) throw new Error('missing node: ' + selector);
         return node.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(node).paddingLeft);
       };
-      const nesting = (selector) => doc.querySelector(selector)
-        ?.closest('.sidebar-group-node')?.getAttribute('data-sidebar-node-nesting') ?? null;
       const subgroup = '#briefing-subgroup-${GROUP_ID}-0';
       const bundleNode = '#briefing-bundle-${UNGROUPED_BUNDLE_ID}';
       const region = doc.querySelector(subgroup + '-body').closest('.sidebar-group-node--category')
@@ -167,8 +163,6 @@ function measure(markup: string): DepthGeometry {
         spineLeft: spine.left,
         spineWidth: spine.width,
         spineBackground: spine.backgroundColor,
-        subgroupNesting: nesting(subgroup + '-heading'),
-        ungroupedNesting: nesting(bundleNode + '-heading'),
       }));
     }, { once: true });
     frame.srcdoc = '<!doctype html><html data-theme="dark"><head><style>' + styles + '</style></head><body>' + markup + '</body></html>';
@@ -194,11 +188,6 @@ const geometry = measure(renderSidebarMarkup());
 afterAll(() => cleanup());
 
 describe('Briefings sidebar ownership depth', () => {
-  it('states each bundle\'s ownership depth rather than leaving it to DOM nesting', () => {
-    expect(geometry.subgroupNesting).toBe('nested');
-    expect(geometry.ungroupedNesting).toBe('root');
-  });
-
   it('indents a group-owned subgroup past a bundle that belongs to no group', () => {
     expect(geometry.subgroupIcon.left - geometry.ungroupedIcon.left).toBeGreaterThanOrEqual(12);
     expect(geometry.ownedRow - geometry.unownedRow).toBeGreaterThanOrEqual(12);

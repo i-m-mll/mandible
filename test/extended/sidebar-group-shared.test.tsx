@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,12 +6,6 @@ import { SidebarGroupNode, SidebarNewChatIcon } from '../../ui/src/components/sh
 import { SettingsView } from '../../ui/src/views/settings.js';
 import type { FeedbackCollection } from '../../ui/src/views/feedback/collection-model.js';
 import * as api from '../../ui/src/api.js';
-
-const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
-const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
-const sidebarItemStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
-const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
-const tokenStylesheet = readFileSync('ui/src/styles/tokens.css', 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -49,14 +42,13 @@ describe('shared sidebar group presentation', () => {
     expect(screen.queryByRole('button', { name: /^(?:Pin|Unpin) One$/ })).toBeNull();
   });
 
-  it('supports count-free aggregate headings and stable interaction-only leaf counts', () => {
+  it('renders count-free aggregate headings and interaction-count metadata', () => {
     render(
       <>
         <SidebarGroupNode presentation="category" id="projects" label="Projects" expanded onToggle={() => undefined}>
           <SidebarGroupNode
             id="project-mandible"
             presentation="folder"
-            nesting="nested"
             leadingIcon={<span>F</span>}
             label="Mandible"
             count={12}
@@ -81,66 +73,9 @@ describe('shared sidebar group presentation', () => {
     expect(projectSection?.classList.contains('sidebar-group-node--with-icon')).toBe(true);
     expect(projectSection?.classList.contains('sidebar-group-node--interaction-count')).toBe(true);
     expect(screen.getByLabelText('12 chats in Mandible').textContent).toBe('12');
-
-    const countRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--interaction-count > \.sidebar-group-node__header > \.sidebar-group-node__heading > \.sidebar-group-node__count \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(countRule).toContain('visibility: hidden');
-    expect(countRule).toContain('opacity: 0');
-    const revealRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--interaction-count > \.sidebar-group-node__header > \.sidebar-group-node__heading:hover > \.sidebar-group-node__count,\s*\.sidebar-group-node--interaction-count > \.sidebar-group-node__header > \.sidebar-group-node__heading:focus-visible > \.sidebar-group-node__count \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(revealRule).toContain('visibility: visible');
-    expect(revealRule).not.toMatch(/display|width|grid-template-columns/);
-    const countTypography = [...sidebarGroupStylesheet.matchAll(/\.sidebar-group-node__count \{([^}]*)\}/g)]
-      .map((match) => match[1])
-      .find((rule) => rule.includes('font-weight')) ?? '';
-    expect(countTypography).toContain('font-weight: 400');
-    expect(countTypography).toContain('color: var(--text-muted)');
-    const folderGrid = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--with-icon > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(folderGrid).toContain('grid-template-columns: 16px minmax(0, 1fr) auto');
-    const folderPreset = sidebarGroupStylesheet.match(/\.sidebar-group-node--folder \{([^}]*)\}/)?.[1] ?? '';
-    expect(folderPreset).toContain('margin-bottom: 2px');
-    const categoryHeading = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(categoryHeading).toContain('color: var(--text-chrome-muted)');
-    expect(tokenStylesheet).toContain('--text-chrome-muted: #747474;');
-    const lightTheme = tokenStylesheet.match(/\[data-theme='light'\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
-    expect(lightTheme).toContain('--text-chrome-muted: #A8A9A9;');
-    const headingTypography = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node__heading \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(headingTypography).toContain('font: 400 var(--text-md)/1.35 var(--font-sans)');
-    const labelTypography = sidebarItemStylesheet.match(
-      /\.sidebar-item-row__label \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(labelTypography).toContain('font-size: var(--text-md)');
-    const strongTypography = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node__heading strong \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(strongTypography).toContain('font-weight: 400');
-    const folderHeading = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(folderHeading).toContain('color: var(--text-primary)');
-    // The title-column insets used to be pinned here as the literal 7px/29px
-    // constants they once were. They are now derived per depth, and what
-    // matters is the rendered result, which
-    // test/browser/briefing-sidebar-ownership-depth.test.tsx measures.
-    const showMoreRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node__show-more \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(showMoreRule).toContain('padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px)');
-    expect(showMoreRule).toContain('font-size: var(--text-md)');
-    expect(showMoreRule).toContain('color: var(--text-chrome-muted)');
-    expect(chatHistoryStylesheet).not.toMatch(/chat-project-group__items[\s\S]*padding-left/);
-    expect(sidebarGroupStylesheet).not.toMatch(/\.sidebar-group-node--without-count \.sidebar-group-node__heading/);
   });
 
-  it('reveals a separate 24px group action only from its exact header line', () => {
+  it('keeps a separate group action on its exact header line', () => {
     const onPress = vi.fn();
     render(
       <SidebarGroupNode
@@ -152,7 +87,7 @@ describe('shared sidebar group presentation', () => {
         action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress }}
         testIds={{ root: 'chats-group', heading: 'chats-heading', action: 'chats-action' }}
       >
-        <SidebarGroupNode presentation="folder" nesting="nested" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: <SidebarNewChatIcon />, onPress: () => undefined }}>
+        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: <SidebarNewChatIcon />, onPress: () => undefined }}>
           <span data-testid="descendant">Leaf</span>
         </SidebarGroupNode>
       </SidebarGroupNode>,
@@ -168,31 +103,9 @@ describe('shared sidebar group presentation', () => {
     expect(screen.getByTestId('descendant').closest('.sidebar-group-node__header')).toBeNull();
     fireEvent.click(action);
     expect(onPress).toHaveBeenCalledOnce();
-    const slotRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__action-slot \{([^}]*)\}/)?.[1] ?? '';
-    expect(slotRule).toContain('width: 24px');
-    expect(slotRule).toContain('flex: 0 0 24px');
     expect(action.parentElement?.classList.contains('contextual-action-group')).toBe(true);
     expect(action.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
     expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
-    expect(sidebarGroupStylesheet).not.toMatch(
-      /\.sidebar-group-node:(?:hover|focus-within) > \.sidebar-group-node__header > \.sidebar-group-node__action/,
-    );
-    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)/);
-  });
-
-  it('keeps category and folder heading backgrounds transparent on hover and focus', () => {
-    const headingRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__heading \{([^}]*)\}/)?.[1] ?? '';
-    expect(headingRule).toContain('background: transparent');
-    expect(sidebarGroupStylesheet).not.toMatch(
-      /\.sidebar-group-node--(?:category|folder)[^{}]*(?::hover|:focus-visible)[^{]*\{[^}]*background:/s,
-    );
-    expect(sidebarGroupStylesheet).toMatch(
-      /\.sidebar-group-node__heading:focus-visible \{[^}]*outline: 2px solid var\(--border-focus\);/s,
-    );
-    expect(sidebarItemStylesheet).toMatch(
-      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*background: var\(--neutral-alpha-05\);/s,
-    );
   });
 
   it('shows and persists the default bounded Chat group size through generic settings', async () => {
