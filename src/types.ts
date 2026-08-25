@@ -173,7 +173,7 @@ export type AuthRequestOutcome =
   | null;         // still in lifecycle (pending / executing / approved)
 export type AuthExecutionMode = "daemon" | "remote";
 // Bug: dd21c1e — generalize auth queue to support action types beyond merges
-export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "preset-promote" | "data-delete";
+export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "data-delete";
 export type AuthRequestActionKind =
   | "comment_add"
   | "issue_close"

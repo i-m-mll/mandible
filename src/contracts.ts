@@ -133,7 +133,6 @@ export type AuthRequestType =
   | "force-push"
   | "branch-delete"
   | "config-change"
-  | "preset-promote"
   | "data-delete";
 export type AuthRequestActionKind =
   | "comment_add"

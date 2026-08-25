@@ -47,7 +47,6 @@ export type AuthRequestType =
   | 'force-push'
   | 'branch-delete'
   | 'config-change'
-  | 'preset-promote'
   | 'data-delete';
 
 export type AuthRequest = {
@@ -157,7 +156,6 @@ const AUTH_TYPE_META: Record<AuthRequestType, { label: string; cssClass: string 
   'force-push':     { label: 'Force Push',  cssClass: 'type-badge--force-push' },
   'branch-delete':  { label: 'Delete',      cssClass: 'type-badge--branch-delete' },
   'config-change':  { label: 'Config',      cssClass: 'type-badge--config-change' },
-  'preset-promote': { label: 'Promote',     cssClass: 'type-badge--preset-promote' },
   'data-delete':    { label: 'Delete Data', cssClass: 'type-badge--data-delete' },
 };
 
@@ -2229,7 +2227,6 @@ export function AuthHooksPanel({
               <option value="force-push">Force Push</option>
               <option value="branch-delete">Branch Delete</option>
               <option value="config-change">Config Change</option>
-              <option value="preset-promote">Preset Promote</option>
               <option value="data-delete">Data Delete</option>
             </select>
           </div>
@@ -2335,7 +2332,6 @@ const AUTH_TYPE_OPTIONS: { value: AuthRequestType | 'all'; label: string }[] = [
   { value: 'force-push', label: 'Force Push' },
   { value: 'branch-delete', label: 'Delete' },
   { value: 'config-change', label: 'Config' },
-  { value: 'preset-promote', label: 'Promote' },
   { value: 'data-delete', label: 'Delete Data' },
 ];
 
