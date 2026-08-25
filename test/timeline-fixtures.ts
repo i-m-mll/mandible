@@ -206,7 +206,6 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     actor_type: "system",
     source: "auth_queue",
     project_id: checkout.project.id,
-    enqueueOutbox: false,
     payload: {
       auth_request_id: "auth_timeline_1",
       issue_id: authDone.id,

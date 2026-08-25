@@ -180,7 +180,7 @@ describe("ledger issue detail projection", () => {
     }
   });
 
-  it("projects comments, relationships, operational evidence, sync, and conflicts", () => {
+  it("projects comments, relationships, and operational evidence", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
     const parent = store.createIssue({
@@ -262,18 +262,6 @@ describe("ledger issue detail projection", () => {
       repo_ref: checkout.checkout.root,
       link_type: "resolves",
     });
-    store.recordConflict({
-      ...SYSTEM_ACTOR,
-      adapter: "git_bug",
-      project_id: checkout.project.id,
-      entity_type: "issue",
-      entity_id: child.id,
-      field: "relationship_label",
-      local_value: null,
-      remote_value: { target_ref: "missing" },
-      source: "git_bug",
-    });
-
     const projection = buildLedgerIssueDetailProjection(db, child.id);
 
     expect(projection).toMatchObject({
@@ -286,7 +274,6 @@ describe("ledger issue detail projection", () => {
       title: "Child",
       body: "Child body",
       worker_status: "in_progress",
-      sync: { state: "conflicted", open_conflicts: 1 },
     });
     expect(projection.labels).toEqual([
       "feature",
@@ -352,7 +339,6 @@ describe("ledger issue detail projection", () => {
     expect(projection.auth_requests).toMatchObject([
       { id: "auth_1", status: "completed", link_type: "resolves" },
     ]);
-    expect(projection.conflicts[0].remote_value).toEqual({ target_ref: "missing" });
   });
 
   it("projects a lightweight initial detail with comments before secondary metadata", () => {
@@ -421,7 +407,6 @@ describe("ledger issue detail projection", () => {
     expect(projection.sessions).toEqual([]);
     expect(projection.auth_requests).toEqual([]);
     expect(projection.associated_artifacts).toEqual([]);
-    expect(projection.sync).toMatchObject({ state: "clean", latest_jobs: [] });
   });
 
   it("projects deliberate relationship edges from both endpoint reports", () => {
@@ -615,39 +600,6 @@ describe("ledger issue detail projection", () => {
       "feedbax://runs/demo",
       "repo://repo@main/results/summary.md",
     ]);
-  });
-
-  it("resolves conflicts without applying remote values implicitly", () => {
-    const checkout = createProject("repo");
-    const store = new LedgerStore(db);
-    const issue = store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: checkout.project.id,
-      title: "Conflicted",
-      aliases: [{ alias_kind: "git_bug_human", alias: "abc123", is_primary: true }],
-    });
-    const conflict = store.recordConflict({
-      ...SYSTEM_ACTOR,
-      adapter: "git_bug",
-      project_id: checkout.project.id,
-      entity_type: "issue",
-      entity_id: issue.id,
-      field: "title",
-      local_value: "Local",
-      remote_value: "Remote",
-      source: "git_bug",
-    });
-
-    const resolved = store.resolveConflict(conflict.id, {
-      ...SYSTEM_ACTOR,
-      resolution: "keep_mandible",
-      actor_type: "mandible_user",
-      author_display: "Mandible",
-    });
-
-    expect(resolved).toMatchObject({ status: "resolved", resolution: "keep_mandible" });
-    expect(store.getIssue(issue.id).title).toBe("Conflicted");
-    expect(buildLedgerIssueDetailProjection(db, issue.id).conflicts).toEqual([]);
   });
 
   it("omits no-op state events from the timeline", () => {

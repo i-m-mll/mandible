@@ -4007,13 +4007,6 @@ function issueDetailProjection({
     sessions: [],
     auth_requests: [],
     associated_artifacts: [],
-    conflicts: [],
-    sync: {
-      state: 'clean',
-      outbox: {},
-      open_conflicts: 0,
-      latest_jobs: [],
-    },
     detail_stage: stage,
     timeline_partial: timelinePartial ?? stage === 'initial',
   };
@@ -4277,8 +4270,6 @@ describe('LedgerIssueDetail', () => {
           metadata: {},
         },
       ],
-      conflicts: [],
-      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     } as const;
 
     render(h(LedgerIssueDetail, { detail }));
@@ -4352,8 +4343,6 @@ describe('LedgerIssueDetail', () => {
           metadata: {},
         },
       ],
-      conflicts: [],
-      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     } as const;
 
     render(h(LedgerIssueDetail, { detail }));
@@ -4440,8 +4429,6 @@ describe('LedgerIssueDetail', () => {
       work_units: [],
       sessions: [],
       auth_requests: [],
-      conflicts: [],
-      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     } as const;
 
     render(h(LedgerIssueDetail, { detail }));
@@ -4599,8 +4586,6 @@ describe('LedgerIssueDetail', () => {
           ],
         },
       ],
-      conflicts: [],
-      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     } as const;
 
     render(h(LedgerIssueDetail, { detail }));
@@ -4677,8 +4662,6 @@ describe('LedgerIssueDetail', () => {
       work_units: [],
       sessions: [],
       auth_requests: [],
-      conflicts: [],
-      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     } as const;
 
     render(h(LedgerIssueDetail, { detail }));
@@ -4879,8 +4862,6 @@ describe('LedgerIssueDetail', () => {
       work_units: [],
       sessions: [],
       auth_requests: [],
-      conflicts: [],
-      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     } as const;
 
     render(h(LedgerIssueDetail, {

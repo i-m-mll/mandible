@@ -19,7 +19,6 @@ import {
   isEvidenceMethod,
   localDefaultAttribution,
   localProcessDefaultAttribution,
-  mintShadowUser,
   normalizeBindingValue,
   projectActorType,
   resolveSessionAttribution,
@@ -120,22 +119,12 @@ describe("legacy actor tuple is frozen (F1: stable ids)", () => {
 
 describe("fail-closed attribution (F2: no unattributed new writes)", () => {
   it("rejects missing attribution at runtime instead of inventing a system principal", () => {
-    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+    const store = new LedgerStore(db);
     const projectId = createProject();
     const attributed = { attribution: systemAction() };
     const issue = store.createIssue({ project_id: projectId, title: "Attributed", ...attributed });
     const other = store.createIssue({ project_id: projectId, title: "Target", ...attributed });
     const comment = store.addComment(issue.id, { body: "Before", ...attributed });
-    const conflict = store.recordConflict({
-      adapter: "git_bug",
-      project_id: projectId,
-      entity_type: "issue",
-      entity_id: issue.id,
-      field: "title",
-      local_value: "a",
-      remote_value: "b",
-      ...attributed,
-    });
 
     const missing = /explicit attribution context/;
     expect(() => store.createIssue({ project_id: projectId, title: "Missing" } as never)).toThrow(missing);
@@ -159,24 +148,6 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
       source_entity: { entity_type: "issue", entity_id: issue.id },
       target_entities: [{ entity_type: "issue", entity_id: other.id }],
     } as never)).toThrow(missing);
-    expect(() => store.recordExternalRef({
-      entity_type: "issue",
-      entity_id: issue.id,
-      adapter: "git_bug",
-      external_id: "missing",
-      external_kind: "git_bug_issue",
-    } as never)).toThrow(missing);
-    expect(() => store.recordConflict({
-      adapter: "git_bug",
-      entity_type: "issue",
-      entity_id: issue.id,
-      field: "missing",
-      local_value: null,
-      remote_value: null,
-    } as never)).toThrow(missing);
-    expect(() => store.resolveConflict(conflict.id, { resolution: "missing" } as never)).toThrow(missing);
-    const outbox = store.listOutbox({ adapter: "git_bug", status: "pending" })[0];
-    expect(() => store.markOutbox(outbox.id, "applied", {}, {} as never)).toThrow(missing);
 
     expect(store.getIssue(issue.id).title).toBe("Attributed");
     expect(store.getComment(comment.id).body).toBe("Before");
@@ -432,53 +403,9 @@ describe("session binding resolution (F5: fail closed)", () => {
   });
 });
 
-describe("shadow users for git-bug imports (F4)", () => {
-  it("normalizes the binding value so whitespace variants reuse one shadow user", () => {
+describe("binding value normalization", () => {
+  it("trims whitespace so binding lookups converge", () => {
     expect(normalizeBindingValue("  Ada Lovelace  ")).toBe("Ada Lovelace");
-    const first = mintShadowUser(db, { adapter: "git_bug", project_id: "p1", author_name: "Ada Lovelace" });
-    const spaced = mintShadowUser(db, { adapter: "git_bug", project_id: "p1", author_name: "  Ada Lovelace  " });
-    expect(spaced.id).toBe(first.id);
-    expect(first.kind).toBe("external");
-    // Raw display name is preserved verbatim on the first mint.
-    expect(first.display_name).toBe("Ada Lovelace");
-
-    const bindings = db
-      .prepare("SELECT COUNT(*) AS n FROM user_bindings WHERE user_id = ? AND status = 'active'")
-      .get(first.id) as { n: number };
-    expect(bindings.n).toBe(1);
-  });
-
-  it("never merges equal names across different adapters", () => {
-    const gitBug = mintShadowUser(db, { adapter: "git_bug", project_id: "p1", author_name: "Same Name" });
-    const github = mintShadowUser(db, { adapter: "github", project_id: "p1", author_name: "Same Name" });
-    expect(gitBug.id).not.toBe(github.id);
-  });
-
-  it("rejects external-author bindings owned by non-external or retired users", () => {
-    const human = createUser(db, { slug: "human", kind: "human", display_name: "Human" });
-    addBinding(db, human.id, {
-      binding_type: "external_author",
-      value: "Ada",
-      scope: "git_bug::p1",
-    });
-    expect(() => mintShadowUser(db, {
-      adapter: "git_bug",
-      project_id: "p1",
-      author_name: "Ada",
-    })).toThrow(/ineligible owner/);
-
-    const external = createUser(db, { slug: "retired-ext", kind: "external", display_name: "Retired" });
-    addBinding(db, external.id, {
-      binding_type: "external_author",
-      value: "Grace",
-      scope: "git_bug::p1",
-    });
-    db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(external.id);
-    expect(() => mintShadowUser(db, {
-      adapter: "git_bug",
-      project_id: "p1",
-      author_name: "Grace",
-    })).toThrow(/ineligible owner/);
   });
 });
 

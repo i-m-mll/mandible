@@ -1486,21 +1486,6 @@ export type LedgerIssueDetailAuthRequest = {
   metadata: Record<string, unknown>;
 };
 
-export type LedgerIssueDetailConflict = {
-  id: string;
-  adapter: string;
-  entity_type: string;
-  entity_id: string;
-  field: string;
-  local_value: unknown;
-  remote_value: unknown;
-  base_value: unknown;
-  status: string;
-  resolution: string | null;
-  created_at: number;
-  resolved_at: number | null;
-};
-
 export type LedgerIssueDetailArtifactLink = {
   id: string;
   entity_type: string;
@@ -1576,23 +1561,6 @@ export type LedgerIssueDetailProjection = {
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
   associated_artifacts?: LedgerIssueDetailAssociatedArtifact[];
-  conflicts: LedgerIssueDetailConflict[];
-  sync: {
-    state: 'clean' | 'pending' | 'failed' | 'conflicted';
-    outbox: Record<string, number>;
-    open_conflicts: number;
-    latest_jobs: Array<{
-      id: string;
-      adapter: string;
-      direction: string;
-      status: string;
-      attempt_count: number;
-      started_at: number | null;
-      finished_at: number | null;
-      last_error: string | null;
-      updated_at: number;
-    }>;
-  };
   detail_stage?: 'initial' | 'full';
   timeline_partial?: boolean;
 };
@@ -1715,18 +1683,6 @@ export async function setLedgerIssueLabel(
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/labels`, { label, present });
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
-}
-
-export async function resolveLedgerConflict(
-  conflictId: string,
-  resolution: string,
-  status: 'resolved' | 'dismissed' = 'resolved',
-): Promise<unknown> {
-  const response = await apiPost(
-    `/api/ledger/conflicts/${encodeURIComponent(conflictId)}/resolve`,
-    { resolution, status },
-  );
-  return parseMaybeJson(response);
 }
 
 export async function getIssueSessions(repoId: string, issueId: string): Promise<unknown[]> {

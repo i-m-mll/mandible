@@ -21,7 +21,6 @@ import { layoutGraph, type RoutedGraphEdge } from '../graph/layout';
 import {
   addLedgerIssueComment,
   getLedgerIssueDetail,
-  resolveLedgerConflict,
   type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
@@ -800,10 +799,6 @@ function DetailPane({
                 setLedgerDetail(next);
               }}
               onAddToSpace={() => setSpacePickerOpen(true)}
-              onResolveConflict={async (conflictId, resolution, status) => {
-                await resolveLedgerConflict(conflictId, resolution, status);
-                setLedgerDetail(await getLedgerIssueDetail(ledgerIssueId));
-              }}
             />
             {spacePickerOpen && (
               <div className="graph-detail-pane__space-picker">
