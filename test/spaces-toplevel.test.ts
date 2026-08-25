@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { openDb, setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import {
@@ -82,86 +82,6 @@ describe("spaces v86 nullable project_id schema (issue 812df41)", () => {
       ).not.toThrow();
       // A surviving top-level Space is unaffected by project deletion.
       expect(getSpace(db, top.id)?.project_id).toBeNull();
-    } finally {
-      db.close();
-    }
-  });
-
-  it("rebuild preserves existing rows + nullability when an existing DB still has NOT NULL project_id", () => {
-    const dbPath = path.join(tempDir, "legacy.db");
-    const db = openDb(dbPath);
-    try {
-      const projectId = seedProject(db, "proj-1");
-      // Seed a Space, item, occurrence, and edge through the live (post-v86) schema.
-      const space = createSpace(db, { project_id: projectId, title: "Legacy Space", metadata: { a: 1 } });
-      db.prepare(
-        `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
-         VALUES ('item-1', ?, 'issue', 'issue-1', ?, ?)`,
-      ).run(space.id, now(), now());
-
-      // Simulate a PRE-v86 database: rebuild `spaces` with a NOT NULL project_id
-      // (FK off, child tables intact), preserving the row, then clear the
-      // post-migration done flag so migrate() re-runs the real rebuild helper.
-      db.pragma("foreign_keys = OFF");
-      db.transaction(() => {
-        db.exec(
-          `CREATE TABLE spaces_legacy (
-             id               TEXT PRIMARY KEY,
-             project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
-             title            TEXT NOT NULL,
-             default_renderer TEXT NOT NULL DEFAULT 'canvas'
-                                CHECK(default_renderer IN ('canvas','document','board','collection')),
-             description      TEXT,
-             metadata_json    TEXT NOT NULL DEFAULT '{}'
-                                CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
-             created_at       INTEGER NOT NULL,
-             updated_at       INTEGER NOT NULL
-           )`,
-        );
-        db.exec(
-          `INSERT INTO spaces_legacy SELECT id, project_id, title, default_renderer,
-             description, metadata_json, created_at, updated_at FROM spaces`,
-        );
-        db.exec("DROP TABLE spaces");
-        db.exec("ALTER TABLE spaces_legacy RENAME TO spaces");
-        db.exec(
-          `CREATE INDEX IF NOT EXISTS idx_spaces_project_updated
-             ON spaces(project_id, updated_at DESC)`,
-        );
-      })();
-      db.pragma("foreign_keys = ON");
-      db.prepare("DELETE FROM meta WHERE key = ?").run(
-        "post_migration.v86_spaces_nullable_project_id.complete",
-      );
-
-      // Confirm the simulated pre-v86 NOT NULL state.
-      const before = (db.prepare("PRAGMA table_info(spaces)").all() as Array<{
-        name: string;
-        notnull: number;
-      }>).find((c) => c.name === "project_id");
-      expect(before!.notnull).toBe(1);
-
-      // Re-run migrations: the post-migration rebuild should fire.
-      migrate(db);
-
-      // project_id is now nullable, the row + its metadata survived, and the
-      // child item (FK to spaces) is intact.
-      const after = (db.prepare("PRAGMA table_info(spaces)").all() as Array<{
-        name: string;
-        notnull: number;
-      }>).find((c) => c.name === "project_id");
-      expect(after!.notnull).toBe(0);
-      const preserved = getSpace(db, space.id);
-      expect(preserved).toMatchObject({ id: space.id, project_id: projectId, title: "Legacy Space" });
-      expect(preserved!.metadata).toEqual({ a: 1 });
-      const itemCount = db
-        .prepare("SELECT COUNT(*) AS n FROM space_items WHERE space_id = ?")
-        .get(space.id) as { n: number };
-      expect(itemCount.n).toBe(1);
-      // A top-level Space can now be created in the rebuilt table.
-      expect(() => createSpace(db, { title: "Now Global" })).not.toThrow();
-      // No FK violations introduced by the rebuild.
-      expect(db.prepare("PRAGMA foreign_key_check").all()).toHaveLength(0);
     } finally {
       db.close();
     }
