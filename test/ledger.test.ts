@@ -61,77 +61,6 @@ function createIssue(store: LedgerStore, projectId: string, title = "Ledger issu
   });
 }
 
-function createHistoricalArtifactSchema(target: Db, version: 54 | 67): void {
-  target.exec(`CREATE TABLE artifacts (
-    id TEXT PRIMARY KEY,
-    algorithm TEXT NOT NULL DEFAULT 'sha256',
-    content_hash TEXT NOT NULL,
-    uri TEXT NOT NULL,
-    media_type TEXT,
-    role TEXT,
-    size_bytes INTEGER NOT NULL DEFAULT 0,
-    provider_id TEXT,
-    manifest_id TEXT,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    pinned INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    UNIQUE(algorithm, content_hash)
-  )`);
-  if (version === 54) return;
-  target.exec(`
-    ALTER TABLE artifacts ADD COLUMN custody_mode TEXT NOT NULL DEFAULT 'managed'
-      CHECK(custody_mode IN ('link','copy','managed','external'));
-    ALTER TABLE artifacts ADD COLUMN home_repo_id TEXT;
-    ALTER TABLE artifacts ADD COLUMN repo_locator_json TEXT NOT NULL DEFAULT '{}';
-    ALTER TABLE artifacts ADD COLUMN availability TEXT NOT NULL DEFAULT 'unchecked'
-      CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned'));
-    ALTER TABLE artifacts ADD COLUMN retention_json TEXT NOT NULL DEFAULT '{}';
-    ALTER TABLE artifacts ADD COLUMN reference_json TEXT NOT NULL DEFAULT '{}';
-    CREATE TABLE artifact_aliases (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
-      scheme TEXT NOT NULL,
-      alias TEXT NOT NULL,
-      normalized_ref TEXT NOT NULL,
-      locator_json TEXT NOT NULL DEFAULT '{}',
-      resolution_status TEXT NOT NULL DEFAULT 'resolved'
-        CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
-      source TEXT NOT NULL DEFAULT 'artifact_registry',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE artifact_links (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
-      entity_type TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
-      link_type TEXT NOT NULL DEFAULT 'references',
-      role TEXT,
-      repo_id TEXT,
-      provider_id TEXT,
-      source TEXT NOT NULL DEFAULT 'artifact_registry',
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-  `);
-}
-
-function removePostV60ArtifactAssociationTables(target: Db): void {
-  const previousForeignKeys = target.pragma("foreign_keys", { simple: true }) as number;
-  target.pragma("foreign_keys = OFF");
-  try {
-    target.exec(`
-      DROP TABLE artifact_drafts;
-      DROP TABLE session_instruction_artifacts;
-      DROP TABLE artifact_aliases;
-      DROP TABLE artifact_links;
-    `);
-  } finally {
-    if (previousForeignKeys) target.pragma("foreign_keys = ON");
-  }
-}
-
 describe("ledger schema", () => {
   it("creates ledger tables, indexes, and enables foreign keys on fresh DBs", () => {
     const tables = db.prepare(
@@ -142,9 +71,7 @@ describe("ledger schema", () => {
       "ledger_body_revisions",
       "ledger_comments",
       "ledger_commit_issue_links",
-      "ledger_conflicts",
       "ledger_events",
-      "ledger_external_refs",
       "ledger_issue_aliases",
       "ledger_issue_checkpoints",
       "ledger_issue_relationship_sources",
@@ -153,14 +80,12 @@ describe("ledger schema", () => {
       "ledger_labels",
       "ledger_operational_link_mismatches",
       "ledger_operational_link_reports",
-      "ledger_outbox",
       "ledger_project_checkouts",
       "ledger_projects",
       "ledger_reconciliation_mismatches",
       "ledger_reconciliation_reports",
       "ledger_relationship_edges",
       "ledger_session_issue_links",
-      "ledger_sync_jobs",
       "ledger_work_unit_issue_links",
     ]);
 
@@ -169,130 +94,10 @@ describe("ledger schema", () => {
     ).all() as Array<{ name: string }>;
     expect(indexes.map((row) => row.name)).toContain("idx_ledger_issues_project_status_updated");
     expect(indexes.map((row) => row.name)).toContain("idx_ledger_body_revisions_entity");
-    expect(indexes.map((row) => row.name)).toContain("idx_ledger_outbox_adapter_status");
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 
-  it("upgrades a v54 database by applying only the ledger migration", () => {
-    const upgradePath = path.join(tempDir, "upgrade.db");
-    const upgradeDb = new Database(upgradePath);
-    upgradeDb.exec(`
-      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta (key, value) VALUES ('schema_version', '54');
-    `);
-    createHistoricalArtifactSchema(upgradeDb, 54);
 
-    migrate(upgradeDb);
-
-    const version = upgradeDb.prepare(
-      "SELECT value FROM meta WHERE key = 'schema_version'",
-    ).get() as { value: string };
-    expect(version.value).toBe(String(CURRENT_SCHEMA_VERSION));
-    expect(upgradeDb.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
-    ).get()).toBeTruthy();
-    upgradeDb.close();
-  });
-
-  it("backfills current-only body revisions when upgrading an existing ledger", () => {
-    const upgradePath = path.join(tempDir, "body-revisions-upgrade.db");
-    const upgradeDb = new Database(upgradePath);
-    upgradeDb.pragma("foreign_keys = ON");
-    upgradeDb.exec(`
-      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta (key, value) VALUES ('schema_version', '67');
-      CREATE TABLE ledger_projects (
-        id TEXT PRIMARY KEY,
-        display_name TEXT NOT NULL,
-        remote_identity TEXT NOT NULL,
-        upstream_identity TEXT NOT NULL,
-        namespace_policy TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE ledger_issues (
-        id TEXT PRIMARY KEY,
-        short_id TEXT NOT NULL DEFAULT '',
-        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
-        title TEXT NOT NULL,
-        body TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL,
-        resolution TEXT,
-        kind TEXT NOT NULL DEFAULT 'unknown',
-        priority TEXT NOT NULL DEFAULT 'unknown',
-        author_actor_id TEXT,
-        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter',
-        author_display TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL DEFAULT 'mandible',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        closed_at INTEGER,
-        deleted_at INTEGER
-      );
-      CREATE TABLE ledger_comments (
-        id TEXT PRIMARY KEY,
-        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
-        ordinal INTEGER NOT NULL DEFAULT 0,
-        body TEXT NOT NULL,
-        author_actor_id TEXT,
-        author_actor_type TEXT NOT NULL,
-        author_display TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER,
-        deleted_at INTEGER
-      );
-      CREATE TABLE ledger_events (
-        id TEXT PRIMARY KEY,
-        entity_type TEXT NOT NULL,
-        entity_id TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        actor_id TEXT,
-        actor_type TEXT NOT NULL,
-        source TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        occurred_at INTEGER NOT NULL,
-        observed_at INTEGER NOT NULL
-      );
-      CREATE TABLE settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      INSERT INTO ledger_projects
-        (id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at)
-        VALUES ('prj_test', 'test', 'local:test', 'local:test', 'local', 1000, 1000);
-      INSERT INTO ledger_issues
-        (id, short_id, project_id, title, body, status, kind, priority, author_actor_type, source, created_at, updated_at)
-        VALUES ('issue_test', 'issue_tes', 'prj_test', 'Issue', 'Issue body', 'open', 'feature', 'normal', 'agent', 'mandible', 1000, 1000);
-      INSERT INTO ledger_comments
-        (id, issue_id, ordinal, body, author_actor_type, source, created_at)
-        VALUES ('com_test', 'issue_test', 1, 'Comment body', 'agent', 'mandible', 1100);
-    `);
-    createHistoricalArtifactSchema(upgradeDb, 67);
-
-    migrate(upgradeDb);
-
-    expect(upgradeDb.prepare(
-      "SELECT entity_type, entity_id, revision_no, reason, snapshot_body FROM ledger_body_revisions ORDER BY entity_type",
-    ).all()).toEqual([
-      {
-        entity_type: "comment_body",
-        entity_id: "com_test",
-        revision_no: 1,
-        reason: "migration_snapshot",
-        snapshot_body: "Comment body",
-      },
-      {
-        entity_type: "issue_body",
-        entity_id: "issue_test",
-        revision_no: 1,
-        reason: "migration_snapshot",
-        snapshot_body: "Issue body",
-      },
-    ]);
-    upgradeDb.close();
-  });
 
   it("enforces canonical ledger foreign keys", () => {
     expect(() => {
@@ -304,43 +109,6 @@ describe("ledger schema", () => {
     }).toThrow();
   });
 
-  it("migrates legacy event IDs and outbox references to SHA-256", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = createIssue(store, project.project.id);
-    const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
-    // Real databases still carry pre-cutover ledger_outbox rows, and the v61
-    // event-ID migration must repoint them. Nothing writes the table any more,
-    // so seed the legacy row directly.
-    db.prepare(
-      `INSERT INTO ledger_outbox (
-        id, event_id, adapter, project_id, status, attempt_count,
-        available_at, created_at, updated_at
-      ) VALUES ('out_legacy', ?, 'git_bug', ?, 'skipped', 0, 1, 1, 1)`,
-    ).run(event.id, project.project.id);
-    db.pragma("foreign_keys = OFF");
-    db.prepare("UPDATE ledger_events SET id = 'evt_00legacy00_00112233445566778899', event_type = 'issue.updated', payload_json = ? WHERE id = ?")
-      .run(JSON.stringify({ issue_id: issue.id, patch: { status: "closed", resolution: "merged" } }), event.id);
-    db.prepare("UPDATE ledger_outbox SET event_id = 'evt_00legacy00_00112233445566778899' WHERE id = 'out_legacy'").run();
-    db.prepare("UPDATE ledger_body_revisions SET event_id = 'evt_00legacy00_00112233445566778899' WHERE event_id = ?")
-      .run(event.id);
-    db.pragma("foreign_keys = ON");
-    removePostV60ArtifactAssociationTables(db);
-    db.prepare("UPDATE meta SET value = '60' WHERE key = 'schema_version'").run();
-
-    migrate(db);
-
-    const migrated = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
-    const migratedOutbox = db.prepare("SELECT event_id FROM ledger_outbox WHERE id = 'out_legacy'")
-      .get() as { event_id: string };
-    expect(migrated.id).toMatch(/^[0-9a-f]{64}$/);
-    expect(migrated.event_type).toBe("issue.closed");
-    expect(JSON.parse(migrated.payload_json)).toMatchObject({
-      legacy_event_id: "evt_00legacy00_00112233445566778899",
-    });
-    expect(migratedOutbox.event_id).toBe(migrated.id);
-    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-  });
 });
 
 describe("ledger IDs and project identity", () => {

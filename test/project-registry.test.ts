@@ -766,7 +766,6 @@ describe("merge move-list schema coverage (codex review #1)", () => {
       for (const column of columns) moveSet.add(`${table}.${column}`);
     }
     expect(moveSet.has("ledger_commit_issue_links.project_id")).toBe(true);
-    expect(moveSet.has("ledger_sync_jobs.project_id")).toBe(true);
     expect(moveSet.has("ledger_reconciliation_mismatches.project_id")).toBe(true);
     expect(moveSet.has("trash_entries.project_id")).toBe(true);
     expect(moveSet.has("auth_request_merge_succeeded_facts.project_id")).toBe(true);

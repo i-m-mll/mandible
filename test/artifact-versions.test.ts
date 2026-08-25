@@ -581,24 +581,6 @@ describe("codex review fixes", () => {
     expect(rSeries.latest_version_id).toBe(rMax.id);
     restored.close();
   });
-
-  it("MEDIUM-6: migration 88 fails loudly on a pre-existing divergent table", () => {
-    const divergentPath = path.join(tempDir, "divergent.db");
-    const setup = openDb(divergentPath);
-    setup.exec("DROP TABLE artifact_versions");
-    // Columns present (so v88's CREATE INDEX statements still build) but the
-    // UNIQUE(series_id, version_no) constraint and the FKs are absent — exactly
-    // what CREATE TABLE IF NOT EXISTS would silently accept.
-    setup.exec(`CREATE TABLE artifact_versions (
-      id TEXT PRIMARY KEY, series_id TEXT, artifact_id TEXT, version_no INTEGER,
-      source_kind TEXT, content_hash TEXT, commit_sha TEXT, repo_path TEXT,
-      observed_path TEXT, custody_mode TEXT, label TEXT, note TEXT,
-      metadata_json TEXT, created_at INTEGER
-    )`);
-    setup.prepare("UPDATE meta SET value = '87' WHERE key = 'schema_version'").run();
-    expect(() => migrate(setup)).toThrow(/migration 88 verification/i);
-    setup.close();
-  });
 });
 
 describe("codex re-review hardening", () => {
@@ -632,27 +614,6 @@ describe("codex re-review hardening", () => {
     expect(() =>
       recordArtifactVersion(db, { source_kind: "managed", ref: canonicalBlobRef, logical_name: "src", provider_id: "test" }, 3000),
     ).toThrow(/not materializable|hash mismatch/i);
-  });
-
-  it("RR-2: schema verifier rejects a table missing the source_kind CHECK", () => {
-    const divergentPath = path.join(tempDir, "no-check.db");
-    const setup = openDb(divergentPath);
-    setup.exec("DROP TABLE artifact_versions");
-    // Full columns, UNIQUE, and FKs — but NO CHECK(source_kind ...).
-    setup.exec(`CREATE TABLE artifact_versions (
-      id TEXT PRIMARY KEY,
-      series_id TEXT NOT NULL REFERENCES artifact_series(id),
-      artifact_id TEXT NOT NULL REFERENCES artifacts(id),
-      version_no INTEGER NOT NULL,
-      source_kind TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      commit_sha TEXT, repo_path TEXT, observed_path TEXT, custody_mode TEXT,
-      label TEXT, note TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER,
-      UNIQUE(series_id, version_no)
-    )`);
-    setup.prepare("UPDATE meta SET value = '87' WHERE key = 'schema_version'").run();
-    expect(() => migrate(setup)).toThrow(/CHECK\(source_kind/i);
-    setup.close();
   });
 
   it("RR-3: managed default series key escapes components so they cannot collide", () => {

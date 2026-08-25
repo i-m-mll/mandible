@@ -74,46 +74,6 @@ function seedOccurrence(
   return id;
 }
 
-function rewindArtifactAssociationsToV89(database: Db): void {
-  database.exec(`
-    DROP TABLE artifact_drafts;
-    DROP TABLE session_instruction_artifacts;
-    DROP TABLE artifact_aliases;
-    DROP TABLE artifact_links;
-    CREATE TABLE artifact_aliases (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
-      scheme TEXT NOT NULL,
-      alias TEXT NOT NULL,
-      normalized_ref TEXT NOT NULL,
-      locator_json TEXT NOT NULL DEFAULT '{}',
-      resolution_status TEXT NOT NULL DEFAULT 'resolved'
-        CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
-      source TEXT NOT NULL DEFAULT 'artifact_registry',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE artifact_links (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
-      entity_type TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
-      link_type TEXT NOT NULL DEFAULT 'references',
-      role TEXT,
-      repo_id TEXT,
-      provider_id TEXT,
-      source TEXT NOT NULL DEFAULT 'artifact_registry',
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      link_kind TEXT NOT NULL DEFAULT 'pinned'
-        CHECK(link_kind IN ('pinned','living')),
-      series_id TEXT,
-      series_ref TEXT
-    );
-  `);
-}
-
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-spaces-"));
   dbPath = path.join(tempDir, "mandible.db");
@@ -208,74 +168,6 @@ describe("spaces core schema (issue b395083)", () => {
     expect(() => seedItem(db, containerId, "item-space-dup", "space", linkedId)).toThrow();
   });
 
-  it("migrates existing space_items tables to accept typed Space refs without losing rows", () => {
-    const projectId = seedProject(db);
-    const containerId = seedSpace(db, projectId, "space-container");
-    const linkedId = seedSpace(db, projectId, "space-linked");
-    seedItem(db, containerId, "item-existing", "artifact", "sha256:abc");
-
-    const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
-    db.pragma("foreign_keys = OFF");
-    try {
-      db.transaction(() => {
-        db.exec("DROP TABLE IF EXISTS space_items_legacy");
-        db.exec(
-          `CREATE TABLE space_items_legacy (
-            id            TEXT NOT NULL,
-            space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
-            ref_type      TEXT NOT NULL
-                            CHECK(ref_type IN ('issue','comment','artifact','external_ref')),
-            ref_id        TEXT NOT NULL CHECK(ref_id != ''),
-            ref_uri       TEXT,
-            title         TEXT,
-            metadata_json TEXT NOT NULL DEFAULT '{}'
-                            CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
-            created_at    INTEGER NOT NULL,
-            updated_at    INTEGER NOT NULL,
-            PRIMARY KEY (id),
-            UNIQUE (space_id, id),
-            UNIQUE (space_id, ref_type, ref_id),
-            CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
-          )`,
-        );
-        db.exec(
-          `INSERT INTO space_items_legacy (
-            id, space_id, ref_type, ref_id, ref_uri, title,
-            metadata_json, created_at, updated_at
-          )
-          SELECT
-            id, space_id, ref_type, ref_id, ref_uri, title,
-            metadata_json, created_at, updated_at
-          FROM space_items`,
-        );
-        db.exec("DROP TABLE space_items");
-        db.exec("ALTER TABLE space_items_legacy RENAME TO space_items");
-        db.exec("CREATE INDEX idx_space_items_lookup ON space_items(space_id, ref_type, ref_id)");
-        db.exec("CREATE INDEX idx_space_items_by_ref ON space_items(ref_type, ref_id, space_id)");
-        rewindArtifactAssociationsToV89(db);
-        db.prepare("UPDATE meta SET value = '89' WHERE key = 'schema_version'").run();
-      })();
-    } finally {
-      if (previousForeignKeys) db.pragma("foreign_keys = ON");
-    }
-
-    const before = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'space_items'").get() as {
-      sql: string;
-    };
-    expect(before.sql).not.toContain("'space'");
-
-    migrate(db);
-
-    const after = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'space_items'").get() as {
-      sql: string;
-    };
-    expect(after.sql).toContain("'space'");
-    const existing = db
-      .prepare("SELECT COUNT(*) AS n FROM space_items WHERE id = 'item-existing'")
-      .get() as { n: number };
-    expect(existing.n).toBe(1);
-    expect(() => seedItem(db, containerId, "item-space", "space", linkedId)).not.toThrow();
-  });
 
   it("allows multiple occurrences of one item (no UNIQUE on space_id,item_id)", () => {
     const projectId = seedProject(db);

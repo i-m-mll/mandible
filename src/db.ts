@@ -6,12 +6,20 @@ import {
   assertMigrationSequence,
   CURRENT_SCHEMA_VERSION,
   migrate,
+  MINIMUM_SUPPORTED_SCHEMA_VERSION,
+  UnsupportedSchemaVersionError,
 } from "./db-migrations.js";
 import type { Migration } from "./db-migrations.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 
 export type Db = Database.Database;
-export { assertMigrationSequence, CURRENT_SCHEMA_VERSION, migrate };
+export {
+  assertMigrationSequence,
+  CURRENT_SCHEMA_VERSION,
+  migrate,
+  MINIMUM_SUPPORTED_SCHEMA_VERSION,
+  UnsupportedSchemaVersionError,
+};
 export type { Migration };
 
 export const SQLITE_COLD_START_TUNING = Object.freeze({

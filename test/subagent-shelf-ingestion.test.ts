@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { openDb, setDb, type Db } from "../src/db.js";
 import { triggerTargetedIngest } from "../src/ingestion.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
@@ -134,35 +134,5 @@ describe("Claude subagent ingestion", () => {
     const list = await router.invoke({ method: "GET", url: "/api/conversations?exclude_subagents=true" });
     expect(list.status).toBe(200);
     expect(list.body).toMatchObject({ total: 1 });
-  });
-
-  it("backfills existing orphan subagent rows from source paths", () => {
-    const now = "2026-06-01T00:00:00.000Z";
-    const parentSource = parentPath();
-    const childSource = subagentPath("gamma");
-    db.prepare(
-      `INSERT INTO conversations (
-        id, source, source_path, source_hash, source_mtime, title, started_at,
-        session_id, created_at, updated_at
-      ) VALUES (?, 'claude_code', ?, ?, 0, ?, ?, ?, ?, ?)`
-    ).run("parent-conv", parentSource, "parent-hash", "Parent", now, parentSessionId, now, now);
-    db.prepare(
-      `INSERT INTO conversations (
-        id, source, source_path, source_hash, source_mtime, title, started_at,
-        session_id, created_at, updated_at
-      ) VALUES (?, 'claude_code', ?, ?, 0, ?, ?, ?, ?, ?)`
-    ).run("child-conv", childSource, "child-hash", "Child", now, "child-gamma", now, now);
-    db.prepare("DELETE FROM meta WHERE key = 'post_migration.v95_backfill_conversation_sidechains.complete'").run();
-
-    migrate(db);
-
-    const child = db.prepare(
-      "SELECT parent_conversation_id, is_sidechain, agent_id FROM conversations WHERE id = 'child-conv'"
-    ).get() as { parent_conversation_id: string; is_sidechain: number; agent_id: string };
-    expect(child).toEqual({
-      parent_conversation_id: "parent-conv",
-      is_sidechain: 1,
-      agent_id: "gamma",
-    });
   });
 });

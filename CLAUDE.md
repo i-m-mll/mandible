@@ -130,10 +130,14 @@ horizontal time coordinates.
 
 Correct build procedure in a worktree:
 ```bash
-cp -r <main-worktree>/node_modules <feature-worktree>/node_modules
+cp -a <main-worktree>/node_modules <feature-worktree>/node_modules
 cd <feature-worktree>
 npm run build
 ```
+
+`-a`, not `-r`: `cp -r` dereferences the `node_modules/.bin` symlinks, so every
+copied launcher resolves its relative entry point against `.bin/` and dies with
+`ERR_MODULE_NOT_FOUND` (`npx vitest` reports a missing `.bin/dist/cli.js`).
 
 ## Auth flow
 
