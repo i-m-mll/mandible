@@ -71,9 +71,7 @@ describe("ledger schema", () => {
       "ledger_body_revisions",
       "ledger_comments",
       "ledger_commit_issue_links",
-      "ledger_conflicts",
       "ledger_events",
-      "ledger_external_refs",
       "ledger_issue_aliases",
       "ledger_issue_checkpoints",
       "ledger_issue_relationship_sources",
@@ -82,14 +80,12 @@ describe("ledger schema", () => {
       "ledger_labels",
       "ledger_operational_link_mismatches",
       "ledger_operational_link_reports",
-      "ledger_outbox",
       "ledger_project_checkouts",
       "ledger_projects",
       "ledger_reconciliation_mismatches",
       "ledger_reconciliation_reports",
       "ledger_relationship_edges",
       "ledger_session_issue_links",
-      "ledger_sync_jobs",
       "ledger_work_unit_issue_links",
     ]);
 
@@ -98,7 +94,6 @@ describe("ledger schema", () => {
     ).all() as Array<{ name: string }>;
     expect(indexes.map((row) => row.name)).toContain("idx_ledger_issues_project_status_updated");
     expect(indexes.map((row) => row.name)).toContain("idx_ledger_body_revisions_entity");
-    expect(indexes.map((row) => row.name)).toContain("idx_ledger_outbox_adapter_status");
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 

@@ -21,7 +21,30 @@ export interface Migration {
  */
 export const MINIMUM_SUPPORTED_SCHEMA_VERSION = 158;
 
-export const MIGRATIONS: readonly Migration[] = [];
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 159,
+    name: "drop_retired_git_bug_and_preset_tables",
+    statements: [
+      // Children before parents: convention_setting_links -> preset_nodes -> presets.
+      // Nothing that survives references any of these tables.
+      "DROP TABLE IF EXISTS convention_setting_links",
+      "DROP TABLE IF EXISTS preset_nodes",
+      "DROP TABLE IF EXISTS presets",
+      "DROP TABLE IF EXISTS preset_diffs",
+      "DROP TABLE IF EXISTS session_presets",
+      "DROP TABLE IF EXISTS session_instruction_artifacts",
+      "DROP TABLE IF EXISTS starred_chats",
+      "DROP TABLE IF EXISTS ledger_outbox",
+      "DROP TABLE IF EXISTS ledger_external_refs",
+      "DROP TABLE IF EXISTS ledger_conflicts",
+      "DROP TABLE IF EXISTS ledger_sync_jobs",
+      "ALTER TABLE message_params DROP COLUMN preset_ids",
+      // Completion markers for the retired v1-v158 post-DDL backfills.
+      "DELETE FROM meta WHERE key LIKE 'post_migration.%'",
+    ],
+  },
+];
 
 /**
  * Migration versions must be unique and form a contiguous ascending run

@@ -487,18 +487,7 @@ describe("canonical artifact compatibility consumers", () => {
       recorded.version.source_kind, recorded.version.content_hash, recorded.version.custody_mode, 3600);
     db.pragma("foreign_keys = OFF");
     db.exec(`
-      DROP TABLE session_instruction_artifacts;
       DROP TABLE artifact_drafts;
-      CREATE TABLE session_instruction_artifacts (
-        session_id TEXT NOT NULL,
-        artifact_series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
-        artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
-        legacy_preset_id TEXT,
-        position INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (session_id, artifact_series_id)
-      );
       CREATE TABLE artifact_drafts (
         id TEXT PRIMARY KEY,
         series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,

@@ -222,7 +222,7 @@ describe.sequential("mandible daemon", () => {
     expect(names).toContain("branches");
     expect(names).toContain("ledger_issues");
     expect(names).toContain("ledger_events");
-    expect(names).toContain("ledger_outbox");
+    expect(names).toContain("ledger_comments");
 
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")

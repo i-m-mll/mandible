@@ -71,4 +71,65 @@ describe.sequential("schema convergence", () => {
       fresh.close();
     }
   });
+
+  it("drops the retired tables and column without disturbing surviving rows", () => {
+    const migratedPath = path.join(tempDir, "retired.db");
+    createFloorDatabase(migratedPath);
+
+    const RETIRED_TABLES = [
+      "ledger_external_refs", "ledger_sync_jobs", "ledger_outbox", "ledger_conflicts",
+      "starred_chats", "presets", "preset_nodes", "preset_diffs", "session_presets",
+      "convention_setting_links", "session_instruction_artifacts",
+    ];
+
+    const seed = new Database(migratedPath);
+    try {
+      // The floor fixture really does carry these tables and the chain's own
+      // completion markers, so the drop below is doing work rather than passing
+      // over an already-absent shape.
+      for (const table of RETIRED_TABLES) {
+        expect(seed.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ).get(table)).toBeTruthy();
+      }
+      expect((seed.prepare(
+        "SELECT count(*) AS n FROM meta WHERE key LIKE 'post_migration.%'",
+      ).get() as { n: number }).n).toBeGreaterThan(0);
+
+      seed.prepare(
+        "INSERT INTO presets (id, name, created_at, updated_at) VALUES ('p1', 'Preset', 1, 1)",
+      ).run();
+      seed.prepare(
+        `INSERT INTO preset_nodes (id, preset_id, created_at, updated_at)
+         VALUES ('n1', 'p1', 1, 1)`,
+      ).run();
+      seed.prepare(
+        `INSERT INTO message_params (session_id, message_index, model, preset_ids, created_at)
+         VALUES ('s1', 0, 'opus', '["p1"]', 7)`,
+      ).run();
+    } finally {
+      seed.close();
+    }
+
+    const migrated = openDb(migratedPath);
+    try {
+      for (const table of RETIRED_TABLES) {
+        expect(migrated.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ).get(table)).toBeUndefined();
+      }
+      expect(migrated.prepare("PRAGMA table_info(message_params)").all())
+        .not.toContainEqual(expect.objectContaining({ name: "preset_ids" }));
+      // Dropping a column must not disturb the rest of the row.
+      expect(migrated.prepare(
+        "SELECT session_id, message_index, model, created_at FROM message_params",
+      ).all()).toEqual([{ session_id: "s1", message_index: 0, model: "opus", created_at: 7 }]);
+      expect(migrated.prepare(
+        "SELECT count(*) AS n FROM meta WHERE key LIKE 'post_migration.%'",
+      ).get()).toEqual({ n: 0 });
+      expect(migrated.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      migrated.close();
+    }
+  });
 });

@@ -801,20 +801,15 @@ export function auditRegistry(db: Db): RegistryAudit {
 // real `REFERENCES ledger_projects(id) ON DELETE RESTRICT` FK (ledger_issues,
 // ledger_issue_aliases, ledger_body_revisions, ledger_relationship_edges,
 // ledger_project_checkouts, ledger_commit_issue_links, spaces) would otherwise
-// THROW at the source-project delete; the non-FK ones (ledger_outbox,
-// ledger_external_refs, ledger_conflicts, ledger_sync_jobs,
-// ledger_reconciliation_mismatches) would silently dangle. Moving them all keeps
+// THROW at the source-project delete; the non-FK ones
+// (ledger_reconciliation_mismatches) would silently dangle. Moving them all keeps
 // the merge orphan-free and FK-clean.
 export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[] }> = [
   { table: "ledger_issues", columns: ["project_id"] },
   { table: "ledger_issue_aliases", columns: ["project_id"] },
   { table: "ledger_body_revisions", columns: ["project_id"] },
   { table: "ledger_relationship_edges", columns: ["source_project_id", "target_project_id"] },
-  { table: "ledger_external_refs", columns: ["project_id"] },
-  { table: "ledger_outbox", columns: ["project_id"] },
-  { table: "ledger_conflicts", columns: ["project_id"] },
   { table: "ledger_commit_issue_links", columns: ["project_id"] },
-  { table: "ledger_sync_jobs", columns: ["project_id"] },
   { table: "ledger_reconciliation_mismatches", columns: ["project_id"] },
   { table: "ledger_project_checkouts", columns: ["project_id"] },
   { table: "artifact", columns: ["source_project_id"] },
