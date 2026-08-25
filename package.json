@@ -24,6 +24,7 @@
     "start": "node dist/index.js",
     "postinstall": "node scripts/fix-pty-permissions.js",
     "test": "node scripts/run-vitest.js run",
+    "test:browser": "node scripts/run-vitest.js run --config vitest.browser.config.ts",
     "test:coverage": "node scripts/run-vitest.js run --coverage",
     "tauri": "tauri dev",
     "tauri:build": "tauri build"
