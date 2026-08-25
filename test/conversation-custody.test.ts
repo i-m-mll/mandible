@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConversationCustodyStore, CustodyError } from "../src/conversations/custody-store.js";
 
 function write(filePath: string, value: string | Buffer): void {
@@ -23,6 +23,7 @@ describe("conversation custody", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -56,6 +57,42 @@ describe("conversation custody", () => {
     expect(fs.readFileSync(path.join(first.version_path, capturedTool.path))).toEqual(Buffer.from([0, 1, 2, 255]));
     expect(fs.statSync(first.version_path).mode & 0o077).toBe(0);
     expect(fs.statSync(path.join(first.version_path, capturedTool.path)).mode & 0o077).toBe(0);
+  });
+
+  it("assigns the same custody version under different host collations", () => {
+    const fixture = claudeFixture("locale-session");
+    write(path.join(fixture.project, fixture.sessionId, "tool-results", "z.txt"), "z");
+    write(path.join(fixture.project, fixture.sessionId, "tool-results", "ä.txt"), "umlaut");
+    const store = new ConversationCustodyStore(custodyRoot);
+    const localeCompare = vi.spyOn(String.prototype, "localeCompare");
+
+    const en = new Intl.Collator("en-US");
+    localeCompare.mockImplementation(function (this: string, other: string) {
+      return en.compare(String(this), other);
+    });
+    const first = store.capture({
+      conversation_id: "conv-locale",
+      provider: "claude_code",
+      session_id: fixture.sessionId,
+      source_path: fixture.source,
+    });
+
+    const sv = new Intl.Collator("sv-SE");
+    localeCompare.mockImplementation(function (this: string, other: string) {
+      return sv.compare(String(this), other);
+    });
+    const second = store.capture({
+      conversation_id: "conv-locale",
+      provider: "claude_code",
+      session_id: fixture.sessionId,
+      source_path: fixture.source,
+    });
+
+    expect(first.manifest.files.map((file) => file.path)).toEqual(
+      [...first.manifest.files.map((file) => file.path)].sort(),
+    );
+    expect(second.manifest.custody_version).toBe(first.manifest.custody_version);
+    expect(second.reused).toBe(true);
   });
 
   it("fails closed when a live source mutates during its stable read", () => {

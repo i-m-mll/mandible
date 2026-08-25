@@ -33,6 +33,25 @@ function sha256(data: Buffer | string): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
+/**
+ * Stable path order for custody identities and checksum manifests.
+ *
+ * `localeCompare` reads the host's default collation, so the same file set can
+ * order differently on two machines — and the order feeds `versionDigest`,
+ * which names the archive's immutable on-disk directory. A custody version is a
+ * content identity, so its input order must be a function of the paths alone.
+ *
+ * This is not only a non-ASCII concern. Collation folds case, so `toolu_01Qo…`
+ * sorts before `toolu_01QS…` under en-CA while code units put the uppercase
+ * `S` first. Provider tool-result filenames differ in exactly that way, so
+ * ASCII-only archives diverge too.
+ */
+function comparePathCodeUnits(
+  left: { path: string },
+  right: { path: string },
+): number {
+  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+}
 
 function versionDigest(files: CustodyFileRecord[]): string {
   return sha256(canonicalJson(files.map(({ path: archivePath, size, sha256: digest }) => ({ path: archivePath, size, sha256: digest }))));
@@ -429,7 +448,7 @@ export class ConversationCustodyStore {
         fs.writeFileSync(destination, generated.data, { mode: 0o600, flag: "wx" });
         files.push({ path: archivePath, provider_relative_path: archivePath, dependency_role: generated.role, size: generated.data.length, sha256: sha256(generated.data), required: false });
       }
-      files.sort((a, b) => a.path.localeCompare(b.path));
+      files.sort(comparePathCodeUnits);
       const sourceVersion = versionDigest(files);
       const custodyVersion = custodyVersionDigest(
         sourceVersion,
@@ -568,7 +587,7 @@ export class ConversationCustodyStore {
         const data = fs.readFileSync(path.join(output, relative));
         records.push({ path: relative, provider_relative_path: relative, dependency_role: relative === "manifest.json" ? "manifest" : "annotations", size: data.length, sha256: sha256(data), required: true });
       }
-      records.sort((a, b) => a.path.localeCompare(b.path));
+      records.sort(comparePathCodeUnits);
       fs.writeFileSync(path.join(output, "SHA256SUMS"), `${records.map((file) => `${file.sha256}  ${file.path}`).join("\n")}\n`, { mode: 0o600, flag: "wx" });
       return output;
     } catch (error) {
