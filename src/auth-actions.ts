@@ -97,7 +97,7 @@ export function insertAuthRequestActions(
       target_issue_ref: normalized.target_issue_ref,
       payload: normalized.payload,
       state: "staged",
-      target_digest: resolveTargetDigest(db, request, normalized.target_issue_ref),
+      target_digest: stagedTargetDigest(db, request, normalized),
       staged_at: now,
       updated_at: now,
       applied_at: null,
@@ -169,7 +169,7 @@ export function updateAuthRequestAction(
     action.kind,
     action.target_issue_ref,
     JSON.stringify(action.payload),
-    resolveTargetDigest(db, request, action.target_issue_ref),
+    stagedTargetDigest(db, request, action),
     now,
     existing.id,
     request.id,
@@ -326,15 +326,53 @@ function requireOnStale(value: unknown): "apply" | "skip" {
   throw new AuthActionValidationError("issue_close on_stale must be 'apply' or 'skip'");
 }
 
-function resolveTargetDigest(db: Db, request: AuthRequest, issueRef: string): string | null {
+/**
+ * Baseline issue digest recorded when an action is staged, used at merge time
+ * to decide whether the target drifted.
+ *
+ * A null baseline makes `digestMoved` permanently false, which silently
+ * DISABLES the `on_stale: "skip"` guard — the close then applies regardless of
+ * drift, which is the opposite of what the staging caller asked for. So the
+ * failure is reported instead of collapsed: `resolveOperationalIssueRef`
+ * already returns a typed reason, and the head read is no longer swallowed.
+ */
+function resolveTargetDigest(
+  db: Db,
+  request: AuthRequest,
+  issueRef: string,
+): { ok: true; digest: string } | { ok: false; error: string } {
   const repoRef = request.repo ?? request.cwd ?? request.target_repo_root ?? null;
   const resolved = resolveOperationalIssueRef(db, issueRef, repoRef);
-  if (!resolved.ok) return null;
+  if (!resolved.ok) return { ok: false, error: resolved.error };
   try {
-    return getLedgerIssueHead(db, resolved.issue_id).digest;
-  } catch {
-    return null;
+    return { ok: true, digest: getLedgerIssueHead(db, resolved.issue_id).digest };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * The digest to store, refusing to stage a guard that cannot be honoured.
+ *
+ * Only `issue_close` with `on_stale: "skip"` depends on the baseline. For
+ * every other action a missing baseline changes nothing, so it stays null
+ * rather than blocking the request.
+ */
+function stagedTargetDigest(
+  db: Db,
+  request: AuthRequest,
+  action: { kind: AuthRequestActionKind; target_issue_ref: string; payload: Record<string, unknown> },
+): string | null {
+  const resolved = resolveTargetDigest(db, request, action.target_issue_ref);
+  if (resolved.ok) return resolved.digest;
+  if (action.kind === "issue_close" && action.payload.on_stale === "skip") {
+    throw new AuthActionValidationError(
+      `Cannot stage issue_close with on_stale: "skip" for ${action.target_issue_ref}: ` +
+        `its current digest could not be read (${resolved.error}), so drift could not be ` +
+        "detected at merge time and the close would apply unconditionally.",
+    );
+  }
+  return null;
 }
 
 function requireAuthAction(db: Db, requestId: string, actionId: string): AuthRequestAction {
@@ -354,11 +392,23 @@ function requireAuthAction(db: Db, requestId: string, actionId: string): AuthReq
 
 function mapAuthActionRow(row: Record<string, unknown>): AuthRequestAction {
   const state = String(row.state ?? "staged") as AuthRequestActionState;
+  const kind = String(row.kind);
+  // `state` on the line below was already validated on read; `kind` was cast
+  // unchecked, so a row outside the vocabulary entered the type system as a
+  // valid kind. Refuse it here instead: the applier switches on this value to
+  // decide what to write to the ledger, and the DB CHECK that makes such a row
+  // unreachable today is not a reason for the reader to assume it.
+  if (!VALID_ACTION_KINDS.includes(kind as AuthRequestActionKind)) {
+    throw new AuthActionValidationError(
+      `auth_request_actions row ${String(row.id)} has unknown kind '${kind}'`,
+      500,
+    );
+  }
   return {
     id: String(row.id),
     auth_request_id: String(row.auth_request_id),
     ordinal: Number(row.ordinal ?? 0),
-    kind: String(row.kind) as AuthRequestActionKind,
+    kind: kind as AuthRequestActionKind,
     target_issue_ref: String(row.target_issue_ref ?? ""),
     payload: parsePayload(row.payload),
     state: VALID_ACTION_STATES.includes(state) ? state : "failed",

@@ -32,6 +32,8 @@ import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearanc
 import {
   AuthExecutionContextError,
   canonicalAuthMergeCommands,
+  classifyGitFailure,
+  describeGitFailure,
   isAuthMergeCommand,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
@@ -4275,14 +4277,38 @@ export class AuthQueue {
         this.broadcast({ event: "auth:updated", data: { request: requeued } });
         return;
       }
-      const detail = "detail" in inspection ? inspection.detail : inspection.outcome;
+      // The three remaining outcomes used to share one message, "Atomic merge
+      // applied and needs recovery". For `failed` that is the opposite claim
+      // about whether the merge landed — and `failed` covers cases like "target
+      // ref does not match the pinned atomic merge commit" and "atomic merge
+      // signature is not authorized", where asserting a routine recovery
+      // actively misdirects the operator. Report what the inspection found.
       const now = this.now();
+      const message = ((): string => {
+        switch (inspection.outcome) {
+          case "atomic_needs_recovery":
+            return `Atomic merge applied and needs recovery: ${inspection.detail}`;
+          case "failed":
+            return `Atomic merge recovery could not prove the merge landed correctly: ${inspection.detail}`;
+          case "completed":
+            // Already finalized by another pass; nothing to recover or report.
+            return "";
+          default:
+            return assertNever(inspection, `atomic recovery for ${request.id}`);
+        }
+      })();
+      if (!message) return;
       this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-        .run(`Atomic merge applied and needs recovery: ${detail}`, now, request.id);
+        .run(message, now, request.id);
     }).catch((error) => {
       const now = this.now();
+      // A thrown recovery pass proves nothing about the merge either.
       this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
-        .run(`Atomic merge applied and needs recovery: ${errorMessage(error) ?? String(error)}`, now, request.id);
+        .run(
+          `Atomic merge recovery failed before reaching a verdict: ${errorMessage(error) ?? String(error)}`,
+          now,
+          request.id,
+        );
     })
       .finally(() => {
         this.inFlight.delete(request.id);
@@ -5169,17 +5195,28 @@ export class AuthQueue {
       return { status: "clean", tree, files: [], message: "clean" };
     } catch (error) {
       const output = outputFromExecError(error);
-      if (isMergeTreeInfrastructureError(error)) {
+      const failure = classifyGitFailure(error);
+      // `git merge-tree --write-tree` exits 1 for a conflicted merge and 128
+      // for a fatal: bad revision, not a repository, corrupt object database,
+      // index.lock contention. Only exit 1 is evidence about the merge.
+      //
+      // The previous test asked whether the SPAWN errno was ENOENT/EACCES/
+      // ENOTDIR, so every fatal — none of which sets those — was classified as
+      // a conflict. Since a fatal never prints `CONFLICT (...)`, the result was
+      // `conflict` with an empty file list: an infrastructure failure reported
+      // to `mandible auth check` as a clean-looking merge conflict, which is
+      // exactly the distinction policy requires be preserved.
+      if (failure.kind === "exit" && failure.status === 1) {
         return {
-          status: "error",
-          files: [],
-          message: output.trim() || errorMessage(error) || "git merge-tree infrastructure error"
+          status: "conflict",
+          files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
+          message: output.trim() || "git merge-tree reported a conflict"
         };
       }
       return {
-        status: "conflict",
-        files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
-        message: output.trim() || "git merge-tree reported a conflict"
+        status: "error",
+        files: [],
+        message: describeGitFailure(failure, "merge check"),
       };
     }
   }
@@ -5410,6 +5447,13 @@ export class AuthQueue {
   }
 
   private syncLedgerLinksForRequest(request: AuthRequest, recordEvent: boolean): void {
+    // The stated reason for swallowing here was that ledger tables are optional
+    // in staged migrations and lightweight test DBs. That is a precondition,
+    // not an error handler, so state it as one — the pattern this file already
+    // uses at `removeActionResolveLink`. What remains in the catch is a real
+    // failure to write the durable merge-to-issue linkage, which must be
+    // visible rather than silently absent while the merge reports delivered.
+    if (!this.tableExists("ledger_auth_issue_links")) return;
     try {
       syncAuthRequestLedgerLinks(this.db, {
         auth_request_id: request.id,
@@ -5422,8 +5466,12 @@ export class AuthQueue {
         merge_output: request.output,
         recordEvent,
       });
-    } catch {
-      // Ledger tables are optional during staged migration and in fallback test DBs.
+    } catch (error) {
+      authLog("error", "auth_ledger_link_sync_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -6660,14 +6708,6 @@ function outputFromExecError(error: unknown): string {
   const stderr = Buffer.isBuffer(maybe.stderr) ? maybe.stderr.toString("utf8") : String(maybe.stderr ?? "");
   const message = typeof maybe.message === "string" ? maybe.message : "";
   return [stdout, stderr, message].filter(Boolean).join("\n");
-}
-
-function isMergeTreeInfrastructureError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const code = (error as { code?: unknown }).code;
-  return code === "ENOENT" || code === "EACCES" || code === "ENOTDIR";
 }
 
 function errorMessage(error: unknown): string | null {
