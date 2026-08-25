@@ -1,11 +1,11 @@
 ---
 title: Batch Push
-description: Push branches and git-bug refs across all repositories in one operation.
+description: Push branches and git notes across all repositories in one operation.
 ---
 
 # Batch Push
 
-The Batch Push feature lets you push branches, git-bug refs, and git notes across multiple repositories in a single operation, authenticated with one YubiKey touch.
+The Batch Push feature lets you push branches and git notes across multiple repositories in a single operation, authenticated with one YubiKey touch.
 
 ## How it works
 
@@ -13,7 +13,6 @@ The Batch Push feature lets you push branches, git-bug refs, and git notes acros
 
 2. **Per-repo push** — Each repository is pushed sequentially. For each repo, Mandible pushes:
    - **Branches** — either just the default branch (`current` scope) or all branches that are ahead of their upstream (`all_ahead` scope).
-   - **git-bug refs** (`refs/bugs/*`) — if any exist in the repo.
    - **git notes** (`refs/notes/*`) — if any exist in the repo.
 
 3. **Post-push rescan** — After all repos complete, Mandible triggers a work-scanner rescan to update ahead/behind counts in the Projects tab.
@@ -29,6 +28,7 @@ The Batch Push feature lets you push branches, git-bug refs, and git notes acros
 
 Push operations broadcast SSE events as they proceed:
 
+- `push:started` — the session began.
 - `push:auth:pending` / `push:auth:complete` — SSH pre-auth phase (the UI shows a YubiKey prompt banner during this window).
 - `push:repo:progress` — a repo is about to be pushed.
 - `push:repo:complete` — a repo finished (may include per-branch errors).
@@ -50,7 +50,7 @@ Every push session is recorded in the `push_history` table with repo ID, scope, 
 ## API
 
 ```
-POST /api/push          — start a batch push session (body: { scope, repo_ids? })
-POST /api/push/:repoId  — push a single repo
-GET  /api/push/status   — current push session status
+POST /api/work/push            — start a batch push session (body: { scope, repo_ids? })
+POST /api/work/repos/:id/push  — push a single repo
+GET  /api/work/push/status     — current push session status
 ```
