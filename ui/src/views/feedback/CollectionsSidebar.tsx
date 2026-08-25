@@ -357,6 +357,7 @@ export function CollectionsSidebar({
                         key={`subgroup:${subgroupKey}`}
                         id={`briefing-subgroup-${group.id}-${index}`}
                         presentation="folder"
+                        nesting="nested"
                         bodyAs="ul"
                         bodyClassName="feedback-collections-sidebar__list"
                         label={entry.name}
@@ -383,6 +384,7 @@ export function CollectionsSidebar({
                   key={bundle.id}
                   id={`briefing-bundle-${bundle.id}`}
                   presentation="folder"
+                  nesting="root"
                   bodyAs="ul"
                   bodyClassName="feedback-collections-sidebar__list"
                   label={bundle.name}

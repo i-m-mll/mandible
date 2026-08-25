@@ -116,6 +116,7 @@ describe('SidebarDisclosureRegion through typed SidebarGroupNode consumers', () 
       <SidebarGroupNode
         id="chat-project-mandible"
         presentation="folder"
+        nesting="nested"
         leadingIcon={<span>F</span>}
         label="Mandible"
         count={2}

@@ -40,9 +40,19 @@ type SidebarGroupNodeCommonProps = {
   };
 };
 
+/**
+ * Where a folder sits in the ownership tree. It is required rather than
+ * defaulted because the two cases are otherwise identical to a reader: a
+ * folder owned by the category above it and a folder owned by nothing render
+ * the same glyph, count and heading, so a caller that never states its depth
+ * is the exact defect this discriminant exists to make unrepresentable.
+ */
+type SidebarGroupNesting = 'root' | 'nested';
+
 export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
   | {
     presentation: 'category';
+    nesting?: never;
     leadingIcon?: never;
     count?: never;
     countLabel?: never;
@@ -50,6 +60,7 @@ export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
   }
   | {
     presentation: 'folder';
+    nesting: SidebarGroupNesting;
     leadingIcon: ComponentChildren;
     count?: number;
     countLabel?: string;
@@ -65,6 +76,7 @@ export function SidebarGroupNode({
   countLabel,
   countVisibility = 'always',
   presentation,
+  nesting,
   expanded,
   onToggle,
   selection,
@@ -80,6 +92,9 @@ export function SidebarGroupNode({
   action,
   drag,
 }: SidebarGroupNodeProps): JSX.Element {
+  // A category is the top of a sidebar tree by construction, so it has no
+  // nesting discriminant to state; every folder must state its own.
+  const depth = presentation === 'category' ? 'root' : nesting;
   const headingId = `${id}-heading`;
   const disclosureId = `${id}-disclosure`;
   const bodyId = `${id}-body`;
@@ -108,8 +123,9 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation} sidebar-group-node--${depth}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
+      data-sidebar-node-nesting={depth}
       data-testid={testIds?.root}
     >
       <div

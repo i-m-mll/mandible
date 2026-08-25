@@ -3279,6 +3279,7 @@ export function ConversationsView({
                     key={group.key}
                     id={`chat-project-${index}`}
                     presentation="folder"
+                    nesting="nested"
                     bodyClassName="chat-project-group__items"
                     label={group.label}
                     count={group.total}

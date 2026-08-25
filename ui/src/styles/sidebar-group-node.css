@@ -1,5 +1,36 @@
 .sidebar-group-node {
   margin-bottom: 10px;
+
+  --sidebar-node-root-inset: 7px;
+  --sidebar-node-step: 12px;
+  --sidebar-node-icon-column: 22px;
+}
+
+/*
+ * Ownership depth.
+ *
+ * A node's title column starts at its parent region's content inset, and its
+ * own children start one advance further in: the icon column for a folder, so
+ * they align under its label, and a plain step for a category, which has no
+ * icon to align to. Depth therefore accumulates through the tree instead of
+ * being a two-row table of constants, and a third level indents correctly
+ * without anyone adding a rule for it.
+ *
+ * A node declared `root` pins to the root inset rather than reading its
+ * surroundings, so placement alone can never silently change a node's stated
+ * ownership.
+ */
+.sidebar-group-node--root {
+  --sidebar-node-parent-inset: var(--sidebar-node-root-inset);
+}
+
+/*
+ * Captured under a second name on purpose: reading and redefining one custom
+ * property on the same element is a cycle, which CSS resolves by throwing the
+ * declaration away.
+ */
+.sidebar-group-node--nested {
+  --sidebar-node-parent-inset: var(--sidebar-title-column-inset, var(--sidebar-node-root-inset));
 }
 
 .sidebar-disclosure-region {
@@ -42,7 +73,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
-  padding: 7px 7px 6px;
+  padding: 7px 7px 6px var(--sidebar-node-parent-inset);
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -180,11 +211,29 @@
 }
 
 .sidebar-group-node--category > .sidebar-disclosure-region {
-  --sidebar-title-column-inset: 7px;
+  position: relative;
+  --sidebar-title-column-inset: calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-step));
 }
 
 .sidebar-group-node--folder > .sidebar-disclosure-region {
-  --sidebar-title-column-inset: 29px;
+  --sidebar-title-column-inset: calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column));
+}
+
+/*
+ * The category's extent, drawn. Indentation alone is a relative signal: it
+ * says a node sits deeper than the one above it, but nothing marks where a
+ * category stops, so the first ungrouped node after one still reads as its
+ * last child. The spine gives containment a visible edge to fall outside of.
+ */
+
+.sidebar-group-node--category > .sidebar-disclosure-region::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-node-parent-inset) + (var(--sidebar-node-step) / 2));
+  width: 1px;
+  background: var(--border-muted);
 }
 
 .sidebar-group-node__show-more:hover {

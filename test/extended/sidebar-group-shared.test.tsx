@@ -56,6 +56,7 @@ describe('shared sidebar group presentation', () => {
           <SidebarGroupNode
             id="project-mandible"
             presentation="folder"
+            nesting="nested"
             leadingIcon={<span>F</span>}
             label="Mandible"
             count={12}
@@ -125,14 +126,10 @@ describe('shared sidebar group presentation', () => {
       /\.sidebar-group-node--folder > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(folderHeading).toContain('color: var(--text-primary)');
-    const rootColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,
-    )?.[1] ?? '';
-    const folderColumn = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > \.sidebar-disclosure-region \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(rootColumn).toContain('--sidebar-title-column-inset: 7px');
-    expect(folderColumn).toContain('--sidebar-title-column-inset: 29px');
+    // The title-column insets used to be pinned here as the literal 7px/29px
+    // constants they once were. They are now derived per depth, and what
+    // matters is the rendered result, which
+    // test/browser/briefing-sidebar-ownership-depth.test.tsx measures.
     const showMoreRule = sidebarGroupStylesheet.match(
       /\.sidebar-group-node__show-more \{([^}]*)\}/,
     )?.[1] ?? '';
@@ -155,7 +152,7 @@ describe('shared sidebar group presentation', () => {
         action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress }}
         testIds={{ root: 'chats-group', heading: 'chats-heading', action: 'chats-action' }}
       >
-        <SidebarGroupNode presentation="folder" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: <SidebarNewChatIcon />, onPress: () => undefined }}>
+        <SidebarGroupNode presentation="folder" nesting="nested" id="project" label="Project" leadingIcon={<span>F</span>} expanded onToggle={() => undefined} action={{ label: 'New project chat', icon: <SidebarNewChatIcon />, onPress: () => undefined }}>
           <span data-testid="descendant">Leaf</span>
         </SidebarGroupNode>
       </SidebarGroupNode>,

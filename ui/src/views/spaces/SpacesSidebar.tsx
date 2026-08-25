@@ -774,6 +774,7 @@ export function SpacesSidebar({
               key={kg.key}
               id={`spaces-group-${kg.key}`}
               presentation="folder"
+              nesting="root"
               label={projectName}
               count={kg.group.spaces.length}
               countLabel={`${kg.group.spaces.length} space${kg.group.spaces.length === 1 ? '' : 's'} in ${projectName}`}
