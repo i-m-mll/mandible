@@ -1,0 +1,417 @@
+/**
+ * @vitest-environment node
+ *
+ * Self-rebuild event ordering, history projection, and self-merge restart drain.
+ *
+ * Split out of the former 6,122-line `test/auth-queue.test.ts` (issue 9e40a31).
+ * Vitest parallelises across files and never within one, so that single file was
+ * 98.9% of the default gate's wall clock. Test names and assertions are
+ * unchanged; the shared helpers live in `test/helpers/auth-queue-fixtures.ts`.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { AuthQueue } from "../src/auth-queue.js";
+import { AuthHookManager } from "../src/auth-hooks.js";
+import type { SseEvent } from "../src/types.js";
+import { commitOnBranch, createAuthCheckRepo, createMigratedDb, createNoopHookManager, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+
+describe("auth queue", () => {
+  describe("self-rebuild event ordering", () => {
+    it("broadcasts auth:resolved before scheduling self-rebuild exit", async () => {
+      const events: SseEvent[] = [];
+      let exitScheduled = false;
+      let resolvedBeforeExit = false;
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+
+      // Mock setTimeout to detect when process.exit is scheduled
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        // The self-rebuild uses a 2000ms timeout for process.exit
+        if (ms === 2000) {
+          exitScheduled = true;
+          // Don't actually call process.exit — just record it
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      try {
+        commitOnBranch(repo, "feature/self-fix", { "self.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
+          hookManager: createNoopHookManager(),
+          broadcast: (event) => {
+            events.push(event);
+            if (event.event === "auth:resolved") {
+              // At the moment auth:resolved fires, exit should NOT yet be scheduled
+              resolvedBeforeExit = !exitScheduled;
+            }
+          },
+          executor: async () => ({
+            exit_code: 0,
+            signal: null,
+            stdout: "Merge made by recursive.\n",
+            stderr: "",
+            output: "Merge made by recursive.\n",
+            started_at: Date.now(),
+            finished_at: Date.now()
+          })
+        });
+
+        const request = queue.submit({
+          command: "mandible auth merge feature/self-fix --into main",
+          title: "Self-merge",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/self-fix",
+          cwd: repo,
+          execution_mode: "daemon"
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        // Give the post-execution code time to run (setTimeout scheduling)
+        await new Promise((resolve) => originalSetTimeout(resolve, 100));
+
+        // Verify auth:resolved was broadcast
+        expect(events.some((e) => e.event === "auth:resolved")).toBe(true);
+        // Verify it fired before the exit was scheduled
+        expect(resolvedBeforeExit).toBe(true);
+        // Verify exit WAS scheduled (the self-rebuild detection works)
+        expect(exitScheduled).toBe(true);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Bug: 645f8a8 — the readiness gate relies on mandible:rebuilding being
+    // broadcast BEFORE the post-merge hooks run (so the splash is up during the
+    // build), and on auth:resolved remaining ordered after it. This locks that
+    // ordering in even as readiness wiring evolves.
+    it("broadcasts mandible:rebuilding before hooks run and before auth:resolved", async () => {
+      const events: SseEvent[] = [];
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+
+      // Prevent the real self-rebuild process.exit(0) from killing the test run.
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        if (ms === 2000) {
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      // A hook manager that records, in the same event stream, the moment hooks
+      // run — so we can assert mandible:rebuilding fired strictly before it.
+      const hookManager = {
+        executeHooks: async () => {
+          events.push({ event: "test:hooks-ran", data: {} });
+          return [];
+        },
+      } as unknown as AuthHookManager;
+
+      try {
+        commitOnBranch(repo, "feature/order-fix", { "order.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
+          hookManager,
+          broadcast: (event) => events.push(event),
+          executor: async () => ({
+            exit_code: 0,
+            signal: null,
+            stdout: "Merge made by recursive.\n",
+            stderr: "",
+            output: "Merge made by recursive.\n",
+            started_at: Date.now(),
+            finished_at: Date.now()
+          })
+        });
+
+        const request = queue.submit({
+          command: "mandible auth merge feature/order-fix --into main",
+          title: "Self-merge ordering",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/order-fix",
+          cwd: repo,
+          execution_mode: "daemon"
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        await new Promise((resolve) => originalSetTimeout(resolve, 50));
+
+        const indexOf = (name: string) => events.findIndex((e) => e.event === name);
+        const rebuildingIdx = indexOf("mandible:rebuilding");
+        const hooksIdx = indexOf("test:hooks-ran");
+        const resolvedIdx = indexOf("auth:resolved");
+
+        expect(rebuildingIdx).toBeGreaterThanOrEqual(0);
+        expect(hooksIdx).toBeGreaterThanOrEqual(0);
+        expect(resolvedIdx).toBeGreaterThanOrEqual(0);
+        // rebuilding strictly before hooks, and before auth:resolved.
+        expect(hooksIdx).toBeGreaterThan(rebuildingIdx);
+        expect(resolvedIdx).toBeGreaterThan(rebuildingIdx);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it("uses a 2-second delay for self-rebuild exit to allow event delivery", async () => {
+      let exitDelayMs: number | undefined;
+      const lifecycleEvents: string[] = [];
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        // Capture the delay used for the self-rebuild exit
+        if (ms !== undefined && ms >= 1000) {
+          exitDelayMs = ms;
+          return originalSetTimeout(fn, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      try {
+        commitOnBranch(repo, "feature/delay-test", { "delay.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
+          hookManager: {
+            executeHooks: async () => {
+              lifecycleEvents.push("hooks");
+              return [];
+            },
+          } as unknown as AuthHookManager,
+          restartAvailability: {
+            markRebuildStarted: (generationId) => {
+              lifecycleEvents.push(`rebuild:${generationId}`);
+              return generationId ?? null;
+            },
+            markShutdownStarted: (generationId) => {
+              lifecycleEvents.push(`shutdown:${generationId}`);
+              return true;
+            },
+          },
+          restartFn: () => lifecycleEvents.push("restart"),
+          executor: async () => ({
+            exit_code: 0,
+            signal: null,
+            stdout: "Merge made by recursive.\n",
+            stderr: "",
+            output: "Merge made by recursive.\n",
+            started_at: Date.now(),
+            finished_at: Date.now()
+          })
+        });
+
+        const request = queue.submit({
+          command: "mandible auth merge feature/delay-test --into main",
+          title: "Self-merge delay test",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/delay-test",
+          cwd: repo,
+          execution_mode: "daemon"
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        const restartDeadline = Date.now() + 2_000;
+        while (!lifecycleEvents.includes("restart") && Date.now() < restartDeadline) {
+          await new Promise((resolve) => originalSetTimeout(resolve, 10));
+        }
+
+        // Bug: 03d6cb0 — the delay must be >= 2000ms to give the channel
+        // server time to receive and process the auth:resolved event.
+        expect(exitDelayMs).toBe(2000);
+        expect(lifecycleEvents).toEqual([
+          `rebuild:${request.id}`,
+          "hooks",
+          `shutdown:${request.id}`,
+          "restart",
+        ]);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("self-merge restart drain", () => {
+    it("parks a newly-approved execution while a self-merge restart is pending", async () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+      const executed: string[] = [];
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        // Neutralize the self-rebuild process.exit so the test keeps running.
+        if (ms === 2000) {
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      let releaseHook: (() => void) | null = null;
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      // Hold the self-merge in its hook phase, keeping admission closed while we
+      // approve a second request.
+      const hookManager = {
+        executeHooks: async () => {
+          await hookGate;
+          return [];
+        },
+      } as unknown as AuthHookManager;
+
+      try {
+        commitOnBranch(repo, "feature/self-park", { "park.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
+          hookManager,
+          executor: async (options) => {
+            executed.push(options.request_id);
+            return {
+              exit_code: 0,
+              signal: null,
+              stdout: "",
+              stderr: "",
+              output: "",
+              started_at: Date.now(),
+              finished_at: Date.now(),
+            };
+          },
+        });
+
+        const selfMerge = queue.submit({
+          command: "mandible auth merge feature/self-park --into main",
+          title: "Self-merge",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/self-park",
+          cwd: repo,
+          execution_mode: "daemon",
+        });
+        queue.approve(selfMerge.id);
+
+        // Wait for the self-merge to enter its hook phase (admission closed).
+        const deadline = Date.now() + 2000;
+        while (!queue.isRebuilding && Date.now() < deadline) {
+          await new Promise((resolve) => originalSetTimeout(resolve, 10));
+        }
+        expect(queue.isRebuilding).toBe(true);
+
+        // A request approved during the rebuild window must be parked, not run.
+        const other = queue.submit({
+          command: "echo other",
+          title: "Other",
+          execution_mode: "daemon",
+        });
+        queue.approve(other.id);
+        expect(queue.getRequest(other.id)?.status).toBe("pending");
+
+        releaseHook?.();
+        await waitForStatus(queue, selfMerge.id, "completed");
+        await new Promise((resolve) => originalSetTimeout(resolve, 50));
+
+        // Parked request stayed pending and never reached the executor.
+        expect(queue.getRequest(other.id)?.status).toBe("pending");
+        expect(executed).toEqual([selfMerge.id]);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it("fast-recovers an execution orphaned by a recorded self-merge shutdown", () => {
+      const db = createMigratedDb();
+      const now = 5_000_000;
+      const q1 = new AuthQueue({ db, now: () => now });
+      const req = q1.submit({
+        command: "echo work",
+        title: "Interrupted",
+        execution_mode: "daemon",
+      });
+      q1.dispose();
+
+      // Approved ~10 s before the daemon exited to rebuild, killed mid-execution
+      // (executing, no exit code). Recent enough that the 5-minute threshold path
+      // would NOT recover it.
+      db.prepare(
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, last_executed_at = ?, exit_code = NULL WHERE id = ?"
+      ).run(now - 10_000, now - 9_000, req.id);
+      // Durable marker recorded by the self-merge just before exit.
+      db.prepare(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).run("auth_self_merge_shutdown_at", String(now - 5_000));
+
+      const events: SseEvent[] = [];
+      const q2 = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
+
+      const recovered = q2.getRequest(req.id);
+      // A non-merge execution cannot be repository-recovered → completed as failed.
+      expect(recovered?.status).toBe("completed");
+      expect(recovered?.exit_code).toBe(1);
+      // Marker is consumed (one-shot).
+      const marker = db
+        .prepare("SELECT value FROM meta WHERE key = ?")
+        .get("auth_self_merge_shutdown_at");
+      expect(marker).toBeUndefined();
+      expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
+
+      q2.dispose();
+      db.close();
+    });
+
+    it("does not fast-recover a recent stuck execution without a shutdown marker", () => {
+      const db = createMigratedDb();
+      const now = 5_000_000;
+      const q1 = new AuthQueue({ db, now: () => now });
+      const req = q1.submit({
+        command: "echo work",
+        title: "Recent",
+        execution_mode: "daemon",
+      });
+      q1.dispose();
+
+      db.prepare(
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, exit_code = NULL WHERE id = ?"
+      ).run(now - 10_000, req.id);
+      // No shutdown marker recorded.
+
+      const q2 = new AuthQueue({ db, now: () => now });
+      // Recent (< 5 min) with no marker → left executing for the threshold path.
+      expect(q2.getRequest(req.id)?.status).toBe("executing");
+
+      q2.dispose();
+      db.close();
+    });
+  });
+});
