@@ -42,7 +42,7 @@ EOF
 }
 
 cmd_archive_state() {
-  local action="$1" briefing_ref="" json=0 response
+  local action="$1" briefing_ref="" json=0 response encoded
   shift
   while (( $# > 0 )); do
     case "$1" in
@@ -52,8 +52,12 @@ cmd_archive_state() {
     esac
   done
   [[ -n "$briefing_ref" ]] || die "Usage: mandible briefing $action <briefing-ref> [--json]" 2
-  response="$(api_send POST "/api/briefings/$(urlencode "$briefing_ref")/$action" '{}')" \
-    || die "Failed to ${action} Briefing." 1
+  encoded="$(urlencode "$briefing_ref")"
+  case "$action" in
+    archive) response="$(api_send POST "/api/briefings/$encoded/archive" '{}')" || die "Failed to archive Briefing." 1 ;;
+    restore) response="$(api_send POST "/api/briefings/$encoded/restore" '{}')" || die "Failed to restore Briefing." 1 ;;
+    *) die "Unknown archive state: $action" 2 ;;
+  esac
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else

@@ -65,9 +65,11 @@ case "$command_name" in
         *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
       esac
     done
-    path="/api/auth/clearances"
-    [[ -z "$request_id" ]] || path="$path?request_id=$(jq -rn --arg v "$request_id" '$v|@uri')"
-    response=$(api_get "$path") ;;
+    if [[ -n "$request_id" ]]; then
+      response=$(api_get "/api/auth/clearances?request_id=$(jq -rn --arg v "$request_id" '$v|@uri')")
+    else
+      response=$(api_get "/api/auth/clearances")
+    fi ;;
   show)
     clearance_id="${1:-}"; [[ -n "$clearance_id" ]] || { usage >&2; exit 2; }; shift
     [[ "${1:-}" != "--json" ]] || { json=1; shift; }

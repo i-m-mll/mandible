@@ -43,6 +43,17 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/umbrella.sh:82 api_get \"$path\") \\",
 ] as const;
 
+// Subcommands that are deliberately unavailable over the file transport. The
+// Interface Contract denies approval, merge, admin, and config routes there,
+// so these call sites are correct and their routes are correctly registered
+// "deny". The assertion is an exact match, not a filter: a new denied call
+// site fails here rather than escaping the coverage lint.
+const EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES = [
+  "cli/auth-clearance.sh:69 GET /api/auth/clearances",
+  "cli/auth-clearance.sh:71 GET /api/auth/clearances",
+  "cli/auth-clearance.sh:77 GET /api/auth/clearances/:param",
+] as const;
+
 describe("CLI API route coverage", () => {
   it("keeps static CLI API calls covered by registered file-RPC route policy", () => {
     const policies = collectRoutePolicies();
@@ -51,7 +62,7 @@ describe("CLI API route coverage", () => {
     const denied = refs.filter((ref) => policies.get(routeKey(ref.method, ref.route)) === "deny");
 
     expect(formatRefs(missing)).toEqual([]);
-    expect(formatRefs(denied)).toEqual([]);
+    expect(formatRefs(denied)).toEqual([...EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES].sort());
     expect(formatUnresolved(unresolved)).toEqual([...EXPECTED_DYNAMIC_CLI_API_CALL_SITES].sort());
   });
 
