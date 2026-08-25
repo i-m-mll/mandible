@@ -4,6 +4,7 @@ import { getLedgerIssueHead } from "./ledger/issue-heads.js";
 import { resolveOperationalIssueRef } from "./ledger/operational-links.js";
 import { validateBriefingGroupPromotionCandidate } from "./feedback/briefing-groups.js";
 import { BriefingStoreError } from "./feedback/briefings.js";
+import { AUTH_REQUEST_ACTION_KINDS } from "./types.js";
 import type {
   AuthRequest,
   AuthRequestAction,
@@ -12,16 +13,26 @@ import type {
   AuthRequestActionState,
 } from "./types.js";
 
-const VALID_ACTION_KINDS: AuthRequestActionKind[] = [
-  "comment_add",
-  "issue_close",
-  "worker_status_set",
-  "label_add",
-  "label_rm",
-  "checkpoint_add",
-  "link_add",
-  "briefing_group_promote",
-];
+/**
+ * Whether a staged action must be withheld when convergence has not completed.
+ *
+ * A `Record` keyed by the kind union rather than a list of the withheld kinds:
+ * adding a kind without classifying it is then a compile error, instead of the
+ * new kind silently defaulting to "apply anyway". Withhold anything that
+ * mutates canonical state a human would want to have converged first.
+ */
+export const WITHHOLD_UNTIL_CONVERGED: Record<AuthRequestActionKind, boolean> = {
+  comment_add: false,
+  issue_close: true,
+  worker_status_set: false,
+  label_add: false,
+  label_rm: false,
+  checkpoint_add: false,
+  link_add: false,
+  briefing_group_promote: true,
+};
+
+const VALID_ACTION_KINDS: readonly AuthRequestActionKind[] = AUTH_REQUEST_ACTION_KINDS;
 const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "skipped_stale", "vetoed"];
 const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
 

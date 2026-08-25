@@ -11,6 +11,13 @@ import type {
   AttributionReadProjection,
   ReadUserIdentity,
 } from "./identity/read-projection.js";
+import { AUTH_REQUEST_ACTION_KINDS } from "./contracts.js";
+import type {
+  AuthRequestActionKind,
+  AuthRequestActionState,
+  AuthRequestOutcome,
+  AuthRequestStatus,
+} from "./contracts.js";
 import type { SessionIdentityMismatch } from "./identity/session-mismatch.js";
 import type { AnthropicBillingPosture } from "./claude-lane-policy.js";
 
@@ -139,38 +146,20 @@ export interface Session {
 
 // --- Auth types (P3) ---
 
-export type AuthRequestStatus =
-  | "pending"
-  | "executing"
-  | "approved"   // legacy — kept for DB backward compat, recovery converts to executing
-  | "needs_rebase"
-  | "rejected"
-  | "expired"
-  | "completed"
-  | "dismissed";
-// Bug: 93c57c4 — outcome is the terminal result of an auth request, distinct from lifecycle status.
-// null means the request has not yet reached a terminal state.
-export type AuthRequestOutcome =
-  | "succeeded"   // completed with exit_code === 0
-  | "failed"      // completed with exit_code !== 0
-  | "needs_rebase" // queued merge was invalidated by another completed merge
-  | "rejected"    // user rejected
-  | "dismissed"   // dismissed without executing
-  | "expired"     // TTL elapsed before execution
-  | null;         // still in lifecycle (pending / executing / approved)
+// Lifecycle status and terminal outcome are owned by contracts.ts, alongside
+// `computeAuthRequestOutcome`, which is the one mapping between them. Note
+// "approved" is legacy — kept for DB backward compat; recovery converts it to
+// "executing". Outcome `null` means "still in lifecycle", so anything that
+// widens the status union must be classified in that function.
+export type { AuthRequestStatus, AuthRequestOutcome };
 export type AuthExecutionMode = "daemon" | "remote";
 // Bug: dd21c1e — generalize auth queue to support action types beyond merges
 export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "data-delete";
-export type AuthRequestActionKind =
-  | "comment_add"
-  | "issue_close"
-  | "worker_status_set"
-  | "label_add"
-  | "label_rm"
-  | "checkpoint_add"
-  | "link_add"
-  | "briefing_group_promote";
-export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
+// Owned by contracts.ts, which the UI imports directly. Re-exported here so the
+// daemon's existing `./types.js` imports keep working against one definition
+// rather than a second hand-maintained copy that drifts silently.
+export { AUTH_REQUEST_ACTION_KINDS };
+export type { AuthRequestActionKind, AuthRequestActionState };
 
 export interface AuthRequestActionInput {
   kind: AuthRequestActionKind;

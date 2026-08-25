@@ -306,6 +306,10 @@ describe("client-auth durable attribution", () => {
     const executionEvidence = addAttributionEvidence(db, {
       evidence_method: "credential_signature",
       credential_id: signingCredential.id,
+      // The recorded verification RESULT. The projection reads this, not the
+      // method name — evidence is written with this method even when
+      // verification fails, so the method name alone claims nothing.
+      details: { verified: true, fingerprint: `SHA256:${"S".repeat(43)}` },
     });
     db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
       .run(executionEvidence.id, requestId);
@@ -316,7 +320,7 @@ describe("client-auth durable attribution", () => {
           evidence_method: "credential_signature",
           credential: { id: signingCredential.id, label: "Operator signing key" },
         },
-        verified_signature: true,
+        merge_signature: { state: "verified" },
       },
     });
 
@@ -337,7 +341,19 @@ describe("client-auth durable attribution", () => {
         evidence_method: "credential_signature",
         credential: { id: signingCredential.id, label: "Operator signing key" },
       },
-      verified_signature: true,
+      merge_signature: { state: "verified" },
+    });
+
+    // A signature that did not verify must report `unverified`, never
+    // `verified` and never silently absent.
+    db.prepare("UPDATE attribution_evidence SET details_json = ? WHERE id = ?")
+      .run(JSON.stringify({ verified: false, reason: "verification_error" }), executionEvidence.id);
+    const failedDetail = await router.invoke({
+      method: "GET",
+      url: `/api/auth/request/${requestId}`,
+    });
+    expect(failedDetail.body).toMatchObject({
+      merge_signature: { state: "unverified", reason: "verification_error" },
     });
 
     db.prepare("UPDATE attribution_evidence SET evidence_method = 'session_claim' WHERE id = ?")
@@ -348,7 +364,7 @@ describe("client-auth durable attribution", () => {
     });
     expect(nonSignatureDetail.body).toMatchObject({
       execution_evidence: { evidence_method: "session_claim" },
-      verified_signature: false,
+      merge_signature: { state: "none" },
     });
 
     const mismatched = await router.invoke({

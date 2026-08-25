@@ -1279,6 +1279,16 @@ export type ReadUserIdentity = {
   kind: 'human' | 'agent' | 'system' | 'external';
 };
 
+/**
+ * Mirrors `MergeSignatureClaim` in src/identity/read-projection.ts. Three
+ * mutually exclusive states, so "verification failed" cannot render as
+ * "verified" the way the previous `verified_signature: boolean` allowed.
+ */
+export type MergeSignatureClaim =
+  | { state: 'none' }
+  | { state: 'verified'; fingerprint: string | null }
+  | { state: 'unverified'; reason: string | null };
+
 export type AttributionReadProjection = {
   user: ReadUserIdentity | null;
   evidence_method: string | null;

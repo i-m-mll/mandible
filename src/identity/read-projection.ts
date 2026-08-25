@@ -20,17 +20,38 @@ export interface AttributionReadProjection {
   credential: ReadCredentialIdentity | null;
 }
 
+/**
+ * What the merge-signature evidence actually says, as three mutually exclusive
+ * states rather than one boolean.
+ *
+ * `verified_signature: boolean` could not express the middle case. A merge
+ * whose signature verification *failed* still records
+ * `evidence_method: "credential_signature"` (auth-queue.ts writes that method
+ * unconditionally, including from its `catch`, and puts the result in the
+ * evidence `details` bag), so deriving the badge from the method name reported
+ * "Verified signature" for a signature that had not verified. The state the
+ * approver most needs to see was the one the type could not represent.
+ */
+export type MergeSignatureClaim =
+  /** No credential-signature evidence attached — nothing is being claimed. */
+  | { state: "none" }
+  /** Evidence attached and `details.verified === true`. */
+  | { state: "verified"; fingerprint: string | null }
+  /** Evidence attached and verification did not succeed. `reason` is the recorded cause. */
+  | { state: "unverified"; reason: string | null };
+
 export interface AuthAttributionReadFields {
   requester: ReadUserIdentity | null;
   approver: ReadUserIdentity | null;
   execution_evidence: AttributionReadProjection | null;
-  verified_signature: boolean;
+  merge_signature: MergeSignatureClaim;
 }
 
 interface EvidenceRow {
   id: string;
   evidence_method: string;
   credential_id: string | null;
+  details_json: string;
 }
 
 interface CredentialRow {
@@ -81,11 +102,45 @@ export class AttributionReadResolver {
     if (!evidenceId) return null;
     if (this.evidence.has(evidenceId)) return this.evidence.get(evidenceId) ?? null;
     const row = this.db.prepare(
-      "SELECT id, evidence_method, credential_id FROM attribution_evidence WHERE id = ?",
+      "SELECT id, evidence_method, credential_id, details_json FROM attribution_evidence WHERE id = ?",
     ).get(evidenceId) as EvidenceRow | undefined;
     const evidence = row ?? null;
     this.evidence.set(evidenceId, evidence);
     return evidence;
+  }
+
+  /**
+   * The signature claim carried by one evidence row. Fails closed: evidence
+   * whose `details.verified` is anything other than exactly `true` — including
+   * a details bag that will not parse — is `unverified`, never `verified`.
+   */
+  mergeSignatureClaim(evidenceId: string | null | undefined): MergeSignatureClaim {
+    const evidence = this.evidenceRow(evidenceId);
+    if (!evidence || evidence.evidence_method !== "credential_signature") {
+      return { state: "none" };
+    }
+    let details: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(evidence.details_json);
+      details = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      // An unreadable details bag is not proof of verification. Say so, and say
+      // why, rather than silently degrading to the "none" state — evidence is
+      // attached, so "nothing is claimed" would also be untrue.
+      return { state: "unverified", reason: "evidence_details_unreadable" };
+    }
+    if (details.verified === true) {
+      return {
+        state: "verified",
+        fingerprint: typeof details.fingerprint === "string" ? details.fingerprint : null,
+      };
+    }
+    return {
+      state: "unverified",
+      reason: typeof details.reason === "string" ? details.reason : null,
+    };
   }
 
   private credential(credentialId: string | null | undefined): ReadCredentialIdentity | null {
@@ -121,6 +176,8 @@ export function authAttributionReadFields(
     requester: resolver.user(request.requested_by_user_id),
     approver: resolver.user(request.approved_by_user_id),
     execution_evidence: executionEvidence,
-    verified_signature: executionEvidence?.evidence_method === "credential_signature",
+    // Derived from the recorded verification RESULT, not from the evidence
+    // method name. Those disagree whenever verification failed.
+    merge_signature: resolver.mergeSignatureClaim(request.execution_evidence_id),
   };
 }

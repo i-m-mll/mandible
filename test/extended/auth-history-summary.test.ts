@@ -72,6 +72,7 @@ function attributeRequest(
   const evidence = addAttributionEvidence(db, {
     evidence_method: "credential_signature",
     credential_id: credential.id,
+    details: { verified: true },
   });
   db.prepare(
     "UPDATE auth_requests SET approved_by_user_id = ?, execution_evidence_id = ? WHERE id = ?",
@@ -158,7 +159,7 @@ describe("auth history summaries", () => {
     expect(summaryFields.approver?.id).toBe(approverId);
     expect(summaryFields.execution_evidence?.evidence_method).toBe("credential_signature");
     expect(summaryFields.execution_evidence?.credential?.id).toBe(credentialId);
-    expect(summaryFields.verified_signature).toBe(true);
+    expect(summaryFields.merge_signature).toEqual({ state: "verified", fingerprint: null });
   });
 
   it("keeps genuinely unset approval attribution null", () => {

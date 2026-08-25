@@ -15,6 +15,7 @@ import {
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
 import {
+  WITHHOLD_UNTIL_CONVERGED,
   addAuthRequestAction,
   countAuthRequestActions,
   deleteAuthRequestAction,
@@ -24,6 +25,8 @@ import {
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
+import { computeAuthRequestOutcome } from "./contracts.js";
+import { assertNever } from "./exhaustive.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
 import {
@@ -5486,7 +5489,7 @@ export class AuthQueue {
       if (action.state !== "staged") {
         continue;
       }
-      if (withholdClosures && (action.kind === "issue_close" || action.kind === "briefing_group_promote")) {
+      if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
         authLog("info", "auth_issue_closure_withheld", {
           subsystem: "auth",
           auth_request_id: request.id,
@@ -5660,6 +5663,16 @@ export class AuthQueue {
           appliedAt: now,
         };
       }
+      default:
+        // This switch is statement-shaped — the cases `break` and control falls
+        // through to the unconditional `return { state: "applied" }` below — so
+        // TypeScript could not catch a new `AuthRequestActionKind` here. Before
+        // this guard, an unhandled kind did nothing and was then recorded as
+        // `applied` with `applied_at` set: a durable false attestation that a
+        // post-merge ledger action ran, on the protected-merge path, terminal
+        // and not replayable. Throwing hands it to the caller's catch, which
+        // records `failed` and logs `auth_deferred_action_failed`.
+        return assertNever(action.kind, `auth deferred ledger action ${action.id}`);
     }
     return { state: "applied", detail, appliedAt: now };
   }
@@ -6453,25 +6466,12 @@ export class AuthQueue {
     return Boolean(row);
   }
 
-  // Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
   // Consumers should use `outcome` to determine the terminal result of a request;
   // `status` is reserved for lifecycle state (pending → executing → completed, etc.).
+  // The mapping itself is canonical in contracts.ts — routes/inbox.ts derives the
+  // same fact and previously carried its own copy.
   private computeOutcome(request: AuthRequest): AuthRequestOutcome {
-    switch (request.status) {
-      case "rejected":
-        return "rejected";
-      case "dismissed":
-        return "dismissed";
-      case "expired":
-        return "expired";
-      case "needs_rebase":
-        return "needs_rebase";
-      case "completed":
-        return (request.exit_code != null && request.exit_code !== 0) ? "failed" : "succeeded";
-      default:
-        // pending, executing, approved — still in lifecycle
-        return null;
-    }
+    return computeAuthRequestOutcome(request.status, request.exit_code);
   }
 
   private buildResolvedPayload(request: AuthRequest): Record<string, unknown> {
