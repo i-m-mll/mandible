@@ -5,7 +5,7 @@ description: Continuations, auth results, work-unit handoffs, and other actionab
 
 # Inbox
 
-The Inbox collects everything that needs your attention: session handoff notes, auth request results, open issues on the current branch, work-unit continuations, and preset diff proposals. It is the primary mechanism for asynchronous communication between agents and the user.
+The Inbox collects everything that needs your attention: session handoff notes, auth request results, open issues on the current branch, and work-unit continuations. It is the primary mechanism for asynchronous communication between agents and the user.
 
 ## Layout
 
@@ -41,17 +41,13 @@ The detail panel shows the branch, linked issue, handoff timestamp, and the cont
 
 Issues on the current branch that are still open appear in the inbox as a reminder. They show a purple badge and link through to the Issues tab.
 
-### Preset diffs
-
-When an agent proposes changes to a preset's conventions, the diff is delivered as an inbox item with a yellow badge. The detail panel shows the preset name, description, and status (pending/accepted/rejected), with a link to review the diff in the Presets tab.
-
 ## Acknowledge All
 
 The **Ack All** button in the sidebar action bar dismisses all continuations and auth results at once. Issues and work-unit handoffs are not affected — they require explicit action.
 
 ## API
 
-The inbox is backed by `GET /api/inbox`, which aggregates data from sessions, auth requests, work units, and preset diffs. The `?branch=` query parameter filters to a specific branch.
+The inbox is backed by `GET /api/inbox`, which aggregates data from sessions, auth requests, and work units. The `?branch=` query parameter filters to a specific branch.
 
 Acknowledgments:
 

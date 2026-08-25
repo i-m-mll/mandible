@@ -15,7 +15,6 @@ Every auth request carries a `type` field that describes what kind of operation 
 | `force-push` | Force-push to a branch. Destructive by nature, so it requires explicit approval. |
 | `branch-delete` | Delete a branch. Used for cleanup after merges. |
 | `config-change` | Modify a configuration that affects system behavior (e.g., Mandible settings, signing config). |
-| `preset-promote` | Promote a preset diff into a permanent convention. Requires user review because it changes future agent behavior. |
 | `data-delete` | Delete stored data (conversations, sessions, etc.). Irreversible, so it's gated. |
 
 The type defaults to `merge` if not specified, which maintains backward compatibility with older CLI versions.

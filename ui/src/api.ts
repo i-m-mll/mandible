@@ -1,6 +1,5 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
-import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
@@ -96,7 +95,6 @@ export type {
   ResolverResult,
   ResolverRefKind,
 } from '../../src/contracts';
-export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 export type AuthRequestAction = ContractAuthRequestAction;
 
 export type InstanceInfo = {
@@ -387,9 +385,6 @@ function normalizeList<T>(payload: ApiList<T>): T[] {
     payload.artifacts ||
     payload.conversations ||
     payload.templates ||
-    payload.presets ||
-    payload.nodes ||
-    payload.diffs ||
     []
   );
 }
@@ -1984,8 +1979,6 @@ export type ConsoleSessionOptions = {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
-  /** Bug: 790433d — Preset IDs for dynamic preset switching (SDK only) */
-  presetIds?: string[];
 };
 
 export async function createConsoleSession(
@@ -1993,7 +1986,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
+  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -2029,7 +2022,6 @@ export async function createConsoleSession(
     backend_type?: ConsoleBackendType;
     channel_enabled?: boolean;
     transport_lane?: ConsoleTransportLane;
-    presetIds?: string[];
     runOptions?: Record<string, SessionRunOptionValue>;
   };
   const body: SessionBody = { label, command: '', args: [] };
@@ -2041,9 +2033,6 @@ export async function createConsoleSession(
   }
   if (options?.transport_lane) {
     body.transport_lane = options.transport_lane;
-  }
-  if (options?.presetIds) {
-    body.presetIds = options.presetIds;
   }
   if (options?.runOptions) body.runOptions = options.runOptions;
   // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
@@ -2190,12 +2179,12 @@ export async function getConsoleRunOptions(
 
 export async function getConsoleSessionOptions(sessionId: string): Promise<{
   runOptions: SessionRunOptionsSnapshot;
-  mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+  mandibleControls: { allowedTools: string[] | null };
 }> {
   const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`);
   return parseMaybeJson(response) as Promise<{
     runOptions: SessionRunOptionsSnapshot;
-    mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+    mandibleControls: { allowedTools: string[] | null };
   }>;
 }
 
@@ -2233,7 +2222,6 @@ export type MessageParams = {
   permission_mode: string | null;
   max_turns: number | null;
   max_cost_usd: number | null;
-  preset_ids: string | null;
   allowed_tools: string | null;
   created_at: number;
 };
@@ -3108,296 +3096,6 @@ export async function resolveArtifact(ref: string): Promise<ArtifactResolveResul
   const response = await apiGet(`/api/artifacts/resolve${query}`);
   const payload = (await parseMaybeJson(response)) as { resolution: ArtifactResolveResult };
   return payload.resolution;
-}
-
-// ── Presets API — Bug: e20c88e, Bug: 11f4f47 ──
-
-export async function fetchPresets(): Promise<Preset[]> {
-  const payload = await cachedApiGetJson<ApiList<Preset>>('/api/presets');
-  return normalizeList(payload);
-}
-
-export const getPresets = fetchPresets;
-
-export async function createPreset(data: {
-  name: string;
-  description?: string;
-  markdown?: string;
-}): Promise<Preset> {
-  const response = await apiPost('/api/presets', data);
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function fetchPreset(id: string): Promise<PresetWithNodes> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
-  return (await parseMaybeJson(response)) as PresetWithNodes;
-}
-
-export async function getPreset(id: string): Promise<Preset> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function updatePreset(
-  id: string,
-  data: Partial<Preset>,
-): Promise<Preset> {
-  const response = await apiPut(`/api/presets/${encodeURIComponent(id)}`, data);
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function deletePreset(id: string): Promise<void> {
-  await apiDelete(`/api/presets/${encodeURIComponent(id)}`);
-}
-
-export async function fetchPresetNodes(presetId: string): Promise<PresetNode[]> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(presetId)}/nodes`);
-  const payload = (await parseMaybeJson(response)) as ApiList<PresetNode>;
-  return normalizeList(payload);
-}
-
-export async function updatePresetNodes(
-  presetId: string,
-  nodes: PresetNode[],
-): Promise<void> {
-  await apiPut(`/api/presets/${encodeURIComponent(presetId)}/nodes`, { nodes });
-}
-
-export async function addPresetNode(
-  presetId: string,
-  node: Partial<PresetNode>,
-): Promise<PresetNode> {
-  const response = await apiPost(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes`,
-    node,
-  );
-  const payload = (await parseMaybeJson(response)) as { node?: PresetNode } | PresetNode;
-  return (payload && typeof payload === 'object' && 'node' in payload) ? payload.node as PresetNode : payload as PresetNode;
-}
-
-export async function updatePresetNode(
-  presetId: string,
-  nodeId: string,
-  data: Partial<PresetNode>,
-): Promise<PresetNode> {
-  const response = await apiPut(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
-    data,
-  );
-  const payload = (await parseMaybeJson(response)) as { node?: PresetNode } | PresetNode;
-  return (payload && typeof payload === 'object' && 'node' in payload) ? payload.node as PresetNode : payload as PresetNode;
-}
-
-export async function deletePresetNode(
-  presetId: string,
-  nodeId: string,
-): Promise<void> {
-  await apiDelete(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
-  );
-}
-
-export async function reorderPresetNode(
-  presetId: string,
-  data: { nodeId: string; newParentId: string | null; newPosition: number },
-): Promise<void> {
-  await apiPatch(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes/reorder`,
-    data,
-  );
-}
-
-export async function fetchConventionLibrary(
-  query?: string,
-  limit?: number,
-  offset?: number,
-): Promise<LibraryConvention[]> {
-  const params = new URLSearchParams();
-  if (query) params.set('q', query);
-  if (limit != null) params.set('limit', String(limit));
-  if (offset != null) params.set('offset', String(offset));
-  const qs = params.toString();
-  const response = await apiGet(`/api/presets/library${qs ? '?' + qs : ''}`);
-  const payload = (await parseMaybeJson(response)) as ApiList<LibraryConvention>;
-  return normalizeList(payload);
-}
-
-export async function exportPreset(id: string): Promise<string> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}/export`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === 'string') return payload;
-  if (payload && typeof payload === 'object' && 'markdown' in payload) {
-    return String((payload as { markdown?: unknown }).markdown || '');
-  }
-  if (payload && typeof payload === 'object' && 'content' in payload) {
-    return String((payload as { content?: unknown }).content ?? '');
-  }
-  return '';
-}
-
-export async function importPreset(markdown: string): Promise<Preset> {
-  const response = await apiPost('/api/presets/import', { markdown });
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function fetchPresetDiffs(sessionId: string): Promise<PresetDiff[]> {
-  const response = await apiGet(
-    `/api/presets/diffs?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  const payload = (await parseMaybeJson(response)) as ApiList<PresetDiff>;
-  return normalizeList(payload);
-}
-
-export async function updatePresetDiff(
-  id: string,
-  status: string,
-): Promise<PresetDiff> {
-  const response = await apiPut(
-    `/api/presets/diffs/${encodeURIComponent(id)}`,
-    { status },
-  );
-  const payload = (await parseMaybeJson(response)) as { diff?: PresetDiff } | PresetDiff;
-  return (payload && typeof payload === 'object' && 'diff' in payload) ? payload.diff as PresetDiff : payload as PresetDiff;
-}
-
-export async function fetchPresetUnion(
-  sessionId: string,
-): Promise<{ text: string; tokenEstimate: number }> {
-  const response = await apiGet(
-    `/api/presets/union?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  return (await parseMaybeJson(response)) as { text: string; tokenEstimate: number };
-}
-
-export type PresetUnion = {
-  systemPrompt: string;
-  settingSources: string[];
-  totalTokens: number;
-};
-
-export type SessionPreset = {
-  preset_id: string;
-  preset_name: string;
-  version: number;
-  position: number;
-};
-
-export async function getPresetUnion(params: {
-  session_id?: string;
-  preset_ids?: string[];
-}): Promise<PresetUnion> {
-  const query = new URLSearchParams();
-  if (params.session_id) query.set('session_id', params.session_id);
-  if (params.preset_ids) query.set('preset_ids', params.preset_ids.join(','));
-  const qs = query.toString();
-  const payload = await cachedApiGetJson<Record<string, unknown>>(
-    `/api/presets/union${qs ? '?' + qs : ''}`,
-  );
-  // Server returns { text, tokenEstimate }; map to client type
-  return {
-    systemPrompt: (payload.systemPrompt ?? payload.text ?? '') as string,
-    settingSources: (payload.settingSources ?? []) as string[],
-    totalTokens: (payload.totalTokens ?? payload.tokenEstimate ?? 0) as number,
-  };
-}
-
-export async function getSessionPresets(
-  sessionId: string,
-): Promise<SessionPreset[]> {
-  const payload = await cachedApiGetJson<{ presets?: SessionPreset[] } | SessionPreset[]>(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-  );
-  if (Array.isArray(payload)) return payload;
-  return Array.isArray(payload?.presets) ? payload.presets : [];
-}
-
-export async function addSessionPreset(
-  sessionId: string,
-  presetId: string,
-  _position?: number,
-): Promise<void> {
-  await apiPost(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-    { presetIds: [presetId] },
-  );
-}
-
-export async function removeSessionPreset(
-  sessionId: string,
-  presetId: string,
-): Promise<void> {
-  await apiDelete(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets/${encodeURIComponent(presetId)}`,
-  );
-}
-
-// ── Convention-Setting Links API — Bug: 8baedeb ──
-
-export async function getSettingLinks(settingKey: string): Promise<ConventionSettingLink[]> {
-  const response = await apiGet(`/api/presets/links?setting_key=${encodeURIComponent(settingKey)}`);
-  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
-  return payload.links ?? [];
-}
-
-export async function getNodeLinks(nodeId: string): Promise<ConventionSettingLink[]> {
-  const response = await apiGet(`/api/presets/nodes/${encodeURIComponent(nodeId)}/links`);
-  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
-  return payload.links ?? [];
-}
-
-export async function createNodeLink(
-  nodeId: string,
-  settingKey: string,
-  linkType?: string,
-): Promise<ConventionSettingLink> {
-  const response = await apiPost(
-    `/api/presets/nodes/${encodeURIComponent(nodeId)}/links`,
-    { settingKey, linkType },
-  );
-  const payload = (await parseMaybeJson(response)) as { link?: ConventionSettingLink };
-  return payload.link as ConventionSettingLink;
-}
-
-export async function deleteSettingLink(linkId: string): Promise<void> {
-  await apiDelete(`/api/presets/links/${encodeURIComponent(linkId)}`);
-}
-
-export async function validateSessionPresets(sessionId: string): Promise<SessionValidationResult> {
-  const response = await apiGet(
-    `/api/presets/validate-session?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  return (await parseMaybeJson(response)) as SessionValidationResult;
-}
-
-export async function validatePresetIds(presetIds: string[]): Promise<SessionValidationResult> {
-  // Bug: 8baedeb — delegate to backend endpoint for accurate validation
-  // (client-side approach only checked link existence, not actual setting values)
-  const response = await apiPost('/api/presets/validate-preset-ids', { presetIds });
-  return (await parseMaybeJson(response)) as SessionValidationResult;
-}
-
-export async function getDefaultPresetIds(): Promise<string[]> {
-  try {
-    const response = await apiGet('/api/settings/default_preset_ids');
-    const payload = await parseMaybeJson(response);
-    if (payload && typeof payload === 'object' && 'value' in payload) {
-      const val = (payload as { value?: unknown }).value;
-      if (typeof val === 'string') {
-        try {
-          return JSON.parse(val) as string[];
-        } catch {
-          return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
-        }
-      }
-    }
-  } catch {
-    // Setting doesn't exist yet — return empty defaults
-  }
-  return [];
 }
 
 // --- Auth hooks API (Bug: 242d0c7) ---

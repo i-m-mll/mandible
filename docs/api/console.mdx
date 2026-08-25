@@ -52,7 +52,6 @@ Create a new console session. SDK, ACP, and spawn sessions start immediately. PT
 | `is_operator` | boolean | no | Whether this is the operator session |
 | `interaction_mode` | string | no | `inbox_only`, `direct`, or `both` (default: `both`) |
 | `backend_type` | string | no | `sdk`, `acp`, `pty`, or `spawn` (default: `sdk` for `claude`, `acp` for `codex`/`gemini`, `spawn` otherwise) |
-| `presetIds` | string[] | no | Convention preset IDs to attach |
 
 **Response:** `201 Created`
 
@@ -284,42 +283,3 @@ Kill and restart the operator session.
 
 **Response:** `200 OK` — operator session object.
 
-## Session-Preset Association
-
-Console sessions can have convention presets attached.
-
-### GET /api/console/sessions/:id/presets
-
-Get presets attached to a session.
-
-**Response:** `200 OK`
-
-```json
-{ "presets": [{ "session_id": "...", "preset_id": "...", "name": "...", "position": 0, ... }] }
-```
-
-### POST /api/console/sessions/:id/presets
-
-Add presets to a session.
-
-**Request body:**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `presetIds` | string[] | yes | Preset IDs to attach |
-
-**Response:** `200 OK`
-
-```json
-{ "ok": true }
-```
-
-### DELETE /api/console/sessions/:id/presets/:presetId
-
-Remove a preset from a session.
-
-**Response:** `200 OK`
-
-```json
-{ "ok": true }
-```

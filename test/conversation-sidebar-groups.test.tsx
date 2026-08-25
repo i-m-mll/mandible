@@ -231,7 +231,6 @@ describe('conversation sidebar groups', () => {
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const agySession: ConsoleSession = {
       id: 'agy-session', label: 'Agy review', agent_type: 'agy', interaction_mode: 'direct',
       pinned: false, status: 'running', is_operator: false, provider_session_id: 'agy-provider',

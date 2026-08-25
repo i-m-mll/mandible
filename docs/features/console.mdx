@@ -90,7 +90,6 @@ Key optional fields:
 - `is_operator` — Marks this as the system operator session (there can be only one).
 - `interaction_mode` — Controls how the session receives input: `"direct"` (prompts only), `"inbox_only"` (webhook events only), or `"both"`.
 - `allowed_tools` — An array of tool names pre-approved for automatic use (SDK and ACP permission-aware backends).
-- `presetIds` — Preset IDs whose convention content is computed into the system prompt (SDK backend only).
 - `provider_session_id` and `resume_at_message` — For resuming an existing Claude conversation at a specific point in its DAG.
 
 ### Agent Type Detection
@@ -214,6 +213,5 @@ Updatable options:
 - `allowedTools` — Update the auto-approved tool list.
 - `systemPrompt` — Override the system prompt.
 - `maxTurns` and `maxCostUsd` — Set turn and cost limits.
-- `presetIds` — Change which presets contribute to the system prompt.
 
 These updates take effect on the next prompt. Model and permission mode changes are also pushed to an active SDK query if one is in progress.

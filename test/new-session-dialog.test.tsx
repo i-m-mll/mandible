@@ -12,10 +12,7 @@ const getConsoleLanePolicy = vi.fn(async () => ({
 }));
 
 vi.mock("../ui/src/api", () => ({
-  getPresets: vi.fn(async () => []),
-  getDefaultPresetIds: vi.fn(async () => []),
   getSettings: vi.fn(async () => ({})),
-  validatePresetIds: vi.fn(async () => ({ warnings: [] })),
   getConsoleLanePolicy: (...args: []) => getConsoleLanePolicy(...args),
   getConsoleRunOptions: vi.fn(async () => ({
     backend: "test",

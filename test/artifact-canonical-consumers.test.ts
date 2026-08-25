@@ -23,13 +23,6 @@ import {
   saveArtifactDraft,
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
-import {
-  appendSessionInstructionArtifacts,
-  computePresetUnion,
-  listSessionInstructionArtifacts,
-  removeSessionInstructionArtifact,
-  replaceSessionInstructionArtifacts,
-} from "../src/presets.js";
 
 let db: Db;
 let tempDir = "";
@@ -244,44 +237,26 @@ describe("canonical artifact compatibility consumers", () => {
     });
   });
 
-  it("reads canonical-only session attachments and drafts through stable preset fields", () => {
+  it("reads canonical-only drafts through stable projection fields", () => {
     const recorded = recordArtifactVersion(db, {
       source_kind: "managed",
-      provider_id: "presets",
+      provider_id: "instructions",
       role: "instructions",
-      logical_name: "canonical-preset",
-      title: "Canonical preset",
+      logical_name: "canonical-instructions",
+      title: "Canonical instructions",
       content: "# Canonical\n\nUse canonical targets.\n",
-      series_key: "managed:presets:instructions:canonical-preset",
+      series_key: "managed:instructions:instructions:canonical-instructions",
     }, 2000, tempDir);
-    replaceSessionInstructionArtifacts(db, "session-canonical", [recorded.version.id]);
     saveArtifactDraft(db, {
       ref: recorded.series.id,
       content: "# Draft\n",
     }, 2001);
 
-    db.prepare(
-      `UPDATE session_instruction_artifacts
-          SET artifact_series_id = NULL, artifact_version_id = NULL`,
-    ).run();
     db.prepare("UPDATE artifact_drafts SET series_id = NULL, base_version_id = NULL").run();
     db.prepare("DELETE FROM artifact_versions").run();
     db.prepare("DELETE FROM artifact_series").run();
     db.prepare("DELETE FROM artifacts").run();
 
-    expect(listSessionInstructionArtifacts(db, "session-canonical")).toEqual([
-      expect.objectContaining({
-        artifact_series_id: recorded.series.id,
-        artifact_version_id: recorded.version.id,
-        preset_id: recorded.series.id,
-        name: "Canonical preset",
-        version: 1,
-        current_version: 1,
-      }),
-    ]);
-    expect(computePresetUnion([recorded.version.id], db)).toMatchObject({
-      text: "# Canonical\n\nUse canonical targets.\n",
-    });
     expect(getArtifactDraft(db, recorded.version.id)).toMatchObject({
       series_id: recorded.series.id,
       base_version_id: recorded.version.id,
@@ -289,53 +264,6 @@ describe("canonical artifact compatibility consumers", () => {
       content: "# Draft\n",
       stale: false,
     });
-  });
-
-  it("writes, lists, unions, and removes canonical-only instruction refs without legacy FK targets", () => {
-    const logicalRecord = recordManaged("logical-ref", "# Logical\n", 3000);
-    const versionRecord = recordManaged("version-ref", "# Version\n", 3001);
-    const blobRecord = recordManaged("blob-ref", "# Blob\n", 3002);
-    const logical = canonicalRefs(logicalRecord);
-    const version = canonicalRefs(versionRecord);
-    const blob = canonicalRefs(blobRecord);
-    deleteLegacyArtifacts();
-
-    replaceSessionInstructionArtifacts(db, "session-projection", [logical.logical]);
-    appendSessionInstructionArtifacts(db, "session-projection", [version.version, blob.blob]);
-
-    expect(db.prepare(
-      `SELECT artifact_id, version_id, artifact_series_id, artifact_version_id
-         FROM session_instruction_artifacts
-        WHERE session_id = ? ORDER BY position`,
-    ).all("session-projection")).toEqual([
-      { artifact_id: logical.logical, version_id: logical.version, artifact_series_id: null, artifact_version_id: null },
-      { artifact_id: version.logical, version_id: version.version, artifact_series_id: null, artifact_version_id: null },
-      { artifact_id: blob.logical, version_id: blob.version, artifact_series_id: null, artifact_version_id: null },
-    ]);
-    expect(listSessionInstructionArtifacts(db, "session-projection").map((row) => row.artifact_version_id))
-      .toEqual([logical.version, version.version, blob.version]);
-    expect(computePresetUnion([logical.logical, version.version, blob.blob], db).text)
-      .toBe("# Logical\n\n\n---\n\n# Version\n\n\n---\n\n# Blob\n");
-
-    removeSessionInstructionArtifact(db, "session-projection", version.version);
-    removeSessionInstructionArtifact(db, "session-projection", blob.blob);
-    removeSessionInstructionArtifact(db, "session-projection", logical.logical);
-    expect(listSessionInstructionArtifacts(db, "session-projection")).toEqual([]);
-  });
-
-  it("fails closed when a canonical blob is shared by more than one logical instruction artifact", () => {
-    const first = recordManaged("shared-a", "# Shared\n", 3100);
-    const sharedBlob = canonicalRefs(first).blob;
-    replaceSessionInstructionArtifacts(db, "session-shared", [canonicalRefs(first).logical]);
-    recordManaged("shared-b", "# Shared\n", 3101);
-    deleteLegacyArtifacts();
-
-    expect(() => replaceSessionInstructionArtifacts(db, "session-shared", [sharedBlob]))
-      .toThrow("instruction artifact blob has multiple logical owners");
-    expect(listSessionInstructionArtifacts(db, "session-shared")).toEqual([
-      expect.objectContaining({ artifact_version_id: canonicalRefs(first).version }),
-    ]);
-    expect(computePresetUnion([sharedBlob], db)).toEqual({ text: "", tokenEstimate: 0 });
   });
 
   it("creates canonical-only living and pinned-version links with complete typed targets", () => {
@@ -537,7 +465,7 @@ describe("canonical artifact compatibility consumers", () => {
     ]);
   });
 
-  it("uses legacy-only draft and session attachment SQL against pre-v104 association tables", () => {
+  it("uses legacy-only draft SQL against pre-v104 association tables", () => {
     const recorded = recordManaged("pre-v104", "# Pre v104\n", 3600);
     db.prepare(
       `INSERT INTO artifacts (id, algorithm, content_hash, uri, custody_mode, created_at)
@@ -587,13 +515,6 @@ describe("canonical artifact compatibility consumers", () => {
     `);
     db.pragma("foreign_keys = ON");
 
-    replaceSessionInstructionArtifacts(db, "session-pre-v104", [recorded.version.id]);
-    expect(listSessionInstructionArtifacts(db, "session-pre-v104")).toEqual([
-      expect.objectContaining({
-        artifact_series_id: recorded.series.id,
-        artifact_version_id: recorded.version.id,
-      }),
-    ]);
     expect(saveArtifactDraft(db, {
       ref: recorded.series.id,
       content: "# Legacy draft\n",

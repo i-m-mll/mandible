@@ -58,7 +58,6 @@ import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
-import { registerPresetRoutes } from "./routes/presets.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
@@ -87,7 +86,6 @@ import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
-import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestionGracefully } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
@@ -301,8 +299,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
   registerHookRoutes(router);
-  // Bug: 61bee4e — preset routes for convention management
-  registerPresetRoutes(router, sessionManager);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
@@ -567,38 +563,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
   } catch (error) {
     logger("warn", "signing_credential_audit_failed", { error: String(error) });
-  }
-
-  // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup.
-  // Bug: 52b75c0 — Re-import if content has changed (hash comparison), not just if missing.
-  if (operationalMutationsAllowed) {
-    try {
-      const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
-      if (fs.existsSync(globalClaudeMd)) {
-        const content = fs.readFileSync(globalClaudeMd, "utf8");
-        const currentHash = computeContentHash(content);
-        const existingPreset = db.prepare(
-          "SELECT id, content_hash FROM presets WHERE source_path = ? LIMIT 1"
-        ).get(globalClaudeMd) as { id: string; content_hash: string } | undefined;
-
-        if (existingPreset) {
-          if (existingPreset.content_hash !== currentHash) {
-            // Content changed — delete old nodes and preset, then re-import
-            db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(existingPreset.id);
-            db.prepare("DELETE FROM presets WHERE id = ?").run(existingPreset.id);
-            importClaudeMd(globalClaudeMd, db);
-            logger("info", "startup_preset_reimport", { path: globalClaudeMd, reason: "content_changed" });
-          }
-          // else: hashes match, skip (no change)
-        } else {
-          // No preset exists for this path — import fresh
-          importClaudeMd(globalClaudeMd, db);
-          logger("info", "startup_preset_import", { path: globalClaudeMd });
-        }
-      }
-    } catch (error) {
-      logger("warn", "startup_preset_import_failed", { error: String(error) });
-    }
   }
 
   // Start periodic reaper (marks dead sessions whose PIDs vanished)

@@ -472,78 +472,12 @@
   font-weight: 600;
 }
 
-/* Bug: 8baedeb — validation warnings for convention-setting links */
-.new-session-dialog__validation-warnings {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.new-session-dialog__validation-warning {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 8px 10px;
-  background: rgba(255, 170, 0, 0.1);
-  border: 1px solid rgba(255, 170, 0, 0.25);
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--text-warning, #ffa500);
-  line-height: 1.4;
-}
-
-.new-session-dialog__validation-warning-icon {
-  flex-shrink: 0;
-  font-size: 14px;
-}
-
-.new-session-dialog__validation-warning-link {
-  color: var(--accent-blue);
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.new-session-dialog__validation-warning-link:hover {
-  text-decoration: underline;
-}
-
-/* Bug: 790433d — preset note below selector */
-.new-session-dialog__preset-note {
+/* Muted note under a run-option field */
+.new-session-dialog__option-note {
   margin-top: 6px;
   font-size: 11px;
-  color: var(--text-warning, #ffa500);
-  line-height: 1.4;
-}
-
-.new-session-dialog__preset-note--muted {
   color: var(--text-secondary, rgba(255, 255, 255, 0.45));
-}
-
-/* Bug: 790433d — locked preset pills in sidebar (read-only) */
-.session-controls__lock-icon {
-  font-size: 11px;
-  margin-left: 4px;
-  opacity: 0.6;
-}
-
-.session-controls__preset-readonly {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px 0;
-}
-
-.session-controls__preset-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 10px;
-  font-size: 11px;
-  background: var(--neutral-alpha-06);
-  border: 1px solid var(--neutral-alpha-10);
-  border-radius: 12px;
-  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
-  cursor: default;
+  line-height: 1.4;
 }
 
 .permission-dialog-overlay {
@@ -1943,4 +1877,15 @@
   .composer__button--send {
     grid-column: 2;
   }
+}
+
+/* ── PTY deprecation banner (rich view) ── */
+.pty-banner {
+  text-align: center;
+  color: var(--accent-yellow);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.85;
+  padding: 16px 24px;
 }

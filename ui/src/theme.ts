@@ -34,8 +34,6 @@ export const appColors = {
   inboxHandoffBg: 'var(--inbox-handoff-bg)',
   inboxIssue: 'var(--inbox-issue)',
   inboxIssueBg: 'var(--inbox-issue-bg)',
-  inboxPresetDiff: 'var(--inbox-preset-diff)',
-  inboxPresetDiffBg: 'var(--inbox-preset-diff-bg)',
   statusDanger: 'var(--status-danger)',
   statusDangerBg: 'var(--status-danger-bg)',
   statusInfo: 'var(--status-info)',

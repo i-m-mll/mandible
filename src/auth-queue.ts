@@ -261,7 +261,7 @@ class FinalizerQueue {
 }
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete"
 ];
 const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
 const VALID_RELATIONSHIP_TYPES = [

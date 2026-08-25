@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe('RichChatPane context usage', () => {
-  it('renders one composer context meter without the legacy preset-token indicator', async () => {
+  it('renders one composer context meter', async () => {
     const streamEvents: StreamEvent[] = [{
       type: 'assistant',
       uuid: 'assistant-1',
@@ -51,12 +51,10 @@ describe('RichChatPane context usage', () => {
         onPermissionRespond={vi.fn()}
         selectedMessageId={null}
         onSelectMessageInfo={vi.fn()}
-        presetTokenCount={75_000}
         queuedPrompts={[]}
         transportLabel="SDK"
         canStop={false}
         onModelSaved={vi.fn()}
-        onPresetTokenCount={vi.fn()}
         prompt=""
         interactionMode="direct"
         onPromptChange={vi.fn()}

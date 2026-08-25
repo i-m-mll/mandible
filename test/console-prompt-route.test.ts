@@ -432,35 +432,4 @@ describe("console prompt route", () => {
     db.close();
   });
 
-  it("rejects runtime preset changes for PTY sessions", () => {
-    const db = openDb(":memory:");
-    setDb(db);
-    const { server, routes } = makeRegistrar();
-    const manager = {
-      get: vi.fn(() => ({
-        meta: {
-          id: "pty-session",
-          command: "unbound-shell",
-          is_operator: false,
-          backend_type: "pty",
-        },
-      })),
-      updateOptions: vi.fn(),
-    };
-    registerConsoleRoutes(server, manager as never);
-    const response = makeJsonResponse();
-    routes.find((item) => (
-      item.method === "PATCH" && item.path === "/api/console/sessions/:id/options"
-    ))?.handler({
-      params: { id: "pty-session" },
-      body: { presetIds: ["artifact-series:mutable"] },
-    } as never, response.res as never);
-
-    expect(manager.updateOptions).not.toHaveBeenCalled();
-    expect(response.payloads).toEqual([{
-      code: 400,
-      payload: { error: "unsupported_session_option" },
-    }]);
-    db.close();
-  });
 });
