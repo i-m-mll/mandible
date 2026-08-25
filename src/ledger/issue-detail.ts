@@ -18,7 +18,6 @@ import { LedgerStore } from "./store.js";
 import type {
   LedgerActorType,
   LedgerComment,
-  LedgerConflict,
   LedgerEvent,
   LedgerEventSource,
   LedgerIssue,
@@ -277,40 +276,6 @@ export interface LedgerIssueDetailAssociatedArtifact {
   links: LedgerIssueDetailArtifactLink[];
 }
 
-export interface LedgerIssueDetailConflict {
-  id: string;
-  adapter: string;
-  entity_type: string;
-  entity_id: string;
-  field: string;
-  local_value: unknown;
-  remote_value: unknown;
-  base_value: unknown;
-  status: string;
-  resolution: string | null;
-  created_at: number;
-  resolved_at: number | null;
-}
-
-export interface LedgerIssueDetailSyncJob {
-  id: string;
-  adapter: string;
-  direction: string;
-  status: string;
-  attempt_count: number;
-  started_at: number | null;
-  finished_at: number | null;
-  last_error: string | null;
-  updated_at: number;
-}
-
-export interface LedgerIssueDetailSyncSummary {
-  state: "clean" | "pending" | "failed" | "conflicted";
-  outbox: Record<string, number>;
-  open_conflicts: number;
-  latest_jobs: LedgerIssueDetailSyncJob[];
-}
-
 export interface LedgerIssueDetailProjection {
   id: string;
   display_id: string;
@@ -338,8 +303,6 @@ export interface LedgerIssueDetailProjection {
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
   associated_artifacts: LedgerIssueDetailAssociatedArtifact[];
-  conflicts: LedgerIssueDetailConflict[];
-  sync: LedgerIssueDetailSyncSummary;
   detail_stage?: "initial" | "full";
   timeline_partial?: boolean;
 }
@@ -466,23 +429,6 @@ export function buildLedgerIssueDetailProjectionWithProfile(
         attributionResolver,
         measure,
       ));
-  const conflicts = stage === "initial"
-    ? []
-    : measure("conflicts", () => listIssueConflicts(
-        db,
-        issue.id,
-        comments.map((comment) => comment.id),
-        relationships.map((rel) => rel.id),
-      ));
-  const sync = stage === "initial"
-    ? emptySyncSummary()
-    : measure("sync", () => buildSyncSummary(
-        db,
-        issue,
-        comments.map((comment) => comment.id),
-        relationships.map((rel) => rel.id),
-        conflicts.length,
-      ));
   const associatedArtifacts = stage === "initial"
     ? []
     : measure("associated_artifacts", () => listAssociatedArtifacts(db, issue.id, issue.body, comments));
@@ -522,8 +468,6 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     sessions,
     auth_requests: authRequests,
     associated_artifacts: associatedArtifacts,
-    conflicts,
-    sync,
     detail_stage: stage,
     timeline_partial: timelinePartial,
   };
@@ -544,7 +488,6 @@ export function buildLedgerIssueDetailProjectionWithProfile(
             sessions: sessions.length,
             auth_requests: authRequests.length,
             associated_artifacts: associatedArtifacts.length,
-            conflicts: conflicts.length,
           },
         }
       : undefined,
@@ -589,15 +532,6 @@ function buildInitialTimeline(
       updated_at: comment.updated_at,
     })),
   ];
-}
-
-function emptySyncSummary(): LedgerIssueDetailSyncSummary {
-  return {
-    state: "clean",
-    outbox: {},
-    open_conflicts: 0,
-    latest_jobs: [],
-  };
 }
 
 function roundMs(value: number): number {
@@ -1372,86 +1306,6 @@ function listAuthRequests(
   });
 }
 
-function listIssueConflicts(
-  db: Db,
-  issueId: string,
-  commentIds: string[],
-  relationshipIds: string[],
-): LedgerIssueDetailConflict[] {
-  if (!tableExists(db, "ledger_conflicts")) return [];
-  const { sql, params } = entityWhere([
-    ["issue", [issueId]],
-    ["comment", commentIds],
-    ["issue_relationship", relationshipIds],
-  ]);
-  if (!sql) return [];
-  return db.prepare(
-    `SELECT * FROM ledger_conflicts
-     WHERE status = 'open' AND (${sql})
-     ORDER BY created_at DESC`,
-  ).all(...params).map((row: unknown) => mapConflict(row as LedgerConflict));
-}
-
-function buildSyncSummary(
-  db: Db,
-  issue: LedgerIssue,
-  commentIds: string[],
-  relationshipIds: string[],
-  openConflicts: number,
-): LedgerIssueDetailSyncSummary {
-  const outbox: Record<string, number> = {};
-  if (tableExists(db, "ledger_outbox") && tableExists(db, "ledger_events")) {
-    const { sql, params } = entityWhere([
-      ["issue", [issue.id]],
-      ["comment", commentIds],
-      ["issue_relationship", relationshipIds],
-    ], "e");
-    if (sql) {
-      const rows = db.prepare(
-        `SELECT o.status, COUNT(*) AS count
-         FROM ledger_outbox o
-         JOIN ledger_events e ON e.id = o.event_id
-         WHERE ${sql}
-         GROUP BY o.status`,
-      ).all(...params) as Array<{ status: string; count: number }>;
-      for (const row of rows) outbox[row.status] = row.count;
-    }
-  }
-
-  const latest_jobs = tableExists(db, "ledger_sync_jobs")
-    ? db.prepare(
-        `SELECT id, adapter, direction, status, attempt_count, started_at,
-                finished_at, last_error, updated_at
-         FROM ledger_sync_jobs
-         WHERE project_id = ?
-         ORDER BY updated_at DESC
-         LIMIT 5`,
-      ).all(issue.project_id).map((row: unknown) => {
-        const record = row as Record<string, unknown>;
-        return {
-          id: String(record.id ?? ""),
-          adapter: stringOr(record.adapter, ""),
-          direction: stringOr(record.direction, ""),
-          status: stringOr(record.status, ""),
-          attempt_count: Number(record.attempt_count ?? 0),
-          started_at: numberOrNull(record.started_at),
-          finished_at: numberOrNull(record.finished_at),
-          last_error: nullableString(record.last_error),
-          updated_at: Number(record.updated_at ?? 0),
-        };
-      })
-    : [];
-
-  const failed = (outbox.failed ?? 0) + (outbox.conflicted ?? 0);
-  const pending = (outbox.pending ?? 0) + (outbox.processing ?? 0);
-  return {
-    state: openConflicts > 0 ? "conflicted" : failed > 0 ? "failed" : pending > 0 ? "pending" : "clean",
-    outbox,
-    open_conflicts: openConflicts,
-    latest_jobs,
-  };
-}
-
 function getProjectInfo(db: Db, projectId: string): LedgerIssueDetailProject {
   const project = db.prepare(
     `SELECT id, project_key, display_name, remote_identity, upstream_identity
@@ -1557,22 +1411,6 @@ function conversationSessionIds(db: Db, sessionIds: string[]): Set<string> {
   return new Set(rows.map((row) => row.session_id));
 }
 
-function entityWhere(
-  groups: Array<[string, string[]]>,
-  alias = "",
-): { sql: string; params: string[] } {
-  const prefix = alias ? `${alias}.` : "";
-  const clauses: string[] = [];
-  const params: string[] = [];
-  for (const [entityType, ids] of groups) {
-    const unique = Array.from(new Set(ids.filter(Boolean)));
-    if (unique.length === 0) continue;
-    clauses.push(`(${prefix}entity_type = ? AND ${prefix}entity_id IN (${unique.map(() => "?").join(", ")}))`);
-    params.push(entityType, ...unique);
-  }
-  return { sql: clauses.join(" OR "), params };
-}
-
 function activeLabels(labels: LedgerLabel[]): string[] {
   return labels
     .filter((label) => label.deleted_at === null)
@@ -1592,23 +1430,6 @@ function mapAlias(alias: LedgerIssueAlias): LedgerIssueDetailAlias {
 
 function displayIssueId(issue: Pick<LedgerIssue, "id" | "short_id">, _aliases: LedgerIssueAlias[]): string {
   return issue.short_id || issue.id.slice(0, 7);
-}
-
-function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
-  return {
-    id: row.id,
-    adapter: row.adapter,
-    entity_type: row.entity_type,
-    entity_id: row.entity_id,
-    field: row.field,
-    local_value: parseJsonValue(row.local_value_json),
-    remote_value: parseJsonValue(row.remote_value_json),
-    base_value: parseJsonValue(row.base_value_json),
-    status: row.status,
-    resolution: row.resolution,
-    created_at: row.created_at,
-    resolved_at: row.resolved_at,
-  };
 }
 
 const ARTIFACT_REF_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob):[^\]\s]+)\]/gi;

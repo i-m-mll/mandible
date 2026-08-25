@@ -93,8 +93,6 @@ function detail(): LedgerIssueDetailProjection {
     work_units: [],
     sessions: [],
     auth_requests: [],
-    conflicts: [],
-    sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
   } as LedgerIssueDetailProjection;
 }
 

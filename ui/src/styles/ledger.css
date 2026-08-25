@@ -72,30 +72,6 @@
   filter: brightness(1.12);
 }
 
-.ledger-sync-pill {
-  border-radius: 999px;
-  padding: 4px 8px;
-  font-size: 11px;
-  background: var(--neutral-alpha-06);
-  color: var(--text-muted);
-}
-
-.ledger-sync-pill--clean {
-  color: #32d296;
-  background: rgba(50,210,150,0.13);
-}
-
-.ledger-sync-pill--pending {
-  color: #f5c25c;
-  background: rgba(245,194,92,0.13);
-}
-
-.ledger-sync-pill--conflicted,
-.ledger-sync-pill--failed {
-  color: #f26b6b;
-  background: rgba(242,107,107,0.13);
-}
-
 .ledger-issue-detail__meta {
   display: flex;
   flex-wrap: wrap;
@@ -449,15 +425,13 @@
 .ledger-relationship-list,
 .ledger-evidence-list,
 .ledger-session-history,
-.ledger-kv-list,
-.ledger-sync-panel {
+.ledger-kv-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.ledger-kv-card,
-.ledger-conflict-card {
+.ledger-kv-card {
   border: 1px solid var(--neutral-alpha-06);
   border-radius: 8px;
   background: var(--neutral-alpha-03);
@@ -711,8 +685,7 @@
   margin-top: 10px;
 }
 
-.ledger-comment-composer__actions,
-.ledger-conflict-card__actions {
+.ledger-comment-composer__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -783,8 +756,7 @@
 .ledger-relationship-row code,
 .ledger-evidence-row code,
 .ledger-session-row code,
-.ledger-kv-card code,
-.ledger-conflict-card code {
+.ledger-kv-card code {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -850,51 +822,4 @@
 
 .ledger-kv-card small {
   color: var(--text-muted);
-}
-
-.ledger-sync-panel__summary {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--neutral-alpha-035);
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.ledger-sync-panel__summary--conflicted,
-.ledger-sync-panel__summary--failed {
-  color: #f26b6b;
-  background: rgba(242,107,107,0.1);
-}
-
-.ledger-sync-panel__summary--pending {
-  color: #f5c25c;
-  background: rgba(245,194,92,0.1);
-}
-
-.ledger-conflict-card__header {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-  font-size: 12px;
-}
-
-.ledger-conflict-card__header span {
-  color: var(--text-muted);
-}
-
-.ledger-conflict-card__values {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
-}
-
-.ledger-conflict-card__values code {
-  display: block;
-  padding: 7px;
-  border-radius: 5px;
-  background: rgba(0,0,0,0.18);
 }

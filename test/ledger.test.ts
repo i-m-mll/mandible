@@ -306,15 +306,22 @@ describe("ledger schema", () => {
 
   it("migrates legacy event IDs and outbox references to SHA-256", () => {
     const project = createProject();
-    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+    const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
     const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
-    const outbox = store.listOutbox({ status: "pending" })[0];
+    // Real databases still carry pre-cutover ledger_outbox rows, and the v61
+    // event-ID migration must repoint them. Nothing writes the table any more,
+    // so seed the legacy row directly.
+    db.prepare(
+      `INSERT INTO ledger_outbox (
+        id, event_id, adapter, project_id, status, attempt_count,
+        available_at, created_at, updated_at
+      ) VALUES ('out_legacy', ?, 'git_bug', ?, 'skipped', 0, 1, 1, 1)`,
+    ).run(event.id, project.project.id);
     db.pragma("foreign_keys = OFF");
     db.prepare("UPDATE ledger_events SET id = 'evt_00legacy00_00112233445566778899', event_type = 'issue.updated', payload_json = ? WHERE id = ?")
       .run(JSON.stringify({ issue_id: issue.id, patch: { status: "closed", resolution: "merged" } }), event.id);
-    db.prepare("UPDATE ledger_outbox SET event_id = 'evt_00legacy00_00112233445566778899' WHERE id = ?")
-      .run(outbox.id);
+    db.prepare("UPDATE ledger_outbox SET event_id = 'evt_00legacy00_00112233445566778899' WHERE id = 'out_legacy'").run();
     db.prepare("UPDATE ledger_body_revisions SET event_id = 'evt_00legacy00_00112233445566778899' WHERE event_id = ?")
       .run(event.id);
     db.pragma("foreign_keys = ON");
@@ -324,7 +331,8 @@ describe("ledger schema", () => {
     migrate(db);
 
     const migrated = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
-    const migratedOutbox = store.listOutbox({ status: "pending" })[0];
+    const migratedOutbox = db.prepare("SELECT event_id FROM ledger_outbox WHERE id = 'out_legacy'")
+      .get() as { event_id: string };
     expect(migrated.id).toMatch(/^[0-9a-f]{64}$/);
     expect(migrated.event_type).toBe("issue.closed");
     expect(JSON.parse(migrated.payload_json)).toMatchObject({
@@ -552,39 +560,10 @@ describe("ledger store", () => {
       event_id: events[0].id,
     });
     expect(JSON.parse(events[0].payload_json)).toMatchObject({ body_revision_id: revisions[0].id });
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
     expect(broadcasts).toEqual(["ledger:issue:created", "ledger:event:created"]);
   });
 
-  it("enqueues outbox rows only when an adapter is explicitly configured", () => {
-    const project = createProject();
-    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
-
-    const issue = createIssue(store, project.project.id);
-    const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
-    const outbox = store.listOutbox({ status: "pending" })[0];
-
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(1);
-    expect(outbox.event_id).toBe(event.id);
-    expect(outbox.event_id).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it("does not enqueue outbox rows for imported adapter-sourced events", () => {
-    const project = createProject();
-    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
-
-    store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.project.id,
-      title: "Imported",
-      source: "git_bug" satisfies LedgerEventSource,
-      aliases: [{ alias_kind: "git_bug_short", alias: "abc123" }],
-    });
-
-    expect(store.listOutbox()).toHaveLength(0);
-  });
-
-  it("writes comments with events without default outbox rows", () => {
+  it("writes comments with events", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
@@ -609,7 +588,6 @@ describe("ledger store", () => {
       snapshot_body: "A comment",
       event_id: events[0].id,
     });
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
   });
 
   it("records body edit revisions, omits body text from event patches, and skips no-op bodies", () => {
@@ -787,9 +765,9 @@ describe("ledger store", () => {
     expect(ambiguousPrefix.ok).toBe(false);
   });
 
-  it("upserts relationships, external refs, conflicts, and outbox status", () => {
+  it("upserts issue relationships", () => {
     const project = createProject();
-    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+    const store = new LedgerStore(db);
     const parent = createIssue(store, project.project.id, "Parent");
     const child = createIssue(store, project.project.id, "Child");
 
@@ -801,38 +779,8 @@ describe("ledger store", () => {
       provenance: "manual",
       metadata: { order: 1 },
     });
-    const ref = store.recordExternalRef({
-      ...SYSTEM_ACTOR,
-      entity_type: "issue",
-      entity_id: parent.id,
-      adapter: "git_bug",
-      project_id: project.project.id,
-      external_kind: "git_bug_id",
-      external_id: "abc123",
-      remote_hash: "remote",
-    });
-    const conflict = store.recordConflict({
-      ...SYSTEM_ACTOR,
-      adapter: "git_bug",
-      project_id: project.project.id,
-      entity_type: "issue",
-      entity_id: parent.id,
-      field: "title",
-      local_value: "Local",
-      remote_value: "Remote",
-    });
-    const outbox = store.markOutbox(
-      store.listOutbox({ status: "pending" })[0].id,
-      "processing",
-      { attempt_count: 1, last_attempt_at: 100 },
-      SYSTEM_ACTOR,
-    );
-
     expect(relationship.id).toMatch(/^rel_/);
-    expect(ref.id).toMatch(/^xref_/);
-    expect(conflict.id).toMatch(/^cnf_/);
-    expect(outbox.status).toBe("processing");
-    expect(store.listConflicts({ status: "open" })).toHaveLength(1);
+    expect(relationship.relationship_type).toBe("parent_child");
   });
 
   it("parses explicit typed issue references only", () => {

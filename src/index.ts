@@ -267,7 +267,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
-  const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
+  registerIssueRoutes(router, workScanner, issueDeps);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   registerUserSettingsRoutes(router, db);
@@ -276,9 +276,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
   const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
-  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner, clientAuth);
+  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, workScanner, clientAuth);
 
-  registerGraphRoutes(router, issueScanner);
+  registerGraphRoutes(router);
   registerProviderRoutes(router);
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
@@ -293,7 +293,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
-  registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
+  registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
   registerHookRoutes(router);

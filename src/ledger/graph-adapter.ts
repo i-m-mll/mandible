@@ -264,34 +264,6 @@ function getCommentStats(db: Db): Map<string, { count: number; latest_comment_at
   ]));
 }
 
-function getOpenConflictCounts(db: Db): Map<string, number> {
-  if (!tableExists(db, "ledger_conflicts")) return new Map();
-  const rows = db.prepare(
-    `SELECT entity_id AS issue_id, COUNT(*) AS count
-       FROM ledger_conflicts
-      WHERE entity_type = 'issue' AND status = 'open'
-      GROUP BY entity_id`,
-  ).all() as Array<{ issue_id: string; count: number }>;
-  return new Map(rows.map((row) => [row.issue_id, row.count]));
-}
-
-function getOutboxCounts(db: Db): Map<string, { pending: number; failed: number }> {
-  if (!tableExists(db, "ledger_outbox")) return new Map();
-  const rows = db.prepare(
-    `SELECT e.entity_id AS issue_id,
-            SUM(CASE WHEN o.status IN ('pending','processing') THEN 1 ELSE 0 END) AS pending,
-            SUM(CASE WHEN o.status IN ('failed','conflicted') THEN 1 ELSE 0 END) AS failed
-       FROM ledger_outbox o
-       JOIN ledger_events e ON e.id = o.event_id
-      WHERE e.entity_type = 'issue'
-      GROUP BY e.entity_id`,
-  ).all() as Array<{ issue_id: string; pending: number | null; failed: number | null }>;
-  return new Map(rows.map((row) => [
-    row.issue_id,
-    { pending: row.pending ?? 0, failed: row.failed ?? 0 },
-  ]));
-}
-
 function getAuthAnnotations(db: Db): Map<string, AttachmentAnnotation[]> {
   if (!tableExists(db, "ledger_auth_issue_links") || !tableExists(db, "auth_requests")) return new Map();
   const rows = db.prepare(
@@ -533,12 +505,6 @@ function buildLayoutHints(
   return hints;
 }
 
-function syncState(openConflictCount: number, outbox: { pending: number; failed: number } | undefined): string {
-  if (openConflictCount > 0 || (outbox?.failed ?? 0) > 0) return "attention";
-  if ((outbox?.pending ?? 0) > 0) return "pending";
-  return "synced";
-}
-
 export function countLedgerGraphIssues(db: Db, status: "open" | "all" = "all"): number | null {
   if (!tableExists(db, "ledger_issues")) return null;
   let sql = "SELECT COUNT(*) AS count FROM ledger_issues WHERE deleted_at IS NULL";
@@ -631,8 +597,6 @@ export function buildLedgerIssueProjection(
   const aliasesByIssue = getAliasRows(db);
   const labelsByIssue = getLabelsByIssue(db);
   const commentStats = getCommentStats(db);
-  const conflictCounts = getOpenConflictCounts(db);
-  const outboxCounts = getOutboxCounts(db);
   const authByIssue = getAuthAnnotations(db);
   const sessionsByIssue = getSessionSummaries(db);
   const relationships = getRelationships(db).filter((rel) =>
@@ -672,8 +636,6 @@ export function buildLedgerIssueProjection(
     const authAnnotations = authByIssue.get(issue.id) ?? [];
     const sessionSummary = sessionsByIssue.get(issue.id) ?? { live: [], historical_count: 0, live_count: 0 };
     const comments = commentStats.get(issue.id);
-    const openConflicts = conflictCounts.get(issue.id) ?? 0;
-    const outbox = outboxCounts.get(issue.id);
     const relationshipSummary = relationshipCounts.get(issue.id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
     const displayId = displayIssueId(issue);
     const nodeId = issueNodeIdByLedgerId.get(issue.id)!;
@@ -712,7 +674,6 @@ export function buildLedgerIssueProjection(
         auth_evidence: authAnnotations.length,
         live_sessions: sessionSummary.live_count,
         historical_sessions: sessionSummary.historical_count,
-        sync: syncState(openConflicts, outbox),
         graph_activity_at: toIso(graphActivityAt),
       },
       detail: {
@@ -745,9 +706,6 @@ export function buildLedgerIssueProjection(
           "session_links.created_at/last_seen_at",
         ],
         latest_comment_at: comments?.latest_comment_at,
-        open_conflicts: openConflicts,
-        outbox_pending: outbox?.pending ?? 0,
-        outbox_failed: outbox?.failed ?? 0,
         relationship_counts: relationshipSummary,
         annotations,
         layout: layoutHints.get(issue.id),

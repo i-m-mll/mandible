@@ -23,18 +23,14 @@ import {
 } from "../ambient-provider-identity.js";
 import {
   SYSTEM_USER_ID,
-  createUser,
   getOperator,
   getUserById,
-  addBinding,
-  getUserBySlug,
 } from "../users/store.js";
 import {
   EVIDENCE_METHODS,
   assertEvidenceMethod,
   isEvidenceMethod,
   type EvidenceMethod,
-  type User,
   type UserKind,
 } from "../users/types.js";
 import type { LedgerActorInput, LedgerActorType } from "../ledger/types.js";
@@ -315,119 +311,13 @@ export function systemActor(authorizerUserId?: string | null): LedgerActorInput 
   return { attribution };
 }
 
-// --- Shadow users for external git-bug import authors ---
-
-const SHADOW_BINDING_TYPE = "external_author";
-
 /**
- * Binding lookup/storage key normalization. Applied identically at mint and
- * lookup so that whitespace variants of the same author name resolve to one
- * shadow user. The RAW author string is preserved as the display name.
+ * Binding lookup/storage key normalization. Applied identically wherever a
+ * binding value is stored or looked up, so whitespace variants of the same
+ * value resolve to one binding.
  */
 export function normalizeBindingValue(value: string): string {
   return value.trim();
-}
-
-function shadowScope(adapter: string, projectId: string): string {
-  return `${adapter}::${projectId}`;
-}
-
-function slugifyShadow(adapter: string, authorName: string): string {
-  const base = `${adapter}-${authorName}`
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const trimmed = base.length > 0 ? base : "author";
-  return `ext-${trimmed}`.slice(0, 96);
-}
-
-function isUniqueConstraint(error: unknown): boolean {
-  const code = (error as { code?: string } | null)?.code;
-  return code === "SQLITE_CONSTRAINT_UNIQUE" || code === "SQLITE_CONSTRAINT";
-}
-
-export interface ShadowUserRequest {
-  adapter: string;
-  project_id: string;
-  author_name: string;
-}
-
-function findShadowUser(db: Db, value: string, scope: string): User | null {
-  const row = db
-    .prepare(
-      `SELECT user_id FROM user_bindings
-       WHERE binding_type = ? AND value = ? AND scope = ? AND status = 'active'
-       LIMIT 1`,
-    )
-    .get(SHADOW_BINDING_TYPE, value, scope) as { user_id: string } | undefined;
-  if (!row) return null;
-  const user = getUserById(db, row.user_id);
-  if (!user || user.kind !== "external" || user.status !== "active") {
-    throw new Error(`External-author binding '${scope}:${value}' has an ineligible owner`);
-  }
-  return user;
-}
-
-/**
- * Idempotently get-or-create an external-kind shadow user for a git-bug import
- * author. Keyed by adapter + project + normalized author name via an
- * `external_author` binding, so equal names across different adapters are never
- * merged and whitespace variants converge. The raw display name is preserved
- * verbatim. External users never receive credentials, authenticator bindings,
- * or permissions — the `external_author` binding is a lookup key only. Minting
- * is race-idempotent: a unique-constraint loss re-looks-up and returns the
- * winner.
- */
-export function mintShadowUser(db: Db, request: ShadowUserRequest): User {
-  const scope = shadowScope(request.adapter, request.project_id);
-  const value = normalizeBindingValue(request.author_name);
-
-  const existing = findShadowUser(db, value, scope);
-  if (existing) return existing;
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    let slug = slugifyShadow(request.adapter, value);
-    if (getUserBySlug(db, slug)) {
-      let suffix = 2;
-      while (getUserBySlug(db, `${slug}-${suffix}`)) suffix += 1;
-      slug = `${slug}-${suffix}`;
-    }
-    try {
-      return db.transaction(() => {
-        const user = createUser(db, {
-          slug,
-          kind: "external",
-          display_name: request.author_name,
-          metadata: { adapter: request.adapter, project_id: request.project_id, shadow: true },
-        });
-        addBinding(db, user.id, {
-          binding_type: SHADOW_BINDING_TYPE,
-          value,
-          scope,
-        });
-        return user;
-      })();
-    } catch (error) {
-      if (isUniqueConstraint(error)) {
-        const winner = findShadowUser(db, value, scope);
-        if (winner) return winner;
-        continue; // slug collision without a binding winner: retry with a new slug.
-      }
-      throw error;
-    }
-  }
-  const finalWinner = findShadowUser(db, value, scope);
-  if (finalWinner) return finalWinner;
-  throw new Error(`Failed to mint shadow user for ${request.adapter}:${request.author_name}`);
-}
-
-/** Attribution for a new git-bug import authored by an external shadow user. */
-export function shadowImportActor(db: Db, request: ShadowUserRequest): LedgerActorInput {
-  const user = mintShadowUser(db, request);
-  return {
-    attribution: { user_id: user.id, evidence_method: "external_import" },
-    author_display: request.author_name,
-  };
 }
 
 // Re-exported so call sites need only import from the resolver module.

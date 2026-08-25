@@ -6,7 +6,6 @@ import {
   getLedgerIssueInitialDetailByIssueId,
   getLedgerIssueInitialDetailByRef,
   patchLedgerIssue,
-  resolveLedgerConflict,
   spawnIssueAgent,
   type LedgerIssueDetailActor,
   type LedgerIssueDetailProjection,
@@ -376,8 +375,6 @@ function synthesizeLedgerIssueDetail(
     sessions: [],
     auth_requests: [],
     associated_artifacts: [],
-    conflicts: [],
-    sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
     detail_stage: 'initial',
     timeline_partial: true,
   };
@@ -1125,10 +1122,6 @@ export function IssuesView({
                   }));
                 }
                 setParentFilter(detail.display_id);
-              }}
-              onResolveConflict={async (conflictId, resolution, status) => {
-                await resolveLedgerConflict(conflictId, resolution, status);
-                await refreshLedgerIssueDetail();
               }}
             />
           </div>

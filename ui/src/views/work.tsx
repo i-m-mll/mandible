@@ -1340,7 +1340,7 @@ export function WorkOverviewView({
                   className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
                   disabled={pushState.active || pushState.authPending}
                   onClick={() => pushRepos('all_ahead').catch(() => {})}
-                  title="Push all ahead branches + git-bug refs + notes for all projects"
+                  title="Push all ahead branches + notes for all projects"
                 >
                   {pushState.authPending
                     ? 'Authenticating...'

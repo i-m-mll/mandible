@@ -12,6 +12,5 @@
     "declaration": true,
     "skipLibCheck": true
   },
-  "include": ["src"],
-  "exclude": ["src/ledger/archive"]
+  "include": ["src"]
 }

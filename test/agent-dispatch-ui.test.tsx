@@ -26,8 +26,7 @@ describe('issue header launch-agent affordance', () => {
       kind: 'feature', priority: 'unknown', source: 'mandible', created_at: 0, updated_at: 0,
       closed_at: null, author: { id: null, type: 'mandible_user', display: 'Mandible' },
       labels: [], aliases: [], comments: [], relationships: [], sessions: [], work_units: [],
-      auth_requests: [], associated_artifacts: [], timeline: [], checkpoints: [], conflicts: [],
-      sync: { state: 'clean', outbox: {} },
+      auth_requests: [], associated_artifacts: [], timeline: [], checkpoints: [],
     } as unknown as LedgerIssueDetailProjection;
   }
 
