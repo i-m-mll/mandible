@@ -1555,6 +1555,11 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversationsDir, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversationsDir, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
+    // Found by watching a real preview's own log: it materialized 38 CLI files
+    // into the shared ~/.cache/mandible/cli, overwriting every one
+    // unconditionally and stamping the manifest's source_root to a preview
+    // worktree that is later deleted. Same leak, fourth shared resource.
+    MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
   };
 }
 

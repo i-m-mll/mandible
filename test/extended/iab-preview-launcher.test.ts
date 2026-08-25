@@ -692,6 +692,7 @@ function previewContractEnv(details: {
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(details.previewRoot, "stderr.log"),
+    MANDIBLE_CLI_CACHE_DIR: path.join(details.previewRoot, "cli"),
   };
 }
 
@@ -1245,12 +1246,14 @@ describe("iab-preview launcher", () => {
       MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(previewConversations, "structure.db"),
       MANDIBLE_CONVERSATION_CACHE_DB: path.join(previewConversations, "search-cache.db"),
       MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
+      MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
     });
 
-    // These three keys are the shared-resource leak this contract closes: a
+    // These four keys are the shared-resource leak this contract closes: a
     // preview used to open the live conversations index read-write on the same
-    // inode as the live daemon, and rotate the live daemon's log file on its
-    // own timer. Every writable path must sit under the preview root.
+    // inode as the live daemon, rotate the live daemon's log file on its own
+    // timer, and overwrite every file in the shared CLI cache. Every writable
+    // path must sit under the preview root.
     const sharedCache = path.join(os.homedir(), ".cache", "mandible");
     expect(payload.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB)
       .not.toBe(path.join(sharedCache, "conversations", "structure.db"));
@@ -1258,10 +1261,13 @@ describe("iab-preview launcher", () => {
       .not.toBe(path.join(sharedCache, "conversations", "search-cache.db"));
     expect(payload.instanceEnv.MANDIBLE_STDERR_LOG_PATH)
       .not.toBe(path.join(sharedCache, "launchd-stderr.log"));
+    expect(payload.instanceEnv.MANDIBLE_CLI_CACHE_DIR)
+      .not.toBe(path.join(sharedCache, "cli"));
     for (const key of [
       "MANDIBLE_CONVERSATION_STRUCTURE_DB",
       "MANDIBLE_CONVERSATION_CACHE_DB",
       "MANDIBLE_STDERR_LOG_PATH",
+      "MANDIBLE_CLI_CACHE_DIR",
     ]) {
       expect(String(payload.instanceEnv[key]).startsWith(`${previewRoot}${path.sep}`)).toBe(true);
     }
