@@ -2839,9 +2839,10 @@ export class AuthQueue {
       }
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
+    const requestId = request.id;
     let consumed: ClearanceConsumption;
     try {
-      consumed = this.clearanceManager.consume(id, (authorization) => {
+      consumed = this.clearanceManager.consume(requestId, (authorization) => {
         const lease = getDelegatedSigningLease(this.db, authorization.approval.leaseId);
         if (!lease || lease.owner_user_id !== authorization.clearance.issuer_user_id) {
           throw new AuthQueueError("invalid_command", "Clearance delegated signing lease is invalid.");
@@ -2865,14 +2866,14 @@ export class AuthQueue {
            WHERE id = ? AND status = 'pending' AND clearance_use_id IS NULL`,
         ).run(
           now, now, authorization.approval.leaseId, authorization.clearance.issuer_user_id,
-          authorization.use.evidence_id, authorization.use.id, atomicEnabled ? 1 : 0, id,
+          authorization.use.evidence_id, authorization.use.id, atomicEnabled ? 1 : 0, requestId,
         );
         if (update.changes !== 1) {
           throw new AuthQueueError("invalid_status", "Auth request changed before clearance execution began.");
         }
-        const executing = this.requireRequest(id);
+        const executing = this.requireRequest(requestId);
         const identity = this.gitCommitIdentity(executing.cwd);
-        this.executionEnvs.set(id, {
+        this.executionEnvs.set(requestId, {
           ...authorization.approval.env,
           ...this.approveTimePreflightEnv(executing),
           ...(atomicEnabled ? {
@@ -2892,7 +2893,7 @@ export class AuthQueue {
         error instanceof Error ? error.message : "Clearance execution was refused.",
       );
     }
-    const executing = this.requireRequest(id);
+    const executing = this.requireRequest(requestId);
     this.broadcast({ event: "auth:updated", data: { request: executing, clearance_use_id: consumed.use.id } });
     this.executeInBackground(executing, consumed.settle);
     return executing;

@@ -184,14 +184,14 @@ function fixture() {
 }
 
 describe("scoped protected-merge clearance", () => {
-  it("executes the exact matching protected merge through the clearance queue path", async () => {
+  it("executes the exact matching protected merge through a short-id clearance queue path", async () => {
     const f = fixture();
     try {
       const request = f.submit("queue");
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
       }, f.operator.id);
-      const executing = f.queue.approveWithClearance(request.id);
+      const executing = f.queue.approveWithClearance(request.id.slice(0, 8));
       expect(executing).toMatchObject({ status: "executing", approval_source: "clearance" });
       await vi.waitFor(() => expect(f.queue.getRequest(request.id)?.status).toBe("completed"));
       expect(f.executions).toHaveLength(1);

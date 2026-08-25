@@ -20,7 +20,6 @@ What Mandible defines, for every install:
 - **Ledger as coordination substrate.** Issues, comments, labels, body
   revisions, and relationships are event-sourced in the daemon-owned SQLite
   ledger. The daemon is the single writer; the CLI and dashboard are clients.
-  git-bug refs are a compatibility mirror, not the hot path.
 - **Auth-request lifecycle.** Protected-branch merges are asynchronous:
   a client submits a request (`mandible auth request`), the user approves in
   the dashboard or terminal, and `auth merge` executes it. Approval is a user

@@ -3,7 +3,7 @@
 Mandible is a local-first agent control plane and conversation browser. It provides:
 - An async auth queue for protected-branch merges (agent submits, user authenticates via YubiKey)
 - A web dashboard (sessions, issues, conversations, console)
-- A daemon that manages the local issue ledger, legacy git-bug sync, session lifecycle, and inbox delivery
+- A daemon that manages the local issue ledger, session lifecycle, and inbox delivery
 - A Tauri native window wrapper (Level 1: thin launcher; Level 2: bundled sidecar, see issue fdc0e8a)
 
 ## Build
@@ -228,7 +228,10 @@ Note: DELETE body parsing requires "DELETE" in the method allowlist in `server.t
 
 ## Issue tracking
 
-Use `mandible issue` commands for issue reads and writes. During ledger migration, git-bug refs are a legacy sync/import source and emergency compatibility surface, not the intended hot path. See the open issue list with `mandible issue list --status open`.
+Use `mandible issue` commands for issue reads and writes. The legacy git-bug
+mirror, import, and export paths have been retired; retained git-bug provenance
+is historical data, not an operational compatibility surface. See the open
+issue list with `mandible issue list --status open`.
 
 For agent planning or handoff context, prefer `mandible issue report <id> --json`
 before manually reconstructing issue state. It is a deterministic fact packet,
