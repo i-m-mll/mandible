@@ -324,3 +324,27 @@ describe("AcpBackend", () => {
     backend.destroy();
   });
 });
+
+describe("codex-acp dependency pin", () => {
+  it("spawns the exact version declared in package.json", async () => {
+    // @agentclientprotocol/codex-acp is never imported: it is a runtime binary
+    // spawned as `npx -y @agentclientprotocol/codex-acp@<version>`. Declaring it
+    // installs node_modules/.bin/codex-acp so npx resolves locally instead of
+    // fetching at session start. That makes the package.json entry the pin and
+    // acp-backend's CODEX_ACP_VERSION the spawned version; they must not drift.
+    const repoRoot = path.resolve(import.meta.dirname, "..");
+    const pkg = JSON.parse(
+      await fs.readFile(path.join(repoRoot, "package.json"), "utf8"),
+    ) as { dependencies?: Record<string, string> };
+    const declared = pkg.dependencies?.["@agentclientprotocol/codex-acp"];
+
+    expect(declared).toBeDefined();
+    const source = await fs.readFile(
+      path.join(repoRoot, "src/backends/acp-backend.ts"),
+      "utf8",
+    );
+    const spawned = /const CODEX_ACP_VERSION = "([^"]+)"/.exec(source)?.[1];
+
+    expect(spawned).toBe(declared);
+  });
+});
