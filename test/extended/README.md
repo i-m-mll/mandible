@@ -11,7 +11,7 @@ these files, in order:
 | --- | --- |
 | Renders Preact (`.tsx`) | 65 |
 | Imports `ui/src/…` and never `src/…` | 30 |
-| Everything not on the whitelist | 153 |
+| Everything not on the whitelist | 152 |
 
 Two facts hold for every file in this directory, and they are what make the
 boundary checkable rather than a promise:

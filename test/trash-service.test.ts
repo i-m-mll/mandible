@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openDb, type Db } from "../../src/db.js";
-import { addOrUpdateCheckout, addProject } from "../../src/ledger/project-registry.js";
-import { registerTrashRoutes } from "../../src/routes/trash.js";
-import { Router } from "../../src/server.js";
+import { openDb, type Db } from "../src/db.js";
+import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
+import { registerTrashRoutes } from "../src/routes/trash.js";
+import { Router } from "../src/server.js";
 import {
   createTrashEntry,
   gcTrashEntries,
@@ -15,8 +15,8 @@ import {
   restoreTrashEntry,
   startTrashGcScheduler,
   stopTrashGcScheduler,
-} from "../../src/trash-service.js";
-import { deriveReapingSafety, WorkScanner } from "../../src/work-scanner.js";
+} from "../src/trash-service.js";
+import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, {
