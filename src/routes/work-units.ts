@@ -81,22 +81,63 @@ type ExistingWorkUnit = {
   assigned_session_id: string | null;
 };
 
+/**
+ * Link a new work unit to its ledger issue.
+ *
+ * The outcome is reported rather than collapsed to `string | null`. A null
+ * `ledger_issue_id` in a 201 response used to mean any of "linked to nothing",
+ * "the ref did not resolve", and "the write threw" — so `mandible work-unit
+ * claim` reported success on a work unit that never reached the ledger. The
+ * work unit itself is real either way, so the response stays 201; it now says
+ * what happened to the link.
+ */
+type LedgerLinkOutcome =
+  | { status: "linked"; issue_id: string }
+  | { status: "unresolved"; error: string }
+  | { status: "failed"; error: string };
+
 function linkLedgerIssue(
   db: ReturnType<typeof getDb>,
   workUnitId: string,
   issueId: string,
   repoId: string,
-): string | null {
+): LedgerLinkOutcome {
   try {
     const result = linkWorkUnitToLedgerIssue(db, {
       work_unit_id: workUnitId,
       issue_ref: issueId,
       repo_ref: repoId,
     });
-    return result.ok ? result.issue_id : null;
-  } catch {
-    return null;
+    return result.ok
+      ? { status: "linked", issue_id: result.issue_id }
+      : { status: "unresolved", error: result.error };
+  } catch (error) {
+    return { status: "failed", error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** Response fields for a link outcome, keeping `ledger_issue_id` shape-compatible. */
+function ledgerLinkFields(outcome: LedgerLinkOutcome): Record<string, unknown> {
+  return outcome.status === "linked"
+    ? { ledger_issue_id: outcome.issue_id }
+    : { ledger_issue_id: null, ledger_link_status: outcome.status, ledger_link_error: outcome.error };
+}
+
+/**
+ * Same, for a reused work unit that may already carry a link. A prior link
+ * stands when a fresh attempt does not succeed, but the failure is still
+ * reported rather than hidden behind the older value.
+ */
+function ledgerLinkFieldsForExisting(
+  outcome: LedgerLinkOutcome,
+  existingIssueId: string | null,
+): Record<string, unknown> {
+  if (outcome.status === "linked") return { ledger_issue_id: outcome.issue_id };
+  return {
+    ledger_issue_id: existingIssueId,
+    ledger_link_status: outcome.status,
+    ledger_link_error: outcome.error,
+  };
 }
 
 function resolveLedgerIssueId(
@@ -157,12 +198,12 @@ export function registerWorkUnitRoutes(
         params.push(existing.id);
         db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
       }
-      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, repoId) ?? existing.ledger_issue_id;
+      const ledgerLink = linkLedgerIssue(db, existing.id, body.issue_id, repoId);
       sendJson(res, 200, {
         id: existing.id,
         state: existing.state,
         existing: true,
-        ledger_issue_id: ledgerIssueId,
+        ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
       });
       return;
     }
@@ -202,8 +243,8 @@ export function registerWorkUnitRoutes(
       ownerUserId,
     );
 
-    const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, repoId);
-    sendJson(res, 201, { id, ledger_issue_id: ledgerIssueId });
+    const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
+    sendJson(res, 201, { id, ...ledgerLinkFields(ledgerLink) });
   }, { fileRpc: "allow" });
 
   // POST /api/work-units/activate — mark as committed, update timestamps
@@ -267,8 +308,12 @@ export function registerWorkUnitRoutes(
         `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
       ).run(...params);
 
-      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, repoId) ?? existing.ledger_issue_id;
-      sendJson(res, 200, { id: existing.id, state: "committed", ledger_issue_id: ledgerIssueId });
+      const ledgerLink = linkLedgerIssue(db, existing.id, body.issue_id, repoId);
+      sendJson(res, 200, {
+        id: existing.id,
+        state: "committed",
+        ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
+      });
     } else {
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
@@ -303,8 +348,8 @@ export function registerWorkUnitRoutes(
         body.worker_owner === true ? ambientIdentity!.provider_session_id : null,
       );
 
-      const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, repoId);
-      sendJson(res, 201, { id, state: "committed", ledger_issue_id: ledgerIssueId });
+      const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
+      sendJson(res, 201, { id, state: "committed", ...ledgerLinkFields(ledgerLink) });
     }
   }, { fileRpc: "allow" });
 

@@ -382,7 +382,7 @@ describe('AuthQueueView attribution', () => {
         evidence_id: 'evidence-1',
         credential: { id: 'credential-1', type: 'ssh_key', label: 'YubiKey signing key' },
       },
-      verified_signature: true,
+      merge_signature: { state: 'verified' as const, fingerprint: null },
     };
     render(
       <AuthQueueView

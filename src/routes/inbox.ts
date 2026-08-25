@@ -5,6 +5,7 @@ import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
+import { computeAuthRequestOutcome } from "../contracts.js";
 import type { AuthRequestOutcome, AuthRequestStatus, WebhookEventRow } from "../types.js";
 import type { WorkScanner } from "../work-scanner.js";
 import { getIntSetting } from "./settings.js";
@@ -135,17 +136,10 @@ interface AuthResultRow {
 }
 
 // Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
+// The mapping is canonical in contracts.ts; this file used to hold a second
+// copy that would have had to be edited in lockstep with the auth-queue one.
 function computeOutcome(row: AuthResultRow): AuthRequestOutcome {
-  switch (row.status) {
-    case "rejected":  return "rejected";
-    case "dismissed": return "dismissed";
-    case "expired":   return "expired";
-    case "needs_rebase": return "needs_rebase";
-    case "completed":
-      return (row.exit_code != null && row.exit_code !== 0) ? "failed" : "succeeded";
-    default:
-      return null;
-  }
+  return computeAuthRequestOutcome(row.status, row.exit_code);
 }
 
 // Bug: 4e32923 — auth_result tier classification used for scoped inbox delivery.
