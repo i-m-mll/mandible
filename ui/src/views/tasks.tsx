@@ -956,28 +956,26 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       taskId: selectedExecutorTask.task.task_id,
       executionHash: knownExecutionHash(selectedExecutorTask),
     } : null);
-    if (!target?.executionHash) return;
-    const intentKey = `${target.executor}/${target.taskId}:${verb}:${target.executionHash}`;
+    if (!target) return;
+    const { executor, taskId, executionHash } = target;
+    if (!executionHash) return;
+    const intentKey = `${executor}/${taskId}:${verb}:${executionHash}`;
     const requestKey = pendingRequestKeys.current.get(intentKey) ?? crypto.randomUUID();
     pendingRequestKeys.current.set(intentKey, requestKey);
-    setActiveIntent({ ...target, verb, command: null });
+    setActiveIntent({ executor, taskId, executionHash, verb, command: null });
     setV2Busy(true);
     setCommandError(null);
     try {
       const result = verb === 'dry_run'
-        ? await requestTaskDryRun(
-          target.executor, target.taskId, target.executionHash, requestKey,
-        )
-        : await requestTaskEnable(
-          target.executor, target.taskId, target.executionHash, requestKey,
-        );
+        ? await requestTaskDryRun(executor, taskId, executionHash, requestKey)
+        : await requestTaskEnable(executor, taskId, executionHash, requestKey);
       if (!mounted.current) return;
       pendingRequestKeys.current.delete(intentKey);
       setCommands((current) => [
         result.command,
         ...current.filter((row) => row.id !== result.command.id),
       ]);
-      setActiveIntent({ ...target, verb, command: result.command });
+      setActiveIntent({ executor, taskId, executionHash, verb, command: result.command });
     } catch (mutationError) {
       if (mounted.current) {
         if (mutationError instanceof ApiError

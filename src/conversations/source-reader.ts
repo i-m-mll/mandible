@@ -348,7 +348,6 @@ export class ConversationSourceReader {
       conversationId,
       rows[0].source_version_id,
       contextRows,
-      verifyRecordHashes,
     );
     if (!snapshot.ok) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, snapshot.kind, snapshot.reason);
@@ -660,7 +659,6 @@ export class ConversationSourceReader {
     conversationId: string,
     versionId: string,
     rows: readonly StructuralRow[],
-    verifyRecordHashes = true,
   ): Promise<SnapshotResult> {
     const source = this.store.resolveConversation(conversationId);
     if (!source || source.currentVersionId !== versionId) {

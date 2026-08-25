@@ -1,6 +1,31 @@
 // Shared API/UI contracts. Keep this module dependency-light so daemon and
 // browser UI code can import its types without dragging in runtime services.
 
+// The transcript vocabularies belong to the parser contract; re-export them so
+// daemon and UI read one definition.
+import type { BlockType, ConversationSource, Role } from "./parsers/types.js";
+
+export type { BlockType, ConversationSource, Role };
+
+// Route handlers still name their list payload after the resource. Declare the
+// accepted keys once so producers, the union type, and the client normalizer
+// cannot drift apart.
+export const LIST_ENVELOPE_KEYS = [
+  "items",
+  "sessions",
+  "queue",
+  "requests",
+  "repos",
+  "branches",
+  "work_units",
+  "hooks",
+  "artifacts",
+  "conversations",
+  "templates",
+] as const;
+
+export type ListEnvelopeKey = (typeof LIST_ENVELOPE_KEYS)[number];
+
 export type ApiListEnvelope<T> = {
   items: T[];
   total?: number;
@@ -8,18 +33,8 @@ export type ApiListEnvelope<T> = {
   limit?: number;
 };
 
-export type LegacyListEnvelope<T> = Partial<ApiListEnvelope<T>> & {
-  sessions?: T[];
-  queue?: T[];
-  requests?: T[];
-  repos?: T[];
-  branches?: T[];
-  work_units?: T[];
-  hooks?: T[];
-  artifacts?: T[];
-  conversations?: T[];
-  templates?: T[];
-};
+export type LegacyListEnvelope<T> = Partial<Record<ListEnvelopeKey, T[]>> &
+  Omit<Partial<ApiListEnvelope<T>>, "items">;
 
 export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
 
@@ -257,7 +272,6 @@ export type WorkUnitWithLiveness = WorkUnit & {
   liveness: WorkUnitLiveness;
 };
 
-export type ConversationSource = "claude_code" | "codex" | "gemini";
 export type ConversationAttachKind = "live-owned" | "live-external" | "resumable" | "historical";
 export type ConversationAttachReason =
   | "mandible-owned"
@@ -280,15 +294,6 @@ export type ConversationAttachState = {
   source_mtime?: number | null;
   checked_at: number;
 };
-export type BlockType =
-  | "user_message"
-  | "assistant_message"
-  | "thinking"
-  | "tool_use"
-  | "tool_result"
-  | "system"
-  | "event";
-export type Role = "user" | "assistant" | "system" | "tool";
 
 export type StoredConversationBlock = {
   id: string;

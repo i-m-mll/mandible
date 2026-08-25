@@ -1,9 +1,11 @@
+import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
   ApiList,
+  ListEnvelopeKey,
   ArtifactAliasRecord as ContractArtifactAliasRecord,
   ArtifactAliasResolutionStatus as ContractArtifactAliasResolutionStatus,
   ArtifactLinkRecord as ContractArtifactLinkRecord,
@@ -373,20 +375,14 @@ function normalizeList<T>(payload: ApiList<T>): T[] {
   if (Array.isArray(payload)) {
     return payload;
   }
-  return (
-    payload.items ||
-    payload.sessions ||
-    payload.queue ||
-    payload.requests ||
-    payload.repos ||
-    payload.branches ||
-    payload.work_units ||
-    payload.hooks ||
-    payload.artifacts ||
-    payload.conversations ||
-    payload.templates ||
-    []
-  );
+  const envelope: Partial<Record<ListEnvelopeKey, T[]>> = payload;
+  for (const key of LIST_ENVELOPE_KEYS) {
+    const value = envelope[key];
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+  return [];
 }
 
 function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
@@ -1992,11 +1988,11 @@ export async function createConsoleSession(
   label: string;
   agent_type: string;
   interaction_mode: 'inbox_only' | 'direct' | 'both';
-  pinned: boolean;
+  pinned?: boolean;
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
-  unread_count: number;
+  unread_count?: number;
   created_at: number;
   started_at: number | null;
   stopped_at: number | null;
@@ -3699,6 +3695,37 @@ function briefingOptionalNumber(value: unknown): number | null {
   return null;
 }
 
+function briefingDocumentProfile(value: unknown): BriefingDocumentProfile | null {
+  return BRIEFING_DOCUMENT_PROFILES.find((candidate) => candidate === value) ?? null;
+}
+
+function briefingDirectiveBindingStatus(value: unknown): BriefingDirectiveBindingStatus | null {
+  return BRIEFING_DIRECTIVE_BINDING_STATUSES.find((candidate) => candidate === value) ?? null;
+}
+
+function briefingSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+type BriefingSpan = {
+  start_offset: number;
+  end_offset: number;
+  body_start_offset: number;
+  body_end_offset: number;
+};
+
+/** Directive spans and text-variant spans share one nesting invariant. */
+function briefingSpan(value: Record<string, unknown>): BriefingSpan | null {
+  const start = value.start_offset;
+  const end = value.end_offset;
+  const bodyStart = value.body_start_offset;
+  const bodyEnd = value.body_end_offset;
+  if (!briefingSafeInteger(start) || !briefingSafeInteger(end)
+      || !briefingSafeInteger(bodyStart) || !briefingSafeInteger(bodyEnd)) return null;
+  if (start < 0 || start >= bodyStart || bodyStart >= bodyEnd || bodyEnd > end) return null;
+  return { start_offset: start, end_offset: end, body_start_offset: bodyStart, body_end_offset: bodyEnd };
+}
+
 function briefingStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.filter((entry): entry is string => typeof entry === 'string');
@@ -3760,6 +3787,12 @@ export type BriefingDirectiveItem = {
   };
 };
 
+export const BRIEFING_DOCUMENT_PROFILES = ['mandible-briefing.v2', 'mandible-briefing.v3'] as const;
+export type BriefingDocumentProfile = (typeof BRIEFING_DOCUMENT_PROFILES)[number];
+
+export const BRIEFING_DIRECTIVE_BINDING_STATUSES = ['valid', 'invalid', 'unavailable'] as const;
+export type BriefingDirectiveBindingStatus = (typeof BRIEFING_DIRECTIVE_BINDING_STATUSES)[number];
+
 export type BriefingRoundProjection = {
   round_id: string;
   state: 'open' | 'submitted';
@@ -3771,7 +3804,7 @@ export type BriefingRoundProjection = {
     artifact_version_id: string;
     content_hash: string;
     previous_round_id: string | null;
-    profile: 'mandible-briefing.v2' | 'mandible-briefing.v3';
+    profile: BriefingDocumentProfile;
     source: string;
     comparison_base?: null | {
       artifact_version_id: string;
@@ -3784,7 +3817,7 @@ export type BriefingRoundProjection = {
       source: string;
     };
   };
-  directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
+  directive_binding: null | { status: BriefingDirectiveBindingStatus; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: BriefingAnnotation[];
   submission_overlays?: BriefingSubmissionOverlaySummary[];
@@ -4011,27 +4044,19 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       return Boolean(option.key && option.label);
     });
     if (responseType === 'text_variant' && !Array.isArray(revision.variants)) valid = false;
-    const variants = (Array.isArray(revision.variants) ? revision.variants : []).map((variant) => {
+    const variants = (Array.isArray(revision.variants) ? revision.variants : []).map((variant): BriefingTextVariant | null => {
       const value = briefingRecord(variant);
       if (!exactBriefingValueKeys(value, ['key', 'label', 'body', 'start_offset', 'end_offset', 'body_start_offset', 'body_end_offset'])) valid = false;
-      const parsed = {
-        key: briefingString(value.key),
-        label: briefingString(value.label),
-        body: briefingString(value.body),
-        start_offset: value.start_offset,
-        end_offset: value.end_offset,
-        body_start_offset: value.body_start_offset,
-        body_end_offset: value.body_end_offset,
-      };
-      if (!parsed.key || !parsed.label || !parsed.body || !Number.isSafeInteger(parsed.start_offset)
-          || !Number.isSafeInteger(parsed.end_offset) || (parsed.start_offset as number) < 0
-          || (parsed.end_offset as number) <= (parsed.start_offset as number)
-          || !Number.isSafeInteger(parsed.body_start_offset) || !Number.isSafeInteger(parsed.body_end_offset)
-          || (parsed.body_start_offset as number) <= (parsed.start_offset as number)
-          || (parsed.body_end_offset as number) > (parsed.end_offset as number)
-          || (parsed.body_end_offset as number) <= (parsed.body_start_offset as number)) valid = false;
-      return parsed as BriefingTextVariant;
-    });
+      const key = briefingString(value.key);
+      const label = briefingString(value.label);
+      const body = briefingString(value.body);
+      const span = briefingSpan(value);
+      if (!key || !label || !body || !span) {
+        valid = false;
+        return null;
+      }
+      return { key, label, body, ...span };
+    }).filter((variant): variant is BriefingTextVariant => variant !== null);
     const choice = responseType === 'single_choice' || responseType === 'multi_choice';
     const textVariant = responseType === 'text_variant';
     if (itemKind === 'group' && (revision.required === true || options.length > 0 || variants.length > 0)) valid = false;
@@ -4051,14 +4076,9 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     if (Object.prototype.hasOwnProperty.call(row, 'directive')) {
       const key = briefingString(rawDirective.key);
       const definitionDigest = briefingString(rawDirective.definition_digest);
-      const start = rawDirective.start_offset;
-      const end = rawDirective.end_offset;
-      const bodyStart = rawDirective.body_start_offset;
-      const bodyEnd = rawDirective.body_end_offset;
-      if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || !/^[0-9a-f]{64}$/.test(definitionDigest) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
-          || !Number.isSafeInteger(bodyStart) || !Number.isSafeInteger(bodyEnd)
-          || start < 0 || start >= bodyStart || bodyStart >= bodyEnd || bodyEnd > end) valid = false;
-      else directive = { key, definition_digest: definitionDigest, start_offset: start, end_offset: end, body_start_offset: bodyStart, body_end_offset: bodyEnd };
+      const span = briefingSpan(rawDirective);
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || !/^[0-9a-f]{64}$/.test(definitionDigest) || !span) valid = false;
+      else directive = { key, definition_digest: definitionDigest, ...span };
     }
     return {
       id,
@@ -4112,10 +4132,10 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     id: briefingString(actorLatest.id),
     ordinal: briefingOptionalNumber(actorLatest.ordinal) ?? 0,
   };
-  if (root.latest_submission_for_actor != null
+  if (latestSubmissionForActor !== null
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
-  const profile = rawDocument.profile;
+  const profile = briefingDocumentProfile(rawDocument.profile);
   const documentShapeValid = [
     ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base', 'original_comparison_base'],
     ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base'],
@@ -4152,8 +4172,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     && comparisonBase !== undefined
     && originalComparisonBase !== undefined
     && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
-  const document = root.document !== null && documentShapeValid && documentFieldsValid
-    && (profile === 'mandible-briefing.v2' || profile === 'mandible-briefing.v3') ? {
+  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile !== null ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
@@ -4165,9 +4184,9 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
   if (!document
       || !document.artifact_version_id) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
-  const bindingStatus = bindingRow.status;
+  const bindingStatus = briefingDirectiveBindingStatus(bindingRow.status);
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
-    && (bindingStatus === 'valid' || bindingStatus === 'invalid' || bindingStatus === 'unavailable')
+    && bindingStatus !== null
     && (bindingRow.reason === undefined || typeof bindingRow.reason === 'string')
     ? { status: bindingStatus, ...(typeof bindingRow.reason === 'string' ? { reason: bindingRow.reason } : {}) }
     : undefined;
@@ -4314,7 +4333,7 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
     const member = briefingRecord(memberEntry);
     const normalized = normalizeBriefings({ briefings: [member.briefing] })[0];
     const position = briefingOptionalNumber(member.position);
-    return normalized && position !== undefined && position >= 0 ? { position, briefing: normalized } : null;
+    return normalized && position !== null && position >= 0 ? { position, briefing: normalized } : null;
   }).filter((member): member is { position: number; briefing: FeedbackCollection } => member !== null)
     .sort((left, right) => left.position - right.position);
   const layoutRows = Array.isArray(bundle.layout) ? bundle.layout : [];
@@ -4988,6 +5007,7 @@ import {
   type TaskCommandMutationResult as ContractTaskCommandMutationResult,
   type TaskCommandRejectionReason,
   type TaskCommandState,
+  type TaskCommandVerb,
   type TaskActivationFacts,
   type TaskBundleFacts,
   type TaskCircuitState,
@@ -5243,6 +5263,7 @@ export async function getTaskInventory(signal?: AbortSignal): Promise<TaskInvent
   return normalizeTaskInventory(await parseMaybeJson(response));
 }
 
+const TASK_COMMAND_VERBS: readonly TaskCommandVerb[] = ['disable', 'dry_run', 'enable'];
 const TASK_COMMAND_STATES: readonly TaskCommandState[] = [
   'requested', 'accepted', 'started', 'applied', 'rejected', 'cancelled',
 ];
@@ -5256,15 +5277,13 @@ function normalizeTaskCommand(value: unknown): TaskCommand | null {
   const id = briefingOptionalString(row.id);
   const executor = briefingOptionalString(row.executor);
   const taskId = briefingOptionalString(row.task_id);
-  if (!id || !executor || !taskId
-    || !['disable', 'dry_run', 'enable'].includes(String(row.verb))) return null;
+  const verb = taskMaybeEnum(row.verb, TASK_COMMAND_VERBS);
+  if (!id || !executor || !taskId || verb === TASK_INVENTORY_UNKNOWN) return null;
   const schema = row.schema === TASK_COMMAND_SCHEMA ? TASK_COMMAND_SCHEMA : TASK_COMMAND_SCHEMA_V1;
-  if (schema === TASK_COMMAND_SCHEMA_V1 && row.verb !== 'disable') return null;
-  const payloadRow = briefingRecord(row.payload);
-  const payload = row.verb === 'disable'
-    ? {}
-    : { execution_hash: briefingString(payloadRow.execution_hash) };
-  if (row.verb !== 'disable' && !/^[0-9a-f]{64}$/.test(payload.execution_hash ?? '')) return null;
+  if (schema === TASK_COMMAND_SCHEMA_V1 && verb !== 'disable') return null;
+  const executionHash = briefingString(briefingRecord(row.payload).execution_hash);
+  if (verb !== 'disable' && !/^[0-9a-f]{64}$/.test(executionHash)) return null;
+  const payload: TaskCommand['payload'] = verb === 'disable' ? {} : { execution_hash: executionHash };
   const state = taskMaybeEnum(row.state, TASK_COMMAND_STATES);
   if (state === TASK_INVENTORY_UNKNOWN) return null;
   const rejectionReason = row.rejection_reason === null
@@ -5277,7 +5296,7 @@ function normalizeTaskCommand(value: unknown): TaskCommand | null {
     request_digest: briefingString(row.request_digest),
     executor,
     task_id: taskId,
-    verb: row.verb,
+    verb,
     payload,
     requested_by_user_id: briefingString(row.requested_by_user_id),
     requested_by_slug: briefingOptionalString(row.requested_by_slug),

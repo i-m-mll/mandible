@@ -8,6 +8,7 @@ import {
   patchLedgerIssue,
   resolveLedgerConflict,
   spawnIssueAgent,
+  type LedgerIssueDetailActor,
   type LedgerIssueDetailProjection,
 } from '../api';
 import { ViewSidebar } from '../components/ViewSidebar';
@@ -125,15 +126,6 @@ function getVisualState(issue: { status: string; labels: string[] }): VisualStat
   if (issue.labels.includes('merged')) return 'merged';
   return 'closed';
 }
-
-// Reverse map: display name → internal label (for filter pills)
-const LABEL_INTERNAL_NAMES: Record<string, string> = {
-  bug: 'error',
-  umbrella: 'umbrella',
-  feature: 'feature',
-  deferred: 'deferred',
-  coordination: 'coordination',
-};
 
 const KIND_FILTERS = [
   { key: 'umbrella', label: 'umbrella', labels: ['umbrella'] },
@@ -316,7 +308,14 @@ function synthesizeLedgerIssueDetail(
 ): LedgerIssueDetailProjection {
   const createdAt = Date.parse(issue.created_at);
   const timestamp = Number.isFinite(createdAt) ? createdAt : Date.now();
-  const author = { id: null, type: 'mandible_user' as const, display: issue.author || 'Mandible' };
+  const authorDisplay = issue.author || 'Mandible';
+  const author: LedgerIssueDetailActor = {
+    id: null,
+    type: 'mandible_user',
+    display: authorDisplay,
+    legacy_display: authorDisplay,
+    attribution: null,
+  };
   const labels = issue.labels ?? [];
   const kind = labels.includes('umbrella')
     ? 'umbrella'
@@ -413,19 +412,17 @@ function normalizeIssueDefaultFilter(value: string | null | undefined): string {
 
 function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewState>): IssuesViewState {
   const stored = value && typeof value === 'object' ? value as Partial<IssuesViewState> : {};
-  const hasEditedFilter = stored.filterEdited === true && typeof stored.filter === 'string';
+  const editedFilter = stored.filterEdited === true && typeof stored.filter === 'string' ? stored.filter : null;
   const legacyRepoFilter = typeof (stored as Partial<IssuesViewState> & { repoFilter?: unknown }).repoFilter === 'string'
     ? (stored as Partial<IssuesViewState> & { repoFilter: string }).repoFilter.trim()
     : '';
-  const storedFilter = hasEditedFilter
-    ? stored.filter
-    : defaults.filter;
+  const storedFilter = editedFilter ?? defaults.filter;
   const filter = legacyRepoFilter && !storedFilter.toLowerCase().includes(legacyRepoFilter.toLowerCase())
     ? `${storedFilter} ${legacyRepoFilter}`.trim()
     : storedFilter;
   return {
     filter,
-    filterEdited: hasEditedFilter || Boolean(legacyRepoFilter),
+    filterEdited: editedFilter !== null || Boolean(legacyRepoFilter),
     parentFilter: stored.parentFilter === null || typeof stored.parentFilter === 'string'
       ? stored.parentFilter
       : defaults.parentFilter,
@@ -629,12 +626,6 @@ export function IssuesView({
   const showRepoLabels = useMemo(() => {
     return new Set(items.map((item) => item.repo.repo_id)).size > 1;
   }, [items]);
-
-  // Total issue count for badge
-  const totalOpen = useMemo(
-    () => repos.reduce((acc, r) => acc + r.open_count, 0),
-    [repos],
-  );
 
   const selectedIssueSummary = useMemo(() => {
     if (!selectedRepoId || !selectedIssueId) return null;

@@ -9,8 +9,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as client from "./client.js";
 import type {
   InboxResponse,
-  InboxContinuation,
-  InboxAuthResult,
   InboxWorkUnit,
   IssueRepoSummary,
 } from "./types.js";

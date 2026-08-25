@@ -40,7 +40,7 @@ import {
   validateCanonicalChangeMessage,
   type CanonicalChangeMessageFields,
 } from "./auth-change-message.js";
-import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
+import { AuthHookManager } from "./auth-hooks.js";
 import {
   describeRecomputeRefusal,
   type RecomputeRefusal,

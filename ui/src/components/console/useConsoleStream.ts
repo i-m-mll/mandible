@@ -23,6 +23,18 @@ export type ConsoleStreamState = {
   beginLocalPrompt: (text: string) => void;
 };
 
+/** Recover the elapsed-time origin from the newest synthetic prompt of the live turn. */
+function recoveredStreamStart(events: readonly StreamEvent[]): number | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === 'result') return null;
+    if (event.type !== 'synthetic_prompt') continue;
+    const match = (event as { localId?: string }).localId?.match(/^sp-(\d+)-/);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
 export function useConsoleStream({
   sessionId,
   providerSessionId,
@@ -220,28 +232,9 @@ export function useConsoleStream({
       setElapsedSeconds(undefined);
       return;
     }
-    if (streamStartAtRef.current === null) {
-      let recovered = false;
-      for (let i = streamEvents.length - 1; i >= 0; i--) {
-        const event = streamEvents[i];
-        if (event.type === 'synthetic_prompt') {
-          const localId = (event as { localId?: string }).localId;
-          if (localId) {
-            const match = localId.match(/^sp-(\d+)-/);
-            if (match) {
-              streamStartAtRef.current = Number(match[1]);
-              recovered = true;
-              break;
-            }
-          }
-        }
-        if (event.type === 'result') break;
-      }
-      if (!recovered) {
-        streamStartAtRef.current = Date.now();
-      }
-    }
-    setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1000));
+    const startedAt = streamStartAtRef.current ?? recoveredStreamStart(streamEvents) ?? Date.now();
+    streamStartAtRef.current = startedAt;
+    setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
     const interval = window.setInterval(() => {
       if (streamStartAtRef.current !== null) {
         setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1000));

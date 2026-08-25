@@ -144,7 +144,7 @@ function contextFromTelemetry(telemetry: StatuslineTelemetry | null | undefined)
       windowData?.output_tokens,
       windowData?.cache_creation_input_tokens,
       windowData?.cache_read_input_tokens,
-    ]),
+    ]) ?? undefined,
     windowTokens: numberOrNull(windowData?.context_window_size) ?? undefined,
     approximate: false,
     model: telemetry?.model ?? undefined,
@@ -352,7 +352,7 @@ function percentFromTokens(used: number | null, windowTokens: number | null): nu
 }
 
 function tokenTotal(values: unknown[]): number | null {
-  const total = values.reduce((sum, value) => sum + (numberOrNull(value) ?? 0), 0);
+  const total = values.reduce<number>((sum, value) => sum + (numberOrNull(value) ?? 0), 0);
   return total > 0 ? total : null;
 }
 

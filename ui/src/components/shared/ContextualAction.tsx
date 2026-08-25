@@ -1,7 +1,7 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { forwardRef } from 'preact/compat';
 
-export type ContextualActionProps = Omit<JSX.HTMLAttributes<HTMLButtonElement>, 'className' | 'type'> & {
+export type ContextualActionProps = Omit<JSX.ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'type'> & {
   children: ComponentChildren;
   className?: string;
   presentation?: 'bare' | 'compact';

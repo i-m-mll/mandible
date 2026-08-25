@@ -316,10 +316,6 @@ function firstEntries(value: Record<string, unknown> | undefined, limit = 4): Ar
     .slice(0, limit);
 }
 
-function nodeTime(node: GraphNode): number {
-  return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
-}
-
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>

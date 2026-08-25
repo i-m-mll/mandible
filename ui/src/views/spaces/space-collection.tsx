@@ -275,7 +275,7 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
     () => (load.status === 'ready' ? projectCollection(load.model) : null),
     [load],
   );
-  const items = load.status === 'ready' ? load.model.items : [];
+  const items = load.status === 'ready' ? Object.values(load.model.itemsById) : [];
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
 

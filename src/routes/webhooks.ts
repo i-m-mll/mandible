@@ -10,9 +10,8 @@ import { broadcast } from "../sse.js";
 import { getChannelRegistry } from "../channel-registry.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
-import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { WebhookEvent, WebhookEventRow, WebhookEventStatus } from "../types.js";
+import type { WebhookEvent, WebhookEventRow } from "../types.js";
 import { sendJson } from "./http.js";
 
 // --- Rate limiter ---
@@ -169,7 +168,6 @@ function tryRouteByIssue(
 
 function tryRouteByBranch(
   sessionManager: SessionManager,
-  sessionRegistry: SessionRegistry,
   branch: string,
   event: WebhookEvent,
   req: RequestLike,
@@ -263,7 +261,6 @@ function markDelivered(id: string, deliveredTo: string): void {
 
 export function registerWebhookRoutes(
   server: RouteRegistrar,
-  sessionRegistry: SessionRegistry,
   sessionManager: SessionManager,
 ): void {
 
@@ -322,7 +319,6 @@ export function registerWebhookRoutes(
     if (!result && event.target_branch) {
       result = tryRouteByBranch(
         sessionManager,
-        sessionRegistry,
         event.target_branch,
         event,
         req,

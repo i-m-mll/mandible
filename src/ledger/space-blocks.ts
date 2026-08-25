@@ -160,7 +160,6 @@ export function isEmbedBlockType(value: BlockType): boolean {
 const SORT_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const SORT_BASE = SORT_ALPHABET.length;
 const MIN_DIGIT = SORT_ALPHABET[0];
-const MAX_DIGIT = SORT_ALPHABET[SORT_BASE - 1];
 
 function digitValue(ch: string): number {
   const idx = SORT_ALPHABET.indexOf(ch);

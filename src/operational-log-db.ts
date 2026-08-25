@@ -826,12 +826,6 @@ function coalesceEquivalentCopyState(db: Db, sourcePath: string): void {
   })();
 }
 
-function attachedLegacySourcePath(db: Db): string | null {
-  const row = (db.pragma("database_list") as Array<{ name: string; file: string }>)
-    .find((database) => database.name === LEGACY_LOG_SCHEMA);
-  return row?.file ? canonicalExistingPath(row.file) : null;
-}
-
 function hasCurrentCompletedCopy(db: Db, sourcePath: string): boolean {
   try {
     const state = db.prepare(

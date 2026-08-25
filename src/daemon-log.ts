@@ -103,7 +103,6 @@ interface ExtractedRefs {
 }
 
 class DaemonLogger {
-  private db: Db | null = null;
   private insert: InsertStatement | null = null;
   private insertMany: ((rows: LogInsertParams[]) => void) | null = null;
   private readonly stderrMinIndex: number;
@@ -135,7 +134,6 @@ class DaemonLogger {
     this.stopTimers();
     this.queue = [];
     this.reportedDbFailure = false;
-    this.db = config.persist === false ? null : db;
     this.insert = config.persist === false
       ? null
       : db.prepare(
@@ -211,7 +209,6 @@ class DaemonLogger {
     this.flush();
     this.stopTimers();
     this.queue = [];
-    this.db = null;
     this.insert = null;
     this.insertMany = null;
   }

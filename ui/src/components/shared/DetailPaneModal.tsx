@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { createPortal } from 'preact/compat';
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { DetailPaneOverlayContext } from './DetailPaneShell';
@@ -20,7 +21,7 @@ export type DetailPaneModalProps = {
   scrollLockClassName?: string;
   className?: string;
   panelClassName?: string;
-  children: JSX.Element | JSX.Element[];
+  children: ComponentChildren;
 };
 
 type PaneBounds = {

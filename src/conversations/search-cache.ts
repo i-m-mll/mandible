@@ -234,7 +234,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
   private readonly reader: ConversationSourceReader;
   private readonly legacy: LegacyConversationSearchSourceAdapter;
 
-  constructor(private readonly db: Db) {
+  constructor(db: Db) {
     this.store = new ConversationSourceStore(db);
     this.reader = new ConversationSourceReader(db);
     this.legacy = new LegacyConversationSearchSourceAdapter(db);

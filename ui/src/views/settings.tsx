@@ -1626,7 +1626,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const initialized = useRef(false);
   const quietInitialized = useRef(false);
   const viewRef = useRef<HTMLDivElement | null>(null);
-  const [activeSection, setActiveSection] = useState(SETTINGS_SECTIONS.notifications.id);
+  const [activeSection, setActiveSection] = useState<string>(SETTINGS_SECTIONS.notifications.id);
   const desktopShell = isDesktopShell();
   const visibleSections = SETTINGS_SECTION_LIST.filter((section) => !section.desktopOnly || desktopShell);
 

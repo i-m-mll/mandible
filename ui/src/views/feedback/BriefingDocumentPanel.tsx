@@ -378,14 +378,14 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     selectedVariantKeys,
     source.length - suppressRepeatedLeadingHeading(source, briefingTitle).length,
   ), [briefingTitle, directiveItems, selectedVariantKeys, source]);
-  const comparisonMarkdownModel = useMemo(() => source === null || !document.comparison_base ? null
+  const comparisonMarkdownModel = useMemo(() => source === null || !document?.comparison_base ? null
     : buildBriefingMarkdownModel(
       document.comparison_base.source,
       [],
       {},
       document.comparison_base.source.length
         - suppressRepeatedLeadingHeading(document.comparison_base.source, briefingTitle).length,
-    ), [briefingTitle, document.comparison_base, source]);
+    ), [briefingTitle, document?.comparison_base, source]);
   const changedEntityIndexes = useMemo(() => markdownModel && comparisonMarkdownModel
     ? changedBriefingEntityIndexes(markdownModel, comparisonMarkdownModel)
     : [], [comparisonMarkdownModel, markdownModel]);

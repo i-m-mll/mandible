@@ -340,10 +340,7 @@ function BoardColumnView({
             type="button"
             className="space-board__column-title"
             disabled={!custom}
-            onDoubleClick={() => custom && setRenaming(true)}
-            onClick={(event) => {
-              if (custom && event.detail >= 2) setRenaming(true);
-            }}
+            onDblClick={() => custom && setRenaming(true)}
             onKeyDown={(event) => {
               if (custom && event.key === 'Enter') setRenaming(true);
             }}

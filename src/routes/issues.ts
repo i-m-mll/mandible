@@ -82,12 +82,6 @@ export interface IssueServer {
   patch?(path: string, handler: RouteHandler, options: RouteOptions): void;
 }
 
-// Bug: cbbb3d9 — spawn-from-issue deps type
-interface SpawnDeps {
-  sessionManager?: import("../session-manager.js").SessionManager;
-  workScanner?: WorkScanner;
-}
-
 function getParam(req: unknown, key: string): string | undefined {
   if (!req || typeof req !== "object") {
     return undefined;

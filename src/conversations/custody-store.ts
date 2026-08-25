@@ -8,7 +8,6 @@ import type {
   CustodyDependency,
   CustodyFileRecord,
   CustodyManifest,
-  CustodyProvider,
   CustodySource,
   CustodyState,
   CustodyStatusRecord,

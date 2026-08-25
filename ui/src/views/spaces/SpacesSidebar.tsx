@@ -548,10 +548,11 @@ export function SpacesSidebar({
 
   const renderChooser = (): JSX.Element | null => {
     if (!popover || popover.mode !== 'create') return null;
-    const isTopLevel = popover.target.kind === 'top-level';
-    const label = isTopLevel
+    const target = popover.target;
+    const isTopLevel = target.kind === 'top-level';
+    const label = target.kind === 'top-level'
       ? 'New space'
-      : `New space in ${popover.target.projectName}`;
+      : `New space in ${target.projectName}`;
     const selectedTypeLabel = spaceTypeLabel(createRenderer);
     const seedCompatible = canSeedRenderer(createRenderer);
     const createWithSeed = seedCompatible && seedAfterCreate;

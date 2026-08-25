@@ -17,7 +17,6 @@ import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
-import { AttributionReadResolver } from "../identity/read-projection.js";
 import { checkSessionIdentity } from "../identity/session-mismatch.js";
 import { readBody, sendJson } from "./http.js";
 
@@ -503,7 +502,7 @@ export function registerSessionRoutes(
   issueScanner?: IssueScanner,
   clientAuth?: SessionScopedTokenRevoker | null,
 ): void {
-  server.post("/api/sessions/discover", async (req, res) => {
+  server.post("/api/sessions/discover", async (_req, res) => {
     if (!discovery) {
       sendJson(res, 501, { error: "Session discovery not configured" });
       return;
@@ -758,7 +757,6 @@ export function registerSessionRoutes(
 
     // Merge in-memory state with DB-persisted state for resilience
     const dbSessions = getChannelConnectedSessionsFromDb();
-    const inMemoryIds = new Set(inMemory.map((s) => s.session_id));
 
     const combined = dbSessions.map((dbRow) => {
       const live = inMemory.find((s) => s.session_id === dbRow.id);

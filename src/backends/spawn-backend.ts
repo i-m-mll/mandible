@@ -13,7 +13,6 @@ import type { WebSocket } from "ws";
 import type { AgenticBackend, BackendMetaUpdate, BackendStatusEvent } from "../agentic-backend.js";
 import type {
   ConsoleSession,
-  ConsoleSessionStatus,
   ConsoleStreamEvent,
   Logger,
 } from "../types.js";

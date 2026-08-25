@@ -275,7 +275,7 @@ export function renderSpaceBlocks(
   blocks: SpaceBlock[],
   spaceId?: string,
 ): RenderedDocument {
-  const frontmatter = spaceId ? { space_id: spaceId } : {};
+  const frontmatter: Record<string, string> = spaceId ? { space_id: spaceId } : {};
   const text = exportDocument(blocksToDocTree(blocks, frontmatter));
   return renderDocumentText(text);
 }
