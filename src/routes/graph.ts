@@ -10,7 +10,6 @@ import {
   presetDescriptors,
 } from "../graph/spec.js";
 import { getIndexedGraph, projectArtifactPublicValue } from "../provider-artifacts.js";
-import type { IssueScanner } from "../issue-scanner.js";
 import type { RouteRegistrar } from "../server.js";
 import type { GraphPayload } from "../types.js";
 
@@ -19,10 +18,7 @@ import type { GraphPayload } from "../types.js";
 // Bug: 22a54d4 — this module owns request parsing, payload assembly, and HTTP
 // registration only; graph spec policy, selection, and projection live in src/graph/.
 
-export function registerGraphRoutes(
-  app: RouteRegistrar,
-  _issueScanner: IssueScanner,
-): void {
+export function registerGraphRoutes(app: RouteRegistrar): void {
   app.get("/api/graph", (req, res) => {
     const query = req.query as Record<string, string | string[] | undefined>;
     const params = parseQueryParams(query);

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
@@ -1310,8 +1309,7 @@ export function registerIssueRoutes(
   server: IssueServer,
   workScanner: WorkScanner,
   deps?: { sessionRegistry?: import("../registry.js").SessionRegistry; sessionManager?: import("../session-manager.js").SessionManager },
-): IssueScanner {
-  const issueScanner = new IssueScanner(workScanner);
+): void {
 
   // GET /api/issues — list repo summaries with optional filtering
   server.get("/api/issues", (req, res) => {
@@ -2742,7 +2740,6 @@ export function registerIssueRoutes(
     });
   }), { fileRpc: "deny" });
 
-  return issueScanner;
 }
 
 function parseJsonStringArray(value: unknown): string[] {

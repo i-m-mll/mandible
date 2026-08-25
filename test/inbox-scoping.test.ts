@@ -762,8 +762,7 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
       },
       post: () => {},
     };
-    const fakeIssueScanner = { getRepoSummaries: () => [] };
-    registerInboxRoutes(server, {} as never, fakeIssueScanner as never, undefined, undefined);
+    registerInboxRoutes(server, {} as never, undefined, undefined);
     if (!handler) throw new Error("/api/inbox/undelivered handler not registered");
     let capturedStatus = 0;
     let capturedBody: unknown = null;
@@ -1858,7 +1857,6 @@ function callInbox(
     server: { get: (path: string, h: (req: unknown, res: unknown) => void) => void;
               post: (path: string, h: (req: unknown, res: unknown) => void) => void; },
     sessionRegistry: unknown,
-    issueScanner: unknown,
     sessionManager?: unknown,
     authQueue?: unknown
   ) => void,
@@ -1872,8 +1870,7 @@ function callInbox(
     },
     post: () => {}
   };
-  const fakeIssueScanner = { getRepoSummaries: () => [] };
-  registerInboxRoutes(server, {} as never, fakeIssueScanner as never, undefined, undefined);
+  registerInboxRoutes(server, {} as never, undefined, undefined);
   if (!handler) throw new Error("Inbox route handler was not registered");
 
   let captured: unknown = null;

@@ -13,8 +13,8 @@ import {
   getChannelConnectedSessionsFromDb,
 } from "../channel-registry.js";
 import { linkSessionToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
-import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
+import type { WorkScanner } from "../work-scanner.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
@@ -82,15 +82,15 @@ function normalizeRepoDisplayName(repoId: string, repoName?: string | null): str
 }
 
 function resolveCanonicalRepoId(
-  issueScanner: IssueScanner | undefined,
+  workScanner: WorkScanner | undefined,
   repoId: string,
   repoName?: string | null,
   _issueId?: string,
 ): string {
-  if (!issueScanner) return repoId;
-  const direct = issueScanner.workScanner.getRepoById(repoId);
+  if (!workScanner) return repoId;
+  const direct = workScanner.getRepoById(repoId);
   if (direct?.exists) return direct.id;
-  const byName = repoName ? issueScanner.workScanner.getRepoById(repoName) : null;
+  const byName = repoName ? workScanner.getRepoById(repoName) : null;
   if (byName?.exists) return byName.id;
   // Stripped-dot basename fallback: handles ".dotfiles" → "dotfiles"
   const stripped = repoId.replace(/^\.+/, '');
@@ -500,7 +500,7 @@ export function registerSessionRoutes(
   server: RouteRegistrar,
   registry: SessionRegistry = new SessionRegistry(getDb()),
   discovery?: SessionDiscovery,
-  issueScanner?: IssueScanner,
+  workScanner?: WorkScanner,
   clientAuth?: SessionScopedTokenRevoker | null,
 ): void {
   server.post("/api/sessions/discover", async (req, res) => {
@@ -1237,7 +1237,7 @@ export function registerSessionRoutes(
       sendJson(res, 400, { error: "Missing issue_id or repo_id" });
       return;
     }
-    const canonicalRepoId = resolveCanonicalRepoId(issueScanner, body.repo_id, body.repo_name, body.issue_id);
+    const canonicalRepoId = resolveCanonicalRepoId(workScanner, body.repo_id, body.repo_name, body.issue_id);
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -1249,7 +1249,7 @@ export function registerSessionRoutes(
     // Persist project association (sticky — survives issue closure)
     let repoName = body.repo_name;
     if (!repoName || repoName.includes("/") || looksLikeBranchName(repoName)) {
-      const repo = issueScanner?.workScanner.getRepoById(canonicalRepoId);
+      const repo = workScanner?.getRepoById(canonicalRepoId);
       if (repo) {
         repoName = repo.name;
       }
