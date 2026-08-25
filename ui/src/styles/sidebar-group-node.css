@@ -1,7 +1,18 @@
 .sidebar-group-node {
   margin-bottom: 10px;
+
+  --sidebar-node-parent-inset: var(--sidebar-title-column-inset, 7px);
+  --sidebar-node-step: 12px;
+  --sidebar-node-icon-column: 22px;
 }
 
+/*
+ * Ownership depth.
+ *
+ * Each disclosure region passes its content inset to descendant nodes through
+ * --sidebar-title-column-inset. Root nodes receive the 7px fallback. Children
+ * advance by the icon column for a folder, or by one step for a category.
+ */
 .sidebar-disclosure-region {
   overflow: hidden;
   opacity: 1;
@@ -42,7 +53,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
-  padding: 7px 7px 6px;
+  padding: 7px 7px 6px var(--sidebar-node-parent-inset);
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -180,11 +191,29 @@
 }
 
 .sidebar-group-node--category > .sidebar-disclosure-region {
-  --sidebar-title-column-inset: 7px;
+  position: relative;
+  --sidebar-title-column-inset: calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-step));
 }
 
 .sidebar-group-node--folder > .sidebar-disclosure-region {
-  --sidebar-title-column-inset: 29px;
+  --sidebar-title-column-inset: calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column));
+}
+
+/*
+ * The category's extent, drawn. Indentation alone is a relative signal: it
+ * says a node sits deeper than the one above it, but nothing marks where a
+ * category stops, so the first ungrouped node after one still reads as its
+ * last child. The spine gives containment a visible edge to fall outside of.
+ */
+
+.sidebar-group-node--category > .sidebar-disclosure-region::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-node-parent-inset) + (var(--sidebar-node-step) / 2));
+  width: 1px;
+  background: var(--border-muted);
 }
 
 .sidebar-group-node__show-more:hover {
