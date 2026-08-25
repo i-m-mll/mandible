@@ -547,6 +547,119 @@ describe("auth request action queue persistence", () => {
 });
 
 describe("auth request action routes", () => {
+  function seedBriefingPromotion(db: Db) {
+    const baseId = "briefing-base-000000000000000000000000";
+    const otherBaseId = "briefing-other-0000000000000000000";
+    const proposalId = "briefing-proposal-00000000000000000000";
+    const groupId = "briefing-group-00000000000000000000000";
+    const insertBundle = db.prepare(
+      "INSERT INTO briefing_bundles (id, name, created_at, updated_at) VALUES (?, ?, 1, 1)",
+    );
+    insertBundle.run(baseId, "Base");
+    insertBundle.run(otherBaseId, "Other base");
+    insertBundle.run(proposalId, "Proposal");
+    db.prepare(`INSERT INTO briefing_groups
+      (id, name, current_bundle_id, created_at, updated_at) VALUES (?, 'Policy', ?, 1, 1)`)
+      .run(groupId, baseId);
+    db.prepare(`INSERT INTO briefing_group_updates
+      (group_id, bundle_id, position, created_at) VALUES (?, ?, 0, 1)`)
+      .run(groupId, proposalId);
+    return { baseId, otherBaseId, proposalId, groupId };
+  }
+
+  it("atomically creates a request with an exact validated Briefing promotion", async () => {
+    const db = createMigratedDb();
+    try {
+      const refs = seedBriefingPromotion(db);
+      const router = new Router();
+      const queue = new AuthQueue({ db });
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      addBinding(db, "auth-action-agent", {
+        binding_type: "provider_session_env",
+        value: "auth-action-promotion-session",
+      });
+      const response = await router.invoke({
+        method: "POST",
+        url: "/api/auth/request",
+        body: {
+          command: "echo merge",
+          title: "Promote reviewed policy",
+          type: "merge",
+          session_id: "auth-action-promotion-session",
+          actions: [{
+            kind: "briefing_group_promote",
+            target_issue_ref: "policy123",
+            payload: {
+              group_ref: "briefing-group-0",
+              expected_base_bundle_ref: "briefing-base-0",
+              proposal_bundle_ref: "briefing-proposal-0",
+            },
+          }],
+        },
+      });
+      expect(response.status).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const readback = await router.invoke({
+        method: "GET",
+        url: `/api/auth/request/${requestId}/actions`,
+      });
+      expect(readback.status).toBe(200);
+      expect(readback.body).toMatchObject({ actions: [{
+        kind: "briefing_group_promote",
+        target_issue_ref: "policy123",
+        state: "staged",
+        payload: {
+          group_ref: refs.groupId,
+          expected_base_bundle_ref: refs.baseId,
+          proposal_bundle_ref: refs.proposalId,
+        },
+      }] });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back the whole request when the expected Briefing Base has drifted", async () => {
+    const db = createMigratedDb();
+    try {
+      const refs = seedBriefingPromotion(db);
+      const router = new Router();
+      const queue = new AuthQueue({ db });
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      addBinding(db, "auth-action-agent", {
+        binding_type: "provider_session_env",
+        value: "auth-action-promotion-drift-session",
+      });
+      const response = await router.invoke({
+        method: "POST",
+        url: "/api/auth/request",
+        body: {
+          command: "echo merge",
+          title: "Stale policy promotion",
+          type: "merge",
+          session_id: "auth-action-promotion-drift-session",
+          actions: [{
+            kind: "briefing_group_promote",
+            target_issue_ref: "policy123",
+            payload: {
+              group_ref: refs.groupId,
+              expected_base_bundle_ref: refs.otherBaseId,
+              proposal_bundle_ref: refs.proposalId,
+            },
+          }],
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({
+        error: "Briefing group Base does not match expected_base_bundle_ref",
+      });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests").get()).toEqual({ count: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM auth_request_actions").get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
   it("supports per-action CRUD on pending requests", async () => {
     const db = createMigratedDb();
     try {

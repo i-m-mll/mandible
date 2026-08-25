@@ -78,6 +78,27 @@ export type BriefingGroupPromotionResult = {
   changed: boolean;
 };
 
+export function validateBriefingGroupPromotionCandidate(
+  db: Db,
+  input: Pick<BriefingGroupPromotionInput, "groupRef" | "expectedBaseBundleRef" | "proposalBundleRef">,
+): { groupId: string; expectedBaseBundleId: string; proposalBundleId: string } {
+  const groupId = resolveGroupId(db, input.groupRef);
+  const expectedBaseBundleId = resolveBundleId(db, input.expectedBaseBundleRef);
+  const proposalBundleId = resolveBundleId(db, input.proposalBundleRef);
+  const group = db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?")
+    .get(groupId) as { current_bundle_id: string | null };
+  if (group.current_bundle_id !== expectedBaseBundleId) {
+    throw new BriefingStoreError("Briefing group Base does not match expected_base_bundle_ref", 409,
+      "promotion_base_drift");
+  }
+  if (!db.prepare("SELECT 1 FROM briefing_group_updates WHERE group_id = ? AND bundle_id = ?")
+    .get(groupId, proposalBundleId)) {
+    throw new BriefingStoreError("Proposal bundle is not an active proposal in this group", 409,
+      "promotion_proposal_drift");
+  }
+  return { groupId, expectedBaseBundleId, proposalBundleId };
+}
+
 function resolveAuthRequestId(db: Db, authRequestRef: string): string {
   const ref = authRequestRef.trim();
   if (!ref) throw new BriefingStoreError("auth_request_ref must be nonblank");
