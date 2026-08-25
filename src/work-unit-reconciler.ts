@@ -3,6 +3,16 @@ import { tableExists } from "./db-introspection.js";
 import { canonicalRepoKeysForRef } from "./repo-identity.js";
 import type { Logger } from "./types.js";
 
+/**
+ * Result of looking for an auth request that explains a missing branch.
+ * `none` is a proven absence; `unknown` is a failed lookup. Only `none` may
+ * abandon a work unit.
+ */
+type AuthPipelineMatch =
+  | { status: "matched"; id: string; completed: boolean; resolved_at: number | null }
+  | { status: "none" }
+  | { status: "unknown" };
+
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
 // Runs every 60s and performs three reconciliation passes:
 // 1. Dead session cleanup: clear assigned_session_id when session is dead
@@ -135,11 +145,17 @@ export class WorkUnitReconciler {
           // reaches Stage 2. Keep it committed while a same-repo request is
           // active, or resolve it here once that request proves success.
           const authRequest = this.matchingAuthPipelineRequest(row);
-          if (authRequest?.completed) {
-            resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
+          if (authRequest.status === "unknown") {
+            // No evidence either way. Leave it committed for the next pass
+            // rather than abandoning on a failed lookup.
             continue;
           }
-          if (authRequest) continue;
+          if (authRequest.status === "matched") {
+            if (authRequest.completed) {
+              resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id);
+            }
+            continue;
+          }
           abandonStmt.run(row.id);
           count++;
         }
@@ -151,13 +167,23 @@ export class WorkUnitReconciler {
     return run();
   }
 
+  /**
+   * Whether an auth request in flight explains this work unit's missing branch.
+   *
+   * Three outcomes, not two. The caller ABANDONS a committed work unit when no
+   * request matches, so "the query failed" and "no request matches" must not
+   * share a return value — a SQL error used to abandon a work unit whose merge
+   * may well have succeeded. The legitimate legacy-schema case is already
+   * handled by the `tableExists` precondition above the try, so the catch only
+   * ever fires on a real failure.
+   */
   private matchingAuthPipelineRequest(workUnit: {
     branch: string;
     repo_id: string;
     created_at: number;
-  }): { id: string; completed: boolean; resolved_at: number | null } | null {
+  }): AuthPipelineMatch {
     const db = getDb();
-    if (!tableExists(db, "auth_requests")) return null;
+    if (!tableExists(db, "auth_requests")) return { status: "none" };
     try {
       const requests = db.prepare(
         `SELECT id, repo, cwd, target_repo_root, status, resolved_at
@@ -189,17 +215,21 @@ export class WorkUnitReconciler {
           : refs.includes(workUnit.repo_id);
         if (matches) {
           return {
+            status: "matched",
             id: request.id,
             completed: request.status === "completed",
             resolved_at: request.resolved_at,
           };
         }
       }
-      return null;
-    } catch {
-      // Legacy/lightweight schemas without the full auth columns retain the
-      // previous abandonment behavior.
-      return null;
+      return { status: "none" };
+    } catch (error) {
+      this.logger("error", "work_unit_auth_match_query_failed", {
+        work_unit_branch: workUnit.branch,
+        repo_id: workUnit.repo_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { status: "unknown" };
     }
   }
 

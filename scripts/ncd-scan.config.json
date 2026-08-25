@@ -1,0 +1,75 @@
+{
+  "$comment": "Configuration for scripts/ncd-scan.mjs. Paths are repo-root-relative POSIX paths matched as JS regular expressions against the tracked path.",
+
+  "includeExtensions": [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx"],
+
+  "excludePaths": [
+    "^dist/",
+    "^ui/dist/",
+    "^node_modules/",
+    "^src-tauri/target/",
+    "^worktrees/",
+    "\\.d\\.ts$"
+  ],
+
+  "$comment_tags": "Tag rules classify every unit. Tags are informational; dropPairTags decides which pairs leave the primary ranked list. Dropped pairs are still reported in a separate section so nothing is silently hidden.",
+  "tagRules": [
+    { "tag": "test", "path": "^test/|(^|/)[^/]*\\.test\\.(ts|tsx|mts|js|mjs)$|(^|/)__tests__/" },
+    { "tag": "fixture", "path": "^test/fixtures/|(^|/)fixtures?/" },
+    { "tag": "generated", "path": "(^|/)generated/|\\.generated\\.|(^|/)ui/dist/|(^|/)dist/" },
+    { "tag": "snapshot", "path": "(^|/)snapshots?/|\\.snap$|^docs/archive/" },
+    { "tag": "ui", "path": "^ui/src/" },
+    { "tag": "cli", "path": "^src/cli/|^cli/" },
+    { "tag": "script", "path": "^scripts/" },
+    { "tag": "vendor", "path": "(^|/)vendor/|(^|/)third[-_]party/" }
+  ],
+
+  "dropPairTags": ["test", "fixture", "generated", "snapshot", "vendor"],
+
+  "$comment_units": "Extraction and scoring thresholds.",
+  "minTokens": 40,
+  "maxTokens": 20000,
+  "shingleK": 5,
+  "jaccardMin": 0.35,
+  "ncdMax": 0.55,
+  "literals": "erase",
+  "compressLevel": 9,
+  "maxCandidatePairs": 3000000,
+
+  "$comment_kinds": "Unit kinds to extract. function covers declarations, methods, arrows and function expressions bound to a name; type covers interface and type-alias declarations; sql covers string and template literals that look like SQL.",
+  "kinds": ["function", "type", "sql"],
+
+  "$comment_reject": "Region-level advisory annotation, not a verdict. When both units of a pair fall inside one of these paths, the pair is marked with the id of a binding rejection recorded in docs/88e6aeb-post-consolidation-design-review.md. The match is by path, so it says only that the pair lies in a region where a large abstraction was rejected on semantic grounds; it does NOT establish that this particular pair IS that abstraction. A reviewer must check which before proposing or dismissing a unification. Annotation never removes a pair from the ranked list. R2 (the AuthQueue recovery service) is deliberately absent: it was reopened on 2026-08-24 because src/auth-queue.ts grew from 2,939 to roughly 6,900 lines.",
+  "bindingRejections": [
+    {
+      "id": "R1",
+      "label": "generic Repository<T> / reflective fromRow<T>",
+      "paths": ["^src/provider-artifacts\\.ts$", "^src/ledger/store\\.ts$"]
+    },
+    {
+      "id": "R3",
+      "label": "handler DSL / one-file-per-endpoint",
+      "paths": ["^src/routes/", "^src/server\\.ts$", "^src/http/"]
+    },
+    {
+      "id": "R4",
+      "label": "artifact god service / generation plugin",
+      "paths": ["^src/artifact-", "^src/provider-artifacts\\.ts$"]
+    },
+    {
+      "id": "R5",
+      "label": "generic EntityBrowser / layout and detail renderers / forced DetailPaneShell",
+      "paths": ["^ui/src/"]
+    },
+    {
+      "id": "R7",
+      "label": "timeline projection split",
+      "paths": ["^src/ledger/timeline-projection\\.ts$"]
+    },
+    {
+      "id": "R8",
+      "label": "SessionManager split",
+      "paths": ["^src/session-manager\\.ts$", "^src/sessions/"]
+    }
+  ]
+}

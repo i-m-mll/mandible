@@ -46,3 +46,16 @@ export function queryNumber(
   const minBounded = options.min === undefined ? finite : Math.max(options.min, finite);
   return options.max === undefined ? minBounded : Math.min(options.max, minBounded);
 }
+
+/**
+ * Read a request body as a plain record.
+ *
+ * A body that is absent, a primitive, or an array is not a record, so it yields
+ * an empty one and a handler can read fields off the result unconditionally.
+ * This is stricter than `readBody`, which casts whatever arrived.
+ */
+export function bodyRecord(req: RequestLike): Record<string, unknown> {
+  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
+}

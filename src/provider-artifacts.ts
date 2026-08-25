@@ -477,12 +477,37 @@ function assertProviderId(value: unknown): string {
   return normalized;
 }
 
+// Key order for artifact content addressing.
+//
+// Keys are compared by UTF-16 code unit, never with `localeCompare`. A content
+// address must be a pure function of the value; `localeCompare` with no locale
+// argument reads the host's default collation, so the same artifact JSON
+// serialized on an en-US host and on a sv-SE host produced different bytes and
+// therefore different ids ("ä" sorts beside "a" under en-US and after "z"
+// under sv-SE).
+//
+// Deliberately NOT `canonicalJson` from ./canonical-json.js, despite the
+// obvious family resemblance. That function builds its output string directly
+// and so does not implement `JSON.stringify` semantics: it emits the bare token
+// `undefined` for undefined/function/symbol values and holes in sparse arrays,
+// and it ignores `toJSON`. For digest inputs, which is what it is for, an
+// unparseable-but-deterministic string is harmless. Here the output is the
+// artifact's stored bytes, so it has to be valid JSON that round-trips. Routing
+// the final serialization through `JSON.stringify` keeps those semantics exact.
+//
+// One consequence of that round trip through an object literal: integer-like
+// keys are emitted first, in ascending numeric order, whatever the sort said,
+// because that is how JS orders own property keys. That ordering is fixed by
+// the language rather than by the host, so addresses stay reproducible. Do not
+// "correct" it — it would change the address of every artifact with a numeric
+// key.
 function stableJson(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(stableJson);
   }
   if (value && typeof value === "object") {
-    const entries = Object.entries(value as JsonRecord).sort(([a], [b]) => a.localeCompare(b));
+    const entries = Object.entries(value as JsonRecord)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const out: JsonRecord = {};
     for (const [key, nested] of entries) {
       out[key] = stableJson(nested);

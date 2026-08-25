@@ -20,6 +20,7 @@ import {
   type UserKind,
   type UserStatus,
 } from "./types.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 /** Fixed sentinel id for the single canonical `system` user (see migration v107). */
 export const SYSTEM_USER_ID = "00000000000000000000000000";
@@ -105,16 +106,6 @@ interface DelegatedSigningLeaseRow {
 
 // --- mappers ---
 
-function parseJsonObject(raw: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function mapUser(row: UserRow): User {
   return {

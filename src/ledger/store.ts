@@ -40,6 +40,7 @@ import type {
   LedgerRelationshipType,
   LedgerWorkerStatus,
 } from "./types.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 export type ResolveIssueRefResult =
   | { ok: true; id: string }
@@ -2477,16 +2478,6 @@ interface ResolvedRelationshipEntity {
   issue_id: string;
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function normalizeOptionalText(value: string | null | undefined): string | null {
   const trimmed = value?.trim() ?? "";

@@ -10,14 +10,7 @@ import {
   type TrashRestoreInput,
   type TrashState,
 } from "../trash-service.js";
-import { queryString, sendJson } from "./http.js";
-
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? req.body as Record<string, unknown>
-    : {};
-}
-
+import { bodyRecord, queryString, sendJson } from "./http.js";
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof TrashServiceError) {
     sendJson(res, error.status, {

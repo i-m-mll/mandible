@@ -139,7 +139,9 @@ export class SessionDiscovery {
 
     let count = 0;
     for (const session of activeSessions) {
-      if (!this.isProcessAlive(session.pid)) {
+      // Only proven death reaps. An unprovable probe leaves the session
+      // active and logs; a wrongly-reaped live session is the worse error.
+      if (this.probeProcess(session.pid) === "dead") {
         const now = new Date().toISOString();
         this.db
           .prepare(
@@ -312,12 +314,31 @@ export class SessionDiscovery {
     return cwdByPid;
   }
 
-  private isProcessAlive(pid: number): boolean {
+  /**
+   * Three states, because `process.kill(pid, 0)` has three outcomes and only
+   * one of them means the process is gone.
+   *
+   * ESRCH is the only proof of death. EPERM means the process is alive but
+   * owned by another uid — which is the normal case for a session started
+   * under a different user — and every other errno (EINVAL, EAGAIN under
+   * process exhaustion) is not evidence either way. Collapsing all three to
+   * `false` reaped live sessions as `dead`. `delegated-signing-resource.ts`
+   * already made exactly this distinction for signer liveness.
+   */
+  private probeProcess(pid: number): "alive" | "dead" | "unprovable" {
     try {
       process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
+      return "alive";
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return "dead";
+      if (code === "EPERM") return "alive";
+      this.log("warn", "session_liveness_unprovable", {
+        pid,
+        code: code ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "unprovable";
     }
   }
 }

@@ -282,6 +282,17 @@
   text-transform: uppercase;
 }
 
+.auth-detail__unverified-signature {
+  border: 1px solid color-mix(in srgb, var(--accent-red) 55%, transparent);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--accent-red);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
 .auth-detail__links {
   display: flex;
   align-items: center;

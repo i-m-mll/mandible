@@ -35,9 +35,11 @@ import {
   type AuthClearance,
   type AuthHook,
   type AttributionReadProjection,
+  type MergeSignatureClaim,
   type InstanceInfo,
   type ReadUserIdentity,
 } from '../api';
+import { exhausted } from '../../../src/exhaustive';
 
 export type AuthRequestType =
   | 'merge'
@@ -100,7 +102,7 @@ export type AuthRequest = {
   requester?: ReadUserIdentity | null;
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
-  verified_signature?: boolean;
+  merge_signature?: MergeSignatureClaim;
   action_count?: number;
   actions?: AuthRequestAction[];
   [key: string]: unknown;
@@ -408,7 +410,12 @@ function formatActionKind(kind: AuthRequestAction['kind']): string {
     case 'label_rm': return 'Remove label';
     case 'checkpoint_add': return 'Checkpoint';
     case 'link_add': return 'Link issue';
-    default: return String(kind);
+    case 'briefing_group_promote': return 'Promote Briefing Base';
+    default:
+      // Render rather than throw — a newer daemon must not blank this pane —
+      // but bind to `never` so a new kind is a build error here, not a raw
+      // enum string in the pane a human reads before approving a merge.
+      return exhausted(kind, String(kind));
   }
 }
 
@@ -435,19 +442,27 @@ function actionPayloadSummary(action: AuthRequestAction): string {
       const note = payload.note ? `: ${truncateSummary(String(payload.note), 120)}` : '';
       return `Link ${target}${type}${note}`;
     }
+    case 'briefing_group_promote': {
+      // The one staged action that mutates canonical Briefing Base state, so
+      // the approver needs to read which bundle replaces which — not raw JSON.
+      const proposal = String(payload.proposal_bundle_ref ?? '');
+      const base = String(payload.expected_base_bundle_ref ?? '');
+      const group = String(payload.group_ref ?? '');
+      return `Promote ${proposal} to Base of ${group} (replacing ${base})`;
+    }
     default:
-      return JSON.stringify(payload);
+      return exhausted(action.kind, JSON.stringify(payload));
   }
 }
 
-function actionStateLabel(state: string): string {
+function actionStateLabel(state: AuthRequestAction['state']): string {
   switch (state) {
     case 'staged': return 'Staged';
     case 'applied': return 'Applied';
     case 'failed': return 'Failed';
     case 'skipped_stale': return 'Skipped stale';
     case 'vetoed': return 'Vetoed';
-    default: return state;
+    default: return exhausted(state, String(state));
   }
 }
 
@@ -909,6 +924,9 @@ function AuthRequestDetail({
   const shortRef = requestHash || 'unknown';
   const requester = request.requester ?? null;
   const approver = request.approver ?? null;
+  // A daemon that predates `merge_signature` sends nothing; absent evidence is
+  // "none", never "verified".
+  const signatureClaim: MergeSignatureClaim = request.merge_signature ?? { state: 'none' };
   const hasActionBundle = Boolean(actionBundle);
   const panelsClass = hasActionBundle
     ? 'auth-detail__panels auth-detail__panels--with-actions'
@@ -1081,7 +1099,7 @@ function AuthRequestDetail({
                   {typeSubtitle}
                 </span>
               </div>
-              {(requester || approver || request.verified_signature) && (
+              {(requester || approver || signatureClaim.state !== 'none') && (
                 <div className="auth-detail__attribution" aria-label="Auth attribution">
                   {requester && (
                     <div>
@@ -1104,8 +1122,15 @@ function AuthRequestDetail({
                       />
                     </div>
                   )}
-                  {request.verified_signature && (
+                  {signatureClaim.state === 'verified' && (
                     <span className="auth-detail__verified-signature">Verified signature</span>
+                  )}
+                  {signatureClaim.state === 'unverified' && (
+                    <span className="auth-detail__unverified-signature">
+                      {signatureClaim.reason
+                        ? `Signature NOT verified: ${signatureClaim.reason}`
+                        : 'Signature NOT verified'}
+                    </span>
                   )}
                 </div>
               )}

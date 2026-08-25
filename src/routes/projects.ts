@@ -12,16 +12,11 @@ import {
   type AddOrUpdateProjectInput,
 } from "../ledger/project-registry.js";
 import type { LedgerNamespacePolicy } from "../ledger/types.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import { sendJson } from "./http.js";
+import type { ResponseLike, RouteRegistrar } from "../server.js";
+import { bodyRecord, sendJson } from "./http.js";
 import { requireOperator } from "../client-auth/authz.js";
 import { projectAccessSettings, setProjectRestricted } from "../permissions/store.js";
 
-function bodyRecord(req: RequestLike): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>)
-    : {};
-}
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];

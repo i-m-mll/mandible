@@ -69,6 +69,7 @@ import {
   sendPermissionError,
   type ProjectRole,
 } from "../permissions/store.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 export interface RouteHandler<Request = RequestLike, Response = ResponseLike> {
   (req: Request, res: Response): unknown;
@@ -632,17 +633,6 @@ function placeholders(values: string[], prefix: string): { sql: string; bindings
   return { sql: keys.join(", "), bindings };
 }
 
-function parseJsonObject(value: unknown): Record<string, unknown> {
-  if (typeof value !== "string" || !value.trim()) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 interface BatchHeadEventRow {
   id: string;

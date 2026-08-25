@@ -1,5 +1,70 @@
 // --- Core daemon types (P1) ---
 
+// --- Contracts owned by contracts.ts -------------------------------------
+// These were byte-equivalent second declarations. contracts.ts is the module
+// the UI imports directly and is dependency-light, so it owns them; types.ts
+// re-exports so every existing `./types.js` import keeps resolving to ONE
+// definition instead of a copy that drifts without any compile error.
+import type {
+  AuthRequestAction,
+  AuthExecutionMode,
+  AuthRequestType,
+  AuthRequestActionInput,
+  AuthOutputChunk,
+  ArtifactRecord,
+  ArtifactIdentitySourceKind,
+  ArtifactBlobRecord,
+  ArtifactIdentityRecord,
+  CanonicalArtifactVersionRecord,
+  Artifact,
+  ArtifactVersion,
+  ProjectArtifactAssociationRecord,
+  ProjectArtifactAssociation,
+  ArtifactSeriesSummary,
+  ArtifactAliasResolutionStatus,
+  ArtifactAliasRecord,
+  ArtifactLinkRecord,
+  ArtifactResolveResult,
+  ArtifactVersionSourceKind,
+  ArtifactSeriesSourceKind,
+  ArtifactVersionRecordResult,
+  ArtifactDraftRecord,
+  ArtifactDraftPublishResult,
+  WorkUnitKind,
+  WorkUnitState,
+  WorkUnit,
+} from "./contracts.js";
+export type {
+  AuthRequestAction,
+  AuthExecutionMode,
+  AuthRequestType,
+  AuthRequestActionInput,
+  AuthOutputChunk,
+  ArtifactRecord,
+  ArtifactIdentitySourceKind,
+  ArtifactBlobRecord,
+  ArtifactIdentityRecord,
+  CanonicalArtifactVersionRecord,
+  Artifact,
+  ArtifactVersion,
+  ProjectArtifactAssociationRecord,
+  ProjectArtifactAssociation,
+  ArtifactSeriesSummary,
+  ArtifactAliasResolutionStatus,
+  ArtifactAliasRecord,
+  ArtifactLinkRecord,
+  ArtifactResolveResult,
+  ArtifactVersionSourceKind,
+  ArtifactSeriesSourceKind,
+  ArtifactVersionRecordResult,
+  ArtifactDraftRecord,
+  ArtifactDraftPublishResult,
+  WorkUnitKind,
+  WorkUnitState,
+  WorkUnit,
+};
+
+
 import type {
   LedgerIssueKind,
   LedgerIssueResolution,
@@ -11,6 +76,13 @@ import type {
   AttributionReadProjection,
   ReadUserIdentity,
 } from "./identity/read-projection.js";
+import { AUTH_REQUEST_ACTION_KINDS } from "./contracts.js";
+import type {
+  AuthRequestActionKind,
+  AuthRequestActionState,
+  AuthRequestOutcome,
+  AuthRequestStatus,
+} from "./contracts.js";
 import type { SessionIdentityMismatch } from "./identity/session-mismatch.js";
 import type { AnthropicBillingPosture } from "./claude-lane-policy.js";
 
@@ -139,56 +211,17 @@ export interface Session {
 
 // --- Auth types (P3) ---
 
-export type AuthRequestStatus =
-  | "pending"
-  | "executing"
-  | "approved"   // legacy — kept for DB backward compat, recovery converts to executing
-  | "needs_rebase"
-  | "rejected"
-  | "expired"
-  | "completed"
-  | "dismissed";
-// Bug: 93c57c4 — outcome is the terminal result of an auth request, distinct from lifecycle status.
-// null means the request has not yet reached a terminal state.
-export type AuthRequestOutcome =
-  | "succeeded"   // completed with exit_code === 0
-  | "failed"      // completed with exit_code !== 0
-  | "needs_rebase" // queued merge was invalidated by another completed merge
-  | "rejected"    // user rejected
-  | "dismissed"   // dismissed without executing
-  | "expired"     // TTL elapsed before execution
-  | null;         // still in lifecycle (pending / executing / approved)
-export type AuthExecutionMode = "daemon" | "remote";
-// Bug: dd21c1e — generalize auth queue to support action types beyond merges
-export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "data-delete";
-export type AuthRequestActionKind =
-  | "comment_add"
-  | "issue_close"
-  | "worker_status_set"
-  | "label_add"
-  | "label_rm"
-  | "checkpoint_add"
-  | "link_add"
-  | "briefing_group_promote";
-export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
-
-export interface AuthRequestActionInput {
-  kind: AuthRequestActionKind;
-  target_issue_ref: string;
-  payload: Record<string, unknown>;
-}
-
-export interface AuthRequestAction extends AuthRequestActionInput {
-  id: string;
-  auth_request_id: string;
-  ordinal: number;
-  state: AuthRequestActionState;
-  target_digest: string | null;
-  staged_at: number;
-  updated_at: number;
-  applied_at: number | null;
-  outcome_detail: string | null;
-}
+// Lifecycle status and terminal outcome are owned by contracts.ts, alongside
+// `computeAuthRequestOutcome`, which is the one mapping between them. Note
+// "approved" is legacy — kept for DB backward compat; recovery converts it to
+// "executing". Outcome `null` means "still in lifecycle", so anything that
+// widens the status union must be classified in that function.
+export type { AuthRequestStatus, AuthRequestOutcome };
+// Owned by contracts.ts, which the UI imports directly. Re-exported here so the
+// daemon's existing `./types.js` imports keep working against one definition
+// rather than a second hand-maintained copy that drifts silently.
+export { AUTH_REQUEST_ACTION_KINDS };
+export type { AuthRequestActionKind, AuthRequestActionState };
 
 export interface AuthRequest {
   id: string;
@@ -319,13 +352,6 @@ export interface AuthRequestInput {
   /** Verified request-boundary provenance; route-owned, never caller-authored. */
   requester_evidence_method?: string | null;
   requester_credential_id?: string | null;
-}
-
-export interface AuthOutputChunk {
-  request_id: string;
-  stream: "stdout" | "stderr";
-  text: string;
-  timestamp: number;
 }
 
 // --- Issue tracking types ---
@@ -1078,133 +1104,6 @@ export interface ProviderRecord {
   last_seen_at: number | null;
 }
 
-export interface ArtifactRecord {
-  id: string;
-  algorithm: string;
-  content_hash: string;
-  uri: string;
-  media_type: string | null;
-  role: string | null;
-  size_bytes: number;
-  provider_id: string | null;
-  manifest_id: string | null;
-  metadata: Record<string, unknown>;
-  pinned: boolean;
-  custody_mode: "link" | "copy" | "managed" | "external";
-  home_repo_id: string | null;
-  repo_locator: Record<string, unknown>;
-  availability: "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
-  retention: Record<string, unknown>;
-  reference: Record<string, unknown>;
-  created_at: number;
-  alias_schemes?: string[];
-  aliases?: ArtifactAliasRecord[];
-  links?: ArtifactLinkRecord[];
-}
-
-export type ArtifactIdentitySourceKind =
-  | "tracked_repo"
-  | "local_only"
-  | "managed"
-  | "external"
-  | "mixed";
-
-export interface ArtifactBlobRecord {
-  id: string;
-  algorithm: string;
-  content_hash: string;
-  storage_uri: string | null;
-  media_type: string | null;
-  role: string | null;
-  size_bytes: number;
-  provider_id: string | null;
-  manifest_id: string | null;
-  metadata: Record<string, unknown>;
-  custody_mode: "link" | "copy" | "managed" | "external";
-  availability: "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
-  retention: Record<string, unknown>;
-  reference: Record<string, unknown>;
-  created_at: number;
-}
-
-export interface ArtifactIdentityRecord {
-  id: string;
-  identity_key: string;
-  source_kind: ArtifactIdentitySourceKind;
-  title: string | null;
-  source_project_id: string | null;
-  source_repo_id: string | null;
-  logical_name: string | null;
-  source_path: string | null;
-  latest_version_id: string | null;
-  version_count: number;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface CanonicalArtifactVersionRecord {
-  id: string;
-  artifact_id: string;
-  version_no: number;
-  blob_id: string;
-  source_kind: Exclude<ArtifactIdentitySourceKind, "mixed">;
-  content_hash: string;
-  source_project_id: string | null;
-  source_repo_id: string | null;
-  repo_path: string | null;
-  commit_sha: string | null;
-  observed_path: string | null;
-  source_locator: Record<string, unknown>;
-  custody_mode: "link" | "copy" | "managed" | "external" | null;
-  label: string | null;
-  note: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-}
-
-export type Artifact = ArtifactIdentityRecord;
-export type ArtifactVersion = CanonicalArtifactVersionRecord;
-
-export interface ProjectArtifactAssociationRecord {
-  id: string;
-  project_id: string;
-  target_type: "artifact" | "artifact_version";
-  target_id: string;
-  association_kind: "associated" | "canonical";
-  role: string;
-  title: string | null;
-  description: string | null;
-  rank: number | null;
-  status: "active" | "superseded" | "archived";
-  source: "user" | "agent_explicit" | "space_rule" | "migration" | "system";
-  source_ref_type: string | null;
-  source_ref_id: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
-
-export type ProjectArtifactAssociation = ProjectArtifactAssociationRecord;
-
-export interface ArtifactSeriesSummary {
-  id: string;
-  ref: string;
-  series_key: string;
-  source_kind: ArtifactSeriesSourceKind;
-  title: string | null;
-  repo_id: string | null;
-  logical_name: string | null;
-  latest_version_id: string | null;
-  version_count: number;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-  latest_version: ArtifactVersionRecord | null;
-  latest_artifact: ArtifactRecord | null;
-  links: ArtifactLinkRecord[];
-}
-
 export type ArtifactRecoverability =
   | "repo_commit"
   | "repo_worktree"
@@ -1252,67 +1151,6 @@ export interface ArtifactBundleRecord {
   bundle: ArtifactRecord;
   members: ArtifactBundleMemberRecord[];
 }
-
-export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguous" | "unsupported";
-
-export interface ArtifactAliasRecord {
-  id: string;
-  artifact_id: string | null;
-  scheme: string;
-  alias: string;
-  normalized_ref: string;
-  locator: Record<string, unknown>;
-  resolution_status: ArtifactAliasResolutionStatus;
-  source: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface ArtifactLinkRecord {
-  id: string;
-  artifact_id: string;
-  entity_type: string;
-  entity_id: string;
-  link_type: string;
-  role: string | null;
-  repo_id: string | null;
-  provider_id: string | null;
-  source: string;
-  metadata: Record<string, unknown>;
-  // Typed-link columns (migration v89, issue 10960ea). `pinned` (default) names
-  // one immutable artifact version; `living` tracks a series head. `series_id`
-  // is a SOFT reference to artifact_series.id (no FK) and `series_ref` carries
-  // the human-resolvable author ref. Both are null for pinned links.
-  link_kind: "pinned" | "living";
-  series_id: string | null;
-  series_ref: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface ArtifactResolveResult {
-  status: ArtifactAliasResolutionStatus;
-  ref: string;
-  scheme: string;
-  normalized_ref: string;
-  target_type?: "artifact" | "artifact_version" | "artifact_blob" | "legacy_artifact";
-  target_id?: string | null;
-  artifact: ArtifactRecord | null;
-  alias: ArtifactAliasRecord | null;
-  logical_artifact?: ArtifactIdentityRecord | null;
-  artifact_version?: CanonicalArtifactVersionRecord | null;
-  artifact_blob?: ArtifactBlobRecord | null;
-  // Populated only when `ref` is an artifact-version/artifact-series ref.
-  // Additive: existing resolver callers ignore these fields.
-  series?: ArtifactSeriesRecord | null;
-  version?: ArtifactVersionRecord | null;
-  warnings?: string[];
-}
-
-// A version's source kind. The series can additionally be 'mixed' when its
-// versions span more than one kind.
-export type ArtifactVersionSourceKind = "tracked_repo" | "local_only" | "managed";
-export type ArtifactSeriesSourceKind = ArtifactVersionSourceKind | "mixed";
 
 // Stable LOGICAL artifact identity. Separate from the immutable content rows in
 // `artifacts`; a series groups multiple `artifact_versions` rows that each pin
@@ -1362,36 +1200,6 @@ export interface ArtifactVersionHistory {
   links: ArtifactLinkRecord[];
 }
 
-export interface ArtifactVersionRecordResult {
-  series: ArtifactSeriesRecord;
-  version: ArtifactVersionRecord;
-  artifact: ArtifactRecord;
-  created: boolean;
-  warnings: string[];
-}
-
-export interface ArtifactDraftRecord {
-  id: string;
-  series_id: string;
-  base_version_id: string;
-  base_version_no: number;
-  latest_version_id: string | null;
-  latest_version_no: number | null;
-  stale: boolean;
-  content: string;
-  media_type: string | null;
-  label: string | null;
-  note: string | null;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface ArtifactDraftPublishResult {
-  draft: ArtifactDraftRecord;
-  result: ArtifactVersionRecordResult;
-}
-
 export type KnowledgeBackrefSourceType = "artifact" | "document";
 export type KnowledgeBackrefRefType = "document" | "entity" | "claim";
 
@@ -1430,34 +1238,6 @@ export interface ProviderManifestRecord {
   source: string;
   content: Record<string, unknown>;
   created_at: number;
-}
-
-// --- Work-unit types (Bug: a247bc3) ---
-
-export type WorkUnitKind = "solo" | "partition" | "integration";
-export type WorkUnitState = "open" | "committed" | "resolved" | "abandoned";
-
-export interface WorkUnit {
-  id: string;
-  issue_id: string;
-  ledger_issue_id: string | null;
-  repo_id: string;
-  branch: string | null;
-  parent_branch: string | null;
-  kind: WorkUnitKind;
-  state: WorkUnitState;
-  assigned_session_id: string | null;
-  provider: string | null;
-  provider_session_id: string | null;
-  worker_provider_session_id: string | null;
-  continuation: string | null;
-  continuation_by: string | null;
-  continuation_at: number | null;
-  created_at: number;
-  activated_at: number | null;
-  last_commit_at: number | null;
-  resolved_at: number | null;
-  auth_request_id: string | null;
 }
 
 // --- Webhook event types (Bug: 9f66ad9) ---

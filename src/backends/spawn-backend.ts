@@ -21,6 +21,7 @@ import {
   normalizeGeminiStreamLine,
   type CodexNormalizerState,
 } from "./normalizers.js";
+import { extractModel } from "./cli-args.js";
 
 const STREAM_EVENTS_LIMIT = 2000;
 const MAX_RESTART_ATTEMPTS = 5;
@@ -325,7 +326,7 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
       const codexState: CodexNormalizerState = {
         threadId: this.meta.provider_session_id,
         turnCount: 0,
-        model: this.extractModel(this.meta.args),
+        model: extractModel(this.meta.args),
       };
 
       child.stdout?.on("data", (chunk: Buffer) => {
@@ -565,7 +566,7 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
     injectUserEvent: boolean;
     normalize: "claude" | "codex" | "gemini";
   } | null {
-    const model = this.extractModel(this.meta.args);
+    const model = extractModel(this.meta.args);
 
     if (this.meta.command === "claude") {
       const args = ["-p", prompt, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
@@ -621,15 +622,6 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
     return cleaned;
   }
 
-  private extractModel(args: string[]): string | null {
-    for (let i = args.length - 2; i >= 0; i -= 1) {
-      const arg = args[i];
-      if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
-        return args[i + 1].trim();
-      }
-    }
-    return null;
-  }
 
   private emitMetaUpdate(fields: BackendMetaUpdate): void {
     this.emit("meta_update", fields);

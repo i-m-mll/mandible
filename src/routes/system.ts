@@ -10,6 +10,7 @@ import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
 import { queryNumber, queryString, readBody, sendJson } from "./http.js";
+import { parseJsonObject } from "../row-coerce.js";
 
 const LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");
 
@@ -326,7 +327,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   const hasOlder = rows.length > filters.limit;
   const pageRows = rows.slice(0, filters.limit);
   const entries = [...pageRows].reverse().map((row) => {
-    const fields = parseFields(row.fields_json);
+    const fields = parseJsonObject(row.fields_json);
     return {
       ...fields,
       id: row.id,
@@ -637,13 +638,3 @@ function matchesFallbackFilters(entry: LogEntry, filters: LogFilters): boolean {
   return true;
 }
 
-function parseFields(raw: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
