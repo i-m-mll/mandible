@@ -69,43 +69,6 @@ function allowedSigner(keyPath = key, principal = "credential-test"): string {
   return `${principal} ${fs.readFileSync(`${keyPath}.pub`, "utf8").trim()}`;
 }
 
-function runAtomic(
-  base: string,
-  head: string,
-  cached: { tree: string; pin: string; ref: string },
-  extraEnv: Record<string, string> = {},
-  stubCheckpoint = true,
-): ReturnType<typeof spawnSync> {
-  const snippet = [
-    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
-    `source ${JSON.stringify(AUTH_MERGE)}`,
-    "prompt_confirm() { printf 'y'; }",
-    "run_merge_preflight() { :; }",
-    ...(stubCheckpoint ? ["persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }"] : []),
-    "cleanup_merged_worktrees() { :; }",
-    "collect_declared_issues() { :; }",
-    "main feature/atomic --into main",
-  ].join("\n");
-  return spawnSync("bash", ["-c", snippet], {
-    cwd: repo,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_OPTIONAL_LOCKS: "0",
-      MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
-      MANDIBLE_AUTH_ATOMIC: "1",
-      MANDIBLE_AUTH_REQUEST_ID: "atomic-test",
-      MANDIBLE_AUTH_CANDIDATE_TREE_SHA: cached.tree,
-      MANDIBLE_AUTH_CANDIDATE_PIN_SHA: cached.pin,
-      MANDIBLE_AUTH_CANDIDATE_BASE_SHA: base,
-      MANDIBLE_AUTH_CANDIDATE_HEAD_SHA: head,
-      MANDIBLE_AUTH_CANDIDATE_REF: cached.ref,
-      MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(),
-      ...extraEnv,
-    },
-  });
-}
-
 function runAtomicAsync(
   base: string,
   head: string,

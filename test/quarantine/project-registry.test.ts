@@ -4,8 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../../src/db.js";
-import { systemAction } from "../../src/identity/resolver.js";
-import { buildLedgerIssueDetailProjection } from "../../src/ledger/issue-detail.js";
+
 import {
   addOrUpdateCheckout,
   addProject,
@@ -24,14 +23,10 @@ import {
   suggestProjectRefs,
   updateProject,
 } from "../../src/ledger/project-registry.js";
-import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
-import { resolveOperationalIssueRef } from "../../src/ledger/operational-links.js";
-import { LedgerStore } from "../../src/ledger/store.js";
 
 let tempDir = "";
 let dbPath = "";
 let db: Db;
-const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-prreg-"));

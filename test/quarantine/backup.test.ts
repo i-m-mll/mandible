@@ -39,30 +39,6 @@ class TestRoutes implements RouteRegistrar {
   }
 }
 
-function createResponse(): ResponseLike & { statusCode: number; payload: unknown } {
-  return {
-    statusCode: 200,
-    payload: undefined,
-    status(code: number): ResponseLike {
-      this.statusCode = code;
-      return this;
-    },
-    json(payload: unknown): void {
-      this.payload = payload;
-    },
-  };
-}
-
-function request(method: string, url: string, body?: unknown): RequestLike {
-  return {
-    method,
-    url,
-    params: {},
-    query: {},
-    body,
-  };
-}
-
 describe("backup routes", () => {
   const originalHome = process.env.HOME;
   let tempHome = "";

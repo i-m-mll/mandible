@@ -9,8 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AuthQueue, AuthQueueError } from "../../src/auth-queue.js";
 import { AuthHookManager } from "../../src/auth-hooks.js";
 import type { Db } from "../../src/db.js";
-import { LedgerStore } from "../../src/ledger/store.js";
-import type { SseEvent } from "../../src/types.js";
+
 import {
   SYSTEM_ACTOR,
   createLedgerIssue as createSharedLedgerIssue,
@@ -49,33 +48,6 @@ function createLedgerIssue(
     source: "mandible",
     aliases: [{ alias_kind: "git_bug_short", alias: shortId, source: "mandible", is_primary: true }],
   });
-}
-
-function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
-  const db = createMigratedDb();
-  return new AuthQueue({ db, ...options });
-}
-
-function registerTestDelegatedLease(
-  db: InstanceType<typeof Database>,
-  id: string,
-  now = Date.now(),
-): string {
-  const operator = getOperator(db)!;
-  const credential = addCredential(db, operator.id, {
-    type: "delegated_ssh_key",
-    fingerprint: `SHA256:${"A".repeat(43)}`,
-    public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} auth-test`,
-  }, now - 1000);
-  addDelegatedSigningLease(db, {
-    id,
-    credential_id: credential.id,
-    owner_user_id: operator.id,
-    minted_at: now - 1000,
-    expires_at: now + 60_000,
-    mint_method: "fresh_presence",
-  });
-  return operator.id;
 }
 
 function createNoopHookManager(): AuthHookManager {
@@ -167,67 +139,9 @@ function configureSigningCredential(
 // completed auth request (MANDIBLE_MERGE_RESULT marker + reviewed
 // merge_head_sha), which is exactly what base-transition provenance
 // verification demands. Requires configureSigningCredential on the repo first.
-function insertSiblingMergeRequest(
-  db: InstanceType<typeof Database>,
-  repo: string,
-  requestId: string,
-  sourceBranch: string,
-  status: "executing" | "completed" = "executing",
-): void {
-  const now = 100;
-  // Review F1 — recorded queue merges qualify as provenance only when their
-  // signature verifies against the approving user's credentials, so the
-  // fixture rows carry the operator (whose key configureSigningCredential
-  // registered and configured for signing) as approver.
-  const approverUserId = getOperator(db)?.id ?? null;
-  db.prepare(
-    `INSERT INTO auth_requests (
-      id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
-      merge_head_sha, status, created_at, updated_at, expires_at, output, execution_mode,
-      files_changed, additions, deletions, approval_source, approved_by_user_id
-    ) VALUES (?, NULL, 'merge', ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual', ?)`
-  ).run(
-    requestId,
-    `mandible auth merge ${sourceBranch} --into main`,
-    `Merge ${sourceBranch}`,
-    repo,
-    path.basename(repo),
-    sourceBranch,
-    git(repo, ["rev-parse", sourceBranch]),
-    status,
-    now,
-    now,
-    now + 100_000,
-    approverUserId,
-  );
-}
-
-function signedMergeIntoMain(repo: string, sourceBranch: string): string {
-  git(repo, ["checkout", "main"]);
-  git(repo, ["merge", "--no-ff", "--no-edit", "-S", sourceBranch]);
-  return git(repo, ["rev-parse", "main"]);
-}
-
-function mergeResultOutput(mergeSha: string): string {
-  return `MANDIBLE_MERGE_RESULT {"merge_sha":"${mergeSha}"}\n`;
-}
 
 // Authorized base advance recorded directly as a finalized completed request
 // (no live finalizer involvement) — for approve-time recompute tests.
-function advanceMainViaAuthorizedMerge(
-  db: InstanceType<typeof Database>,
-  repo: string,
-  sourceBranch: string,
-  requestId: string,
-): string {
-  insertSiblingMergeRequest(db, repo, requestId, sourceBranch, "completed");
-  const mergeSha = signedMergeIntoMain(repo, sourceBranch);
-  const now = 100;
-  db.prepare(
-    "UPDATE auth_requests SET exit_code = 0, resolved_at = ?, merge_finalized_at = ?, output = ? WHERE id = ?",
-  ).run(now, now, mergeResultOutput(mergeSha), requestId);
-  return mergeSha;
-}
 
 function createAuthCheckRepo(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-check-"));
@@ -260,71 +174,6 @@ function registerWorkRepo(
     `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
      VALUES (?, ?, ?, ?, 1, 0)`
   ).run(path.basename(repoRoot), fs.realpathSync(repoRoot), path.basename(repoRoot), defaultBranch);
-}
-
-function insertMandibleSession(
-  db: InstanceType<typeof Database>,
-  id: string,
-  status: string,
-): void {
-  db.prepare(
-    "INSERT INTO sessions (id, app, status, created_at, updated_at) VALUES (?, 'codex', ?, datetime('now'), datetime('now'))",
-  ).run(id, status);
-}
-
-function insertConsoleSession(
-  db: InstanceType<typeof Database>,
-  input: {
-    id: string;
-    providerSessionId: string;
-    mandibleSessionId?: string | null;
-    status?: string;
-  },
-): void {
-  const now = Date.now();
-  db.prepare(
-    `INSERT INTO console_sessions (
-      id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
-      status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
-      backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled
-    ) VALUES (?, ?, 'codex', '[]', ?, NULL, '{}', 120, 30,
-      ?, 0, 0, 'both', ?, ?, 'spawn', NULL, ?, NULL, 0)`,
-  ).run(
-    input.id,
-    input.id,
-    input.providerSessionId,
-    input.status ?? "stopped",
-    now,
-    now,
-    input.mandibleSessionId ?? null,
-  );
-}
-
-function insertWorkUnit(
-  db: InstanceType<typeof Database>,
-  input: {
-    id: string;
-    issueShortId: string;
-    ledgerIssueId: string;
-    repoId: string;
-    assignedSessionId: string;
-    authRequestId: string;
-  },
-): void {
-  db.prepare(
-    `INSERT INTO work_units (
-      id, issue_id, ledger_issue_id, repo_id, branch, kind, state, assigned_session_id,
-      created_at, auth_request_id
-    ) VALUES (?, ?, ?, ?, 'feature/archive-worker', 'solo', 'committed', ?, ?, ?)`,
-  ).run(
-    input.id,
-    input.issueShortId,
-    input.ledgerIssueId,
-    input.repoId,
-    input.assignedSessionId,
-    Date.now(),
-    input.authRequestId,
-  );
 }
 
 describe("auth queue", () => {
