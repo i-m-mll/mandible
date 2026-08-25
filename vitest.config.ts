@@ -11,7 +11,6 @@ export function mandibleVitestConfig(include: string[]) {
       environment: 'jsdom',
       // Issue c4f456c: unconditional per-test reset of the src/db.ts singleton.
       setupFiles: ['./test/helpers/db-reset-backstop.ts'],
-      fileParallelism: false,
       // No global line threshold on purpose: a coverage floor rewards adding
       // tests wherever they are cheapest to reach, which is the pressure the
       // whitelist in test/README.md exists to resist.
