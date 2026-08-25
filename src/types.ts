@@ -137,19 +137,6 @@ export interface Session {
   children?: Session[];
 }
 
-// --- Starred chat types (P2) ---
-
-export interface StarredChat {
-  id: string;
-  session_id: string | null;
-  label: string;
-  notes: string | null;
-  transcript_path: string | null;
-  cwd: string | null;
-  branch: string | null;
-  created_at: string;
-}
-
 // --- Auth types (P3) ---
 
 export type AuthRequestStatus =

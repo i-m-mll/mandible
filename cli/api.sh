@@ -920,7 +920,6 @@ api_operational_mutation_category() {
     /api/briefing-bundles|/api/briefing-bundles/*) printf 'briefing'; return 0 ;;
     /api/briefing-groups|/api/briefing-groups/*) printf 'briefing'; return 0 ;;
     /api/briefings|/api/briefings/*) printf 'briefing'; return 0 ;;
-    /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;
     /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
     /api/conversation-custody|/api/conversation-custody/*) printf 'conversations'; return 0 ;;

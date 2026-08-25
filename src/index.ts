@@ -39,7 +39,6 @@ import {
 } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
-import { registerChatRoutes } from "./routes/chats.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
@@ -254,7 +253,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     restartAvailability: restartAvailability ?? undefined,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
-  registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     on_event: (event) => {
       broadcast(event);
@@ -342,11 +340,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   } catch (error) {
     logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
   }
-
-  // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
-  router.get("/api/reaper/status", (_req, res) => {
-    res.json(reaperTimer.getStatus());
-  }, { fileRpc: "deny" });
 
   const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
   if (operationalMutationsAllowed) {
