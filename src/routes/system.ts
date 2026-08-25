@@ -1,10 +1,10 @@
 import { exec } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Db } from "../db.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { tableExists } from "../db-introspection.js";
+import { daemonStderrLogPath } from "../daemon-log.js";
 import { visibleDaemonLogSource } from "../operational-log-db.js";
 import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
@@ -12,7 +12,6 @@ import type { WorkScanner } from "../work-scanner.js";
 import { queryNumber, queryString, readBody, sendJson } from "./http.js";
 import { parseJsonObject } from "../row-coerce.js";
 
-const LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");
 
 // Log levels ordered from least to most severe for >= filtering.
 const LEVEL_ORDER: Record<string, number> = {
@@ -168,11 +167,11 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
 
     let rawText: string;
     try {
-      rawText = await tailFile(LOG_FILE_PATH, tailCount);
+      rawText = await tailFile(daemonStderrLogPath(), tailCount);
     } catch (err: unknown) {
       const code = (err as { code?: string }).code;
       if (code === "ENOENT") {
-        sendJson(res, 200, { entries: [], total: 0, log_file: LOG_FILE_PATH, exists: false });
+        sendJson(res, 200, { entries: [], total: 0, log_file: daemonStderrLogPath(), exists: false });
         return;
       }
       sendJson(res, 500, { error: `failed to read log file: ${String(err)}` });
@@ -215,7 +214,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       total,
       limit: filters.limit,
       offset: filters.offset,
-      log_file: LOG_FILE_PATH,
+      log_file: daemonStderrLogPath(),
       exists: true,
       source: "stderr_file",
     });
@@ -348,7 +347,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     total,
     limit: filters.limit,
     offset: filters.offset,
-    log_file: LOG_FILE_PATH,
+    log_file: daemonStderrLogPath(),
     exists: true,
     source: "daemon_log",
     facets: queryDaemonLogFacets(db, source, where),

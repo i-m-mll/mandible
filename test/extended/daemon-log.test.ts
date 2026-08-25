@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../../src/db.js";
 import {
   configureDaemonLogger,
+  daemonStderrLogPath,
   flushDaemonLogger,
   pruneDaemonLogs,
   rotateStderrLogSegments,
@@ -145,20 +146,65 @@ describe("daemon logger", () => {
     expect(JSON.parse(String(info.fields_json))).toMatchObject({ value: 42 });
   });
 
-  it("rotates stderr log segments without truncating the active file in place", () => {
+  // The daemon does not open this file: it writes to its own stderr, and its
+  // spawner redirected that stderr here and holds the only descriptor. Rotating
+  // by rename left that descriptor attached to the moved inode, so every later
+  // line landed in a rotated segment and the live path stayed empty until the
+  // process restarted. Truncating in place is what keeps the writer attached.
+  it("keeps an open append-mode writer on the live path across a rotation", () => {
     const logPath = path.join(tempDir, "launchd-stderr.log");
+    const fd = fs.openSync(logPath, "a");
+
+    try {
+      fs.writeSync(fd, "before-rotation\n");
+
+      rotateStderrLogSegments({ filePath: logPath, maxBytes: 5, keepSegments: 2 });
+
+      fs.writeSync(fd, "after-rotation\n");
+
+      expect(fs.existsSync(logPath)).toBe(true);
+      // O_APPEND recomputes the offset at every write, so the truncated live
+      // file receives the post-rotation bytes at offset 0 rather than after a
+      // hole the size of the rotated segment.
+      expect(fs.readFileSync(logPath, "utf8")).toBe("after-rotation\n");
+      expect(fs.readFileSync(`${logPath}.1`, "utf8")).toBe("before-rotation\n");
+      expect(fs.readFileSync(`${logPath}.1`, "utf8")).not.toContain("after-rotation");
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
+
+  it("shifts segments on each rotation and drops the oldest beyond keepSegments", () => {
+    const logPath = path.join(tempDir, "launchd-stderr.log");
+
     fs.writeFileSync(logPath, "first-segment", "utf8");
-
     rotateStderrLogSegments({ filePath: logPath, maxBytes: 5, keepSegments: 2 });
-
-    expect(fs.existsSync(logPath)).toBe(false);
+    expect(fs.readFileSync(logPath, "utf8")).toBe("");
     expect(fs.readFileSync(`${logPath}.1`, "utf8")).toBe("first-segment");
 
     fs.writeFileSync(logPath, "second-segment", "utf8");
     rotateStderrLogSegments({ filePath: logPath, maxBytes: 5, keepSegments: 2 });
-
     expect(fs.readFileSync(`${logPath}.1`, "utf8")).toBe("second-segment");
     expect(fs.readFileSync(`${logPath}.2`, "utf8")).toBe("first-segment");
+
+    fs.writeFileSync(logPath, "third-segment", "utf8");
+    rotateStderrLogSegments({ filePath: logPath, maxBytes: 5, keepSegments: 2 });
+    expect(fs.readFileSync(`${logPath}.1`, "utf8")).toBe("third-segment");
+    expect(fs.readFileSync(`${logPath}.2`, "utf8")).toBe("second-segment");
+    expect(fs.existsSync(`${logPath}.3`)).toBe(false);
+  });
+
+  it("resolves the stderr log path from the environment or the cache default", () => {
+    const defaultPath = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");
+    const configured = path.join(tempDir, "preview", "stderr.log");
+
+    process.env.MANDIBLE_STDERR_LOG_PATH = configured;
+    expect(daemonStderrLogPath()).toBe(configured);
+
+    expect(daemonStderrLogPath({ MANDIBLE_STDERR_LOG_PATH: "relative/stderr.log" }))
+      .toBe(path.resolve("relative/stderr.log"));
+    expect(daemonStderrLogPath({ MANDIBLE_STDERR_LOG_PATH: "   " })).toBe(defaultPath);
+    expect(daemonStderrLogPath({})).toBe(defaultPath);
   });
 });
 

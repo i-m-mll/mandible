@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 
 import { openDb } from "../../src/db.js";
@@ -22,6 +22,89 @@ const execFileAsync = promisify(execFile);
 
 let tempRoots: string[] = [];
 let previewServer: http.Server | null = null;
+
+// Previews are ordinary detached child processes now, so these tests really do
+// launch one. Every pid this file is responsible for is tracked here and killed
+// between tests: a stand-in daemon that outlived the suite would be the exact
+// leak the launcher change exists to stop.
+let standInPids: number[] = [];
+let standInPidFiles: string[] = [];
+
+// Above macOS's pid ceiling, so `kill(pid, 0)` is guaranteed to report it dead.
+// Used wherever a preview pid file must name a process that cannot exist.
+const UNREACHABLE_PID = 999_999;
+
+function readPidFile(filePath: string): number | null {
+  try {
+    const value = Number.parseInt(fs.readFileSync(filePath, "utf8").trim(), 10);
+    return Number.isInteger(value) && value > 1 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kill only processes this file started.
+ *
+ * Pids come from `standInPids` (started here directly) and from the marker file
+ * that only the stand-in daemon writes — never from the launcher's own
+ * `mandible.pid`, which a fixture may deliberately seed with a pid this suite
+ * does not own.
+ */
+function killStandInProcesses(): void {
+  const pids = new Set<number>(standInPids);
+  for (const pidFile of standInPidFiles) {
+    const pid = readPidFile(pidFile);
+    if (pid !== null) pids.add(pid);
+  }
+  for (const pid of pids) {
+    if (pid <= 1 || pid === process.pid) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone: the launcher stopped it, or the test did.
+    }
+  }
+  standInPids = [];
+  standInPidFiles = [];
+}
+
+/**
+ * Start a detached, reparented stand-in for a running preview daemon.
+ *
+ * The direct child exits immediately so the background process reparents to
+ * init, which reaps it the moment it dies. That matters: a zombie still answers
+ * `kill(pid, 0)`, which would make the launcher's own "did it stop?" poll
+ * observe a process that has actually exited.
+ */
+function spawnStandInDaemon(pidPath: string, options: { ignoresSigterm?: boolean } = {}): number {
+  // `trap "" TERM` is what forces the launcher's bounded SIGKILL escalation.
+  const body = options.ignoresSigterm
+    ? `trap "" TERM; while :; do sleep 1; done`
+    : `while :; do sleep 1; done`;
+  const result = spawnSync("/bin/sh", [
+    "-c",
+    `sh -c '${body}' >/dev/null 2>&1 & printf '%s' "$!" > '${pidPath}'`,
+  ], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`could not start a stand-in preview daemon:\n${result.stderr}`);
+  }
+  const pid = readPidFile(pidPath);
+  if (pid === null) {
+    throw new Error("stand-in preview daemon did not report a pid");
+  }
+  standInPids.push(pid);
+  return pid;
+}
 
 function fixtureGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
@@ -517,14 +600,23 @@ function runSeed(fixture: ReturnType<typeof createSeedFixture>, extraArgs: strin
 }
 
 afterEach(() => {
+  // Stop the daemons before removing the directories they are running out of.
+  killStandInProcesses();
   if (previewServer) {
     previewServer.close();
     previewServer = null;
   }
   for (const root of tempRoots) {
+    // `dist` inside a fixture repo is a tree of symlinks into the real build.
+    // Recursive removal unlinks symlinks rather than following them, so the
+    // real dist is never touched.
     fs.rmSync(root, { recursive: true, force: true });
   }
   tempRoots = [];
+});
+
+afterAll(() => {
+  killStandInProcesses();
 });
 
 function listenForHealth(health: unknown): Promise<number> {
@@ -571,14 +663,86 @@ function listenForDynamicHealth(healthPath: string): Promise<number> {
   });
 }
 
-async function createRefreshFixture(options: {
-  buildFails?: boolean;
-  primaryRestartFails?: boolean;
-  registrationMissing?: boolean;
-  restartFails?: boolean;
-} = {}) {
+/**
+ * The environment the launcher is required to pin for an isolated preview.
+ *
+ * Mirrors `previewInstanceEnv` in scripts/iab-preview.mjs, including the three
+ * keys derived from the preview root. A recorded instance missing any of them
+ * is treated as drifted and replaced rather than refreshed, so a fixture that
+ * omits them silently stops testing the refresh path at all.
+ */
+function previewContractEnv(details: {
+  port: number;
+  db: string;
+  sourceDb: string;
+  previewRoot: string;
+  pidFile: string;
+}): Record<string, string> {
+  const conversations = path.join(details.previewRoot, "conversations");
+  return {
+    MANDIBLE_PORT: String(details.port),
+    MANDIBLE_DB: details.db,
+    MANDIBLE_PID_FILE: details.pidFile,
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
+    MANDIBLE_FILE_RPC_DIR: path.join(details.previewRoot, "agent-rpc"),
+    MANDIBLE_CONFIG_DIR: path.join(details.previewRoot, "config"),
+    MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
+    MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
+    MANDIBLE_STDERR_LOG_PATH: path.join(details.previewRoot, "stderr.log"),
+    MANDIBLE_CLI_CACHE_DIR: path.join(details.previewRoot, "cli"),
+  };
+}
+
+/**
+ * Give the fixture repo a `dist` the launcher can really execute.
+ *
+ * The launcher does two different things with `<worktree>/dist`: it imports the
+ * genuine `db.js` and `feedback/rich-briefing-demo.js` to materialize the
+ * projected briefing demo, and it executes `index.js` as the preview daemon. So
+ * every real entry is symlinked through, and only `index.js` is replaced by a
+ * stand-in.
+ *
+ * The health file paths are baked in as literals rather than passed through the
+ * environment on purpose: `sanitizedLauncherEnv()` strips every `MANDIBLE_*`
+ * variable from the child, so an env-carried path would arrive empty and the
+ * test would pass for the wrong reason.
+ */
+function installStandInDaemonDist(repo: string, details: {
+  healthPath: string;
+  refreshedHealthPath: string;
+  markerPidFile: string;
+}): void {
+  const realDist = path.join(process.cwd(), "dist");
+  if (!fs.existsSync(path.join(realDist, "db.js"))) {
+    throw new Error(`the refresh fixture needs a built dist; run \`npm run build\` first (looked in ${realDist})`);
+  }
+  const repoDist = path.join(repo, "dist");
+  fs.mkdirSync(repoDist, { recursive: true });
+  for (const entry of fs.readdirSync(realDist)) {
+    if (entry === "index.js") continue;
+    fs.symlinkSync(path.join(realDist, entry), path.join(repoDist, entry));
+  }
+  // CommonJS: the fixture repo has no package.json, so `require` is available
+  // and the real dist's ESM modules still resolve through their own package.
+  fs.writeFileSync(path.join(repoDist, "index.js"), [
+    `const fs = require("node:fs");`,
+    // The pid file is the launcher's stop contract; writing it from the
+    // environment proves run.sh actually exported MANDIBLE_PID_FILE.
+    `fs.writeFileSync(process.env.MANDIBLE_PID_FILE, process.pid + "\\n");`,
+    // A marker only this stand-in writes, so teardown never kills a pid the
+    // suite does not own.
+    `fs.writeFileSync(${JSON.stringify(details.markerPidFile)}, process.pid + "\\n");`,
+    `fs.copyFileSync(${JSON.stringify(details.refreshedHealthPath)}, ${JSON.stringify(details.healthPath)});`,
+    `setInterval(function () {}, 1000);`,
+    ``,
+  ].join("\n"), "utf8");
+}
+
+async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
   const repo = createRepo();
-  fs.symlinkSync(path.join(process.cwd(), "dist"), path.join(repo, "dist"), "dir");
   git(["checkout", "-b", "integration/test-preview"], repo);
   fs.writeFileSync(path.join(repo, "README.md"), "new head\n", "utf8");
   git(["add", "README.md"], repo);
@@ -595,8 +759,12 @@ async function createRefreshFixture(options: {
   fs.writeFileSync(sourceDb, "source database", "utf8");
   fs.symlinkSync(db, path.join(previewRoot, "current.db"));
   for (const name of ["stdout.log", "stderr.log", "run.sh", "mandible.pid"]) {
-    fs.writeFileSync(path.join(previewRoot, name), name === "mandible.pid" ? "999999\n" : "", "utf8");
+    fs.writeFileSync(path.join(previewRoot, name), name === "mandible.pid" ? `${UNREACHABLE_PID}\n` : "", "utf8");
   }
+  const pidFile = path.join(previewRoot, "mandible.pid");
+  const runScript = path.join(previewRoot, "run.sh");
+  const markerPidFile = path.join(previewRoot, "stand-in-daemon.pid");
+  standInPidFiles.push(markerPidFile);
 
   const healthPath = path.join(previewRoot, "health.json");
   const refreshedHealthPath = path.join(previewRoot, "refreshed-health.json");
@@ -620,7 +788,7 @@ async function createRefreshFixture(options: {
     startup_commit: { hash: currentHead, summary: "new", date: "" },
   }), "utf8");
   const port = await listenForDynamicHealth(healthPath);
-  const launchLabel = `bio.mll.mandible.preview.${port}.integration-test-preview`;
+  installStandInDaemonDist(repo, { healthPath, refreshedHealthPath, markerPidFile });
   const metadata = {
     ok: true,
     status: "started",
@@ -630,22 +798,11 @@ async function createRefreshFixture(options: {
     db,
     sourceDb,
     previewRoot,
-    launchLabel,
-    pidFile: path.join(previewRoot, "mandible.pid"),
+    pidFile,
     stdoutLog: path.join(previewRoot, "stdout.log"),
     stderrLog: path.join(previewRoot, "stderr.log"),
-    runScript: path.join(previewRoot, "run.sh"),
-    instanceEnv: {
-      MANDIBLE_PORT: String(port),
-      MANDIBLE_DB: db,
-      MANDIBLE_PID_FILE: path.join(previewRoot, "mandible.pid"),
-      MANDIBLE_INSTANCE_ROLE: "preview",
-      MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
-      MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
-      MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
-      MANDIBLE_FILE_RPC_DIR: fileRpcDir,
-      MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
-    },
+    runScript,
+    instanceEnv: previewContractEnv({ port, db, sourceDb, previewRoot, pidFile }),
     health,
   };
   const metadataPath = path.join(previewRoot, "metadata.json");
@@ -654,22 +811,7 @@ async function createRefreshFixture(options: {
   const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-shims-"));
   tempRoots.push(shimDir);
   const npmShim = path.join(shimDir, "npm");
-  const launchctlShim = path.join(shimDir, "launchctl");
-  const launchLog = path.join(previewRoot, "launch.log");
   fs.writeFileSync(npmShim, `#!/bin/sh\n${options.buildFails ? "exit 23" : "exit 0"}\n`, { mode: 0o755 });
-  fs.writeFileSync(launchctlShim, `#!/bin/sh
-printf '%s\\n' "$*" >> "$MANDIBLE_IAB_PREVIEW_TEST_LAUNCH_LOG"
-if [ "$1" = "print" ]; then
-  ${options.registrationMissing ? "printf '%s\\n' 'service not found' >&2; exit 26" : "printf '%s\\n' 'registered preview service'; exit 0"}
-fi
-if [ "$1" = "kickstart" ] && [ "$2" = "-kp" ]; then
-  ${options.primaryRestartFails || options.restartFails ? "printf '%s\\n' 'primary kickstart failed' >&2; exit 24" : "cp \"$MANDIBLE_IAB_PREVIEW_TEST_REFRESH_HEALTH\" \"$MANDIBLE_IAB_PREVIEW_TEST_HEALTH\"; printf '%s\\n' '4242'; exit 0"}
-fi
-if [ "$1" = "kickstart" ] && [ "$2" = "-p" ]; then
-  ${options.restartFails ? "printf '%s\\n' 'recovery kickstart failed' >&2; exit 25" : "cp \"$MANDIBLE_IAB_PREVIEW_TEST_REFRESH_HEALTH\" \"$MANDIBLE_IAB_PREVIEW_TEST_HEALTH\"; printf '%s\\n' '4243'; exit 0"}
-fi
-exit 0
-`, { mode: 0o755 });
 
   return {
     repo,
@@ -678,20 +820,18 @@ exit 0
     previewBase,
     previewRoot,
     db,
+    sourceDb,
+    pidFile,
+    markerPidFile,
+    runScript,
     metadata,
     metadataPath,
     healthPath,
     refreshedHealthPath,
-    launchctlShim,
-    launchLog,
     env: {
       ...process.env,
       PATH: `${shimDir}:${process.env.PATH}`,
       MANDIBLE_PREVIEW_BASE_DIR: previewBase,
-      MANDIBLE_IAB_PREVIEW_LAUNCHCTL: launchctlShim,
-      MANDIBLE_IAB_PREVIEW_TEST_LAUNCH_LOG: launchLog,
-      MANDIBLE_IAB_PREVIEW_TEST_HEALTH: healthPath,
-      MANDIBLE_IAB_PREVIEW_TEST_REFRESH_HEALTH: refreshedHealthPath,
     },
   };
 }
@@ -1095,6 +1235,7 @@ describe("iab-preview launcher", () => {
 
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);
+    const previewConversations = path.join(previewRoot, "conversations");
     expect(payload.instanceEnv).toMatchObject({
       MANDIBLE_INSTANCE_ROLE: "preview",
       MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
@@ -1102,7 +1243,35 @@ describe("iab-preview launcher", () => {
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
       MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
       MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
+      MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(previewConversations, "structure.db"),
+      MANDIBLE_CONVERSATION_CACHE_DB: path.join(previewConversations, "search-cache.db"),
+      MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
+      MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
     });
+
+    // These four keys are the shared-resource leak this contract closes: a
+    // preview used to open the live conversations index read-write on the same
+    // inode as the live daemon, rotate the live daemon's log file on its own
+    // timer, and overwrite every file in the shared CLI cache. Every writable
+    // path must sit under the preview root.
+    const sharedCache = path.join(os.homedir(), ".cache", "mandible");
+    expect(payload.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB)
+      .not.toBe(path.join(sharedCache, "conversations", "structure.db"));
+    expect(payload.instanceEnv.MANDIBLE_CONVERSATION_CACHE_DB)
+      .not.toBe(path.join(sharedCache, "conversations", "search-cache.db"));
+    expect(payload.instanceEnv.MANDIBLE_STDERR_LOG_PATH)
+      .not.toBe(path.join(sharedCache, "launchd-stderr.log"));
+    expect(payload.instanceEnv.MANDIBLE_CLI_CACHE_DIR)
+      .not.toBe(path.join(sharedCache, "cli"));
+    for (const key of [
+      "MANDIBLE_CONVERSATION_STRUCTURE_DB",
+      "MANDIBLE_CONVERSATION_CACHE_DB",
+      "MANDIBLE_STDERR_LOG_PATH",
+      "MANDIBLE_CLI_CACHE_DIR",
+    ]) {
+      expect(String(payload.instanceEnv[key]).startsWith(`${previewRoot}${path.sep}`)).toBe(true);
+    }
+
     expect(payload.wouldCopyDb).toBe(false);
     expect(payload.wouldProjectDb).toBe(true);
     expect(payload.projection).toMatchObject({
@@ -1220,19 +1389,27 @@ describe("iab-preview launcher", () => {
       instance: { role: "preview", operational_mutations: "reject" },
       file_rpc_dir: fileRpcDir,
     });
+    const db = path.join(previewRoot, "current.db");
+    const sourceDb = path.join(repo, "source.db");
+    fs.writeFileSync(sourceDb, "source database", "utf8");
     const metadata = {
       status: "started",
       branch: "integration/test-preview",
       worktree: repo,
       port,
-      db: path.join(previewRoot, "current.db"),
+      db,
+      sourceDb,
       previewRoot,
-      instanceEnv: {
-        MANDIBLE_INSTANCE_ROLE: "preview",
-        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
-        MANDIBLE_FILE_RPC_DIR: fileRpcDir,
-        MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
-      },
+      // A recorded instance that does not carry the full contract is treated as
+      // drifted and replaced, so the reuse path under test is only reachable
+      // with the complete environment.
+      instanceEnv: previewContractEnv({
+        port,
+        db,
+        sourceDb,
+        previewRoot,
+        pidFile: path.join(previewRoot, "mandible.pid"),
+      }),
     };
     fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify(metadata), "utf8");
 
@@ -1261,27 +1438,80 @@ describe("iab-preview launcher", () => {
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("refreshed");
     expect(payload.port).toBe(fixture.metadata.port);
-    expect(payload.launchLabel).toBe(fixture.metadata.launchLabel);
     expect(payload.db).toBe(fixture.db);
     expect(payload.health.startup_commit.hash).toBe(fixture.currentHead);
     expect(payload.health).toMatchObject({ ready: true, warm: true });
-    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
-    expect(launchLog).toContain(`print gui/${process.getuid()}/${fixture.metadata.launchLabel}`);
-    expect(launchLog).toContain(`kickstart -kp gui/${process.getuid()}/${fixture.metadata.launchLabel}`);
-    expect(launchLog).not.toContain(`remove ${fixture.metadata.launchLabel}`);
-    expect(launchLog).not.toContain(`submit -l ${fixture.metadata.launchLabel}`);
+
+    // An unsupervised child, not a launchd job. `launchLabel` is not a field any
+    // more, and nothing is left registered that could resurrect the preview.
+    expect(payload.launchLabel).toBeUndefined();
     expect(payload.restartLifecycle).toMatchObject({
-      mechanism: "launchctl-kickstart",
-      recovery: "not-needed",
-      replacementPid: 4242,
+      mechanism: "detached-child",
+      stopped: { pid: UNREACHABLE_PID, outcome: "already-stopped" },
     });
+    expect(payload.restartLifecycle.launcherPid).toBeGreaterThan(0);
+
+    // The preview really is being served by a process the launcher started, and
+    // that process claimed the pid file the stop path reads.
+    const daemonPid = readPidFile(fixture.markerPidFile);
+    expect(daemonPid).not.toBeNull();
+    expect(readPidFile(fixture.pidFile)).toBe(daemonPid);
+    expect(isProcessAlive(daemonPid as number)).toBe(true);
+
+    // run.sh is the single launch contract, so it must pin the whole isolation
+    // environment rather than inherit any of it.
+    const runScript = fs.readFileSync(fixture.runScript, "utf8");
+    for (const [key, value] of Object.entries(fixture.metadata.instanceEnv)) {
+      expect(runScript).toContain(`${key}='${value}'`);
+    }
+
     expect(fs.readdirSync(fixture.previewRoot, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith(".db"))
       .map((entry) => entry.name)).toEqual([
       path.basename(fixture.db),
     ]);
     expect(fs.realpathSync(path.join(fixture.previewRoot, "current.db"))).toBe(fs.realpathSync(fixture.db));
-  });
+  }, 60_000);
+
+  it("terminates the running preview daemon before starting its replacement", async () => {
+    const fixture = await createRefreshFixture();
+    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "running.pid"));
+    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
+
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+
+    const payload = JSON.parse(result.stdout);
+    expect(payload.status).toBe("refreshed");
+    expect(payload.restartLifecycle.stopped).toEqual({ pid: running, outcome: "terminated" });
+    expect(isProcessAlive(running)).toBe(false);
+
+    const daemonPid = readPidFile(fixture.markerPidFile);
+    expect(daemonPid).not.toBeNull();
+    expect(daemonPid).not.toBe(running);
+  }, 60_000);
+
+  it("escalates to SIGKILL and reports it when the preview daemon ignores SIGTERM", async () => {
+    const fixture = await createRefreshFixture();
+    const wedged = spawnStandInDaemon(path.join(fixture.previewRoot, "wedged.pid"), { ignoresSigterm: true });
+    fs.writeFileSync(fixture.pidFile, `${wedged}\n`, "utf8");
+
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+
+    // The escalation is reported honestly rather than being folded into a plain
+    // "terminated": a daemon that had to be killed is a different fact.
+    const payload = JSON.parse(result.stdout);
+    expect(payload.status).toBe("refreshed");
+    expect(payload.restartLifecycle.stopped).toEqual({ pid: wedged, outcome: "killed" });
+    expect(isProcessAlive(wedged)).toBe(false);
+  }, 90_000);
 
   it("keeps the already-running fast path when the full startup commit matches", async () => {
     const fixture = await createRefreshFixture();
@@ -1293,7 +1523,9 @@ describe("iab-preview launcher", () => {
     });
 
     expect(JSON.parse(result.stdout).status).toBe("already-running");
-    expect(fs.existsSync(fixture.launchLog)).toBe(false);
+    // Nothing was launched and nothing was stopped.
+    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
+    expect(readPidFile(fixture.pidFile)).toBe(UNREACHABLE_PID);
   });
 
   it("leaves the existing preview metadata and projection untouched when the build fails", async () => {
@@ -1306,89 +1538,9 @@ describe("iab-preview launcher", () => {
     })).rejects.toMatchObject({ code: 1 });
 
     expect(fs.readFileSync(fixture.metadataPath, "utf8")).toBe(before);
-    expect(fs.existsSync(fixture.launchLog)).toBe(false);
+    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
+    expect(readPidFile(fixture.pidFile)).toBe(UNREACHABLE_PID);
     expect(fs.realpathSync(path.join(fixture.previewRoot, "current.db"))).toBe(fs.realpathSync(fixture.db));
-  });
-
-  it("reports restart failure without rewriting metadata or creating a projection", async () => {
-    const fixture = await createRefreshFixture({ restartFails: true });
-    const before = fs.readFileSync(fixture.metadataPath, "utf8");
-    let failure: unknown;
-    try {
-      await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-        cwd: fixture.repo,
-        encoding: "utf8",
-        env: fixture.env,
-      });
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toMatchObject({
-      code: 1,
-      stdout: expect.stringContaining("primary kickstart failed"),
-    });
-    expect((failure as { stdout: string }).stdout).toContain("recovery kickstart failed");
-    expect((failure as { stdout: string }).stdout).toContain("Recovery command:");
-
-    expect(fs.readFileSync(fixture.metadataPath, "utf8")).toBe(before);
-    expect(fs.readdirSync(fixture.previewRoot, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".db"))
-      .map((entry) => entry.name)).toEqual([
-      path.basename(fixture.db),
-    ]);
-    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
-    expect(launchLog).toContain("kickstart -kp");
-    expect(launchLog).toContain("kickstart -p");
-    expect(launchLog).not.toContain("remove");
-  });
-
-  it("recovers a failed replacement kickstart without unregistering the preview", async () => {
-    const fixture = await createRefreshFixture({ primaryRestartFails: true });
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    });
-
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("refreshed");
-    expect(payload.restartLifecycle).toMatchObject({
-      mechanism: "launchctl-kickstart",
-      recovery: "kickstart-registered-service",
-      replacementPid: 4243,
-      initialFailure: {
-        reason: "replacement kickstart failed",
-        evidence: expect.stringContaining("primary kickstart failed"),
-      },
-    });
-    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
-    expect(launchLog).toContain("kickstart -kp");
-    expect(launchLog).toContain("kickstart -p");
-    expect(launchLog).not.toContain("remove");
-  });
-
-  it("refuses to restart an unregistered label without removing or submitting anything", async () => {
-    const fixture = await createRefreshFixture({ registrationMissing: true });
-    let failure: unknown;
-    try {
-      await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-        cwd: fixture.repo,
-        encoding: "utf8",
-        env: fixture.env,
-      });
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toMatchObject({
-      code: 1,
-      stdout: expect.stringContaining("is not registered"),
-    });
-    expect((failure as { stdout: string }).stdout).toContain("service not found");
-    const launchLog = fs.readFileSync(fixture.launchLog, "utf8");
-    expect(launchLog).toContain("print gui/");
-    expect(launchLog).not.toContain("kickstart");
-    expect(launchLog).not.toContain("remove");
-    expect(launchLog).not.toContain("submit");
   });
 
   it("refuses branch custody drift before build or restart", async () => {
@@ -1402,20 +1554,63 @@ describe("iab-preview launcher", () => {
       encoding: "utf8",
       env: fixture.env,
     })).rejects.toMatchObject({ code: 1 });
-    expect(fs.existsSync(fixture.launchLog)).toBe(false);
+    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
   });
 
-  it("refuses port and launch-label custody drift before build or restart", async () => {
+  it("refuses log custody drift outside the preview root before build or restart", async () => {
     const fixture = await createRefreshFixture();
     fs.writeFileSync(fixture.metadataPath, JSON.stringify({
       ...fixture.metadata,
-      launchLabel: `bio.mll.mandible.preview.${fixture.metadata.port + 1}.integration-test-preview`,
+      stdoutLog: path.join(os.tmpdir(), "stray-preview-stdout.log"),
     }), "utf8");
     await expect(execFileAsync(process.execPath, [SCRIPT, "--json"], {
       cwd: fixture.repo,
       encoding: "utf8",
       env: fixture.env,
     })).rejects.toMatchObject({ code: 1 });
-    expect(fs.existsSync(fixture.launchLog)).toBe(false);
+    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
+  });
+
+  it("boots out leaked preview launchd jobs and never touches the live daemon label", () => {
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-launchctl-"));
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(shimDir, previewBase);
+    const commandLog = path.join(shimDir, "launchctl.log");
+    const launchctlShim = path.join(shimDir, "launchctl");
+    fs.writeFileSync(launchctlShim, [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> '${commandLog}'`,
+      'if [ "$1" = "list" ]; then',
+      "  printf '%s\\t%s\\t%s\\n' 'PID' 'Status' 'Label'",
+      "  printf '%s\\t%s\\t%s\\n' '4242' '0' 'bio.mll.mandible.preview.19421.foo'",
+      "  printf '%s\\t%s\\t%s\\n' '45805' '0' 'com.mll.mandible'",
+      "  exit 0",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    const result = spawnSync(process.execPath, [
+      SCRIPT, "cleanup", "--apply", "--json", "--preview-base-dir", previewBase,
+    ], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, MANDIBLE_IAB_PREVIEW_LAUNCHCTL: launchctlShim },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.legacyLaunchdCleanup).toMatchObject({
+      supported: true,
+      labels: ["bio.mll.mandible.preview.19421.foo"],
+      booted: [{ label: "bio.mll.mandible.preview.19421.foo", mechanism: "bootout", ok: true }],
+    });
+
+    const log = fs.readFileSync(commandLog, "utf8");
+    expect(log).toContain(`bootout gui/${process.getuid()}/bio.mll.mandible.preview.19421.foo`);
+    // Safety-critical: com.mll.mandible supervises the live Mandible daemon.
+    // Booting it out would stop the user's daemon, so no launchctl subcommand
+    // may ever name a label outside the preview namespace.
+    expect(log).not.toContain("com.mll.mandible");
   });
 });

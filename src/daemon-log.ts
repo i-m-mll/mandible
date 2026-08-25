@@ -119,7 +119,7 @@ class DaemonLogger {
     const level = normalizeLevel(env.LOG_LEVEL) ?? "info";
     this.stderrMinIndex = LEVELS.indexOf(level);
     this.stderrRotation = {
-      filePath: env.MANDIBLE_STDERR_LOG_PATH || DEFAULT_LOG_FILE_PATH,
+      filePath: daemonStderrLogPath(env),
       maxBytes: parsePositiveInteger(env.MANDIBLE_STDERR_ROTATION_MAX_BYTES, DEFAULT_STDERR_MAX_BYTES),
       keepSegments: parsePositiveInteger(env.MANDIBLE_STDERR_ROTATION_KEEP_SEGMENTS, DEFAULT_STDERR_KEEP_SEGMENTS),
     };
@@ -152,7 +152,7 @@ class DaemonLogger {
       : null;
     this.stderrRotation = {
       ...this.stderrRotation,
-      filePath: process.env.MANDIBLE_STDERR_LOG_PATH || this.stderrRotation.filePath,
+      filePath: daemonStderrLogPath(),
       ...readRotationSettings(config.settingsDb ?? db),
     };
     rotateStderrLogSegments(this.stderrRotation);
@@ -291,6 +291,21 @@ export function stopDaemonLogger(): void {
   singleton.shutdown();
 }
 
+/**
+ * The file this process's stderr is expected to be redirected to.
+ *
+ * This is the single source of truth for that path. The daemon never opens it —
+ * it writes to its own stderr and its spawner decides where that goes — so the
+ * rotation timer and every reader (the system-logs route, the preview launcher)
+ * must agree on it through this function rather than by separately re-deriving
+ * the same default. An instance that is pointed at its own database must be
+ * pointed at its own log too, or it rotates and serves someone else's.
+ */
+export function daemonStderrLogPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.MANDIBLE_STDERR_LOG_PATH?.trim();
+  return configured ? path.resolve(configured) : DEFAULT_LOG_FILE_PATH;
+}
+
 export function rotateStderrLogSegments(config: StderrRotationConfig = {}): void {
   const filePath = config.filePath ?? DEFAULT_LOG_FILE_PATH;
   const maxBytes = Math.max(1, Math.floor(config.maxBytes ?? DEFAULT_STDERR_MAX_BYTES));
@@ -306,23 +321,39 @@ export function rotateStderrLogSegments(config: StderrRotationConfig = {}): void
     return;
   }
 
-  if (keepSegments === 0) {
-    fs.rmSync(filePath, { force: true });
-    return;
+  if (keepSegments > 0) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    // Shift the already-rotated segments down. Nothing holds these open, so a
+    // rename is both correct and free. The loop stops at .1 because the live
+    // file is handled separately below.
+    for (let index = keepSegments; index >= 2; index -= 1) {
+      const source = `${filePath}.${index - 1}`;
+      const target = `${filePath}.${index}`;
+      if (!fs.existsSync(source)) {
+        continue;
+      }
+      if (index === keepSegments) {
+        fs.rmSync(target, { force: true });
+      }
+      fs.renameSync(source, target);
+    }
+    fs.copyFileSync(filePath, `${filePath}.1`);
   }
 
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  for (let index = keepSegments; index >= 1; index -= 1) {
-    const source = index === 1 ? filePath : `${filePath}.${index - 1}`;
-    const target = `${filePath}.${index}`;
-    if (!fs.existsSync(source)) {
-      continue;
-    }
-    if (index === keepSegments) {
-      fs.rmSync(target, { force: true });
-    }
-    fs.renameSync(source, target);
-  }
+  // Copy-then-truncate rather than rename-or-unlink. This process does not own
+  // the file descriptor writing this file: the daemon logs to its own stderr,
+  // and whoever spawned it (launchd, the desktop launcher, the preview run
+  // script) redirected that stderr here and still holds the descriptor open.
+  // Renaming or unlinking the file leaves that descriptor pointing at the moved
+  // or unlinked inode, so every later line lands in a rotated segment — or in
+  // no reachable file at all — until the process restarts and its spawner
+  // reopens the path. Truncating in place keeps the inode, and every writer is
+  // opened O_APPEND, so the next write resumes at offset 0.
+  //
+  // Lines written between the copy and the truncate are lost. That window is
+  // one file copy wide and is the deliberate price of not invalidating a
+  // descriptor this process cannot reopen.
+  fs.truncateSync(filePath, 0);
 }
 
 /**
