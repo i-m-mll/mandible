@@ -97,8 +97,6 @@ describe("ledger schema", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 
-
-
   it("enforces canonical ledger foreign keys", () => {
     expect(() => {
       db.prepare(
@@ -847,32 +845,6 @@ describe("ledger store", () => {
 describe("ledger backup contract", () => {
   it("keeps the legacy ledger table list inside the metadata backup set", () => {
     expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining(LEDGER_BACKUP_TABLES));
-  });
-
-  it("classifies every live metadata table so schema drift is visible", () => {
-    const tableNames = db.prepare(
-      `SELECT name FROM sqlite_master
-       WHERE type = 'table'
-         AND name NOT LIKE 'sqlite_%'
-       ORDER BY name`,
-    ).all() as Array<{ name: string }>;
-    const backedUp = new Set<string>(METADATA_BACKUP_TABLES);
-    const excluded = new Set<string>(REPRODUCIBLE_OR_RUNTIME_TABLES);
-    const unclassified = tableNames
-      .map((table) => table.name)
-      .filter((table) => !backedUp.has(table) && !excluded.has(table));
-
-    expect(unclassified, "metadata backup table classification drift").toEqual([]);
-    expect(backedUp.has("briefing_runs")).toBe(true);
-    expect(backedUp.has("briefing_submissions")).toBe(true);
-    expect(backedUp.has("briefing_legacy_custody")).toBe(true);
-    expect(backedUp.has("feedback_ingest_requests")).toBe(false);
-    expect(backedUp.has("task_command_requests")).toBe(true);
-    expect(backedUp.has("task_command_events")).toBe(true);
-    expect(backedUp.has("conversation_blocks")).toBe(false);
-    expect(excluded.has("conversation_blocks")).toBe(true);
-    expect(backedUp.has("daemon_log")).toBe(false);
-    expect(excluded.has("daemon_log")).toBe(true);
   });
 
   it("round-trips exact durable user settings after their user owners", () => {

@@ -887,10 +887,15 @@ api_operational_mutation_category() {
   local request_path="$2"
   local pathname="${request_path%%\?*}"
   local generated_category
-  method="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
 
+  # Normalize and filter in one fork-free case. This runs once per mutating CLI
+  # call and ~500 times in the preflight table-sync probe, so the `tr` pipeline
+  # it replaces was the dominant cost of both.
   case "$method" in
-    POST|PUT|PATCH|DELETE) ;;
+    [Pp][Oo][Ss][Tt]) method="POST" ;;
+    [Pp][Uu][Tt]) method="PUT" ;;
+    [Pp][Aa][Tt][Cc][Hh]) method="PATCH" ;;
+    [Dd][Ee][Ll][Ee][Tt][Ee]) method="DELETE" ;;
     *) return 1 ;;
   esac
 
