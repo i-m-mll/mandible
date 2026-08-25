@@ -959,8 +959,7 @@ a {
 
 .app-content--view-sidebar .auth-sidebar-layout,
 .app-content--view-sidebar .artifacts-view,
-.app-content--view-sidebar .inbox-sidebar-layout,
-.app-content--view-sidebar .presets-view {
+.app-content--view-sidebar .inbox-sidebar-layout {
   height: 100%;
   margin: 0;
 }
@@ -1083,8 +1082,7 @@ a {
 }
 
 /* ── Screen reader only ──
- * App-wide accessibility utility (LoadingSkeleton, timeline row labels).
- * Moved here from presets.css when the Presets tab was retired. */
+ * App-wide accessibility utility (LoadingSkeleton, timeline row labels). */
 .sr-only {
   position: absolute;
   width: 1px;

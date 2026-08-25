@@ -318,7 +318,7 @@ export function BriefingDocumentRenderer({
   const submitReason = !canMutate
     ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
     : round?.directive_binding?.status !== 'valid'
-      ? (round.directive_binding.reason || 'The directive binding is unavailable.')
+      ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
       : contentGate === null ? 'Loading pinned document…'
       : contentGate ? contentGate
       : clearBusy ? 'Clearing pending annotations…'

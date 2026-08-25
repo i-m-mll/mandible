@@ -67,6 +67,25 @@ Key conventions:
 - Liveness (is an agent currently working?) is derived at query time, not stored as a state
 - Continuations (handoff notes) live on the work unit, not on individual sessions
 
+## Test suites
+
+`npm test` is the **default suite**: `vitest.config.ts` includes
+`test/*.test.{ts,tsx}` — a single star — so it is exactly the flat `test/`
+directory. It must stay green on a machine that has run nothing but `npm ci`;
+`.github/workflows/ci.yml` provisions nothing else. Never add a default-suite
+test that depends on an external binary.
+
+A suite that does need provisioning lives in `test/<suite>/` with its own
+config and npm script. The single-star include keeps it out of `npm test` by
+construction. Today there is one:
+
+- `npm run test:browser` — `test/browser/`, real headless Chromium plus
+  ImageMagick `magick`. Run it locally before delivering app-chrome or
+  detail-pane layout changes. See `test/browser/README.md`.
+
+Both configs come from the same `mandibleVitestConfig()` factory in
+`vitest.config.ts`; a suite chooses only its include globs.
+
 ## Dist files
 
 Do **not** commit `dist/` or `ui/dist/` in feature branches or integration

@@ -62,7 +62,7 @@
 #   --promote-briefing <group> <expected-base> <proposal>
 #                           After successful convergence, promote the exact
 #                           active proposal to this Briefing group's Base
-#   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, preset-promote, data-delete)
+#   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
 #   --dirty-policy <policy> Protected-root dirty policy: block, allow-untracked, stash, branch-off
 #   --dirty-branch-prefix <prefix>
@@ -213,7 +213,7 @@ if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
 fi
 
 # Validate auth type
-valid_types="merge commit force-push branch-delete config-change preset-promote data-delete"
+valid_types="merge commit force-push branch-delete config-change data-delete"
 if ! echo "$valid_types" | grep -qw "$auth_type"; then
   echo "Error: invalid --type '$auth_type'. Must be one of: $valid_types" >&2
   exit 2

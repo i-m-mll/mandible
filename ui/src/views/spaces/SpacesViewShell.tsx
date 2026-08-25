@@ -15,7 +15,7 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useLayoutEffect, useMemo, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
 import {

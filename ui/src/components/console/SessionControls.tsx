@@ -105,12 +105,17 @@ function OptionControl({ option, value, disabled, onChange }: {
   );
   if (option.kind === 'boolean') return <input type="checkbox" checked={value === true} disabled={disabled}
     onChange={(event) => onChange(event.currentTarget.checked)} />;
-  if (option.kind === 'multi_select') return (
-    <select className="session-controls__select" multiple value={Array.isArray(value) ? value : []} disabled={disabled}
-      onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions).map((item) => item.value))}>
-      {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
-    </select>
-  );
+  if (option.kind === 'multi_select') {
+    const selected = new Set((Array.isArray(value) ? value : []).map(String));
+    return (
+      <select className="session-controls__select" multiple disabled={disabled}
+        onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions).map((item) => item.value))}>
+        {(option.allowedValues ?? []).map((choice) => (
+          <option key={String(choice.value)} value={String(choice.value)} selected={selected.has(String(choice.value))}>{choice.label}</option>
+        ))}
+      </select>
+    );
+  }
   if (option.kind === 'text') return <textarea {...common} value={displayValue(value)} onInput={(event) => onChange(event.currentTarget.value || null)} />;
   return <input {...common} type="number" min={option.kind === 'integer' ? '1' : '0'} step={option.kind === 'integer' ? '1' : '0.01'}
     value={displayValue(value)} onInput={(event) => onChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)} />;

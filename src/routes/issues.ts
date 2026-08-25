@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
@@ -80,12 +79,6 @@ export interface IssueServer {
   post(path: string, handler: RouteHandler, options: RouteOptions): void;
   put?(path: string, handler: RouteHandler, options: RouteOptions): void;
   patch?(path: string, handler: RouteHandler, options: RouteOptions): void;
-}
-
-// Bug: cbbb3d9 — spawn-from-issue deps type
-interface SpawnDeps {
-  sessionManager?: import("../session-manager.js").SessionManager;
-  workScanner?: WorkScanner;
 }
 
 function getParam(req: unknown, key: string): string | undefined {
@@ -1095,8 +1088,6 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       work_units: child.work_units,
       sessions: child.sessions,
       associated_artifacts: child.associated_artifacts,
-      conflicts: child.conflicts,
-      sync: child.sync,
     };
   }) : buildUmbrellaChildSummaries(db, childIds);
   return {
@@ -1312,8 +1303,7 @@ export function registerIssueRoutes(
   server: IssueServer,
   workScanner: WorkScanner,
   deps?: { sessionRegistry?: import("../registry.js").SessionRegistry; sessionManager?: import("../session-manager.js").SessionManager },
-): IssueScanner {
-  const issueScanner = new IssueScanner(workScanner);
+): void {
 
   // GET /api/issues — list repo summaries with optional filtering
   server.get("/api/issues", (req, res) => {
@@ -2262,32 +2252,6 @@ export function registerIssueRoutes(
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   }, { fileRpc: "allow" });
 
-  server.post("/api/ledger/conflicts/:conflictId/resolve", (req, res) => {
-    const conflictId = getParam(req, "conflictId");
-    if (!conflictId) {
-      sendJson(res, 400, { error: "missing conflictId" });
-      return;
-    }
-    const body = getBody(req) ?? {};
-    const resolution = typeof body.resolution === "string" && body.resolution.trim()
-      ? body.resolution.trim()
-      : "keep_mandible";
-    const status = body.status === "dismissed" ? "dismissed" : "resolved";
-    try {
-      const conflictDb = getDb();
-      const conflict = new LedgerStore(conflictDb).resolveConflict(conflictId, {
-        resolution,
-        status,
-        actor_type: "mandible_user",
-        author_display: "Mandible",
-        attribution: attributionForRequest(conflictDb, req),
-      });
-      sendJson(res, 200, { ok: true, conflict });
-    } catch (error) {
-      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
-    }
-  }, { fileRpc: "deny" });
-
   // GET /api/issues/find/:issueId — search ledger-backed issues by ID prefix.
   // Registered before /:repoId/:issueId to avoid the literal "find" being treated as repoId.
   server.get("/api/issues/find/:issueId", (req, res) => {
@@ -2770,7 +2734,6 @@ export function registerIssueRoutes(
     });
   }), { fileRpc: "deny" });
 
-  return issueScanner;
 }
 
 function parseJsonStringArray(value: unknown): string[] {

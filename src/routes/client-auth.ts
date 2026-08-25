@@ -1,7 +1,6 @@
 // Client-authentication routes (issue 708dc4c):
 //   POST /api/client-auth/handshake   dashboard acquires an ephemeral operator token
 //   POST /api/client-auth/session-token  exchange an agent PAT for a session-scoped token
-//   GET  /api/client-auth/status      current mode + unattributed-write telemetry (read)
 //   GET  /api/client-auth/whoami      effective client identity for this request (read)
 //   PUT  /api/client-auth/mode        set mode (operator only, both directions)
 //   POST /api/users/:ref/tokens       mint an api_token (self or operator)
@@ -166,18 +165,6 @@ export function registerClientAuthRoutes(
       handleError(res, error);
     }
   }, { fileRpc: "deny", countUnattributed: false });
-
-  // Current client-auth mode and the unattributed-write ratchet (read).
-  router.get("/api/client-auth/status", (_req, res) => {
-    try {
-      sendJson(res, 200, {
-        mode: getClientAuthMode(getDb()),
-        telemetry: authenticator.telemetrySnapshot(),
-      });
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { fileRpc: "allow" });
 
   // Issue 499c148 — the cheap self-check. A session that carries the wrong
   // bearer (e.g. an inherited operator token in an agent shell) previously had

@@ -285,8 +285,6 @@ function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
     work_units: [],
     timeline: [],
     associated_artifacts: [],
-    conflicts: [],
-    sync: { state: 'clean', last_synced_at: null, message: null },
   } as unknown as LedgerIssueDetailProjection;
 }
 

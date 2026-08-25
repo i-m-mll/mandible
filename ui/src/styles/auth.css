@@ -881,11 +881,6 @@
   color: var(--accent-purple);
 }
 
-.type-badge--preset-promote {
-  background: rgba(168, 85, 247, 0.15);
-  color: var(--accent-purple);
-}
-
 .type-badge--data-delete {
   background: rgba(242, 107, 107, 0.15);
   color: var(--accent-red);

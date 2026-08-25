@@ -143,7 +143,6 @@ describe('conversation sidebar labeled-item rows', () => {
     ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewSession={() => undefined} />);
 
     const selected = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
@@ -166,7 +165,6 @@ describe('conversation sidebar labeled-item rows', () => {
     vi.spyOn(api, 'getConversationWindow').mockResolvedValue(positionWindow(conversation));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const updateConversation = vi.spyOn(api, 'updateConversation').mockImplementation(async (_id, patch) => {
       serverRow = { ...serverRow, ...patch };
       return serverRow;
@@ -226,7 +224,6 @@ describe('conversation sidebar labeled-item rows', () => {
     ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const updateConversation = vi.spyOn(api, 'updateConversation').mockImplementation(async (id, patch) => {
       serverRows = serverRows.map((row) => row.id === id ? { ...row, ...patch } : row);
       return serverRows.find((row) => row.id === id)!;
@@ -301,7 +298,6 @@ describe('conversation sidebar labeled-item rows', () => {
     ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionPresets').mockResolvedValue([]);
     const updateConversation = vi.spyOn(api, 'updateConversation');
     window.localStorage.setItem(CHAT_VIEW_STATE_KEY, JSON.stringify({
       pinnedConversationIds: [existingPinnedConversation.id],

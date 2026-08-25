@@ -1,10 +1,11 @@
+import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
-import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
   ApiList,
+  ListEnvelopeKey,
   ArtifactAliasRecord as ContractArtifactAliasRecord,
   ArtifactAliasResolutionStatus as ContractArtifactAliasResolutionStatus,
   ArtifactLinkRecord as ContractArtifactLinkRecord,
@@ -96,7 +97,6 @@ export type {
   ResolverResult,
   ResolverRefKind,
 } from '../../src/contracts';
-export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 export type AuthRequestAction = ContractAuthRequestAction;
 
 export type InstanceInfo = {
@@ -375,23 +375,14 @@ function normalizeList<T>(payload: ApiList<T>): T[] {
   if (Array.isArray(payload)) {
     return payload;
   }
-  return (
-    payload.items ||
-    payload.sessions ||
-    payload.queue ||
-    payload.requests ||
-    payload.repos ||
-    payload.branches ||
-    payload.work_units ||
-    payload.hooks ||
-    payload.artifacts ||
-    payload.conversations ||
-    payload.templates ||
-    payload.presets ||
-    payload.nodes ||
-    payload.diffs ||
-    []
-  );
+  const envelope: Partial<Record<ListEnvelopeKey, T[]>> = payload;
+  for (const key of LIST_ENVELOPE_KEYS) {
+    const value = envelope[key];
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+  return [];
 }
 
 function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
@@ -1486,21 +1477,6 @@ export type LedgerIssueDetailAuthRequest = {
   metadata: Record<string, unknown>;
 };
 
-export type LedgerIssueDetailConflict = {
-  id: string;
-  adapter: string;
-  entity_type: string;
-  entity_id: string;
-  field: string;
-  local_value: unknown;
-  remote_value: unknown;
-  base_value: unknown;
-  status: string;
-  resolution: string | null;
-  created_at: number;
-  resolved_at: number | null;
-};
-
 export type LedgerIssueDetailArtifactLink = {
   id: string;
   entity_type: string;
@@ -1576,23 +1552,6 @@ export type LedgerIssueDetailProjection = {
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
   associated_artifacts?: LedgerIssueDetailAssociatedArtifact[];
-  conflicts: LedgerIssueDetailConflict[];
-  sync: {
-    state: 'clean' | 'pending' | 'failed' | 'conflicted';
-    outbox: Record<string, number>;
-    open_conflicts: number;
-    latest_jobs: Array<{
-      id: string;
-      adapter: string;
-      direction: string;
-      status: string;
-      attempt_count: number;
-      started_at: number | null;
-      finished_at: number | null;
-      last_error: string | null;
-      updated_at: number;
-    }>;
-  };
   detail_stage?: 'initial' | 'full';
   timeline_partial?: boolean;
 };
@@ -1715,18 +1674,6 @@ export async function setLedgerIssueLabel(
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/labels`, { label, present });
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
-}
-
-export async function resolveLedgerConflict(
-  conflictId: string,
-  resolution: string,
-  status: 'resolved' | 'dismissed' = 'resolved',
-): Promise<unknown> {
-  const response = await apiPost(
-    `/api/ledger/conflicts/${encodeURIComponent(conflictId)}/resolve`,
-    { resolution, status },
-  );
-  return parseMaybeJson(response);
 }
 
 export async function getIssueSessions(repoId: string, issueId: string): Promise<unknown[]> {
@@ -1984,8 +1931,6 @@ export type ConsoleSessionOptions = {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
-  /** Bug: 790433d — Preset IDs for dynamic preset switching (SDK only) */
-  presetIds?: string[];
 };
 
 export async function createConsoleSession(
@@ -1993,17 +1938,17 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[]; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
+  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
 ): Promise<{ session: {
   id: string;
   label: string;
   agent_type: string;
   interaction_mode: 'inbox_only' | 'direct' | 'both';
-  pinned: boolean;
+  pinned?: boolean;
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
-  unread_count: number;
+  unread_count?: number;
   created_at: number;
   started_at: number | null;
   stopped_at: number | null;
@@ -2029,7 +1974,6 @@ export async function createConsoleSession(
     backend_type?: ConsoleBackendType;
     channel_enabled?: boolean;
     transport_lane?: ConsoleTransportLane;
-    presetIds?: string[];
     runOptions?: Record<string, SessionRunOptionValue>;
   };
   const body: SessionBody = { label, command: '', args: [] };
@@ -2041,9 +1985,6 @@ export async function createConsoleSession(
   }
   if (options?.transport_lane) {
     body.transport_lane = options.transport_lane;
-  }
-  if (options?.presetIds) {
-    body.presetIds = options.presetIds;
   }
   if (options?.runOptions) body.runOptions = options.runOptions;
   // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
@@ -2190,12 +2131,12 @@ export async function getConsoleRunOptions(
 
 export async function getConsoleSessionOptions(sessionId: string): Promise<{
   runOptions: SessionRunOptionsSnapshot;
-  mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+  mandibleControls: { allowedTools: string[] | null };
 }> {
   const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`);
   return parseMaybeJson(response) as Promise<{
     runOptions: SessionRunOptionsSnapshot;
-    mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+    mandibleControls: { allowedTools: string[] | null };
   }>;
 }
 
@@ -2233,7 +2174,6 @@ export type MessageParams = {
   permission_mode: string | null;
   max_turns: number | null;
   max_cost_usd: number | null;
-  preset_ids: string | null;
   allowed_tools: string | null;
   created_at: number;
 };
@@ -3110,296 +3050,6 @@ export async function resolveArtifact(ref: string): Promise<ArtifactResolveResul
   return payload.resolution;
 }
 
-// ── Presets API — Bug: e20c88e, Bug: 11f4f47 ──
-
-export async function fetchPresets(): Promise<Preset[]> {
-  const payload = await cachedApiGetJson<ApiList<Preset>>('/api/presets');
-  return normalizeList(payload);
-}
-
-export const getPresets = fetchPresets;
-
-export async function createPreset(data: {
-  name: string;
-  description?: string;
-  markdown?: string;
-}): Promise<Preset> {
-  const response = await apiPost('/api/presets', data);
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function fetchPreset(id: string): Promise<PresetWithNodes> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
-  return (await parseMaybeJson(response)) as PresetWithNodes;
-}
-
-export async function getPreset(id: string): Promise<Preset> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function updatePreset(
-  id: string,
-  data: Partial<Preset>,
-): Promise<Preset> {
-  const response = await apiPut(`/api/presets/${encodeURIComponent(id)}`, data);
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function deletePreset(id: string): Promise<void> {
-  await apiDelete(`/api/presets/${encodeURIComponent(id)}`);
-}
-
-export async function fetchPresetNodes(presetId: string): Promise<PresetNode[]> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(presetId)}/nodes`);
-  const payload = (await parseMaybeJson(response)) as ApiList<PresetNode>;
-  return normalizeList(payload);
-}
-
-export async function updatePresetNodes(
-  presetId: string,
-  nodes: PresetNode[],
-): Promise<void> {
-  await apiPut(`/api/presets/${encodeURIComponent(presetId)}/nodes`, { nodes });
-}
-
-export async function addPresetNode(
-  presetId: string,
-  node: Partial<PresetNode>,
-): Promise<PresetNode> {
-  const response = await apiPost(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes`,
-    node,
-  );
-  const payload = (await parseMaybeJson(response)) as { node?: PresetNode } | PresetNode;
-  return (payload && typeof payload === 'object' && 'node' in payload) ? payload.node as PresetNode : payload as PresetNode;
-}
-
-export async function updatePresetNode(
-  presetId: string,
-  nodeId: string,
-  data: Partial<PresetNode>,
-): Promise<PresetNode> {
-  const response = await apiPut(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
-    data,
-  );
-  const payload = (await parseMaybeJson(response)) as { node?: PresetNode } | PresetNode;
-  return (payload && typeof payload === 'object' && 'node' in payload) ? payload.node as PresetNode : payload as PresetNode;
-}
-
-export async function deletePresetNode(
-  presetId: string,
-  nodeId: string,
-): Promise<void> {
-  await apiDelete(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
-  );
-}
-
-export async function reorderPresetNode(
-  presetId: string,
-  data: { nodeId: string; newParentId: string | null; newPosition: number },
-): Promise<void> {
-  await apiPatch(
-    `/api/presets/${encodeURIComponent(presetId)}/nodes/reorder`,
-    data,
-  );
-}
-
-export async function fetchConventionLibrary(
-  query?: string,
-  limit?: number,
-  offset?: number,
-): Promise<LibraryConvention[]> {
-  const params = new URLSearchParams();
-  if (query) params.set('q', query);
-  if (limit != null) params.set('limit', String(limit));
-  if (offset != null) params.set('offset', String(offset));
-  const qs = params.toString();
-  const response = await apiGet(`/api/presets/library${qs ? '?' + qs : ''}`);
-  const payload = (await parseMaybeJson(response)) as ApiList<LibraryConvention>;
-  return normalizeList(payload);
-}
-
-export async function exportPreset(id: string): Promise<string> {
-  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}/export`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === 'string') return payload;
-  if (payload && typeof payload === 'object' && 'markdown' in payload) {
-    return String((payload as { markdown?: unknown }).markdown || '');
-  }
-  if (payload && typeof payload === 'object' && 'content' in payload) {
-    return String((payload as { content?: unknown }).content ?? '');
-  }
-  return '';
-}
-
-export async function importPreset(markdown: string): Promise<Preset> {
-  const response = await apiPost('/api/presets/import', { markdown });
-  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
-  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
-}
-
-export async function fetchPresetDiffs(sessionId: string): Promise<PresetDiff[]> {
-  const response = await apiGet(
-    `/api/presets/diffs?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  const payload = (await parseMaybeJson(response)) as ApiList<PresetDiff>;
-  return normalizeList(payload);
-}
-
-export async function updatePresetDiff(
-  id: string,
-  status: string,
-): Promise<PresetDiff> {
-  const response = await apiPut(
-    `/api/presets/diffs/${encodeURIComponent(id)}`,
-    { status },
-  );
-  const payload = (await parseMaybeJson(response)) as { diff?: PresetDiff } | PresetDiff;
-  return (payload && typeof payload === 'object' && 'diff' in payload) ? payload.diff as PresetDiff : payload as PresetDiff;
-}
-
-export async function fetchPresetUnion(
-  sessionId: string,
-): Promise<{ text: string; tokenEstimate: number }> {
-  const response = await apiGet(
-    `/api/presets/union?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  return (await parseMaybeJson(response)) as { text: string; tokenEstimate: number };
-}
-
-export type PresetUnion = {
-  systemPrompt: string;
-  settingSources: string[];
-  totalTokens: number;
-};
-
-export type SessionPreset = {
-  preset_id: string;
-  preset_name: string;
-  version: number;
-  position: number;
-};
-
-export async function getPresetUnion(params: {
-  session_id?: string;
-  preset_ids?: string[];
-}): Promise<PresetUnion> {
-  const query = new URLSearchParams();
-  if (params.session_id) query.set('session_id', params.session_id);
-  if (params.preset_ids) query.set('preset_ids', params.preset_ids.join(','));
-  const qs = query.toString();
-  const payload = await cachedApiGetJson<Record<string, unknown>>(
-    `/api/presets/union${qs ? '?' + qs : ''}`,
-  );
-  // Server returns { text, tokenEstimate }; map to client type
-  return {
-    systemPrompt: (payload.systemPrompt ?? payload.text ?? '') as string,
-    settingSources: (payload.settingSources ?? []) as string[],
-    totalTokens: (payload.totalTokens ?? payload.tokenEstimate ?? 0) as number,
-  };
-}
-
-export async function getSessionPresets(
-  sessionId: string,
-): Promise<SessionPreset[]> {
-  const payload = await cachedApiGetJson<{ presets?: SessionPreset[] } | SessionPreset[]>(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-  );
-  if (Array.isArray(payload)) return payload;
-  return Array.isArray(payload?.presets) ? payload.presets : [];
-}
-
-export async function addSessionPreset(
-  sessionId: string,
-  presetId: string,
-  _position?: number,
-): Promise<void> {
-  await apiPost(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-    { presetIds: [presetId] },
-  );
-}
-
-export async function removeSessionPreset(
-  sessionId: string,
-  presetId: string,
-): Promise<void> {
-  await apiDelete(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets/${encodeURIComponent(presetId)}`,
-  );
-}
-
-// ── Convention-Setting Links API — Bug: 8baedeb ──
-
-export async function getSettingLinks(settingKey: string): Promise<ConventionSettingLink[]> {
-  const response = await apiGet(`/api/presets/links?setting_key=${encodeURIComponent(settingKey)}`);
-  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
-  return payload.links ?? [];
-}
-
-export async function getNodeLinks(nodeId: string): Promise<ConventionSettingLink[]> {
-  const response = await apiGet(`/api/presets/nodes/${encodeURIComponent(nodeId)}/links`);
-  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
-  return payload.links ?? [];
-}
-
-export async function createNodeLink(
-  nodeId: string,
-  settingKey: string,
-  linkType?: string,
-): Promise<ConventionSettingLink> {
-  const response = await apiPost(
-    `/api/presets/nodes/${encodeURIComponent(nodeId)}/links`,
-    { settingKey, linkType },
-  );
-  const payload = (await parseMaybeJson(response)) as { link?: ConventionSettingLink };
-  return payload.link as ConventionSettingLink;
-}
-
-export async function deleteSettingLink(linkId: string): Promise<void> {
-  await apiDelete(`/api/presets/links/${encodeURIComponent(linkId)}`);
-}
-
-export async function validateSessionPresets(sessionId: string): Promise<SessionValidationResult> {
-  const response = await apiGet(
-    `/api/presets/validate-session?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  return (await parseMaybeJson(response)) as SessionValidationResult;
-}
-
-export async function validatePresetIds(presetIds: string[]): Promise<SessionValidationResult> {
-  // Bug: 8baedeb — delegate to backend endpoint for accurate validation
-  // (client-side approach only checked link existence, not actual setting values)
-  const response = await apiPost('/api/presets/validate-preset-ids', { presetIds });
-  return (await parseMaybeJson(response)) as SessionValidationResult;
-}
-
-export async function getDefaultPresetIds(): Promise<string[]> {
-  try {
-    const response = await apiGet('/api/settings/default_preset_ids');
-    const payload = await parseMaybeJson(response);
-    if (payload && typeof payload === 'object' && 'value' in payload) {
-      const val = (payload as { value?: unknown }).value;
-      if (typeof val === 'string') {
-        try {
-          return JSON.parse(val) as string[];
-        } catch {
-          return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
-        }
-      }
-    }
-  } catch {
-    // Setting doesn't exist yet — return empty defaults
-  }
-  return [];
-}
-
 // --- Auth hooks API (Bug: 242d0c7) ---
 
 export type AuthHook = {
@@ -4001,6 +3651,37 @@ function briefingOptionalNumber(value: unknown): number | null {
   return null;
 }
 
+function briefingDocumentProfile(value: unknown): BriefingDocumentProfile | null {
+  return BRIEFING_DOCUMENT_PROFILES.find((candidate) => candidate === value) ?? null;
+}
+
+function briefingDirectiveBindingStatus(value: unknown): BriefingDirectiveBindingStatus | null {
+  return BRIEFING_DIRECTIVE_BINDING_STATUSES.find((candidate) => candidate === value) ?? null;
+}
+
+function briefingSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+type BriefingSpan = {
+  start_offset: number;
+  end_offset: number;
+  body_start_offset: number;
+  body_end_offset: number;
+};
+
+/** Directive spans and text-variant spans share one nesting invariant. */
+function briefingSpan(value: Record<string, unknown>): BriefingSpan | null {
+  const start = value.start_offset;
+  const end = value.end_offset;
+  const bodyStart = value.body_start_offset;
+  const bodyEnd = value.body_end_offset;
+  if (!briefingSafeInteger(start) || !briefingSafeInteger(end)
+      || !briefingSafeInteger(bodyStart) || !briefingSafeInteger(bodyEnd)) return null;
+  if (start < 0 || start >= bodyStart || bodyStart >= bodyEnd || bodyEnd > end) return null;
+  return { start_offset: start, end_offset: end, body_start_offset: bodyStart, body_end_offset: bodyEnd };
+}
+
 function briefingStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.filter((entry): entry is string => typeof entry === 'string');
@@ -4062,6 +3743,12 @@ export type BriefingDirectiveItem = {
   };
 };
 
+export const BRIEFING_DOCUMENT_PROFILES = ['mandible-briefing.v2', 'mandible-briefing.v3'] as const;
+export type BriefingDocumentProfile = (typeof BRIEFING_DOCUMENT_PROFILES)[number];
+
+export const BRIEFING_DIRECTIVE_BINDING_STATUSES = ['valid', 'invalid', 'unavailable'] as const;
+export type BriefingDirectiveBindingStatus = (typeof BRIEFING_DIRECTIVE_BINDING_STATUSES)[number];
+
 export type BriefingRoundProjection = {
   round_id: string;
   state: 'open' | 'submitted';
@@ -4073,7 +3760,7 @@ export type BriefingRoundProjection = {
     artifact_version_id: string;
     content_hash: string;
     previous_round_id: string | null;
-    profile: 'mandible-briefing.v2' | 'mandible-briefing.v3';
+    profile: BriefingDocumentProfile;
     source: string;
     comparison_base?: null | {
       artifact_version_id: string;
@@ -4086,7 +3773,7 @@ export type BriefingRoundProjection = {
       source: string;
     };
   };
-  directive_binding: null | { status: 'valid' | 'invalid' | 'unavailable'; reason?: string };
+  directive_binding: null | { status: BriefingDirectiveBindingStatus; reason?: string };
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
   annotations?: BriefingAnnotation[];
   submission_overlays?: BriefingSubmissionOverlaySummary[];
@@ -4313,27 +4000,19 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       return Boolean(option.key && option.label);
     });
     if (responseType === 'text_variant' && !Array.isArray(revision.variants)) valid = false;
-    const variants = (Array.isArray(revision.variants) ? revision.variants : []).map((variant) => {
+    const variants = (Array.isArray(revision.variants) ? revision.variants : []).map((variant): BriefingTextVariant | null => {
       const value = briefingRecord(variant);
       if (!exactBriefingValueKeys(value, ['key', 'label', 'body', 'start_offset', 'end_offset', 'body_start_offset', 'body_end_offset'])) valid = false;
-      const parsed = {
-        key: briefingString(value.key),
-        label: briefingString(value.label),
-        body: briefingString(value.body),
-        start_offset: value.start_offset,
-        end_offset: value.end_offset,
-        body_start_offset: value.body_start_offset,
-        body_end_offset: value.body_end_offset,
-      };
-      if (!parsed.key || !parsed.label || !parsed.body || !Number.isSafeInteger(parsed.start_offset)
-          || !Number.isSafeInteger(parsed.end_offset) || (parsed.start_offset as number) < 0
-          || (parsed.end_offset as number) <= (parsed.start_offset as number)
-          || !Number.isSafeInteger(parsed.body_start_offset) || !Number.isSafeInteger(parsed.body_end_offset)
-          || (parsed.body_start_offset as number) <= (parsed.start_offset as number)
-          || (parsed.body_end_offset as number) > (parsed.end_offset as number)
-          || (parsed.body_end_offset as number) <= (parsed.body_start_offset as number)) valid = false;
-      return parsed as BriefingTextVariant;
-    });
+      const key = briefingString(value.key);
+      const label = briefingString(value.label);
+      const body = briefingString(value.body);
+      const span = briefingSpan(value);
+      if (!key || !label || !body || !span) {
+        valid = false;
+        return null;
+      }
+      return { key, label, body, ...span };
+    }).filter((variant): variant is BriefingTextVariant => variant !== null);
     const choice = responseType === 'single_choice' || responseType === 'multi_choice';
     const textVariant = responseType === 'text_variant';
     if (itemKind === 'group' && (revision.required === true || options.length > 0 || variants.length > 0)) valid = false;
@@ -4353,14 +4032,9 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     if (Object.prototype.hasOwnProperty.call(row, 'directive')) {
       const key = briefingString(rawDirective.key);
       const definitionDigest = briefingString(rawDirective.definition_digest);
-      const start = rawDirective.start_offset;
-      const end = rawDirective.end_offset;
-      const bodyStart = rawDirective.body_start_offset;
-      const bodyEnd = rawDirective.body_end_offset;
-      if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || !/^[0-9a-f]{64}$/.test(definitionDigest) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
-          || !Number.isSafeInteger(bodyStart) || !Number.isSafeInteger(bodyEnd)
-          || start < 0 || start >= bodyStart || bodyStart >= bodyEnd || bodyEnd > end) valid = false;
-      else directive = { key, definition_digest: definitionDigest, start_offset: start, end_offset: end, body_start_offset: bodyStart, body_end_offset: bodyEnd };
+      const span = briefingSpan(rawDirective);
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || !/^[0-9a-f]{64}$/.test(definitionDigest) || !span) valid = false;
+      else directive = { key, definition_digest: definitionDigest, ...span };
     }
     return {
       id,
@@ -4414,10 +4088,10 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     id: briefingString(actorLatest.id),
     ordinal: briefingOptionalNumber(actorLatest.ordinal) ?? 0,
   };
-  if (root.latest_submission_for_actor != null
+  if (latestSubmissionForActor !== null
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
-  const profile = rawDocument.profile;
+  const profile = briefingDocumentProfile(rawDocument.profile);
   const documentShapeValid = [
     ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base', 'original_comparison_base'],
     ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base'],
@@ -4454,8 +4128,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     && comparisonBase !== undefined
     && originalComparisonBase !== undefined
     && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
-  const document = root.document !== null && documentShapeValid && documentFieldsValid
-    && (profile === 'mandible-briefing.v2' || profile === 'mandible-briefing.v3') ? {
+  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile !== null ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
@@ -4467,9 +4140,9 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
   if (!document
       || !document.artifact_version_id) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
-  const bindingStatus = bindingRow.status;
+  const bindingStatus = briefingDirectiveBindingStatus(bindingRow.status);
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
-    && (bindingStatus === 'valid' || bindingStatus === 'invalid' || bindingStatus === 'unavailable')
+    && bindingStatus !== null
     && (bindingRow.reason === undefined || typeof bindingRow.reason === 'string')
     ? { status: bindingStatus, ...(typeof bindingRow.reason === 'string' ? { reason: bindingRow.reason } : {}) }
     : undefined;
@@ -4616,7 +4289,7 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
     const member = briefingRecord(memberEntry);
     const normalized = normalizeBriefings({ briefings: [member.briefing] })[0];
     const position = briefingOptionalNumber(member.position);
-    return normalized && position !== undefined && position >= 0 ? { position, briefing: normalized } : null;
+    return normalized && position !== null && position >= 0 ? { position, briefing: normalized } : null;
   }).filter((member): member is { position: number; briefing: FeedbackCollection } => member !== null)
     .sort((left, right) => left.position - right.position);
   const layoutRows = Array.isArray(bundle.layout) ? bundle.layout : [];
@@ -5290,6 +4963,7 @@ import {
   type TaskCommandMutationResult as ContractTaskCommandMutationResult,
   type TaskCommandRejectionReason,
   type TaskCommandState,
+  type TaskCommandVerb,
   type TaskActivationFacts,
   type TaskBundleFacts,
   type TaskCircuitState,
@@ -5545,6 +5219,7 @@ export async function getTaskInventory(signal?: AbortSignal): Promise<TaskInvent
   return normalizeTaskInventory(await parseMaybeJson(response));
 }
 
+const TASK_COMMAND_VERBS: readonly TaskCommandVerb[] = ['disable', 'dry_run', 'enable'];
 const TASK_COMMAND_STATES: readonly TaskCommandState[] = [
   'requested', 'accepted', 'started', 'applied', 'rejected', 'cancelled',
 ];
@@ -5558,15 +5233,13 @@ function normalizeTaskCommand(value: unknown): TaskCommand | null {
   const id = briefingOptionalString(row.id);
   const executor = briefingOptionalString(row.executor);
   const taskId = briefingOptionalString(row.task_id);
-  if (!id || !executor || !taskId
-    || !['disable', 'dry_run', 'enable'].includes(String(row.verb))) return null;
+  const verb = taskMaybeEnum(row.verb, TASK_COMMAND_VERBS);
+  if (!id || !executor || !taskId || verb === TASK_INVENTORY_UNKNOWN) return null;
   const schema = row.schema === TASK_COMMAND_SCHEMA ? TASK_COMMAND_SCHEMA : TASK_COMMAND_SCHEMA_V1;
-  if (schema === TASK_COMMAND_SCHEMA_V1 && row.verb !== 'disable') return null;
-  const payloadRow = briefingRecord(row.payload);
-  const payload = row.verb === 'disable'
-    ? {}
-    : { execution_hash: briefingString(payloadRow.execution_hash) };
-  if (row.verb !== 'disable' && !/^[0-9a-f]{64}$/.test(payload.execution_hash ?? '')) return null;
+  if (schema === TASK_COMMAND_SCHEMA_V1 && verb !== 'disable') return null;
+  const executionHash = briefingString(briefingRecord(row.payload).execution_hash);
+  if (verb !== 'disable' && !/^[0-9a-f]{64}$/.test(executionHash)) return null;
+  const payload: TaskCommand['payload'] = verb === 'disable' ? {} : { execution_hash: executionHash };
   const state = taskMaybeEnum(row.state, TASK_COMMAND_STATES);
   if (state === TASK_INVENTORY_UNKNOWN) return null;
   const rejectionReason = row.rejection_reason === null
@@ -5579,7 +5252,7 @@ function normalizeTaskCommand(value: unknown): TaskCommand | null {
     request_digest: briefingString(row.request_digest),
     executor,
     task_id: taskId,
-    verb: row.verb,
+    verb,
     payload,
     requested_by_user_id: briefingString(row.requested_by_user_id),
     requested_by_slug: briefingOptionalString(row.requested_by_slug),

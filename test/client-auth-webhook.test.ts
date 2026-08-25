@@ -84,7 +84,6 @@ describe("client-auth operator webhook delivery", () => {
     router = new Router({ clientAuth: authenticator });
     registerWebhookRoutes(
       router,
-      {} as never,
       manager as never,
     );
   });

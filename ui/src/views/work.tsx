@@ -472,91 +472,6 @@ export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expan
   );
 }
 
-// --- Scrollable branch table with fade-out hint at the bottom ---
-
-type BranchTableScrollerProps = {
-  branches: WorkBranch[];
-  repoId: string;
-  defaultBranch: string;
-  hasActiveFilters: boolean;
-  perRepoFilter: string | undefined;
-  expanded: Set<string>;
-  onToggle: (repoId: string, branchName: string) => void;
-};
-
-function BranchTableScroller({
-  branches,
-  repoId,
-  defaultBranch,
-  hasActiveFilters,
-  perRepoFilter,
-  expanded,
-  onToggle,
-}: BranchTableScrollerProps): JSX.Element {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [atBottom, setAtBottom] = useState(false);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // Consider "at bottom" when within 4px of the bottom
-    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 4);
-  };
-
-  // Re-evaluate on mount and whenever branch list changes
-  useEffect(() => {
-    handleScroll();
-  }, [branches]);
-
-  return (
-    <div className="branch-scroll-wrap">
-      <div
-        ref={scrollRef}
-        className="branch-scroll-region"
-        onScroll={handleScroll}
-      >
-        <table>
-          <thead>
-            <tr>
-              <th className="work-col-status"></th>
-              <th>Branch</th>
-              <th>vs {defaultBranch}</th>
-              <th>vs upstream</th>
-              <th>Last Commit</th>
-              <th className="work-col-actions"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {branches.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="empty-state">
-                  {hasActiveFilters || perRepoFilter
-                    ? 'No branches match this filter.'
-                    : 'No branches reported yet. Open a session in this repo or use Refresh now from advanced filters.'}
-                </td>
-              </tr>
-            ) : (
-              branches.map((branch) => (
-                <BranchRow
-                  key={`${repoId}:${getBranchName(branch)}`}
-                  branch={branch}
-                  repoId={repoId}
-                  defaultBranch={defaultBranch}
-                  expanded={expanded}
-                  onToggle={onToggle}
-                />
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-      {!atBottom && branches.length > 0 ? (
-        <div className="branch-scroll-fade" aria-hidden="true" />
-      ) : null}
-    </div>
-  );
-}
-
 const AUDIT_GROUPS: Array<{
   title: string;
   classifications: WorkAuditEntry['classification'][];
@@ -828,7 +743,6 @@ export function WorkOverviewView({
   params = {},
 }: WorkOverviewProps): JSX.Element {
   const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(params.repo ?? null);
   const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>(
     params.repo && params.branch ? { [params.repo]: params.branch } : {},
@@ -1215,19 +1129,6 @@ export function WorkOverviewView({
     return counts;
   }, [repoRows]);
 
-  const toggleBranch = (repoId: string, branchName: string) => {
-    const key = `${repoId}:${branchName}`;
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
-
   const handleUpdateRepo = async (id: string, patch: { name?: string; excluded?: boolean }) => {
     try {
       const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
@@ -1439,7 +1340,7 @@ export function WorkOverviewView({
                   className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
                   disabled={pushState.active || pushState.authPending}
                   onClick={() => pushRepos('all_ahead').catch(() => {})}
-                  title="Push all ahead branches + git-bug refs + notes for all projects"
+                  title="Push all ahead branches + notes for all projects"
                 >
                   {pushState.authPending
                     ? 'Authenticating...'

@@ -9,7 +9,6 @@ import type {
   StreamRendererProps,
 } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
-import { PresetViolationBlock } from '../components/stream-renderer/PresetViolationBlock';
 import { MessageActions } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
@@ -513,17 +512,7 @@ export function ChatSurface({
         );
       }
 
-      case 'violation':
-        return (
-          <PresetViolationBlock
-            key={node.key}
-            analyzing={node.event.analyzing}
-            presetId={node.event.preset_id}
-            subagentSessionId={node.event.subagent_session_id}
-          />
-        );
-
-      case 'semantic_event': {
+       case 'semantic_event': {
         const source = node.event.source;
         return (
           <div key={node.key} className="message-block-wrapper" data-block-id={source.blockId}>

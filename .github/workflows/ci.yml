@@ -20,8 +20,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Type check
+        run: npm run typecheck
+
       - name: Build
         run: npm run build
 
+      # `npm test` is the default suite: it must be green on a runner that has
+      # nothing beyond `npm ci`. The extended browser gate (`npm run test:browser`)
+      # needs a real Chromium and ImageMagick and is deliberately not run here.
       - name: Test
         run: npm test

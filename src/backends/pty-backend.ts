@@ -11,8 +11,6 @@ import type {
   PermissionRequest,
 } from "../agentic-backend.js";
 import { RingBuffer } from "../ring-buffer.js";
-import { computePresetUnion } from "../presets.js";
-import { getDb } from "../db.js";
 import {
   extractSettingsPath,
   injectMandibleClaudeHookSettingsArgs,
@@ -74,8 +72,6 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
   private onExitDisposable: IDisposable | null = null;
   private restartAttempts = 0;
   private logger: Logger;
-  /** Bug: 790433d — Preset IDs for PTY sessions, applied at launch via --append-system-prompt */
-  private presetIds: string[] = [];
   private promptQueue: ConsolePromptQueueItem[] = [];
   private restartTimer: NodeJS.Timeout | null = null;
   private promptQuietFallbackTimer: NodeJS.Timeout | null = null;
@@ -106,11 +102,6 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
         onAttentionChange: (attention, classification) => this.publishAttention(attention, classification),
       });
     }
-  }
-
-  /** Bug: 790433d — Set preset IDs before start(). PTY presets are locked for session lifetime. */
-  setPresetIds(ids: string[]): void {
-    this.presetIds = [...ids];
   }
 
   start(): void {
@@ -769,18 +760,6 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
             id: this.id,
             reason: CLAUDE_PTY_LANE_DISABLED_CODE,
           });
-        }
-      }
-      // Bug: 790433d — Append preset union as system prompt for PTY sessions
-      if (this.presetIds.length > 0) {
-        try {
-          const db = getDb();
-          const union = computePresetUnion(this.presetIds, db);
-          if (union.text) {
-            sanitized.push("--append-system-prompt", union.text);
-          }
-        } catch (err) {
-          this.logger("warn", "pty_preset_union_failed", { id: this.id, error: String(err) });
         }
       }
       try {

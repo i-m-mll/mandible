@@ -1,18 +1,12 @@
-// Bug: 11f4f47 — NewSessionDialog with preset selector for SDK sessions
-// Bug: 8baedeb — session validation warnings for convention-setting links
 // Bug: b5e1c51 — PTY+Channel transport option for channel-connected sessions
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
-import type { Preset, SessionRunOptionsSnapshot, SessionRunOptionValue, SessionValidationWarning } from '../../api';
+import type { SessionRunOptionsSnapshot, SessionRunOptionValue } from '../../api';
 import {
   getConsoleRunOptions,
   getConsoleLanePolicy,
-  getPresets,
-  getDefaultPresetIds,
   getSettings,
-  validatePresetIds,
 } from '../../api';
-import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
@@ -36,12 +30,9 @@ type NewSessionDialogProps = {
     backend_type: Transport;
     transport_lane: TransportLane;
     channel_enabled?: boolean;
-    presetIds?: string[];
     runOptions?: Record<string, SessionRunOptionValue>;
     cwd?: string;
   }) => void;
-  /** Pre-selected instruction artifact or legacy preset ID from navigation. */
-  initialPresetId?: string | null;
 };
 
 const KIND_OPTIONS: Array<{
@@ -189,7 +180,6 @@ export function NewSessionDialog({
   cwd,
   onClose,
   onSubmit,
-  initialPresetId,
 }: NewSessionDialogProps): JSX.Element | null {
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<AgentKind>('agent');
@@ -198,11 +188,7 @@ export function NewSessionDialog({
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   // Issue 8aadf70 — daemon-reported gate for the local-only Claude PTY lanes.
   const [claudePtyLaneEnabled, setClaudePtyLaneEnabled] = useState(false);
-  const [presetIds, setPresetIds] = useState<string[]>([]);
-  const [allPresets, setAllPresets] = useState<Preset[]>([]);
-  const [presetsLoaded, setPresetsLoaded] = useState(false);
   // Bug: 8baedeb — convention-setting validation warnings
-  const [validationWarnings, setValidationWarnings] = useState<SessionValidationWarning[]>([]);
   const [runOptions, setRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
   const [runOptionValues, setRunOptionValues] = useState<Record<string, SessionRunOptionValue>>({});
 
@@ -219,55 +205,6 @@ export function NewSessionDialog({
     }).catch(() => { if (active) setRunOptions(null); });
     return () => { active = false; };
   }, [backend, open, transportLane]);
-
-  // Load available presets and default selections when dialog opens
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-
-    const loadPresets = async () => {
-      try {
-        const [presets, defaults] = await Promise.all([
-          getPresets(),
-          getDefaultPresetIds(),
-        ]);
-        if (cancelled) return;
-        setAllPresets(presets);
-        const resolvePresetId = (id: string): string | null => {
-          const match = presets.find((p) => p.id === id || p.legacy_preset_id === id);
-          return match?.id ?? null;
-        };
-
-        // If an initial preset ID was passed (e.g., from "Start Chat" button),
-        // use it; otherwise use defaults
-        if (initialPresetId) {
-          const initialId = resolvePresetId(initialPresetId);
-          const ids = initialId
-            ? [initialId]
-            : [];
-          // Merge with defaults, initial first
-          const defaultIds = defaults
-            .map(resolvePresetId)
-            .filter((id): id is string => Boolean(id));
-          const merged = [...ids, ...defaultIds.filter((d) => !ids.includes(d))];
-          setPresetIds(merged.filter((id) => presets.some((p) => p.id === id)));
-        } else {
-          setPresetIds(defaults
-            .map(resolvePresetId)
-            .filter((id): id is string => Boolean(id)));
-        }
-        setPresetsLoaded(true);
-      } catch {
-        if (!cancelled) {
-          setAllPresets([]);
-          setPresetIds([]);
-          setPresetsLoaded(true);
-        }
-      }
-    };
-    void loadPresets();
-    return () => { cancelled = true; };
-  }, [open, initialPresetId]);
 
   // Bug: b5e1c51 — Check if API key is configured to determine default transport
   useEffect(() => {
@@ -297,23 +234,6 @@ export function NewSessionDialog({
     return () => { cancelled = true; };
   }, [open]);
 
-  // Bug: 8baedeb — validate selected presets for unsatisfied setting requirements
-  useEffect(() => {
-    if (!presetsLoaded || presetIds.length === 0 || backend !== 'claude') {
-      setValidationWarnings([]);
-      return;
-    }
-    let cancelled = false;
-    void validatePresetIds(presetIds).then((result) => {
-      if (!cancelled) {
-        setValidationWarnings(result.warnings);
-      }
-    }).catch(() => {
-      if (!cancelled) setValidationWarnings([]);
-    });
-    return () => { cancelled = true; };
-  }, [presetIds, presetsLoaded, backend]);
-
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
       setBackend('claude');
@@ -331,9 +251,6 @@ export function NewSessionDialog({
 
   if (!open) return null;
 
-  const isSDK = transportLane === 'sdk';
-  // Issue 2181ffd — instruction artifacts are supported for both SDK and PTY Claude sessions.
-  const supportsPresets = backend === 'claude';
   const transportOptions = availableTransportLanes(backend, hasApiKey, claudePtyLaneEnabled);
 
   const handleSubmit = (e: Event) => {
@@ -347,7 +264,6 @@ export function NewSessionDialog({
       backend_type: backendType,
       transport_lane: transportLane,
       channel_enabled: transportLane === 'channel' || undefined,
-      presetIds: supportsPresets ? presetIds : undefined,
       runOptions: Object.keys(runOptionValues).length > 0 ? runOptionValues : undefined,
       cwd,
     });
@@ -355,9 +271,6 @@ export function NewSessionDialog({
     setKind('agent');
     setBackend('claude');
     setTransportLane(defaultTransportLaneForBackend('claude'));
-    setPresetIds([]);
-    setPresetsLoaded(false);
-    setValidationWarnings([]);
     setRunOptions(null);
     setRunOptionValues({});
     onClose();
@@ -420,7 +333,7 @@ export function NewSessionDialog({
                         setRunOptionValues((current) => raw ? { ...current, [option.id]: value } : Object.fromEntries(Object.entries(current).filter(([id]) => id !== option.id)));
                       }} />
                   )}
-                  {option.description && <span className="new-session-dialog__preset-note new-session-dialog__preset-note--muted">{option.description}</span>}
+                  {option.description && <span className="new-session-dialog__option-note">{option.description}</span>}
                 </label>
               ))}
             </div>
@@ -479,52 +392,6 @@ export function NewSessionDialog({
               ))}
             </div>
           </div>
-
-          {/* Issue 2181ffd — instruction artifact selector shown for all Claude sessions (SDK + PTY) */}
-          {supportsPresets && presetsLoaded && (
-            <div className="new-session-dialog__field">
-              <div className="new-session-dialog__label">Instructions</div>
-              <PresetPillSelector
-                selectedPresetIds={presetIds}
-                onChange={setPresetIds}
-                presets={allPresets}
-              />
-              {/* Bug: 790433d — Mode-specific note about preset mutability */}
-              {!isSDK && (
-                <div className="new-session-dialog__preset-note">
-                  Instructions will be applied at session start. Restart session to change.
-                </div>
-              )}
-              {isSDK && (
-                <div className="new-session-dialog__preset-note new-session-dialog__preset-note--muted">
-                  Instructions can be changed mid-conversation.
-                </div>
-              )}
-              {/* Bug: 8baedeb — validation warnings for unconfigured required settings */}
-              {validationWarnings.length > 0 && (
-                <div className="new-session-dialog__validation-warnings">
-                  {validationWarnings.map((w, i) => (
-                    <div key={i} className="new-session-dialog__validation-warning">
-                      <span className="new-session-dialog__validation-warning-icon">{'\u26A0'}</span>
-                      <span>
-                        Convention "{w.conventionTitle}" requires setting "{w.settingKey}" to be configured.{' '}
-                        <a
-                          href="#/settings"
-                          className="new-session-dialog__validation-warning-link"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            window.location.hash = '#/settings';
-                          }}
-                        >
-                          Configure now {'\u2192'}
-                        </a>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           <div className="new-session-dialog__actions">
             <button type="button" onClick={onClose} className="new-session-dialog__button new-session-dialog__button--ghost">

@@ -57,8 +57,6 @@ const legacyRootTokens = [
   '--inbox-handoff-bg',
   '--inbox-issue',
   '--inbox-issue-bg',
-  '--inbox-preset-diff',
-  '--inbox-preset-diff-bg',
   '--auth-result-completed',
   '--auth-result-completed-bg',
   '--auth-result-problem',
@@ -215,7 +213,7 @@ describe('design token stylesheet', () => {
 
   it('keeps every legacy root token resolvable', () => {
     const tokens = declaredTokens(tokensCss);
-    expect(legacyRootTokens).toHaveLength(132);
+    expect(legacyRootTokens).toHaveLength(130);
     expect(legacyRootTokens.filter((token) => !tokens.has(token))).toEqual([]);
   });
 

@@ -7,7 +7,7 @@ import type { Db } from "./db.js";
 import { LedgerStore } from "./ledger/store.js";
 import { resolveProjectRef, type RegistryProject } from "./ledger/project-registry.js";
 import type { AuthRequest } from "./types.js";
-import { getOperator, getUserById, listCredentials, resolveUser } from "./users/store.js";
+import { getOperator, listCredentials, resolveUser } from "./users/store.js";
 import type { AuthApprovalContext, DelegatedSignerBorrow } from "./delegated-signing-resource.js";
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 

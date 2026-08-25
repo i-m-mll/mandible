@@ -34,6 +34,7 @@ import {
   type Connection,
   type EdgeChange,
   type Edge as FlowEdge,
+  type EdgeMarkerType,
   type Node as FlowNode,
   type NodeChange,
 } from '@xyflow/react';
@@ -177,7 +178,7 @@ function occurrenceLabel(occurrence: SpaceOccurrence, item: SpaceItem | null): s
   return occurrence.id.slice(0, 8);
 }
 
-function occurrenceKind(occurrence: SpaceOccurrence, item: SpaceItem | null): string {
+function occurrenceKind(item: SpaceItem | null): string {
   return item?.ref_type ?? 'occurrence';
 }
 
@@ -261,9 +262,12 @@ export function edgesToFlowEdges(
   return flow;
 }
 
+function markerFingerprint(marker: EdgeMarkerType | undefined): string {
+  if (!marker) return '';
+  return typeof marker === 'string' ? marker : `${marker.type}:${marker.color ?? ''}`;
+}
+
 function sameFlowEdge(left: FlowEdge, right: FlowEdge): boolean {
-  const leftMarker = left.markerEnd;
-  const rightMarker = right.markerEnd;
   return (
     left.id === right.id &&
     left.source === right.source &&
@@ -271,8 +275,7 @@ function sameFlowEdge(left: FlowEdge, right: FlowEdge): boolean {
     left.label === right.label &&
     left.selected === right.selected &&
     left.className === right.className &&
-    leftMarker?.type === rightMarker?.type &&
-    leftMarker?.color === rightMarker?.color
+    markerFingerprint(left.markerEnd) === markerFingerprint(right.markerEnd)
   );
 }
 
@@ -320,7 +323,7 @@ export function canvasNodesToFlowNodes(
     position: { x: node.x, y: node.y },
     data: {
       label: occurrenceLabel(node.occurrence, node.item),
-      kind: occurrenceKind(node.occurrence, node.item),
+      kind: occurrenceKind(node.item),
       linkedSpace: linkedSpaceData(node.item),
     },
     selected: selection.has(node.occurrence.id),

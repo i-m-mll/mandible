@@ -19,11 +19,8 @@ import type {
   LedgerBodyRevisionEntityType,
   LedgerBodyRevisionReason,
   LedgerComment,
-  LedgerConflict,
-  LedgerConflictStatus,
   LedgerEvent,
   LedgerEventSource,
-  LedgerExternalRef,
   LedgerIssue,
   LedgerIssueAlias,
   LedgerIssueBranch,
@@ -36,8 +33,6 @@ import type {
   LedgerIssueResolution,
   LedgerIssueStatus,
   LedgerLabel,
-  LedgerOutbox,
-  LedgerOutboxStatus,
   LedgerPriority,
   LedgerRelationshipEdge,
   LedgerRelationshipEntityType,
@@ -52,7 +47,6 @@ export type ResolveIssueRefResult =
   | { ok: false; error: "ambiguous"; count: number; matches: string[] };
 
 export interface LedgerStoreOptions {
-  outboxAdapters?: string[];
   broadcaster?: LedgerBroadcaster;
 }
 
@@ -173,49 +167,6 @@ export interface ReconcileTextIssueReferencesInput {
   actor: LedgerActorInput;
 }
 
-export interface RecordExternalRefInput extends LedgerActorInput {
-  id?: string;
-  entity_type: string;
-  entity_id: string;
-  adapter: string;
-  project_id?: string;
-  external_id: string;
-  external_kind: string;
-  remote_version?: string;
-  remote_hash?: string;
-  last_imported_at?: number | null;
-  last_exported_at?: number | null;
-  metadata?: Record<string, unknown>;
-  source?: LedgerEventSource;
-}
-
-export interface RecordConflictInput extends LedgerActorInput {
-  id?: string;
-  adapter: string;
-  project_id?: string;
-  entity_type: string;
-  entity_id: string;
-  field: string;
-  local_value: unknown;
-  remote_value: unknown;
-  base_value?: unknown;
-  status?: LedgerConflictStatus;
-  resolution?: string | null;
-  source?: LedgerEventSource;
-}
-
-export interface ResolveConflictInput extends LedgerActorInput {
-  resolution: string;
-  status?: "resolved" | "dismissed";
-  source?: LedgerEventSource;
-}
-
-export interface MarkOutboxPatch {
-  attempt_count?: number;
-  last_attempt_at?: number | null;
-  error?: string | null;
-}
-
 export interface RecordLedgerEventInput extends LedgerActorInput {
   entity_type: string;
   entity_id: string;
@@ -224,18 +175,15 @@ export interface RecordLedgerEventInput extends LedgerActorInput {
   payload?: Record<string, unknown>;
   project_id: string;
   occurred_at?: number;
-  enqueueOutbox?: boolean;
 }
 
 export class LedgerStore {
   private readonly db: Db;
-  private readonly outboxAdapters: string[];
   private readonly broadcaster: LedgerBroadcaster;
 
   constructor(db: Db, options: LedgerStoreOptions = {}) {
     this.db = db;
     this.db.pragma("foreign_keys = ON");
-    this.outboxAdapters = options.outboxAdapters ?? [];
     this.broadcaster = options.broadcaster ?? broadcast;
   }
 
@@ -817,7 +765,6 @@ export class LedgerStore {
       payload: input.payload ?? {},
       project_id: input.project_id,
       occurred_at: now,
-      enqueueOutbox: input.enqueueOutbox,
     }))();
     emitted.push({ event, payload: input.payload ?? { entity_id: input.entity_id } });
     emitLedgerEvents(emitted, this.broadcaster);
@@ -1779,265 +1726,6 @@ export class LedgerStore {
     emitLedgerEvents(emitted, this.broadcaster);
   }
 
-  recordExternalRef(input: RecordExternalRefInput): LedgerExternalRef {
-    const emitted: LedgerSsePayload[] = [];
-    const now = Date.now();
-    const source = input.source ?? "import";
-    const id = input.id ?? createLedgerId("xref", { now });
-    const metadataJson = jsonStringify(input.metadata ?? {});
-    const projectId = input.project_id ?? "";
-    const actor = this.resolveActor(input);
-
-    const run = this.db.transaction(() => {
-      const existing = this.db.prepare(
-        `SELECT * FROM ledger_external_refs
-         WHERE adapter = ? AND project_id = ? AND external_kind = ? AND external_id = ?`,
-      ).get(
-        input.adapter,
-        projectId,
-        input.external_kind,
-        input.external_id,
-      ) as LedgerExternalRef | undefined;
-
-      if (existing) {
-        this.db.prepare(
-          `UPDATE ledger_external_refs
-           SET entity_type = ?, entity_id = ?, remote_version = ?, remote_hash = ?,
-               last_imported_at = ?, last_exported_at = ?, metadata_json = ?, updated_at = ?
-           WHERE id = ?`,
-        ).run(
-          input.entity_type,
-          input.entity_id,
-          input.remote_version ?? existing.remote_version,
-          input.remote_hash ?? existing.remote_hash,
-          input.last_imported_at ?? existing.last_imported_at,
-          input.last_exported_at ?? existing.last_exported_at,
-          metadataJson,
-          now,
-          existing.id,
-        );
-      } else {
-        this.db.prepare(
-          `INSERT INTO ledger_external_refs (
-            id, entity_type, entity_id, adapter, project_id, external_id,
-            external_kind, remote_version, remote_hash, last_imported_at,
-            last_exported_at, metadata_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          id,
-          input.entity_type,
-          input.entity_id,
-          input.adapter,
-          projectId,
-          input.external_id,
-          input.external_kind,
-          input.remote_version ?? "",
-          input.remote_hash ?? "",
-          input.last_imported_at ?? null,
-          input.last_exported_at ?? null,
-          metadataJson,
-          now,
-          now,
-        );
-      }
-
-      const ref = this.db.prepare(
-        `SELECT * FROM ledger_external_refs
-         WHERE adapter = ? AND project_id = ? AND external_kind = ? AND external_id = ?`,
-      ).get(
-        input.adapter,
-        projectId,
-        input.external_kind,
-        input.external_id,
-      ) as LedgerExternalRef;
-      const event = this.insertEvent({
-        entity_type: "external_ref",
-        entity_id: ref.id,
-        event_type: "external_ref.recorded",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        actor_user_id: actor.actor_user_id,
-        evidence_method: actor.evidence_method,
-        evidence_id: actor.evidence_id,
-        source,
-        payload: { external_ref_id: ref.id, entity_type: input.entity_type, entity_id: input.entity_id },
-        project_id: projectId,
-        occurred_at: now,
-        enqueueOutbox: false,
-      });
-      emitted.push({ event, payload: { external_ref_id: ref.id } });
-      return ref;
-    });
-
-    const ref = run();
-    emitLedgerEvents(emitted, this.broadcaster);
-    return ref;
-  }
-
-  recordConflict(input: RecordConflictInput): LedgerConflict {
-    const emitted: LedgerSsePayload[] = [];
-    const now = Date.now();
-    const source = input.source ?? "import";
-    const id = input.id ?? createLedgerId("cnf", { now });
-    const projectId = input.project_id ?? "";
-    const localValueJson = jsonStringify(input.local_value);
-    const remoteValueJson = jsonStringify(input.remote_value);
-    const baseValueJson = jsonStringify(input.base_value ?? null);
-    const status = input.status ?? "open";
-    const actor = this.resolveActor(input);
-
-    const run = this.db.transaction(() => {
-      const existing = this.db.prepare(
-        `SELECT * FROM ledger_conflicts
-         WHERE adapter = ? AND project_id = ? AND entity_type = ? AND entity_id = ?
-           AND field = ? AND status = ? AND local_value_json = ?
-           AND remote_value_json = ? AND base_value_json = ?
-         LIMIT 1`,
-      ).get(
-        input.adapter,
-        projectId,
-        input.entity_type,
-        input.entity_id,
-        input.field,
-        status,
-        localValueJson,
-        remoteValueJson,
-        baseValueJson,
-      ) as LedgerConflict | undefined;
-      if (existing) {
-        return existing;
-      }
-
-      this.db.prepare(
-        `INSERT INTO ledger_conflicts (
-          id, adapter, project_id, entity_type, entity_id, field,
-          local_value_json, remote_value_json, base_value_json, status,
-          resolution, created_at, resolved_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      ).run(
-        id,
-        input.adapter,
-        projectId,
-        input.entity_type,
-        input.entity_id,
-        input.field,
-        localValueJson,
-        remoteValueJson,
-        baseValueJson,
-        status,
-        input.resolution ?? null,
-        now,
-      );
-      const event = this.insertEvent({
-        entity_type: "conflict",
-        entity_id: id,
-        event_type: "conflict.created",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        actor_user_id: actor.actor_user_id,
-        evidence_method: actor.evidence_method,
-        evidence_id: actor.evidence_id,
-        source,
-        payload: { conflict_id: id, entity_type: input.entity_type, entity_id: input.entity_id },
-        project_id: projectId,
-        occurred_at: now,
-        enqueueOutbox: false,
-      });
-      emitted.push({ event, payload: { conflict_id: id } });
-      return this.getConflict(id);
-    });
-
-    const conflict = run();
-    emitLedgerEvents(emitted, this.broadcaster);
-    return conflict;
-  }
-
-  resolveConflict(id: string, input: ResolveConflictInput): LedgerConflict {
-    const existing = this.getConflict(id);
-    const emitted: LedgerSsePayload[] = [];
-    const now = Date.now();
-    const status = input.status ?? "resolved";
-    const source = input.source ?? "mandible";
-    const actor = this.resolveActor(input);
-
-    const run = this.db.transaction(() => {
-      this.db.prepare(
-        `UPDATE ledger_conflicts
-         SET status = ?, resolution = ?, resolved_at = ?
-         WHERE id = ?`,
-      ).run(status, input.resolution, now, id);
-      const event = this.insertEvent({
-        entity_type: "conflict",
-        entity_id: id,
-        event_type: "conflict.resolved",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        actor_user_id: actor.actor_user_id,
-        evidence_method: actor.evidence_method,
-        evidence_id: actor.evidence_id,
-        source,
-        payload: { conflict_id: id, status, resolution: input.resolution },
-        project_id: existing.project_id,
-        occurred_at: now,
-        enqueueOutbox: false,
-      });
-      emitted.push({ event, payload: { conflict_id: id, status, resolution: input.resolution } });
-      return this.getConflict(id);
-    });
-
-    const conflict = run();
-    emitLedgerEvents(emitted, this.broadcaster);
-    return conflict;
-  }
-
-  markOutbox(
-    id: string,
-    status: LedgerOutboxStatus,
-    patch: MarkOutboxPatch,
-    actorInput: LedgerActorInput,
-  ): LedgerOutbox {
-    const existing = this.requireOutbox(id);
-    const emitted: LedgerSsePayload[] = [];
-    const now = Date.now();
-    const actor = this.resolveActor(actorInput);
-
-    const run = this.db.transaction(() => {
-      this.db.prepare(
-        `UPDATE ledger_outbox
-         SET status = ?, attempt_count = ?, last_attempt_at = ?, error = ?, updated_at = ?
-         WHERE id = ?`,
-      ).run(
-        status,
-        patch.attempt_count ?? existing.attempt_count,
-        "last_attempt_at" in patch ? patch.last_attempt_at ?? null : existing.last_attempt_at,
-        "error" in patch ? patch.error ?? null : existing.error,
-        now,
-        id,
-      );
-      const event = this.insertEvent({
-        entity_type: "outbox",
-        entity_id: id,
-        event_type: "outbox.updated",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        actor_user_id: actor.actor_user_id,
-        evidence_method: actor.evidence_method,
-        evidence_id: actor.evidence_id,
-        source: "system",
-        payload: { outbox_id: id, status },
-        project_id: existing.project_id,
-        occurred_at: now,
-        enqueueOutbox: false,
-      });
-      emitted.push({ event, payload: { outbox_id: id, status } });
-      return this.requireOutbox(id);
-    });
-
-    const outbox = run();
-    emitLedgerEvents(emitted, this.broadcaster);
-    return outbox;
-  }
-
   resolveIssueRef(ref: string, options: { project_id?: string } = {}): ResolveIssueRefResult {
     const trimmed = ref.trim();
     if (!trimmed) {
@@ -2256,82 +1944,6 @@ export class LedgerStore {
     return row;
   }
 
-  listOutbox(filters: { adapter?: string; status?: LedgerOutboxStatus } = {}): LedgerOutbox[] {
-    if (filters.adapter && filters.status) {
-      return this.db.prepare(
-        `SELECT * FROM ledger_outbox
-         WHERE adapter = ? AND status = ?
-         ORDER BY available_at, created_at`,
-      ).all(filters.adapter, filters.status) as LedgerOutbox[];
-    }
-    if (filters.status) {
-      return this.db.prepare(
-        "SELECT * FROM ledger_outbox WHERE status = ? ORDER BY available_at, created_at",
-      ).all(filters.status) as LedgerOutbox[];
-    }
-    return this.db.prepare("SELECT * FROM ledger_outbox ORDER BY available_at, created_at").all() as LedgerOutbox[];
-  }
-
-  listConflicts(filters: { status?: LedgerConflictStatus; adapter?: string } = {}): LedgerConflict[] {
-    if (filters.status && filters.adapter) {
-      return this.db.prepare(
-        `SELECT * FROM ledger_conflicts
-         WHERE status = ? AND adapter = ?
-         ORDER BY created_at DESC`,
-      ).all(filters.status, filters.adapter) as LedgerConflict[];
-    }
-    if (filters.status) {
-      return this.db.prepare(
-        "SELECT * FROM ledger_conflicts WHERE status = ? ORDER BY created_at DESC",
-      ).all(filters.status) as LedgerConflict[];
-    }
-    return this.db.prepare("SELECT * FROM ledger_conflicts ORDER BY created_at DESC").all() as LedgerConflict[];
-  }
-
-  findExternalRef(input: {
-    adapter: string;
-    project_id?: string;
-    external_kind: string;
-    external_id: string;
-  }): LedgerExternalRef | null {
-    return (this.db.prepare(
-      `SELECT * FROM ledger_external_refs
-       WHERE adapter = ? AND project_id = ? AND external_kind = ? AND external_id = ?`,
-    ).get(
-      input.adapter,
-      input.project_id ?? "",
-      input.external_kind,
-      input.external_id,
-    ) as LedgerExternalRef | undefined) ?? null;
-  }
-
-  findExternalRefForEntity(input: {
-    adapter: string;
-    entity_type: string;
-    entity_id: string;
-    external_kind?: string;
-  }): LedgerExternalRef | null {
-    if (input.external_kind) {
-      return (this.db.prepare(
-        `SELECT * FROM ledger_external_refs
-         WHERE adapter = ? AND entity_type = ? AND entity_id = ? AND external_kind = ?
-         ORDER BY updated_at DESC
-         LIMIT 1`,
-      ).get(
-        input.adapter,
-        input.entity_type,
-        input.entity_id,
-        input.external_kind,
-      ) as LedgerExternalRef | undefined) ?? null;
-    }
-    return (this.db.prepare(
-      `SELECT * FROM ledger_external_refs
-       WHERE adapter = ? AND entity_type = ? AND entity_id = ?
-       ORDER BY updated_at DESC
-       LIMIT 1`,
-    ).get(input.adapter, input.entity_type, input.entity_id) as LedgerExternalRef | undefined) ?? null;
-  }
-
   private requireIssue(id: string): LedgerIssue {
     return this.getIssue(id);
   }
@@ -2494,22 +2106,6 @@ export class LedgerStore {
     return (this.db.prepare(
       "SELECT * FROM issue_branches WHERE issue_id = ? AND branch = ?",
     ).get(issueId, branch) as LedgerIssueBranch | undefined) ?? null;
-  }
-
-  private getConflict(id: string): LedgerConflict {
-    const row = this.db.prepare("SELECT * FROM ledger_conflicts WHERE id = ?").get(id) as LedgerConflict | undefined;
-    if (!row) {
-      throw new Error(`Ledger conflict not found: ${id}`);
-    }
-    return row;
-  }
-
-  private requireOutbox(id: string): LedgerOutbox {
-    const row = this.db.prepare("SELECT * FROM ledger_outbox WHERE id = ?").get(id) as LedgerOutbox | undefined;
-    if (!row) {
-      throw new Error(`Ledger outbox row not found: ${id}`);
-    }
-    return row;
   }
 
   private resolveProjectId(projectRef: string | undefined, fallbackProjectId: string): string | null {
@@ -2784,7 +2380,6 @@ export class LedgerStore {
     payload: Record<string, unknown>;
     project_id: string;
     occurred_at: number;
-    enqueueOutbox?: boolean;
   }): LedgerEvent {
     const observedAt = Date.now();
     const occurrence = createCreationNonce();
@@ -2823,24 +2418,6 @@ export class LedgerStore {
       observedAt,
     );
 
-    if (input.enqueueOutbox ?? shouldEnqueueOutbox(input.source)) {
-      for (const adapter of this.outboxAdapters) {
-        this.db.prepare(
-          `INSERT OR IGNORE INTO ledger_outbox (
-            id, event_id, adapter, project_id, status, attempt_count,
-            available_at, last_attempt_at, error, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, ?, ?)`,
-        ).run(
-          createLedgerId("out", { now: input.occurred_at }),
-          id,
-          adapter,
-          input.project_id,
-          input.occurred_at,
-          input.occurred_at,
-          input.occurred_at,
-        );
-      }
-    }
 
     return this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id) as LedgerEvent;
   }
@@ -2879,10 +2456,6 @@ interface ResolvedActor extends LedgerActorInput {
   actor_user_id: string | null;
   evidence_method: string | null;
   evidence_id: string | null;
-}
-
-function shouldEnqueueOutbox(source: LedgerEventSource): boolean {
-  return source === "mandible" || source === "auth_queue" || source === "session" || source === "work_unit";
 }
 
 function relationshipSourceKey(targetIssueId: string, refKind: string, normalizedRef: string): string {

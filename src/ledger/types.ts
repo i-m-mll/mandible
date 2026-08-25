@@ -58,19 +58,6 @@ export const LEDGER_EVENT_SOURCES = [
 ] as const;
 export type LedgerEventSource = (typeof LEDGER_EVENT_SOURCES)[number];
 
-export const LEDGER_OUTBOX_STATUSES = [
-  "pending",
-  "processing",
-  "applied",
-  "failed",
-  "conflicted",
-  "skipped",
-] as const;
-export type LedgerOutboxStatus = (typeof LEDGER_OUTBOX_STATUSES)[number];
-
-export const LEDGER_CONFLICT_STATUSES = ["open", "resolved", "dismissed"] as const;
-export type LedgerConflictStatus = (typeof LEDGER_CONFLICT_STATUSES)[number];
-
 export const LEDGER_RELATIONSHIP_TYPES = [
   "parent_child",
   "blocks",
@@ -346,53 +333,6 @@ export interface LedgerEvent {
   payload_json: string;
   occurred_at: number;
   observed_at: number;
-}
-
-export interface LedgerOutbox {
-  id: string;
-  event_id: string;
-  adapter: string;
-  project_id: string;
-  status: LedgerOutboxStatus;
-  attempt_count: number;
-  available_at: number;
-  last_attempt_at: number | null;
-  error: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface LedgerExternalRef {
-  id: string;
-  entity_type: string;
-  entity_id: string;
-  adapter: string;
-  project_id: string;
-  external_id: string;
-  external_kind: string;
-  remote_version: string;
-  remote_hash: string;
-  last_imported_at: number | null;
-  last_exported_at: number | null;
-  metadata_json: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface LedgerConflict {
-  id: string;
-  adapter: string;
-  project_id: string;
-  entity_type: string;
-  entity_id: string;
-  field: string;
-  local_value_json: string;
-  remote_value_json: string;
-  base_value_json: string;
-  status: LedgerConflictStatus;
-  resolution: string | null;
-  created_at: number;
-  resolved_at: number | null;
 }
 
 export interface LedgerIssueDetail extends LedgerIssue {

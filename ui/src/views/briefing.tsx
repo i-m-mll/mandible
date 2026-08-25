@@ -4,6 +4,7 @@ import {
   getBriefingSidebarSnapshot,
   getCachedBriefingSidebarSnapshot,
   isApiErrorStatus,
+  type BriefingBundle,
   type BriefingGroup,
   type BriefingSidebarSnapshot,
   type InstanceInfo,

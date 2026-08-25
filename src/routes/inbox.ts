@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, resolvePrefix } from "../db.js";
-import type { IssueScanner } from "../issue-scanner.js";
 import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
@@ -12,7 +11,6 @@ import { getIntSetting } from "./settings.js";
 import {
   mapWorkUnitRow,
   computeLiveness,
-  type WorkUnitLiveness,
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
@@ -323,7 +321,6 @@ export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
 export function registerInboxRoutes(
   server: InboxRouteServer,
   sessionRegistry: SessionRegistry,
-  _issueScanner: IssueScanner,
   sessionManager?: SessionManager,
   // Bug: 4e32923 — authQueue is required for the new /api/inbox/delivered
   // endpoint that marks auth_requests as delivered to the owner session.

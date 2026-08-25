@@ -706,7 +706,7 @@ function resolveAuthRequester(
 
 // Bug: dd21c1e — valid auth request types for input validation
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete"
 ];
 
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {

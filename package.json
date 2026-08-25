@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
-    "build": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json && node ui/esbuild.config.js",
+    "build": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json && node scripts/run-tsc.js -p ui/tsconfig.json && node ui/esbuild.config.js",
+    "typecheck": "node scripts/run-tsc.js --noEmit && node scripts/run-tsc.js -p channel-server/tsconfig.json --noEmit && node scripts/run-tsc.js -p ui/tsconfig.json",
     "build:server": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json",
     "build:channel-server": "node scripts/run-tsc.js -p channel-server/tsconfig.json",
     "channel-server": "node dist/channel-server/index.js",
@@ -24,6 +25,7 @@
     "start": "node dist/index.js",
     "postinstall": "node scripts/fix-pty-permissions.js",
     "test": "node scripts/run-vitest.js run",
+    "test:browser": "node scripts/run-vitest.js run --config vitest.browser.config.ts",
     "test:coverage": "node scripts/run-vitest.js run --coverage",
     "tauri": "tauri dev",
     "tauri:build": "tauri build"
@@ -39,20 +41,17 @@
     "remark-parse": "^11.0.0",
     "smol-toml": "^1.6.1",
     "unified": "^11.0.5",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@atlaskit/pragmatic-drag-and-drop": "^1.7.9",
-    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/state": "^6.7.0",
     "@codemirror/view": "^6.43.4",
-    "@tauri-apps/api": "~2.10.1",
     "@tauri-apps/cli": "~2.10.0",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@testing-library/preact": "^3.2.3",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/d3": "^7.4.3",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
@@ -60,7 +59,6 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "@xyflow/react": "^12.10.2",
-    "d3": "^7.9.0",
     "diff2html": "^3.4.56",
     "dompurify": "^3.4.9",
     "esbuild": "^0.28.0",

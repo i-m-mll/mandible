@@ -366,7 +366,6 @@ export function applyAuthRequestLedgerCompletion(
       attribution: actor.attribution,
       source: "auth_queue",
       project_id: issue.project_id,
-      enqueueOutbox: false,
       payload: {
         auth_request_id: input.auth_request_id,
         issue_id: issueId,
@@ -864,7 +863,6 @@ function maybeRecordLinkEvent(
     actor_type: actor?.actor_type ?? "system",
     actor_id: actor?.actor_id ?? null,
     attribution: actor?.attribution ?? systemAction(),
-    enqueueOutbox: false,
   });
 }
 

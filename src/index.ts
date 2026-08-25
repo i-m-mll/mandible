@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
@@ -40,7 +39,6 @@ import {
 } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
-import { registerChatRoutes } from "./routes/chats.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
@@ -58,7 +56,6 @@ import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
-import { registerPresetRoutes } from "./routes/presets.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
@@ -87,7 +84,6 @@ import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
-import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestionGracefully } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
@@ -102,7 +98,6 @@ import {
 } from "./restart-availability.js";
 
 const DEFAULT_PORT = 19420;
-const DOTFILES_ROOT = resolveDotfilesRoot();
 const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
@@ -258,7 +253,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     restartAvailability: restartAvailability ?? undefined,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
-  registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     on_event: (event) => {
       broadcast(event);
@@ -271,7 +265,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
-  const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
+  registerIssueRoutes(router, workScanner, issueDeps);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   registerUserSettingsRoutes(router, db);
@@ -280,9 +274,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
   const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
-  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner, clientAuth);
+  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, workScanner, clientAuth);
 
-  registerGraphRoutes(router, issueScanner);
+  registerGraphRoutes(router);
   registerProviderRoutes(router);
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
@@ -297,16 +291,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
-  registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
+  registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
   registerHookRoutes(router);
-  // Bug: 61bee4e — preset routes for convention management
-  registerPresetRoutes(router, sessionManager);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
-  registerWebhookRoutes(router, sessionRegistry, sessionManager);
+  registerWebhookRoutes(router, sessionManager);
   // Bug: cc4688b — Zone 2 mutable runtime routes
   registerRuntimeRoutes(router);
   registerTimelineRoutes(router);
@@ -348,11 +340,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   } catch (error) {
     logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
   }
-
-  // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
-  router.get("/api/reaper/status", (_req, res) => {
-    res.json(reaperTimer.getStatus());
-  }, { fileRpc: "deny" });
 
   const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
   if (operationalMutationsAllowed) {
@@ -569,38 +556,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     logger("warn", "signing_credential_audit_failed", { error: String(error) });
   }
 
-  // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup.
-  // Bug: 52b75c0 — Re-import if content has changed (hash comparison), not just if missing.
-  if (operationalMutationsAllowed) {
-    try {
-      const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
-      if (fs.existsSync(globalClaudeMd)) {
-        const content = fs.readFileSync(globalClaudeMd, "utf8");
-        const currentHash = computeContentHash(content);
-        const existingPreset = db.prepare(
-          "SELECT id, content_hash FROM presets WHERE source_path = ? LIMIT 1"
-        ).get(globalClaudeMd) as { id: string; content_hash: string } | undefined;
-
-        if (existingPreset) {
-          if (existingPreset.content_hash !== currentHash) {
-            // Content changed — delete old nodes and preset, then re-import
-            db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(existingPreset.id);
-            db.prepare("DELETE FROM presets WHERE id = ?").run(existingPreset.id);
-            importClaudeMd(globalClaudeMd, db);
-            logger("info", "startup_preset_reimport", { path: globalClaudeMd, reason: "content_changed" });
-          }
-          // else: hashes match, skip (no change)
-        } else {
-          // No preset exists for this path — import fresh
-          importClaudeMd(globalClaudeMd, db);
-          logger("info", "startup_preset_import", { path: globalClaudeMd });
-        }
-      }
-    } catch (error) {
-      logger("warn", "startup_preset_import_failed", { error: String(error) });
-    }
-  }
-
   // Start periodic reaper (marks dead sessions whose PIDs vanished)
   if (operationalMutationsAllowed) {
     reaperTimer.start();
@@ -743,15 +698,6 @@ function resolveVersion(): string {
   } catch {
     return "0.0.0";
   }
-}
-
-function resolveDotfilesRoot(): string {
-  const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidate = path.resolve(currentDir, "../../..");
-  if (fs.existsSync(path.join(candidate, ".git"))) {
-    return candidate;
-  }
-  return path.resolve(currentDir, "../../../..");
 }
 
 function resolveMandibleRoot(): string {

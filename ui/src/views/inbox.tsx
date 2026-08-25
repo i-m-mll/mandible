@@ -24,10 +24,6 @@ const INBOX_TONES = {
     fg: appColors.inboxIssue,
     bg: appColors.inboxIssueBg,
   },
-  presetDiff: {
-    fg: appColors.inboxPresetDiff,
-    bg: appColors.inboxPresetDiffBg,
-  },
   authCompleted: {
     fg: appColors.authResultCompleted,
     bg: appColors.authResultCompletedBg,
@@ -77,16 +73,6 @@ export interface InboxIssue {
   labels: string[];
   repo_id?: string;
   repo_name?: string;
-}
-
-// Bug: 11f4f47 — Preset diff proposals delivered via inbox
-export interface InboxPresetDiff {
-  id: string;
-  preset_id: string;
-  preset_name: string;
-  description: string;
-  status: 'pending' | 'accepted' | 'rejected';
-  created_at: number;
 }
 
 // Issue 71a287e — pending webhook events. Credential-leak alerts ride this
@@ -141,8 +127,6 @@ export interface InboxData {
   // Bug: 8a281b3 — work units needing attention and work-unit continuations
   work_units?: import('../api').WorkUnitWithLiveness[];
   work_unit_continuations?: import('../api').WorkUnitWithLiveness[];
-  // Bug: 11f4f47 — preset diff proposals
-  preset_diffs?: InboxPresetDiff[];
   // Issue 71a287e — pending webhook events (credential-leak alerts and others)
   pending_webhooks?: InboxWebhookEvent[];
   managed_reminder_occurrences?: InboxManagedReminderOccurrence[];
@@ -167,7 +151,7 @@ export interface InboxViewProps {
 
 // Bug: cbbb3d9 — added 'work_unit_continuation' type for work-unit handoff notes
 // Issue 71a287e — added 'credential_leak' for leaked-credential alerts
-type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation' | 'preset_diff' | 'credential_leak' | 'managed_reminder_occurrence';
+type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation' | 'credential_leak' | 'managed_reminder_occurrence';
 
 interface UnifiedItem {
   id: string;
@@ -176,7 +160,7 @@ interface UnifiedItem {
   repo: string | null;
   branch: string | null;
   time: number | null;
-  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness | InboxPresetDiff | InboxWebhookEvent | InboxManagedReminderOccurrence;
+  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness | InboxWebhookEvent | InboxManagedReminderOccurrence;
 }
 
 // ── Helpers ──
@@ -185,7 +169,6 @@ function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'continuation') return INBOX_TONES.continuation.fg;
   if (item.type === 'work_unit_continuation') return INBOX_TONES.handoff.fg;
   if (item.type === 'issue') return INBOX_TONES.issue.fg;
-  if (item.type === 'preset_diff') return INBOX_TONES.presetDiff.fg;
   if (item.type === 'credential_leak') return INBOX_TONES.credentialLeak.fg;
   if (item.type === 'managed_reminder_occurrence') return INBOX_TONES.reminder.fg;
   const ar = item.raw as InboxAuthResult;
@@ -199,7 +182,6 @@ function itemTypeBadge(item: UnifiedItem): string {
   if (item.type === 'continuation') return 'Continuation';
   if (item.type === 'work_unit_continuation') return 'Handoff';
   if (item.type === 'issue') return 'Issue';
-  if (item.type === 'preset_diff') return 'Preset Diff';
   if (item.type === 'credential_leak') return 'Credential Leak';
   if (item.type === 'managed_reminder_occurrence') return 'Reminder';
   const ar = item.raw as InboxAuthResult;
@@ -216,12 +198,6 @@ function authResultTone(status: string): { fg: string; bg: string } {
     return INBOX_TONES.authProblem;
   }
   return INBOX_TONES.authNeutral;
-}
-
-function presetDiffTone(status: string): { fg: string; bg: string } {
-  if (status === 'accepted') return INBOX_TONES.authCompleted;
-  if (status === 'rejected') return INBOX_TONES.authProblem;
-  return INBOX_TONES.presetDiff;
 }
 
 function buildUnifiedItems(data: InboxData): UnifiedItem[] {
@@ -277,19 +253,6 @@ function buildUnifiedItems(data: InboxData): UnifiedItem[] {
       branch: wu.branch ?? null,
       time: wu.continuation_at,
       raw: wu,
-    });
-  }
-
-  // Bug: 11f4f47 — include preset diff proposals in unified list
-  for (const pd of (data.preset_diffs ?? [])) {
-    items.push({
-      id: `preset_diff:${pd.id}`,
-      type: 'preset_diff',
-      title: `${pd.preset_name}: ${pd.description || 'Proposed change'}`,
-      repo: null,
-      branch: null,
-      time: pd.created_at,
-      raw: pd,
     });
   }
 
@@ -873,54 +836,6 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
   );
 }
 
-// Bug: 11f4f47 — Preset diff detail panel
-function PresetDiffDetail({ item }: { item: InboxPresetDiff }): JSX.Element {
-  const statusTone = presetDiffTone(item.status);
-  return (
-    <div className="inbox-detail__content">
-      <div className="inbox-detail__header">
-        <span
-          className="inbox-detail__type-badge"
-          style={{ color: statusTone.fg, background: statusTone.bg }}
-        >
-          Preset Diff
-        </span>
-        <h2 className="inbox-detail__title">{item.preset_name}</h2>
-      </div>
-      <div className="inbox-detail__meta">
-        <div className="inbox-detail__meta-row">
-          <span className="inbox-detail__meta-label">Status</span>
-          <span className="inbox-detail__meta-value" style={{ color: statusTone.fg }}>
-            {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
-          </span>
-        </div>
-        {item.description && (
-          <div className="inbox-detail__meta-row">
-            <span className="inbox-detail__meta-label">Description</span>
-            <span className="inbox-detail__meta-value">{item.description}</span>
-          </div>
-        )}
-        {item.created_at && (
-          <div className="inbox-detail__meta-row">
-            <span className="inbox-detail__meta-label">Created</span>
-            <span className="inbox-detail__meta-value">
-              {formatRelativeTime(item.created_at)}
-            </span>
-          </div>
-        )}
-      </div>
-      <div className="inbox-detail__actions">
-        <a
-          href="#/artifacts?role=instructions"
-          className="btn btn--ghost"
-        >
-          View instructions &rarr;
-        </a>
-      </div>
-    </div>
-  );
-}
-
 function ManagedReminderOccurrenceDetail({
   item,
   onAck,
@@ -1202,8 +1117,6 @@ export function InboxView({
           <WorkUnitContinuationDetail
             item={selectedItem.raw as import('../api').WorkUnitWithLiveness}
           />
-        ) : selectedItem.type === 'preset_diff' ? (
-          <PresetDiffDetail item={selectedItem.raw as InboxPresetDiff} />
         ) : selectedItem.type === 'credential_leak' ? (
           <CredentialLeakDetail item={selectedItem.raw as InboxWebhookEvent} />
         ) : selectedItem.type === 'managed_reminder_occurrence' ? (

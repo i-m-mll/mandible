@@ -10,7 +10,6 @@ import { SseManager } from "../src/sse.js";
 import { registerClientAuthRoutes } from "../src/routes/client-auth.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { registerSettingsRoutes } from "../src/routes/settings.js";
-import { registerPresetRoutes } from "../src/routes/presets.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import {
   authorizeManagedSessionWebSocket,
@@ -52,10 +51,6 @@ beforeEach(async () => {
   registerClientAuthRoutes(router, authenticator);
   registerUserRoutes(router, authenticator);
   registerSettingsRoutes(router);
-  registerPresetRoutes(router, {
-    isCredentialBearing: (id: string) => id === "operator-session" || id === "agent-session",
-  });
-
   sse = new SseManager();
   server = createServer({
     db,
@@ -475,65 +470,6 @@ describe("client-auth: settings surface is protected (finding 4)", () => {
     }
     expect(all.body).not.toHaveProperty("console_operator_session_id");
     expect(all.body).not.toHaveProperty("console_pinned_sessions");
-  });
-});
-
-describe("client-auth: operator instruction routes", () => {
-  it("protects every session-targeted preset surface for the canonical operator", async () => {
-    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
-    const agent = createUser(db, {
-      slug: "agent-presets",
-      kind: "agent",
-      display_name: "Agent Presets",
-    });
-    const operatorBearer = authenticator.mintApiToken(operator.id).token;
-    const agentBearer = authenticator.mintApiToken(agent.id).token;
-    const sessionId = "operator-session";
-    db.prepare(
-      "UPDATE settings SET value = ? WHERE key = 'console_operator_session_id'",
-    ).run(sessionId);
-
-    const attempts: Array<[string, string, unknown]> = [
-      ["GET", `/api/presets/union?session_id=${sessionId}`, undefined],
-      ["GET", `/api/presets/diffs?session_id=${sessionId}`, undefined],
-      ["POST", "/api/presets/diffs", { session_id: sessionId, diff_type: "add" }],
-      ["POST", "/api/presets/violations", { sessionId, context: {} }],
-      ["GET", `/api/presets/validate-session?session_id=${sessionId}`, undefined],
-      ["GET", `/api/console/sessions/${sessionId}/presets`, undefined],
-      ["POST", `/api/console/sessions/${sessionId}/presets`, { presetIds: ["guessed"] }],
-      ["DELETE", `/api/console/sessions/${sessionId}/presets/guessed`, undefined],
-    ];
-    for (const [method, path, body] of attempts) {
-      const denied = await requestJson(method, path, body, bearer(agentBearer));
-      expect(denied.status, `${method} ${path}`).toBe(403);
-      expect(denied.body).toMatchObject({ code: "operator_required" });
-    }
-
-    const appBoundAttempts = attempts.map(([method, path, body]) => [
-      method,
-      path.replaceAll(sessionId, "agent-session"),
-      body && typeof body === "object"
-        ? JSON.parse(JSON.stringify(body).replaceAll(sessionId, "agent-session"))
-        : body,
-    ] as [string, string, unknown]);
-    for (const [method, path, body] of appBoundAttempts) {
-      const denied = await requestJson(method, path, body, bearer(agentBearer));
-      expect(denied.status, `${method} ${path}`).toBe(403);
-      expect(denied.body).toMatchObject({ code: "operator_required" });
-    }
-
-    const anonymous = await requestJson(
-      "GET",
-      `/api/presets/union?session_id=${sessionId}`,
-    );
-    expect(anonymous.status).toBe(401);
-    const allowed = await requestJson(
-      "GET",
-      `/api/presets/union?session_id=${sessionId}`,
-      undefined,
-      bearer(operatorBearer),
-    );
-    expect(allowed.status).toBe(200);
   });
 });
 

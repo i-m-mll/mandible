@@ -14,7 +14,6 @@ import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailArtifactLink,
   LedgerIssueDetailAuthRequest,
-  LedgerIssueDetailConflict,
   LedgerIssueDetailProjection,
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
@@ -64,7 +63,6 @@ export type LedgerIssueDetailProps = {
   onStartAgent?: () => Promise<void> | void;
   onOpenEntity?: (type: EntityType, id: string, repoId?: string) => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
-  onResolveConflict?: (conflictId: string, resolution: string, status?: 'resolved' | 'dismissed') => Promise<void> | void;
   // Add-to-Space affordance (umbrella de56ffa, child 08c312a). When provided,
   // the issue-actions menu surfaces an "Add to Space" item even on otherwise
   // read-only panes — hence it is part of the `hasIssueActions` gate below, not
@@ -85,7 +83,6 @@ export function LedgerIssueDetail({
   onStartAgent,
   onOpenEntity,
   onShowChildren,
-  onResolveConflict,
   onAddToSpace,
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
@@ -132,16 +129,8 @@ export function LedgerIssueDetail({
     onSetStatus ||
     onStartAgent ||
     onShowChildren ||
-    onResolveConflict ||
     onAddToSpace,
   );
-  const syncTone = detail.sync.state === 'clean'
-    ? 'clean'
-    : detail.sync.state === 'pending'
-      ? 'pending'
-      : detail.sync.state === 'conflicted'
-        ? 'conflicted'
-        : 'failed';
   const projectRef = issueProjectRef(detail);
 
   const submitComment = async () => {
@@ -216,9 +205,6 @@ export function LedgerIssueDetail({
                 linkedAuth={resolvingAuth}
                 onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
               />
-              {detail.sync.state !== 'clean' && (
-                <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
-              )}
             </>
           )}
           actions={hasIssueActions ? (
@@ -332,12 +318,6 @@ export function LedgerIssueDetail({
           </section>
         )}
 
-        {(detail.sync.state !== 'clean' || detail.conflicts.length > 0) && (
-          <section className="ledger-issue-detail__section">
-            <SectionTitle title="Sync" count={detail.conflicts.length || undefined} />
-            <SyncStatus detail={detail} onResolveConflict={onResolveConflict} busy={busy} />
-          </section>
-        )}
     </DetailPaneShell>
   );
 }
@@ -372,7 +352,7 @@ function AssociatedArtifactList({
             href={artifactLinkHref(artifact, link, authoredRef)}
             title={artifact.uri}
           >
-            <span>{artifactSourceLabel(artifact, link, authoredRef)}</span>
+            <span>{artifactSourceLabel(link, authoredRef)}</span>
             <strong>{artifactTitle(artifact)}</strong>
             <span className="ledger-evidence-row__meta">
               {link && <ArtifactLinkBadge link={link} />}
@@ -425,7 +405,6 @@ function logicalArtifactRefFromSeriesId(ref: string): string {
 }
 
 function artifactSourceLabel(
-  artifact: LedgerIssueDetailAssociatedArtifact,
   link: LedgerIssueDetailArtifactLink | null,
   authoredRef: string | null,
 ): string {
@@ -1140,53 +1119,6 @@ function SessionRow({
   );
 }
 
-function SyncStatus({
-  detail,
-  onResolveConflict,
-  busy,
-}: {
-  detail: LedgerIssueDetailProjection;
-  onResolveConflict?: LedgerIssueDetailProps['onResolveConflict'];
-  busy: boolean;
-}): JSX.Element {
-  const outboxEntries = Object.entries(detail.sync.outbox).filter(([, count]) => count > 0);
-  return (
-    <div className="ledger-sync-panel">
-      <div className={`ledger-sync-panel__summary ledger-sync-panel__summary--${detail.sync.state}`}>
-        <span>{syncLabel(detail.sync.state)}</span>
-        {outboxEntries.length > 0 && (
-          <code>{outboxEntries.map(([status, count]) => `${status} ${count}`).join(' · ')}</code>
-        )}
-      </div>
-      {detail.conflicts.map((conflict) => (
-        <div key={conflict.id} className="ledger-conflict-card">
-          <div className="ledger-conflict-card__header">
-            <strong>{conflict.field}</strong>
-            <span>{conflict.adapter}</span>
-          </div>
-          <div className="ledger-conflict-card__values">
-            <code>{safeJson(conflict.local_value)}</code>
-            <code>{safeJson(conflict.remote_value)}</code>
-          </div>
-          {onResolveConflict && (
-            <div className="ledger-conflict-card__actions">
-              <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={() => void onResolveConflict(conflict.id, 'keep_mandible', 'resolved')}>
-                Keep Mandible
-              </button>
-              <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={() => void onResolveConflict(conflict.id, 'dismissed', 'dismissed')}>
-                Dismiss
-              </button>
-              <button type="button" className="btn btn--ghost btn--sm" disabled title="Manual merge is not wired yet">
-                Manual Merge
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function SectionTitle({ title, count }: { title: string; count?: number }): JSX.Element {
   return (
     <h3 className="ledger-section-title">
@@ -1214,7 +1146,6 @@ function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, 
     .map((alias) => alias.alias || alias.external_id)
     .filter((alias) => alias && alias !== detail.id && alias !== detail.display_id);
   if (alternateAliases.length > 0) rows.push(['Alternate refs', alternateAliases.join(', ')]);
-  if (detail.sync.state !== 'clean') rows.push(['Sync', syncLabel(detail.sync.state)]);
   return rows.filter(([, value]) => Boolean(value));
 }
 
@@ -1230,7 +1161,7 @@ function issueMetadataSections(detail: LedgerIssueDetailProjection): IssueMetada
     .filter((row): row is IssueMetadataRow => Boolean(row));
   const sections: IssueMetadataSection[] = [
     { title: 'Identity', rows: pullRows(['Reference', 'Canonical ID', 'Alternate refs', 'Project']) },
-    { title: 'Status', rows: pullRows(['Kind', 'Priority', 'Sync']) },
+    { title: 'Status', rows: pullRows(['Kind', 'Priority']) },
     { title: 'Provenance', rows: pullRows(['Source', 'Created', 'Updated', 'Closed']) },
   ];
   return sections.filter((section) => section.rows.length > 0);
@@ -1242,13 +1173,14 @@ function copyValueForIssueMetadata(key: string, value: string): string {
 }
 
 function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body' }>): Array<[string, string]> {
-  return [
+  const rows: Array<[string, string]> = [
     ['Entry', '#0'],
     ['Author type', entry.author.type.replace(/_/g, ' ')],
     ['Source', entry.source || 'unknown'],
     ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
     ['Updated', formatAbsoluteTime(entry.updated_at, LEDGER_TIME_OPTIONS)],
-  ].filter(([, value]) => Boolean(value));
+  ];
+  return rows.filter(([, value]) => Boolean(value));
 }
 
 function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 'comment' }>): Array<[string, string]> {
@@ -1267,12 +1199,13 @@ function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 
 }
 
 function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): Array<[string, string]> {
-  return [
+  const rows: Array<[string, string]> = [
     ['Event ID', entry.id],
     ['Event type', entry.event_type],
     ['Source', entry.source || 'unknown'],
     ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
-  ].filter(([, value]) => Boolean(value));
+  ];
+  return rows.filter(([, value]) => Boolean(value));
 }
 
 function eventMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): Array<[string, string]> {
@@ -1338,23 +1271,6 @@ function authEvidenceLinkLabel(auth: LedgerIssueDetailAuthRequest): string {
   if (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') return 'resolved by';
   if (auth.link_type === 'references') return 'referenced by';
   return `${auth.link_type.replace(/_/g, ' ')} by`;
-}
-
-function syncLabel(state: string): string {
-  if (state === 'clean') return 'synced';
-  if (state === 'pending') return 'pending sync';
-  if (state === 'conflicted') return 'conflict';
-  return 'sync failed';
-}
-
-function safeJson(value: unknown): string {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
 }
 
 function MetadataIcon(): JSX.Element {

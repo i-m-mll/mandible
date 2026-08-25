@@ -140,7 +140,11 @@ export function computeReachability() {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) walk(absolute);
-      else allFiles.push(absolute);
+      // Ambient declaration files are not modules: they emit no runtime bytes
+      // and no stylesheet, so they cannot be the dead weight this walker looks
+      // for. Their consumer is `ui/tsconfig.json`'s project include, which
+      // `npm run typecheck` enforces.
+      else if (!entry.name.endsWith('.d.ts')) allFiles.push(absolute);
     }
   })(UI_SRC);
 

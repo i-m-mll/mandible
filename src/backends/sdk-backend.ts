@@ -33,7 +33,6 @@ import type {
   PermissionRequest,
   UsageAwareBackend,
   ToolPolicyBackend,
-  PresetAwareBackend,
 } from "../agentic-backend.js";
 import type {
   ConsoleContentBlock,
@@ -47,7 +46,6 @@ import {
   DEFAULT_SDK_PERMISSION_MODE,
   describeAnthropicBilling,
 } from "../claude-lane-policy.js";
-import { computePresetUnion } from "../presets.js";
 import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
 import {
   composeRunOptions,
@@ -89,9 +87,7 @@ export interface SDKBackendOptions {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
-  /** Bug: 61bee4e — Preset IDs to compute union system prompt from */
-  presetIds?: string[];
-  /** Bug: 61bee4e — Override settingSources based on active preset sources */
+  /** Bug: 61bee4e — Explicit settingSources override for this session */
   settingSourcesOverride?: string[];
 }
 
@@ -169,7 +165,6 @@ implements
   PermissionAwareBackend,
   ConfigurableBackend,
   ToolPolicyBackend,
-  PresetAwareBackend,
   UsageAwareBackend<UsageRow> {
   readonly id: string;
   meta: ConsoleSession;
@@ -448,22 +443,6 @@ implements
     this.emitMetaUpdate({ allowed_tools: [...tools], updated_at: this.meta.updated_at });
   }
 
-  setPresetIds(ids: readonly string[]): void {
-    this.options.presetIds = [...ids];
-    const presetNames: string[] = [];
-    try {
-      const db = getDb();
-      for (const pid of ids) {
-        const row = db.prepare("SELECT name FROM presets WHERE id = ?").get(pid) as { name: string } | undefined;
-        if (row) presetNames.push(row.name);
-      }
-    } catch { /* DB not available */ }
-    this.storeAndBroadcast({
-      type: "system", subtype: "preset_changed", session_id: this.meta.provider_session_id ?? this.id,
-      data: { presetIds: [...ids], presetNames },
-    } as unknown as ConsoleStreamEvent);
-  }
-
   getPendingPermissions(): PermissionRequest[] {
     return Array.from(this.pendingPermissions.values())
       .map((entry) => entry.request)
@@ -706,19 +685,7 @@ implements
       }
     }
 
-    // Bug: 61bee4e — Compute system prompt from presets if presetIds are set
     let systemPrompt = this.options.systemPrompt;
-    if (this.options.presetIds && this.options.presetIds.length > 0 && !systemPrompt) {
-      try {
-        const db = getDb();
-        const result = computePresetUnion(this.options.presetIds, db);
-        if (result.text) {
-          systemPrompt = result.text;
-        }
-      } catch {
-        // Presets module or DB not available — fall through to default
-      }
-    }
     try {
       systemPrompt = withMandibleInstructionsFragment(systemPrompt);
     } catch (error) {
@@ -729,11 +696,7 @@ implements
     }
 
     // Bug: 61bee4e — settingSources controls more than just CLAUDE.md loading in the SDK.
-    // Removing a source (e.g., "user") would prevent ALL user-level settings from loading,
-    // not just CLAUDE.md. Instead, we let the SDK load settings normally from all sources
-    // and rely on the preset systemPrompt being additive — the union text is prepended to
-    // whatever CLAUDE.md content the SDK loads on its own. If duplication becomes a problem,
-    // content-hash dedup in the union engine can handle it later.
+    // Removing a source (e.g., "user") would prevent ALL user-level settings from loading.
     // If settingSourcesOverride is explicitly provided, honour it (the caller knows what
     // they're doing). Otherwise, always use the full set.
     type SettingSource = "user" | "project" | "local";
@@ -1384,12 +1347,11 @@ implements
       const permissionMode = this.options.permissionMode ?? DEFAULT_SDK_PERMISSION_MODE;
       const maxTurns = this.options.maxTurns ?? null;
       const maxCostUsd = this.options.maxCostUsd ?? null;
-      const presetIds = this.options.presetIds ?? [];
       const allowedTools = [...this.autoAllowedTools];
 
       // Check if params differ from the last snapshot
       const lastRow = db.prepare(
-        `SELECT model, thinking_effort, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools
+        `SELECT model, thinking_effort, permission_mode, max_turns, max_cost_usd, allowed_tools
          FROM message_params
          WHERE session_id = ?
          ORDER BY message_index DESC
@@ -1400,11 +1362,9 @@ implements
         permission_mode: string | null;
         max_turns: number | null;
         max_cost_usd: number | null;
-        preset_ids: string | null;
         allowed_tools: string | null;
       } | undefined;
 
-      const presetIdsJson = JSON.stringify(presetIds);
       const allowedToolsJson = JSON.stringify(allowedTools);
 
       if (lastRow) {
@@ -1414,15 +1374,14 @@ implements
           lastRow.permission_mode === permissionMode &&
           lastRow.max_turns === maxTurns &&
           lastRow.max_cost_usd === maxCostUsd &&
-          lastRow.preset_ids === presetIdsJson &&
           lastRow.allowed_tools === allowedToolsJson;
         if (same) return; // Inherit from previous — no new row needed
       }
 
       db.prepare(
         `INSERT OR REPLACE INTO message_params
-         (session_id, message_index, model, thinking_effort, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (session_id, message_index, model, thinking_effort, permission_mode, max_turns, max_cost_usd, allowed_tools, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         this.id,
         this.messageIndex,
@@ -1431,7 +1390,6 @@ implements
         permissionMode,
         maxTurns,
         maxCostUsd,
-        presetIdsJson,
         allowedToolsJson,
         Math.floor(Date.now() / 1000),
       );

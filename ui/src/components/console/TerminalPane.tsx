@@ -15,10 +15,9 @@ import { TerminalDebugOverlay } from './TerminalDebugOverlay';
 import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 import {
   cancelConsolePrompt,
-  getPresetUnion,
   sendConsolePrompt,
 } from '../../api';
-import type { ConsolePermissionDecision, PresetUnion } from '../../api';
+import type { ConsolePermissionDecision } from '../../api';
 import type { ComposerUsage, QueuedPrompt } from './Composer';
 
 export type ViewMode = 'terminal' | 'rich' | 'events';
@@ -84,7 +83,7 @@ function readUsageNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function collectComposerUsage(events: StreamEvent[], contextTokens: number): ComposerUsage | undefined {
+function collectComposerUsage(events: StreamEvent[]): ComposerUsage | undefined {
   let usage: Record<string, unknown> | undefined;
   let costUsd: number | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -102,7 +101,7 @@ function collectComposerUsage(events: StreamEvent[], contextTokens: number): Com
   const cacheTokens = (readUsageNumber(usage?.cache_creation_input_tokens) ?? 0)
     + (readUsageNumber(usage?.cache_read_input_tokens) ?? 0);
   const totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0) + cacheTokens;
-  if (totalTokens === 0 && contextTokens === 0 && costUsd === undefined) {
+  if (totalTokens === 0 && costUsd === undefined) {
     return undefined;
   }
   return {
@@ -110,7 +109,6 @@ function collectComposerUsage(events: StreamEvent[], contextTokens: number): Com
     outputTokens,
     cacheTokens: cacheTokens > 0 ? cacheTokens : undefined,
     totalTokens: totalTokens > 0 ? totalTokens : undefined,
-    contextTokens: contextTokens > 0 ? contextTokens : undefined,
     costUsd,
   };
 }
@@ -199,7 +197,6 @@ function buildActiveSubagents(events: StreamEvent[]): ActiveSubagent[] {
 
 export function TerminalPane({
   sessionId,
-  agentType,
   backendType,
   allowedTools,
   command,
@@ -255,8 +252,6 @@ export function TerminalPane({
   // Bug: 60b1fd7 — Sidebar tab state: settings vs info panel
   const [sidebarTab, setSidebarTab] = useState<'settings' | 'info'>('settings');
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
-  // Bug: 11f4f47 — Track preset union token count for ContextIndicator
-  const [presetTokenCount, setPresetTokenCount] = useState(0);
   // Bug: b5e1c51 — Unseen channel event badge tracking
   const [channelEventCount, setChannelEventCount] = useState(0);
   const [unseenEventCount, setUnseenEventCount] = useState(0);
@@ -276,7 +271,7 @@ export function TerminalPane({
 
   const providerFamily = isOperator ? 'claude' : command;
   const availableTools = collectAvailableTools(streamEvents);
-  const composerUsage = collectComposerUsage(streamEvents, backendType === 'sdk' ? presetTokenCount : 0);
+  const composerUsage = collectComposerUsage(streamEvents);
   const transportLabel = transportBadge?.label ?? transportLane ?? backendType;
   const transportTitle = transportBadge?.title;
 
@@ -313,20 +308,6 @@ export function TerminalPane({
     }
     setActiveSubagents(buildActiveSubagents(streamEvents));
   }, [backendType, streamEvents]);
-
-  // Bug: 11f4f47 — Fetch initial preset union token count for SDK sessions
-  useEffect(() => {
-    if (backendType !== 'sdk') return;
-    let cancelled = false;
-    getPresetUnion({ session_id: sessionId })
-      .then((union: PresetUnion) => {
-        if (!cancelled) setPresetTokenCount(union.totalTokens);
-      })
-      .catch(() => {
-        // Non-fatal: indicator stays at 0
-      });
-    return () => { cancelled = true; };
-  }, [backendType, sessionId]);
 
   // Bug: 60b1fd7 — Selection handler for sidebar info panel
   const handleSelectMessageInfo = (turnId: string) => {
@@ -503,7 +484,6 @@ export function TerminalPane({
             onPermissionRespond={handleRichPermissionResponse}
             selectedMessageId={selectedMessageId}
             onSelectMessageInfo={handleSelectMessageInfo}
-            presetTokenCount={presetTokenCount}
             usage={composerUsage}
             queuedPrompts={queuedPrompts}
             transportLabel={transportLabel}
@@ -512,7 +492,6 @@ export function TerminalPane({
             stopBusy={stopBusy}
             attentionSlot={attentionSlot}
             onModelSaved={setModel}
-            onPresetTokenCount={setPresetTokenCount}
             prompt={prompt}
             interactionMode={interactionMode}
             onPromptChange={setPrompt}

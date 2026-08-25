@@ -213,8 +213,6 @@ function readOnlyDetail(): LedgerIssueDetailProjection {
     associated_artifacts: [],
     timeline: [],
     checkpoints: [],
-    conflicts: [],
-    sync: { state: 'clean', outbox: {} },
   } as unknown as LedgerIssueDetailProjection;
 }
 

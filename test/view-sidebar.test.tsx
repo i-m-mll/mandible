@@ -219,7 +219,6 @@ describe('ViewSidebar', () => {
       { storageKey: 'sidebar-width:artifacts', defaultWidth: 320, minWidth: 240, className: 'artifacts-sidebar', ariaLabel: 'Artifacts', bodyClassName: 'artifacts-sidebar__list' },
       { storageKey: 'sidebar-width:conversations', defaultWidth: 320, minWidth: 190, className: 'chat-history-sidebar', ariaLabel: 'Conversations', bodyClassName: 'chat-history-list' },
       { storageKey: 'sidebar-width:inbox', defaultWidth: 400, minWidth: 190, className: 'inbox-sidebar', ariaLabel: 'Inbox', bodyClassName: 'inbox-sidebar__list' },
-      { storageKey: 'mandible-presets-sidebar-width', defaultWidth: 260, minWidth: 200, className: 'presets-sidebar', ariaLabel: 'Presets', bodyClassName: 'presets-sidebar__list', footer: <button type="button">New Preset</button> },
     ];
 
     for (const config of migrated) {

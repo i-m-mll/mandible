@@ -920,7 +920,6 @@ api_operational_mutation_category() {
     /api/briefing-bundles|/api/briefing-bundles/*) printf 'briefing'; return 0 ;;
     /api/briefing-groups|/api/briefing-groups/*) printf 'briefing'; return 0 ;;
     /api/briefings|/api/briefings/*) printf 'briefing'; return 0 ;;
-    /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;
     /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
     /api/conversation-custody|/api/conversation-custody/*) printf 'conversations'; return 0 ;;
@@ -928,7 +927,6 @@ api_operational_mutation_category() {
     /api/ledger|/api/ledger/*) printf 'ledger'; return 0 ;;
     /api/issues|/api/issues/*) printf 'issues'; return 0 ;;
     /api/knowledge-backrefs|/api/knowledge-backrefs/*) printf 'artifacts'; return 0 ;;
-    /api/presets|/api/presets/*) printf 'presets'; return 0 ;;
     /api/projects|/api/projects/*) printf 'projects'; return 0 ;;
     /api/provider-manifests|/api/provider-manifests/*) printf 'providers'; return 0 ;;
     /api/providers|/api/providers/*) printf 'providers'; return 0 ;;

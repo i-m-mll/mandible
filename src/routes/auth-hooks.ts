@@ -18,7 +18,7 @@ import type { AuthHookInput, AuthRequestType } from "../types.js";
 import { readBody } from "./http.js";
 
 const VALID_AUTH_TYPES: AuthRequestType[] = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete"
 ];
 
 export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookManager): AuthHookManager {

@@ -1,7 +1,6 @@
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
-import type { RequestLike } from "../server.js";
 
 type RedirectKind = "issue" | "auth" | "artifact";
 type IssueRedirectResolution =

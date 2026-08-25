@@ -97,7 +97,15 @@ type ConsoleSession = {
   } | null;
 };
 
-export type { ConsoleSession };
+/**
+ * `pinned` and `unread_count` are client-owned view state; the daemon never
+ * sends them, so a fetched or freshly created session row may omit them.
+ */
+type ConsoleSessionPayload =
+  Omit<ConsoleSession, 'pinned' | 'unread_count'>
+  & Partial<Pick<ConsoleSession, 'pinned' | 'unread_count'>>;
+
+export type { ConsoleSession, ConsoleSessionPayload };
 
 type AppState = {
   authQueue: AuthRequest[];

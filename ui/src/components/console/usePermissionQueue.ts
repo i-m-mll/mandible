@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { ConsolePermissionRequest } from '../../api';
+import type { ConsolePermissionDecision, ConsolePermissionRequest } from '../../api';
 import { getConsolePermissions, respondToConsolePermission } from '../../api';
 
 export function usePermissionQueue({
@@ -13,7 +13,7 @@ export function usePermissionQueue({
   busy: boolean;
   handlePermissionResponse: (
     requestId: string,
-    decision: 'deny' | 'allow' | 'allow_always' | 'reject_once' | 'reject_always',
+    decision: ConsolePermissionDecision,
   ) => Promise<void>;
 } {
   const [permissionQueue, setPermissionQueue] = useState<ConsolePermissionRequest[]>([]);
@@ -86,7 +86,7 @@ export function usePermissionQueue({
 
   const handlePermissionResponse = async (
     requestId: string,
-    decision: 'deny' | 'allow' | 'allow_always' | 'reject_once' | 'reject_always',
+    decision: ConsolePermissionDecision,
   ) => {
     setPermissionBusy(true);
     try {

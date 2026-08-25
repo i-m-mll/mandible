@@ -13,7 +13,6 @@ import type {
   PermissionRequest,
   UsageAwareBackend,
   ToolPolicyBackend,
-  PresetAwareBackend,
 } from "./agentic-backend.js";
 import { getDb, type Db } from "./db.js";
 import {
@@ -28,7 +27,7 @@ import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, getSdkRunOptionDeclaration, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
-import { AcpBackend, getAcpRunOptionDeclaration, type AcpBackendOptions } from "./backends/acp-backend.js";
+import { AcpBackend, getAcpRunOptionDeclaration } from "./backends/acp-backend.js";
 import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import {
   defaultCodexThreadArchiver,
@@ -46,7 +45,6 @@ import type {
   ConsoleTransportLane,
   Logger,
 } from "./types.js";
-import { listSessionInstructionArtifacts, replaceSessionInstructionArtifacts } from "./presets.js";
 import type { ClientAuthenticator } from "./client-auth/authenticator.js";
 import { getOperator } from "./users/store.js";
 import { resolveSessionOwnerUserId } from "./session-ownership.js";
@@ -56,7 +54,6 @@ import {
   type AppliedSessionRunOption,
   type BackendRunOptionDeclaration,
   type SessionRunOptionValue,
-  type SessionRunOptionsPatch,
   type SessionRunOptionsSnapshot,
 } from "./session-run-options.js";
 
@@ -641,23 +638,7 @@ export class SessionManager {
       run_options_json: JSON.stringify({}),
     }, new AttributionReadResolver(db));
 
-    // Issue 2181ffd — Store instruction attachments as pinned artifact versions.
-    const pinnedPresetIds = input.presetIds && input.presetIds.length > 0
-      ? replaceSessionInstructionArtifacts(db, id, input.presetIds)
-      : [];
-
     const backend = this.createBackend(session, backend_type, { allowUnpersistedOperator: allowOperator });
-
-    // Bug: 61bee4e — If presetIds are set, update the SDK backend options
-    if (pinnedPresetIds.length > 0 && this.isPresetAwareBackend(backend)) {
-      backend.setPresetIds(pinnedPresetIds);
-    }
-
-    // Bug: 790433d — If presetIds are set on a PTY session, pass them so the
-    // preset union is appended at launch via --append-system-prompt
-    if (pinnedPresetIds.length > 0 && backend instanceof PTYBackend) {
-      backend.setPresetIds(pinnedPresetIds);
-    }
 
     this.sessions.set(id, backend);
     this.wireBackend(backend);
@@ -702,12 +683,9 @@ export class SessionManager {
       : declaredRunOptionsSnapshot({ backendType: backend.meta.backend_type, command: backend.meta.command, options: [] });
   }
 
-  getSessionOptionsControls(id: string): { allowedTools: string[] | null; presetIds: string[] } {
+  getSessionOptionsControls(id: string): { allowedTools: string[] | null } {
     const backend = this.requireSession(id);
-    return {
-      allowedTools: backend.meta.allowed_tools,
-      presetIds: listSessionInstructionArtifacts(getDb(), id).map((attachment) => attachment.preset_id),
-    };
+    return { allowedTools: backend.meta.allowed_tools };
   }
 
   get(id: string): AgenticBackend | undefined {
@@ -844,7 +822,6 @@ export class SessionManager {
     options: {
       runOptions?: Record<string, SessionRunOptionValue>;
       allowedTools?: string[];
-      presetIds?: string[];
       model?: string;
       thinkingEffort?: SDKBackendOptions["thinkingEffort"];
       permissionMode?: SDKBackendOptions["permissionMode"];
@@ -857,16 +834,11 @@ export class SessionManager {
     session: ConsoleSession;
     runOptions: SessionRunOptionsSnapshot;
     applied: readonly AppliedSessionRunOption[];
-    mandibleControls: { allowedTools: string[] | null; presetIds: string[] };
+    mandibleControls: { allowedTools: string[] | null };
   }> {
     const session = this.requireSession(id);
     if (options.allowedTools !== undefined && this.isToolPolicyBackend(session)) {
       await session.setAllowedTools(options.allowedTools);
-    }
-    let pinnedPresetIds: string[] = [];
-    if (options.presetIds !== undefined) {
-      pinnedPresetIds = replaceSessionInstructionArtifacts(getDb(), id, options.presetIds);
-      if (this.isPresetAwareBackend(session)) await session.setPresetIds(pinnedPresetIds);
     }
     const values: Record<string, SessionRunOptionValue> = { ...(options.runOptions ?? {}) };
     if (options.model !== undefined) values.model = options.model;
@@ -1359,10 +1331,6 @@ export class SessionManager {
 
   private isToolPolicyBackend(backend: AgenticBackend): backend is AgenticBackend & ToolPolicyBackend {
     return "setAllowedTools" in backend;
-  }
-
-  private isPresetAwareBackend(backend: AgenticBackend): backend is AgenticBackend & PresetAwareBackend {
-    return "setPresetIds" in backend;
   }
 
   private isUsageAwareBackend<TUsage>(backend: AgenticBackend): backend is AgenticBackend & UsageAwareBackend<TUsage> {

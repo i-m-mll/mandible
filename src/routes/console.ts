@@ -72,10 +72,9 @@ function parseSessionOptionsBody(
 ): { ok: true; options: {
   runOptions: Record<string, SessionRunOptionValue>;
   allowedTools?: string[];
-  presetIds?: string[];
 } } | { ok: false; error: string } {
   const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  const allowedKeys = new Set(["runOptions", "allowedTools", "presetIds"]);
+  const allowedKeys = new Set(["runOptions", "allowedTools"]);
   for (const option of declaration.options) {
     for (const alias of option.legacyRequestKeys ?? []) allowedKeys.add(alias);
   }
@@ -111,15 +110,9 @@ function parseSessionOptionsBody(
   if (allowedTools !== undefined && !allowedTools.ok) {
     return { ok: false, error: "invalid_allowed_tools" };
   }
-
-  const presetIds = parseStringArray(record.presetIds);
-  if (presetIds !== undefined && !presetIds.ok) {
-    return { ok: false, error: "invalid_preset_ids" };
-  }
   return { ok: true, options: {
     runOptions: patch.values,
     ...(allowedTools?.ok ? { allowedTools: allowedTools.value } : {}),
-    ...(presetIds?.ok ? { presetIds: presetIds.value } : {}),
   } };
 }
 
@@ -170,7 +163,7 @@ function sendRunOptionError(res: ResponseLike, error: SessionRunOptionError): vo
 
 function creationOptionFields(body: unknown): Record<string, unknown> {
   const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  const keys = ["runOptions", "allowedTools", "presetIds", "model", "thinkingEffort", "permissionMode",
+  const keys = ["runOptions", "allowedTools", "model", "thinkingEffort", "permissionMode",
     "maxTurns", "maxCostUsd", "systemPrompt", "settingSourcesOverride"];
   return Object.fromEntries(keys.filter((key) => record[key] !== undefined).map((key) => [key, record[key]]));
 }
@@ -367,12 +360,6 @@ export function registerConsoleRoutes(
       transport_lane: parseTransportLane((body as Record<string, unknown>).transport_lane),
       // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
       channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
-      // Bug: 61bee4e — Accept presetIds for convention presets
-      presetIds: Array.isArray((body as Record<string, unknown>).presetIds)
-        ? ((body as Record<string, unknown>).presetIds as unknown[]).filter(
-            (id): id is string => typeof id === "string",
-          )
-        : undefined,
     };
 
     try {
@@ -384,7 +371,6 @@ export function registerConsoleRoutes(
       }
       input.runOptions = parsed.options.runOptions;
       input.allowed_tools = parsed.options.allowedTools ?? null;
-      input.presetIds = parsed.options.presetIds;
     } catch (error) {
       if (error instanceof SessionRunOptionError) {
         sendRunOptionError(res, error);
@@ -411,7 +397,6 @@ export function registerConsoleRoutes(
     if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn" || input.backend_type === "acp") {
       manager.start(session.id);
     }
-    const ptySession = manager.get(session.id);
     try {
       const runOptions = await manager.waitForInitialRunOptions(session.id);
       res.status(201).json({ session: manager.get(session.id)?.meta ?? session, runOptions });
@@ -503,16 +488,12 @@ export function registerConsoleRoutes(
       const declaration = resolveDeclaration(manager, session.meta.backend_type, session.meta.command);
       const parsed = parseSessionOptionsBody(declaration, req.body ?? {});
       if (!parsed.ok) { sendJson(res, 400, { error: parsed.error }); return; }
-      if (session.meta.backend_type !== "sdk" && session.meta.backend_type !== "acp" && parsed.options.presetIds !== undefined) {
-        sendJson(res, 400, { error: "unsupported_session_option" });
-        return;
-      }
       const source = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
       const legacyKeys = ["model", "thinkingEffort", "permissionMode", "maxTurns", "maxCostUsd", "systemPrompt", "settingSourcesOverride"];
       const legacy = Object.fromEntries(legacyKeys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
       const result = await manager.updateOptions(id, Object.keys(source.runOptions as object ?? {}).length > 0
         ? parsed.options
-        : { ...legacy, allowedTools: parsed.options.allowedTools, presetIds: parsed.options.presetIds });
+        : { ...legacy, allowedTools: parsed.options.allowedTools });
       res.status(200).json(result && typeof result === "object" && "session" in result ? result : { session: result });
     } catch (error) {
       if (error instanceof SessionRunOptionError) { sendRunOptionError(res, error); return; }

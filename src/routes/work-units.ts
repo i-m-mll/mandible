@@ -10,13 +10,12 @@ import { normalizeProjectRepoId } from "../ledger/project-registry.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { Logger, WorkUnit, WorkUnitState } from "../types.js";
+import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
 import {
   mapWorkUnitRow as mapRow,
   normalizeWorkUnitSessionId,
-  computeLiveness,
   enrichWithLiveness,
   type WorkUnitLiveness,
   type WorkUnitWithLiveness,

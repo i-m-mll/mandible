@@ -21,7 +21,6 @@ import { layoutGraph, type RoutedGraphEdge } from '../graph/layout';
 import {
   addLedgerIssueComment,
   getLedgerIssueDetail,
-  resolveLedgerConflict,
   type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
@@ -314,10 +313,6 @@ function firstEntries(value: Record<string, unknown> | undefined, limit = 4): Ar
   return Object.entries(value)
     .filter(([, v]) => v !== null && v !== undefined && typeof v !== 'object')
     .slice(0, limit);
-}
-
-function nodeTime(node: GraphNode): number {
-  return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
@@ -800,10 +795,6 @@ function DetailPane({
                 setLedgerDetail(next);
               }}
               onAddToSpace={() => setSpacePickerOpen(true)}
-              onResolveConflict={async (conflictId, resolution, status) => {
-                await resolveLedgerConflict(conflictId, resolution, status);
-                setLedgerDetail(await getLedgerIssueDetail(ledgerIssueId));
-              }}
             />
             {spacePickerOpen && (
               <div className="graph-detail-pane__space-picker">

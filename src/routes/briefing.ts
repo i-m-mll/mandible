@@ -187,7 +187,7 @@ function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; ope
     }
     return { userId: caller.id, operator: true };
   }
-  const publisher = requireDurableAgentPublisher(db, req, {
+  requireDurableAgentPublisher(db, req, {
     credentialCode: "briefing_bundle_membership_publisher_credential_required",
     credentialMessage: "Briefing bundle membership replacement requires a durable API token, not a session credential.",
     agentCode: "briefing_bundle_membership_publisher_agent_required",
