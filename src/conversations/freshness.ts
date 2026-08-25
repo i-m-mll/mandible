@@ -14,7 +14,6 @@ import {
   type StableSourceObservation,
   type StableSourceExtentObservation,
 } from "./source-observer.js";
-import type { ConversationSourceAlias } from "./source-types.js";
 import { readExactCodexTitleAuthority } from "./codex-title-authority.js";
 import { getConversationStructureCache } from "./structure-cache.js";
 

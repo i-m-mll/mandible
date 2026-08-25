@@ -14,7 +14,6 @@ import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailArtifactLink,
   LedgerIssueDetailAuthRequest,
-  LedgerIssueDetailConflict,
   LedgerIssueDetailProjection,
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
@@ -372,7 +371,7 @@ function AssociatedArtifactList({
             href={artifactLinkHref(artifact, link, authoredRef)}
             title={artifact.uri}
           >
-            <span>{artifactSourceLabel(artifact, link, authoredRef)}</span>
+            <span>{artifactSourceLabel(link, authoredRef)}</span>
             <strong>{artifactTitle(artifact)}</strong>
             <span className="ledger-evidence-row__meta">
               {link && <ArtifactLinkBadge link={link} />}
@@ -425,7 +424,6 @@ function logicalArtifactRefFromSeriesId(ref: string): string {
 }
 
 function artifactSourceLabel(
-  artifact: LedgerIssueDetailAssociatedArtifact,
   link: LedgerIssueDetailArtifactLink | null,
   authoredRef: string | null,
 ): string {
@@ -1242,13 +1240,14 @@ function copyValueForIssueMetadata(key: string, value: string): string {
 }
 
 function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body' }>): Array<[string, string]> {
-  return [
+  const rows: Array<[string, string]> = [
     ['Entry', '#0'],
     ['Author type', entry.author.type.replace(/_/g, ' ')],
     ['Source', entry.source || 'unknown'],
     ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
     ['Updated', formatAbsoluteTime(entry.updated_at, LEDGER_TIME_OPTIONS)],
-  ].filter(([, value]) => Boolean(value));
+  ];
+  return rows.filter(([, value]) => Boolean(value));
 }
 
 function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 'comment' }>): Array<[string, string]> {
@@ -1267,12 +1266,13 @@ function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 
 }
 
 function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): Array<[string, string]> {
-  return [
+  const rows: Array<[string, string]> = [
     ['Event ID', entry.id],
     ['Event type', entry.event_type],
     ['Source', entry.source || 'unknown'],
     ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
-  ].filter(([, value]) => Boolean(value));
+  ];
+  return rows.filter(([, value]) => Boolean(value));
 }
 
 function eventMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): Array<[string, string]> {

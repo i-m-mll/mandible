@@ -197,7 +197,6 @@ function buildActiveSubagents(events: StreamEvent[]): ActiveSubagent[] {
 
 export function TerminalPane({
   sessionId,
-  agentType,
   backendType,
   allowedTools,
   command,

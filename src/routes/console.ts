@@ -397,7 +397,6 @@ export function registerConsoleRoutes(
     if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn" || input.backend_type === "acp") {
       manager.start(session.id);
     }
-    const ptySession = manager.get(session.id);
     try {
       const runOptions = await manager.waitForInitialRunOptions(session.id);
       res.status(201).json({ session: manager.get(session.id)?.meta ?? session, runOptions });

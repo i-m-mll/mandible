@@ -32,7 +32,6 @@ import type {
   ConversationSidebarConversation,
   CanonicalProject,
   WorkflowRun,
-  WorkflowWorker,
 } from '../api.js';
 import {
   exportConversationBlocks,
@@ -266,15 +265,6 @@ const CHAT_PROVIDER_TONES: Record<ConversationSource, SidebarItemProviderTone> =
   gemini: 'agy',
 };
 
-function getSessionProviderFamily(session: ConsoleSession): string {
-  if (session.is_operator) return 'claude';
-  const command = (session.command ?? session.agent_type).toLowerCase();
-  if (command.includes('claude')) return 'claude';
-  if (command.includes('gemini')) return 'gemini';
-  if (command.includes('codex')) return 'codex';
-  return command;
-}
-
 function parseModelFromArgs(args: string[] | undefined): string | undefined {
   if (!args) return undefined;
   for (let i = args.length - 2; i >= 0; i -= 1) {
@@ -490,7 +480,6 @@ function HorizontalDotsIcon(): JSX.Element {
 function ExportPanel({
   conversationId,
   exportableCount,
-  totalSelectedCount,
   hiddenSelectedCount,
   selectedIds,
   onClose,
@@ -1573,11 +1562,6 @@ function ConversationDetail({
     return null;
   }, [attachState?.kind, latestDagUuid, linkedConsoleSession]);
 
-  const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : (
-    conversation?.source === 'gemini' ? 'gemini' :
-    conversation?.source === 'codex' ? 'codex' :
-    'claude'
-  );
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelOptions = (sessionRunOptions?.options.find((option) => option.id === 'model')?.allowedValues ?? [])
     .map((choice) => choice.value)

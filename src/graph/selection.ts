@@ -68,13 +68,6 @@ export function capGraphNodesForDisplay(
   return { nodes: ranked.slice(0, limit), truncated: true };
 }
 
-function isWeakIssueReferenceEdge(edge: GraphEdge): boolean {
-  if (edge.edge_class !== "semantic") return false;
-  return edge.type === "references"
-    || edge.type === "curated_related"
-    || edge.type === "related";
-}
-
 function edgeFamilyIds(edge: GraphEdge): string[] {
   const ids = new Set<string>([edge.type]);
   const relationshipType = edge.metadata?.relationship_type;

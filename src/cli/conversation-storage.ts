@@ -14,7 +14,7 @@ import {
   redactCredentialLeaksInBlocks,
 } from "../credential-leak-scan.js";
 import { getAllParsers } from "../parsers/index.js";
-import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
+import type { ConversationSource } from "../parsers/types.js";
 
 // Deliberately below the multi-gigabyte sources that need the already-bounded
 // ingestion path, but large enough to repair the finite legacy cohort observed

@@ -31,7 +31,7 @@ type SpaceTypeIndicatorProps = {
 };
 
 function SpaceTypeGlyph({ renderer, className }: { renderer: SpaceRenderer | string; className?: string }): JSX.Element {
-  const common = {
+  const common: JSX.SVGAttributes<SVGSVGElement> = {
     className: ['space-type-indicator__icon', className].filter(Boolean).join(' '),
     viewBox: '0 0 20 20',
     width: '20',

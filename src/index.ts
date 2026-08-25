@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
@@ -100,7 +99,6 @@ import {
 } from "./restart-availability.js";
 
 const DEFAULT_PORT = 19420;
-const DOTFILES_ROOT = resolveDotfilesRoot();
 const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
@@ -302,7 +300,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
-  registerWebhookRoutes(router, sessionRegistry, sessionManager);
+  registerWebhookRoutes(router, sessionManager);
   // Bug: cc4688b — Zone 2 mutable runtime routes
   registerRuntimeRoutes(router);
   registerTimelineRoutes(router);
@@ -707,15 +705,6 @@ function resolveVersion(): string {
   } catch {
     return "0.0.0";
   }
-}
-
-function resolveDotfilesRoot(): string {
-  const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidate = path.resolve(currentDir, "../../..");
-  if (fs.existsSync(path.join(candidate, ".git"))) {
-    return candidate;
-  }
-  return path.resolve(currentDir, "../../../..");
 }
 
 function resolveMandibleRoot(): string {

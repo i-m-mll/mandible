@@ -13,10 +13,10 @@ export type ConversationAppendPayload = Partial<Conversation> & {
   };
 };
 
-export function applyConversationAppendPayload(
-  conversation: ConversationWithBlocks,
+export function applyConversationAppendPayload<T extends ConversationWithBlocks>(
+  conversation: T,
   data: ConversationAppendPayload,
-): ConversationWithBlocks | null {
+): T | null {
   const { append, ...conversationData } = data;
   const appendBlocks = append?.blocks ?? [];
   if (appendBlocks.length === 0) {

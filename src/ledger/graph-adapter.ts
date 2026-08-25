@@ -232,7 +232,7 @@ function getAliasRows(db: Db): Map<string, AliasRow[]> {
   ).all() as AliasRow[]);
 }
 
-function displayIssueId(issue: IssueRow, aliases: AliasRow[]): string {
+function displayIssueId(issue: IssueRow): string {
   return issue.short_id || issue.id.slice(0, 7);
 }
 
@@ -646,7 +646,7 @@ export function buildLedgerIssueProjection(
   for (const issue of visibleIssues) {
     const project = projectInfos.get(issue.project_id);
     const repoId = project?.repo_id ?? issue.project_id;
-    const displayId = displayIssueId(issue, aliasesByIssue.get(issue.id) ?? []);
+    const displayId = displayIssueId(issue);
     const nodeId = `issue:${repoId}:${displayId}`;
     issueNodeIdByLedgerId.set(issue.id, nodeId);
     issueNodeIds.add(nodeId);
@@ -675,7 +675,7 @@ export function buildLedgerIssueProjection(
     const openConflicts = conflictCounts.get(issue.id) ?? 0;
     const outbox = outboxCounts.get(issue.id);
     const relationshipSummary = relationshipCounts.get(issue.id) ?? { incoming: 0, outgoing: 0, children: 0, parents: 0 };
-    const displayId = displayIssueId(issue, aliases);
+    const displayId = displayIssueId(issue);
     const nodeId = issueNodeIdByLedgerId.get(issue.id)!;
     const bodyExcerpt = issue.body.trim().slice(0, 360);
     const annotations = [...authAnnotations, ...sessionSummary.live];

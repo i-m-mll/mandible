@@ -102,7 +102,7 @@ export function checkArtifactMaterialization(
   const warnings: string[] = [];
   const reasons: string[] = [];
 
-  const managedPath = resolveManagedFileArtifact(db, artifact);
+  const managedPath = resolveManagedFileArtifact(artifact);
   if (managedPath.ok) {
     return checkResolvedFile(artifact, managedPath.path, "managed_file", expected, recoverability, options.ref);
   }
@@ -527,7 +527,7 @@ function resolveRegisteredArtifactPath(
   db: Db,
   artifact: ArtifactRecord,
 ): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  const managedPath = resolveManagedFileArtifact(db, artifact);
+  const managedPath = resolveManagedFileArtifact(artifact);
   if (managedPath.ok) return managedPath;
 
   const linkPath = resolveLinkFileArtifact(artifact);
@@ -571,7 +571,6 @@ function resolveCasArtifact(
 }
 
 function resolveManagedFileArtifact(
-  db: Db,
   artifact: ArtifactRecord,
 ): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
   if (!artifact.uri.startsWith("file://")) {

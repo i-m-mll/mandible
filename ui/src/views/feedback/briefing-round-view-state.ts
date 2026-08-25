@@ -1,4 +1,4 @@
-import type { BriefingDirectiveItem, BriefingResponseValue } from '../../api';
+import type { BriefingDirectiveItem, BriefingDocumentProfile, BriefingResponseValue } from '../../api';
 
 export const BRIEFING_DRAFT_VERSION = 2;
 export const BRIEFING_DRAFT_KEY_PREFIX = 'mandible.briefing.draft:v2';
@@ -8,7 +8,7 @@ export type BriefingDraftScope = {
   briefingId: string;
   roundId: string;
   artifactVersionId: string;
-  profile: 'mandible-briefing.v2';
+  profile: BriefingDocumentProfile;
 };
 
 function record(value: unknown): Record<string, unknown> {

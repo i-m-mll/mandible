@@ -10,7 +10,6 @@ import type {
   TimelineIssuePredicate,
   TimelineIssueRef,
   TimelineLabelMembershipInterval,
-  TimelineLabelMembershipMode,
   TimelineLink,
   TimelineNormalizedRowSpec,
   TimelineRowOccurrence,

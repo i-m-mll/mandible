@@ -27,7 +27,7 @@ import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, getSdkRunOptionDeclaration, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
-import { AcpBackend, getAcpRunOptionDeclaration, type AcpBackendOptions } from "./backends/acp-backend.js";
+import { AcpBackend, getAcpRunOptionDeclaration } from "./backends/acp-backend.js";
 import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import {
   defaultCodexThreadArchiver,
@@ -54,7 +54,6 @@ import {
   type AppliedSessionRunOption,
   type BackendRunOptionDeclaration,
   type SessionRunOptionValue,
-  type SessionRunOptionsPatch,
   type SessionRunOptionsSnapshot,
 } from "./session-run-options.js";
 

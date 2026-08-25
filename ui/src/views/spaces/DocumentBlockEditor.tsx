@@ -542,15 +542,16 @@ export function DocumentBlockEditor({
       const placement = afterBlockId
         ? placementForIndex(blocks, parentId, anchorIndex, null)
         : { sort_key: appendSortKey(blocks, null) };
+      const blockMarkdown = markdown || (blockType === 'heading' ? 'New heading' : '');
       const body: CreateBlockBody = {
         block_type: blockType,
         parent_id: parentId,
         sort_key: placement.sort_key,
-        markdown: markdown || (blockType === 'heading' ? 'New heading' : ''),
+        markdown: blockMarkdown,
       };
       await runMutation(async () => {
         const created = await createSpaceBlock(spaceId, body, fetcher());
-        const caret = body.markdown.length;
+        const caret = blockMarkdown.length;
         setActiveBlockId(created.id);
         beginEditing(created.id);
         pendingFocusBlockId.current = created.id;

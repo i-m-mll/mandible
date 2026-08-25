@@ -12,7 +12,6 @@ import { getIntSetting } from "./settings.js";
 import {
   mapWorkUnitRow,
   computeLiveness,
-  type WorkUnitLiveness,
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";

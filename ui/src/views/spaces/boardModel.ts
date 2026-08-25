@@ -381,7 +381,6 @@ export function projectBoard(
     })),
   ];
   const columnByKey = new Map(columns.map((column) => [column.key, column]));
-  const customByKey = new Map(customColumns.map((column) => [column.key, column]));
 
   const danglingOccurrences: ResolvedSpaceOccurrence[] = [];
 

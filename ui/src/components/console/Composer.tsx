@@ -34,8 +34,7 @@ type ComposerProps = {
 };
 
 function textareaIsComposing(event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>): boolean {
-  const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-  return event.isComposing === true || nativeEvent.isComposing === true;
+  return event.isComposing === true;
 }
 
 function summarizeText(text: string): string {

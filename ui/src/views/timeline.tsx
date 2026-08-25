@@ -38,6 +38,7 @@ import {
 } from './timeline-layout';
 import {
   DEFAULT_TIMELINE_VIEW_STATE,
+  type ProjectTimelineInput,
   type ProjectTimelineProjection,
   type TimelineDensity,
   type TimelineEvent,
@@ -1029,9 +1030,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     }
     return intervals;
   }, [allEventsByRow, expandedPathSet, rowChildrenByParent, rows]);
-  const aggregateIntervalById = useMemo(() => (
-    new Map(aggregateIntervals.map((interval) => [interval.id, interval]))
-  ), [aggregateIntervals]);
   const dataExtent = useMemo(() => {
     const timestamps = Array.from(eventsByRow.values()).flatMap((rowEvents) => (
       rowEvents.map((event) => event.timestamp)
@@ -1412,7 +1410,8 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
 
   const removePromotedRow = useCallback((row: TimelineRowOccurrence) => {
     if (!row.issue) return;
-    updateState({ promotedRootIssueIds: viewState.promotedRootIssueIds.filter((id) => id !== row.issue.id) });
+    const issueId = row.issue.id;
+    updateState({ promotedRootIssueIds: viewState.promotedRootIssueIds.filter((id) => id !== issueId) });
   }, [updateState, viewState.promotedRootIssueIds]);
 
   const removeTransientRow = useCallback((row: TimelineRowOccurrence) => {
@@ -1571,8 +1570,8 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     suppressTimelineScrollEvents();
-    const bounds = timeScrollRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
-    const focalRatio = bounds.width > 0
+    const bounds = timeScrollRef.current?.getBoundingClientRect() ?? timelineMainRef.current?.getBoundingClientRect();
+    const focalRatio = bounds && bounds.width > 0
       ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
       : 0.5;
     zoomTimeline(event.deltaY < 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);

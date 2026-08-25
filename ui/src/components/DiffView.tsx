@@ -114,7 +114,6 @@ function renderDiff2Html(raw: string, mode: DiffViewMode): string | null {
   if (!raw.trim()) return null;
   try {
     const html = diff2htmlHtml(raw, {
-      inputFormat: 'diff',
       outputFormat: getDiffOutputFormat(mode),
       drawFileList: false,
       matching: 'lines',

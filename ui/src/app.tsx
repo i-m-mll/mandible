@@ -1,12 +1,11 @@
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 
 import {
   acknowledgeInboxItem,
   ackAllInbox,
   approveAuthRequest,
-  closeConsoleSession,
   createConsoleSession,
   dismissAuthRequest,
   getAuthHistory,
@@ -98,7 +97,7 @@ import {
   parseAuthResolvedId,
 } from './state';
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
-import type { BugRef, ConsoleSession } from './state';
+import type { BugRef, ConsoleSession, ConsoleSessionPayload } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
 import {
   readInitialViewSidebarWidths,
@@ -112,7 +111,6 @@ import {
   AuthIcon,
   ArtifactsIcon,
   SettingsIcon,
-  MonitorIcon,
   GraphIcon,
   TimelineIcon,
   LogsIcon,
@@ -674,14 +672,15 @@ function App(): JSX.Element {
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
   useEffect(() => {
-    if (!isRenderableTab(route.tab)) return;
+    const tab = route.tab;
+    if (!isRenderableTab(tab)) return;
     setVisitedTabs((current) => {
-      if (current.has(route.tab)) return current;
+      if (current.has(tab)) return current;
       const next = new Set(current);
-      next.add(route.tab);
+      next.add(tab);
       return next;
     });
-    setTabRouteSnapshots((current) => ({ ...current, [route.tab]: route }));
+    setTabRouteSnapshots((current) => ({ ...current, [tab]: route }));
   }, [route]);
 
   const navigateToHash = useCallback((hash: string) => {
@@ -829,7 +828,7 @@ function App(): JSX.Element {
   // Add tauri-window class to body when running inside Tauri so CSS can
   // apply the extra top padding needed for the hidden title bar traffic lights.
   useEffect(() => {
-    if (typeof window !== 'undefined' && (window as Record<string, unknown>).__TAURI__) {
+    if (typeof window !== 'undefined' && '__TAURI__' in window) {
       document.body.classList.add('tauri-window');
     }
   }, []);
@@ -897,7 +896,7 @@ function App(): JSX.Element {
         case 'console':
         case 'chat-history':
           await Promise.all([
-            getConsoleSessions<ConsoleSession>().then((sessions) => dispatch({
+            getConsoleSessions<ConsoleSessionPayload>().then((sessions) => dispatch({
               type: 'setConsoleSessions',
               sessions: sessions.map((session) => ({ pinned: false, unread_count: 0, ...session })),
             })),
@@ -1602,7 +1601,6 @@ function App(): JSX.Element {
     }, 500);
     return () => window.clearTimeout(timer);
   }, [
-    state.sessions,
     state.authQueue,
     state.authHistory,
     state.workRepos,
@@ -1780,22 +1778,6 @@ function App(): JSX.Element {
     dispatch({ type: 'setConsoleActiveSessionId', sessionId });
   };
 
-  const handleConsoleCloseSession = async (sessionId: string) => {
-    try {
-      await closeConsoleSession(sessionId);
-      dispatch({ type: 'removeConsoleSession', sessionId });
-      // If closing the active session, auto-select the operator session or first remaining
-      if (state.consoleActiveSessionId === sessionId) {
-        const next =
-          state.consoleSessions.find((s) => s.id !== sessionId && !s.pinned) ??
-          state.consoleSessions.find((s) => s.id !== sessionId);
-        dispatch({ type: 'setConsoleActiveSessionId', sessionId: next?.id ?? null });
-      }
-    } catch {
-      return;
-    }
-  };
-
   const handleConsoleNewSession = async ({
     label,
     backend,
@@ -1826,7 +1808,6 @@ function App(): JSX.Element {
         pinned: false,
         unread_count: 0,
         channel_enabled: channel_enabled ?? false,
-        transport_lane,
         transport_badge: result.session.transport_badge,
         ...result.session,
         agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],

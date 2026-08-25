@@ -64,7 +64,6 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
-import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -1786,34 +1785,20 @@ function PreviewSection({
 }): JSX.Element {
   const showPreview = !contentError && preview !== null;
   const [autoFormatJson, setAutoFormatJson] = useState(true);
-  const formatToggleVisible = Boolean(
-    preview
-    && (preview.kind === 'json' || preview.kind === 'text')
-    && preview.autoFormatted,
-  );
-  const previewValue = preview
-    && (preview.kind === 'json' || preview.kind === 'text')
-    && preview.autoFormatted
-    ? (autoFormatJson ? preview.value : preview.rawValue)
-    : preview && (preview.kind === 'json' || preview.kind === 'text')
-      ? preview.value
-      : '';
-  const highlightLanguage = preview
-    && (preview.kind === 'json' || preview.kind === 'text')
-    && !preview.partial
+  const codePreview = preview && (preview.kind === 'json' || preview.kind === 'text') ? preview : null;
+  const previewValue = codePreview
+    ? (codePreview.autoFormatted && !autoFormatJson ? codePreview.rawValue : codePreview.value)
+    : '';
+  const highlightLanguage = codePreview
+    && !codePreview.partial
     && previewValue.length <= ARTIFACT_HIGHLIGHT_MAX_CHARS
-    ? preview.highlightLanguage
+    ? codePreview.highlightLanguage
     : null;
   const highlightedPreview = useMemo(() => (
-    preview && (preview.kind === 'json' || preview.kind === 'text')
-      ? highlightArtifactCode(previewValue, highlightLanguage)
-      : null
-  ), [preview, previewValue, highlightLanguage]);
+    codePreview ? highlightArtifactCode(previewValue, highlightLanguage) : null
+  ), [codePreview, previewValue, highlightLanguage]);
   const virtualizedPreview = Boolean(
-    preview
-    && (preview.kind === 'json' || preview.kind === 'text')
-    && !highlightedPreview
-    && shouldVirtualizeArtifactPreview(previewValue),
+    codePreview && !highlightedPreview && shouldVirtualizeArtifactPreview(previewValue),
   );
   const codeClassName = highlightedPreview
     ? `hljs language-${highlightedPreview.language}`
@@ -1821,9 +1806,7 @@ function PreviewSection({
   const codePreviewClassName = [
     'artifact-preview',
     'artifact-preview--code',
-    preview && (preview.kind === 'json' || preview.kind === 'text') && preview.partial
-      ? 'artifact-preview--partial'
-      : '',
+    codePreview?.partial ? 'artifact-preview--partial' : '',
   ].filter(Boolean).join(' ');
   useEffect(() => {
     setAutoFormatJson(true);
@@ -1836,9 +1819,9 @@ function PreviewSection({
         <div key={warning} className="artifact-detail__warning">{warning}</div>
         ))}
         {showPreview && preview.kind === 'bundle' && <BundlePreview preview={preview} />}
-        {showPreview && formatToggleVisible && (
+        {showPreview && codePreview?.autoFormatted && (
           <div className="artifact-preview-toolbar">
-            <span>{preview.formatLabel}</span>
+            <span>{codePreview.formatLabel}</span>
             <button
               type="button"
               onClick={() => setAutoFormatJson((enabled) => !enabled)}
@@ -2503,14 +2486,6 @@ function CloseIcon(): JSX.Element {
   );
 }
 
-function CopyIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
-    </svg>
-  );
-}
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '';

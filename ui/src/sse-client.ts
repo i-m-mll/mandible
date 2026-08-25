@@ -298,7 +298,7 @@ export class SSEClient {
     try {
       const parsed = JSON.parse(data) as SSEPayload;
       const type = parsed.type || (parsed as { event?: string }).event || 'message';
-      return { type, ...parsed };
+      return { ...parsed, type };
     } catch {
       return { type: 'message', data };
     }

@@ -1,5 +1,4 @@
 import { getDb, type Db } from "../db.js";
-import { requireIdentity, isOperator } from "../client-auth/authz.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
@@ -49,7 +48,6 @@ import {
   isEmbedBlockType,
   listSpaceBlocks,
   updateSpaceBlock,
-  BlockValidationError,
   BLOCK_TYPES,
   type BlockItemSnapshot,
   type BlockType,
