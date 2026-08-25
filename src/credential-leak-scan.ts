@@ -377,7 +377,7 @@ export function replaceAllCounted(
  */
 function leakEventId(credentialId: string, conversationId: string | null): string {
   const digest = createHash("sha256")
-    .update(`${CREDENTIAL_LEAK_EVENT_TYPE} ${credentialId} ${conversationId ?? ""}`)
+    .update(`${CREDENTIAL_LEAK_EVENT_TYPE}\u0000${credentialId}\u0000${conversationId ?? ""}`)
     .digest("hex")
     .slice(0, 24);
   return `leak_${digest}`;
@@ -1125,7 +1125,7 @@ export function backfillCredentialLeakScan(
       for (const candidate of candidates) {
         const leak = matchActiveCredential(db, pepper, candidate);
         if (!leak) continue;
-        const key = `${leak.credential_id} ${row.conversation_id}`;
+        const key = `${leak.credential_id}\u0000${row.conversation_id}`;
         if (seen.has(key)) continue;
         seen.add(key);
         const location: CredentialLeakLocation = {
