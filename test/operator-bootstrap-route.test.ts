@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { openDb, setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -23,19 +23,6 @@ describe("operator bootstrap ledger boundary", () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-operator-bootstrap-"));
     db = openDb(path.join(tempDir, "mandible.db"));
 
-    // Exercise the real upgrade path from the schema immediately before the
-    // user registry. The migration must seed only the system principal.
-    db.pragma("foreign_keys = OFF");
-    db.exec(`
-      DROP TABLE IF EXISTS attribution_evidence;
-      DROP TABLE IF EXISTS delegated_signing_leases;
-      DROP TABLE IF EXISTS user_bindings;
-      DROP TABLE IF EXISTS user_credentials;
-      DROP TABLE IF EXISTS users;
-      UPDATE meta SET value = '106' WHERE key = 'schema_version';
-    `);
-    db.pragma("foreign_keys = ON");
-    migrate(db);
     setDb(db);
 
     expect(db.prepare("SELECT id, kind FROM users").all()).toEqual([

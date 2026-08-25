@@ -1,126 +1,74 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, openDb, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, openDb, type Db } from "../src/db.js";
+import {
+  builtinAuthHooks,
+  metaRows,
+  schemaVersion,
+  seededUsers,
+  settingsRows,
+  sqliteMaster,
+  tableInfo,
+} from "./helpers/schema-snapshot.js";
 
-// Integration reconciliation (umbrella c16807e): the additive-column hooks for
-// v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
-// and v114 (auth_requests.merge_finalizer_state) were renumbered atop main's
-// user-system migrations v107-v111. A database that previously ran an
-// intermediate feature-branch daemon may have recorded v107/v108 under DIFFERENT
-// meanings, so if a renumbered column is missing while the recorded version is
-// already at head (123), the per-version hooks never fire — the live-schema
-// convergence gate must repair the full column set regardless of recorded
-// version.
-describe("migration convergence: renumbered additive column hooks", () => {
-  let tempDir: string;
-  let db: Db;
+// The schema has two representations: src/db-baseline.ts creates it outright for
+// a fresh database, and src/db-migrations.ts moves a supported existing database
+// to the same shape. Nothing derives one from the other, so this is the check
+// that keeps them from drifting: take the frozen floor-version fixture, migrate
+// it, and require the result to be indistinguishable from a fresh database.
 
-  const columnNames = (table: string): string[] =>
-    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
-      (column) => column.name,
-    );
+const FLOOR_FIXTURE = fs.readFileSync(
+  path.join(process.cwd(), "test", "fixtures", `schema-v${MINIMUM_SUPPORTED_SCHEMA_VERSION}.sql`),
+  "utf8",
+);
 
-  beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-db-converge-"));
-    db = openDb(path.join(tempDir, "mandible.db"));
-  });
+let tempDir = "";
 
-  afterEach(() => {
+beforeEach(() => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-schema-converge-"));
+});
+
+afterEach(() => {
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+function createFloorDatabase(dbPath: string): void {
+  const db = new Database(dbPath);
+  try {
+    db.exec(FLOOR_FIXTURE);
+  } finally {
     db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
+  }
+}
 
-  it("converges every renumbered column for a DB recorded at v108 that is missing them", () => {
-    // Simulate an intermediate-version DB: the version says 108, but the
-    // renumbered v112/v113/v114 columns are absent because the intermediate
-    // daemon's v107/v108 meant something else. migrate() must restore the full
-    // renumbered column set (via the pending v112-v114 hooks and the live-schema
-    // convergence gate) rather than leaving the upstream, retirement, or
-    // finalizer-state columns absent.
-    db.exec(`
-      ALTER TABLE branches DROP COLUMN has_upstream;
-      ALTER TABLE branches DROP COLUMN upstream;
-      ALTER TABLE work_units DROP COLUMN merge_scan_retired_at;
-      ALTER TABLE auth_requests DROP COLUMN merge_finalizer_state;
-      UPDATE meta SET value = '108' WHERE key = 'schema_version';
-    `);
+describe.sequential("schema convergence", () => {
+  it("migrates the frozen floor fixture to the same schema a fresh database gets", () => {
+    const freshPath = path.join(tempDir, "fresh.db");
+    const migratedPath = path.join(tempDir, "migrated.db");
+    createFloorDatabase(migratedPath);
 
-    expect(columnNames("branches")).not.toContain("has_upstream");
-    expect(columnNames("branches")).not.toContain("upstream");
-    expect(columnNames("work_units")).not.toContain("merge_scan_retired_at");
-    expect(columnNames("auth_requests")).not.toContain("merge_finalizer_state");
+    const fresh = openDb(freshPath);
+    const migrated = openDb(migratedPath);
+    try {
+      for (const db of [fresh, migrated]) {
+        expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+        expect(db.pragma("foreign_key_check")).toEqual([]);
+        expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+      }
 
-    migrate(db);
-
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "158",
-    });
-    expect(columnNames("branches")).toContain("has_upstream");
-    expect(columnNames("branches")).toContain("upstream");
-    expect(columnNames("work_units")).toContain("merge_scan_retired_at");
-    expect(columnNames("auth_requests")).toContain("merge_finalizer_state");
-
-    // has_upstream is re-created with its intended definition, not a divergent one.
-    const branchInfo = db.prepare("PRAGMA table_info(branches)").all() as Array<{
-      name: string;
-      type: string;
-      notnull: number;
-      dflt_value: unknown;
-    }>;
-    const hasUpstream = branchInfo.find((column) => column.name === "has_upstream");
-    expect(hasUpstream?.type).toBe("INTEGER");
-    expect(hasUpstream?.notnull).toBe(1);
-    expect(hasUpstream?.dflt_value).toBe("0");
-    expect(db.pragma("foreign_key_check")).toEqual([]);
-  });
-
-  it("is idempotent when the columns already exist at a below-head version", () => {
-    // Only the version marker is rewound; all columns remain present. Convergence
-    // hooks must be no-ops (guarded) rather than duplicate-column errors.
-    db.exec("UPDATE meta SET value = '108' WHERE key = 'schema_version';");
-    expect(() => migrate(db)).not.toThrow();
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "158",
-    });
-    expect(
-      columnNames("branches").filter((name) => name === "has_upstream"),
-    ).toHaveLength(1);
-    expect(
-      columnNames("work_units").filter((name) => name === "merge_scan_retired_at"),
-    ).toHaveLength(1);
-    expect(
-      columnNames("auth_requests").filter((name) => name === "merge_finalizer_state"),
-    ).toHaveLength(1);
-  });
-
-  it("re-fires convergence at head version when a renumbered column is missing (post-failure recovery)", () => {
-    // Simulate the state a convergence-hook failure leaves behind: the version is
-    // ALREADY recorded at head (123) — applySchemaMigrations committed it — but a
-    // renumbered column is absent because its ALTER rolled back. A version-based
-    // gate ("currentVersion < 117") would never fire again, so the columns would
-    // stay missing forever. The live schema gate must detect and repair them on
-    // this open even though the version does not change.
-    db.exec(`
-      ALTER TABLE work_units DROP COLUMN merge_scan_retired_at;
-      ALTER TABLE branches DROP COLUMN upstream;
-    `);
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "158",
-    });
-    expect(columnNames("work_units")).not.toContain("merge_scan_retired_at");
-    expect(columnNames("branches")).not.toContain("upstream");
-
-    migrate(db);
-
-    // Version is unchanged (already at head) but the missing columns are repaired.
-    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "158",
-    });
-    expect(columnNames("work_units")).toContain("merge_scan_retired_at");
-    expect(columnNames("branches")).toContain("upstream");
-    expect(db.pragma("foreign_key_check")).toEqual([]);
+      expect(sqliteMaster(migrated)).toEqual(sqliteMaster(fresh));
+      expect(tableInfo(migrated)).toEqual(tableInfo(fresh));
+      expect(metaRows(migrated)).toEqual(metaRows(fresh));
+      expect(settingsRows(migrated)).toEqual(settingsRows(fresh));
+      expect(builtinAuthHooks(migrated)).toEqual(builtinAuthHooks(fresh));
+      expect(seededUsers(migrated)).toEqual(seededUsers(fresh));
+    } finally {
+      migrated.close();
+      fresh.close();
+    }
   });
 });

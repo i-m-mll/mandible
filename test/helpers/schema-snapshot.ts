@@ -1,0 +1,127 @@
+import type { Db } from "../../src/db.js";
+
+/**
+ * Comparable views of a database's schema and seeded rows, shared by the
+ * fresh-baseline and floor-fixture convergence checks.
+ */
+
+export interface SqliteMasterRow {
+  type: string;
+  name: string;
+  tbl_name: string;
+  sql: string | null;
+}
+
+export interface TableInfoRow {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+}
+
+/**
+ * Collapse insignificant whitespace outside string, identifier, and bracket
+ * quoting, so DDL written across several lines compares equal to the same DDL
+ * on one line.
+ */
+export function normalizeSql(sql: string | null): string | null {
+  if (sql === null) return null;
+
+  let result = "";
+  let pendingWhitespace = false;
+  let quote: "'" | '"' | "`" | "]" | null = null;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index];
+    if (quote !== null) {
+      result += char;
+      if (char === quote) {
+        if (quote !== "]" && sql[index + 1] === quote) {
+          result += sql[index + 1];
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      pendingWhitespace = true;
+      continue;
+    }
+
+    if (pendingWhitespace && result.length > 0) result += " ";
+    pendingWhitespace = false;
+    result += char;
+    if (char === "'" || char === '"' || char === "`") quote = char;
+    else if (char === "[") quote = "]";
+  }
+
+  return result.trim();
+}
+
+export function sqliteMaster(db: Db): SqliteMasterRow[] {
+  return (db.prepare(
+    `SELECT type, name, tbl_name, sql
+       FROM sqlite_master
+      WHERE name NOT LIKE 'sqlite_%'
+      ORDER BY type, name, tbl_name`,
+  ).all() as SqliteMasterRow[]).map((row) => ({ ...row, sql: normalizeSql(row.sql) }));
+}
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+export function tableInfo(db: Db): Array<{ table: string; columns: TableInfoRow[] }> {
+  const tables = db.prepare(
+    `SELECT name
+       FROM sqlite_master
+      WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+      ORDER BY name`,
+  ).all() as Array<{ name: string }>;
+
+  return tables.map(({ name }) => ({
+    table: name,
+    columns: db.prepare(`PRAGMA table_info(${quoteIdentifier(name)})`).all() as TableInfoRow[],
+  }));
+}
+
+export function metaRows(db: Db): Array<{ key: string; value: string }> {
+  return db.prepare("SELECT key, value FROM meta ORDER BY key").all() as Array<{
+    key: string;
+    value: string;
+  }>;
+}
+
+export function settingsRows(db: Db): Array<{ key: string; value: string }> {
+  return db.prepare("SELECT key, value FROM settings ORDER BY key").all() as Array<{
+    key: string;
+    value: string;
+  }>;
+}
+
+export function builtinAuthHooks(db: Db): Array<Record<string, string | number>> {
+  return db.prepare(
+    `SELECT id, repo_pattern, auth_type, command, label, enabled, builtin, position
+       FROM auth_hooks
+      WHERE builtin = 1
+      ORDER BY id`,
+  ).all() as Array<Record<string, string | number>>;
+}
+
+export function seededUsers(db: Db): Array<Record<string, unknown>> {
+  return db.prepare(
+    `SELECT id, slug, kind, display_name, email, status, created_at, updated_at, metadata_json
+       FROM users ORDER BY id`,
+  ).all() as Array<Record<string, unknown>>;
+}
+
+export function schemaVersion(db: Db): string | undefined {
+  return (db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
+    | { value: string }
+    | undefined)?.value;
+}

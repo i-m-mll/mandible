@@ -346,14 +346,6 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
   ...BRIEFING_GROUP_SCHEMA_SQL,
 ];
 
-/** Historical v142 apply shape. It exists only long enough for v143 to seal and retire v1. */
-export const TRANSIENT_BRIEFING_V1_SCHEMA_SQL: readonly string[] = BRIEFING_SCHEMA_SQL.map((statement) =>
-  statement.replace(
-    /CHECK\(profile (?:= 'mandible-briefing\.v\d+'|IN \([^)]*\))\)/,
-    "CHECK(profile = 'mandible-briefing.v1')",
-  )
-);
-
 export const CANONICAL_AGENT_DISPATCH_SQL = `CREATE TABLE agent_dispatch_events (
   id TEXT PRIMARY KEY,
   subject_kind TEXT NOT NULL CHECK(subject_kind IN ('issue','incident')),
@@ -390,25 +382,3 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_groups", "briefing_group_updates",
 ];
 
-/** Child-first retirement of the pre-v142 kind-split feedback schema. */
-export const LEGACY_FEEDBACK_DROP_SQL: readonly string[] = [
-  "DROP TABLE IF EXISTS feedback_submission_annotations",
-  "DROP TABLE IF EXISTS feedback_item_directives",
-  "DROP TABLE IF EXISTS feedback_collection_documents",
-  "DROP TABLE IF EXISTS feedback_submission_answers",
-  "DROP TABLE IF EXISTS feedback_submissions",
-  "DROP TABLE IF EXISTS feedback_annotation_events",
-  "DROP TABLE IF EXISTS feedback_comments",
-  "DROP TABLE IF EXISTS feedback_response_events",
-  "DROP TABLE IF EXISTS feedback_item_events",
-  "DROP TABLE IF EXISTS feedback_collection_events",
-  "DROP TABLE IF EXISTS feedback_publication_items",
-  "DROP TABLE IF EXISTS feedback_item_options",
-  "DROP TABLE IF EXISTS feedback_item_revisions",
-  "DROP TABLE IF EXISTS feedback_items",
-  "DROP TABLE IF EXISTS feedback_publications",
-  "DROP TABLE IF EXISTS feedback_ingest_requests",
-  "DROP TABLE IF EXISTS feedback_ask_sessions",
-  "DROP TABLE IF EXISTS feedback_recurring_profiles",
-  "DROP TABLE IF EXISTS feedback_collections",
-];

@@ -3,13 +3,14 @@ import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 
 /**
- * Schema snapshot generated from a full v1-v131 migration replay.
- * Regenerate whenever a migration is appended; the equivalence test guards drift.
+ * The Mandible schema. This file is the single representation of the head shape
+ * and is applied verbatim to a fresh database; `src/db-migrations.ts` carries
+ * only the forward statements that move a supported existing database to the
+ * same shape.
  *
- * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
- * the statements below unchanged from the v114 schema and only advance the head
- * version. Migration 116 is additive DDL: it contributes the two nullable
- * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
+ * Append a migration and update these statements in the same change.
+ * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
+ * head and fails if the two representations disagree.
  */
 export const BASELINE_SCHEMA_VERSION = 158;
 
@@ -83,7 +84,7 @@ const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX idx_conversation_block_aliases_block ON conversation_block_aliases(block_id)`,
 ];
 
-export const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests (
+const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests (
         id                   TEXT PRIMARY KEY,
         schema_id            TEXT NOT NULL
                              CHECK(schema_id IN ('task-command@1','task-command@2')),
@@ -118,7 +119,7 @@ export const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests 
         UNIQUE(requested_by_user_id, request_key)
       )`;
 
-export const TASK_COMMAND_EVENTS_V2_SQL = `CREATE TABLE task_command_events (
+const TASK_COMMAND_EVENTS_V2_SQL = `CREATE TABLE task_command_events (
         id               TEXT PRIMARY KEY,
         command_id       TEXT NOT NULL
                          REFERENCES task_command_requests(id) ON DELETE RESTRICT,
@@ -163,7 +164,7 @@ export const TASK_COMMAND_EVENTS_V2_SQL = `CREATE TABLE task_command_events (
         )
       )`;
 
-export const TASK_COMMAND_V2_INDEX_SQL: readonly string[] = [
+const TASK_COMMAND_V2_INDEX_SQL: readonly string[] = [
   `CREATE INDEX idx_task_command_requests_target
         ON task_command_requests(executor_name, task_id, requested_at DESC)`,
   `CREATE UNIQUE INDEX uq_task_command_events_accepted
@@ -267,7 +268,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE space_blocks (\n        id                 TEXT NOT NULL,\n        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        parent_id          TEXT,\n        block_type         TEXT NOT NULL\n                             CHECK(block_type IN (\n                               'heading','paragraph','reference','artifact_embed',\n                               'issue_embed','comment_embed','todo'\n                             )),\n        item_id            TEXT,\n        item_snapshot_json TEXT\n                             CHECK(item_snapshot_json IS NULL\n                               OR (json_valid(item_snapshot_json)\n                                   AND json_type(item_snapshot_json)='object')),\n        sort_key           TEXT NOT NULL,\n        markdown           TEXT NOT NULL DEFAULT '',\n        metadata_json      TEXT NOT NULL DEFAULT '{}'\n                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at         INTEGER NOT NULL,\n        updated_at         INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE RESTRICT\n      )",
   "CREATE TABLE space_edges (\n        id            TEXT PRIMARY KEY,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        source        TEXT NOT NULL,\n        target        TEXT NOT NULL,\n        label         TEXT,\n        style         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        FOREIGN KEY (space_id, source)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, target)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
   "CREATE TABLE space_exports (\n        id                              TEXT PRIMARY KEY,\n        space_id                        TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        repo_id                         TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,\n        branch                          TEXT NOT NULL,\n        path                            TEXT NOT NULL,\n        authority                       TEXT NOT NULL DEFAULT 'mandible'\n                                          CHECK(authority IN ('mandible','repo')),\n        status                          TEXT NOT NULL DEFAULT 'clean'\n                                          CHECK(status IN ('clean','stale','repo_changed','worktree_dirty','conflict')),\n        last_export_artifact_id         TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        pre_export_snapshot_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        last_export_commit              TEXT,\n        last_export_blob_sha            TEXT,\n        last_export_content_sha256      TEXT,\n        last_seen_commit                TEXT,\n        last_seen_content_sha256        TEXT,\n        created_at                      INTEGER NOT NULL,\n        updated_at                      INTEGER NOT NULL, last_export_blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL, pre_export_snapshot_blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL,\n        UNIQUE (repo_id, branch, path)\n      )",
-  "CREATE TABLE space_items (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        ref_type      TEXT NOT NULL\n                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space','finding')),\n        ref_id        TEXT NOT NULL CHECK(ref_id != ''),\n        ref_uri       TEXT,\n        title         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        UNIQUE (space_id, ref_type, ref_id),\n        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)\n      )",
+  CANONICAL_SPACE_ITEMS_SQL,
   "CREATE TABLE space_occurrences (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        item_id       TEXT,\n        renderer      TEXT NOT NULL DEFAULT 'canvas'\n                        CHECK(renderer IN ('canvas','board','collection')),\n        parent_id     TEXT,\n        x             REAL,\n        y             REAL,\n        width         REAL,\n        height        REAL,\n        z_index       INTEGER,\n        sort_key      TEXT,\n        section_id    TEXT,\n        note          TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
   "CREATE TABLE spaces (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        title            TEXT NOT NULL,\n        default_renderer TEXT NOT NULL DEFAULT 'canvas'\n                           CHECK(default_renderer IN ('canvas','document','board','collection')),\n        description      TEXT,\n        metadata_json    TEXT NOT NULL DEFAULT '{}'\n                           CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at       INTEGER NOT NULL,\n        updated_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE starred_chats (\n        id TEXT PRIMARY KEY,\n        session_id TEXT,\n        label TEXT NOT NULL,\n        notes TEXT,\n        transcript_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)\n      )",
@@ -647,45 +648,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         ON operational_incident_observation_events(incident_id, event_seq)`,
   `CREATE INDEX idx_operational_incident_observations_received
         ON operational_incident_observation_events(received_at DESC, id)`,
-  `CREATE TABLE "agent_dispatch_events" (
-        id                        TEXT PRIMARY KEY,
-        subject_kind              TEXT NOT NULL
-          CHECK(subject_kind IN ('issue','incident')),
-        issue_id                  TEXT,
-        incident_id               TEXT
-          REFERENCES operational_incidents(id) ON DELETE RESTRICT,
-        incident_telemetry_sha256 TEXT
-          CHECK(incident_telemetry_sha256 IS NULL
-                OR length(incident_telemetry_sha256) = 64),
-        actor_user_id             TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        provider                  TEXT NOT NULL DEFAULT 'claude',
-        instruction               TEXT NOT NULL,
-        cwd                       TEXT NOT NULL,
-        prompt_path               TEXT,
-        prompt_sha256             TEXT,
-        status                    TEXT NOT NULL
-                                  CHECK(status IN ('dispatching','dispatched','failed')),
-        session_handle            TEXT,
-        session_id                TEXT,
-        attach_command            TEXT,
-        error                     TEXT,
-        created_at                INTEGER NOT NULL,
-        settled_at                INTEGER,
-        CHECK(
-          (
-            subject_kind = 'issue'
-            AND issue_id IS NOT NULL
-            AND incident_id IS NULL
-          )
-          OR
-          (
-            subject_kind = 'incident'
-            AND incident_id IS NOT NULL
-            AND incident_telemetry_sha256 IS NOT NULL
-            AND issue_id IS NULL
-          )
-        )
-      )`,
+  CANONICAL_AGENT_DISPATCH_SQL,
   `CREATE INDEX idx_agent_dispatch_events_issue
          ON agent_dispatch_events(issue_id, created_at DESC)`,
   `CREATE INDEX idx_agent_dispatch_events_incident
@@ -983,18 +946,6 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec("ALTER TABLE auth_requests ADD COLUMN clearance_use_id TEXT REFERENCES auth_clearance_uses(id) ON DELETE RESTRICT");
     const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
     if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
-    // v142 removes the retired finding reference kind. The generated baseline
-    // still contains its historical DDL above so old migration snapshots stay
-    // readable; converge the empty fresh table to the canonical head shape.
-    db.exec("DROP TABLE space_items");
-    db.exec(CANONICAL_SPACE_ITEMS_SQL);
-    db.exec("CREATE INDEX idx_space_items_lookup ON space_items(space_id, ref_type, ref_id)");
-    db.exec("CREATE INDEX idx_space_items_by_ref ON space_items(ref_type, ref_id, space_id)");
-    db.exec("DROP TABLE agent_dispatch_events");
-    db.exec(CANONICAL_AGENT_DISPATCH_SQL);
-    db.exec("CREATE INDEX idx_agent_dispatch_events_issue ON agent_dispatch_events(issue_id, created_at DESC)");
-    db.exec("CREATE INDEX idx_agent_dispatch_events_incident ON agent_dispatch_events(incident_id, created_at DESC)");
-
     const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)");
     setMeta.run("schema_version", String(schemaVersion));
     for (const key of COMPLETED_POST_MIGRATIONS) {

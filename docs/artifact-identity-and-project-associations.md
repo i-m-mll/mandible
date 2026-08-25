@@ -606,9 +606,9 @@ Required tests:
 Recommended focused commands once implemented:
 
 ```bash
-npx vitest run test/artifact-versions.test.ts test/artifact-link-typed.test.ts test/artifact-series-backfill.test.ts
+npx vitest run test/artifact-versions.test.ts test/artifact-link-typed.test.ts
 npx vitest run test/provider-artifacts.test.ts test/spaces-routes.test.ts
-npx vitest run test/db-migration-*.test.ts
+npx vitest run test/db-schema-baseline.test.ts test/db-migration-convergence.test.ts
 npx tsc --noEmit --pretty false
 git diff --check
 ```
