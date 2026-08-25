@@ -129,7 +129,6 @@ SDK session stream events are cached in IndexedDB on the client for instant hydr
 
 - **Node.js** >= 18 (ESM, `node:` imports, `structuredClone`)
 - **macOS** (primary target; Linux should work but is less tested)
-- **git-bug** for legacy issue import/export compatibility (optional)
 - **node-pty** native module (postinstall script fixes permissions)
 
 ### Installation
