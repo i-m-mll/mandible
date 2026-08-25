@@ -350,6 +350,27 @@ export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
   );
 }
 
+/**
+ * Issue 1512471 — the one derivation of "the change this merge candidate makes".
+ *
+ * Three dots, always: `base...head` is the diff from the merge base to the head,
+ * which is what the merge will actually apply. `base..head` is the diff between
+ * the two tips, so every commit that landed on the base after the branch was cut
+ * appears inverted — work another lane merged is rendered as this branch
+ * *deleting* it. The error is silent and grows as the base advances, which is
+ * precisely when an approver most needs the number to be true.
+ *
+ * The conflict/independence file set and the operator-facing counts and preview
+ * are the same question about the same pair of refs, so they share this one
+ * answer rather than each spelling out a range that can drift apart again.
+ *
+ * Callers pass whatever ref form they already use; only the range semantics are
+ * shared, not the ref qualification.
+ */
+export function authReviewDiffRange(baseRef: string, headRef: string): string {
+  return `${baseRef}...${headRef}`;
+}
+
 export async function computeAuthMergeReviewMetadata(
   repoRoot: string,
   baseBranch: string,
@@ -359,7 +380,10 @@ export async function computeAuthMergeReviewMetadata(
     diffSummary: true,
   }
 ): Promise<AuthMergeReviewMetadata> {
-  const range = `refs/heads/${baseBranch}..refs/heads/${headBranch}`;
+  const range = authReviewDiffRange(
+    `refs/heads/${baseBranch}`,
+    `refs/heads/${headBranch}`
+  );
   const metadata: AuthMergeReviewMetadata = {};
 
   if (options.counts !== false) {

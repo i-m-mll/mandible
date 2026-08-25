@@ -352,8 +352,10 @@ export function registerAuthRoutes(
       return;
     }
     try {
-      authQueue.delete(req.params.id, body.reason);
-      res.status(200).json({ request_id: req.params.id, deleted: true });
+      // Issue 22ace1c — report the canonical id the queue actually deleted,
+      // not the prefix the caller happened to send.
+      const deleted = authQueue.delete(req.params.id, body.reason);
+      res.status(200).json({ request_id: deleted.id, deleted: true });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -510,8 +512,9 @@ export function registerAuthRoutes(
       return;
     }
     try {
-      authQueue.appendOutput(req.params.id, body.chunk);
-      res.status(202).json({ request_id: req.params.id, ok: true });
+      // Issue 22ace1c — report the canonical id the append landed on.
+      const appended = authQueue.appendOutput(req.params.id, body.chunk);
+      res.status(202).json({ request_id: appended.id, ok: true });
     } catch (error) {
       handleQueueError(error, res);
     }
