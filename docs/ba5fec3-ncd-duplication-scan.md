@@ -284,10 +284,12 @@ support the reopening rather than as silent absence of evidence.
   They are deliberate and the file is valid UTF-8, but `file(1)` reports it as
   `data` and plain `grep` silently skips the whole file. Writing them as
   `\u0000` escapes would be behavior-preserving.
-- The default test suite is not reliable on a contended machine. Three full runs
-  during this work, at load averages between 50 and 86, produced 1, 2 and 7
-  failures with disjoint membership. Every failing file passed when re-run in
-  isolation. The failures are daemon-spawn and health-probe timeouts.
+- The default test suite is load-sensitive rather than flaky in content. Three
+  full runs during this work, at load averages between 50 and 86, produced 1, 2
+  and 7 failures with disjoint membership; every failing file passed when re-run
+  in isolation, and a final full run at load average 26 was green across all 86
+  files and 1,534 tests. The failures are daemon-spawn and health-probe
+  timeouts.
 - A worktree with no `dist/` fails four daemon-boot tests for that reason alone.
   `npm run build` in the worktree is a precondition for a meaningful run.
 
