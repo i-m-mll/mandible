@@ -429,10 +429,15 @@ interface SpaceExportStoredRow extends SpaceExportRow {
   pre_export_snapshot_blob_id: string | null;
 }
 
+/**
+ * `last_export_artifact_id` and `pre_export_snapshot_artifact_id` are public
+ * compatibility names computed from the canonical blob columns. Nothing stores
+ * them.
+ */
 function projectSpaceExportRow(db: Db, row: SpaceExportStoredRow): SpaceExportRow {
-  const compatibilityRef = (blobId: string | null, legacyId: string | null): string | null => {
-    const storedId = blobId ? (getArtifact(db, blobId)?.id ?? legacyId) : legacyId;
-    return storedId ? projectArtifactPublicValue(db, storedId) as string : null;
+  const compatibilityRef = (blobId: string | null): string | null => {
+    const artifactId = blobId ? getArtifact(db, blobId)?.id ?? null : null;
+    return artifactId ? projectArtifactPublicValue(db, artifactId) as string : null;
   };
   const {
     last_export_blob_id: lastExportBlobId,
@@ -441,14 +446,8 @@ function projectSpaceExportRow(db: Db, row: SpaceExportStoredRow): SpaceExportRo
   } = row;
   return {
     ...compatibility,
-    last_export_artifact_id: compatibilityRef(
-      lastExportBlobId,
-      row.last_export_artifact_id,
-    ),
-    pre_export_snapshot_artifact_id: compatibilityRef(
-      preExportSnapshotBlobId,
-      row.pre_export_snapshot_artifact_id,
-    ),
+    last_export_artifact_id: compatibilityRef(lastExportBlobId),
+    pre_export_snapshot_artifact_id: compatibilityRef(preExportSnapshotBlobId),
   };
 }
 
@@ -616,31 +615,13 @@ function upsertSpaceExport(
 ): SpaceExportRow {
   const existing = findSpaceExport(db, input.repo_id, input.branch, input.path);
   const now = input.now;
-  const legacyArtifactId = (blobId: string | null): string | null => {
-    if (!blobId) return null;
-    const rows = db.prepare(
-      `SELECT legacy.id
-         FROM artifact_blob canonical
-         JOIN artifacts legacy
-           ON legacy.algorithm = canonical.algorithm
-          AND legacy.content_hash = canonical.content_hash
-        WHERE canonical.id = ?`,
-    ).all(blobId) as Array<{ id: string }>;
-    return rows.length === 1 ? rows[0].id : null;
-  };
-  const stored = {
-    ...input,
-    last_export_artifact_id: legacyArtifactId(input.last_export_blob_id),
-    pre_export_snapshot_artifact_id: legacyArtifactId(input.pre_export_snapshot_blob_id),
-  };
+  const stored = input;
   if (existing) {
     db.prepare(
       `UPDATE space_exports SET
          space_id = @space_id,
          authority = @authority,
          status = @status,
-         last_export_artifact_id = @last_export_artifact_id,
-         pre_export_snapshot_artifact_id = @pre_export_snapshot_artifact_id,
          last_export_blob_id = @last_export_blob_id,
          pre_export_snapshot_blob_id = @pre_export_snapshot_blob_id,
          last_export_commit = @last_export_commit,
@@ -657,13 +638,11 @@ function upsertSpaceExport(
   db.prepare(
     `INSERT INTO space_exports (
        id, space_id, repo_id, branch, path, authority, status,
-       last_export_artifact_id, pre_export_snapshot_artifact_id,
        last_export_blob_id, pre_export_snapshot_blob_id,
        last_export_commit, last_export_blob_sha, last_export_content_sha256,
        last_seen_commit, last_seen_content_sha256, created_at, updated_at
      ) VALUES (
        @id, @space_id, @repo_id, @branch, @path, @authority, @status,
-       @last_export_artifact_id, @pre_export_snapshot_artifact_id,
        @last_export_blob_id, @pre_export_snapshot_blob_id,
        @last_export_commit, @last_export_blob_sha, @last_export_content_sha256,
        @last_seen_commit, @last_seen_content_sha256, @created_at, @updated_at

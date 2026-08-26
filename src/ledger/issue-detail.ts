@@ -1,18 +1,18 @@
 import type { Db } from "../db.js";
-import { columnExists, tableExists } from "../db-introspection.js";
+import { tableExists } from "../db-introspection.js";
 import {
   AttributionReadResolver,
   resolvedActorDisplay,
   type AttributionReadProjection,
   type ReadUserIdentity,
 } from "../identity/read-projection.js";
+import type { ArtifactIdentityResolution } from "../artifact-identity.js";
 import {
   getArtifact,
   projectArtifactPublicValue,
-  resolveArtifactLinkRef,
-  resolveArtifactSurfaceRefReadonlyFull,
+  resolveArtifactIdentity,
 } from "../provider-artifacts.js";
-import type { ArtifactRecord, ArtifactResolveResult, WorkUnit } from "../types.js";
+import type { ArtifactRecord, WorkUnit } from "../types.js";
 import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "./store.js";
 import type {
@@ -575,7 +575,7 @@ function listAssociatedArtifacts(
   issueBody: string,
   comments: LedgerIssueDetailComment[],
 ): LedgerIssueDetailAssociatedArtifact[] {
-  if (!tableExists(db, "artifacts") && !tableExists(db, "artifact_blob")) return [];
+  if (!tableExists(db, "artifact_blob")) return [];
   const artifacts = new Map<string, LedgerIssueDetailAssociatedArtifact>();
 
   for (const row of listExplicitArtifactRows(db, issueId, comments.map((comment) => comment.id))) {
@@ -598,7 +598,7 @@ function listAssociatedArtifacts(
     const refs = extractArtifactRefs([issueBody, ...comments.map((comment) => comment.body)]);
     for (const ref of refs) {
       try {
-        const resolution = resolveArtifactLinkRef(db, ref);
+        const resolution = resolveArtifactIdentity(db, ref, "link");
         if (!resolution.artifact) continue;
         const displayIdentity = artifactDisplayIdentity(resolution);
         upsertAssociatedArtifact(artifacts, resolution.artifact, {
@@ -634,29 +634,19 @@ function listExplicitArtifactRows(
     groups.push(`(l.entity_type = 'comment' AND l.entity_id IN (${uniqueCommentIds.map(() => "?").join(", ")}))`);
     params.push(...uniqueCommentIds);
   }
-  const hasCanonicalTargets = columnExists(db, "artifact_links", "blob_id")
-    && columnExists(db, "artifact_links", "target_type")
-    && columnExists(db, "artifact_links", "target_id")
-    && tableExists(db, "artifact_blob");
   return db.prepare(
     `SELECT
-        a.id AS artifact_id, a.algorithm, a.content_hash, a.uri, a.media_type,
-        a.role AS artifact_role, a.provider_id AS artifact_provider_id,
-        a.manifest_id, a.custody_mode, a.availability,
-        a.created_at AS artifact_created_at,
         l.id AS link_id, l.entity_type, l.entity_id, l.link_type,
         l.role AS link_role, l.repo_id AS link_repo_id,
         l.provider_id AS link_provider_id, l.source AS link_source,
-        l.metadata_json AS link_metadata_json, l.link_kind, l.series_id, l.series_ref,
-        ${hasCanonicalTargets ? "b.id" : "NULL"} AS canonical_blob_id,
-        ${hasCanonicalTargets ? "l.target_type" : "NULL"} AS canonical_target_type,
-        ${hasCanonicalTargets ? "l.target_id" : "NULL"} AS canonical_target_id,
+        l.metadata_json AS link_metadata_json, l.link_kind, l.series_ref,
+        l.blob_id AS canonical_blob_id,
+        l.target_type AS canonical_target_type,
+        l.target_id AS canonical_target_id,
         l.created_at AS link_created_at, l.updated_at AS link_updated_at
        FROM artifact_links l
-       LEFT JOIN artifacts a ON a.id = l.artifact_id
-       ${hasCanonicalTargets ? "LEFT JOIN artifact_blob b ON b.id = l.blob_id" : ""}
       WHERE ${groups.join(" OR ")}
-      ORDER BY l.created_at DESC, a.created_at DESC`,
+      ORDER BY l.created_at DESC, l.id DESC`,
   ).all(...params) as Array<Record<string, unknown>>;
 }
 
@@ -747,16 +737,14 @@ function resolveIssueDetailLinkArtifact(
   link: LedgerIssueDetailArtifactLink,
 ): ResolvedIssueDetailLink {
   const canonicalBlobId = nullableString(row.canonical_blob_id);
-  const fallback = canonicalBlobId
-    ? getArtifact(db, canonicalBlobId)
-    : artifactFromIssueDetailRow(row);
+  const fallback = canonicalBlobId ? getArtifact(db, canonicalBlobId) : null;
   if (link.link_kind !== "living") {
     const targetRef = row.canonical_target_type === "artifact_version"
       || row.canonical_target_type === "artifact"
       ? nullableString(row.canonical_target_id)
       : null;
     const resolution = targetRef
-      ? resolveArtifactSurfaceRefReadonlyFull(db, targetRef)
+      ? resolveArtifactIdentity(db, targetRef, "surface")
       : null;
     const displayIdentity = artifactDisplayIdentity(resolution);
     return {
@@ -783,21 +771,21 @@ function resolveIssueDetailLinkArtifact(
   }
 
   try {
-    const resolution = resolveArtifactSurfaceRefReadonlyFull(db, ref);
+    const resolution = resolveArtifactIdentity(db, ref, "surface");
     if (resolution.artifact) {
-      const resolvedSeriesId = resolution.series?.id ?? link.series_id;
-      const resolvedVersionNo = resolution.version?.version_no ?? null;
+      const logical = resolution.logical_artifact;
+      const version = resolution.artifact_version;
+      const resolvedSeriesId = logical ? seriesRefForLogicalArtifact(logical.id) : link.series_id;
+      const resolvedVersionNo = version?.version_no ?? null;
       return {
         artifact: resolution.artifact,
         link: { ...link, series_id: resolvedSeriesId, resolved_version_no: resolvedVersionNo },
         ...artifactDisplayIdentity(resolution),
         pinState: "living",
-        isLatest: resolution.version && resolution.series
-          ? resolution.series.latest_version_id === resolution.version.id
-          : null,
+        isLatest: version && logical ? logical.latest_version_id === version.id : null,
         resolvedVersionNo,
         seriesId: resolvedSeriesId,
-        warnings: [...(resolution.warnings ?? [])],
+        warnings: [...resolution.warnings],
       };
     }
     return livingFallback(fallback, link, [
@@ -810,7 +798,7 @@ function resolveIssueDetailLinkArtifact(
 }
 
 function livingFallback(
-  artifact: ReturnType<typeof artifactFromIssueDetailRow>,
+  artifact: ResolvedIssueDetailLink["artifact"],
   link: LedgerIssueDetailArtifactLink,
   warnings: string[],
 ): ResolvedIssueDetailLink {
@@ -828,38 +816,18 @@ function livingFallback(
   };
 }
 
-function artifactDisplayIdentity(
-  resolution: ArtifactResolveResult | null,
-): { title: string | null; logicalName: string | null } {
-  const logical = resolution?.logical_artifact;
-  const series = resolution?.series;
-  return {
-    title: logical?.title ?? series?.title ?? null,
-    logicalName: logical?.logical_name ?? series?.logical_name ?? null,
-  };
+/** The authored `artifact-series:` spelling of a canonical logical artifact. */
+function seriesRefForLogicalArtifact(artifactId: string): string {
+  return artifactId.replace(/^artifact:/i, "artifact-series:");
 }
 
-function artifactFromIssueDetailRow(
-  row: Record<string, unknown>,
-): Pick<
-  ArtifactRecord,
-  "id" | "algorithm" | "content_hash" | "uri" | "media_type" | "role" | "provider_id" |
-  "manifest_id" | "custody_mode" | "availability" | "created_at"
-> | null {
-  const id = stringOr(row.artifact_id, "");
-  if (!id) return null;
+function artifactDisplayIdentity(
+  resolution: ArtifactIdentityResolution | null,
+): { title: string | null; logicalName: string | null } {
+  const logical = resolution?.logical_artifact;
   return {
-    id,
-    algorithm: stringOr(row.algorithm, "sha256"),
-    content_hash: stringOr(row.content_hash, ""),
-    uri: stringOr(row.uri, id),
-    media_type: nullableString(row.media_type),
-    role: nullableString(row.artifact_role),
-    provider_id: nullableString(row.artifact_provider_id),
-    manifest_id: nullableString(row.manifest_id),
-    custody_mode: artifactCustodyMode(row.custody_mode),
-    availability: artifactAvailability(row.availability),
-    created_at: Number(row.artifact_created_at ?? 0),
+    title: logical?.title ?? null,
+    logicalName: logical?.logical_name ?? null,
   };
 }
 
@@ -869,6 +837,7 @@ function artifactLinkFromIssueDetailRow(row: Record<string, unknown>): LedgerIss
     || row.canonical_target_type === "artifact_blob"
     ? row.canonical_target_type
     : null;
+  const targetId = nullableString(row.canonical_target_id);
   return {
     id: stringOr(row.link_id, ""),
     entity_type: stringOr(row.entity_type, ""),
@@ -880,11 +849,11 @@ function artifactLinkFromIssueDetailRow(row: Record<string, unknown>): LedgerIss
     source: stringOr(row.link_source, "artifact_registry"),
     metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
     link_kind: row.link_kind === "living" ? "living" : "pinned",
-    series_id: nullableString(row.series_id),
+    series_id: targetType === "artifact" && targetId ? seriesRefForLogicalArtifact(targetId) : null,
     series_ref: nullableString(row.series_ref),
     resolved_version_no: null,
     target_type: targetType,
-    target_id: nullableString(row.canonical_target_id),
+    target_id: targetId,
     created_at: Number(row.link_created_at ?? 0),
     updated_at: Number(row.link_updated_at ?? 0),
   };
@@ -1474,19 +1443,6 @@ function trimTrailingPunctuation(value: string): string {
 function schemeForRef(ref: string): string | null {
   const match = ref.match(/^([a-z][a-z0-9+.-]*):/i);
   return match ? match[1].toLowerCase() : null;
-}
-
-function artifactCustodyMode(value: unknown): ArtifactRecord["custody_mode"] {
-  return value === "link" || value === "copy" || value === "managed" || value === "external"
-    ? value
-    : "managed";
-}
-
-function artifactAvailability(value: unknown): ArtifactRecord["availability"] {
-  return value === "present" || value === "missing" || value === "stale" ||
-    value === "unchecked" || value === "remote_only" || value === "pinned"
-    ? value
-    : "unchecked";
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {
