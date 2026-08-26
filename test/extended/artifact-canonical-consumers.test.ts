@@ -49,12 +49,6 @@ function canonicalRefs(recorded: ReturnType<typeof recordArtifactVersion>): {
   };
 }
 
-function deleteLegacyArtifacts(): void {
-  db.prepare("DELETE FROM artifact_versions").run();
-  db.prepare("DELETE FROM artifact_series").run();
-  db.prepare("DELETE FROM artifacts").run();
-}
-
 function recordManaged(name: string, content: string, now: number, repoId?: string) {
   return recordArtifactVersion(db, {
     source_kind: "managed",
@@ -137,7 +131,7 @@ describe("canonical artifact compatibility consumers", () => {
       .map((series) => series.id)).toEqual(expected);
   });
 
-  it("keeps new ingest, reference, snapshot, and version writes out of legacy authority tables", () => {
+  it("keeps new ingest, reference, snapshot, and version writes canonical-only", () => {
     const ingested = ingestArtifact(db, {
       content: "canonical ingest\n",
       custody_mode: "copy",
@@ -173,7 +167,9 @@ describe("canonical artifact compatibility consumers", () => {
     expect(second.series.version_count).toBe(2);
 
     for (const table of ["artifacts", "artifact_series", "artifact_versions"]) {
-      expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0);
+      expect(db.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(table)).toEqual({ n: 0 });
     }
     expect(getArtifact(db, ingested.id)).toMatchObject({ id: ingested.id, content_hash: ingested.content_hash });
     expect(resolveArtifactRefReadonlyFull(db, second.version.id)).toMatchObject({
@@ -197,24 +193,21 @@ describe("canonical artifact compatibility consumers", () => {
       link_type: "evidence",
     }, 1001);
     const association = db.prepare(
-      "SELECT artifact_id, blob_id, target_type, target_id FROM artifact_links WHERE id = ?",
+      "SELECT blob_id, target_type, target_id FROM artifact_links WHERE id = ?",
     ).get(link?.id) as Record<string, unknown>;
 
     expect(association).toMatchObject({
-      artifact_id: null,
       blob_id: `artifact-blob:${artifact.content_hash}`,
       target_type: "artifact_blob",
       target_id: `artifact-blob:${artifact.content_hash}`,
     });
 
-    db.prepare("DELETE FROM artifacts WHERE id = ?").run(artifact.id);
-
     expect(db.prepare(
-      "SELECT artifact_id, blob_id FROM artifact_aliases WHERE normalized_ref = ?",
-    ).get(fileRef)).toEqual({ artifact_id: null, blob_id: `artifact-blob:${artifact.content_hash}` });
+      "SELECT blob_id FROM artifact_aliases WHERE normalized_ref = ?",
+    ).get(fileRef)).toEqual({ blob_id: `artifact-blob:${artifact.content_hash}` });
     expect(db.prepare(
-      "SELECT artifact_id, blob_id FROM artifact_links WHERE id = ?",
-    ).get(link?.id)).toEqual({ artifact_id: null, blob_id: `artifact-blob:${artifact.content_hash}` });
+      "SELECT blob_id FROM artifact_links WHERE id = ?",
+    ).get(link?.id)).toEqual({ blob_id: `artifact-blob:${artifact.content_hash}` });
 
     const projected = getArtifact(db, `artifact-blob:${artifact.content_hash}`);
     expect(projected).toMatchObject({
@@ -252,11 +245,6 @@ describe("canonical artifact compatibility consumers", () => {
       content: "# Draft\n",
     }, 2001);
 
-    db.prepare("UPDATE artifact_drafts SET series_id = NULL, base_version_id = NULL").run();
-    db.prepare("DELETE FROM artifact_versions").run();
-    db.prepare("DELETE FROM artifact_series").run();
-    db.prepare("DELETE FROM artifacts").run();
-
     expect(getArtifactDraft(db, recorded.version.id)).toMatchObject({
       series_id: recorded.series.id,
       base_version_id: recorded.version.id,
@@ -271,7 +259,6 @@ describe("canonical artifact compatibility consumers", () => {
     const second = recordManaged("linked", "linked v2\n", 3201);
     const firstRefs = canonicalRefs(first);
     const secondRefs = canonicalRefs(second);
-    deleteLegacyArtifacts();
 
     const living = resolveAndLinkArtifact(db, {
       ref: secondRefs.logical,
@@ -286,20 +273,18 @@ describe("canonical artifact compatibility consumers", () => {
     }, 3203).link!;
 
     expect(db.prepare(
-      `SELECT artifact_id, blob_id, target_type, target_id, fallback_version_id
+      `SELECT blob_id, target_type, target_id, fallback_version_id
          FROM artifact_links WHERE id = ?`,
     ).get(living.id)).toEqual({
-      artifact_id: null,
       blob_id: secondRefs.blob,
       target_type: "artifact",
       target_id: secondRefs.logical,
       fallback_version_id: secondRefs.version,
     });
     expect(db.prepare(
-      `SELECT artifact_id, blob_id, target_type, target_id, fallback_version_id
+      `SELECT blob_id, target_type, target_id, fallback_version_id
          FROM artifact_links WHERE id = ?`,
     ).get(pinned.id)).toEqual({
-      artifact_id: null,
       blob_id: firstRefs.blob,
       target_type: "artifact_version",
       target_id: firstRefs.version,
@@ -307,12 +292,11 @@ describe("canonical artifact compatibility consumers", () => {
     });
   });
 
-  it("saves, rebases, and publishes a stale draft after all legacy artifact rows are removed", () => {
+  it("saves, rebases, and publishes a stale draft", () => {
     const first = recordManaged("draft-flow", "base\n", 3300);
     const second = recordManaged("draft-flow", "base\nupstream\n", 3301);
     const firstRefs = canonicalRefs(first);
     const secondRefs = canonicalRefs(second);
-    deleteLegacyArtifacts();
 
     const saved = saveArtifactDraft(db, {
       ref: firstRefs.logical,
@@ -325,12 +309,10 @@ describe("canonical artifact compatibility consumers", () => {
       stale: true,
     });
     expect(db.prepare(
-      "SELECT artifact_id, version_id, series_id, base_version_id FROM artifact_drafts",
+      "SELECT artifact_id, version_id FROM artifact_drafts",
     ).get()).toEqual({
       artifact_id: firstRefs.logical,
       version_id: firstRefs.version,
-      series_id: null,
-      base_version_id: null,
     });
 
     const rebased = rebaseArtifactDraft(db, firstRefs.logical, 3303);
@@ -339,48 +321,6 @@ describe("canonical artifact compatibility consumers", () => {
     expect(published.result.series.id).toBe(first.series.id);
     expect(published.result.version.version_no).toBe(3);
     expect(getArtifactDraft(db, firstRefs.logical)).toBeNull();
-  });
-
-  it("prefers canonical retention and association targets over divergent optional legacy ids", () => {
-    const canonical = ingestArtifact(db, {
-      content: "canonical association\n",
-      custody_mode: "copy",
-      retention: { pinned: true, policy: "canonical" },
-    }, 3400, tempDir);
-    const unrelated = ingestArtifact(db, {
-      content: "unrelated legacy pointer\n",
-      custody_mode: "copy",
-    }, 3401, tempDir);
-    for (const artifact of [canonical, unrelated]) {
-      db.prepare(
-        `INSERT INTO artifacts (
-          id, algorithm, content_hash, uri, pinned, custody_mode, retention_json, created_at
-        ) VALUES (?, 'sha256', ?, ?, 0, 'copy', '{"policy":"legacy"}', ?)`,
-      ).run(artifact.id, artifact.content_hash, artifact.uri, artifact.created_at);
-    }
-    const alias = registerArtifactAlias(db, {
-      artifactId: canonical.id,
-      ref: "file:///canonical-association.txt",
-      now: 3402,
-    });
-    const link = registerArtifactLink(db, canonical.id, {
-      entity_type: "session",
-      entity_id: "association-session",
-    }, 3403)!;
-    db.prepare("UPDATE artifacts SET pinned = 0, retention_json = '{\"policy\":\"legacy\"}' WHERE id = ?")
-      .run(canonical.id);
-    db.prepare("UPDATE artifact_aliases SET artifact_id = ? WHERE id = ?").run(unrelated.id, alias.id);
-    db.prepare("UPDATE artifact_links SET artifact_id = ? WHERE id = ?").run(unrelated.id, link.id);
-
-    const projected = getArtifact(db, canonical.id)!;
-    expect(projected.pinned).toBe(true);
-    expect(projected.retention).toMatchObject({ pinned: true, policy: "canonical" });
-    expect(projected.aliases).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: alias.id, artifact_id: canonical.id }),
-    ]));
-    expect(projected.links).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: link.id, artifact_id: canonical.id }),
-    ]));
   });
 
   it("isolates logical projections for a shared blob and applies q, repo, location, and same-row link filters", () => {
@@ -415,7 +355,6 @@ describe("canonical artifact compatibility consumers", () => {
     db.prepare("UPDATE artifact_links SET target_type = 'artifact_blob', target_id = ? WHERE id = ?")
       .run(firstRefs.version, wrongType.id);
 
-    deleteLegacyArtifacts();
     expect(getArtifact(db, firstRefs.logical)?.metadata).toMatchObject({ logical_only: "a" });
     expect(getArtifact(db, secondRefs.logical)?.metadata).toMatchObject({ logical_only: "b" });
     expect(getArtifact(db, firstRefs.blob)?.metadata).not.toHaveProperty("logical_only");
@@ -432,84 +371,5 @@ describe("canonical artifact compatibility consumers", () => {
     })).toEqual([]);
     expect(db.prepare("SELECT target_type, target_id FROM artifact_links WHERE id = ?")
       .get(matching.id)).toEqual({ target_type: "artifact_version", target_id: firstRefs.version });
-  });
-
-  it("merges canonical and unmatched legacy rows beyond the 500-row scan boundary", () => {
-    const canonical = ingestArtifact(db, {
-      content: "canonical pagination\n",
-      custody_mode: "copy",
-    }, 10_000, tempDir);
-    const insert = db.prepare(
-      `INSERT INTO artifacts (
-        id, algorithm, content_hash, uri, media_type, size_bytes, metadata_json,
-        pinned, created_at, custody_mode, repo_locator_json, availability,
-        retention_json, reference_json
-      ) VALUES (?, 'sha256', ?, ?, 'text/plain', 0, '{}', 0, ?, 'external', '{}',
-        'remote_only', '{}', '{}')`,
-    );
-    db.transaction(() => {
-      for (let i = 0; i < 505; i += 1) {
-        const hash = i.toString(16).padStart(64, "0");
-        insert.run(`legacy-pagination-${i}`, hash, `external://legacy/${i}`, i);
-      }
-    })();
-
-    expect(listArtifacts(db, { limit: 2 }).map((artifact) => artifact.id)).toEqual([
-      canonical.id,
-      "legacy-pagination-504",
-    ]);
-    expect(listArtifacts(db, { offset: 500, limit: 3 }).map((artifact) => artifact.id)).toEqual([
-      "legacy-pagination-5",
-      "legacy-pagination-4",
-      "legacy-pagination-3",
-    ]);
-  });
-
-  it("uses legacy-only draft SQL against pre-v104 association tables", () => {
-    const recorded = recordManaged("pre-v104", "# Pre v104\n", 3600);
-    db.prepare(
-      `INSERT INTO artifacts (id, algorithm, content_hash, uri, custody_mode, created_at)
-       VALUES (?, 'sha256', ?, ?, 'managed', ?)`,
-    ).run(recorded.artifact.id, recorded.artifact.content_hash, recorded.artifact.uri, recorded.artifact.created_at);
-    db.prepare(
-      `INSERT INTO artifact_series (
-        id, series_key, source_kind, title, logical_name, latest_version_id,
-        version_count, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?, ?)`,
-    ).run(recorded.series.id, recorded.series.series_key, recorded.series.source_kind,
-      recorded.series.title, recorded.series.logical_name, recorded.version.id, 3600, 3600);
-    db.prepare(
-      `INSERT INTO artifact_versions (
-        id, series_id, artifact_id, version_no, source_kind, content_hash,
-        custody_mode, metadata_json, created_at
-      ) VALUES (?, ?, ?, 1, ?, ?, ?, '{}', ?)`,
-    ).run(recorded.version.id, recorded.series.id, recorded.artifact.id,
-      recorded.version.source_kind, recorded.version.content_hash, recorded.version.custody_mode, 3600);
-    db.pragma("foreign_keys = OFF");
-    db.exec(`
-      DROP TABLE artifact_drafts;
-      CREATE TABLE artifact_drafts (
-        id TEXT PRIMARY KEY,
-        series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
-        base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
-        content TEXT NOT NULL,
-        media_type TEXT,
-        label TEXT,
-        note TEXT,
-        metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        UNIQUE(series_id)
-      );
-    `);
-    db.pragma("foreign_keys = ON");
-
-    expect(saveArtifactDraft(db, {
-      ref: recorded.series.id,
-      content: "# Legacy draft\n",
-    }, 3601)).toMatchObject({
-      series_id: recorded.series.id,
-      base_version_id: recorded.version.id,
-    });
   });
 });

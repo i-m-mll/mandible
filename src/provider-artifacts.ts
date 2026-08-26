@@ -3810,8 +3810,7 @@ function listCanonicalArtifactSeriesCompatibility(
 ): ArtifactSeriesSummary[] {
   const where: string[] = [];
   const bindings: Record<string, unknown> = {};
-  const linkScope = `(al.blob_id = b.id OR al.target_id = a.id OR al.target_id = v.id
-    OR al.series_id = replace(a.id, 'artifact:', 'artifact-series:'))`;
+  const linkScope = "(al.blob_id = b.id OR al.target_id = a.id OR al.target_id = v.id)";
   const q = asString(options.q);
   if (q) {
     bindArtifactIdentifierSearch(bindings, q);
