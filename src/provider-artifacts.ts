@@ -2703,16 +2703,13 @@ export async function addArtifactBundleMembersAsync(
 
 export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBundleMemberRecord[] {
   if (!tableExists(db, "artifact_links")) return [];
-  const blobColumn = columnExists(db, "artifact_links", "blob_id") ? "blob_id" : "NULL AS blob_id";
   const rows = db.prepare(
-    `SELECT id, artifact_id, ${blobColumn}, entity_type, entity_id, link_type, role, repo_id,
-            provider_id, source, metadata_json, link_kind, series_id, series_ref,
-            created_at, updated_at
+    `SELECT ${ARTIFACT_LINK_COLUMNS}
        FROM artifact_links
       WHERE entity_type = 'artifact_bundle'
         AND entity_id = ?
         AND link_type = 'bundle_member'
-      ORDER BY CAST(json_extract(metadata_json, '$.order') AS INTEGER), artifact_id`,
+      ORDER BY CAST(json_extract(metadata_json, '$.order') AS INTEGER), blob_id`,
   ).all(bundleId) as Array<Record<string, unknown>>;
   return rows.map((row, index) => {
     const link = artifactLinkFromRow(db, row);
@@ -5828,18 +5825,13 @@ function canonicalArtifactVersionHistory(
   };
   const targetIds = [logical.id, ...canonicalVersions.map((version) => version.id)];
   const blobIds = canonicalVersions.map((version) => version.blob_id);
-  const links = columnExists(db, "artifact_links", "blob_id")
-    && targetIds.length + blobIds.length > 0
-    ? (db.prepare(
-        `SELECT id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
-                provider_id, source, metadata_json, link_kind, series_id, series_ref,
-                created_at, updated_at
-           FROM artifact_links
-          WHERE target_id IN (${[...targetIds, ...blobIds].map(() => "?").join(",")})
-          ORDER BY entity_type, entity_id, link_type, role`,
-      ).all(...targetIds, ...blobIds) as Array<Record<string, unknown>>)
-        .map((row) => artifactLinkFromRow(db, row))
-    : listArtifactSeriesLinks(db, seriesId);
+  const links = (db.prepare(
+    `SELECT ${ARTIFACT_LINK_COLUMNS}
+       FROM artifact_links
+      WHERE target_id IN (${[...targetIds, ...blobIds].map(() => "?").join(",")})
+      ORDER BY entity_type, entity_id, link_type, role`,
+  ).all(...targetIds, ...blobIds) as Array<Record<string, unknown>>)
+    .map((row) => artifactLinkFromRow(db, row));
   return { series, versions, links };
 }
 
