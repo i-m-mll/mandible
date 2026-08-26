@@ -4,8 +4,6 @@ import type {
   ArtifactIdentityRecord,
   ArtifactRecord,
   ArtifactResolveResult,
-  ArtifactSeriesRecord,
-  ArtifactVersionRecord,
   CanonicalArtifactVersionRecord,
 } from "./types.js";
 
@@ -23,8 +21,6 @@ interface ArtifactIdentityPayload {
   logical_artifact: ArtifactIdentityRecord | null;
   artifact_version: CanonicalArtifactVersionRecord | null;
   artifact_blob: ArtifactBlobRecord | null;
-  series: ArtifactSeriesRecord | null;
-  version: ArtifactVersionRecord | null;
 }
 
 interface ArtifactIdentityBase extends ArtifactIdentityPayload {
@@ -94,8 +90,6 @@ export function emptyArtifactIdentityPayload(): ArtifactIdentityPayload {
     logical_artifact: null,
     artifact_version: null,
     artifact_blob: null,
-    series: null,
-    version: null,
   };
 }
 
@@ -112,7 +106,13 @@ export function failedArtifactIdentity(
   return { ...input, kind: input.status, target_id: null };
 }
 
-/** Compatibility-only projection for the historical public resolver shape. */
+/**
+ * Compatibility-only projection for the historical public resolver shape.
+ *
+ * The deprecated `series` and `version` fields are deliberately absent here:
+ * they are computed from canonical records by the caller that owns the HTTP
+ * boundary, so no canonical code path can read them back as domain facts.
+ */
 export function projectLegacyArtifactResolution(
   resolution: ArtifactIdentityResolution,
 ): ArtifactResolveResult {
@@ -128,8 +128,6 @@ export function projectLegacyArtifactResolution(
     logical_artifact: resolution.logical_artifact,
     artifact_version: resolution.artifact_version,
     artifact_blob: resolution.artifact_blob,
-    series: resolution.series,
-    version: resolution.version,
     warnings: resolution.warnings,
   };
 }

@@ -4750,7 +4750,7 @@ function resolveAssociationTarget(
   if (resolution.status !== "resolved" || !resolution.target_type || !resolution.target_id) {
     throw new Error(`artifact target did not resolve: ${input.target_ref}`);
   }
-  if (resolution.target_type === "artifact_blob" || resolution.target_type === "legacy_artifact") {
+  if (resolution.target_type === "artifact_blob") {
     throw new Error("project associations target logical artifacts or artifact versions, not blobs");
   }
   return {
@@ -5990,8 +5990,6 @@ function discriminatedArtifactResolution(
     logical_artifact: legacy.logical_artifact ?? null,
     artifact_version: legacy.artifact_version ?? null,
     artifact_blob: legacy.artifact_blob ?? null,
-    series: legacy.series ?? null,
-    version: legacy.version ?? null,
   };
   const warnings = legacy.warnings ?? [];
   const requestedKind = requestedIdentityKind(legacy.ref);
@@ -6082,14 +6080,30 @@ export function resolveArtifactIdentity(
   return discriminatedArtifactResolution(db, resolved);
 }
 
-/** Preserve the historical public shape at compatibility boundaries only. */
+/**
+ * Preserve the historical public shape at compatibility boundaries only.
+ *
+ * `series` and `version` are deprecated projections of the canonical records,
+ * computed here rather than resolved. They exist for one compatibility window
+ * on `/api/artifacts/resolve` and its CLI reader; nothing inside the canonical
+ * model reads them back.
+ */
 export function resolveArtifactIdentityCompat(
   db: Db,
   ref: string,
   mode: ArtifactResolutionMode = "strict-read",
   now = Date.now(),
 ): ArtifactResolveResult {
-  return projectLegacyArtifactResolution(resolveArtifactIdentity(db, ref, mode, now));
+  const resolution = resolveArtifactIdentity(db, ref, mode, now);
+  return {
+    ...projectLegacyArtifactResolution(resolution),
+    series: resolution.logical_artifact
+      ? projectCanonicalSeriesRecord(resolution.logical_artifact)
+      : null,
+    version: resolution.artifact_version
+      ? projectCanonicalVersionRecord(db, resolution.artifact_version)
+      : null,
+  };
 }
 
 export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
@@ -6110,7 +6124,7 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
 
 export function getProviderManifest(db: Db, id: string): ProviderManifestRecord | null {
   const row = db.prepare(
-    `SELECT id, provider_id, manifest_type, version, content_hash, artifact_id,
+    `SELECT id, provider_id, manifest_type, version, content_hash, blob_id,
             source, content_json, created_at
        FROM provider_manifests WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
