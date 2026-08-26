@@ -295,11 +295,14 @@ describe("NO SILENT RETARGET: artifact_id is never rewritten on conflict", () =>
     const lb = registerArtifactLink(db, b.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 1001)!;
     expect(la.id).not.toBe(lb.id);
     // The original pinned row still points at a — it was never rewritten.
-    const reread = db.prepare("SELECT artifact_id, blob_id FROM artifact_links WHERE id = ?").get(la.id) as {
-      artifact_id: string | null;
+    const reread = db.prepare("SELECT blob_id, target_id FROM artifact_links WHERE id = ?").get(la.id) as {
       blob_id: string;
+      target_id: string;
     };
-    expect(reread).toEqual({ artifact_id: null, blob_id: `artifact-blob:${a.content_hash}` });
+    expect(reread).toEqual({
+      blob_id: `artifact-blob:${a.content_hash}`,
+      target_id: `artifact-blob:${a.content_hash}`,
+    });
   });
 });
 
@@ -318,15 +321,15 @@ describe("backward compatibility / idempotency", () => {
     db.prepare("DELETE FROM artifact_links WHERE id = ?").run(seed.id);
     db.prepare(
       `INSERT INTO artifact_links
-        (id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
+        (id, blob_id, entity_type, entity_id, link_type, role, repo_id,
          provider_id, source, metadata_json, created_at, updated_at, target_type, target_id)
-       VALUES (@id, @artifact_id, @blob_id, 'issue', @entity_id, 'references', NULL, NULL,
+       VALUES (@id, @blob_id, 'issue', @entity_id, 'references', NULL, NULL,
          NULL, 'legacy', '{}', 1, 1, @target_type, @target_id)`,
-    ).run({ id: seed.id, artifact_id: null, entity_id: issueId, ...canonicalTarget });
-    const legacy = db
-      .prepare("SELECT link_kind, series_id, series_ref FROM artifact_links WHERE id = ?")
+    ).run({ id: seed.id, entity_id: issueId, ...canonicalTarget });
+    const seeded = db
+      .prepare("SELECT link_kind, series_ref FROM artifact_links WHERE id = ?")
       .get(seed.id);
-    expect(legacy).toEqual({ link_kind: "pinned", series_id: null, series_ref: null });
+    expect(seeded).toEqual({ link_kind: "pinned", series_ref: null });
 
     // Re-POST with no link_kind → same id, in-place update, no duplicate row.
     const again = registerArtifactLink(db, art.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 2000)!;
@@ -539,9 +542,9 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
       expect(response.statusCode).toBe(200);
       expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
     }
-    expect(registered.payload.manifest.artifact_id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
-    expect(ingested.payload.manifest.artifact_id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
-    expect(detail.payload.manifests[0].artifact_id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(registered.payload.manifest.blob_id).toMatch(/^artifact-blob:[a-f0-9]{12,64}$/);
+    expect(ingested.payload.manifest.blob_id).toMatch(/^artifact-blob:[a-f0-9]{12,64}$/);
+    expect(detail.payload.manifests[0].blob_id).toMatch(/^artifact-blob:[a-f0-9]{12,64}$/);
     expect(detail.payload.artifacts.every((artifact: { id: string }) =>
       /^artifact:[a-f0-9]{12,64}$/.test(artifact.id))).toBe(true);
 
@@ -635,9 +638,13 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
       }, 1000),
     ).not.toThrow();
     const row = db
-      .prepare("SELECT link_kind, series_id, artifact_id FROM artifact_links WHERE entity_id = ?")
-      .get(issueId) as { link_kind: string; series_id: string; artifact_id: string };
-    expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: null });
+      .prepare("SELECT link_kind, target_type, target_id FROM artifact_links WHERE entity_id = ?")
+      .get(issueId) as { link_kind: string; target_type: string; target_id: string };
+    expect(row).toEqual({
+      link_kind: "living",
+      target_type: "artifact",
+      target_id: seriesId.replace(/^artifact-series:/, "artifact:"),
+    });
   });
 
   it("leaves the pinned ingest path unaffected (default link_kind, no series required)", async () => {
@@ -654,8 +661,10 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(res.statusCode).toBe(200);
     expect(res.payload.artifact.id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
     const row = db
-      .prepare("SELECT link_kind, series_id FROM artifact_links WHERE entity_id = ? AND link_type = 'evidence'")
-      .get(issueId) as { link_kind: string; series_id: string | null };
-    expect(row).toEqual({ link_kind: "pinned", series_id: null });
+      .prepare(
+        "SELECT link_kind, target_type FROM artifact_links WHERE entity_id = ? AND link_type = 'evidence'",
+      )
+      .get(issueId) as { link_kind: string; target_type: string };
+    expect(row).toEqual({ link_kind: "pinned", target_type: "artifact_blob" });
   });
 });

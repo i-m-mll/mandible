@@ -44,33 +44,27 @@ function createIssue(projectId: string, title: string, opts: { labels?: string[]
 }
 
 function insertArtifact(_id: string, hash: string): string {
-  const id = `artifact:sha256:${hash}`;
-  db.prepare(
-    `INSERT INTO artifacts (id, algorithm, content_hash, uri, created_at)
-     VALUES (?, 'sha256', ?, ?, ?)`,
-  ).run(id, hash, id, Date.now());
   db.prepare(
     `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, custody_mode, availability, created_at)
      VALUES (?, 'sha256', ?, ?, 'managed', 'present', ?)`,
-  ).run(`artifact-blob:${hash}`, hash, id, Date.now());
-  return id;
+  ).run(`artifact-blob:${hash}`, hash, `artifact:sha256:${hash}`, Date.now());
+  return `artifact:sha256:${hash}`;
 }
 
 function linkArtifactToIssue(artifactId: string, issueId: string): void {
-  const hash = artifactId.replace(/^artifact:sha256:/, "");
+  const blobId = artifactId.replace(/^artifact:sha256:/, "artifact-blob:");
   db.prepare(
     `INSERT INTO artifact_links (
-       id, artifact_id, blob_id, entity_type, entity_id, link_type, source,
+       id, blob_id, entity_type, entity_id, link_type, source,
        target_type, target_id, created_at, updated_at
      ) VALUES (
-       ?, ?, ?, 'issue', ?, 'references', 'test', 'artifact_blob', ?, ?, ?
+       ?, ?, 'issue', ?, 'references', 'test', 'artifact_blob', ?, ?, ?
      )`,
   ).run(
     `link-${artifactId}-${issueId}`,
-    artifactId,
-    `artifact-blob:${hash}`,
+    blobId,
     issueId,
-    `artifact-blob:${hash}`,
+    blobId,
     Date.now(),
     Date.now(),
   );

@@ -692,12 +692,12 @@ describe("provider/artifact substrate", () => {
   it("materializes unknown scheme refs as external artifact records instead of failing", () => {
     const resolution = resolveArtifactRef(db, "zotero://library/items/ABC123", 1000);
     const row = db.prepare(
-      "SELECT scheme, normalized_ref, resolution_status, artifact_id FROM artifact_aliases WHERE alias = ?"
+      "SELECT scheme, normalized_ref, resolution_status, blob_id FROM artifact_aliases WHERE alias = ?"
     ).get("zotero://library/items/ABC123") as {
       scheme: string;
       normalized_ref: string;
       resolution_status: string;
-      artifact_id: string | null;
+      blob_id: string | null;
     };
 
     expect(resolution).toMatchObject({
@@ -714,7 +714,7 @@ describe("provider/artifact substrate", () => {
       scheme: "zotero",
       normalized_ref: "zotero://library/items/ABC123",
       resolution_status: "resolved",
-      artifact_id: null,
+      blob_id: `artifact-blob:${resolution.artifact?.content_hash}`,
     });
     expect(listArtifacts(db, { scheme: "zotero" }).map((item) => item.id)).toEqual([
       resolution.artifact?.id,
