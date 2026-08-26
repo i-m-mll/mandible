@@ -31,6 +31,8 @@ const REF_LOCATOR = hash("d");
 const MALFORMED_ID = hash("e");
 /** A legacy row whose uri the canonical blob never recorded. */
 const URI_ONLY = hash("f");
+/** A link-custody row whose repo locator lives only on the legacy row. */
+const REPO_LOCATOR = hash("2");
 /** Bytes referenced by the Space export and the provider manifest. */
 const EXPORTED = hash("1");
 
@@ -58,6 +60,11 @@ function seedFloorCorpus(dbPath: string): void {
     const legacy = db.prepare(
       `INSERT INTO artifacts (id, algorithm, content_hash, uri, custody_mode, availability, created_at)
        VALUES (?, 'sha256', ?, ?, 'managed', 'present', 1000)`,
+    );
+    const linkedLegacy = db.prepare(
+      `INSERT INTO artifacts (id, algorithm, content_hash, uri, custody_mode, home_repo_id,
+                              repo_locator_json, availability, created_at)
+       VALUES (?, 'sha256', ?, ?, 'link', ?, ?, 'present', 1000)`,
     );
     const logical = db.prepare(
       `INSERT INTO artifact (id, identity_key, source_kind, latest_version_id, version_count,
@@ -107,6 +114,15 @@ function seedFloorCorpus(dbPath: string): void {
     version.run(
       "artifact-version:malformed-1", "artifact:malformed", 1,
       `artifact-blob:artifact:ref:${MALFORMED_ID}`, MALFORMED_ID,
+    );
+
+    // 5b. link custody whose repo locator exists only on the legacy row. This is
+    //     the only fact that lets the blob's bytes be found, so losing it makes
+    //     the content unreadable while the row itself survives.
+    blob.run(`artifact-blob:${REPO_LOCATOR}`, REPO_LOCATOR, null);
+    linkedLegacy.run(
+      `artifact:sha256:${REPO_LOCATOR}`, REPO_LOCATOR, "repo://corpus/tracked.md", "corpus",
+      JSON.stringify({ repo_id: "corpus", path: "docs/tracked.md", root: "/corpus" }),
     );
 
     // 5. a legacy uri the canonical blob never recorded.
@@ -240,7 +256,23 @@ describe.sequential("artifact retirement support floor", () => {
         "SELECT json_extract(reference_json, '$.uri') AS uri FROM artifact_blob WHERE content_hash = ?",
       ).get(BLOB_ONLY)).toEqual({ uri: null });
 
-      // Port 3: the malformed blob id is normalized, and so is every column
+      // Port 3: the repo locator that only the legacy row carried lands in the
+      // slots projectCanonicalArtifactRecord reads.
+      expect(db.prepare(
+        `SELECT json_extract(metadata_json, '$.home_repo_id') AS repo,
+                json_extract(metadata_json, '$.repo_locator') AS locator
+           FROM artifact_blob WHERE content_hash = ?`,
+      ).get(REPO_LOCATOR)).toEqual({
+        repo: "corpus",
+        locator: JSON.stringify({ repo_id: "corpus", path: "docs/tracked.md", root: "/corpus" }),
+      });
+      // A blob with no legacy locator to inherit is left alone.
+      expect(db.prepare(
+        `SELECT json_extract(metadata_json, '$.repo_locator') AS locator
+           FROM artifact_blob WHERE content_hash = ?`,
+      ).get(BLOB_ONLY)).toEqual({ locator: null });
+
+      // Port 4: the malformed blob id is normalized, and so is every column
       // that referenced it.
       expect(db.prepare(
         "SELECT id FROM artifact_blob WHERE id <> 'artifact-blob:' || content_hash",

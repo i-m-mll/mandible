@@ -30,7 +30,7 @@ export const MINIMUM_SUPPORTED_SCHEMA_VERSION = 158;
  * artifact may carry versions the legacy series never had. Nothing here copies
  * a legacy counter or latest-version pointer back over canonical state.
  *
- * Three things are ported forward before the legacy rows go, because they are
+ * Four things are ported forward before the legacy rows go, because they are
  * facts the canonical rows did not yet carry:
  *
  *  1. A legacy artifact id that is not the default `artifact:sha256:<hash>`
@@ -40,7 +40,14 @@ export const MINIMUM_SUPPORTED_SCHEMA_VERSION = 158;
  *     in the ledger names those ids, so they must keep resolving.
  *  2. A legacy `uri` with no canonical equivalent becomes the blob's
  *     `reference_json.$.uri`, the locator slot for non-custodied bytes.
- *  3. A blob id that is not `artifact-blob:<content_hash>` is normalized to
+ *  3. A legacy `home_repo_id` / `repo_locator_json` with no canonical
+ *     equivalent becomes `metadata_json.$.home_repo_id` and
+ *     `$.repo_locator`, the slots `projectCanonicalArtifactRecord` reads. A
+ *     `link`-custody blob resolves its bytes through that locator and nothing
+ *     else, so dropping it makes the content unreadable while every row
+ *     survives. Rehearsal against a copy of the live database found 96 blobs
+ *     in exactly that state.
+ *  4. A blob id that is not `artifact-blob:<content_hash>` is normalized to
  *     that spelling, along with every column that references it. Those ids
  *     were built from the legacy artifact id by an older backfill, so hash
  *     lookups could not find them.
@@ -196,7 +203,43 @@ const RETIRE_LEGACY_ARTIFACT_MODEL: string[] = [
            AND a.content_hash = artifact_blob.content_hash
            AND a.uri IS NOT NULL AND a.uri <> '')`,
 
-  // 3. Normalize blob ids that were built from a legacy artifact id, and every
+  // 3. A legacy repo locator the canonical row never recorded. Without it a
+  //    `link`-custody blob has nothing to resolve its bytes from, so the
+  //    content becomes unreadable even though every row survives.
+  `UPDATE artifact_blob
+      SET metadata_json = json_set(
+            CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END,
+            '$.home_repo_id',
+            (SELECT a.home_repo_id FROM artifacts a
+              WHERE a.algorithm = artifact_blob.algorithm
+                AND a.content_hash = artifact_blob.content_hash))
+    WHERE json_extract(
+            CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END,
+            '$.home_repo_id') IS NULL
+      AND EXISTS (
+        SELECT 1 FROM artifacts a
+         WHERE a.algorithm = artifact_blob.algorithm
+           AND a.content_hash = artifact_blob.content_hash
+           AND a.home_repo_id IS NOT NULL AND a.home_repo_id <> '')`,
+
+  `UPDATE artifact_blob
+      SET metadata_json = json_set(
+            CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END,
+            '$.repo_locator',
+            json((SELECT a.repo_locator_json FROM artifacts a
+                   WHERE a.algorithm = artifact_blob.algorithm
+                     AND a.content_hash = artifact_blob.content_hash)))
+    WHERE json_extract(
+            CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END,
+            '$.repo_locator') IS NULL
+      AND EXISTS (
+        SELECT 1 FROM artifacts a
+         WHERE a.algorithm = artifact_blob.algorithm
+           AND a.content_hash = artifact_blob.content_hash
+           AND json_valid(a.repo_locator_json)
+           AND a.repo_locator_json NOT IN ('', '{}'))`,
+
+  // 4. Normalize blob ids that were built from a legacy artifact id, and every
   //    column that references one. Children first is fine: enforcement is
   //    deferred to COMMIT.
   `UPDATE artifact_version SET blob_id = 'artifact-blob:' || (
