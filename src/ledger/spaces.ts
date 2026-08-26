@@ -845,7 +845,7 @@ export function deleteSpaceEdge(db: Db, spaceId: string, edgeId: string): boolea
 
 interface IssueArtifactRow {
   issue_id: string;
-  artifact_id: string;
+  target_id: string;
 }
 
 /**
@@ -886,14 +886,14 @@ function loadArtifactsForIssues(db: Db, issueIds: string[]): Map<string, string[
   if (issueIds.length === 0) return byIssue;
   const placeholders = issueIds.map(() => "?").join(", ");
   const rows = db.prepare(
-    `SELECT entity_id AS issue_id, artifact_id
+    `SELECT entity_id AS issue_id, target_id
        FROM artifact_links
       WHERE entity_type = 'issue' AND entity_id IN (${placeholders})
-      ORDER BY artifact_id ASC`,
+      ORDER BY target_id ASC`,
   ).all(...issueIds) as IssueArtifactRow[];
   for (const row of rows) {
     const list = byIssue.get(row.issue_id) ?? [];
-    if (!list.includes(row.artifact_id)) list.push(row.artifact_id);
+    if (!list.includes(row.target_id)) list.push(row.target_id);
     byIssue.set(row.issue_id, list);
   }
   return byIssue;

@@ -697,7 +697,7 @@ export type ArtifactResolveResult = {
   ref: string;
   scheme: string;
   normalized_ref: string;
-  target_type?: "artifact" | "artifact_version" | "artifact_blob" | "legacy_artifact";
+  target_type?: "artifact" | "artifact_version" | "artifact_blob";
   target_id?: string | null;
   artifact: ArtifactRecord | null;
   alias: ArtifactAliasRecord | null;

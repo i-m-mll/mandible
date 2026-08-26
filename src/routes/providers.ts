@@ -36,6 +36,7 @@ import {
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
+  resolveArtifactIdentity,
   resolveArtifactSurfaceRefReadonlyFull,
   resolveArtifactVersionHistory,
   rebaseArtifactDraft,
@@ -128,6 +129,20 @@ function enforceArtifactAccess(
   }
 }
 
+/**
+ * The project-bearing resource behind an artifact ref is the logical artifact
+ * whenever the ref resolves to one, and only otherwise the version.
+ *
+ * `resolveArtifactProject` reaches a version's project through the version id
+ * and the parent artifact it joins, but it reaches artifact-level
+ * `project_artifact_associations` rows only through the logical artifact id.
+ * Gating a logical or series ref on its selected version would therefore miss
+ * exactly those associations and allow the request.
+ *
+ * The compatibility `artifact` id stays as the last fallback: a ref with no
+ * canonical logical identity (a bare content hash) can still carry an
+ * association recorded under that content-addressed id.
+ */
 function enforceArtifactRefAccess(
   req: RequestLike,
   res: ResponseLike,
@@ -135,11 +150,11 @@ function enforceArtifactRefAccess(
   role: "read" | "write",
 ): boolean {
   try {
-    if (/^artifact-version:/i.test(ref.trim())) {
-      return enforceArtifactAccess(req, res, ref.trim(), role);
-    }
-    const resolved = resolveArtifactSurfaceRefReadonlyFull(getDb(), ref);
-    const id = resolved.version?.id ?? resolved.artifact?.id ?? null;
+    const resolved = resolveArtifactIdentity(getDb(), ref, "surface");
+    const id = resolved.logical_artifact?.id
+      ?? resolved.artifact_version?.id
+      ?? resolved.artifact?.id
+      ?? null;
     if (!id && resolved.status === "ambiguous") {
       sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
       return false;

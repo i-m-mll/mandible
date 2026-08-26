@@ -82,32 +82,20 @@ afterEach(() => {
   }
 });
 
-describe("artifact versioning schema (migration v88)", () => {
-  it("creates the artifact_series and artifact_versions tables", () => {
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('artifact_series','artifact_versions')")
-      .all()
-      .map((row) => (row as { name: string }).name)
-      .sort();
-    expect(tables).toEqual(["artifact_series", "artifact_versions"]);
-  });
-
-  it("keeps artifacts immutability (UNIQUE(algorithm, content_hash)) intact", () => {
-    const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'artifacts'").get() as { sql: string }).sql;
+describe("canonical artifact schema", () => {
+  it("keeps artifact_blob immutability (UNIQUE(algorithm, content_hash)) intact", () => {
+    const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'artifact_blob'")
+      .get() as { sql: string }).sql;
     expect(sql).toContain("UNIQUE(algorithm, content_hash)");
   });
 
-  it("enforces UNIQUE(series_key) on artifact_series", () => {
-    db.prepare(
-      `INSERT INTO artifact_series (id, series_key, source_kind, version_count, created_at, updated_at)
-       VALUES ('s1', 'local:/a', 'local_only', 0, 1, 1)`,
-    ).run();
-    expect(() =>
-      db.prepare(
-        `INSERT INTO artifact_series (id, series_key, source_kind, version_count, created_at, updated_at)
-         VALUES ('s2', 'local:/a', 'local_only', 0, 1, 1)`,
-      ).run(),
-    ).toThrow(/UNIQUE/i);
+  it("enforces UNIQUE(identity_key) on artifact", () => {
+    const insert = (id: string) => db.prepare(
+      `INSERT INTO artifact (id, identity_key, source_kind, version_count, created_at, updated_at)
+       VALUES (?, 'local:/a', 'local_only', 0, 1, 1)`,
+    ).run(id);
+    insert("artifact:aaaaaaaaaaaa");
+    expect(() => insert("artifact:bbbbbbbbbbbb")).toThrow(/UNIQUE/i);
   });
 });
 
@@ -356,10 +344,10 @@ describe("canonical ref resolution and no silent retarget", () => {
 
     // The existing issue link still points at the pinned immutable artifact A.
     const linkRows = db
-      .prepare("SELECT artifact_id, target_type, target_id FROM artifact_links WHERE entity_type = 'issue' AND entity_id = ?")
-      .all(issueId) as Array<{ artifact_id: string | null; target_type: string; target_id: string }>;
+      .prepare("SELECT target_type, target_id FROM artifact_links WHERE entity_type = 'issue' AND entity_id = ?")
+      .all(issueId) as Array<{ target_type: string; target_id: string }>;
     expect(linkRows).toHaveLength(1);
-    expect(linkRows[0]).toEqual({ artifact_id: null, target_type: "artifact_version", target_id: r1.version.id });
+    expect(linkRows[0]).toEqual({ target_type: "artifact_version", target_id: r1.version.id });
 
     // Logical artifact resolution floats to B. The compatibility series ref
     // reaches the same latest version without changing the existing pin.
@@ -398,14 +386,19 @@ describe("version history query", () => {
 });
 
 describe("backup/export coverage", () => {
-  it("lists the new tables in METADATA_BACKUP_TABLES after artifacts/links", () => {
-    expect(METADATA_BACKUP_TABLES).toContain("artifact_series");
-    expect(METADATA_BACKUP_TABLES).toContain("artifact_versions");
-    const idxArtifacts = METADATA_BACKUP_TABLES.indexOf("artifacts");
-    const idxSeries = METADATA_BACKUP_TABLES.indexOf("artifact_series");
-    const idxVersions = METADATA_BACKUP_TABLES.indexOf("artifact_versions");
-    expect(idxSeries).toBeGreaterThan(idxArtifacts);
-    expect(idxVersions).toBeGreaterThan(idxSeries);
+  // Restore replays the inventory in order, so a child table must never be
+  // listed before the table its foreign keys point at.
+  it("orders METADATA_BACKUP_TABLES parents before children", () => {
+    const at = (table: string) => {
+      const index = METADATA_BACKUP_TABLES.indexOf(table);
+      expect(index, `${table} is missing from METADATA_BACKUP_TABLES`).toBeGreaterThanOrEqual(0);
+      return index;
+    };
+    expect(at("artifact")).toBeGreaterThan(at("artifact_blob"));
+    expect(at("artifact_version")).toBeGreaterThan(at("artifact"));
+    for (const child of ["artifact_aliases", "artifact_links", "artifact_drafts"]) {
+      expect(at(child)).toBeGreaterThan(at("artifact_version"));
+    }
   });
 
   it("round-trips canonical artifact and artifact_version rows through backup/restore", () => {
@@ -539,7 +532,7 @@ describe("codex review fixes", () => {
 
   it("MEDIUM-5: read-only history/diff do not materialize rows for unregistered refs", () => {
     const counts = () => ({
-      artifacts: (db.prepare("SELECT COUNT(*) AS n FROM artifacts").get() as { n: number }).n,
+      blobs: (db.prepare("SELECT COUNT(*) AS n FROM artifact_blob").get() as { n: number }).n,
       aliases: (db.prepare("SELECT COUNT(*) AS n FROM artifact_aliases").get() as { n: number }).n,
       graph: (db.prepare("SELECT COUNT(*) AS n FROM graph_entities").get() as { n: number }).n,
     });

@@ -52,9 +52,10 @@ describe("space_exports schema (issue 9041bb3)", () => {
     ).run(id, projectId, root, "repo-1", "main", "github.com/test/repo-1", now(), now());
     return id;
   }
-  function seedArtifact(id: string, contentHash: string): string {
+  function seedBlob(contentHash: string): string {
+    const id = `artifact-blob:${contentHash}`;
     db.prepare(
-      `INSERT INTO artifacts (id, algorithm, content_hash, uri, created_at)
+      `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, created_at)
        VALUES (?, 'sha256', ?, ?, ?)`,
     ).run(id, contentHash, `artifact://${id}`, now());
     return id;
@@ -68,14 +69,14 @@ describe("space_exports schema (issue 9041bb3)", () => {
       path?: string;
       authority?: string;
       status?: string;
-      lastExportArtifactId?: string | null;
-      preExportSnapshotArtifactId?: string | null;
+      lastExportBlobId?: string | null;
+      preExportSnapshotBlobId?: string | null;
     } = {},
   ): void {
     db.prepare(
       `INSERT INTO space_exports (
          id, space_id, repo_id, branch, path, authority, status,
-         last_export_artifact_id, pre_export_snapshot_artifact_id,
+         last_export_blob_id, pre_export_snapshot_blob_id,
          created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
@@ -86,8 +87,8 @@ describe("space_exports schema (issue 9041bb3)", () => {
       opts.path ?? "docs/spaces/one.md",
       opts.authority ?? "mandible",
       opts.status ?? "clean",
-      opts.lastExportArtifactId ?? null,
-      opts.preExportSnapshotArtifactId ?? null,
+      opts.lastExportBlobId ?? null,
+      opts.preExportSnapshotBlobId ?? null,
       now(),
       now(),
     );
@@ -199,25 +200,25 @@ describe("space_exports schema (issue 9041bb3)", () => {
     expect(remaining.n).toBe(0);
   });
 
-  it("nulls artifact links on artifact deletion (ON DELETE SET NULL)", () => {
+  it("nulls blob links on blob deletion (ON DELETE SET NULL)", () => {
     const projectId = seedProject();
     const spaceId = seedSpace(projectId);
     const repoId = seedCheckout(projectId);
-    const lastArtifact = seedArtifact("art-last", "a".repeat(64));
-    const snapArtifact = seedArtifact("art-snap", "b".repeat(64));
+    const lastBlob = seedBlob("a".repeat(64));
+    const snapBlob = seedBlob("b".repeat(64));
     insertExport(spaceId, repoId, {
-      lastExportArtifactId: lastArtifact,
-      preExportSnapshotArtifactId: snapArtifact,
+      lastExportBlobId: lastBlob,
+      preExportSnapshotBlobId: snapBlob,
     });
-    db.prepare("DELETE FROM artifacts WHERE id = ?").run(lastArtifact);
+    db.prepare("DELETE FROM artifact_blob WHERE id = ?").run(lastBlob);
     const row = db
       .prepare(
-        "SELECT last_export_artifact_id, pre_export_snapshot_artifact_id FROM space_exports WHERE id = 'exp-1'",
+        "SELECT last_export_blob_id, pre_export_snapshot_blob_id FROM space_exports WHERE id = 'exp-1'",
       )
-      .get() as { last_export_artifact_id: string | null; pre_export_snapshot_artifact_id: string | null };
-    // The mutable tracking row survives; only the artifact link is nulled.
-    expect(row.last_export_artifact_id).toBeNull();
-    expect(row.pre_export_snapshot_artifact_id).toBe(snapArtifact);
+      .get() as { last_export_blob_id: string | null; pre_export_snapshot_blob_id: string | null };
+    // The mutable tracking row survives; only the blob link is nulled.
+    expect(row.last_export_blob_id).toBeNull();
+    expect(row.pre_export_snapshot_blob_id).toBe(snapBlob);
   });
 });
 

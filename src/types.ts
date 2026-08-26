@@ -1234,7 +1234,7 @@ export interface ProviderManifestRecord {
   manifest_type: string;
   version: string | null;
   content_hash: string;
-  artifact_id: string | null;
+  blob_id: string | null;
   source: string;
   content: Record<string, unknown>;
   created_at: number;

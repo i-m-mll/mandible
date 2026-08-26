@@ -86,8 +86,6 @@ function insertExportRow(spaceId: string, overrides: Record<string, unknown> = {
     path: 'docs/spaces/doc.md',
     authority: 'repo',
     status: 'clean',
-    last_export_artifact_id: null,
-    pre_export_snapshot_artifact_id: null,
     last_export_commit: 'c-export',
     last_export_blob_sha: 'b-export',
     last_export_content_sha256: sha('EXPORTED'),
@@ -100,12 +98,10 @@ function insertExportRow(spaceId: string, overrides: Record<string, unknown> = {
   db.prepare(
     `INSERT INTO space_exports (
        id, space_id, repo_id, branch, path, authority, status,
-       last_export_artifact_id, pre_export_snapshot_artifact_id,
        last_export_commit, last_export_blob_sha, last_export_content_sha256,
        last_seen_commit, last_seen_content_sha256, created_at, updated_at
      ) VALUES (
        @id, @space_id, @repo_id, @branch, @path, @authority, @status,
-       @last_export_artifact_id, @pre_export_snapshot_artifact_id,
        @last_export_commit, @last_export_blob_sha, @last_export_content_sha256,
        @last_seen_commit, @last_seen_content_sha256, @created_at, @updated_at
      )`,

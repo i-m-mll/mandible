@@ -22,12 +22,16 @@ afterEach(() => {
   delete process.env.MANDIBLE_ARTIFACT_DIR;
 });
 
-function insertLinkedArtifact(id: string, targetPath: string): void {
+/** Seed one linked canonical blob and return its compatibility artifact id. */
+function insertLinkedArtifact(targetPath: string): string {
   const bytes = fs.statSync(targetPath).isFile() ? fs.readFileSync(targetPath) : Buffer.from("directory");
+  const hash = crypto.createHash("sha256").update(bytes).digest("hex");
   db.prepare(
-    `INSERT INTO artifacts (id, content_hash, uri, size_bytes, custody_mode, availability, created_at)
-     VALUES (?, ?, ?, ?, 'link', 'present', 1)`,
-  ).run(id, crypto.createHash("sha256").update(bytes).digest("hex"), `file://${targetPath}`, bytes.length);
+    `INSERT INTO artifact_blob (
+       id, content_hash, storage_uri, size_bytes, custody_mode, availability, created_at
+     ) VALUES (?, ?, ?, ?, 'link', 'present', 1)`,
+  ).run(`artifact-blob:${hash}`, hash, `file://${targetPath}`, bytes.length);
+  return `artifact:sha256:${hash}`;
 }
 
 describe("artifact external open", () => {
@@ -52,12 +56,12 @@ describe("artifact external open", () => {
   it("opens a registered linked file and never accepts a caller path", async () => {
     const linkedPath = path.join(tempDir, "linked.txt");
     fs.writeFileSync(linkedPath, "linked material\n");
-    insertLinkedArtifact("artifact-linked", linkedPath);
+    const linkedId = insertLinkedArtifact(linkedPath);
     const opener = vi.fn(async () => undefined);
 
-    await expect(openArtifactExternally(db, "artifact-linked", opener)).resolves.toEqual({
+    await expect(openArtifactExternally(db, linkedId, opener)).resolves.toEqual({
       ok: true,
-      artifact_id: "artifact-linked",
+      artifact_id: linkedId,
     });
     expect(opener).toHaveBeenCalledWith(fs.realpathSync(linkedPath));
   });
@@ -77,30 +81,36 @@ describe("artifact external open", () => {
     ).run(repoRoot);
     const hash = crypto.createHash("sha256").update("tracked material\n").digest("hex");
     db.prepare(
-      `INSERT INTO artifacts (
-         id, content_hash, uri, size_bytes, custody_mode, home_repo_id,
-         repo_locator_json, availability, created_at
-       ) VALUES ('artifact-tracked', ?, 'repo://repo/results/report.md', 17, 'link', 'repo', ?, 'present', 1)`,
-    ).run(hash, JSON.stringify({ repo_id: "repo", path: "results/report.md" }));
+      `INSERT INTO artifact_blob (
+         id, content_hash, storage_uri, size_bytes, custody_mode,
+         metadata_json, availability, created_at
+       ) VALUES (?, ?, 'repo://repo/results/report.md', 17, 'link', ?, 'present', 1)`,
+    ).run(`artifact-blob:${hash}`, hash, JSON.stringify({
+      home_repo_id: "repo",
+      repo_locator: { repo_id: "repo", path: "results/report.md" },
+    }));
     const opener = vi.fn(async () => undefined);
 
-    await expect(openArtifactExternally(db, "artifact-tracked", opener)).resolves.toMatchObject({ ok: true });
+    await expect(openArtifactExternally(db, `artifact:sha256:${hash}`, opener))
+      .resolves.toMatchObject({ ok: true });
     expect(opener).toHaveBeenCalledWith(fs.realpathSync(trackedPath));
   });
 
   it("rejects unavailable and non-file material without invoking the OS", async () => {
     const missingPath = path.join(tempDir, "missing.txt");
+    const missingHash = "0".repeat(64);
     db.prepare(
-      `INSERT INTO artifacts (id, content_hash, uri, custody_mode, availability, created_at)
-       VALUES ('artifact-missing', ?, ?, 'link', 'missing', 1)`,
-    ).run("0".repeat(64), `file://${missingPath}`);
+      `INSERT INTO artifact_blob (id, content_hash, storage_uri, custody_mode, availability, created_at)
+       VALUES (?, ?, ?, 'link', 'missing', 1)`,
+    ).run(`artifact-blob:${missingHash}`, missingHash, `file://${missingPath}`);
     const directoryPath = path.join(tempDir, "directory");
     fs.mkdirSync(directoryPath);
-    insertLinkedArtifact("artifact-directory", directoryPath);
+    const directoryId = insertLinkedArtifact(directoryPath);
     const opener = vi.fn(async () => undefined);
 
-    await expect(openArtifactExternally(db, "artifact-missing", opener)).resolves.toMatchObject({ ok: false, status: 409 });
-    await expect(openArtifactExternally(db, "artifact-directory", opener)).resolves.toMatchObject({
+    await expect(openArtifactExternally(db, `artifact:sha256:${missingHash}`, opener))
+      .resolves.toMatchObject({ ok: false, status: 409 });
+    await expect(openArtifactExternally(db, directoryId, opener)).resolves.toMatchObject({
       ok: false,
       status: 409,
       reason: "artifact locator does not point to a regular file",

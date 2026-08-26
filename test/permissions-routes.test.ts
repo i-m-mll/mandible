@@ -18,6 +18,7 @@ import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerWorkRoutes } from "../src/routes/work.js";
 import { Router } from "../src/server.js";
+import type { ArtifactResolveResult } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
@@ -236,6 +237,53 @@ describe("restricted project route enforcement", () => {
       resource: project.id, permission: "read",
     });
     expect((await invoke()).status).toBe(200);
+  });
+
+  // Before the legacy artifact model was retired this gate read the deprecated
+  // compatibility `version`/`artifact` records off the resolve result. For a
+  // logical or series ref `version` was null and `artifact.id` was a
+  // content-addressed compatibility id that `resolveArtifactProject` cannot
+  // match, so the gate resolved `unassociated` and allowed every request. It
+  // now reads the canonical logical artifact, which is the only id that reaches
+  // artifact-level `project_artifact_associations` rows.
+  it("denies logical and series refs whose artifact is associated to a restricted project", async () => {
+    const project = addProject(db, { project_key: "ref-guard", display_name: "Ref Guard" });
+    setProjectRestricted(db, project.id, true);
+    const recorded = recordArtifactVersion(db, {
+      source_kind: "managed", provider_id: "permission-route-test", content: "restricted bytes\n",
+      media_type: "text/plain", logical_name: "restricted-document",
+    }, 1_000, tempDir);
+    const logicalId = recorded.series.id.replace(/^artifact-series:/, "artifact:");
+    associateProjectArtifact(db, {
+      project_ref: project.id,
+      target_type: "artifact",
+      target_id: logicalId,
+      source: "system",
+    });
+    registerProviderRoutes(router);
+    const agent = createUser(db, { slug: "ref-reader", kind: "agent", display_name: "Ref Reader" });
+    const { token } = authenticator.mintApiToken(agent.id);
+    const resolve = (ref: string) => router.invoke({
+      method: "GET",
+      url: `/api/artifacts/resolve?ref=${encodeURIComponent(ref)}`,
+      credential: token,
+      transport: "http",
+    });
+
+    expect((await resolve(logicalId)).status).toBe(403);
+    expect((await resolve(recorded.series.id)).status).toBe(403);
+    expect((await resolve(recorded.version.id)).status).toBe(403);
+
+    addGrant(db, {
+      subject_type: "user", subject: agent.id, resource_type: "project",
+      resource: project.id, permission: "read",
+    });
+    const granted = await resolve(logicalId);
+    expect(granted.status).toBe(200);
+    const { resolution } = (granted.body as { resolution: ArtifactResolveResult });
+    expect(resolution.logical_artifact?.id).toBe(logicalId);
+    expect(resolution.series?.id).toBe(recorded.series.id);
+    expect(resolution.version?.id).toBe(recorded.version.id);
   });
 });
 

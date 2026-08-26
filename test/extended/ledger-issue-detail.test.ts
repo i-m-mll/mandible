@@ -69,17 +69,6 @@ function insertAuthRequest(id: string, repoRoot: string): void {
 
 function insertArtifact(id: string, hash: string, uri: string): void {
   db.prepare(
-    `INSERT INTO artifacts (
-      id, algorithm, content_hash, uri, media_type, role, size_bytes,
-      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
-      repo_locator_json, availability, retention_json, reference_json, created_at
-    ) VALUES (
-      ?, 'sha256', ?, ?, 'text/markdown', 'report', 42,
-      'provider_1', 'manifest_1', '{}', 1, 'managed', 'repo',
-      '{}', 'present', '{}', '{}', 1000
-    )`,
-  ).run(id, hash, uri);
-  db.prepare(
     `INSERT INTO artifact_blob (
        id, algorithm, content_hash, storage_uri, media_type, role, size_bytes,
        provider_id, manifest_id, custody_mode, availability, created_at
@@ -578,14 +567,14 @@ describe("ledger issue detail projection", () => {
     });
     db.prepare(
       `INSERT INTO artifact_links (
-        id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
+        id, blob_id, entity_type, entity_id, link_type, role, repo_id,
         provider_id, source, metadata_json, target_type, target_id, created_at, updated_at
       ) VALUES (
-        'link_1', ?, ?, 'issue', ?, 'produced_by', 'report', 'repo',
+        'link_1', ?, 'issue', ?, 'produced_by', 'report', 'repo',
         'provider_1', 'artifact_registry', '{"path":"results/report.md"}',
         'artifact_blob', ?, 2000, 2000
       )`,
-    ).run(linkedId, `artifact-blob:${linkedHash}`, issue.id, `artifact-blob:${linkedHash}`);
+    ).run(`artifact-blob:${linkedHash}`, issue.id, `artifact-blob:${linkedHash}`);
 
     const artifacts = buildLedgerIssueDetailProjection(db, issue.id).associated_artifacts;
 

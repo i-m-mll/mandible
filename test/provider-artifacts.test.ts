@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { migrate } from "../src/db.js";
 import { checkArtifactMaterialization, getArtifactContent, getArtifactContentAsync } from "../src/artifact-content.js";
 import {
   addArtifactBundleMembers,
@@ -46,327 +47,6 @@ let tempDir = "";
 let db: Database.Database;
 let savedEnv: Record<string, string | undefined>;
 
-function createSchema(database: Database.Database): void {
-  database.exec(`
-    CREATE TABLE providers (
-      id TEXT PRIMARY KEY,
-      display_name TEXT NOT NULL,
-      version TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      transport TEXT NOT NULL DEFAULT 'manifest',
-      endpoint TEXT,
-      capabilities_json TEXT NOT NULL DEFAULT '{}',
-      actions_json TEXT NOT NULL DEFAULT '[]',
-      source TEXT NOT NULL DEFAULT 'local',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      last_seen_at INTEGER
-    );
-    CREATE TABLE artifacts (
-      id TEXT PRIMARY KEY,
-      algorithm TEXT NOT NULL DEFAULT 'sha256',
-      content_hash TEXT NOT NULL,
-      uri TEXT NOT NULL,
-      media_type TEXT,
-      role TEXT,
-      size_bytes INTEGER NOT NULL DEFAULT 0,
-      provider_id TEXT,
-      manifest_id TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      pinned INTEGER NOT NULL DEFAULT 1,
-      custody_mode TEXT NOT NULL DEFAULT 'managed',
-      home_repo_id TEXT,
-      repo_locator_json TEXT NOT NULL DEFAULT '{}',
-      availability TEXT NOT NULL DEFAULT 'unchecked',
-      retention_json TEXT NOT NULL DEFAULT '{}',
-      reference_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      UNIQUE(algorithm, content_hash)
-    );
-    CREATE TABLE artifact_aliases (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
-      blob_id TEXT REFERENCES artifact_blob(id) ON DELETE RESTRICT,
-      scheme TEXT NOT NULL,
-      alias TEXT NOT NULL,
-      normalized_ref TEXT NOT NULL,
-      locator_json TEXT NOT NULL DEFAULT '{}',
-      resolution_status TEXT NOT NULL DEFAULT 'resolved',
-      source TEXT NOT NULL DEFAULT 'artifact_registry',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      CHECK (
-        (resolution_status = 'resolved' AND blob_id IS NOT NULL) OR
-        (resolution_status != 'resolved' AND blob_id IS NULL)
-      )
-    );
-    CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref
-      ON artifact_aliases(scheme, normalized_ref);
-    CREATE INDEX idx_artifact_aliases_artifact
-      ON artifact_aliases(artifact_id)
-      WHERE artifact_id IS NOT NULL;
-    CREATE INDEX idx_artifact_aliases_status
-      ON artifact_aliases(resolution_status, scheme);
-    CREATE TABLE artifact_links (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
-      blob_id TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,
-      entity_type TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
-      link_type TEXT NOT NULL DEFAULT 'references',
-      role TEXT,
-      repo_id TEXT,
-      provider_id TEXT,
-      source TEXT NOT NULL DEFAULT 'artifact_registry',
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      link_kind TEXT NOT NULL DEFAULT 'pinned' CHECK(link_kind IN ('pinned','living')),
-      series_id TEXT,
-      series_ref TEXT,
-      target_type TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version','artifact_blob')),
-      target_id TEXT NOT NULL,
-      fallback_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,
-      legacy_blob_id TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      CHECK (
-        (link_kind = 'living' AND target_type = 'artifact') OR
-        (link_kind = 'pinned' AND target_type IN ('artifact_version','artifact_blob'))
-      )
-    );
-    CREATE INDEX idx_artifact_links_artifact
-      ON artifact_links(artifact_id, link_type);
-    CREATE INDEX idx_artifact_links_entity
-      ON artifact_links(entity_type, entity_id);
-    CREATE INDEX idx_artifact_links_repo
-      ON artifact_links(repo_id)
-      WHERE repo_id IS NOT NULL;
-    CREATE INDEX idx_artifact_links_provider
-      ON artifact_links(provider_id)
-      WHERE provider_id IS NOT NULL;
-    CREATE INDEX idx_artifact_links_role
-      ON artifact_links(role)
-      WHERE role IS NOT NULL;
-    CREATE INDEX idx_artifact_links_kind
-      ON artifact_links(link_kind);
-    CREATE INDEX idx_artifact_links_series
-      ON artifact_links(series_id)
-      WHERE series_id IS NOT NULL;
-    CREATE TABLE artifact_series (
-      id TEXT PRIMARY KEY,
-      series_key TEXT NOT NULL,
-      source_kind TEXT NOT NULL DEFAULT 'managed'
-        CHECK(source_kind IN ('tracked_repo','local_only','managed','mixed')),
-      title TEXT,
-      repo_id TEXT,
-      logical_name TEXT,
-      latest_version_id TEXT,
-      version_count INTEGER NOT NULL DEFAULT 0,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      UNIQUE(series_key)
-    );
-    CREATE TABLE artifact_versions (
-      id TEXT PRIMARY KEY,
-      series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
-      artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
-      version_no INTEGER NOT NULL,
-      source_kind TEXT NOT NULL
-        CHECK(source_kind IN ('tracked_repo','local_only','managed')),
-      content_hash TEXT NOT NULL,
-      commit_sha TEXT,
-      repo_path TEXT,
-      observed_path TEXT,
-      custody_mode TEXT,
-      label TEXT,
-      note TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      UNIQUE(series_id, version_no)
-    );
-    CREATE INDEX idx_artifact_versions_series
-      ON artifact_versions(series_id, version_no DESC);
-    CREATE TABLE artifact_blob (
-      id TEXT PRIMARY KEY,
-      algorithm TEXT NOT NULL DEFAULT 'sha256',
-      content_hash TEXT NOT NULL,
-      storage_uri TEXT,
-      media_type TEXT,
-      role TEXT,
-      size_bytes INTEGER NOT NULL DEFAULT 0,
-      provider_id TEXT,
-      manifest_id TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      custody_mode TEXT NOT NULL DEFAULT 'managed'
-        CHECK(custody_mode IN ('link','copy','managed','external')),
-      availability TEXT NOT NULL DEFAULT 'unchecked'
-        CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),
-      retention_json TEXT NOT NULL DEFAULT '{}',
-      reference_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      UNIQUE(algorithm, content_hash)
-    );
-    CREATE TABLE artifact (
-      id TEXT PRIMARY KEY,
-      identity_key TEXT NOT NULL,
-      source_kind TEXT NOT NULL DEFAULT 'managed'
-        CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),
-      title TEXT,
-      source_project_id TEXT,
-      source_repo_id TEXT,
-      logical_name TEXT,
-      source_path TEXT,
-      latest_version_id TEXT,
-      version_count INTEGER NOT NULL DEFAULT 0,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      UNIQUE(identity_key)
-    );
-    CREATE TABLE artifact_version (
-      id TEXT PRIMARY KEY,
-      artifact_id TEXT NOT NULL,
-      version_no INTEGER NOT NULL,
-      blob_id TEXT NOT NULL,
-      source_kind TEXT NOT NULL
-        CHECK(source_kind IN ('tracked_repo','local_only','managed','external')),
-      content_hash TEXT NOT NULL,
-      source_project_id TEXT,
-      source_repo_id TEXT,
-      repo_path TEXT,
-      commit_sha TEXT,
-      observed_path TEXT,
-      source_locator_json TEXT NOT NULL DEFAULT '{}',
-      custody_mode TEXT
-        CHECK(custody_mode IS NULL OR custody_mode IN ('link','copy','managed','external')),
-      label TEXT,
-      note TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      UNIQUE(artifact_id, version_no)
-    );
-    CREATE TABLE project_artifact_associations (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      target_type TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version')),
-      target_id TEXT NOT NULL,
-      association_kind TEXT NOT NULL DEFAULT 'associated'
-        CHECK(association_kind IN ('associated','canonical')),
-      role TEXT NOT NULL DEFAULT '',
-      title TEXT,
-      description TEXT,
-      rank INTEGER,
-      status TEXT NOT NULL DEFAULT 'active'
-        CHECK(status IN ('active','superseded','archived')),
-      source TEXT NOT NULL DEFAULT 'user'
-        CHECK(source IN ('user','agent_explicit','space_rule','migration','system')),
-      source_ref_type TEXT,
-      source_ref_id TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      UNIQUE(project_id, target_type, target_id, role)
-    );
-    CREATE TABLE provider_manifests (
-      id TEXT PRIMARY KEY,
-      provider_id TEXT NOT NULL,
-      manifest_type TEXT NOT NULL DEFAULT 'provider_manifest',
-      version TEXT,
-      content_hash TEXT NOT NULL,
-      artifact_id TEXT,
-      source TEXT NOT NULL DEFAULT 'ingest',
-      content_json TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE graph_entities (
-      id TEXT PRIMARY KEY,
-      entity_type TEXT NOT NULL,
-      repo_id TEXT,
-      provider_id TEXT,
-      external_id TEXT,
-      title TEXT NOT NULL,
-      status TEXT,
-      labels_json TEXT NOT NULL DEFAULT '[]',
-      summary_json TEXT NOT NULL DEFAULT '{}',
-      detail_ref_json TEXT NOT NULL DEFAULT '{}',
-      action_context_json TEXT NOT NULL DEFAULT '{}',
-      visual_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER,
-      updated_at INTEGER,
-      observed_at INTEGER NOT NULL,
-      source TEXT NOT NULL
-    );
-    CREATE TABLE graph_edges (
-      id TEXT PRIMARY KEY,
-      source_id TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      edge_type TEXT NOT NULL,
-      edge_class TEXT NOT NULL DEFAULT 'provenance',
-      provenance TEXT NOT NULL DEFAULT 'system',
-      confidence TEXT NOT NULL DEFAULT 'observed',
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER,
-      observed_at INTEGER NOT NULL,
-      source TEXT NOT NULL
-    );
-    CREATE TABLE settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE ledger_projects (
-      id TEXT PRIMARY KEY,
-      project_key TEXT NOT NULL DEFAULT '',
-      display_name TEXT NOT NULL,
-      remote_identity TEXT NOT NULL DEFAULT '',
-      upstream_identity TEXT NOT NULL DEFAULT '',
-      namespace_policy TEXT NOT NULL DEFAULT 'remote',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE ledger_project_checkouts (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      work_repo_id TEXT,
-      root TEXT NOT NULL,
-      name TEXT NOT NULL,
-      default_branch TEXT NOT NULL DEFAULT '',
-      remote_url TEXT NOT NULL DEFAULT '',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE ledger_issues (
-      id TEXT PRIMARY KEY,
-      short_id TEXT NOT NULL DEFAULT '',
-      project_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL,
-      resolution TEXT,
-      kind TEXT NOT NULL DEFAULT 'unknown',
-      priority TEXT NOT NULL DEFAULT 'unknown',
-      author_actor_id TEXT,
-      author_actor_type TEXT NOT NULL DEFAULT 'external_adapter',
-      author_display TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT 'mandible',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      closed_at INTEGER,
-      deleted_at INTEGER
-    );
-    CREATE TABLE ledger_issue_aliases (
-      issue_id TEXT NOT NULL,
-      alias_kind TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      alias TEXT NOT NULL,
-      external_id TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL,
-      is_primary INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (alias_kind, project_id, alias)
-    );
-  `);
-}
 
 function createLedgerIssue(projectName: string, alias: string, title = `Issue ${alias}`): string {
   const projectId = insertRawLedgerProject(db, {
@@ -470,7 +150,7 @@ beforeEach(() => {
   delete process.env.MANDIBLE_ARTIFACT_DIR;
   delete process.env.MANDIBLE_HOME;
   db = new Database(":memory:");
-  createSchema(db);
+  migrate(db);
 });
 
 afterEach(() => {
@@ -1012,12 +692,12 @@ describe("provider/artifact substrate", () => {
   it("materializes unknown scheme refs as external artifact records instead of failing", () => {
     const resolution = resolveArtifactRef(db, "zotero://library/items/ABC123", 1000);
     const row = db.prepare(
-      "SELECT scheme, normalized_ref, resolution_status, artifact_id FROM artifact_aliases WHERE alias = ?"
+      "SELECT scheme, normalized_ref, resolution_status, blob_id FROM artifact_aliases WHERE alias = ?"
     ).get("zotero://library/items/ABC123") as {
       scheme: string;
       normalized_ref: string;
       resolution_status: string;
-      artifact_id: string | null;
+      blob_id: string | null;
     };
 
     expect(resolution).toMatchObject({
@@ -1034,7 +714,7 @@ describe("provider/artifact substrate", () => {
       scheme: "zotero",
       normalized_ref: "zotero://library/items/ABC123",
       resolution_status: "resolved",
-      artifact_id: null,
+      blob_id: `artifact-blob:${resolution.artifact?.content_hash}`,
     });
     expect(listArtifacts(db, { scheme: "zotero" }).map((item) => item.id)).toEqual([
       resolution.artifact?.id,
