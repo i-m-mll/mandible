@@ -21,7 +21,6 @@ EOF
 command_name="${1:-}"
 [[ -n "$command_name" ]] || { usage >&2; exit 2; }
 shift
-json=0
 case "$command_name" in
   create)
     request_id=""; grantee=""; credential=""; project=""; base=""; issue=""; head=""; duration=""; max_uses=""
@@ -36,7 +35,7 @@ case "$command_name" in
         --head) head="${2:-}"; shift 2 ;;
         --duration-minutes) duration="${2:-}"; shift 2 ;;
         --max-uses) max_uses="${2:-}"; shift 2 ;;
-        --json) json=1; shift ;;
+        --json) shift ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
       esac
     done
@@ -55,13 +54,13 @@ case "$command_name" in
        + (if $head == "" then {} else {head:$head} end)
        + (if $duration == "" then {} else {duration_minutes:($duration|tonumber)} end)
        + (if $max_uses == "" then {} else {max_uses:($max_uses|tonumber)} end)')
-    response=$(api_mutate POST "/api/auth/clearances" "$payload") ;;
+    response=$(api_send POST "/api/auth/clearances" "$payload") ;;
   list)
     request_id=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --request) request_id="${2:-}"; shift 2 ;;
-        --json) json=1; shift ;;
+        --json) shift ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
       esac
     done
@@ -72,25 +71,24 @@ case "$command_name" in
     fi ;;
   show)
     clearance_id="${1:-}"; [[ -n "$clearance_id" ]] || { usage >&2; exit 2; }; shift
-    [[ "${1:-}" != "--json" ]] || { json=1; shift; }
+    [[ "${1:-}" != "--json" ]] || shift
     [[ $# -eq 0 ]] || { usage >&2; exit 2; }
     response=$(api_get "/api/auth/clearances/$clearance_id") ;;
   revoke)
     clearance_id="${1:-}"; [[ -n "$clearance_id" ]] || { usage >&2; exit 2; }; shift
-    [[ "${1:-}" != "--json" ]] || { json=1; shift; }
+    [[ "${1:-}" != "--json" ]] || shift
     [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-    response=$(api_mutate POST "/api/auth/clearances/$clearance_id/revoke" '{}') ;;
+    response=$(api_send POST "/api/auth/clearances/$clearance_id/revoke" '{}') ;;
   execute)
     request_id="${1:-}"; [[ -n "$request_id" ]] || { usage >&2; exit 2; }; shift
-    [[ "${1:-}" != "--json" ]] || { json=1; shift; }
+    [[ "${1:-}" != "--json" ]] || shift
     [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-    response=$(api_mutate POST "/api/auth/request/$request_id/clearance/execute" '{}') ;;
+    response=$(api_send POST "/api/auth/request/$request_id/clearance/execute" '{}') ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
 
-if [[ "$json" -eq 1 ]]; then
-  printf '%s\n' "$response" | jq .
-else
-  printf '%s\n' "$response" | jq .
-fi
+# --json is accepted on every subcommand because the Interface Contract
+# documents it, and it changes nothing: this command has no human rendering and
+# emits the exact API JSON either way.
+printf '%s\n' "$response" | jq .
