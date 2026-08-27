@@ -49,12 +49,25 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
 // "deny". The assertion is an exact match, not a filter: a new denied call
 // site fails here rather than escaping the coverage lint.
 const EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES = [
-  "cli/auth-clearance.sh:69 GET /api/auth/clearances",
-  "cli/auth-clearance.sh:71 GET /api/auth/clearances",
-  "cli/auth-clearance.sh:77 GET /api/auth/clearances/:param",
+  "cli/auth-clearance.sh:57 POST /api/auth/clearances",
+  "cli/auth-clearance.sh:68 GET /api/auth/clearances",
+  "cli/auth-clearance.sh:70 GET /api/auth/clearances",
+  "cli/auth-clearance.sh:76 GET /api/auth/clearances/:param",
+  "cli/auth-clearance.sh:81 POST /api/auth/clearances/:param/revoke",
+  "cli/auth-clearance.sh:86 POST /api/auth/request/:param/clearance/execute",
 ] as const;
 
 describe("CLI API route coverage", () => {
+  // Issue 15048da — the three mutating clearance subcommands called a helper
+  // (`api_mutate`) that never existed, so every one of them died with
+  // "command not found" at first use and the whole prospective-clearance
+  // mechanism was unreachable from the CLI. Nothing caught it: the route lint
+  // above matches four known request helpers by name, and an unknown name is
+  // invisible to a lint keyed on known names.
+  it("defines every API helper the CLI scripts invoke", () => {
+    expect(collectUndefinedApiHelperCallSites()).toEqual([]);
+  });
+
   it("keeps static CLI API calls covered by registered file-RPC route policy", () => {
     const policies = collectRoutePolicies();
     const { refs, unresolved } = collectCliRouteRefs();
@@ -316,6 +329,93 @@ function collectLegacyAllowedRoutes(): CliRouteRef[] {
   };
   visit(source);
   return routes;
+}
+
+// Every `api_*`/`secret_*` name a CLI script runs as a command must be a
+// function the script defines itself or inherits from the `cli/api.sh` it
+// sources. That shared namespace is the whole surface a CLI script talks to the
+// daemon through, and a name that resolves to nothing fails only when a human
+// runs that exact subcommand.
+function collectUndefinedApiHelperCallSites(): string[] {
+  const cliDir = path.join(process.cwd(), "cli");
+  const shared = collectShellFunctionNames(fs.readFileSync(path.join(cliDir, "api.sh"), "utf8"));
+  const undefinedSites: string[] = [];
+  for (const file of walk(cliDir).filter(isShellScript)) {
+    const text = fs.readFileSync(file, "utf8");
+    const defined = new Set([...shared, ...collectShellFunctionNames(text)]);
+    const code = blankShellNonCode(text);
+    for (const match of code.matchAll(SHELL_HELPER_COMMAND)) {
+      const name = match[1];
+      if (defined.has(name)) continue;
+      const line = code.slice(0, match.index + match[0].indexOf(name)).split("\n").length;
+      undefinedSites.push(`${path.relative(process.cwd(), file)}:${line} ${name}`);
+    }
+  }
+  return undefinedSites.sort();
+}
+
+// A helper name in command position: at the start of a command, after a
+// separator or pipeline operator, inside a command substitution, or after a
+// compound-command keyword. A bare `(` is deliberately not an opener, so
+// arithmetic like `(( secret_traced == 0 ))` reads as the variable it is.
+const SHELL_HELPER_COMMAND =
+  /(?:^|[\n;&|{]|\$\(|`|\bif\b|\bthen\b|\belse\b|\belif\b|\bdo\b|\bwhile\b|\buntil\b|!)\s*((?:api|secret)_[a-z0-9_]*)\b(?!=)/g;
+
+function isShellScript(file: string): boolean {
+  if (file.endsWith(".sh")) return true;
+  if (path.extname(file) !== "") return false;
+  return /^#!.*\b(bash|zsh|sh)\b/.test(fs.readFileSync(file, "utf8").split("\n", 1)[0] ?? "");
+}
+
+function collectShellFunctionNames(text: string): Set<string> {
+  return new Set(
+    [...text.matchAll(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\(\)/gm)].map((match) => match[1]),
+  );
+}
+
+// Blank comments and quoted text so only shell code is scanned, preserving
+// offsets. Command substitutions stay code even inside double quotes, which is
+// how every `response="$(api_send ...)"` call site is written.
+function blankShellNonCode(text: string): string {
+  const out = [...text];
+  const blank = (index: number): void => {
+    if (out[index] !== "\n") out[index] = " ";
+  };
+  const stack: Array<"code" | "dq" | "sq"> = ["code"];
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i];
+    const state = stack[stack.length - 1];
+    if (state === "sq") {
+      if (char === "'") stack.pop();
+      else blank(i);
+      i += 1;
+    } else if (char === "\\" && i + 1 < text.length) {
+      if (state === "dq") {
+        blank(i);
+        blank(i + 1);
+      }
+      i += 2;
+    } else if (char === "$" && text[i + 1] === "(") {
+      stack.push("code");
+      i += 2;
+    } else if (char === ")" && state === "code" && stack.length > 1) {
+      stack.pop();
+      i += 1;
+    } else if (state === "dq") {
+      if (char === '"') stack.pop();
+      else blank(i);
+      i += 1;
+    } else if (char === '"' || char === "'") {
+      stack.push(char === '"' ? "dq" : "sq");
+      i += 1;
+    } else if (char === "#" && (i === 0 || " \t\n;&|(".includes(text[i - 1]))) {
+      while (i < text.length && text[i] !== "\n") blank(i++);
+    } else {
+      i += 1;
+    }
+  }
+  return out.join("");
 }
 
 function collectCliRouteRefs(): { refs: CliRouteRef[]; unresolved: UnresolvedCliCallSite[] } {
