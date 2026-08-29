@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useId, useMemo, useState } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
+import { SidebarDisclosureChevronIcon } from '../shared/SidebarGroupNode';
 import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
 
 export type ToolResultContent =
@@ -47,8 +48,6 @@ export type ToolVisual = {
 };
 
 type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
-
-const INPUT_AUTO_COLLAPSE_LINES = 5;
 
 export function getToolVisual(toolName: string): ToolVisual {
   const presentation = presentTool(toolName, {});
@@ -102,11 +101,6 @@ function extractImages(content: ToolResultContent): Array<{ type: string; media_
   return (content as Array<{ type: string; source?: { type: string; media_type: string; data: string } }>)
     .filter((item) => item.type === 'image' && item.source)
     .map((item) => item.source as { type: string; media_type: string; data: string });
-}
-
-function countInputLines(input: Record<string, unknown> | string): number {
-  const text = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-  return text.split('\n').length;
 }
 
 function formatInput(input: Record<string, unknown> | string): string {
@@ -211,12 +205,25 @@ function JsonInputPanel({ input }: { input: Record<string, unknown> | string }):
   );
 }
 
-function CommandInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
-  const command = firstString(input, ['command', 'cmd', 'description']) || JSON.stringify(input, null, 2);
+function CommandInputPanel({ input, inputObj }: {
+  input: Record<string, unknown> | string;
+  inputObj: Record<string, unknown>;
+}): JSX.Element {
+  const structuredCommand = firstString(inputObj, ['command', 'cmd', 'description']);
+  const command = structuredCommand || (typeof input === 'string' ? input : JSON.stringify(inputObj, null, 2));
   return (
     <div className="tool-card__terminal">
       <OverflowFade lines={10}><pre><AnsiText text={command} /></pre></OverflowFade>
     </div>
+  );
+}
+
+function TerminalIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="1.75" y="2.5" width="12.5" height="11" rx="2" />
+      <path d="m4.25 6 2 2-2 2M8.25 10h3" />
+    </svg>
   );
 }
 
@@ -252,22 +259,10 @@ export function ToolCard({
   const status = statusFor(result, statusEmoji);
   const commandLike = isCommandTool(toolName);
   const editLike = isEditTool(toolName) && typeof inputObj.file_path === 'string';
-  const inputLineCount = useMemo(() => countInputLines(input), [input]);
-  const initialExpanded = defaultExpanded !== undefined
-    ? defaultExpanded
-    : (status === 'pending' || status === 'running' || inputLineCount < INPUT_AUTO_COLLAPSE_LINES);
+  const initialExpanded = defaultExpanded ?? false;
   const [localExpanded, setLocalExpanded] = useState(initialExpanded);
-  const [userToggled, setUserToggled] = useState(false);
   const isExpanded = expanded ?? localExpanded;
-
-  useEffect(() => {
-    if (expanded !== undefined || defaultExpanded !== undefined || userToggled) {
-      return;
-    }
-    if ((status === 'success' || status === 'failed') && inputLineCount >= INPUT_AUTO_COLLAPSE_LINES) {
-      setLocalExpanded(false);
-    }
-  }, [defaultExpanded, expanded, inputLineCount, status, userToggled]);
+  const bodyId = useId();
 
   const diffStats = useMemo(() => {
     if (!editLike) return null;
@@ -290,7 +285,7 @@ export function ToolCard({
       );
     }
     if (commandLike) {
-      return <CommandInputPanel input={inputObj} />;
+      return <CommandInputPanel input={input} inputObj={inputObj} />;
     }
     if (toolName === 'Write') {
       return <WriteInputPanel input={inputObj} />;
@@ -299,7 +294,6 @@ export function ToolCard({
   }
 
   function setExpandedValue(nextExpanded: boolean): void {
-    setUserToggled(true);
     if (expanded === undefined) {
       setLocalExpanded(nextExpanded);
     }
@@ -337,10 +331,12 @@ export function ToolCard({
         type="button"
         className="tool-card__header"
         aria-expanded={isExpanded}
+        aria-controls={bodyId}
         onClick={() => setExpandedValue(!isExpanded)}
       >
-        <span className="tool-card__chevron">{isExpanded ? 'v' : '>'}</span>
-        <span className="tool-card__icon" aria-hidden="true">{visual.icon}</span>
+        <span className="tool-card__icon" aria-hidden="true">
+          {visual.kind === 'execute' ? <TerminalIcon /> : visual.icon}
+        </span>
         <span className="tool-card__verb">{visual.verb}</span>
         {target && (
           <span className="tool-card__target" title={target}>
@@ -350,15 +346,17 @@ export function ToolCard({
         {diffStats && (
           <span className="tool-card__stat-chip">+{diffStats.additions} / -{diffStats.deletions}</span>
         )}
+        <span className="tool-card__spacer" aria-hidden="true" />
         {(status === 'pending' || status === 'running') && (
           <span className="tool-card__status tool-card__status--running">Running</span>
         )}
         {status === 'failed' && (
           <span className="tool-card__status tool-card__status--failed">Failed</span>
         )}
+        <span className="tool-card__chevron"><SidebarDisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
       {isExpanded ? (
-        <div className="tool-card__body">
+        <div id={bodyId} role="region" aria-label={`${visual.verb} details`} className="tool-card__body">
           {renderInputPanel()}
           {result && renderResult(<ResultBody result={result} commandLike={commandLike} />)}
         </div>

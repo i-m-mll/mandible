@@ -47,10 +47,10 @@ describe('message action cards', () => {
 
   it('classifies commands and browser calls into deterministic phrases and targets', () => {
     expect(presentTool('exec_command', { cmd: 'npm test' })).toMatchObject({
-      category: 'execute', icon: '$', phrase: 'Ran a command', target: 'npm test',
+      category: 'execute', icon: 'terminal', phrase: 'Ran a command', target: 'npm test',
     });
     expect(presentTool('exec', {})).toMatchObject({
-      category: 'execute', icon: '$', phrase: 'Ran a command', target: '',
+      category: 'execute', icon: 'terminal', phrase: 'Ran a command', target: '',
     });
     expect(presentTool('web__run', { search_query: [{ q: 'Mandible docs' }] })).toMatchObject({
       category: 'browser', phrase: 'Used the browser', target: 'Mandible docs',
@@ -72,6 +72,13 @@ describe('message action cards', () => {
     expect(screen.queryByText('exec')).toBeNull();
   });
 
+  it('preserves a non-empty opaque Codex custom-tool payload', () => {
+    const source = 'const r = await tools.exec_command({ cmd: "npm test" });';
+    render(<ToolUseBlock toolName="exec" input={source} defaultExpanded />);
+    expect(screen.getByText(source)).toBeTruthy();
+    expect(screen.queryByText('{}')).toBeNull();
+  });
+
   it('computes line-based diff stats without fabricating a full diff string', () => {
     expect(computeDiffStats('one\ntwo\nthree', 'one\nTWO\nthree\nfour')).toEqual({
       additions: 2,
@@ -79,7 +86,7 @@ describe('message action cards', () => {
     });
   });
 
-  it('auto-collapses long live tool cards when the result arrives', () => {
+  it('default-folds tool leaves before and after a result arrives', () => {
     const input = {
       file_path: '/tmp/example.txt',
       alpha: 'one',
@@ -88,7 +95,7 @@ describe('message action cards', () => {
       delta: 'four',
     };
     const result = render(<ToolUseBlock toolName="Read" input={input} />);
-    expect(result.container.querySelector('.tool-card--expanded')).toBeTruthy();
+    expect(result.container.querySelector('.tool-card--collapsed')).toBeTruthy();
 
     result.rerender(
       <ToolUseBlock
@@ -104,6 +111,17 @@ describe('message action cards', () => {
 
     expect(result.container.querySelector('.tool-card--collapsed')).toBeTruthy();
     expect(screen.queryByText('complete')).toBeNull();
+  });
+
+  it('uses the exact Codex tool tokens and full-width prose-scale bodies', () => {
+    const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+    for (const token of ['#767778', '#F4F4F4', '#DADADB', '#88888A', '#A3A3A3', '#242424', '#464646', '#919191']) {
+      expect(css).toContain(token);
+    }
+    expect(css).toMatch(/\.tool-card\s*\{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
+    expect(css).toMatch(/\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
   });
 
   it('groups only maximal consecutive tool runs and keeps leaves independently foldable', () => {
@@ -131,12 +149,16 @@ describe('message action cards', () => {
     const view = render(<MessageGroup turn={turn} isStreaming={false} />);
     const group = screen.getByRole('button', { name: /Read some files, ran a command/ });
     expect(group.getAttribute('aria-expanded')).toBe('false');
+    expect(group.getAttribute('aria-controls')).toBeTruthy();
     expect(view.container.querySelectorAll('.tool-card')).toHaveLength(1);
     fireEvent.click(group);
+    expect(screen.getByRole('region', { name: /Read some files, ran a command details/ })).toBeTruthy();
     expect(view.container.querySelectorAll('.tool-card')).toHaveLength(4);
     const leaves = view.container.querySelectorAll<HTMLButtonElement>('.tool-card__header');
+    expect(leaves[0].getAttribute('aria-controls')).toBeTruthy();
     fireEvent.click(leaves[0]);
     expect(leaves[0].getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Read a file details' })).toBeTruthy();
     expect(leaves[1].getAttribute('aria-expanded')).toBe('false');
     expect(view.container.textContent).not.toContain('Success');
     expect(view.container.textContent).not.toContain('exit ok');

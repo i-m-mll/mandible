@@ -15,7 +15,7 @@ const DEFINITIONS: Record<ToolCategory, { icon: string; phrase: string }> = {
   delete: { icon: '−', phrase: 'Removed a file' },
   move: { icon: '→', phrase: 'Moved a file' },
   search: { icon: '⌕', phrase: 'Searched' },
-  execute: { icon: '$', phrase: 'Ran a command' },
+  execute: { icon: 'terminal', phrase: 'Ran a command' },
   think: { icon: '·', phrase: 'Thought' },
   fetch: { icon: '↓', phrase: 'Fetched' },
   browser: { icon: '◎', phrase: 'Used the browser' },
