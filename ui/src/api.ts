@@ -2414,10 +2414,10 @@ export async function forkConversation(
 
 export async function resumeConversation(
   conversationId: string,
-  messageDagUuid: string,
+  messageDagUuid?: string,
   label?: string,
   model?: string,
-  options: { force?: boolean; fork?: boolean } = {},
+  options: { fork?: boolean } = {},
 ): Promise<{ console_session_id?: string; session_id?: string; attach_state?: ConversationAttachState }> {
   const path = `/api/conversations/${encodeURIComponent(conversationId)}/resume`;
   const response = await fetch(path, {
@@ -2427,10 +2427,9 @@ export async function resumeConversation(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      message_dag_uuid: messageDagUuid,
+      ...(messageDagUuid ? { message_dag_uuid: messageDagUuid } : {}),
       label,
       ...(model ? { model } : {}),
-      ...(options.force ? { force: true } : {}),
       ...(options.fork ? { fork: true } : {}),
     }),
   });

@@ -51,6 +51,9 @@ interface CodexResponsePayload {
   name?: string;
   call_id?: string;
   arguments?: string;
+  // custom_tool_call input is an opaque provider payload. It is display-only
+  // and must not be parsed or normalized.
+  input?: string;
   // function_call_output fields
   output?: string;
   // reasoning fields
@@ -542,7 +545,7 @@ export class CodexParser implements ConversationParser {
                 tool_name: payload.name || undefined,
                 tool_kind: "custom_tool_call",
                 tool_id: payload.call_id || undefined,
-                tool_input: parseToolArguments(payload.arguments),
+                tool_input: payload.input ?? payload.arguments,
                 visibility: "default_hidden",
               },
             });

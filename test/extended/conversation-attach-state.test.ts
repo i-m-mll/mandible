@@ -60,10 +60,16 @@ describe("conversation attach state", () => {
     expect(state).toMatchObject({ kind: "live-external", reason: "transcript-recent" });
   });
 
-  it("derives resumable when a supported provider has no liveness evidence", () => {
-    const state = deriveConversationAttachState(baseRow, db, undefined, { now: 1_000_000 });
+  it("derives provider-session resume without a message anchor for Codex", () => {
+    const state = deriveConversationAttachState(
+      { ...baseRow, source: "codex" }, db, undefined, { now: 1_000_000 },
+    );
 
-    expect(state).toMatchObject({ kind: "resumable", reason: "provider-resumable", resumable: true });
+    expect(state).toMatchObject({
+      kind: "resumable",
+      reason: "provider-resumable",
+      continuation: { kind: "provider-session-resume", provider_session_id: "provider-1" },
+    });
   });
 
   it("derives historical for subagent conversations", () => {
@@ -74,6 +80,10 @@ describe("conversation attach state", () => {
       { now: 1_000_000 },
     );
 
-    expect(state).toMatchObject({ kind: "historical", reason: "subagent", resumable: false });
+    expect(state).toMatchObject({
+      kind: "historical",
+      reason: "subagent",
+      continuation: { kind: "hidden", reason: "unavailable" },
+    });
   });
 });

@@ -95,24 +95,24 @@ type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
 
 export function getConversationAttachPresentation(
   state: ConversationAttachState,
-): { label: string; title: string; composer: AttachComposerMode } {
-  if (state.kind === 'live-owned') {
+): { label: string | null; title: string; composer: AttachComposerMode } {
+  if (state.continuation.kind === 'live-send') {
     return {
       label: 'Live',
       title: 'Mandible owns the live process for this conversation.',
       composer: 'enabled',
     };
   }
-  if (state.kind === 'live-external') {
+  if (state.continuation.kind === 'blocked') {
     return {
       label: 'External',
       title: 'This conversation appears live outside Mandible.',
       composer: 'disabled',
     };
   }
-  if (state.kind === 'resumable') {
+  if (state.continuation.kind === 'provider-session-resume' || state.continuation.kind === 'message-anchor-resume') {
     return {
-      label: 'Resumable',
+      label: null,
       title: 'Sending a message will resume this conversation.',
       composer: 'enabled',
     };
@@ -1476,18 +1476,8 @@ function ConversationDetail({
   }, [consoleSessions, conversation?.session_id]);
 
   const attachState = useMemo<ConversationAttachState | null>(() => {
-    if (!conversation) return null;
-    if (linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)) {
-      return {
-        ...conversation.attach_state,
-        kind: 'live-owned',
-        reason: 'mandible-owned',
-        resumable: true,
-        console_session_id: linkedConsoleSession.id,
-      };
-    }
-    return conversation.attach_state;
-  }, [conversation, linkedConsoleSession]);
+    return conversation?.attach_state ?? null;
+  }, [conversation]);
 
   const attachPresentation = attachState ? getConversationAttachPresentation(attachState) : null;
 
@@ -1547,20 +1537,14 @@ function ConversationDetail({
   }, [blocks]);
 
   const continueDisabledReason = useMemo(() => {
-    if (attachState?.kind === 'live-external') {
+    if (attachState?.continuation.kind === 'blocked') {
       return 'Live in your terminal.';
-    }
-    if (attachState?.kind === 'historical') {
-      return 'This conversation is read-only.';
     }
     if (linkedConsoleSession?.interaction_mode === 'inbox_only' && isLiveConsoleSession(linkedConsoleSession)) {
       return 'Direct input is disabled for this session.';
     }
-    if ((!linkedConsoleSession || !isLiveConsoleSession(linkedConsoleSession)) && !latestDagUuid) {
-      return 'No resumable message is available.';
-    }
     return null;
-  }, [attachState?.kind, latestDagUuid, linkedConsoleSession]);
+  }, [attachState?.continuation.kind, linkedConsoleSession]);
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelOptions = (sessionRunOptions?.options.find((option) => option.id === 'model')?.allowedValues ?? [])
@@ -1594,22 +1578,17 @@ function ConversationDetail({
     setContinueError(null);
     setResumeErrorDetails(null);
     try {
-      let targetSessionId = linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)
-        ? linkedConsoleSession.id
-        : null;
-      if (!targetSessionId) {
-        if (!latestDagUuid) {
-          throw new Error('No resumable message is available.');
-        }
-        const result = await resumeConversation(conversationId, latestDagUuid, undefined, composerModel || undefined);
-        if (result.attach_state) {
-          setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
-        }
-        if (!result.console_session_id) {
-          throw new Error('Resume did not return a console session.');
-        }
-        targetSessionId = result.console_session_id;
+      const messageAnchor = attachState?.continuation.kind === 'message-anchor-resume'
+        ? latestDagUuid ?? undefined
+        : undefined;
+      const result = await resumeConversation(conversationId, messageAnchor, undefined, composerModel || undefined);
+      if (result.attach_state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
       }
+      if (!result.console_session_id) {
+        throw new Error('Continuation did not return a Console session.');
+      }
+      const targetSessionId = result.console_session_id;
       await sendConsolePrompt(targetSessionId, prompt);
       setContinueDraft('');
       setToast({ message: 'Message sent.', type: 'info' });
@@ -1624,7 +1603,7 @@ function ConversationDetail({
     } finally {
       setContinueBusy(false);
     }
-  }, [composerModel, continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
+  }, [attachState?.continuation.kind, composerModel, continueDisabledReason, continueDraft, conversationId, latestDagUuid]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'ArrowUp' && shelfItems.length > 0 && event.currentTarget.selectionStart === 0) {
@@ -1854,7 +1833,7 @@ function ConversationDetail({
           <span className="conv-detail__provider">
             {getConversationHeaderProviderLabel(conversation.source)}
           </span>
-          {attachPresentation && attachState && (
+          {attachPresentation?.label && attachState && (
             <span
               className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
               title={attachPresentation.title}
@@ -1902,7 +1881,7 @@ function ConversationDetail({
             {continueBusy ? '...' : '↑'}
           </button>
         </form>
-        {attachState?.kind === 'live-external' && (
+        {attachState?.continuation.kind === 'blocked' && (
           <div className="conv-compose__actions">
             {attachState.external_session_id && (
               <button
@@ -2500,6 +2479,10 @@ export function ConversationsView({
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
   const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
+  const availableProjectCount = useMemo(
+    () => new Set(registeredProjects.map((project) => project.id)).size,
+    [registeredProjects],
+  );
 
   useEffect(() => {
     if (!canonicalProjectsLoaded) return;
@@ -3269,6 +3252,12 @@ export function ConversationsView({
                   </select>
                   <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
+                </div>
+              ) : null}
+              {chatSections.projects.length === 0 && registeredProjects.length > 0 ? (
+                <div className="chat-projects-empty" role="status">
+                  <span>No projects shown · {availableProjectCount} available</span>
+                  <button type="button" onClick={openProjectChooser}>Add Project</button>
                 </div>
               ) : null}
               {chatSections.projects.map((group, index) => {

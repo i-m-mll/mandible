@@ -340,10 +340,17 @@ export type ConversationAttachReason =
   | "no-session"
   | "unsupported-provider";
 
+export type ConversationContinuationCapability =
+  | { kind: "live-send"; console_session_id: string }
+  | { kind: "provider-session-resume"; provider_session_id: string }
+  | { kind: "message-anchor-resume"; provider_session_id: string }
+  | { kind: "blocked"; reason: "external-live"; external_session_id: string | null }
+  | { kind: "hidden"; reason: "unavailable" };
+
 export type ConversationAttachState = {
   kind: ConversationAttachKind;
   reason: ConversationAttachReason;
-  resumable: boolean;
+  continuation: ConversationContinuationCapability;
   can_fork: boolean;
   provider_session_id: string | null;
   console_session_id?: string | null;

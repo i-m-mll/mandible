@@ -185,6 +185,52 @@ describe("conversation fork routes", () => {
     });
   });
 
+  it("resumes Codex by provider session without requiring a message DAG UUID", async () => {
+    insertConversation();
+    const manager = {
+      create: vi.fn(() => ({ id: "console-codex" })),
+      getAll: vi.fn(() => []),
+    };
+    const router = new Router({ clientAuth: authenticator });
+    registerConversationRoutes(router, manager as never);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/conversations/conv-fork/resume",
+      body: {},
+      credential: operatorToken,
+    });
+
+    expect(response.status).toBe(200);
+    expect(manager.create).toHaveBeenCalledWith(expect.objectContaining({
+      command: "codex",
+      provider_session_id: "session-1",
+      resume_at_message: null,
+    }));
+    expect(response.body).toMatchObject({
+      console_session_id: "console-codex",
+      attach_state: { continuation: { kind: "live-send" } },
+    });
+  });
+
+  it("requires the server-declared message anchor for Claude resume", async () => {
+    insertConversationWithSource("conv-anchor", "/tmp/missing-mandible-transcript.jsonl", 0);
+    const manager = { create: vi.fn(), getAll: vi.fn(() => []) };
+    const router = new Router({ clientAuth: authenticator });
+    registerConversationRoutes(router, manager as never);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/conversations/conv-anchor/resume",
+      body: {},
+      credential: operatorToken,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ error: "resume_unavailable", reason: "no-message-anchor" });
+    expect(manager.create).not.toHaveBeenCalled();
+  });
+
   it("admits only the operator before a resume can construct a managed backend", async () => {
     insertConversationWithSource("conv-authz", "/tmp/missing-mandible-transcript.jsonl", 0);
     const manager = {

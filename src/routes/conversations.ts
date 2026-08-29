@@ -1505,17 +1505,11 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     const body = readBody<{
-      message_dag_uuid: string;
+      message_dag_uuid?: string;
       label?: string;
       model?: string;
-      force?: boolean;
       fork?: boolean;
     }>(req);
-    if (!body.message_dag_uuid) {
-      sendJson(res, 400, { error: "Missing message_dag_uuid" });
-      return;
-    }
-
     const conv = db
       .prepare("SELECT * FROM conversations WHERE id = ?")
       .get(id) as ConversationRow | undefined;
@@ -1532,6 +1526,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
       const attachState = deriveConversationAttachState(conv, db, sessionManager);
       if (body.fork === true) {
+        if (!body.message_dag_uuid) {
+          sendJson(res, 400, { error: "Missing message_dag_uuid", attach_state: attachState });
+          return;
+        }
         if (conv.source !== "claude_code") {
           sendJson(res, 501, {
             error: "fork_unsupported",
@@ -1556,15 +1554,15 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         return;
       }
 
-      if (attachState.kind === "live-owned" && attachState.console_session_id) {
+      if (attachState.continuation.kind === "live-send") {
         sendJson(res, 200, {
-          console_session_id: attachState.console_session_id,
+          console_session_id: attachState.continuation.console_session_id,
           attach_state: attachState,
         });
         return;
       }
 
-      if (attachState.kind === "live-external" && body.force !== true) {
+      if (attachState.continuation.kind === "blocked") {
         sendJson(res, 409, {
           error: "resume_conflict",
           reason: attachState.reason,
@@ -1574,11 +1572,21 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         return;
       }
 
-      if (attachState.kind === "historical") {
+      if (attachState.continuation.kind === "hidden") {
         sendJson(res, 409, {
           error: "resume_unavailable",
           reason: attachState.reason,
           message: "This conversation is historical and cannot be resumed by the current provider.",
+          attach_state: attachState,
+        });
+        return;
+      }
+
+      if (attachState.continuation.kind === "message-anchor-resume" && !body.message_dag_uuid) {
+        sendJson(res, 409, {
+          error: "resume_unavailable",
+          reason: "no-message-anchor",
+          message: "This Claude conversation has no resumable message anchor.",
           attach_state: attachState,
         });
         return;
@@ -1605,7 +1613,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         args,
         backend_type: backendType,
         provider_session_id: conv.session_id,
-        resume_at_message: command === "claude" ? body.message_dag_uuid : null,
+        resume_at_message: attachState.continuation.kind === "message-anchor-resume"
+          ? body.message_dag_uuid ?? null
+          : null,
         cwd: conv.cwd ?? undefined,
       });
 
@@ -1615,8 +1625,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
           ...attachState,
           kind: "live-owned",
           reason: "mandible-owned",
-          resumable: true,
           console_session_id: newSession.id,
+          continuation: { kind: "live-send", console_session_id: newSession.id },
           checked_at: Date.now(),
         },
       });

@@ -3,12 +3,14 @@
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
 import { useMemo } from 'preact/hooks';
-import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './types';
+import type { ContentBlock, MessageGroupProps, ToolResultContentBlock, ToolUseContentBlock } from './types';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
 import { MessageActions, type MessageActionsMeta } from '../shared/MessageActions';
+import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
+import { summarizeToolRun } from '../message-blocks/toolPresentation';
 
 /** Extract copyable text from a single content block. */
 function blockCopyText(block: ContentBlock): string {
@@ -147,10 +149,50 @@ export function MessageGroup({
     );
   }
 
+  function renderBlocks(): Array<JSX.Element | null> {
+    const rendered: Array<JSX.Element | null> = [];
+    let index = 0;
+    while (index < blocks.length) {
+      if (blocks[index].type !== 'tool_use') {
+        rendered.push(renderBlock(blocks[index], index));
+        index += 1;
+        continue;
+      }
+      let end = index + 1;
+      while (end < blocks.length && blocks[end].type === 'tool_use') end += 1;
+      const run = blocks.slice(index, end) as ToolUseContentBlock[];
+      if (run.length < 2) {
+        rendered.push(renderBlock(run[0], index));
+        index = end;
+        continue;
+      }
+
+      const groupBlock: ToolUseContentBlock = {
+        type: 'tool_use',
+        id: `group:${run[0].id}`,
+        name: 'tool-call-group',
+        input: {},
+      };
+      const expanded = getBlockExpanded?.(groupBlock, index, false);
+      rendered.push(
+        <ToolCallGroup
+          key={groupBlock.id}
+          summary={summarizeToolRun(run)}
+          expanded={expanded}
+          onExpandedChange={(next) => onBlockExpandedChange?.(groupBlock, index, next)}
+        >
+          {run.map((block, offset) => renderBlock(block, index + offset))}
+        </ToolCallGroup>,
+      );
+      index = end;
+    }
+    return rendered;
+  }
+
   return (
     <div className="message-group">
       <div className="message-group__content">
-        {blocks.map((block, i) => renderBlock(block, i))}
+        {renderBlocks()}
       </div>
     </div>
   );
