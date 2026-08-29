@@ -19,20 +19,16 @@ import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
-  createAuthClearance,
   fetchAuthHooks,
   findIssue,
-  getAuthClearances,
   getAuthRequestActions,
   getAuthRequestDetail,
   isApiErrorStatus,
   createAuthHook,
-  revokeAuthClearance,
   setAuthRequestActionVeto,
   updateAuthHook,
   deleteAuthHook,
   type AuthRequestAction,
-  type AuthClearance,
   type AuthHook,
   type AttributionReadProjection,
   type MergeSignatureClaim,
@@ -710,65 +706,6 @@ function MetadataRow({ label, value }: { label: string; value: string | JSX.Elem
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
-  );
-}
-
-function AuthClearancePanel({
-  request,
-  clearances,
-  busy,
-  mutationsAllowed,
-  onCreate,
-  onRevoke,
-}: {
-  request: AuthRequest;
-  clearances: AuthClearance[];
-  busy: boolean;
-  mutationsAllowed: boolean;
-  onCreate: () => void;
-  onRevoke: (id: string) => void;
-}): JSX.Element {
-  const eligible = getAuthStatus(request) === 'pending'
-    && getAuthType(request) === 'merge'
-    && request.requester_evidence_method === 'api_token'
-    && Boolean(request.requester_credential_id);
-  return (
-    <section className="panel auth-clearance-panel" aria-label="Protected merge clearances">
-      <div className="panel__header">
-        <strong>Scoped clearance</strong>
-        {eligible && (
-          <button type="button" className="btn btn--active" disabled={busy || !mutationsAllowed} onClick={onCreate}>
-            {busy ? 'Waiting for YubiKey…' : 'Issue clearance'}
-          </button>
-        )}
-      </div>
-      <div className="panel__body">
-        <p className="text-muted">
-          Requester provenance: {request.requester_evidence_method ?? 'unverified'}
-          {request.requester_credential_id ? ` · ${request.requester_credential_id.slice(0, 12)}` : ''}
-        </p>
-        {!eligible && getAuthStatus(request) === 'pending' && (
-          <p className="text-muted">This request is not eligible for autonomous clearance execution.</p>
-        )}
-        {clearances.length === 0 ? (
-          <p className="text-muted">No clearance history for this request.</p>
-        ) : clearances.map((clearance) => {
-          const active = clearance.revoked_at == null
-            && clearance.expires_at > Date.now()
-            && clearance.consumed_uses < clearance.max_uses;
-          return (
-            <div className="auth-clearance-panel__row" key={clearance.id}>
-              <span>{clearance.id.slice(0, 8)} · {clearance.consumed_uses}/{clearance.max_uses} uses · {clearance.issue_id ? `issue ${clearance.issue_id.slice(0, 8)}` : clearance.head_branch}</span>
-              {active && (
-                <button type="button" className="btn btn--ghost" disabled={busy || !mutationsAllowed} onClick={() => onRevoke(clearance.id)}>
-                  Revoke
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 
@@ -2529,61 +2466,6 @@ export function AuthQueueView({
     return hydration ? { ...selectedRequestRaw, ...hydration } : selectedRequestRaw;
   }, [selectedRequestRaw, hydratedBodies]);
 
-  const [clearances, setClearances] = useState<AuthClearance[]>([]);
-  const [clearanceBusy, setClearanceBusy] = useState(false);
-  const refreshClearances = useCallback((requestId: string) => {
-    getAuthClearances(requestId)
-      .then(setClearances)
-      .catch(() => setClearances([]));
-  }, []);
-  useEffect(() => {
-    if (!selectedRequest) {
-      setClearances([]);
-      return;
-    }
-    refreshClearances(getAuthId(selectedRequest));
-  }, [selectedRequest, refreshClearances]);
-
-  const handleCreateClearance = useCallback(async () => {
-    if (!selectedRequest?.requested_by_user_id || !operationalMutationsAllowed) return;
-    const requestId = getAuthId(selectedRequest);
-    const issue = selectedRequest.issue_closures?.[0]
-      ?? selectedRequest.issue_references?.[0]
-      ?? selectedRequest.issue_ids?.[0];
-    const head = selectedRequest.head_branch ?? selectedRequest.head;
-    if (!issue && !head) {
-      showToast('The selected request has no exact issue or head scope.');
-      return;
-    }
-    setClearanceBusy(true);
-    try {
-      await createAuthClearance({
-        request_id: requestId,
-        grantee: selectedRequest.requested_by_user_id,
-        ...(issue ? { issue } : {}),
-        ...(head ? { head } : {}),
-      });
-      refreshClearances(requestId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Clearance issuance failed.');
-    } finally {
-      setClearanceBusy(false);
-    }
-  }, [operationalMutationsAllowed, refreshClearances, selectedRequest, showToast]);
-
-  const handleRevokeClearance = useCallback(async (clearanceId: string) => {
-    if (!selectedRequest || !operationalMutationsAllowed) return;
-    setClearanceBusy(true);
-    try {
-      await revokeAuthClearance(clearanceId);
-      refreshClearances(getAuthId(selectedRequest));
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Clearance revocation failed.');
-    } finally {
-      setClearanceBusy(false);
-    }
-  }, [operationalMutationsAllowed, refreshClearances, selectedRequest, showToast]);
-
   useEffect(() => {
     if (!selectedRequest) return;
     const requestId = getAuthId(selectedRequest);
@@ -3038,27 +2920,15 @@ export function AuthQueueView({
               attemptCount={attemptCount}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
-              actionBundle={
-                <div>
-                  <AuthClearancePanel
-                    request={request}
-                    clearances={clearances}
-                    busy={clearanceBusy}
-                    mutationsAllowed={operationalMutationsAllowed}
-                    onCreate={() => void handleCreateClearance()}
-                    onRevoke={(clearanceId) => void handleRevokeClearance(clearanceId)}
-                  />
-                  {requestActions.length > 0 && (
-                    <AuthActionBundle
-                      request={request}
-                      actions={requestActions}
-                      inFlightActionIds={inFlightActionIds}
-                      mutationsAllowed={operationalMutationsAllowed}
-                      onToggleVeto={handleToggleActionVeto}
-                    />
-                  )}
-                </div>
-              }
+              actionBundle={requestActions.length > 0 ? (
+                <AuthActionBundle
+                  request={request}
+                  actions={requestActions}
+                  inFlightActionIds={inFlightActionIds}
+                  mutationsAllowed={operationalMutationsAllowed}
+                  onToggleVeto={handleToggleActionVeto}
+                />
+              ) : undefined}
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
               mutationsAllowed={operationalMutationsAllowed}

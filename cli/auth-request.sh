@@ -51,7 +51,8 @@
 #   --commit-message <text> Legacy free-form review text stored on the request.
 #                           Not used as the merge commit message.
 #   --diff-summary <text>   Unified diff (auto-generated from git diff if omitted; truncated at 100KB)
-#   --spec <text>           Spec/notes content
+#   --spec <text>           Inline spec/review Markdown
+#   --spec-file <file>      Read spec/review Markdown from a file ('-' reads stdin)
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Override auto-detected protected branch worktree path
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
@@ -117,6 +118,9 @@ verification_text=""
 canonical_message="false"
 diff_summary=""
 spec_content=""
+spec_file=""
+spec_inline_set=0
+spec_file_set=0
 post_merge_handoff=""
 depends_on_id=""
 ISSUE_REFERENCES=()
@@ -142,7 +146,8 @@ while [[ $# -gt 0 ]]; do
     --message-file)   change_message_file="$2"; change_message_set=1; shift 2 ;;
     --verification)   verification_text="$2"; shift 2 ;;
     --diff-summary)   diff_summary="$2"; shift 2 ;;
-    --spec)           spec_content="$2"; shift 2 ;;
+    --spec)           spec_content="$2"; spec_inline_set=1; shift 2 ;;
+    --spec-file)      spec_file="$2"; spec_file_set=1; shift 2 ;;
     --handoff)        post_merge_handoff="$2"; shift 2 ;;
     --dirty-policy)   dirty_policy="$2"; shift 2 ;;
     --dirty-branch-prefix) dirty_branch_prefix="$2"; shift 2 ;;
@@ -198,6 +203,29 @@ fi
 if [[ -n "$change_message_text" && -n "$change_message_file" ]]; then
   echo "Error: --message and --message-file are mutually exclusive" >&2
   exit 2
+fi
+if [[ $spec_inline_set -eq 1 && $spec_file_set -eq 1 ]]; then
+  echo "Error: --spec and --spec-file are mutually exclusive" >&2
+  exit 2
+fi
+if [[ "$change_message_file" == "-" && "$spec_file" == "-" ]]; then
+  echo "Error: --message-file - and --spec-file - cannot both read stdin" >&2
+  exit 2
+fi
+if [[ $spec_file_set -eq 1 ]]; then
+  if [[ "$spec_file" != "-" && ! -f "$spec_file" ]]; then
+    echo "Error: --spec-file '${spec_file}' does not exist" >&2
+    exit 2
+  fi
+  # Command substitution normally strips every trailing newline. Append and
+  # remove one non-newline sentinel so the opaque Markdown reaches jq exactly
+  # as authored, including blank lines and a final newline.
+  if [[ "$spec_file" == "-" ]]; then
+    spec_content="$(cat; printf '\034')"
+  else
+    spec_content="$(cat -- "$spec_file"; printf '\034')"
+  fi
+  spec_content="${spec_content%$'\034'}"
 fi
 if [[ $change_message_set -eq 1 && -n "$commit_message" ]]; then
   echo "Error: --commit-message cannot be combined with --message/--message-file" >&2

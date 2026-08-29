@@ -16,13 +16,19 @@ The agent runs:
 mandible auth request feature/add-dark-mode \
   --title "Merge feature/add-dark-mode: dark mode support" \
   --closes-issue abc1234 \
-  --spec "Adds dark mode toggle to the settings panel. Uses CSS custom properties for theme switching. Preserves user preference in localStorage." \
+  --spec-file ./auth-spec.md \
   --no-watch
 ```
 
 The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
+
+`auth-spec.md` is a detailed Markdown review packet with `Intent`, `Design
+choices`, `Scope` and `Non-goals`, `Verification` and its limitations, and
+`Delivery` sections. `--spec-file -` reads the same content from stdin, while
+the compatible `--spec` form remains available for short inline text. Mandible
+preserves supplied spec text as opaque bytes rather than rewriting it.
 
 ### Protected-Root Dirty Policy
 

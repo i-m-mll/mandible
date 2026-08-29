@@ -2586,6 +2586,72 @@ describe('AuthQueueView', () => {
     expect(commitPanel?.querySelector('.panel__edit-btn')).toBeNull();
   });
 
+  it('renders multiline specifications as sanitized block Markdown without rewriting legacy text', () => {
+    const multilineSpec = [
+      '# Intent',
+      '',
+      'Keep **review prose** readable.',
+      '',
+      '## Scope',
+      '',
+      '- Preserve paragraphs and lists.',
+      '- Reuse the Auth Markdown renderer.',
+      '',
+      '```text',
+      'operator-gate: none',
+      '```',
+      '',
+      '<img src=x onerror="window.compromised = true">',
+    ].join('\n');
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-multiline-spec',
+          title: 'Multiline specification',
+          repo: 'mandible',
+          base: 'main',
+          head: 'feature/multiline-spec',
+          status: 'pending',
+          spec_content: multilineSpec,
+        }],
+        outputs: {},
+        selectedAuthId: 'req-multiline-spec',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    const specPanel = screen.getByText('Specification').closest('.panel') as HTMLElement | null;
+    const rendered = specPanel?.querySelector('.rendered-markdown') as HTMLElement | null;
+    expect(rendered?.querySelector('h1')?.textContent).toBe('Intent');
+    expect(rendered?.querySelector('h2')?.textContent).toBe('Scope');
+    expect(rendered?.querySelectorAll('li')).toHaveLength(2);
+    expect(rendered?.querySelector('strong')?.textContent).toBe('review prose');
+    expect(rendered?.querySelector('code')?.textContent).toContain('operator-gate: none');
+    expect(rendered?.querySelector('img')?.getAttribute('src')).toBe('x');
+    expect(rendered?.innerHTML).not.toContain('onerror');
+
+    cleanup();
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-legacy-spec',
+          title: 'Legacy specification',
+          repo: 'mandible',
+          status: 'pending',
+          spec_content: 'Intent: keep this exact one-line specification.',
+        }],
+        outputs: {},
+        selectedAuthId: 'req-legacy-spec',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+    const legacyPanel = screen.getByText('Specification').closest('.panel') as HTMLElement | null;
+    expect(legacyPanel?.textContent).toContain('Intent: keep this exact one-line specification.');
+    expect(legacyPanel?.querySelector('.rendered-markdown h1, .rendered-markdown h2')).toBeNull();
+  });
+
   it('toggles pending action veto state through the API', async () => {
     const action = { id: 'act1', auth_request_id: 'req-veto', ordinal: 1, kind: 'comment_add', target_issue_ref: 'abc123', payload: { body: 'Closeout' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null };
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
