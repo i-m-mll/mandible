@@ -10,18 +10,33 @@ export type ToolPresentation = {
 };
 
 const DEFINITIONS: Record<ToolCategory, { icon: string; phrase: string }> = {
-  read: { icon: '↗', phrase: 'Read' },
-  edit: { icon: '±', phrase: 'Edited' },
-  delete: { icon: '−', phrase: 'Removed' },
-  move: { icon: '→', phrase: 'Moved' },
+  read: { icon: '↗', phrase: 'Read a file' },
+  edit: { icon: '±', phrase: 'Edited a file' },
+  delete: { icon: '−', phrase: 'Removed a file' },
+  move: { icon: '→', phrase: 'Moved a file' },
   search: { icon: '⌕', phrase: 'Searched' },
-  execute: { icon: '$', phrase: 'Ran' },
+  execute: { icon: '$', phrase: 'Ran a command' },
   think: { icon: '·', phrase: 'Thought' },
   fetch: { icon: '↓', phrase: 'Fetched' },
-  browser: { icon: '◎', phrase: 'Browsed' },
+  browser: { icon: '◎', phrase: 'Used the browser' },
   switch_mode: { icon: '→', phrase: 'Switched mode' },
-  mcp: { icon: '◇', phrase: 'Called' },
-  other: { icon: '·', phrase: 'Used' },
+  mcp: { icon: '◇', phrase: 'Called a tool' },
+  other: { icon: '·', phrase: 'Used a tool' },
+};
+
+const PLURAL_PHRASES: Record<ToolCategory, string> = {
+  read: 'Read some files',
+  edit: 'Edited some files',
+  delete: 'Removed some files',
+  move: 'Moved some files',
+  search: 'Searched several times',
+  execute: 'Ran some commands',
+  think: 'Thought several times',
+  fetch: 'Fetched several resources',
+  browser: 'Used the browser several times',
+  switch_mode: 'Switched modes several times',
+  mcp: 'Called some tools',
+  other: 'Used some tools',
 };
 
 export function toolInputObject(input: Record<string, unknown> | string): Record<string, unknown> {
@@ -53,7 +68,7 @@ export function classifyTool(toolName: string): ToolCategory {
   if (['delete', 'remove', 'rm'].includes(name)) return 'delete';
   if (['move', 'rename', 'mv'].includes(name)) return 'move';
   if (['grep', 'glob', 'search', 'websearch', 'find'].includes(name)) return 'search';
-  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec_command'].includes(name)) return 'execute';
+  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec', 'exec_command'].includes(name)) return 'execute';
   if (['think', 'thinking'].includes(name)) return 'think';
   if (['switch_mode', 'switchmode'].includes(name)) return 'switch_mode';
   if (['webfetch', 'fetch', 'http', 'open_url'].includes(name)) return 'fetch';
@@ -78,7 +93,7 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
     const to = firstString(input, ['destination', 'to', 'new_path']);
     return to ? `${from} → ${to}` : from;
   }
-  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec_command'].includes(name)) {
+  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec', 'exec_command'].includes(name)) {
     return firstString(input, ['description', 'cmd', 'command']);
   }
   if (['grep', 'glob', 'search', 'find'].includes(name)) {
@@ -107,8 +122,9 @@ export function summarizeToolRun(
     counts.set(category, (counts.get(category) ?? 0) + 1);
   }
   const labels = Array.from(counts.entries()).map(([category, count]) => {
-    const phrase = DEFINITIONS[category].phrase.toLowerCase();
-    return count === 1 ? phrase : `${phrase} ×${count}`;
+    const phrase = count === 1 ? DEFINITIONS[category].phrase : PLURAL_PHRASES[category];
+    return phrase.charAt(0).toLowerCase() + phrase.slice(1);
   });
-  return `${tools.length} tool calls · ${labels.join(', ')}`;
+  const summary = labels.join(', ');
+  return summary.charAt(0).toUpperCase() + summary.slice(1);
 }

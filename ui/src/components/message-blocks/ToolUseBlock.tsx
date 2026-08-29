@@ -130,7 +130,7 @@ function isEditTool(toolName: string): boolean {
 
 function isCommandTool(toolName: string): boolean {
   const normalized = toolName.trim().toLowerCase();
-  return ['bash', 'execute', 'run', 'shell', 'terminal', 'command'].includes(normalized);
+  return ['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec', 'exec_command'].includes(normalized);
 }
 
 function ansiClass(code: string): string | null {
@@ -342,7 +342,6 @@ export function ToolCard({
         <span className="tool-card__chevron">{isExpanded ? 'v' : '>'}</span>
         <span className="tool-card__icon" aria-hidden="true">{visual.icon}</span>
         <span className="tool-card__verb">{visual.verb}</span>
-        <span className="tool-card__tool-name">{toolName}</span>
         {target && (
           <span className="tool-card__target" title={target}>
             {displayTarget}

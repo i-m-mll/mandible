@@ -47,16 +47,29 @@ describe('message action cards', () => {
 
   it('classifies commands and browser calls into deterministic phrases and targets', () => {
     expect(presentTool('exec_command', { cmd: 'npm test' })).toMatchObject({
-      category: 'execute', icon: '$', phrase: 'Ran', target: 'npm test',
+      category: 'execute', icon: '$', phrase: 'Ran a command', target: 'npm test',
+    });
+    expect(presentTool('exec', {})).toMatchObject({
+      category: 'execute', icon: '$', phrase: 'Ran a command', target: '',
     });
     expect(presentTool('web__run', { search_query: [{ q: 'Mandible docs' }] })).toMatchObject({
-      category: 'browser', phrase: 'Browsed', target: 'Mandible docs',
+      category: 'browser', phrase: 'Used the browser', target: 'Mandible docs',
     });
     expect(summarizeToolRun([
       { name: 'Read', input: { path: '/a' } },
       { name: 'Read', input: { path: '/b' } },
       { name: 'exec_command', input: { cmd: 'npm test' } },
-    ])).toBe('3 tool calls · read ×2, ran');
+    ])).toBe('Read some files, ran a command');
+    expect(summarizeToolRun([
+      { name: 'exec', input: {} },
+      { name: 'exec', input: {} },
+    ])).toBe('Ran some commands');
+  });
+
+  it('renders the live Codex exec payload as a human command description', () => {
+    render(<ToolUseBlock toolName="exec" input={{}} defaultExpanded={false} />);
+    expect(screen.getByRole('button', { name: /Ran a command/ })).toBeTruthy();
+    expect(screen.queryByText('exec')).toBeNull();
   });
 
   it('computes line-based diff stats without fabricating a full diff string', () => {
@@ -116,7 +129,7 @@ describe('message action cards', () => {
     };
 
     const view = render(<MessageGroup turn={turn} isStreaming={false} />);
-    const group = screen.getByRole('button', { name: /3 tool calls/ });
+    const group = screen.getByRole('button', { name: /Read some files, ran a command/ });
     expect(group.getAttribute('aria-expanded')).toBe('false');
     expect(view.container.querySelectorAll('.tool-card')).toHaveLength(1);
     fireEvent.click(group);
