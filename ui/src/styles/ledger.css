@@ -423,6 +423,7 @@
 
 .ledger-comment-list,
 .ledger-relationship-list,
+.ledger-child-list,
 .ledger-evidence-list,
 .ledger-session-history,
 .ledger-kv-list {
@@ -693,6 +694,7 @@
 }
 
 .ledger-relationship-row,
+.ledger-child-row,
 .ledger-evidence-row,
 .ledger-session-row {
   display: grid;
@@ -712,6 +714,7 @@
   padding: 8px;
 }
 
+.ledger-child-row,
 .ledger-evidence-row,
 .ledger-session-row {
   grid-template-columns: 96px minmax(0, 1fr) auto;
@@ -723,12 +726,14 @@
 }
 
 .ledger-relationship-row:not(:disabled),
+.ledger-child-row:not(:disabled),
 .ledger-evidence-row:not(:disabled),
 .ledger-session-row:not(:disabled) {
   cursor: pointer;
 }
 
 .ledger-relationship-row:not(:disabled):hover,
+.ledger-child-row:not(:disabled):hover,
 .ledger-evidence-row:not(:disabled):hover,
 .ledger-session-row:not(:disabled):hover {
   border-color: rgba(77,163,255,0.28);
@@ -744,6 +749,7 @@
 }
 
 .ledger-relationship-row strong,
+.ledger-child-row strong,
 .ledger-evidence-row strong,
 .ledger-session-row strong {
   overflow: hidden;
@@ -754,6 +760,7 @@
 }
 
 .ledger-relationship-row code,
+.ledger-child-row code,
 .ledger-evidence-row code,
 .ledger-session-row code,
 .ledger-kv-card code {
