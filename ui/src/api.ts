@@ -983,8 +983,8 @@ export type AuthClearance = {
   runtime_epoch: string;
 };
 
-export async function getAuthClearances(requestId: string): Promise<AuthClearance[]> {
-  const response = await apiGet(`/api/auth/clearances?request_id=${encodeURIComponent(requestId)}`);
+export async function getAuthClearances(): Promise<AuthClearance[]> {
+  const response = await apiGet('/api/auth/clearances');
   const body = await parseMaybeJson(response) as { clearances?: AuthClearance[] };
   return body.clearances ?? [];
 }

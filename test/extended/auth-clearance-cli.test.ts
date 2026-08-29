@@ -11,7 +11,7 @@ describe("auth clearance CLI", () => {
     const helperDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-clearance-cli-"));
     try {
       fs.writeFileSync(path.join(helperDir, "api.sh"), `
-api_mutate() {
+api_send() {
   jq -n --arg method "$1" --arg route "$2" --argjson payload "$3" \
     '{method:$method,route:$route,payload:$payload}'
 }

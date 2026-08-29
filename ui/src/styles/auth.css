@@ -30,27 +30,6 @@
   letter-spacing: normal;
 }
 
-.auth-clearance-panel {
-  margin-bottom: 12px;
-}
-
-.auth-clearance-panel .panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.auth-clearance-panel__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 0;
-  border-top: 1px solid var(--neutral-alpha-08);
-  font-size: 12px;
-}
-
 .auth-list {
   display: flex;
   flex-direction: column;
