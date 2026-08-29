@@ -17,6 +17,7 @@
 // (groups/permissions) and evidence persistence are separate umbrella children.
 
 import type { Db } from "../db.js";
+import type { InstanceInfo } from "../types.js";
 import { getOperator, getUserById } from "../users/store.js";
 import type {
   ClientAuthRequestContext,
@@ -33,6 +34,7 @@ import {
   writeDashboardSessions,
   type StoredDashboardSession,
   writeBootstrapTokenFile,
+  writePreviewBrowserEnrollmentProof,
 } from "./secret-store.js";
 import {
   ClientAuthTelemetry,
@@ -87,6 +89,9 @@ export interface ClientAuthenticatorOptions {
   maxEphemeralTokens?: number;
   /** Injectable clock for expiry tests. */
   now?: () => number;
+  /** Exact daemon instance policy and epoch used for preview-only enrollment. */
+  instance?: InstanceInfo;
+  startupEpoch?: string;
 }
 
 const DEFAULT_DASHBOARD_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -97,6 +102,7 @@ const DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_EPHEMERAL_TTL_MS = 15 * 60 * 1_000;
 const OPERATOR_BOOTSTRAP_TTL_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_EPHEMERAL_TOKENS = 256;
+export const PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX = "preview_browser_enrollment:";
 
 export class ClientAuthenticator implements ClientAuthGate {
   private readonly ephemeral = new Map<string, EphemeralEntry>();
@@ -114,6 +120,8 @@ export class ClientAuthenticator implements ClientAuthGate {
   /** Presented dashboard fingerprint keyed by the exact authenticate() result. */
   private readonly presentedDashboardSessions = new WeakMap<object, string>();
   private bootstrapRaw: string | null = null;
+  private previewEnrollmentRaw: string | null = null;
+  private readonly previewEnrollment: { previewRoot: string; startupEpoch: string } | null;
 
   constructor(
     private readonly db: Db,
@@ -136,6 +144,11 @@ export class ClientAuthenticator implements ClientAuthGate {
       options.maxEphemeralTokens ?? DEFAULT_MAX_EPHEMERAL_TOKENS,
     );
     this.now = options.now ?? Date.now;
+    this.previewEnrollment = options.instance?.preview_browser_enrollment === "allow"
+      && options.instance.preview_root
+      && options.startupEpoch
+      ? { previewRoot: options.instance.preview_root, startupEpoch: options.startupEpoch }
+      : null;
     this.pepper = loadOrCreatePepper(db, this.secretsDir);
     this.restoreDashboardSession();
   }
@@ -157,6 +170,12 @@ export class ClientAuthenticator implements ClientAuthGate {
     const key = fingerprintForToken(this.pepper, token);
     const eph = this.ephemeral.get(key);
     if (eph) {
+      if (
+        eph.purpose.startsWith(PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX)
+        && (context?.method !== "POST" || context.pathname !== "/api/client-auth/handshake")
+      ) {
+        return null;
+      }
       const now = this.now();
       if (eph.expiresAt !== null && eph.expiresAt <= now) {
         const renewableDashboard = eph.purpose === "dashboard_handshake"
@@ -448,7 +467,43 @@ export class ClientAuthenticator implements ClientAuthGate {
    * when no operator exists.
    */
   refreshBootstrapTokenFile(): void {
+    if (this.previewEnrollment) {
+      this.revokeOperatorBootstrap();
+      return;
+    }
     writeBootstrapTokenFile(this.bootstrapToken(), this.secretsDir);
+  }
+
+  /**
+   * Publish a daemon-process proof for an isolated reject-mode preview.
+   *
+   * The raw proof is held in this process's ephemeral map and in one 0600 file
+   * beneath the verified preview root. A copied file cannot authenticate to a
+   * different process because that process has a different in-memory token and
+   * startup epoch. Authentication is additionally restricted to the handshake
+   * path above, so the proof cannot call ordinary APIs directly.
+   */
+  publishPreviewBrowserEnrollmentProof(): boolean {
+    if (!this.previewEnrollment) return false;
+    const operator = getOperator(this.db);
+    if (!operator) return false;
+    if (this.previewEnrollmentRaw) {
+      this.revokeEphemeralToken(this.previewEnrollmentRaw);
+    }
+    const purpose = `${PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX}${this.previewEnrollment.startupEpoch}`;
+    const token = this.issueEphemeralToken(
+      { user_id: operator.id, slug: operator.slug },
+      purpose,
+      { ttlMs: null },
+    );
+    writePreviewBrowserEnrollmentProof({
+      version: 1,
+      pid: process.pid,
+      startup_epoch: this.previewEnrollment.startupEpoch,
+      token,
+    }, this.previewEnrollment.previewRoot);
+    this.previewEnrollmentRaw = token;
+    return true;
   }
 
   private restoreDashboardSession(): void {

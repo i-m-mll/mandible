@@ -223,7 +223,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // so token-bearing requests resolve to a user identity (compat mode by
   // default: unauthenticated loopback still works and unattributed writes are
   // counted; strict mode rejects anonymous mutations).
-  const clientAuth = new ClientAuthenticator(db);
+  const clientAuth = new ClientAuthenticator(db, { instance, startupEpoch });
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
   const sessionRegistry = new SessionRegistry(db, logger);
@@ -412,6 +412,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // listen endpoint. A losing concurrent startup must never overwrite the
   // credential used by the live daemon.
   clientAuth.refreshBootstrapTokenFile();
+  clientAuth.publishPreviewBrowserEnrollmentProof();
 
   // Initialize console session manager: reconcile DB state, restart operator if configured.
   try {

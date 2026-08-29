@@ -89,8 +89,18 @@ export function resolveInstanceInfo(options: {
     ?? (options.sourceDbPath ? "start_options" : env.MANDIBLE_INSTANCE_SOURCE_DB ? "env" : null);
   const resolvedDbPath = dbPath ? path.resolve(dbPath) : null;
   const resolvedSourceDbPath = sourceDbPath ? path.resolve(sourceDbPath) : null;
+  const resolvedPreviewRoot = env.MANDIBLE_PREVIEW_ROOT
+    ? path.resolve(env.MANDIBLE_PREVIEW_ROOT)
+    : null;
+  const isolatedDatabaseCopy = hasIsolatedDatabaseCopy(resolvedDbPath, resolvedSourceDbPath);
   const briefingResponseMutations = operationalMutations === "allow"
-    || hasIsolatedDatabaseCopy(resolvedDbPath, resolvedSourceDbPath)
+    || isolatedDatabaseCopy
+    ? "allow"
+    : "reject";
+  const previewBrowserEnrollment = role === "preview"
+    && operationalMutations === "reject"
+    && isolatedDatabaseCopy
+    && isPathWithinRoot(resolvedDbPath, resolvedPreviewRoot)
     ? "allow"
     : "reject";
 
@@ -99,11 +109,25 @@ export function resolveInstanceInfo(options: {
     operational_mutations: operationalMutations,
     operational_mutations_overridden: env.MANDIBLE_OPERATIONAL_MUTATIONS !== undefined,
     briefing_response_mutations: briefingResponseMutations,
+    preview_browser_enrollment: previewBrowserEnrollment,
+    preview_root: resolvedPreviewRoot,
     db_path: resolvedDbPath,
     db_path_source: dbPathSource,
     source_db_path: resolvedSourceDbPath,
     source_db_path_source: sourceDbPathSource,
   };
+}
+
+function isPathWithinRoot(candidate: string | null, root: string | null): boolean {
+  if (candidate === null || root === null) return false;
+  try {
+    const canonicalCandidate = fs.realpathSync.native(candidate);
+    const canonicalRoot = fs.realpathSync.native(root);
+    const relative = path.relative(canonicalRoot, canonicalCandidate);
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
 }
 
 export function evaluateInstanceMutation(

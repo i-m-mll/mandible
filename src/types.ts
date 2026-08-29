@@ -145,6 +145,12 @@ export interface InstanceInfo {
   operational_mutations: OperationalMutationPolicy;
   operational_mutations_overridden: boolean;
   briefing_response_mutations: OperationalMutationPolicy;
+  /**
+   * Whether this exact process may publish a filesystem proof used only to
+   * enroll a preview browser through the client-auth handshake.
+   */
+  preview_browser_enrollment: OperationalMutationPolicy;
+  preview_root?: string | null;
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;

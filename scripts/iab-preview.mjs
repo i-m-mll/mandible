@@ -96,7 +96,7 @@ async function createOrReusePreview(options) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
-        ...withBrowserReadyUrl(existing),
+        ...await withBrowserReadyUrl(existing),
         ok: true,
         status: "already-running",
         mode,
@@ -134,7 +134,7 @@ async function createOrReusePreview(options) {
         });
       }
       return {
-        ...withBrowserReadyUrl(existing),
+        ...await withBrowserReadyUrl(existing),
         ok: true,
         status: "already-running",
         mode,
@@ -237,7 +237,6 @@ async function createOrReusePreview(options) {
     protectedBranch,
     port,
     url: `http://127.0.0.1:${port}/#/timeline`,
-    freshUrl: `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline`,
     db: dbCopy,
     sourceDb,
     projection,
@@ -259,7 +258,7 @@ async function createOrReusePreview(options) {
     keepDbPaths: [dbCopy],
   });
   fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
-  return withBrowserReadyUrl(metadata);
+  return await withBrowserReadyUrl(metadata);
 }
 
 async function seedBriefingDemo(options) {
@@ -976,7 +975,7 @@ async function refreshExistingPreview(existing, details) {
   delete refreshed.freshUrl;
   delete refreshed.browserEnrollment;
   fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
-  return withBrowserReadyUrl(refreshed);
+  return await withBrowserReadyUrl(refreshed);
 }
 
 function validatePreviewIdentity(metadata, preview, branch, expectedWorktree) {
@@ -1054,18 +1053,36 @@ function validateRefreshContract(existing, preview, details) {
   };
 }
 
-function withBrowserReadyUrl(preview) {
-  const tokenPath = path.join(
-    preview.previewRoot ?? path.dirname(preview.db),
-    "config",
-    "client-auth",
-    "bootstrap-token",
+export async function withBrowserReadyUrl(preview) {
+  const previewRoot = preview.previewRoot ?? path.dirname(preview.db);
+  const proof = readPreviewEnrollmentProof(
+    path.join(previewRoot, "preview-browser-enrollment.json"),
   );
-  const token = readProtectedToken(tokenPath);
+  const expectedPid = readPidFile(preview.pidFile ?? path.join(previewRoot, "mandible.pid"));
+  if (expectedPid === null || proof.pid !== expectedPid) {
+    throw new Error("Preview browser enrollment proof is not bound to the live daemon pid.");
+  }
+  if (!preview.health?.startup_epoch || proof.startup_epoch !== preview.health.startup_epoch) {
+    throw new Error("Preview browser enrollment proof is not bound to the live daemon instance.");
+  }
+  const handshake = await requestPreviewJson(preview.port, "POST", "/api/client-auth/handshake", proof.token);
+  if (handshake.status !== 200 || typeof handshake.body?.token !== "string") {
+    throw new Error(`Preview browser enrollment handshake failed with HTTP ${handshake.status}.`);
+  }
+  const dashboardToken = handshake.body.token;
+  const whoami = await requestPreviewJson(preview.port, "GET", "/api/client-auth/whoami", dashboardToken);
+  const verified = whoami.status === 200
+    && whoami.body?.authenticated === true
+    && whoami.body?.user?.kind === "human"
+    && whoami.body?.user?.id === handshake.body?.user?.id
+    && whoami.body?.ephemeral_purpose === "dashboard_handshake";
+  if (!verified) {
+    throw new Error(`Preview browser enrollment identity verification failed with HTTP ${whoami.status}.`);
+  }
   return {
     ...preview,
-    freshUrl: browserUrl(preview.port, token),
-    browserEnrollment: token ? "one-time-fragment" : "existing-session",
+    freshUrl: browserUrl(preview.port, dashboardToken),
+    browserEnrollment: "verified-dashboard-session",
   };
 }
 
@@ -1076,18 +1093,44 @@ function browserUrl(port, token = null) {
   return `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline${hashQuery}`;
 }
 
-function readProtectedToken(tokenPath) {
-  try {
-    const stat = fs.statSync(tokenPath);
-    if (!stat.isFile()) return null;
-    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
-      throw new Error(`Preview bootstrap token has unsafe permissions: ${tokenPath}`);
-    }
-    return fs.readFileSync(tokenPath, "utf8").trim() || null;
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
+function readPreviewEnrollmentProof(proofPath) {
+  const stat = fs.statSync(proofPath);
+  if (!stat.isFile()) throw new Error("Preview browser enrollment proof is not a file.");
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw new Error(`Preview browser enrollment proof has unsafe permissions: ${proofPath}`);
   }
+  const proof = JSON.parse(fs.readFileSync(proofPath, "utf8"));
+  if (proof?.version !== 1 || !Number.isInteger(proof.pid) || proof.pid <= 1
+      || typeof proof.startup_epoch !== "string" || !proof.startup_epoch
+      || typeof proof.token !== "string" || !proof.token) {
+    throw new Error("Preview browser enrollment proof is invalid.");
+  }
+  return proof;
+}
+
+function requestPreviewJson(port, method, requestPath, token) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: "127.0.0.1",
+      port,
+      path: requestPath,
+      method,
+      timeout: 2_000,
+      headers: { Authorization: `Bearer ${token}` },
+    }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        let parsed = null;
+        try { parsed = body ? JSON.parse(body) : null; } catch { /* invalid response */ }
+        resolve({ status: res.statusCode ?? 0, body: parsed });
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("Preview browser enrollment request timed out.")));
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 async function analyzePreviewDirForCleanup(dirPath, apply) {
@@ -1546,6 +1589,7 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
+    MANDIBLE_PREVIEW_ROOT: previewRoot,
     // Every writable file the preview daemon opens has to live under the
     // preview root. The ledger copy was isolated from the start; these three
     // were missed, so a preview opened the live conversations index read-write
@@ -1675,7 +1719,8 @@ function readHealth(port) {
 
 function hasExpectedPreviewPolicy(health) {
   return health?.instance?.role === "preview" &&
-    health.instance.operational_mutations === "reject";
+    health.instance.operational_mutations === "reject" &&
+    health.instance.preview_browser_enrollment === "allow";
 }
 
 function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {

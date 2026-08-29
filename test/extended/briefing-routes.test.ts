@@ -71,6 +71,16 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("keeps operator-visible Briefing reads authenticated", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "GET", url: "/api/briefings" })).toMatchObject({
+      status: 401,
+      body: { code: "authentication_required" },
+    });
+    expect(await router.invoke({
+      method: "GET", url: "/api/briefings", credential: "human",
+    })).toMatchObject({ status: 200 });
+  });
   it("archives and restores exact Briefings with durable publisher authorization and preserved custody", async () => {
     const source = path.join(root, "archive.md");
     fs.writeFileSync(source, "# Archive\n");

@@ -619,11 +619,41 @@ afterAll(() => {
   killStandInProcesses();
 });
 
-function listenForHealth(health: unknown): Promise<number> {
+function listenForHealth(
+  health: unknown,
+  proofPath?: string,
+  options: { verifiedHuman?: boolean } = {},
+): Promise<number> {
+  let dashboardSequence = 0;
+  const dashboardTokens = new Set<string>();
   previewServer = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/api/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(health));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/client-auth/handshake" && proofPath) {
+      const proof = JSON.parse(fs.readFileSync(proofPath, "utf8")) as { token: string };
+      if (req.headers.authorization !== `Bearer ${proof.token}`) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: "authentication_required" }));
+        return;
+      }
+      const dashboardToken = `preview dashboard session ${++dashboardSequence}`;
+      dashboardTokens.add(dashboardToken);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ token: dashboardToken, user: { id: "human-browser" } }));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/client-auth/whoami" && proofPath) {
+      const authenticated = typeof req.headers.authorization === "string"
+        && dashboardTokens.has(req.headers.authorization.slice("Bearer ".length));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(authenticated ? {
+        authenticated: true,
+        user: { id: "human-browser", kind: options.verifiedHuman === false ? "agent" : "human" },
+        ephemeral_purpose: "dashboard_handshake",
+      } : { authenticated: false, user: null }));
       return;
     }
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -641,25 +671,19 @@ function listenForHealth(health: unknown): Promise<number> {
   });
 }
 
-function listenForDynamicHealth(healthPath: string): Promise<number> {
-  previewServer = http.createServer((req, res) => {
-    if (req.method === "GET" && req.url === "/api/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(fs.readFileSync(healthPath, "utf8"));
-      return;
-    }
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "not_found" }));
-  });
-
-  return new Promise((resolve) => {
-    previewServer!.listen(0, "127.0.0.1", () => {
-      const address = previewServer!.address();
-      if (!address || typeof address === "string") {
-        throw new Error("preview test server did not bind a TCP port");
+function listenForDynamicHealth(healthPath: string, proofPath: string): Promise<number> {
+  return listenForHealth(JSON.parse(fs.readFileSync(healthPath, "utf8")), proofPath).then((port) => {
+    const original = previewServer!.listeners("request")[0] as http.RequestListener;
+    previewServer!.removeAllListeners("request");
+    previewServer!.on("request", (req, res) => {
+      if (req.method === "GET" && req.url === "/api/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(fs.readFileSync(healthPath, "utf8"));
+        return;
       }
-      resolve(address.port);
+      original(req, res);
     });
+    return port;
   });
 }
 
@@ -689,6 +713,7 @@ function previewContractEnv(details: {
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(details.previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(details.previewRoot, "config"),
+    MANDIBLE_PREVIEW_ROOT: details.previewRoot,
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(details.previewRoot, "stderr.log"),
@@ -714,6 +739,8 @@ function installStandInDaemonDist(repo: string, details: {
   healthPath: string;
   refreshedHealthPath: string;
   markerPidFile: string;
+  proofPath: string;
+  startupEpoch: string;
 }): void {
   const realDist = path.join(process.cwd(), "dist");
   if (!fs.existsSync(path.join(realDist, "db.js"))) {
@@ -735,6 +762,7 @@ function installStandInDaemonDist(repo: string, details: {
     // A marker only this stand-in writes, so teardown never kills a pid the
     // suite does not own.
     `fs.writeFileSync(${JSON.stringify(details.markerPidFile)}, process.pid + "\\n");`,
+    `fs.writeFileSync(${JSON.stringify(details.proofPath)}, JSON.stringify({ version: 1, pid: process.pid, startup_epoch: ${JSON.stringify(details.startupEpoch)}, token: "preview process proof" }), { mode: 0o600 });`,
     `fs.copyFileSync(${JSON.stringify(details.refreshedHealthPath)}, ${JSON.stringify(details.healthPath)});`,
     `setInterval(function () {}, 1000);`,
     ``,
@@ -768,14 +796,18 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
 
   const healthPath = path.join(previewRoot, "health.json");
   const refreshedHealthPath = path.join(previewRoot, "refreshed-health.json");
+  const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
+  const startupEpoch = "preview-refresh-fixture";
   const fileRpcDir = path.join(previewRoot, "agent-rpc");
   const health = {
     ready: true,
     warm: true,
+    startup_epoch: startupEpoch,
     startup_commit: { hash: oldHead, summary: "old", date: "" },
     instance: {
       role: "preview",
       operational_mutations: "reject",
+      preview_browser_enrollment: "allow",
       db_path: db,
       db_path_source: "iab-preview-copy",
       source_db_path: sourceDb,
@@ -787,8 +819,10 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
     ...health,
     startup_commit: { hash: currentHead, summary: "new", date: "" },
   }), "utf8");
-  const port = await listenForDynamicHealth(healthPath);
-  installStandInDaemonDist(repo, { healthPath, refreshedHealthPath, markerPidFile });
+  const port = await listenForDynamicHealth(healthPath, proofPath);
+  installStandInDaemonDist(repo, {
+    healthPath, refreshedHealthPath, markerPidFile, proofPath, startupEpoch,
+  });
   const metadata = {
     ok: true,
     status: "started",
@@ -1371,24 +1405,32 @@ describe("iab-preview launcher", () => {
     expect(payload.instanceEnv.MANDIBLE_FILE_RPC_DIR).toBe(path.join(previewRoot, "agent-rpc"));
   });
 
-  it("returns a one-time enrollment fragment without persisting the credential", async () => {
+  it("exchanges the process proof and returns only a verified dashboard session fragment", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
     tempRoots.push(previewBase);
     const previewRoot = path.join(previewBase, "integration-test-preview");
     const fileRpcDir = path.join(previewRoot, "agent-rpc");
-    const authDir = path.join(previewRoot, "config", "client-auth");
-    fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(authDir, "bootstrap-token"), "preview bootstrap proof", { mode: 0o600 });
+    fs.mkdirSync(fileRpcDir, { recursive: true });
+    const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
+    const pidFile = path.join(previewRoot, "mandible.pid");
+    const startupEpoch = "preview-reuse-fixture";
+    fs.writeFileSync(pidFile, `${process.pid}\n`, "utf8");
+    fs.writeFileSync(proofPath, JSON.stringify({
+      version: 1, pid: process.pid, startup_epoch: startupEpoch, token: "preview process proof",
+    }), { mode: 0o600 });
     const currentHead = gitOutput(["rev-parse", "HEAD"], repo);
     const port = await listenForHealth({
       ready: true,
       warm: true,
+      startup_epoch: startupEpoch,
       startup_commit: { hash: currentHead, summary: "current", date: "" },
-      instance: { role: "preview", operational_mutations: "reject" },
+      instance: {
+        role: "preview", operational_mutations: "reject", preview_browser_enrollment: "allow",
+      },
       file_rpc_dir: fileRpcDir,
-    });
+    }, proofPath);
     const db = path.join(previewRoot, "current.db");
     const sourceDb = path.join(repo, "source.db");
     fs.writeFileSync(sourceDb, "source database", "utf8");
@@ -1397,6 +1439,7 @@ describe("iab-preview launcher", () => {
       branch: "integration/test-preview",
       worktree: repo,
       port,
+      pidFile,
       db,
       sourceDb,
       previewRoot,
@@ -1421,10 +1464,61 @@ describe("iab-preview launcher", () => {
 
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("already-running");
-    expect(payload.browserEnrollment).toBe("one-time-fragment");
-    expect(new URL(payload.freshUrl).hash).toContain("mandible_auth=preview+bootstrap+proof");
+    expect(payload.browserEnrollment).toBe("verified-dashboard-session");
+    expect(new URL(payload.freshUrl).hash).toContain("mandible_auth=preview+dashboard+session+1");
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
-      .not.toContain("preview bootstrap proof");
+      .not.toContain("preview process proof");
+    expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
+      .not.toContain("preview dashboard session");
+
+    const reused = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+    });
+    const reusedPayload = JSON.parse(reused.stdout);
+    expect(reusedPayload.status).toBe("already-running");
+    expect(new URL(reusedPayload.freshUrl).hash)
+      .toContain("mandible_auth=preview+dashboard+session+2");
+    expect(reusedPayload.freshUrl).not.toBe(payload.freshUrl);
+    expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
+      .not.toContain("preview dashboard session");
+  });
+
+  it("emits no browser URL when the exchanged identity is not a verified human", async () => {
+    const previewRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-enrollment-"));
+    tempRoots.push(previewRoot);
+    const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
+    const pidFile = path.join(previewRoot, "mandible.pid");
+    const startupEpoch = "preview-fail-closed-fixture";
+    fs.writeFileSync(pidFile, `${process.pid}\n`, "utf8");
+    fs.writeFileSync(proofPath, JSON.stringify({
+      version: 1, pid: process.pid, startup_epoch: startupEpoch, token: "preview process proof",
+    }), { mode: 0o600 });
+    const health = {
+      startup_epoch: startupEpoch,
+      instance: {
+        role: "preview", operational_mutations: "reject", preview_browser_enrollment: "allow",
+      },
+    };
+    const port = await listenForHealth(health, proofPath, { verifiedHuman: false });
+    const source = `
+      const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
+      try {
+        const result = await launcher.withBrowserReadyUrl(${JSON.stringify({
+          port, pidFile, previewRoot, health,
+        })});
+        process.stdout.write(JSON.stringify({ ok: true, result }));
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ ok: false, error: String(error) }));
+      }
+    `;
+    const result = await execFileAsync(process.execPath, ["--input-type=module", "--eval", source], {
+      cwd: process.cwd(), encoding: "utf8",
+    });
+    const payload = JSON.parse(result.stdout);
+    expect(payload).toMatchObject({ ok: false, error: expect.stringContaining("identity verification failed") });
+    expect(payload.freshUrl).toBeUndefined();
   });
 
   it("refreshes the same preview in place when its startup commit drifts", async () => {
@@ -1516,6 +1610,14 @@ describe("iab-preview launcher", () => {
   it("keeps the already-running fast path when the full startup commit matches", async () => {
     const fixture = await createRefreshFixture();
     fs.copyFileSync(fixture.refreshedHealthPath, fixture.healthPath);
+    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "already-running.pid"));
+    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
+    fs.writeFileSync(path.join(fixture.previewRoot, "preview-browser-enrollment.json"), JSON.stringify({
+      version: 1,
+      pid: running,
+      startup_epoch: "preview-refresh-fixture",
+      token: "preview process proof",
+    }), { mode: 0o600 });
     const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
       cwd: fixture.repo,
       encoding: "utf8",
@@ -1525,7 +1627,7 @@ describe("iab-preview launcher", () => {
     expect(JSON.parse(result.stdout).status).toBe("already-running");
     // Nothing was launched and nothing was stopped.
     expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
-    expect(readPidFile(fixture.pidFile)).toBe(UNREACHABLE_PID);
+    expect(readPidFile(fixture.pidFile)).toBe(running);
   });
 
   it("leaves the existing preview metadata and projection untouched when the build fails", async () => {
