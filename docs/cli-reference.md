@@ -9,7 +9,6 @@ mandible issue title <id> [--json] [--graceful]
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
 mandible umbrella status <id> [--deep] [--json]
 mandible umbrella adopt <umbrella> <children...> [--json]
-mandible umbrella reconcile <umbrella> [--json]
 mandible umbrella manifest refresh <umbrella> [--json]
 mandible issue parent-role status <umbrella> [--json]
 mandible issue parent-role assume <umbrella> [--session S] [--mechanism M] [--override] [--json]
@@ -121,14 +120,12 @@ mandible auth help | -h | --help | ""   → shows auth subcommand list (does NOT
 `mandible umbrella adopt <umbrella> <children...> [--json]` explicitly adopts
 the provided child refs into an umbrella. It sends one server-side adoption
 request that creates any missing `parent_child` edges, refreshes the
-`delegation-manifest` checkpoint, reports drift, and returns the updated
-umbrella status packet.
+`delegation-manifest` checkpoint, and returns the updated umbrella status
+packet.
 
-`mandible umbrella reconcile <umbrella> [--json]` is for legacy or drifted
-umbrellas whose child links are missing but whose body contains the canonical
-Children table. The table format is the parent plan table with columns `issue`,
-`scope`, `branch`, and `state`; reconcile derives children only from that table,
-not from arbitrary issue refs elsewhere in the umbrella body.
+Umbrella membership is the `parent_child` edge graph created by `umbrella adopt`
+or `mandible issue link <umbrella> <children...> --type parent_child`; there is
+no body Children table and no reconcile command.
 
 `mandible umbrella status <umbrella> --deep [--json]` keeps the default status
 surface unchanged but inlines child issue bodies, latest closeout checkpoints,

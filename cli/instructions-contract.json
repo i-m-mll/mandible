@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 9,
+  "version": 10,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -16,11 +16,7 @@
     },
     {
       "name": "mandible umbrella adopt <umbrella> <children...> [--json]",
-      "description": "Idempotently adopt explicit children into an umbrella, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, report body-table/link-graph drift, and return the updated umbrella status fact packet."
-    },
-    {
-      "name": "mandible umbrella reconcile <umbrella> [--json]",
-      "description": "Derive children only from the canonical umbrella Children table, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, report reconciliation drift, and return the updated umbrella status fact packet."
+      "description": "Idempotently adopt explicit children into an umbrella, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, and return the updated umbrella status fact packet. This command and `mandible issue link --type parent_child` are the only ways to establish umbrella membership."
     },
     {
       "name": "mandible umbrella manifest refresh <umbrella> [--json]",
@@ -28,7 +24,7 @@
     },
     {
       "name": "mandible issue parent-role status|assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]",
-      "description": "Inspect or record advisory parent-role holder state; live holder conflicts require an explicit override while stale holders are informational."
+      "description": "Inspect or record advisory parent-role holder state. --session accepts a registered Mandible session id or a registered provider session/thread id; the daemon resolves the alias to its canonical session, stores both identities, and rejects an unknown or unregistered id with an actionable error. Liveness comes from the canonical session-liveness rule: a live holder conflict requires an explicit override while a stale holder is informational."
     },
     {
       "name": "mandible issue heads <id>... [--json]",
@@ -372,7 +368,7 @@
   ],
   "coordination": [
     "The umbrella issue is the coordinator; sessions are disposable role holders.",
-    "Umbrella bodies use a canonical Children table with columns issue, scope, branch, and state; `mandible umbrella reconcile` may derive children from that table only, not from arbitrary issue refs elsewhere in the body.",
+    "Umbrella membership is the set of `parent_child` relationship edges from the umbrella to its children, created by `mandible umbrella adopt` or `mandible issue link --type parent_child` and removed by `mandible issue unlink`. Umbrella bodies carry the plan and rationale, not a membership table; read children and their live state from `mandible umbrella status` or the issue's children shelf in the Mandible app.",
     "Delegation manifests are stored as `delegation-manifest` checkpoints and record both `digest` (the entry's own head) and `subtree_digest` (the entry plus all transitive parent_child descendants) per entry. The first payload entry is the umbrella's own head marked `self: true` — an explicit stored self baseline, not a child entry. Refresh digests with `mandible umbrella manifest refresh <umbrella>` before resuming.",
     "`mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries, classifying each as changed, subtree_changed, unchanged, or unknown. `subtree_changed` flags work that landed on a nested sub-umbrella's descendants even when the direct child's own head is unchanged; `unknown` marks entries from manifests recorded before subtree digests existed, including the umbrella self-entry when the manifest predates the stored `self: true` baseline. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.",
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
