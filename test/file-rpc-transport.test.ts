@@ -39,7 +39,6 @@ const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DE
   ["PATCH", "/api/ledger/issues/:issueId"],
   ["GET", "/api/ledger/issues/:issueId/umbrella-status"],
   ["POST", "/api/ledger/issues/:issueId/umbrella-adopt"],
-  ["POST", "/api/ledger/issues/:issueId/umbrella-reconcile"],
   ["POST", "/api/ledger/issues/:issueId/umbrella-manifest-refresh"],
   ["GET", "/api/ledger/issues/:issueId/parent-role"],
   ["POST", "/api/ledger/issues/:issueId/parent-role"],
@@ -484,7 +483,6 @@ describe("file RPC transport", () => {
     expect(allowsFileRpcRoute("POST", "/api/artifacts/bundles/bundle-1/members")).toBe(true);
     expect(allowsFileRpcRoute("GET", "/api/ledger/issues/abc/umbrella-status")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-adopt")).toBe(true);
-    expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-reconcile")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-manifest-refresh")).toBe(true);
     expect(allowsFileRpcRoute("GET", "/api/ledger/issues/abc/parent-role")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/parent-role")).toBe(true);

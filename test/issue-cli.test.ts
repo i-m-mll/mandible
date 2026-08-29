@@ -348,7 +348,6 @@ function listen(): Promise<number> {
             },
             delegation_manifest: { id: "checkpoint-4", payload: [] },
             children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
-            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
             operation: {
               kind: "manifest-refresh",
               refreshed_child_refs: ["def"],
@@ -375,28 +374,7 @@ function listen(): Promise<number> {
               { id: "issue-2", short_id: "def", title: "Child", status: "open" },
               { id: "issue-3", short_id: "ghi", title: "Another child", status: "open" },
             ],
-            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
             operation: { kind: "adopt", created_child_refs: ["def", "ghi"], existing_child_refs: [] },
-            auth_queue: { pending_requests: [], active_requests: [] },
-          }));
-        });
-        return;
-      }
-      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/umbrella-reconcile") {
-        void readBody().then((body) => {
-          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
-          res.end(JSON.stringify({
-            umbrella: {
-              id: "issue-1",
-              short_id: "abc",
-              title: "Umbrella",
-              status: "open",
-              current_revision_id: "rev_issue_1",
-            },
-            delegation_manifest: { id: "checkpoint-3", payload: [] },
-            children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
-            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
-            operation: { kind: "reconcile", created_child_refs: ["def"], unresolved_child_refs: [] },
             auth_queue: { pending_requests: [], active_requests: [] },
           }));
         });
@@ -655,21 +633,6 @@ describe("issue CLI body revisions", () => {
     const parsed = JSON.parse(result.stdout);
     expect(parsed.umbrella.short_id).toBe("abc");
     expect(parsed.operation.created_child_refs).toEqual(["def", "ghi"]);
-  });
-
-  it("reconciles umbrella children from the canonical table", async () => {
-    const port = await listen();
-    const result = await run(["umbrella", "reconcile", "abc", "--json"], port);
-
-    expect(result.status).toBe(0);
-    expect(requestBodies).toContainEqual({
-      path: "/api/ledger/issues/abc/umbrella-reconcile",
-      method: "POST",
-      body: {},
-    });
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.umbrella.short_id).toBe("abc");
-    expect(parsed.operation.created_child_refs).toEqual(["def"]);
   });
 
   it("refreshes an umbrella manifest server-side", async () => {

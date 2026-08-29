@@ -429,57 +429,6 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.length > 0)));
 }
 
-function issueRefFromCell(cell: string): string | null {
-  const match = cell.match(/\[issue:([^\]\s]+)\]/);
-  return match?.[1] ?? null;
-}
-
-function splitMarkdownTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isMarkdownSeparatorRow(cells: string[]): boolean {
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseCanonicalUmbrellaChildRefs(body: string): string[] {
-  const lines = body.split(/\r?\n/);
-  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+Children\s*$/i.test(line.trim()));
-  if (headingIndex < 0) return [];
-
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (!line) continue;
-    if (!line.startsWith("|")) {
-      if (/^#{1,6}\s+/.test(line)) return [];
-      continue;
-    }
-
-    const header = splitMarkdownTableRow(line).map((cell) => cell.toLowerCase());
-    const issueColumn = header.indexOf("issue");
-    if (issueColumn < 0) return [];
-    const separator = splitMarkdownTableRow(lines[index + 1] ?? "");
-    if (!isMarkdownSeparatorRow(separator)) return [];
-
-    const refs: string[] = [];
-    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
-      const rowLine = lines[rowIndex].trim();
-      if (!rowLine.startsWith("|")) break;
-      const cells = splitMarkdownTableRow(rowLine);
-      const ref = issueRefFromCell(cells[issueColumn] ?? "");
-      if (ref) refs.push(ref);
-    }
-    return uniqueStrings(refs);
-  }
-
-  return [];
-}
-
 function resolveIssueRefs(db: Db, refs: string[]): {
   ids: string[];
   unresolved: string[];
@@ -539,21 +488,6 @@ function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
         .map((row) => row.target_issue_id)
     : [];
   return uniqueStrings([...edgeChildIds, ...legacyChildIds]);
-}
-
-function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection): Record<string, unknown> {
-  const bodyRefs = parseCanonicalUmbrellaChildRefs(umbrella.body);
-  const resolvedBody = resolveIssueRefs(db, bodyRefs);
-  const linkedIds = listUmbrellaChildEdgeIds(db, umbrella.id);
-  const linkedSet = new Set(linkedIds);
-  const bodySet = new Set(resolvedBody.ids);
-  return {
-    body_child_refs: bodyRefs,
-    linked_child_refs: issueDisplayRefs(db, linkedIds),
-    missing_edge_refs: issueDisplayRefs(db, resolvedBody.ids.filter((id) => !linkedSet.has(id))),
-    extra_edge_refs: issueDisplayRefs(db, linkedIds.filter((id) => !bodySet.has(id))),
-    unresolved_child_refs: resolvedBody.unresolved,
-  };
 }
 
 function refreshDelegationManifest(
@@ -1094,7 +1028,6 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       parent_role: buildParentRoleStatus(db, umbrella.id),
     },
     delegation_manifest: latestCheckpoint(umbrella, "delegation-manifest"),
-    child_drift: buildUmbrellaChildDrift(db, umbrella),
     children,
     auth_queue: repoAuthQueueSummary(db, umbrella),
   };
@@ -1131,7 +1064,6 @@ function buildUmbrellaAdoptionResponse(
   db: Db,
   umbrellaId: string,
   childRefs: string[],
-  kind: "adopt" | "reconcile",
   attribution: AttributionContext | null,
 ): Record<string, unknown> {
   const resolved = resolveIssueRefs(db, childRefs);
@@ -1139,7 +1071,7 @@ function buildUmbrellaAdoptionResponse(
     db,
     umbrellaId,
     resolved.ids,
-    kind === "adopt" ? "Umbrella child adoption" : "Umbrella child-table reconciliation",
+    "Umbrella child adoption",
     attribution,
   );
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
@@ -1148,7 +1080,7 @@ function buildUmbrellaAdoptionResponse(
   return {
     ...status,
     operation: {
-      kind,
+      kind: "adopt",
       requested_child_refs: childRefs,
       resolved_child_refs: issueDisplayRefs(db, resolved.ids),
       unresolved_child_refs: resolved.unresolved,
@@ -1159,7 +1091,6 @@ function buildUmbrellaAdoptionResponse(
       ),
       action_id: linked.action_id,
       delegation_manifest: checkpoint,
-      drift: (status as Record<string, unknown>).child_drift,
     },
   };
 }
@@ -1179,21 +1110,6 @@ function buildUmbrellaManifestRefreshResponse(
       refreshed_child_refs: issueDisplayRefs(db, childIds),
       delegation_manifest: checkpoint,
     },
-  };
-}
-
-function parentRoleReconcileBlocker(db: Db, umbrellaId: string): Record<string, unknown> | null {
-  const umbrella = buildLedgerIssueDetailProjection(db, umbrellaId);
-  const childRefs = parseCanonicalUmbrellaChildRefs(umbrella.body);
-  if (childRefs.length === 0) return null;
-  const drift = buildUmbrellaChildDrift(db, umbrella);
-  const missing = Array.isArray(drift.missing_edge_refs) ? drift.missing_edge_refs : [];
-  const unresolved = Array.isArray(drift.unresolved_child_refs) ? drift.unresolved_child_refs : [];
-  if (missing.length === 0 && unresolved.length === 0) return null;
-  return {
-    error: "umbrella child table is not reconciled; run `mandible umbrella reconcile <umbrella>` first",
-    reconcile_command: `mandible umbrella reconcile ${umbrella.display_id}`,
-    child_drift: drift,
   };
 }
 
@@ -1394,42 +1310,10 @@ export function registerIssueRoutes(
         db,
         resolved.issue_id,
         childRefs,
-        "adopt",
         attributionForRequest(db, req),
       ));
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
-    }
-  }, { fileRpc: "allow" });
-
-  server.post("/api/ledger/issues/:issueId/umbrella-reconcile", (req, res) => {
-    const issueRef = getParam(req, "issueId");
-    if (!issueRef) {
-      sendJson(res, 400, { error: "missing issueId" });
-      return;
-    }
-    const db = getDb();
-    const resolved = resolveLedgerIssueId(db, issueRef);
-    if (!resolved.ok) {
-      sendJson(res, resolved.status, { error: resolved.error });
-      return;
-    }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
-    try {
-      const umbrella = buildLedgerIssueDetailProjection(db, resolved.issue_id);
-      sendJson(
-        res,
-        200,
-        buildUmbrellaAdoptionResponse(
-          db,
-          resolved.issue_id,
-          parseCanonicalUmbrellaChildRefs(umbrella.body),
-          "reconcile",
-          attributionForRequest(db, req),
-        ),
-      );
-    } catch (error) {
-      sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to reconcile umbrella" });
     }
   }, { fileRpc: "allow" });
 
@@ -1498,11 +1382,6 @@ export function registerIssueRoutes(
       return;
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
-    const reconcileBlocker = parentRoleReconcileBlocker(db, resolved.issue_id);
-    if (reconcileBlocker) {
-      sendJson(res, 409, reconcileBlocker);
-      return;
-    }
     const current = buildParentRoleStatus(db, resolved.issue_id);
     const liveHolder = current.live_holder as Record<string, unknown> | null;
     if (liveHolder && liveHolder.session_id !== sessionId && !override) {
