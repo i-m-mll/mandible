@@ -40,7 +40,7 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/logs.sh:115 api_get \"$request\")",
   "cli/search.sh:94 api_get \"$request\"",
   "cli/space.sh:81 api_send POST \"$1\" \"$2\"",
-  "cli/umbrella.sh:82 api_get \"$path\") \\",
+  "cli/umbrella.sh:80 api_get \"$path\") \\",
 ] as const;
 
 // Subcommands that are deliberately unavailable over the file transport. The
