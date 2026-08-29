@@ -17,14 +17,12 @@ export function ContextUsageRing({ usage, size = 'md', onClick }: ContextUsageRi
   return (
     <button
       type="button"
-      className={`context-ring context-ring--${size} context-ring--${severity}`}
-      style={{ '--context-ring-percent': `${Math.round(context.percent)}%` } as JSX.CSSProperties}
+      className={`context-usage context-usage--${size} context-usage--${severity}`}
       title={title}
       aria-label={title}
       onClick={onClick}
     >
-      <span className="context-ring__meter" aria-hidden="true" />
-      <span className="context-ring__label">{label}</span>
+      {label}
     </button>
   );
 }

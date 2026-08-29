@@ -35,7 +35,13 @@ function state(kind: ConversationAttachState["kind"]): ConversationAttachState {
         : kind === "resumable"
           ? "provider-resumable"
           : "unsupported-provider",
-    resumable: kind === "live-owned" || kind === "resumable",
+    continuation: kind === "live-owned"
+      ? { kind: "live-send", console_session_id: "console-1" }
+      : kind === "live-external"
+        ? { kind: "blocked", reason: "external-live", external_session_id: "external-1" }
+        : kind === "resumable"
+          ? { kind: "provider-session-resume", provider_session_id: "provider-1" }
+          : { kind: "hidden", reason: "unavailable" },
     can_fork: kind !== "historical",
     provider_session_id: "provider-1",
     checked_at: 1,
@@ -53,7 +59,7 @@ describe("conversation attach presentation", () => {
       composer: "disabled",
     });
     expect(getConversationAttachPresentation(state("resumable"))).toMatchObject({
-      label: "Resumable",
+      label: null,
       composer: "enabled",
     });
     expect(getConversationAttachPresentation(state("live-external"))).not.toHaveProperty("hint");

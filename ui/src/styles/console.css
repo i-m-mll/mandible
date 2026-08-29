@@ -963,75 +963,25 @@
   padding: var(--space-7);
 }
 
-.context-ring {
-  --context-ring-color: var(--status-info-fg);
-  --context-ring-bg: var(--status-info-bg-soft);
-  min-width: 44px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--border-muted);
-  border-radius: 7px;
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  padding: 0 8px 0 5px;
+.context-usage {
+  appearance: none;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--status-info-fg);
   cursor: pointer;
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  line-height: 1;
+  font: var(--text-xs)/1 var(--font-mono);
   white-space: nowrap;
 }
 
-.context-ring:hover {
-  border-color: var(--context-ring-color);
-  background: var(--context-ring-bg);
-  color: var(--text-primary);
+.context-usage:hover,
+.context-usage:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
-.context-ring--sm {
-  min-width: 36px;
-  height: 26px;
-  padding-right: 7px;
-}
-
-.context-ring--warning {
-  --context-ring-color: var(--status-warning-fg);
-  --context-ring-bg: var(--status-warning-bg-soft);
-}
-
-.context-ring--danger {
-  --context-ring-color: var(--status-danger-fg);
-  --context-ring-bg: var(--status-danger-bg-soft);
-}
-
-.context-ring__meter {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background:
-    conic-gradient(var(--context-ring-color) var(--context-ring-percent), var(--border-faint) 0),
-    var(--surface-base);
-  position: relative;
-}
-
-.context-ring__meter::after {
-  content: "";
-  position: absolute;
-  inset: 4px;
-  border-radius: inherit;
-  background: var(--surface-base);
-}
-
-.context-ring--sm .context-ring__meter {
-  width: 15px;
-  height: 15px;
-}
-
-.context-ring--sm .context-ring__meter::after {
-  inset: 3px;
-}
+.context-usage--warning { color: var(--status-warning-fg); }
+.context-usage--danger { color: var(--status-danger-fg); }
 
 .chat-overlay {
   position: absolute;
@@ -1547,8 +1497,8 @@
 /* Bug: 02d701a — Selected message highlight */
 
 .stream-turn--selected {
-  border-left: 2px solid var(--accent-fg);
-  background: var(--status-info-bg-soft);
+  border-left: 0;
+  background: transparent;
 }
 
 /* GroupFooter — turn-scoped aggregate actions without a reserved row. */

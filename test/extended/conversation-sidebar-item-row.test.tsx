@@ -76,7 +76,7 @@ const conversation: ConversationSidebarConversation = {
   attach_state: {
     kind: 'historical',
     reason: 'no-session',
-    resumable: false,
+    continuation: { kind: 'hidden', reason: 'unavailable' },
     can_fork: false,
     provider_session_id: null,
     checked_at: 1,

@@ -65,7 +65,7 @@ const conversation: Conversation = {
   attach_state: {
     kind: 'resumable',
     reason: 'provider-resumable',
-    resumable: true,
+    continuation: { kind: 'provider-session-resume', provider_session_id: 'session-detail-shell' },
     can_fork: false,
     provider_session_id: null,
     checked_at: 1,
@@ -321,7 +321,7 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.querySelector('.ledger-copy-ref-button')).toBeNull();
     const status = canonicalHeader?.querySelector('.conv-detail__status');
     expect(status?.querySelector('.conv-detail__provider')?.textContent).toBe('Codex');
-    expect(status?.textContent).toContain('Resumable');
+    expect(status?.textContent).not.toContain('Resumable');
     const titleRow = canonicalHeader?.querySelector('.detail-pane-header__title-row');
     const compactMenu = canonicalHeader?.querySelector('.detail-pane-header__menu');
     const metadata = canonicalHeader?.querySelector('.detail-pane-header__compact-metadata');
@@ -338,12 +338,12 @@ describe('compact detail pane shell', () => {
     expect(compactMenu?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeNull();
-    expect(body?.querySelector('.context-ring')).toBeNull();
-    expect(shell?.querySelectorAll('.context-ring')).toHaveLength(1);
+    expect(body?.querySelector('.context-usage')).toBeNull();
+    expect(shell?.querySelectorAll('.context-usage')).toHaveLength(1);
     const runtime = footer?.querySelector('.conv-compose__runtime');
     expect(runtime?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Model' }));
     expect(runtime?.lastElementChild?.classList.contains('conv-compose__runtime-actions')).toBe(true);
-    expect(runtime?.lastElementChild?.lastElementChild?.classList.contains('context-ring')).toBe(true);
+    expect(runtime?.lastElementChild?.lastElementChild?.classList.contains('context-usage')).toBe(true);
     expect(footer?.querySelector('.conv-compose__hint')).toBeNull();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
     expect(footer?.textContent).not.toContain('Sending will resume this session.');
@@ -421,8 +421,9 @@ describe('compact detail pane shell', () => {
         kind: 'live-owned',
         reason: 'owned',
         console_session_id: 'console-live',
-        resumable: true,
+        continuation: { kind: 'live-send', console_session_id: 'console-live' },
         can_fork: false,
+        provider_session_id: 'provider-live',
         checked_at: 2,
       } satisfies ConversationAttachState,
       badge: 'Live',
@@ -434,8 +435,9 @@ describe('compact detail pane shell', () => {
         kind: 'live-external',
         reason: 'transcript-recent',
         external_session_id: 'external-live',
-        resumable: false,
+        continuation: { kind: 'blocked', reason: 'external-live', external_session_id: 'external-live' },
         can_fork: true,
+        provider_session_id: 'provider-external',
         checked_at: 2,
       } satisfies ConversationAttachState,
       badge: 'External',
@@ -444,7 +446,7 @@ describe('compact detail pane shell', () => {
     {
       label: 'resumable',
       attachState: conversation.attach_state,
-      badge: 'Resumable',
+      badge: 'Codex',
       hasComposer: true,
     },
     {
@@ -452,8 +454,9 @@ describe('compact detail pane shell', () => {
       attachState: {
         kind: 'historical',
         reason: 'complete',
-        resumable: false,
+        continuation: { kind: 'hidden', reason: 'unavailable' },
         can_fork: false,
+        provider_session_id: null,
         checked_at: 3,
       } satisfies ConversationAttachState,
       badge: 'History',

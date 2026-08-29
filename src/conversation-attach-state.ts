@@ -54,6 +54,24 @@ function supportsFork(source: string): boolean {
   return source === "claude_code";
 }
 
+function hasMessageAnchor(db: Db, conversationId: string): boolean {
+  if (tableExists(db, "conversation_structural_blocks")) {
+    const structural = db.prepare(
+      `SELECT 1 FROM conversation_structural_blocks
+        WHERE conversation_id = ? AND status = 'current'
+          AND dag_uuid IS NOT NULL AND dag_uuid <> ''
+        LIMIT 1`,
+    ).get(conversationId);
+    if (structural) return true;
+  }
+  if (!tableExists(db, "conversation_blocks")) return false;
+  return Boolean(db.prepare(
+    `SELECT 1 FROM conversation_blocks
+      WHERE conversation_id = ? AND dag_uuid IS NOT NULL AND dag_uuid <> ''
+      LIMIT 1`,
+  ).get(conversationId));
+}
+
 function getOwnedSession(
   sessionManager: SessionManagerLike | undefined,
   providerSessionId: string,
@@ -120,7 +138,7 @@ export function deriveConversationAttachState(
     return {
       kind: "historical",
       reason: "subagent",
-      resumable: false,
+      continuation: { kind: "hidden", reason: "unavailable" },
       ...base,
     };
   }
@@ -129,7 +147,7 @@ export function deriveConversationAttachState(
     return {
       kind: "historical",
       reason: "no-session",
-      resumable: false,
+      continuation: { kind: "hidden", reason: "unavailable" },
       ...base,
     };
   }
@@ -139,7 +157,7 @@ export function deriveConversationAttachState(
     return {
       kind: "live-owned",
       reason: "mandible-owned",
-      resumable: true,
+      continuation: { kind: "live-send", console_session_id: owned.id },
       console_session_id: owned.id,
       ...base,
     };
@@ -150,7 +168,7 @@ export function deriveConversationAttachState(
     return {
       kind: "live-external",
       reason: "session-active",
-      resumable: false,
+      continuation: { kind: "blocked", reason: "external-live", external_session_id: external.id },
       external_session_id: external.id,
       ...base,
     };
@@ -164,7 +182,11 @@ export function deriveConversationAttachState(
     return {
       kind: "live-external",
       reason: "channel-fresh",
-      resumable: false,
+      continuation: {
+        kind: "blocked",
+        reason: "external-live",
+        external_session_id: external?.id ?? providerSessionId,
+      },
       external_session_id: external?.id ?? providerSessionId,
       ...base,
     };
@@ -175,7 +197,7 @@ export function deriveConversationAttachState(
     return {
       kind: "live-external",
       reason: "transcript-recent",
-      resumable: false,
+      continuation: { kind: "blocked", reason: "external-live", external_session_id: external?.id ?? null },
       source_mtime: sourceMtime,
       ...base,
     };
@@ -185,16 +207,21 @@ export function deriveConversationAttachState(
     return {
       kind: "historical",
       reason: "unsupported-provider",
-      resumable: false,
+      continuation: { kind: "hidden", reason: "unavailable" },
       source_mtime: sourceMtime,
       ...base,
     };
   }
 
+  const continuation = row.source === "claude_code"
+    ? hasMessageAnchor(db, row.id)
+      ? { kind: "message-anchor-resume" as const, provider_session_id: providerSessionId }
+      : { kind: "hidden" as const, reason: "unavailable" as const }
+    : { kind: "provider-session-resume" as const, provider_session_id: providerSessionId };
   return {
     kind: "resumable",
     reason: "provider-resumable",
-    resumable: true,
+    continuation,
     source_mtime: sourceMtime,
     ...base,
   };
