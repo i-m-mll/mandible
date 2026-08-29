@@ -82,7 +82,7 @@ import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import { useChatViewState } from './conversation-view-state';
+import { reconcileShownProjects, useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
@@ -2486,18 +2486,17 @@ export function ConversationsView({
 
   useEffect(() => {
     if (!canonicalProjectsLoaded) return;
-    const registeredSelections = new Set(registeredProjects.map((project) => (
-      `${project.id}\0${project.checkoutId}`
-    )));
     setChatViewState((current) => {
-      const shownProjects = current.shownProjects.filter((shown) => (
-        registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`)
-      ));
+      const shownProjects = reconcileShownProjects(current.shownProjects, canonicalProjects);
       return shownProjects.length === current.shownProjects.length
+        && shownProjects.every((shown, index) => (
+          shown.projectId === current.shownProjects[index].projectId
+          && shown.checkoutId === current.shownProjects[index].checkoutId
+        ))
         ? current
         : { ...current, shownProjects };
     });
-  }, [canonicalProjectsLoaded, registeredProjects, setChatViewState]);
+  }, [canonicalProjects, canonicalProjectsLoaded, setChatViewState]);
 
   const selectedProjectIds = useMemo(() => {
     if (!canonicalProjectsReady) return [];

@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
-import { useState } from 'preact/hooks';
+import { useId, useState } from 'preact/hooks';
 import { OverflowFade } from '../shared/OverflowFade';
+import { SidebarDisclosureChevronIcon } from '../shared/SidebarGroupNode';
 
 export function ToolCallGroup({ summary, expanded, onExpandedChange, children }: {
   summary: string;
@@ -9,6 +10,7 @@ export function ToolCallGroup({ summary, expanded, onExpandedChange, children }:
   children: ComponentChildren;
 }): JSX.Element {
   const [localExpanded, setLocalExpanded] = useState(false);
+  const bodyId = useId();
   const isExpanded = expanded ?? localExpanded;
   const toggle = (): void => {
     const next = !isExpanded;
@@ -18,11 +20,15 @@ export function ToolCallGroup({ summary, expanded, onExpandedChange, children }:
 
   return (
     <section className={`tool-call-group${isExpanded ? ' tool-call-group--expanded' : ''}`}>
-      <button type="button" className="tool-call-group__summary" aria-expanded={isExpanded} onClick={toggle}>
-        <span className="tool-call-group__chevron" aria-hidden="true">{isExpanded ? 'v' : '>'}</span>
+      <button type="button" className="tool-call-group__summary" aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>
         <span>{summary}</span>
+        <span className="tool-call-group__chevron"><SidebarDisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
-      {isExpanded ? <OverflowFade className="tool-call-group__body" lines={10}>{children}</OverflowFade> : null}
+      {isExpanded ? (
+        <div id={bodyId} role="region" aria-label={`${summary} details`}>
+          <OverflowFade className="tool-call-group__body" lines={10}>{children}</OverflowFade>
+        </div>
+      ) : null}
     </section>
   );
 }

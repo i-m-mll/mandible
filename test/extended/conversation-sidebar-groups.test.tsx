@@ -13,7 +13,7 @@ import { normalizeSidebarGroupLimit } from '../../ui/src/components/shared/sideb
 import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import { compareConversationSidebarRows } from '../../src/conversations/sidebar-order.js';
-import { normalizeChatViewState } from '../../ui/src/views/conversation-view-state.js';
+import { normalizeChatViewState, reconcileShownProjects } from '../../ui/src/views/conversation-view-state.js';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -166,6 +166,17 @@ describe('conversation sidebar groups', () => {
       pinnedConversationIds: [],
       previewPinOverrides: {},
     });
+  });
+
+  it('preserves selected projects when their checkout identity changes', () => {
+    expect(reconcileShownProjects([
+      { projectId: 'prj-mandible', checkoutId: 'checkout-retired' },
+      { projectId: 'prj-feedbax', checkoutId: 'checkout-feedbax' },
+      { projectId: 'prj-removed', checkoutId: 'checkout-removed' },
+    ], canonicalProjects)).toEqual([
+      { projectId: 'prj-mandible', checkoutId: 'checkout-mandible' },
+      { projectId: 'prj-feedbax', checkoutId: 'checkout-feedbax' },
+    ]);
   });
 
   it('drops removed registry selections without requesting or manufacturing their groups', async () => {

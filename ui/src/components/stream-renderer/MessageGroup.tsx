@@ -92,9 +92,9 @@ export function MessageGroup({
       case 'tool_use': {
         // Find the matching tool result from the user event
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
-        // While streaming and no result yet, the tool is in-progress
-        const isPendingStreaming = isStreaming && result === null;
-        const defaultExpanded = isPendingStreaming || result === null;
+        // Tool disclosures are initially folded in both live and persisted
+        // streams. Running state remains visible in the summary row.
+        const defaultExpanded = false;
         const expanded = getBlockExpanded?.(block, index, defaultExpanded);
         inner = (
           <ToolUseBlock
@@ -103,7 +103,6 @@ export function MessageGroup({
             toolUseId={block.id}
             input={block.input}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
-            // Expand while pending (streaming in progress), collapse after result
             defaultExpanded={defaultExpanded}
             expanded={expanded}
             onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
