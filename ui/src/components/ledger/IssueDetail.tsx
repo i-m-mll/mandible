@@ -18,6 +18,7 @@ import type {
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
   LedgerIssueDetailWorkUnit,
+  LedgerIssueSummaryRef,
   LedgerIssueTimelineEntry,
 } from '../../api';
 import { AgentDispatchDialog } from '../agent-dispatch/AgentDispatchDialog';
@@ -51,6 +52,53 @@ type RenderTimelineEntry =
       auth: LedgerIssueDetailAuthRequest;
       created_at: number;
     };
+
+const UMBRELLA_LABEL = 'umbrella';
+
+/**
+ * Umbrella 96c5090: `parent_child` relationship edges are the only source of
+ * truth for umbrella membership, so an umbrella's children arrive in the detail
+ * projection as ordinary outgoing relationships. Split them out so the pane can
+ * answer "what does this umbrella own?" at a glance without listing the same
+ * issue twice.
+ *
+ * Matched on `relationship_type` because that is the field the UI projection
+ * type carries and the field the existing relationship list already reads; the
+ * daemon writes the same value into both `relationship_type` and `link_type`
+ * (`src/ledger/issue-detail.ts`).
+ *
+ * An edge whose `related_issue` did not resolve has no id, title, or status to
+ * put in a shelf row, so it stays in Relationships, where the existing list
+ * renders it as "missing issue". A broken edge stays visible rather than
+ * vanishing into a shelf that cannot describe it.
+ */
+export type UmbrellaChildRelationship = LedgerIssueDetailRelationship & {
+  related_issue: LedgerIssueSummaryRef;
+};
+
+function isUmbrellaChild(
+  relationship: LedgerIssueDetailRelationship,
+): relationship is UmbrellaChildRelationship {
+  return (
+    relationship.direction === 'outgoing' &&
+    relationship.relationship_type === 'parent_child' &&
+    relationship.related_issue !== null
+  );
+}
+
+export function partitionUmbrellaChildren(detail: LedgerIssueDetailProjection): {
+  children: UmbrellaChildRelationship[];
+  rest: LedgerIssueDetailRelationship[];
+} {
+  if (!detail.labels.includes(UMBRELLA_LABEL)) return { children: [], rest: detail.relationships };
+  const children: UmbrellaChildRelationship[] = [];
+  const rest: LedgerIssueDetailRelationship[] = [];
+  for (const relationship of detail.relationships) {
+    if (isUmbrellaChild(relationship)) children.push(relationship);
+    else rest.push(relationship);
+  }
+  return { children, rest };
+}
 
 export type LedgerIssueDetailProps = {
   detail: LedgerIssueDetailProjection;
@@ -109,6 +157,8 @@ export function LedgerIssueDetail({
   const timeline = detail.timeline ?? fallbackTimeline(detail);
   const associatedArtifacts = detail.associated_artifacts ?? [];
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
+  const isUmbrella = detail.labels.includes(UMBRELLA_LABEL);
+  const { children: umbrellaChildren, rest: otherRelationships } = partitionUmbrellaChildren(detail);
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
   const shouldShowFullDetailLoading = (
@@ -223,7 +273,7 @@ export function LedgerIssueDetail({
               onAddToSpace={onAddToSpace}
               onShowMetadata={hasIssueMetadata ? () => setMetadataOpen(true) : undefined}
               onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
-              onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
+              onShowChildren={isUmbrella ? onShowChildren : undefined}
             />
           ) : undefined}
           actionsLabel="Issue header actions"
@@ -253,6 +303,13 @@ export function LedgerIssueDetail({
       overlays={overlays}
       ariaBusy={hydrating}
     >
+        {umbrellaChildren.length > 0 && (
+          <section className="ledger-issue-detail__section">
+            <SectionTitle title="Children" count={umbrellaChildren.length} />
+            <UmbrellaChildrenShelf rows={umbrellaChildren} onOpenEntity={onOpenEntity} />
+          </section>
+        )}
+
         <section className="ledger-issue-detail__section">
           <div className="ledger-comment-list ledger-timeline-list">
             {timelineEntries.map((entry) => (
@@ -297,10 +354,10 @@ export function LedgerIssueDetail({
           )}
         </section>
 
-        {detail.relationships.length > 0 && (
+        {otherRelationships.length > 0 && (
           <section className="ledger-issue-detail__section">
-            <SectionTitle title="Relationships" count={detail.relationships.length} />
-            <RelationshipList relationships={detail.relationships} onOpenEntity={onOpenEntity} />
+            <SectionTitle title="Relationships" count={otherRelationships.length} />
+            <RelationshipList relationships={otherRelationships} onOpenEntity={onOpenEntity} />
           </section>
         )}
 
@@ -725,22 +782,28 @@ function StatusPill({
   resolution,
   linkedAuth,
   onOpenAuth,
+  size = 'lg',
 }: {
   status: string;
   resolution: string | null;
   linkedAuth?: LedgerIssueDetailAuthRequest;
   onOpenAuth?: (auth: LedgerIssueDetailAuthRequest) => void;
+  // The header pill is the pane's headline status and stays large. Inline row
+  // pills (the umbrella children shelf) take the base size so a row keeps the
+  // same height as every other ledger row.
+  size?: 'sm' | 'lg';
 }): JSX.Element {
   const label = status === 'closed' && resolution ? `${status}: ${resolution}` : status;
   const cls = status === 'open' ? 'status-pill--success' : resolution === 'merged' ? 'status-pill--merged' : 'status-pill--dismissed';
+  const sizeCls = size === 'lg' ? ' status-pill--lg' : '';
   if (linkedAuth && onOpenAuth) {
     return (
-      <button type="button" className={`status-pill status-pill--lg ledger-status-button ${cls}`} onClick={() => onOpenAuth(linkedAuth)}>
+      <button type="button" className={`status-pill${sizeCls} ledger-status-button ${cls}`} onClick={() => onOpenAuth(linkedAuth)}>
         {label}
       </button>
     );
   }
-  return <span className={`status-pill status-pill--lg ${cls}`}>{label}</span>;
+  return <span className={`status-pill${sizeCls} ${cls}`}>{label}</span>;
 }
 
 function TimelineEntryCard({
@@ -988,6 +1051,35 @@ function RelationshipList({
             <span>{relationship.direction === 'incoming' ? 'from' : 'to'}</span>
             <strong>{relationship.relationship_type.replace(/_/g, ' ')}</strong>
             <code>{related ? `${related.display_id} ${related.title}` : 'missing issue'}</code>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function UmbrellaChildrenShelf({
+  rows,
+  onOpenEntity,
+}: {
+  rows: UmbrellaChildRelationship[];
+  onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
+}): JSX.Element {
+  return (
+    <div className="ledger-child-list">
+      {rows.map((relationship) => {
+        const related = relationship.related_issue;
+        return (
+          <button
+            key={relationship.id}
+            type="button"
+            className="ledger-child-row"
+            disabled={!onOpenEntity}
+            onClick={() => onOpenEntity?.('issue', related.display_id)}
+          >
+            <code>{related.display_id}</code>
+            <strong>{related.title}</strong>
+            <StatusPill status={related.status} resolution={related.resolution} size="sm" />
           </button>
         );
       })}
