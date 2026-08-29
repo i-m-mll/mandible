@@ -23,7 +23,6 @@ usage() {
 Usage:
   mandible umbrella status <id> [--deep] [--json]
   mandible umbrella adopt <umbrella> <children...> [--json]
-  mandible umbrella reconcile <umbrella> [--json]
   mandible umbrella manifest refresh <umbrella> [--json]
 USAGE
 }
@@ -40,7 +39,6 @@ print_status_response() {
       "delegation_manifest: \(if .delegation_manifest then (.delegation_manifest | mandible_display_id) else "-" end)",
       "operation: \(.operation.kind // "-")",
       "created_edges: \((.operation.created_child_refs // []) | length)",
-      "missing_edges: \((.child_drift.missing_edge_refs // []) | length)",
       "pending_auth: \((.auth_queue.pending_requests // []) | length)",
       "active_auth: \((.auth_queue.active_requests // []) | length)"
     '
@@ -117,37 +115,6 @@ cmd_adopt() {
   print_status_response "$response" "$json"
 }
 
-cmd_reconcile() {
-  local issue_ref=""
-  local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
-
-  if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible umbrella reconcile <umbrella> [--json]" 2
-  fi
-
-  require_tools
-  local response
-  response=$(api_send POST "/api/ledger/issues/$(urlencode "$issue_ref")/umbrella-reconcile" '{}') \
-    || die "Failed to reconcile umbrella ${issue_ref}" 1
-  print_status_response "$response" "$json"
-}
-
 cmd_manifest() {
   local action="${1:-}"
   if [[ "$action" != "refresh" ]]; then
@@ -193,10 +160,6 @@ case "${1:-}" in
   adopt)
     shift
     cmd_adopt "$@"
-    ;;
-  reconcile)
-    shift
-    cmd_reconcile "$@"
     ;;
   manifest)
     shift
