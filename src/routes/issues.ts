@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
+import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
@@ -352,22 +353,88 @@ function currentIssueBodyRevisionId(db: Db, issueId: string): string | null {
   return row?.id ?? null;
 }
 
+/**
+ * Holder liveness, through the one canonical session resolver (issue 5b2cdbf).
+ *
+ * This used to compare `sessions.status` directly, which understood only a
+ * `sessions.id`. A coordinator holding a provider thread id therefore resolved
+ * to nothing and was reported as a dead holder, so the next coordinator took
+ * the same umbrella without an override. The `agent_*` fields keep their names
+ * and meanings for existing readers; the resolved identities are added
+ * alongside them.
+ */
 function sessionLiveness(db: Db, sessionId: string | null): Record<string, unknown> {
-  if (!sessionId || !tableExists(db, "sessions")) {
-    return { has_live_agent: false, agent_session_id: sessionId, agent_status: null, last_activity: null };
-  }
-  const row = db.prepare(
-    "SELECT status, updated_at, last_active FROM sessions WHERE id = ?",
-  ).get(sessionId) as { status?: string; updated_at?: string; last_active?: string | null } | undefined;
-  if (!row) {
-    return { has_live_agent: false, agent_session_id: sessionId, agent_status: null, last_activity: null };
-  }
-  const status = row.status ?? "unknown";
+  const resolved = sessionId ? resolveSessionAlias(db, sessionId) : null;
   return {
-    has_live_agent: status === "active" || status === "idle",
+    has_live_agent: resolved?.has_live_agent ?? false,
     agent_session_id: sessionId,
-    agent_status: status,
-    last_activity: row.last_active ?? row.updated_at ?? null,
+    agent_status: resolved ? resolved.mandible_status ?? resolved.console_status ?? "unknown" : null,
+    last_activity: resolved?.last_activity ?? null,
+    resolved_session_id: resolved?.mandible_session_id ?? null,
+    console_session_id: resolved?.console_session_id ?? null,
+    provider: resolved?.provider ?? null,
+    provider_session_id: resolved?.provider_session_id ?? null,
+  };
+}
+
+/**
+ * Every id that names the same agent as this parent-role holder.
+ *
+ * A holder recorded under one alias must not be treated as a different holder
+ * when the same coordinator returns with another: the lease is on the agent,
+ * not on the spelling of its id.
+ */
+function holderAliasIds(holder: Record<string, unknown> | null): Set<string> {
+  const ids = new Set<string>();
+  if (!holder) return ids;
+  const liveness = holder.liveness as Record<string, unknown> | undefined;
+  const payload = holder.payload as Record<string, unknown> | undefined;
+  for (const source of [holder, liveness, payload]) {
+    if (!source) continue;
+    for (const key of PARENT_ROLE_IDENTITY_KEYS) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) ids.add(value.trim());
+    }
+  }
+  return ids;
+}
+
+const PARENT_ROLE_IDENTITY_KEYS = [
+  "session_id",
+  "agent_session_id",
+  "resolved_session_id",
+  "console_session_id",
+  "provider_session_id",
+] as const;
+
+function resolutionAliasIds(
+  suppliedId: string,
+  resolution: SessionAliasResolution,
+): Set<string> {
+  return new Set(
+    [
+      suppliedId,
+      resolution.mandible_session_id,
+      resolution.console_session_id,
+      resolution.provider_session_id,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  );
+}
+
+function unregisteredSessionResponse(suppliedId: string): Record<string, unknown> {
+  return {
+    error: `unknown session id "${suppliedId}": Mandible has no session, console session, `
+      + "or provider session recorded under it, so a parent-role holder recorded under it "
+      + "could never be verified. Assume the role from a session Mandible has registered, "
+      + `or link this one first with \`mandible session link-issue ${suppliedId} `
+      + "--issue <issue> --repo <repo>`, then retry.",
+    supplied_session_id: suppliedId,
+    accepted_session_id_forms: [
+      "a Mandible session id (sessions.id)",
+      "a console session id (console_sessions.id)",
+      "a provider session or thread id (console_sessions.provider_session_id)",
+    ],
+    repair_command: `mandible session link-issue ${suppliedId} --issue <issue> --repo <repo>`,
   };
 }
 
@@ -1383,8 +1450,22 @@ export function registerIssueRoutes(
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const current = buildParentRoleStatus(db, resolved.issue_id);
+    // Issue 5b2cdbf: refuse an id Mandible cannot verify. Recording one produced
+    // a holder that every liveness check judged dead, so the next coordinator
+    // took the same umbrella without an override while both were told the lease
+    // had succeeded.
+    const resolution = resolveSessionAlias(db, sessionId);
+    if (!resolution) {
+      sendJson(res, 400, unregisteredSessionResponse(sessionId));
+      return;
+    }
     const liveHolder = current.live_holder as Record<string, unknown> | null;
-    if (liveHolder && liveHolder.session_id !== sessionId && !override) {
+    // The lease belongs to the agent, not to one spelling of its id: a holder
+    // recorded under its provider thread id is the same holder when it returns
+    // with its Mandible session id.
+    const callerAliases = resolutionAliasIds(sessionId, resolution);
+    const callerAlreadyHolds = [...holderAliasIds(liveHolder)].some((id) => callerAliases.has(id));
+    if (liveHolder && !callerAlreadyHolds && !override) {
       sendJson(res, 409, {
         error: "parent role already held by a live session; pass override to retake",
         live_holder: liveHolder,
@@ -1396,7 +1477,13 @@ export function registerIssueRoutes(
     const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
       kind: "parent-role",
       payload: {
+        // `session_id` stays exactly what the caller supplied; existing readers
+        // (including the archive path's holder protection) depend on it.
         session_id: sessionId,
+        resolved_session_id: resolution.mandible_session_id,
+        console_session_id: resolution.console_session_id,
+        provider: resolution.provider,
+        provider_session_id: resolution.provider_session_id,
         mechanism,
         assumed_at: now,
         override,

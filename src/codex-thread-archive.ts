@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
+import { isLiveSessionStatus, isSessionAliasLive } from "./session-liveness.js";
 import type { AuthRequest } from "./types.js";
 
 // Issue 75f52ac — archiving spawns the codex CLI (up to 15 s). Running it via
@@ -116,7 +117,7 @@ function addDirectWorkUnitCandidate(
 ): void {
   const providerSessionId = stringOrNull(row.worker_provider_session_id);
   if (!providerSessionId) return;
-  if (parentRoleSessionIds.has(providerSessionId) || isProviderSessionLive(db, providerSessionId)) return;
+  if (parentRoleSessionIds.has(providerSessionId) || isSessionAliasLive(db, providerSessionId)) return;
 
   addRankedCandidate(byProviderId, {
     provider_session_id: providerSessionId,
@@ -389,51 +390,6 @@ function expandConsoleSessionAliases(db: Db, ids: Set<string>): void {
       }
     }
   }
-}
-
-function isSessionLive(db: Db, sessionId: string): boolean {
-  if (!tableExists(db, "sessions")) return false;
-  const row = db.prepare(
-    "SELECT status FROM sessions WHERE id = ?",
-  ).get(sessionId) as { status?: string | null } | undefined;
-  return isLiveSessionStatus(row?.status);
-}
-
-function isProviderSessionLive(db: Db, providerSessionId: string): boolean {
-  if (isSessionLive(db, providerSessionId)) return true;
-  if (!tableExists(db, "console_sessions")) return false;
-  const rows = tableExists(db, "sessions")
-    ? db.prepare(
-      `SELECT cs.status AS console_status, s.status AS mandible_status
-       FROM console_sessions cs
-       LEFT JOIN sessions s ON s.id = COALESCE(cs.mandible_session_id, ?)
-       WHERE cs.id = ?
-          OR cs.mandible_session_id = ?
-          OR cs.provider_session_id = ?`,
-    ).all(
-      providerSessionId,
-      providerSessionId,
-      providerSessionId,
-      providerSessionId,
-    ) as Array<{ console_status?: string | null; mandible_status?: string | null }>
-    : db.prepare(
-      `SELECT cs.status AS console_status, NULL AS mandible_status
-       FROM console_sessions cs
-       WHERE cs.id = ?
-          OR cs.mandible_session_id = ?
-          OR cs.provider_session_id = ?`,
-    ).all(
-      providerSessionId,
-      providerSessionId,
-      providerSessionId,
-    ) as Array<{ console_status?: string | null; mandible_status?: string | null }>;
-  return rows.some((row) =>
-    isLiveSessionStatus(row.console_status) || isLiveSessionStatus(row.mandible_status)
-  );
-}
-
-function isLiveSessionStatus(value: unknown): boolean {
-  return value === "active" || value === "idle" || value === "running";
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
