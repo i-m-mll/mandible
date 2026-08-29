@@ -1239,10 +1239,6 @@ code.inbox-detail__meta-value {
     flex-wrap: wrap;
   }
 
-  .auth-detail__panels {
-    grid-template-columns: 1fr;
-  }
-
   .auth-detail__actions-menu {
     left: 0;
     right: auto;

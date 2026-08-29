@@ -2556,6 +2556,36 @@ describe('AuthQueueView', () => {
     await waitFor(() => expect(screen.getByText('abc123 · Close umbrella')).toBeTruthy());
   });
 
+  it('renders canonical commit messages through sanitized Markdown without an authorship badge', () => {
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-canonical-markdown',
+          title: 'Canonical Markdown auth',
+          repo: 'mandible',
+          base: 'main',
+          head: 'feature/canonical-markdown',
+          status: 'pending',
+          commit_message: 'Ship **structured prose** with [artifact:bbbbbbbbbbbb].\n\n<script>window.compromised = true</script>',
+          commit_message_digest: 'a'.repeat(64),
+        }],
+        outputs: {},
+        selectedAuthId: 'req-canonical-markdown',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
+    const rendered = commitPanel?.querySelector('.rendered-markdown') as HTMLElement | null;
+    expect(rendered?.querySelector('strong')?.textContent).toBe('structured prose');
+    expect(rendered?.querySelector('[data-resource-ref="artifact:bbbbbbbbbbbb"]')).toBeTruthy();
+    expect(rendered?.querySelector('script')).toBeNull();
+    expect(commitPanel?.querySelector('.panel__badge')).toBeNull();
+    expect(commitPanel?.querySelector('.canonical-message')).toBeNull();
+    expect(commitPanel?.querySelector('.panel__edit-btn')).toBeNull();
+  });
+
   it('toggles pending action veto state through the API', async () => {
     const action = { id: 'act1', auth_request_id: 'req-veto', ordinal: 1, kind: 'comment_add', target_issue_ref: 'abc123', payload: { body: 'Closeout' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null };
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -5822,8 +5852,12 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*20px 24px 24px;/s);
     expect(css).not.toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*padding:\s*20px 24px;/s);
     expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
-    expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
+    expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*container:\s*auth-detail \/ inline-size;/s);
+    expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/@container auth-detail \(min-width:\s*1120px\)\s*\{\s*\.auth-detail__panels--with-actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
     expect(css).toMatch(/\.auth-detail__panels--single\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).not.toMatch(/@media[^}]*\.auth-detail__panels\s*\{/s);
+    expect(css).not.toMatch(/\.panel__badge|\.canonical-message/);
     expect(css).toMatch(/\.auth-detail__right-col\s*\{[^}]*align-self:\s*start;/s);
     expect(css).toMatch(/\.auth-detail__right-col \.auth-action-bundle\s*\{[^}]*margin-top:\s*0;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-wrapper\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*auto hidden;/s);
