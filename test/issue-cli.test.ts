@@ -402,6 +402,30 @@ function listen(): Promise<number> {
         });
         return;
       }
+      // Issue 7a97e2c: this route answers 409 for reasons other than a holder
+      // conflict, and those responses carry no `live_holder`.
+      if (req.url === "/api/ledger/issues/unreconciled/parent-role" && req.method === "POST") {
+        void readBody().then(() => {
+          res.statusCode = 409;
+          res.end(JSON.stringify({
+            error: "umbrella child table is not reconciled; run `mandible umbrella reconcile <umbrella>` first",
+            reconcile_command: "mandible umbrella reconcile unreconciled",
+          }));
+        });
+        return;
+      }
+      // Issue 5b2cdbf: an unregistered session id is refused with a 400.
+      if (req.url === "/api/ledger/issues/unknown-session/parent-role" && req.method === "POST") {
+        void readBody().then(() => {
+          res.statusCode = 400;
+          res.end(JSON.stringify({
+            error: 'unknown session id "sess-ghost": Mandible has no session recorded under it. '
+              + "Link it first with `mandible session link-issue sess-ghost --issue <issue> --repo <repo>`.",
+            supplied_session_id: "sess-ghost",
+          }));
+        });
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc/parent-role") {
         if (req.method === "GET") {
           res.end(JSON.stringify({
@@ -714,6 +738,39 @@ describe("issue CLI body revisions", () => {
     ], port);
     expect(assumed.status).toBe(0);
     expect(JSON.parse(assumed.stdout).checkpoint.id).toBe("checkpoint-parent");
+  });
+
+  it("reports non-holder parent-role refusals as themselves, not as a phantom holder", async () => {
+    const port = await listen();
+
+    // Issue 7a97e2c reproduced exactly this: `parent-role status` reported no
+    // holder while `assume` answered `live parent-role holder exists: - (-)`,
+    // because every 409 on this route was rendered through the holder template.
+    const unreconciled = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "unreconciled",
+      "--session",
+      "sess-new",
+    ], port);
+
+    expect(unreconciled.status).toBe(1);
+    expect(unreconciled.stderr).not.toContain("live parent-role holder exists");
+    expect(unreconciled.stderr).toContain("umbrella child table is not reconciled");
+
+    const unknownSession = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "unknown-session",
+      "--session",
+      "sess-ghost",
+    ], port);
+
+    expect(unknownSession.status).toBe(1);
+    expect(unknownSession.stderr).toContain('unknown session id "sess-ghost"');
+    expect(unknownSession.stderr).toContain("mandible session link-issue");
   });
 
   it("reports a specific parent-role error when no session id is available", async () => {

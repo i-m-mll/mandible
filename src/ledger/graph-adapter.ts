@@ -4,6 +4,7 @@ import { columnExists, tableExists } from "../db-introspection.js";
 import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import type { GraphEdge, GraphNode, GraphQueryParams } from "../types.js";
 import { parseJsonObject } from "../row-coerce.js";
+import { isLiveSessionStatus } from "../session-liveness.js";
 
 interface ProjectInfo {
   project_id: string;
@@ -282,10 +283,6 @@ function getAuthAnnotations(db: Db): Map<string, AttachmentAnnotation[]> {
     grouped.set(row.issue_id, annotations);
   }
   return grouped;
-}
-
-function isLiveSessionStatus(status: string | null): boolean {
-  return status === "active" || status === "idle" || status === "running";
 }
 
 function getSessionSummaries(db: Db): Map<string, {

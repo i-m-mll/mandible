@@ -1467,11 +1467,19 @@ PARENT_ROLE_ASSUME_USAGE
     fi
     return 0
   fi
-  if [[ "$status" == "409" ]]; then
+  # Only a response that actually carries a holder is a holder conflict. Other
+  # 409s on this route (and the 400 for an unregistered session id) carry their
+  # own `error` and must be shown as themselves, not rendered as a phantom
+  # "live parent-role holder exists: - (-)" (issue 7a97e2c).
+  if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.live_holder != null' >/dev/null 2>&1; then
     printf '%s\n' "$response" | api_jq_human '"live parent-role holder exists: \((.live_holder.session_id // "-") | mandible_short_id) (\(.live_holder.mechanism // "-")); rerun with --override to retake"' >&2
     return 3
   fi
-  printf '%s\n' "$response" >&2
+  local rendered
+  rendered=$(printf '%s\n' "$response" \
+    | jq -r 'if type == "object" and (.error | type) == "string" then .error else . end' 2>/dev/null) \
+    || rendered="$response"
+  printf '%s\n' "$rendered" >&2
   return 1
 }
 
