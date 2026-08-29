@@ -824,7 +824,8 @@ function AuthRequestDetail({
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
   // Issue 7d64d8f — a digest means these exact bytes are the merge commit
-  // message, so they are shown verbatim rather than rendered as Markdown.
+  // message. It controls editability only; display still uses the shared,
+  // sanitized Markdown pipeline without mutating the stored source bytes.
   const canonicalDigest =
     typeof request.commit_message_digest === 'string' && request.commit_message_digest
       ? request.commit_message_digest
@@ -1228,11 +1229,6 @@ function AuthRequestDetail({
                     </span>
                     Commit Message
                   </button>
-                  {isCanonicalMessage && (
-                    <span className="panel__badge" title={`sha256 ${canonicalDigest}`}>
-                      agent-authored
-                    </span>
-                  )}
                   {/* Issue 7d64d8f — a canonical message is immutable once it leaves pending. */}
                   {onUpdateField && mutationsAllowed
                     && (status === 'pending' || (failedLike && !isCanonicalMessage))
@@ -1282,10 +1278,6 @@ function AuthRequestDetail({
                           Cancel
                         </button>
                       </div>
-                    </div>
-                  ) : isCanonicalMessage ? (
-                    <div className="panel__body spec-panel">
-                      <pre className="canonical-message">{commitMsg}</pre>
                     </div>
                   ) : commitHtml ? (
                     <div
