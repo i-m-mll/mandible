@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
+import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
@@ -352,22 +353,88 @@ function currentIssueBodyRevisionId(db: Db, issueId: string): string | null {
   return row?.id ?? null;
 }
 
+/**
+ * Holder liveness, through the one canonical session resolver (issue 5b2cdbf).
+ *
+ * This used to compare `sessions.status` directly, which understood only a
+ * `sessions.id`. A coordinator holding a provider thread id therefore resolved
+ * to nothing and was reported as a dead holder, so the next coordinator took
+ * the same umbrella without an override. The `agent_*` fields keep their names
+ * and meanings for existing readers; the resolved identities are added
+ * alongside them.
+ */
 function sessionLiveness(db: Db, sessionId: string | null): Record<string, unknown> {
-  if (!sessionId || !tableExists(db, "sessions")) {
-    return { has_live_agent: false, agent_session_id: sessionId, agent_status: null, last_activity: null };
-  }
-  const row = db.prepare(
-    "SELECT status, updated_at, last_active FROM sessions WHERE id = ?",
-  ).get(sessionId) as { status?: string; updated_at?: string; last_active?: string | null } | undefined;
-  if (!row) {
-    return { has_live_agent: false, agent_session_id: sessionId, agent_status: null, last_activity: null };
-  }
-  const status = row.status ?? "unknown";
+  const resolved = sessionId ? resolveSessionAlias(db, sessionId) : null;
   return {
-    has_live_agent: status === "active" || status === "idle",
+    has_live_agent: resolved?.has_live_agent ?? false,
     agent_session_id: sessionId,
-    agent_status: status,
-    last_activity: row.last_active ?? row.updated_at ?? null,
+    agent_status: resolved ? resolved.mandible_status ?? resolved.console_status ?? "unknown" : null,
+    last_activity: resolved?.last_activity ?? null,
+    resolved_session_id: resolved?.mandible_session_id ?? null,
+    console_session_id: resolved?.console_session_id ?? null,
+    provider: resolved?.provider ?? null,
+    provider_session_id: resolved?.provider_session_id ?? null,
+  };
+}
+
+/**
+ * Every id that names the same agent as this parent-role holder.
+ *
+ * A holder recorded under one alias must not be treated as a different holder
+ * when the same coordinator returns with another: the lease is on the agent,
+ * not on the spelling of its id.
+ */
+function holderAliasIds(holder: Record<string, unknown> | null): Set<string> {
+  const ids = new Set<string>();
+  if (!holder) return ids;
+  const liveness = holder.liveness as Record<string, unknown> | undefined;
+  const payload = holder.payload as Record<string, unknown> | undefined;
+  for (const source of [holder, liveness, payload]) {
+    if (!source) continue;
+    for (const key of PARENT_ROLE_IDENTITY_KEYS) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) ids.add(value.trim());
+    }
+  }
+  return ids;
+}
+
+const PARENT_ROLE_IDENTITY_KEYS = [
+  "session_id",
+  "agent_session_id",
+  "resolved_session_id",
+  "console_session_id",
+  "provider_session_id",
+] as const;
+
+function resolutionAliasIds(
+  suppliedId: string,
+  resolution: SessionAliasResolution,
+): Set<string> {
+  return new Set(
+    [
+      suppliedId,
+      resolution.mandible_session_id,
+      resolution.console_session_id,
+      resolution.provider_session_id,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  );
+}
+
+function unregisteredSessionResponse(suppliedId: string): Record<string, unknown> {
+  return {
+    error: `unknown session id "${suppliedId}": Mandible has no session, console session, `
+      + "or provider session recorded under it, so a parent-role holder recorded under it "
+      + "could never be verified. Assume the role from a session Mandible has registered, "
+      + `or link this one first with \`mandible session link-issue ${suppliedId} `
+      + "--issue <issue> --repo <repo>`, then retry.",
+    supplied_session_id: suppliedId,
+    accepted_session_id_forms: [
+      "a Mandible session id (sessions.id)",
+      "a console session id (console_sessions.id)",
+      "a provider session or thread id (console_sessions.provider_session_id)",
+    ],
+    repair_command: `mandible session link-issue ${suppliedId} --issue <issue> --repo <repo>`,
   };
 }
 
@@ -429,57 +496,6 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.length > 0)));
 }
 
-function issueRefFromCell(cell: string): string | null {
-  const match = cell.match(/\[issue:([^\]\s]+)\]/);
-  return match?.[1] ?? null;
-}
-
-function splitMarkdownTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isMarkdownSeparatorRow(cells: string[]): boolean {
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseCanonicalUmbrellaChildRefs(body: string): string[] {
-  const lines = body.split(/\r?\n/);
-  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+Children\s*$/i.test(line.trim()));
-  if (headingIndex < 0) return [];
-
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (!line) continue;
-    if (!line.startsWith("|")) {
-      if (/^#{1,6}\s+/.test(line)) return [];
-      continue;
-    }
-
-    const header = splitMarkdownTableRow(line).map((cell) => cell.toLowerCase());
-    const issueColumn = header.indexOf("issue");
-    if (issueColumn < 0) return [];
-    const separator = splitMarkdownTableRow(lines[index + 1] ?? "");
-    if (!isMarkdownSeparatorRow(separator)) return [];
-
-    const refs: string[] = [];
-    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
-      const rowLine = lines[rowIndex].trim();
-      if (!rowLine.startsWith("|")) break;
-      const cells = splitMarkdownTableRow(rowLine);
-      const ref = issueRefFromCell(cells[issueColumn] ?? "");
-      if (ref) refs.push(ref);
-    }
-    return uniqueStrings(refs);
-  }
-
-  return [];
-}
-
 function resolveIssueRefs(db: Db, refs: string[]): {
   ids: string[];
   unresolved: string[];
@@ -539,21 +555,6 @@ function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
         .map((row) => row.target_issue_id)
     : [];
   return uniqueStrings([...edgeChildIds, ...legacyChildIds]);
-}
-
-function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection): Record<string, unknown> {
-  const bodyRefs = parseCanonicalUmbrellaChildRefs(umbrella.body);
-  const resolvedBody = resolveIssueRefs(db, bodyRefs);
-  const linkedIds = listUmbrellaChildEdgeIds(db, umbrella.id);
-  const linkedSet = new Set(linkedIds);
-  const bodySet = new Set(resolvedBody.ids);
-  return {
-    body_child_refs: bodyRefs,
-    linked_child_refs: issueDisplayRefs(db, linkedIds),
-    missing_edge_refs: issueDisplayRefs(db, resolvedBody.ids.filter((id) => !linkedSet.has(id))),
-    extra_edge_refs: issueDisplayRefs(db, linkedIds.filter((id) => !bodySet.has(id))),
-    unresolved_child_refs: resolvedBody.unresolved,
-  };
 }
 
 function refreshDelegationManifest(
@@ -1094,7 +1095,6 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       parent_role: buildParentRoleStatus(db, umbrella.id),
     },
     delegation_manifest: latestCheckpoint(umbrella, "delegation-manifest"),
-    child_drift: buildUmbrellaChildDrift(db, umbrella),
     children,
     auth_queue: repoAuthQueueSummary(db, umbrella),
   };
@@ -1131,7 +1131,6 @@ function buildUmbrellaAdoptionResponse(
   db: Db,
   umbrellaId: string,
   childRefs: string[],
-  kind: "adopt" | "reconcile",
   attribution: AttributionContext | null,
 ): Record<string, unknown> {
   const resolved = resolveIssueRefs(db, childRefs);
@@ -1139,7 +1138,7 @@ function buildUmbrellaAdoptionResponse(
     db,
     umbrellaId,
     resolved.ids,
-    kind === "adopt" ? "Umbrella child adoption" : "Umbrella child-table reconciliation",
+    "Umbrella child adoption",
     attribution,
   );
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
@@ -1148,7 +1147,7 @@ function buildUmbrellaAdoptionResponse(
   return {
     ...status,
     operation: {
-      kind,
+      kind: "adopt",
       requested_child_refs: childRefs,
       resolved_child_refs: issueDisplayRefs(db, resolved.ids),
       unresolved_child_refs: resolved.unresolved,
@@ -1159,7 +1158,6 @@ function buildUmbrellaAdoptionResponse(
       ),
       action_id: linked.action_id,
       delegation_manifest: checkpoint,
-      drift: (status as Record<string, unknown>).child_drift,
     },
   };
 }
@@ -1179,21 +1177,6 @@ function buildUmbrellaManifestRefreshResponse(
       refreshed_child_refs: issueDisplayRefs(db, childIds),
       delegation_manifest: checkpoint,
     },
-  };
-}
-
-function parentRoleReconcileBlocker(db: Db, umbrellaId: string): Record<string, unknown> | null {
-  const umbrella = buildLedgerIssueDetailProjection(db, umbrellaId);
-  const childRefs = parseCanonicalUmbrellaChildRefs(umbrella.body);
-  if (childRefs.length === 0) return null;
-  const drift = buildUmbrellaChildDrift(db, umbrella);
-  const missing = Array.isArray(drift.missing_edge_refs) ? drift.missing_edge_refs : [];
-  const unresolved = Array.isArray(drift.unresolved_child_refs) ? drift.unresolved_child_refs : [];
-  if (missing.length === 0 && unresolved.length === 0) return null;
-  return {
-    error: "umbrella child table is not reconciled; run `mandible umbrella reconcile <umbrella>` first",
-    reconcile_command: `mandible umbrella reconcile ${umbrella.display_id}`,
-    child_drift: drift,
   };
 }
 
@@ -1394,42 +1377,10 @@ export function registerIssueRoutes(
         db,
         resolved.issue_id,
         childRefs,
-        "adopt",
         attributionForRequest(db, req),
       ));
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
-    }
-  }, { fileRpc: "allow" });
-
-  server.post("/api/ledger/issues/:issueId/umbrella-reconcile", (req, res) => {
-    const issueRef = getParam(req, "issueId");
-    if (!issueRef) {
-      sendJson(res, 400, { error: "missing issueId" });
-      return;
-    }
-    const db = getDb();
-    const resolved = resolveLedgerIssueId(db, issueRef);
-    if (!resolved.ok) {
-      sendJson(res, resolved.status, { error: resolved.error });
-      return;
-    }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
-    try {
-      const umbrella = buildLedgerIssueDetailProjection(db, resolved.issue_id);
-      sendJson(
-        res,
-        200,
-        buildUmbrellaAdoptionResponse(
-          db,
-          resolved.issue_id,
-          parseCanonicalUmbrellaChildRefs(umbrella.body),
-          "reconcile",
-          attributionForRequest(db, req),
-        ),
-      );
-    } catch (error) {
-      sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to reconcile umbrella" });
     }
   }, { fileRpc: "allow" });
 
@@ -1498,14 +1449,23 @@ export function registerIssueRoutes(
       return;
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
-    const reconcileBlocker = parentRoleReconcileBlocker(db, resolved.issue_id);
-    if (reconcileBlocker) {
-      sendJson(res, 409, reconcileBlocker);
+    const current = buildParentRoleStatus(db, resolved.issue_id);
+    // Issue 5b2cdbf: refuse an id Mandible cannot verify. Recording one produced
+    // a holder that every liveness check judged dead, so the next coordinator
+    // took the same umbrella without an override while both were told the lease
+    // had succeeded.
+    const resolution = resolveSessionAlias(db, sessionId);
+    if (!resolution) {
+      sendJson(res, 400, unregisteredSessionResponse(sessionId));
       return;
     }
-    const current = buildParentRoleStatus(db, resolved.issue_id);
     const liveHolder = current.live_holder as Record<string, unknown> | null;
-    if (liveHolder && liveHolder.session_id !== sessionId && !override) {
+    // The lease belongs to the agent, not to one spelling of its id: a holder
+    // recorded under its provider thread id is the same holder when it returns
+    // with its Mandible session id.
+    const callerAliases = resolutionAliasIds(sessionId, resolution);
+    const callerAlreadyHolds = [...holderAliasIds(liveHolder)].some((id) => callerAliases.has(id));
+    if (liveHolder && !callerAlreadyHolds && !override) {
       sendJson(res, 409, {
         error: "parent role already held by a live session; pass override to retake",
         live_holder: liveHolder,
@@ -1517,7 +1477,13 @@ export function registerIssueRoutes(
     const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
       kind: "parent-role",
       payload: {
+        // `session_id` stays exactly what the caller supplied; existing readers
+        // (including the archive path's holder protection) depend on it.
         session_id: sessionId,
+        resolved_session_id: resolution.mandible_session_id,
+        console_session_id: resolution.console_session_id,
+        provider: resolution.provider,
+        provider_session_id: resolution.provider_session_id,
         mechanism,
         assumed_at: now,
         override,

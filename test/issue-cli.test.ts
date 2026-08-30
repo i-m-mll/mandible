@@ -348,7 +348,6 @@ function listen(): Promise<number> {
             },
             delegation_manifest: { id: "checkpoint-4", payload: [] },
             children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
-            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
             operation: {
               kind: "manifest-refresh",
               refreshed_child_refs: ["def"],
@@ -375,29 +374,35 @@ function listen(): Promise<number> {
               { id: "issue-2", short_id: "def", title: "Child", status: "open" },
               { id: "issue-3", short_id: "ghi", title: "Another child", status: "open" },
             ],
-            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
             operation: { kind: "adopt", created_child_refs: ["def", "ghi"], existing_child_refs: [] },
             auth_queue: { pending_requests: [], active_requests: [] },
           }));
         });
         return;
       }
-      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/umbrella-reconcile") {
-        void readBody().then((body) => {
-          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+      // Issue 7a97e2c: cli/issue.sh rendered every 409 on this route through the
+      // live-holder template, so a refusal carrying no `live_holder` printed as
+      // the phantom holder `- (-)`. The specific 409 that exposed it was the
+      // umbrella-reconcile blocker, removed with that command on issue d894231.
+      // The CLI contract it broke is not: any 409 without a holder must be
+      // reported as itself.
+      if (req.url === "/api/ledger/issues/non-holder-conflict/parent-role" && req.method === "POST") {
+        void readBody().then(() => {
+          res.statusCode = 409;
           res.end(JSON.stringify({
-            umbrella: {
-              id: "issue-1",
-              short_id: "abc",
-              title: "Umbrella",
-              status: "open",
-              current_revision_id: "rev_issue_1",
-            },
-            delegation_manifest: { id: "checkpoint-3", payload: [] },
-            children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
-            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
-            operation: { kind: "reconcile", created_child_refs: ["def"], unresolved_child_refs: [] },
-            auth_queue: { pending_requests: [], active_requests: [] },
+            error: "parent role cannot be recorded while the umbrella is closed",
+          }));
+        });
+        return;
+      }
+      // Issue 5b2cdbf: an unregistered session id is refused with a 400.
+      if (req.url === "/api/ledger/issues/unknown-session/parent-role" && req.method === "POST") {
+        void readBody().then(() => {
+          res.statusCode = 400;
+          res.end(JSON.stringify({
+            error: 'unknown session id "sess-ghost": Mandible has no session recorded under it. '
+              + "Link it first with `mandible session link-issue sess-ghost --issue <issue> --repo <repo>`.",
+            supplied_session_id: "sess-ghost",
           }));
         });
         return;
@@ -657,21 +662,6 @@ describe("issue CLI body revisions", () => {
     expect(parsed.operation.created_child_refs).toEqual(["def", "ghi"]);
   });
 
-  it("reconciles umbrella children from the canonical table", async () => {
-    const port = await listen();
-    const result = await run(["umbrella", "reconcile", "abc", "--json"], port);
-
-    expect(result.status).toBe(0);
-    expect(requestBodies).toContainEqual({
-      path: "/api/ledger/issues/abc/umbrella-reconcile",
-      method: "POST",
-      body: {},
-    });
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.umbrella.short_id).toBe("abc");
-    expect(parsed.operation.created_child_refs).toEqual(["def"]);
-  });
-
   it("refreshes an umbrella manifest server-side", async () => {
     const port = await listen();
     const result = await run(["umbrella", "manifest", "refresh", "abc", "--json"], port);
@@ -714,6 +704,39 @@ describe("issue CLI body revisions", () => {
     ], port);
     expect(assumed.status).toBe(0);
     expect(JSON.parse(assumed.stdout).checkpoint.id).toBe("checkpoint-parent");
+  });
+
+  it("reports non-holder parent-role refusals as themselves, not as a phantom holder", async () => {
+    const port = await listen();
+
+    // Issue 7a97e2c reproduced exactly this: `parent-role status` reported no
+    // holder while `assume` answered `live parent-role holder exists: - (-)`,
+    // because every 409 on this route was rendered through the holder template.
+    const nonHolder = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "non-holder-conflict",
+      "--session",
+      "sess-new",
+    ], port);
+
+    expect(nonHolder.status).toBe(1);
+    expect(nonHolder.stderr).not.toContain("live parent-role holder exists");
+    expect(nonHolder.stderr).toContain("parent role cannot be recorded while the umbrella is closed");
+
+    const unknownSession = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "unknown-session",
+      "--session",
+      "sess-ghost",
+    ], port);
+
+    expect(unknownSession.status).toBe(1);
+    expect(unknownSession.stderr).toContain('unknown session id "sess-ghost"');
+    expect(unknownSession.stderr).toContain("mandible session link-issue");
   });
 
   it("reports a specific parent-role error when no session id is available", async () => {
