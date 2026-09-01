@@ -20,7 +20,12 @@ import { isEvidenceMethod, type EvidenceMethod } from "../users/types.js";
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 
 export class BriefingStoreError extends Error {
-  constructor(message: string, public readonly status = 400, public readonly code = "invalid_briefing") {
+  constructor(
+    message: string,
+    public readonly status = 400,
+    public readonly code = "invalid_briefing",
+    public readonly details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "BriefingStoreError";
   }

@@ -169,6 +169,24 @@ describe("briefing CLI", () => {
     }
   });
 
+  it("archives and restores a group and forwards explicit sharing provenance", async () => {
+    const group = { id: "group-12345678", name: "Policy", archived_at: 123,
+      current: null, updates: [], history: [], created_at: 1, updated_at: 2 };
+    for (const action of ["archive", "restore"]) {
+      const result = await runRpc(["briefing", "group", action, group.id, "--json"], (request) => {
+        expect(request).toMatchObject({ method: "POST", path: `/api/briefing-groups/${group.id}/${action}`, body: {} });
+        return { status: 200, body: { group: { ...group, archived_at: action === "archive" ? 123 : null }, changed: true } };
+      });
+      expect(result.status).toBe(0);
+    }
+    const shared = await runRpc(["briefing", "group", "add", group.id, "bundle-1",
+      "--sharing-reason", "Deliberate comparative placement", "--json"], (request) => {
+      expect(request.body).toEqual({ bundle_ref: "bundle-1", sharing_reason: "Deliberate comparative placement" });
+      return { status: 200, body: { group, added: true } };
+    });
+    expect(shared.status).toBe(0);
+  });
+
   it("supports create, append, and show for ordered Briefing bundles", async () => {
     const bundle = { id: "bundle-12345678", name: "Agent policy", created_at: 1, updated_at: 1,
       members: [{ position: 0, briefing: { id: "briefing-one", title: "Global", briefing_key: "global",

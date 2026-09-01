@@ -4279,6 +4279,7 @@ export type BriefingGroup = {
   name: string;
   createdAt: number;
   updatedAt: number;
+  archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
   history?: BriefingGroupDisposition[];
@@ -4388,6 +4389,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       name,
       createdAt: briefingOptionalNumber(group.created_at) ?? 0,
       updatedAt: briefingOptionalNumber(group.updated_at) ?? 0,
+      archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
       history,

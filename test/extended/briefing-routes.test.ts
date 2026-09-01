@@ -15,6 +15,8 @@ import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../
 import { createUser } from "../../src/users/store.js";
 import { broadcast } from "../../src/sse.js";
 import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings.js";
+import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
+import { createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 
 class SlugGate implements ClientAuthGate {
@@ -71,6 +73,36 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("archives and restores a group through durable authorization without cascading member lifecycle", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    const source = path.join(root, "group.md");
+    fs.writeFileSync(source, "# Group\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "group.md", role: "review-document", media_type: "text/markdown" }).version;
+    const published = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "group-member", artifact_version_ref: version.id, title: "Group member",
+      profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    }, 100);
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Base", briefingRefs: [published.briefing_id], viewer }, 110);
+    const group = createBriefingGroup(db, { name: "Archive me", currentBundleRef: bundle.id,
+      bundleRefs: [], viewer }, 120);
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
+      credential: "session:agent-schedule", body: {} })).toMatchObject({ status: 403 });
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
+      credential: "agent-schedule", body: {} })).toMatchObject({ status: 200, body: {
+      changed: true, group: { id: group.id, archived_at: expect.any(Number), current: { id: bundle.id } },
+    } });
+    expect(db.prepare("SELECT archived_at FROM briefings WHERE id = ?").get(published.briefing_id))
+      .toEqual({ archived_at: null });
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-groups/${group.id}`, credential: "human" }))
+      .toMatchObject({ status: 200, body: { group: { id: group.id, archived_at: expect.any(Number) } } });
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/restore`,
+      credential: "agent-schedule", body: {} })).toMatchObject({ status: 200, body: {
+      changed: true, group: { id: group.id, archived_at: null },
+    } });
+  });
+
   it("archives and restores exact Briefings with durable publisher authorization and preserved custody", async () => {
     const source = path.join(root, "archive.md");
     fs.writeFileSync(source, "# Archive\n");

@@ -91,7 +91,10 @@ export function CollectionsSidebar({
     ]),
   ), [groups]);
   const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);
-  const visibleBundles = useMemo(() => bundles.filter((bundle) => !groupedBundleIds.has(bundle.id)).map((bundle) => ({
+  const lifecycleGroups = useMemo(() => groups.filter((group) => viewState.collectionLifecycle === 'all'
+    || (viewState.collectionLifecycle === 'archived' ? group.archivedAt != null : group.archivedAt == null)),
+  [groups, viewState.collectionLifecycle]);
+  const visibleBundles = useMemo(() => viewState.collectionLifecycle === 'archived' ? [] : bundles.filter((bundle) => !groupedBundleIds.has(bundle.id)).map((bundle) => ({
     ...bundle,
     members: bundle.members.filter((member) => filteredIds.has(member.briefing.id)),
   })).filter((bundle) => bundle.members.length > 0), [
@@ -99,8 +102,9 @@ export function CollectionsSidebar({
     filteredIds,
     groupedBundleIds,
     viewState.collectionSourceFilter,
+    viewState.collectionLifecycle,
   ]);
-  const visibleGroups = useMemo(() => groups.map((group) => {
+  const visibleGroups = useMemo(() => lifecycleGroups.map((group) => {
     const projection = resolveBriefingGroupProjection(
       group,
       viewState.selectedGroupUpdateIds[group.id],
@@ -121,13 +125,15 @@ export function CollectionsSidebar({
     }).filter((entry): entry is BriefingBundleLayoutEntry => entry !== null);
     return { group, projection, layout };
   }).filter((entry) => entry.layout.length > 0 || !viewState.collectionSourceFilter.trim()), [
-    groups,
+    lifecycleGroups,
     filteredIds,
     viewState.collectionSourceFilter,
     viewState.selectedGroupUpdateIds,
     groupBundleOwners,
   ]);
-  const unbundled = useMemo(() => ordered.filter((collection) => !containedBriefingIds.has(collection.id)), [ordered, containedBriefingIds]);
+  const unbundled = useMemo(() => viewState.collectionLifecycle === 'archived' ? []
+    : ordered.filter((collection) => !containedBriefingIds.has(collection.id)),
+  [ordered, containedBriefingIds, viewState.collectionLifecycle]);
   const collapsedBundles = useMemo(() => new Set(viewState.collapsedBundleIds), [viewState.collapsedBundleIds]);
   const collapsedGroups = useMemo(() => new Set(viewState.collapsedGroupIds), [viewState.collapsedGroupIds]);
   const collapsedSubgroups = useMemo(() => new Set(viewState.collapsedGroupSubgroupKeys), [viewState.collapsedGroupSubgroupKeys]);
@@ -154,7 +160,8 @@ export function CollectionsSidebar({
     onSelect: (row) => onSelect(row.collection),
   });
   const navigationIndex = new Map(navigationRows.map((row, index) => [row.key, index]));
-  const activeFilterCount = Number(viewState.collectionSort !== 'activity');
+  const activeFilterCount = Number(viewState.collectionSort !== 'activity')
+    + Number(viewState.collectionLifecycle !== 'active');
 
   const toggleBundle = (bundleId: string) => {
     setViewState((current) => ({
@@ -267,6 +274,8 @@ export function CollectionsSidebar({
             <>
               {viewState.collectionSort === 'name' ? <span>By name</span> : null}
               {viewState.collectionSort === 'unanswered-count' ? <span>Needs response</span> : null}
+              {viewState.collectionLifecycle === 'all' ? <span>All</span> : null}
+              {viewState.collectionLifecycle === 'archived' ? <span>Archived</span> : null}
             </>
           ) : undefined}
           panel={filterPanelOpen ? {
@@ -276,6 +285,22 @@ export function CollectionsSidebar({
             onDismiss: () => setFilterPanelOpen(false),
             children: (
               <>
+                <div className="sidebar-search-filter__section">
+                  <label className="sidebar-search-filter__label" for="briefing-lifecycle">Collection</label>
+                  <select
+                    id="briefing-lifecycle"
+                    aria-label="Briefing collection lifecycle"
+                    value={viewState.collectionLifecycle}
+                    onInput={(event) => setViewState((current) => ({
+                      ...current,
+                      collectionLifecycle: event.currentTarget.value as BriefingCollectionViewState['collectionLifecycle'],
+                    }))}
+                  >
+                    <option value="active">Active</option>
+                    <option value="all">All</option>
+                    <option value="archived">Archived</option>
+                  </select>
+                </div>
                 <div className="sidebar-search-filter__section">
                   <label className="sidebar-search-filter__label" for="briefing-sort">Sort</label>
                   <select
