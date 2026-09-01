@@ -12,6 +12,7 @@ import { parseBriefingDirectives } from '../../src/feedback/briefing-directives'
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
 const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
+const renderedMarkdownStylesheet = readFileSync('ui/src/styles/rendered-markdown.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
 const bodyStart = source.indexOf('Plan');
@@ -182,6 +183,37 @@ describe('Briefing document panel', () => {
     expect(prose).toBeTruthy();
     expect(prose?.querySelector('pre code')?.textContent).toBe('const answer = 42;\n');
     expect(prose?.querySelector('p code')?.textContent).toBe('answer');
+  });
+
+  it('uses one shared rendered Markdown rhythm for quoted prose and readable tables', async () => {
+    const proseSource = [
+      '# Presentation',
+      '',
+      '> A restrained quotation.',
+      '',
+      '| Name | State |',
+      '| --- | --- |',
+      '| Shared | Ready |',
+    ].join('\n');
+    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Presentation" roundId="round-1" round={round({
+      document: {
+        artifact_version_id: 'artifact-version:presentation',
+        content_hash: createHash('sha256').update(proseSource).digest('hex'),
+        previous_round_id: null, profile: 'mandible-briefing.v3', source: proseSource,
+      },
+      items: [],
+    })} canMutate onRefresh={async () => null} />);
+
+    const document = await screen.findByLabelText('Pinned briefing document');
+    expect(document.querySelector('blockquote')?.textContent).toContain('A restrained quotation.');
+    expect(Array.from(document.querySelectorAll('th'), (cell) => cell.textContent)).toEqual(['Name', 'State']);
+    expect(Array.from(document.querySelectorAll('td'), (cell) => cell.textContent)).toEqual(['Shared', 'Ready']);
+    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown blockquote \{[^}]*margin-inline: 0[^}]*padding:[^}]*var\(--space-4\)[^}]*border-inline-start/s);
+    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown table \{[^}]*width: 100%[^}]*border: 1px solid var\(--border-muted\)[^}]*border-radius: var\(--radius-md\)/s);
+    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown :where\(th, td\) \{[^}]*padding: var\(--space-2\) var\(--space-3\)[^}]*text-align: start/s);
+    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown > :first-child \{[^}]*margin-top: 0/s);
+    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown > :last-child \{[^}]*margin-bottom: 0/s);
+    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown a \{[^}]*color: var\(--accent-fg\)[^}]*text-decoration: underline/s);
   });
 
   it('maps coherent Markdown entities to exact UTF-16 ranges with deterministic nested targets', () => {
@@ -433,7 +465,7 @@ describe('Briefing document panel', () => {
     const verdict = await screen.findByRole('group', { name: 'Keep this finding?' });
     const keep = within(verdict).getByRole('button', { name: 'Keep' });
     const dismiss = within(verdict).getByRole('button', { name: 'Dismiss' });
-    expect(verdict.closest('.briefing-directive__response-host--rail')).toBeTruthy();
+    expect(verdict.closest('.briefing-directive__response-host')).toBeTruthy();
     expect(verdict.classList.contains('briefing-directive__compact-controls')).toBe(true);
     expect(keep.classList.contains('contextual-action')).toBe(true);
     expect(keep.classList.contains('contextual-action--compact')).toBe(true);
@@ -476,12 +508,17 @@ describe('Briefing document panel', () => {
     expect(long.getAttribute('aria-required')).toBe('true');
     expect(rating.getAttribute('aria-required')).toBe('true');
     const shortSection = short.closest('.briefing-directive__response-host') as HTMLElement;
-    expect(shortSection.classList.contains('briefing-directive__response-host--flow')).toBe(true);
+    expect(shortSection.className).toBe('briefing-directive__response-host');
     expect(shortSection.previousElementSibling).toBe(screen.getByText('Give a short rationale').closest('.briefing-directive'));
-    [single, multi, long, rating].forEach((control) => {
-      expect(control.closest('.briefing-directive__response-host--flow')).toBeTruthy();
+    [verdict, single, multi, short, long, rating].forEach((control) => {
+      expect(control.closest('.briefing-directive__response-host')?.className).toBe('briefing-directive__response-host');
     });
-    fireEvent.click(within(shortSection).getByRole('button', { name: 'Clear answer' }));
+    const shortOwner = shortSection.previousElementSibling as HTMLElement;
+    const shortActions = shortOwner.querySelector('.briefing-directive__actions') as HTMLElement;
+    expect(shortActions.children[0].classList.contains('briefing-directive__clear-slot')).toBe(true);
+    expect(shortActions.children[1].classList.contains('briefing-annotation-action')).toBe(true);
+    expect(screen.queryByText('Clear answer')).toBeNull();
+    fireEvent.click(within(shortOwner).getByRole('button', { name: 'Clear response' }));
     expect(changes.at(-1)).toEqual({ id: 'short', value: null });
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive--selected')).toBeNull();
   });
@@ -522,12 +559,6 @@ describe('Briefing document panel', () => {
     vi.spyOn(owners[1], 'getBoundingClientRect').mockReturnValue({
       x: 528, y: 100, left: 528, right: 1088, top: 100, bottom: 140, width: 560, height: 40, toJSON: () => ({}),
     });
-    responseHosts.forEach((host) => vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
-      x: 928, y: 0, left: 928, right: 1088, top: 0, bottom: 100, width: 160, height: 100, toJSON: () => ({}),
-    }));
-    responseHosts.forEach((host) => vi.spyOn(host.querySelector('.briefing-directive__verdict')!, 'getBoundingClientRect').mockReturnValue({
-      x: 960, y: 40, left: 960, right: 1010, top: 40, bottom: 60, width: 50, height: 20, toJSON: () => ({}),
-    }));
     sourceTree.style.paddingRight = '160px';
     sourceTree.style.paddingBottom = '0px';
     owners.forEach((owner) => { owner.style.lineHeight = '24px'; });
@@ -553,13 +584,14 @@ describe('Briefing document panel', () => {
     expect(owners).toHaveLength(2);
     expect(actions.style.getPropertyValue('--briefing-right-rail-action-offset')).toBe('488px');
     expect(actions.style.getPropertyValue('--briefing-right-rail-top')).toBe('0px');
-    expect(responseHosts.map((host) => host.style.getPropertyValue('--briefing-right-rail-top'))).toEqual(['40px', '100px']);
+    expect(responseHosts.every((host) => host.className === 'briefing-directive__response-host')).toBe(true);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
     expect(briefingStylesheet).toMatch(/\.briefing-document__source-tree \{[^}]*padding-inline-end: var\(--briefing-right-rail-width\)/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity \{[^}]*position: relative/s);
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-block-start: var\(--briefing-right-rail-top, 0px\)[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \{[^}]*position: absolute[^}]*width: calc\(var\(--briefing-right-rail-width\) - var\(--briefing-right-action-slot-width\)\)[^}]*padding-inline-start: var\(--space-1\)[^}]*justify-items: start/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host--rail \.briefing-directive__response \{[^}]*justify-items: start/s);
+    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*width: 100%[^}]*margin-block: var\(--space-1\) var\(--space-4\)[^}]*justify-items: start/s);
+    expect(briefingStylesheet).not.toContain('.briefing-directive__response-host--rail');
+    expect(briefingStylesheet).not.toContain('.briefing-directive__response-host--flow');
     expect(briefingStylesheet).toMatch(/\.briefing-directive__compact-controls \{[^}]*grid-auto-columns: 2em[^}]*column-gap: var\(--space-1\)[^}]*white-space: nowrap/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, max-content\) 2em/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
@@ -614,7 +646,7 @@ describe('Briefing document panel', () => {
     owners.forEach((owner) => {
       const action = owner.querySelector<HTMLElement>('.briefing-markdown__action-rail');
       expect(action?.style.getPropertyValue('--briefing-right-rail-top')).toBe('0px');
-      expect(owner.style.getPropertyValue('--briefing-right-rail-hover-width')).toBe('calc(8px + 1.3em)');
+      expect(owner.style.getPropertyValue('--briefing-right-rail-hover-width')).toBe('calc(8px + var(--briefing-action-rail-width, 1.3em))');
     });
     expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity::after,\s*\.briefing-directive--owner::after \{[^}]*inset-inline-start: 100%[^}]*width: var\(--briefing-right-rail-hover-width, 0px\)[^}]*pointer-events: auto/s);
   });
@@ -1005,20 +1037,12 @@ describe('Briefing document panel', () => {
     const sourceTree = screen.getByLabelText('Pinned briefing document').querySelector('.briefing-document__source-tree') as HTMLElement;
     const owner = concise.closest('.briefing-directive--owner') as HTMLElement;
     const heading = screen.getByRole('heading', { name: 'Briefing directive layout specimens' });
-    const responseHost = screen.getByRole('group', { name: 'Text variant: Concise' }).closest('.briefing-directive__response-host--rail') as HTMLElement;
+    const responseHost = screen.getByRole('group', { name: 'Text variant: Concise' }).closest('.briefing-directive__response-host') as HTMLElement;
     const actionHost = owner.querySelector('[data-briefing-directive-action]') as HTMLElement;
     vi.spyOn(sourceTree, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 600, width: 640, height: 600, toJSON: () => ({}) });
     vi.spyOn(owner, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 40, left: 448, right: 928, top: 40, bottom: 64, width: 480, height: 24, toJSON: () => ({}) });
     vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 72, left: 448, right: 928, top: 72, bottom: 104, width: 480, height: 32, toJSON: () => ({}) });
-    vi.spyOn(responseHost, 'getBoundingClientRect').mockImplementation(() => {
-      const top = Number.parseFloat(responseHost.style.getPropertyValue('--briefing-right-rail-top')) || 40;
-      return { x: 928, y: top, left: 928, right: 1088, top, bottom: top + 24, width: 160, height: 24, toJSON: () => ({}) };
-    });
     const variantControls = responseHost.querySelector('.briefing-directive__variant-controls') as HTMLElement;
-    vi.spyOn(variantControls, 'getBoundingClientRect').mockImplementation(() => {
-      const top = responseHost.getBoundingClientRect().top;
-      return { x: 960, y: top, left: 960, right: 1080, top, bottom: top + 24, width: 120, height: 24, toJSON: () => ({}) };
-    });
     vi.spyOn(actionHost, 'getBoundingClientRect').mockImplementation(() => {
       const top = owner.getBoundingClientRect().top + Number.parseFloat(actionHost.style.getPropertyValue('--briefing-right-rail-top') || '0');
       return { x: 936, y: top, left: 936, right: 956, top, bottom: top + 20, width: 20, height: 20, toJSON: () => ({}) };
@@ -1027,12 +1051,9 @@ describe('Briefing document panel', () => {
     sourceTree.style.paddingBottom = '0px';
     owner.style.lineHeight = '24px';
     fireEvent(globalThis, new Event('resize'));
-    expect(responseHost.style.getPropertyValue('--briefing-right-rail-top')).toBe('40px');
-    const responseControlRect = variantControls.getBoundingClientRect();
-    const actionRect = actionHost.getBoundingClientRect();
-    expect(responseControlRect.top).toBe(actionRect.top);
-    expect(responseControlRect.top).toBe(owner.getBoundingClientRect().top);
-    expect(responseControlRect.top).toBeLessThan(heading.getBoundingClientRect().top);
+    expect(responseHost.previousElementSibling).toBe(owner);
+    expect(responseHost.nextElementSibling).toBe(heading);
+    expect(responseHost.className).toBe('briefing-directive__response-host');
     expect(changes).toEqual([]);
     const previous = screen.getByRole('button', { name: 'Previous text variant' }) as HTMLButtonElement;
     const next = screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement;
@@ -1047,7 +1068,8 @@ describe('Briefing document panel', () => {
     expect(screen.getByText('1 of 2')).toBeTruthy();
     fireEvent.click(next);
     expect(changes).toEqual([{ id: 'wording', value: { option_key: 'detailed' } }]);
-    expect(await screen.findByText('Detailed policy with more words.')).toBeTruthy();
+    const detailed = await screen.findByText('Detailed policy with more words.');
+    expect(within(detailed.closest('.briefing-directive--owner') as HTMLElement).getByRole('button', { name: 'Clear response' })).toBeTruthy();
     expect(screen.queryByText('This is a layout and rail specimen.')).toBeNull();
     expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
