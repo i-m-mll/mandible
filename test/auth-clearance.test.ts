@@ -184,6 +184,30 @@ function fixture() {
 }
 
 describe("scoped protected-merge clearance", () => {
+  it("does not consume clearance until the dependency is durably finalized", async () => {
+    const f = fixture();
+    try {
+      const dependency = f.submit("dependency");
+      const request = f.submit("dependent", { depends_on_id: dependency.id });
+      const clearance = await f.manager.issue({
+        requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
+      }, f.operator.id);
+
+      expect(() => f.queue.approveWithClearance(request.id)).toThrow(/Dependency .* is pending/);
+      expect(f.manager.uses(clearance.id)).toEqual([]);
+
+      f.db.prepare(
+        "UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_finalized_at = ? WHERE id = ?",
+      ).run(10_001, dependency.id);
+      expect(f.queue.approveWithClearance(request.id).status).toBe("executing");
+      expect(f.manager.uses(clearance.id)).toHaveLength(1);
+    } finally {
+      f.queue.dispose();
+      f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
   it("executes the exact matching protected merge through a short-id clearance queue path", async () => {
     const f = fixture();
     try {

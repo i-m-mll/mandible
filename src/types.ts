@@ -7,6 +7,8 @@
 // definition instead of a copy that drifts without any compile error.
 import type {
   AuthRequestAction,
+  AuthDependencyProjection,
+  AuthDependencyReadiness,
   AuthExecutionMode,
   AuthRequestType,
   AuthRequestActionInput,
@@ -36,6 +38,8 @@ import type {
 } from "./contracts.js";
 export type {
   AuthRequestAction,
+  AuthDependencyProjection,
+  AuthDependencyReadiness,
   AuthExecutionMode,
   AuthRequestType,
   AuthRequestActionInput,
@@ -274,6 +278,7 @@ export interface AuthRequest {
   /** @deprecated Legacy close-on-merge issue list. Use issue_closures. */
   issues?: string[] | null;
   depends_on_id?: string | null;
+  dependency?: AuthDependencyProjection | null;
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
   created_at: number;

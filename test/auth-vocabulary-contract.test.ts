@@ -73,6 +73,7 @@ describe("auth request outcome", () => {
   it("separates a completed merge that failed from one that succeeded", () => {
     expect(computeAuthRequestOutcome("completed", 0)).toBe("succeeded");
     expect(computeAuthRequestOutcome("completed", 1)).toBe("failed");
+    expect(computeAuthRequestOutcome("completed", null)).toBe("failed");
   });
 });
 

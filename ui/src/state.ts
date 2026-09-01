@@ -163,6 +163,19 @@ type Action =
 
 type AppAction = Action | { type: 'sse'; payload: SSEPayload };
 
+const AUTH_PROJECTION_EVENTS = new Set([
+  'auth:new',
+  'auth:updated',
+  'auth:merged',
+  'auth:resolved',
+  'auth:finalized',
+  'auth:deleted',
+]);
+
+export function authEventRequiresProjectionRefresh(type: string): boolean {
+  return AUTH_PROJECTION_EVENTS.has(type);
+}
+
 const initialState: AppState = {
   authQueue: [],
   authHistory: [],
