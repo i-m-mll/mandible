@@ -908,6 +908,7 @@ export function ArtifactDetail({
   knowledgeError,
 }: ArtifactDetailProps): JSX.Element {
   const preview = content ? artifactPreview(content) : null;
+  const detailIdentity = artifactDetailIdentity(artifact, series, selectedVersion);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -1336,11 +1337,15 @@ export function ArtifactDetail({
             canonicalRef: headerCopyValue,
             copyLabel: headerCopyLabel,
           }}
-          title={artifactTitle(artifact)}
+          title={detailIdentity.title}
           supportingMetadata={(
             <div className="artifact-detail__header-context">
               <span className="artifact-detail__subline">
-                {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
+                {[
+                  detailIdentity.filename ? `File: ${detailIdentity.filename}` : '',
+                  artifact.custody_mode,
+                  artifact.role,
+                ].filter(Boolean).join(' · ')}
               </span>
               <span className="artifact-detail__dates">
                 <span>Created: {formatTime(createdUpdated.created)}</span>
@@ -2187,6 +2192,44 @@ function seriesTitle(series: ArtifactSeriesSummary): string {
     || (series.latest_artifact ? artifactTitle(series.latest_artifact) : '')
     || series.series_key
     || seriesRef(series);
+}
+
+export type ArtifactDetailIdentity = {
+  title: string;
+  filename: string | null;
+};
+
+export function artifactDetailIdentity(
+  artifact: ArtifactRecord,
+  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null,
+  selectedVersion: ArtifactVersionRecord | null,
+): ArtifactDetailIdentity {
+  const logicalTitle = artifactTitleCandidate(series?.title ?? '')
+    || artifactTitleCandidate(series?.logical_name ?? '')
+    || artifactTitle(artifact);
+  const filename = artifactFilename(artifact, selectedVersion);
+  return {
+    title: logicalTitle,
+    filename: filename && filename !== logicalTitle ? filename : null,
+  };
+}
+
+function artifactFilename(
+  artifact: ArtifactRecord,
+  selectedVersion: ArtifactVersionRecord | null,
+): string {
+  const declared = typeof artifact.metadata.filename === 'string' ? artifact.metadata.filename.trim() : '';
+  if (declared) return basename(declared);
+  const locator = selectedVersion?.observed_path
+    || selectedVersion?.repo_path
+    || (typeof artifact.repo_locator.path === 'string' ? artifact.repo_locator.path : '')
+    || artifact.uri;
+  return basename(locator);
+}
+
+function basename(locator: string): string {
+  const withoutQuery = locator.trim().split(/[?#]/, 1)[0].replace(/[\\/]+$/, '');
+  return withoutQuery.split(/[\\/]/).pop() ?? '';
 }
 
 function artifactTitle(artifact: ArtifactRecord): string {

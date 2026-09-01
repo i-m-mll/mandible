@@ -9,6 +9,7 @@ import type {
 } from '../../ui/src/api';
 import {
   ArtifactDetail,
+  artifactDetailIdentity,
   artifactHighlightLanguage,
   artifactPreview,
   highlightArtifactCode,
@@ -141,6 +142,66 @@ function renderArtifactDetail(
 }
 
 describe('artifact preview helpers', () => {
+  it.each([
+    {
+      projection: 'linked latest',
+      custodyMode: 'link',
+      selectedVersion: null,
+      versionPath: null,
+    },
+    {
+      projection: 'managed pinned version',
+      custodyMode: 'managed',
+      selectedVersion: version({ observed_path: '/skills/coordinate-umbrella/SKILL.md' }),
+      versionPath: 'SKILL.md',
+    },
+  ])('uses the logical Artifact title for the $projection projection', ({ custodyMode, selectedVersion, versionPath }) => {
+    const selectedArtifact = artifact({
+      custody_mode: custodyMode,
+      metadata: versionPath ? {} : { filename: 'SKILL.md' },
+      repo_locator: { repo_id: 'dotfiles', path: 'skills/coordinate-umbrella/SKILL.md' },
+    });
+
+    expect(artifactDetailIdentity(
+      selectedArtifact,
+      series({ title: 'Claude coordinate-umbrella skill', logical_name: 'coordinate-umbrella' }),
+      selectedVersion,
+    )).toEqual({
+      title: 'Claude coordinate-umbrella skill',
+      filename: 'SKILL.md',
+    });
+  });
+
+  it('renders filename provenance below the logical Artifact title without duplicating identity', () => {
+    const { rerender } = renderArtifactDetail(content(), {
+      artifact: artifact({ metadata: { filename: 'SKILL.md' } }),
+      series: series({ title: 'Claude coordinate-umbrella skill' }),
+    });
+
+    expect(screen.getByRole('heading', { name: 'Claude coordinate-umbrella skill' })).toBeTruthy();
+    expect(screen.getByText(/File: SKILL\.md/)).toBeTruthy();
+
+    rerender(<ArtifactDetail
+      artifact={artifact({ metadata: { filename: 'Claude coordinate-umbrella skill' } })}
+      resolution={null}
+      series={series({ title: 'Claude coordinate-umbrella skill' })}
+      versions={[]}
+      selectedVersion={null}
+      selectedVersionNo={null}
+      versionHistoryOpen={false}
+      onVersionChange={() => undefined}
+      onToggleVersionHistory={() => undefined}
+      onCloseVersionHistory={() => undefined}
+      content={content()}
+      contentLoading={false}
+      contentError={null}
+      knowledgeBackrefs={[]}
+      knowledgeLoading={false}
+      knowledgeError={null}
+    />);
+    expect(screen.queryByText(/File: Claude coordinate-umbrella skill/)).toBeNull();
+  });
+
   it('creates a Briefing from the exact selected materializable Markdown version', async () => {
     const selected = version({ id: 'artifact-version:exact-v1', version_no: 1 });
     const mockFetch = vi.fn((input: RequestInfo, init?: RequestInit) => {

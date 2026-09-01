@@ -48,15 +48,33 @@
   text-transform: uppercase;
 }
 
-.rendered-markdown .markdown-frontmatter__source {
-  min-inline-size: 0;
+.rendered-markdown .markdown-frontmatter__facts {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
   margin: 0;
-  padding: 0;
-  overflow: visible;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-secondary);
+}
+
+.rendered-markdown .markdown-frontmatter__fact {
+  display: contents;
+}
+
+.rendered-markdown .markdown-frontmatter__fact dt,
+.rendered-markdown .markdown-frontmatter__fact dd {
+  margin: 0;
+  font-family: var(--font-sans);
   font-size: var(--text-sm);
-  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.rendered-markdown .markdown-frontmatter__fact dt {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.rendered-markdown .markdown-frontmatter__fact dd {
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
 }

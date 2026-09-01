@@ -237,7 +237,17 @@ describe('Briefing document panel', () => {
       start: 0,
       end: frontmatter.length,
       quote: frontmatter,
-      label: 'Metadata',
+      label: 'Frontmatter',
+    });
+    expect(model.frontmatter).toMatchObject({
+      start: 0,
+      end: frontmatter.length,
+      raw: frontmatter,
+      body: 'title: Review\ntags:\n  - markdown\n',
+      entries: [
+        { key: 'title', value: 'Review' },
+        { key: 'tags', value: 'markdown' },
+      ],
     });
     expect(model.markdown).toBe('\n# Policy\n\nBody.\n\n---\n\nAfter rule.');
     expect(model.entities.filter((entity) => entity.kind === 'frontmatter')).toHaveLength(1);
@@ -328,8 +338,8 @@ describe('Briefing document panel', () => {
     const rendered = render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review" roundId="round-1"
       round={comparisonRound} canMutate onRefresh={async () => null} />);
 
-    const metadata = await screen.findByLabelText('Changed document metadata');
-    expect(metadata.textContent).toContain('title: New');
+    const metadata = await screen.findByLabelText('Changed document frontmatter');
+    expect(metadata.textContent).toContain('titleNew');
     expect(metadata.textContent).not.toContain('---');
     const changed = Array.from(rendered.container.querySelectorAll<HTMLElement>('[data-briefing-changed-order]'));
     expect(changed).toHaveLength(3);
