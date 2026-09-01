@@ -1182,6 +1182,7 @@ export type BriefingGroup = {
   name: string;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
   history: BriefingGroupDisposition[];
@@ -1207,6 +1208,8 @@ export const BRIEFING_EVENTS = Object.freeze({
   groupConfigurationUpdated: "briefing:group-configuration-updated",
   groupProposalPromoted: "briefing:group-proposal-promoted",
   groupNameUpdated: "briefing:group-name-updated",
+  groupArchived: "briefing:group-archived",
+  groupRestored: "briefing:group-restored",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",
   annotated: "briefing:annotated",

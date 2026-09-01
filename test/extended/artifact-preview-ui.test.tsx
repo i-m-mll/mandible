@@ -242,6 +242,41 @@ describe('artifact preview helpers', () => {
     expect(mockFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
+  it('shows store-authoritative reuse guidance when an active Briefing owns the Artifact', async () => {
+    const selected = version({ id: 'artifact-version:exact-v1', version_no: 1 });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/drafts') && !init?.method) {
+        return Promise.resolve(new Response(JSON.stringify({ draft: null }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/briefings' && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: 'An active Briefing already owns this logical Artifact',
+          code: 'briefing_active_candidates',
+          outcome: 'active_candidates',
+          logical_artifact_id: 'artifact:logical',
+          active_candidates: [{
+            briefing_id: 'briefing-existing', title: 'Existing review', archived_at: null,
+            latest_round_id: 'round-existing', matching_round_id: 'round-existing', guidance: 'reuse_round',
+          }],
+          archived_candidates: [],
+        }), { status: 409, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+    renderArtifactDetail(content({ kind: 'markdown', media_type: 'text/markdown' }), {
+      artifact: artifact({ metadata: { filename: 'AGENTS.review.md' }, media_type: 'text/markdown' }),
+      versions: [selected], selectedVersion: selected, selectedVersionNo: 1,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Create briefing' }));
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Existing review (briefing): reuse exact round');
+  });
+
   it('disables Briefing creation without an exact materializable Markdown selection', () => {
     renderArtifactDetail(content(), { selectedVersion: version(), selectedVersionNo: 1 });
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));

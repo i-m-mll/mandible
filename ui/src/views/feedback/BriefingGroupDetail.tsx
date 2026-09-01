@@ -32,6 +32,9 @@ export function BriefingGroupDetail({
       bodyClassName="briefing-group-detail__body"
     >
       <div className="briefing-group-detail__sections">
+        {group.archivedAt != null ? (
+          <p className="briefing-empty" role="status">Archived collection. Its bundles, Briefings, and review history remain intact.</p>
+        ) : null}
         <section className="briefing-group-detail__current" aria-labelledby="briefing-group-current-title">
           <div className="briefing-group-detail__intro">
             <h3 id="briefing-group-current-title">Base</h3>

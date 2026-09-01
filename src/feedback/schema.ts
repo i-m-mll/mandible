@@ -29,12 +29,12 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     current_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_briefing_groups_current_bundle
+    , archived_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_groups_current_bundle
     ON briefing_groups(current_bundle_id) WHERE current_bundle_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS briefing_group_updates (
     group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
-    bundle_id TEXT NOT NULL UNIQUE REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     position INTEGER NOT NULL CHECK(position >= 0),
     created_at INTEGER NOT NULL,
     PRIMARY KEY(group_id, bundle_id),
@@ -57,6 +57,31 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_group_dispositions_group
     ON briefing_group_dispositions(group_id, created_at DESC, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_collection_sharing_receipts (
+    id TEXT PRIMARY KEY,
+    operation TEXT NOT NULL CHECK(trim(operation) != ''),
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('group','bundle')),
+    target_id TEXT NOT NULL CHECK(trim(target_id) != ''),
+    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('bundle','briefing')),
+    subject_id TEXT NOT NULL CHECK(trim(subject_id) != ''),
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('group','bundle')),
+    owner_id TEXT NOT NULL CHECK(trim(owner_id) != ''),
+    reason TEXT NOT NULL CHECK(trim(reason) != ''),
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_collection_sharing_target
+    ON briefing_collection_sharing_receipts(target_kind, target_id, created_at)`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_collection_sharing_receipts_immutable_update
+    BEFORE UPDATE ON briefing_collection_sharing_receipts BEGIN
+      SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_collection_sharing_receipts_immutable_delete
+    BEFORE DELETE ON briefing_collection_sharing_receipts BEGIN
+      SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
+    END`,
 ];
 
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */
@@ -71,7 +96,30 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     archived_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+    , logical_artifact_id TEXT REFERENCES artifact(id) ON DELETE RESTRICT)`,
+  `CREATE INDEX IF NOT EXISTS idx_briefings_logical_artifact
+    ON briefings(logical_artifact_id, archived_at) WHERE logical_artifact_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS briefing_creation_overrides (
+    id TEXT PRIMARY KEY,
+    briefing_id TEXT NOT NULL UNIQUE REFERENCES briefings(id) ON DELETE RESTRICT,
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    reason TEXT NOT NULL CHECK(trim(reason) != ''),
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN (
+      'local_default','session_claim','external_import','credential_signature',
+      'hardware_presence','delegated_lease','system_internal','api_token'
+    )),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL
   )`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_creation_overrides_immutable_update
+    BEFORE UPDATE ON briefing_creation_overrides BEGIN
+      SELECT RAISE(ABORT, 'briefing creation override receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_creation_overrides_immutable_delete
+    BEFORE DELETE ON briefing_creation_overrides BEGIN
+      SELECT RAISE(ABORT, 'briefing creation override receipts are immutable');
+    END`,
   `CREATE TABLE IF NOT EXISTS briefing_members (
     briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -379,6 +427,5 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_response_events", "briefing_annotation_events", "briefing_submissions",
   "briefing_submission_answers", "briefing_submission_annotations", "briefing_legacy_audit",
   "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
-  "briefing_groups", "briefing_group_updates",
+  "briefing_groups", "briefing_group_updates", "briefing_collection_sharing_receipts",
 ];
-

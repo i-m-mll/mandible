@@ -1113,6 +1113,16 @@ export function ArtifactDetail({
         artifact_version_ref: selectedVersion.id,
         title: artifactTitle(artifact),
       });
+      if (receipt.outcome === 'active_candidates') {
+        const guidance = receipt.active_candidates.map((candidate) =>
+          `${candidate.title} (${candidate.briefing_id.slice(0, 8)}): ${candidate.guidance === 'reuse_round' ? 'reuse exact round' : 'add a round'}`,
+        ).join('; ');
+        const archived = receipt.archived_candidates.length > 0
+          ? ` Archived advisories: ${receipt.archived_candidates.length}.`
+          : '';
+        setBriefingError(`Active Briefing candidates: ${guidance}.${archived}`);
+        return;
+      }
       if (typeof window !== 'undefined') {
         window.location.hash = briefingRoute(receipt.briefing_id, receipt.round_id).slice(1);
       }

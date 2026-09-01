@@ -15,6 +15,8 @@ import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../
 import { createUser } from "../../src/users/store.js";
 import { broadcast } from "../../src/sse.js";
 import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings.js";
+import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
+import { createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 
 class SlugGate implements ClientAuthGate {
@@ -81,6 +83,37 @@ describe("plural Briefing routes", () => {
       method: "GET", url: "/api/briefings", credential: "human",
     })).toMatchObject({ status: 200 });
   });
+
+  it("archives and restores a group through durable authorization without cascading member lifecycle", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    const source = path.join(root, "group.md");
+    fs.writeFileSync(source, "# Group\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "group.md", role: "review-document", media_type: "text/markdown" }).version;
+    const published = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "group-member", artifact_version_ref: version.id, title: "Group member",
+      profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    }, 100);
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Base", briefingRefs: [published.briefing_id], viewer }, 110);
+    const group = createBriefingGroup(db, { name: "Archive me", currentBundleRef: bundle.id,
+      bundleRefs: [], viewer }, 120);
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
+      credential: "session:agent-schedule", body: {} })).toMatchObject({ status: 403 });
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
+      credential: "agent-schedule", body: {} })).toMatchObject({ status: 200, body: {
+      changed: true, group: { id: group.id, archived_at: expect.any(Number), current: { id: bundle.id } },
+    } });
+    expect(db.prepare("SELECT archived_at FROM briefings WHERE id = ?").get(published.briefing_id))
+      .toEqual({ archived_at: null });
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-groups/${group.id}`, credential: "human" }))
+      .toMatchObject({ status: 200, body: { group: { id: group.id, archived_at: expect.any(Number) } } });
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/restore`,
+      credential: "agent-schedule", body: {} })).toMatchObject({ status: 200, body: {
+      changed: true, group: { id: group.id, archived_at: null },
+    } });
+  });
+
   it("archives and restores exact Briefings with durable publisher authorization and preserved custody", async () => {
     const source = path.join(root, "archive.md");
     fs.writeFileSync(source, "# Archive\n");
@@ -197,7 +230,8 @@ describe("plural Briefing routes", () => {
     const first = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
       body: { artifact_version_ref: version.id, title: "First" } });
     const second = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
-      body: { artifact_version_ref: version.id, title: "Second" } });
+      body: { artifact_version_ref: version.id, title: "Second",
+        distinct_reason: "Keep a separate bundle fixture." } });
     const firstId = (first.body as { briefing_id: string }).briefing_id;
     const secondId = (second.body as { briefing_id: string }).briefing_id;
 
@@ -240,13 +274,20 @@ describe("plural Briefing routes", () => {
     fs.writeFileSync(source, "# Bundle member\n");
     const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
       logical_name: "agent-bundle.md", role: "review-document", media_type: "text/markdown" }).version;
-    const briefingIds = ["Global", "Codex", "Claude"].map((title) => publishBriefingFromArtifactVersion(db, {
+    const briefingIds = ["Global", "Codex", "Claude"].map((title, index) => publishBriefingFromArtifactVersion(db, {
       briefing_key: `agent-bundle:${title}`,
       title,
       artifact_version_ref: version.id,
       profile: "mandible-briefing.v3",
       responder_user_ids: [humanId],
-    }).briefing_id);
+      ...(index === 0 ? {} : {
+        distinct_reason: `Keep ${title} as a separate review fixture.`,
+        creation_provenance: { actor_user_id: humanId, evidence_method: "local_default" as const, credential_id: null },
+      }),
+    })).map((result) => {
+      if (result.outcome === "active_candidates") throw new Error("explicit fixture publication conflicted");
+      return result.briefing_id;
+    });
     const briefingRowsBefore = db.prepare("SELECT * FROM briefings ORDER BY id").all();
     const roundRowsBefore = db.prepare("SELECT * FROM briefing_rounds ORDER BY id").all();
     const memberRowsBefore = db.prepare("SELECT * FROM briefing_members ORDER BY briefing_id, user_id").all();
@@ -369,7 +410,8 @@ describe("plural Briefing routes", () => {
     });
 
     const humanCreated = await router.invoke({ method: "POST", url: "/api/briefing-bundles",
-      credential: "human", body: { name: "Human bundle", briefing_refs: briefingIds } });
+      credential: "human", body: { name: "Human bundle", briefing_refs: briefingIds,
+        sharing_reason: "Verify durable human-authored alternate layout" } });
     expect(humanCreated).toMatchObject({ status: 201 });
   });
 
@@ -413,23 +455,37 @@ describe("plural Briefing routes", () => {
     const createdAgain = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
       credential: "human" });
     expect(created).toMatchObject({ status: 201, body: { artifact_version_id: latestVersion.version.id } });
-    expect(createdAgain).toMatchObject({ status: 201, body: { artifact_version_id: latestVersion.version.id } });
-    expect((created.body as { briefing_id: string }).briefing_id)
-      .not.toBe((createdAgain.body as { briefing_id: string }).briefing_id);
+    const createdIds = created.body as { briefing_id: string; round_id: string };
+    expect(createdAgain).toMatchObject({ status: 409, body: {
+      code: "briefing_active_candidates",
+      outcome: "active_candidates",
+      active_candidates: [{ briefing_id: createdIds.briefing_id,
+        matching_round_id: createdIds.round_id, guidance: "reuse_round" }],
+    } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { ...request, target_briefing_ref: createdIds.briefing_id } })).toMatchObject({
+      status: 200, body: { outcome: "round_reused", briefing_id: createdIds.briefing_id,
+        round_id: createdIds.round_id },
+    });
+    const distinct = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { ...request, distinct_reason: "Independent approval boundary." } });
+    expect(distinct).toMatchObject({ status: 201, body: {
+      outcome: "created_distinct", override_receipt_id: expect.any(String),
+    } });
     expect(firstVersion.version.id).not.toBe(latestVersion.version.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 2 });
     expect(db.prepare(
       "SELECT briefing_id, user_id FROM briefing_members ORDER BY briefing_id",
     ).all()).toEqual([
-      { briefing_id: (created.body as { briefing_id: string }).briefing_id, user_id: humanId },
-      { briefing_id: (createdAgain.body as { briefing_id: string }).briefing_id, user_id: humanId },
+      { briefing_id: createdIds.briefing_id, user_id: humanId },
+      { briefing_id: (distinct.body as { briefing_id: string }).briefing_id, user_id: humanId },
     ].sort((left, right) => left.briefing_id.localeCompare(right.briefing_id)));
     expect(db.prepare("SELECT DISTINCT artifact_version_id, comparison_base_artifact_version_id FROM briefing_rounds").all())
       .toEqual([{ artifact_version_id: latestVersion.version.id,
         comparison_base_artifact_version_id: firstVersion.version.id }]);
     expect(vi.mocked(broadcast).mock.calls.filter(([event]) => event === "briefing:created")).toHaveLength(2);
 
-    const ids = created.body as { briefing_id: string; round_id: string };
+    const ids = createdIds;
     expect(await router.invoke({ method: "GET", url: `/api/briefings/${ids.briefing_id}`,
       credential: "agent-schedule" })).toMatchObject({
       status: 403, body: { code: "human_responder_required" },
@@ -746,10 +802,17 @@ describe("plural Briefing routes", () => {
     const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
       logical_name: "policy-layout.md", role: "review-document", media_type: "text/markdown" }).version;
     const titles = ["Global", "Codex", "Claude", "Reliability design", "Performance", "Squeeze", "Strict engineering"];
-    const ids = titles.map((title) => publishBriefingFromArtifactVersion(db, {
+    const ids = titles.map((title, index) => publishBriefingFromArtifactVersion(db, {
       briefing_key: `policy-layout:${title}`, title, artifact_version_ref: version.id,
       profile: "mandible-briefing.v3", responder_user_ids: [humanId],
-    }).briefing_id);
+      ...(index === 0 ? {} : {
+        distinct_reason: `Keep ${title} as a separate layout fixture.`,
+        creation_provenance: { actor_user_id: humanId, evidence_method: "local_default" as const, credential_id: null },
+      }),
+    })).map((result) => {
+      if (result.outcome === "active_candidates") throw new Error("explicit layout fixture publication conflicted");
+      return result.briefing_id;
+    });
     setSetting(db, "user.operator_id", humanId);
 
     const firstBundle = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
@@ -793,10 +856,12 @@ describe("plural Briefing routes", () => {
       ] } })).toMatchObject({ status: 400, body: { error: expect.stringContaining("unsupported field") } });
 
     const secondBundle = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
-      body: { name: "Policy proposal two", briefing_refs: [ids[0]] } });
+      body: { name: "Policy proposal two", briefing_refs: [ids[0]],
+        sharing_reason: "Compare a second policy layout" } });
     const secondBundleId = (secondBundle.body as { bundle: { id: string } }).bundle.id;
     const ungrouped = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
-      body: { name: "Ungrouped", briefing_refs: [ids[1]] } });
+      body: { name: "Ungrouped", briefing_refs: [ids[1]],
+        sharing_reason: "Retain a standalone navigation fixture" } });
     expect(ungrouped.status).toBe(201);
 
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "session:agent-schedule",
@@ -806,7 +871,8 @@ describe("plural Briefing routes", () => {
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "agent-schedule",
       body: { name: "Agent-created empty group", bundle_refs: [] } })).toMatchObject({ status: 201 });
     const createdGroup = await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
-      body: { name: "Sparse policy", bundle_refs: [bundleId] } });
+      body: { name: "Sparse policy", bundle_refs: [bundleId],
+        sharing_reason: "Exercise explicit cross-collection group placement" } });
     expect(createdGroup).toMatchObject({ status: 201, body: { group: { name: "Sparse policy",
       updates: [{ id: bundleId, layout: expect.any(Array) }] } } });
     const groupId = (createdGroup.body as { group: { id: string } }).group.id;
@@ -853,7 +919,8 @@ describe("plural Briefing routes", () => {
       .toMatchObject({ status: 400, body: { error: expect.stringContaining("must not also appear") } });
     const configured = await router.invoke({ method: "PUT",
       url: `/api/briefing-groups/briefing-group:${groupId.slice(0, 8)}/configuration`,
-      credential: "agent-schedule", body: { current_bundle_ref: bundleId, bundle_refs: [secondBundleId] } });
+      credential: "agent-schedule", body: { current_bundle_ref: bundleId, bundle_refs: [secondBundleId],
+        sharing_reason: "Keep the standalone fixture while configuring the group" } });
     expect(configured).toMatchObject({ status: 200, body: { changed: true, group: {
       current: { id: bundleId }, updates: [{ id: secondBundleId }],
     } } });
@@ -885,9 +952,21 @@ describe("plural Briefing routes", () => {
         auth_request_ref: authId,
         merge_head_sha: mergeHead,
       } })).toMatchObject({ status: 200, body: { changed: false } });
-    expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
-      body: { name: "Other", bundle_refs: [bundleId] } })).toMatchObject({
-      status: 409, body: { code: "briefing_bundle_already_grouped" },
+    const conflict = await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
+      body: { name: "Other", bundle_refs: [bundleId] } });
+    expect(conflict).toMatchObject({ status: 409, body: {
+      code: "briefing_collection_placement_conflict",
+      placement_candidates: expect.arrayContaining([expect.objectContaining({
+        subject_kind: "briefing", owner_kind: "group", owner_id: groupId,
+      })]),
+    } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "session:human",
+      body: { name: "Other", bundle_refs: [bundleId], sharing_reason: "Ephemeral is not durable" } }))
+      .toMatchObject({ status: 403, body: { code: "briefing_collection_sharing_credential_required" } });
+    expect(db.prepare(`SELECT reason, actor_user_id, evidence_method FROM briefing_collection_sharing_receipts
+      WHERE reason = 'Exercise explicit cross-collection group placement'`).get()).toEqual({
+      reason: "Exercise explicit cross-collection group placement", actor_user_id: humanId,
+      evidence_method: "api_token",
     });
     expect(await router.invoke({ method: "PATCH", url: `/api/briefing-groups/${groupId}`,
       credential: "session:agent-schedule", body: { name: "Rejected" } })).toMatchObject({

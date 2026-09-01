@@ -12,7 +12,7 @@ import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEM
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 160;
+export const BASELINE_SCHEMA_VERSION = 162;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (

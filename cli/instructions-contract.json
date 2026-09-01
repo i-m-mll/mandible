@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 10,
+  "version": 11,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -179,8 +179,8 @@
       "description": "Resolve an artifact identity and render its ambiguity-safe short ref by default, or an HTTP URL, Markdown hyperlink, full canonical id, or structured JSON."
     },
     {
-      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--json]",
-      "description": "Create a new logical Briefing with an optional purpose/result description whose first round binds exactly the named artifact version and optional exact comparison base; never resolves latest or adds a round to an existing Briefing."
+      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --distinct-reason <text>] [--json]",
+      "description": "Bind exactly the named Artifact version to a Briefing. Active Briefings for the same logical Artifact block default creation and return reuse/add-round guidance; --briefing targets one candidate, while --distinct-reason creates a separate identity with an authenticated durable receipt. Archived candidates are advisory, and logical Artifact or series refs never resolve to latest."
     },
     {
       "name": "mandible briefing rename <briefing-ref> --title <text> [--json]",
@@ -199,15 +199,15 @@
       "description": "Restore one archived Briefing to default collection and bundle projections with its identity and review history unchanged. Human use requires the configured operator; agent use requires a durable active-agent token."
     },
     {
-      "name": "mandible briefing bundle create --name <name> [<briefing-ref>...] [--json]",
-      "description": "Create a stable named Briefing bundle whose optional initial Briefing membership preserves the supplied order."
+      "name": "mandible briefing bundle create --name <name> [<briefing-ref>...] [--sharing-reason <text>] [--json]",
+      "description": "Create a stable named Briefing bundle whose optional initial Briefing membership preserves the supplied order. Active cross-collection sharing requires an explicit reason recorded with authenticated provenance."
     },
     {
-      "name": "mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]",
+      "name": "mandible briefing bundle add <bundle-ref> <briefing-ref> [--sharing-reason <text>] [--json]",
       "description": "Append one existing Briefing to a bundle without changing that Briefing or its rounds."
     },
     {
-      "name": "mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--json]",
+      "name": "mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--sharing-reason <text>] [--json]",
       "description": "Atomically replace an existing Briefing bundle's canonical ordered layout. Flat Briefing refs remain supported; --layout accepts direct Briefings and one-level named subgroups. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
     },
     {
@@ -219,16 +219,24 @@
       "description": "Show one Briefing bundle and its manually ordered Briefing membership."
     },
     {
-      "name": "mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--json]",
+      "name": "mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]",
       "description": "Create a stable Briefing group with an optional explicit Base bundle and ordered active proposals. Omitting --current preserves proposal-only compatibility and does not infer a Base bundle."
     },
     {
-      "name": "mandible briefing group add <group-ref> <bundle-ref> [--json]",
+      "name": "mandible briefing group add <group-ref> <bundle-ref> [--sharing-reason <text>] [--json]",
       "description": "Append one existing Briefing bundle as a proposed update; a bundle belongs to at most one group."
     },
     {
-      "name": "mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]",
+      "name": "mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]",
       "description": "Atomically set a group's distinct Base bundle and complete ordered active-proposal list. Base cannot also be a proposal, duplicates are rejected, and a bundle cannot belong to another group in either role."
+    },
+    {
+      "name": "mandible briefing group archive <group-ref> [--json]",
+      "description": "Archive one Briefing group without archiving its bundles or member Briefings and without losing review or custody history."
+    },
+    {
+      "name": "mandible briefing group restore <group-ref> [--json]",
+      "description": "Atomically restore one archived Briefing group; active placement conflicts fail with candidates and leave it archived."
     },
     {
       "name": "mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]",

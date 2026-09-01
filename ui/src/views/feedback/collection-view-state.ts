@@ -3,10 +3,12 @@ import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 
 export const BRIEFING_VIEW_STATE_KEY = 'mandible.briefing.viewState:v1';
 export type BriefingCollectionSort = 'activity' | 'name' | 'unanswered-count';
+export type BriefingCollectionLifecycle = 'active' | 'all' | 'archived';
 export type BriefingCollectionViewState = {
   collectionSourceFilter: string;
   pinnedOnly: boolean;
   collectionSort: BriefingCollectionSort;
+  collectionLifecycle: BriefingCollectionLifecycle;
   pinnedCollectionIds: string[];
   pinnedSectionCollapsed: boolean;
   collapsedBundleIds: string[];
@@ -18,7 +20,7 @@ export type BriefingCollectionViewState = {
   selectedRoundIds: Record<string, string>;
 };
 export const DEFAULT_BRIEFING_COLLECTION_VIEW_STATE: BriefingCollectionViewState = {
-  collectionSourceFilter: '', pinnedOnly: false, collectionSort: 'activity', pinnedCollectionIds: [], pinnedSectionCollapsed: false,
+  collectionSourceFilter: '', pinnedOnly: false, collectionSort: 'activity', collectionLifecycle: 'active', pinnedCollectionIds: [], pinnedSectionCollapsed: false,
   collapsedBundleIds: [],
   collapsedGroupIds: [], collapsedGroupSubgroupKeys: [], selectedGroupUpdateIds: {}, selectedGroupId: null,
   selectedCollectionId: null, selectedRoundIds: {},
@@ -35,6 +37,9 @@ export function normalizeBriefingCollectionViewState(value: unknown): BriefingCo
     collectionSort: row.collectionSort === 'name' || row.collectionSort === 'unanswered-count'
       ? row.collectionSort
       : 'activity',
+    collectionLifecycle: row.collectionLifecycle === 'all' || row.collectionLifecycle === 'archived'
+      ? row.collectionLifecycle
+      : 'active',
     pinnedCollectionIds: normalizeOrderedPinIds(rawPins),
     pinnedSectionCollapsed: row.pinnedSectionCollapsed === true,
     collapsedBundleIds: normalizeOrderedPinIds(Array.isArray(row.collapsedBundleIds) ? row.collapsedBundleIds : []),

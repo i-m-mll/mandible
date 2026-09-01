@@ -522,9 +522,30 @@ describe('Briefing sidebar row actions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Briefing filters' }));
     fireEvent.input(screen.getByRole('combobox', { name: 'Sort briefings' }), { target: { value: 'name' } });
+    fireEvent.input(screen.getByRole('combobox', { name: 'Briefing collection lifecycle' }),
+      { target: { value: 'archived' } });
 
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}'))
-      .toMatchObject({ collectionSort: 'name' }));
+      .toMatchObject({ collectionSort: 'name', collectionLifecycle: 'archived' }));
+  });
+
+  it('projects Active, All, and Archived without leaking archived-group contents into the root', () => {
+    const archivedGroup: BriefingGroup = { ...groupedUpdates, archivedAt: 42 };
+    const view = render(<Harness bundles={[groupedUpdates.current!]} groups={[archivedGroup]} />);
+
+    expect(screen.queryByRole('button', { name: 'Select Briefing group Release review' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Select briefing First briefing' })).toBeNull();
+
+    view.rerender(<Harness key="all" bundles={[groupedUpdates.current!]} groups={[archivedGroup]}
+      initialViewState={{ collectionLifecycle: 'all' }} />);
+    expect(screen.getAllByRole('button', { name: 'Select Briefing group Release review' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Select briefing First briefing' })).toHaveLength(1);
+
+    view.rerender(<Harness key="archived" bundles={[groupedUpdates.current!]} groups={[archivedGroup]}
+      initialViewState={{ collectionLifecycle: 'archived' }} />);
+    expect(screen.getAllByRole('button', { name: 'Select Briefing group Release review' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Select briefing First briefing' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Select briefing Second briefing' })).toBeNull();
   });
 
   it('uses the shared filter trigger, summary, and overlay dismissal contract', async () => {
