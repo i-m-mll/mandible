@@ -2,6 +2,74 @@
  * stylesheet last so feature-local prose rules cannot accidentally turn a
  * fenced block back into an edge-to-edge band. Raw data/code previews do not
  * opt into this class. */
+.rendered-markdown {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.rendered-markdown :where(p, ul, ol, blockquote, table, pre) {
+  margin-block: var(--space-3);
+}
+
+.rendered-markdown :where(h1, h2, h3, h4, h5, h6) {
+  margin-block: var(--space-6) var(--space-2);
+  line-height: 1.25;
+}
+
+.rendered-markdown :where(ul, ol) {
+  padding-inline-start: var(--space-5);
+}
+
+.rendered-markdown li + li {
+  margin-block-start: var(--space-1);
+}
+
+.rendered-markdown blockquote {
+  margin-inline: 0;
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  border-inline-start: 3px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.rendered-markdown blockquote > :first-child {
+  margin-block-start: 0;
+}
+
+.rendered-markdown blockquote > :last-child {
+  margin-block-end: 0;
+}
+
+.rendered-markdown table {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-muted);
+  border-spacing: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  font-size: var(--text-sm);
+}
+
+.rendered-markdown :where(th, td) {
+  padding: var(--space-2) var(--space-3);
+  border-block-end: 1px solid var(--border-faint);
+  text-align: start;
+  vertical-align: top;
+}
+
+.rendered-markdown :where(th, td) + :where(th, td) {
+  border-inline-start: 1px solid var(--border-faint);
+}
+
+.rendered-markdown th {
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.rendered-markdown tr:last-child td {
+  border-block-end: 0;
+}
+
 .rendered-markdown code:not(pre code) {
   background: transparent;
   padding: 0;
