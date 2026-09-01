@@ -265,14 +265,16 @@ function body(req: RequestLike): Record<string, unknown> {
 
 function placementOverride(req: RequestLike, requestBody: Record<string, unknown>, actorUserId: string) {
   if (requestBody.sharing_reason === undefined) return undefined;
-  if (requireIdentity(req).method !== "api_token") {
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
     throw new ClientAuthzError(403, "briefing_collection_sharing_credential_required",
       "Intentional cross-collection sharing requires a durable API token.");
   }
   if (typeof requestBody.sharing_reason !== "string" || !requestBody.sharing_reason.trim()) {
     throw new BriefingStoreError("sharing_reason must be a nonblank string");
   }
-  return { reason: requestBody.sharing_reason, actorUserId };
+  return { reason: requestBody.sharing_reason, actorUserId,
+    evidenceMethod: identity.method, credentialId: identity.credential_id };
 }
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */

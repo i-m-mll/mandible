@@ -86,7 +86,8 @@ describe("artifact-backed Briefing rounds", () => {
     const viewer = { userId: humanId, operator: true };
     const bundles = [first.briefing_id, second.briefing_id, first.briefing_id].map((briefingId, index) =>
       createBriefingBundle(db, { name: `Bundle ${index}`, briefingRefs: [briefingId], viewer,
-        placementOverride: index === 2 ? { reason: "Compare the same Briefing in two layouts", actorUserId: publisherId } : undefined,
+        placementOverride: index === 2 ? { reason: "Compare the same Briefing in two layouts", actorUserId: publisherId,
+          evidenceMethod: "api_token", credentialId: null } : undefined,
       }, 1_100 + index));
     const group = createBriefingGroup(db, {
       name: "Policy", bundleRefs: [bundles[1].id], viewer,
@@ -155,7 +156,8 @@ describe("artifact-backed Briefing rounds", () => {
     const base = createBriefingBundle(db, { name: "Original", briefingRefs: [first.briefing_id], viewer }, 1_100);
     const promoted = createBriefingBundle(db, { name: "Accepted", briefingRefs: [second.briefing_id], viewer }, 1_110);
     const survivor = createBriefingBundle(db, { name: "Survivor", briefingRefs: [first.briefing_id], viewer,
-      placementOverride: { reason: "Retain an alternate proposal", actorUserId: publisherId } }, 1_120);
+      placementOverride: { reason: "Retain an alternate proposal", actorUserId: publisherId,
+        evidenceMethod: "api_token", credentialId: null } }, 1_120);
     const group = createBriefingGroup(db, {
       name: "Policy", currentBundleRef: base.id, bundleRefs: [promoted.id, survivor.id], viewer,
     }, 1_200);
@@ -225,13 +227,21 @@ describe("artifact-backed Briefing rounds", () => {
           subject_kind: "briefing", subject_id: first.briefing_id, owner_kind: "bundle", owner_id: bundle.id,
         })] } }));
     const shared = createBriefingBundle(db, { name: "Deliberate comparison", briefingRefs: [first.briefing_id], viewer,
-      placementOverride: { reason: "Compare two editorial layouts", actorUserId: publisherId } }, 1_120);
+      placementOverride: { reason: "Compare two editorial layouts", actorUserId: publisherId,
+        evidenceMethod: "api_token", credentialId: null } }, 1_120);
     expect(db.prepare(`SELECT operation, target_kind, target_id, subject_kind, subject_id, owner_kind,
-      owner_id, reason, actor_user_id FROM briefing_collection_sharing_receipts`).all()).toEqual([
+      owner_id, reason, actor_user_id, evidence_method, credential_id
+      FROM briefing_collection_sharing_receipts`).all()).toEqual([
       { operation: "bundle_create", target_kind: "bundle", target_id: shared.id,
         subject_kind: "briefing", subject_id: first.briefing_id, owner_kind: "bundle", owner_id: bundle.id,
-        reason: "Compare two editorial layouts", actor_user_id: publisherId },
+        reason: "Compare two editorial layouts", actor_user_id: publisherId,
+        evidence_method: "api_token", credential_id: null },
     ]);
+    const sharingReceipt = db.prepare("SELECT id FROM briefing_collection_sharing_receipts").get() as { id: string };
+    expect(() => db.prepare("UPDATE briefing_collection_sharing_receipts SET reason = 'rewritten' WHERE id = ?")
+      .run(sharingReceipt.id)).toThrow(/immutable/);
+    expect(() => db.prepare("DELETE FROM briefing_collection_sharing_receipts WHERE id = ?")
+      .run(sharingReceipt.id)).toThrow(/immutable/);
 
     const lifecycleBundle = createBriefingBundle(db, { name: "Lifecycle", briefingRefs: [second.briefing_id], viewer }, 1_130);
     const original = createBriefingGroup(db, {

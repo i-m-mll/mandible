@@ -472,6 +472,50 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE briefing_lineage_guard",
     ],
   },
+  {
+    version: 162,
+    name: "briefing_group_lifecycle_and_collection_placement",
+    statements: [
+      "ALTER TABLE briefing_groups ADD COLUMN archived_at INTEGER",
+      "DROP INDEX idx_briefing_groups_current_bundle",
+      `CREATE INDEX idx_briefing_groups_current_bundle
+        ON briefing_groups(current_bundle_id) WHERE current_bundle_id IS NOT NULL`,
+      "ALTER TABLE briefing_group_updates RENAME TO briefing_group_updates_v161",
+      `CREATE TABLE briefing_group_updates (
+        group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+        bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+        position INTEGER NOT NULL CHECK(position >= 0),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(group_id, bundle_id), UNIQUE(group_id, position) )`,
+      `INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at)
+        SELECT group_id, bundle_id, position, created_at FROM briefing_group_updates_v161`,
+      "DROP TABLE briefing_group_updates_v161",
+      `CREATE TABLE briefing_collection_sharing_receipts (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL CHECK(trim(operation) != ''),
+        target_kind TEXT NOT NULL CHECK(target_kind IN ('group','bundle')),
+        target_id TEXT NOT NULL CHECK(trim(target_id) != ''),
+        subject_kind TEXT NOT NULL CHECK(subject_kind IN ('bundle','briefing')),
+        subject_id TEXT NOT NULL CHECK(trim(subject_id) != ''),
+        owner_kind TEXT NOT NULL CHECK(owner_kind IN ('group','bundle')),
+        owner_id TEXT NOT NULL CHECK(trim(owner_id) != ''),
+        reason TEXT NOT NULL CHECK(trim(reason) != ''),
+        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+        credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        created_at INTEGER NOT NULL )`,
+      `CREATE INDEX idx_briefing_collection_sharing_target
+        ON briefing_collection_sharing_receipts(target_kind, target_id, created_at)`,
+      `CREATE TRIGGER briefing_collection_sharing_receipts_immutable_update
+        BEFORE UPDATE ON briefing_collection_sharing_receipts BEGIN
+          SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
+        END`,
+      `CREATE TRIGGER briefing_collection_sharing_receipts_immutable_delete
+        BEFORE DELETE ON briefing_collection_sharing_receipts BEGIN
+          SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
+        END`,
+    ],
+  },
 ];
 
 /**

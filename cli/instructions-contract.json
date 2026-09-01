@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 10,
+  "version": 11,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",

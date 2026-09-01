@@ -4,7 +4,12 @@ import type { Db } from "../db.js";
 import { BriefingStoreError } from "./briefings.js";
 
 export type PlacementTarget = { kind: "group" | "bundle"; id: string };
-export type PlacementOverride = { reason?: string; actorUserId: string };
+export type PlacementOverride = {
+  reason?: string;
+  actorUserId: string;
+  evidenceMethod: "api_token";
+  credentialId: string | null;
+};
 export type PlacementCandidate = {
   subject_kind: "bundle" | "briefing";
   subject_id: string;
@@ -104,8 +109,9 @@ export function enforceActivePlacement(
   }
   const insert = db.prepare(`INSERT INTO briefing_collection_sharing_receipts
     (id, operation, target_kind, target_id, subject_kind, subject_id, owner_kind, owner_id,
-     reason, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     reason, actor_user_id, evidence_method, credential_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const conflict of conflicts) insert.run(randomUUID(), input.operation, input.target.kind, input.target.id,
     conflict.subject_kind, conflict.subject_id, conflict.owner_kind, conflict.owner_id, reason,
-    input.override?.actorUserId, input.now);
+    input.override?.actorUserId, input.override?.evidenceMethod, input.override?.credentialId, input.now);
 }
