@@ -371,16 +371,23 @@ describe("artifact-backed Briefing rounds", () => {
     const original = record("# Policy\n\nOriginal.\n");
     const accepted = record("# Policy\n\nAccepted.\n");
     const surviving = record("# Policy\n\nSurviving proposal.\n");
-    const publish = (key: string, version: string, comparison: string) => publishBriefingFromArtifactVersion(db, {
+    const publish = (key: string, version: string, comparison: string, distinct = false) => publishBriefingFromArtifactVersion(db, {
       briefing_key: key,
       title: "Policy",
       artifact_version_ref: version,
       comparison_base_artifact_version_ref: comparison,
       profile: "mandible-briefing.v3",
       responder_user_ids: [humanId],
+      ...(distinct ? {
+        distinct_reason: "Keep the surviving proposal as a separate review identity.",
+        creation_provenance: { actor_user_id: humanId, evidence_method: "local_default" as const, credential_id: null },
+      } : {}),
     });
     const baseBriefing = publish("accepted-policy", accepted.id, original.id);
-    const survivorBriefing = publish("surviving-policy", surviving.id, original.id);
+    const survivorBriefing = publish("surviving-policy", surviving.id, original.id, true);
+    if (baseBriefing.outcome === "active_candidates" || survivorBriefing.outcome === "active_candidates") {
+      throw new Error("expected explicit Briefing publications to succeed");
+    }
     const viewer = { userId: humanId, operator: true };
     const baseBundle = createBriefingBundle(db, {
       name: "Accepted", briefingRefs: [baseBriefing.briefing_id], viewer,
@@ -493,7 +500,7 @@ Review note prompt.
       .toThrowError(BriefingStoreError);
 
     const second = publishBriefingRun(db, request(undefined, { run_id: "run-2", run_key: "run-key-2" }), publisherId, 2_000);
-    expect(second.round_id).not.toBe(first.round_id);
+    expect(second.round_id).toBe(first.round_id);
     expect(second.artifact_version_id).toBe(first.artifact_version_id);
 
     const changed = publishBriefingRun(db, request('# Daily changed\n\n:::spec-item{key="paper" type="verdict" required="true"}\nKeep this revised paper?\n:::\n', {
@@ -512,7 +519,7 @@ Review note prompt.
     expect(quiet).toMatchObject({ quiet: true, round_id: null, artifact_version_id: null });
     expect(db.prepare("SELECT run_id, quiet_reason FROM briefing_runs WHERE id = ?").get(quiet.receipt_id))
       .toEqual({ run_id: "run-4", quiet_reason: "no new evidence" });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 3 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 2 });
   });
 
   it("scopes directive instances and frozen corrections to one actor and one round", () => {
@@ -574,8 +581,11 @@ Review note prompt.
       answers: [{ response_event_id: answer.response_event_id, value: { verdict: "keep" } }],
       annotations: [{ annotation_event_id: annotations.annotation_event_ids[0], body: "Good framing" }],
     });
-    const later = publishBriefingRun(db, request(undefined, { run_id: "run-2", run_key: "run-key-2" }), publisherId, 1_600);
-    expect(later.artifact_version_id).toBe(first.artifact_version_id);
+    const later = publishBriefingRun(db, request(
+      '# Daily revised\n\n:::spec-item{key="paper" type="verdict" required="true"}\nKeep this paper?\n:::\n',
+      { run_id: "run-2", run_key: "run-key-2" },
+    ), publisherId, 1_600);
+    expect(later.artifact_version_id).not.toBe(first.artifact_version_id);
     expect(() => readBriefing(db, first.briefing_id, {
       roundId: later.round_id!, submissionId: submission.submission_id, actorUserId: humanId, operator: false,
     })).toThrowError(expect.objectContaining({ code: "submission_overlay_not_found" }));
@@ -667,6 +677,127 @@ Review note prompt.
        VALUES ('other-sub', ?, ?, ?, ?, 0)`,
     ).run(published.round_id, other, answer.directive_instance_id, answer.response_event_id))
       .toThrow(/matching set event|FOREIGN KEY/);
+  });
+
+  it("makes logical Artifact identity authoritative with typed guidance and durable overrides", () => {
+    const version = (series: string, content: string) => recordArtifactVersion(db, {
+      source_kind: "managed",
+      content,
+      series_key: series,
+      logical_name: `${series}.md`,
+      role: "review-document",
+      media_type: "text/markdown",
+    }).version;
+    const firstVersion = version("lineage-a", "# First\n");
+    const secondVersion = version("lineage-a", "# Second\n");
+    const sameBytesDifferentArtifact = version("lineage-b", "# First\n");
+    const publish = (overrides: Record<string, unknown>) => publishBriefingFromArtifactVersion(db, {
+      title: "Lineage review",
+      artifact_version_ref: firstVersion.id,
+      profile: "mandible-briefing.v3",
+      responder_user_ids: [humanId],
+      ...overrides,
+    });
+
+    const first = publish({ briefing_key: "lineage-first" });
+    if (first.outcome === "active_candidates") throw new Error("first publication unexpectedly conflicted");
+    expect(first).toMatchObject({ outcome: "created", archived_candidates: [] });
+    expect(publish({ briefing_key: "lineage-same-version" })).toMatchObject({
+      outcome: "active_candidates",
+      active_candidates: [{ briefing_id: first.briefing_id, matching_round_id: first.round_id, guidance: "reuse_round" }],
+    });
+    expect(publish({ briefing_key: "lineage-new-version", artifact_version_ref: secondVersion.id })).toMatchObject({
+      outcome: "active_candidates",
+      active_candidates: [{ briefing_id: first.briefing_id, matching_round_id: null, guidance: "add_round" }],
+    });
+
+    const distinct = publish({
+      briefing_key: "lineage-distinct",
+      artifact_version_ref: secondVersion.id,
+      distinct_reason: "Review the release candidate independently.",
+      creation_provenance: {
+        actor_user_id: humanId,
+        evidence_method: "local_default",
+        credential_id: null,
+      },
+    });
+    if (distinct.outcome === "active_candidates") throw new Error("explicit distinct publication conflicted");
+    expect(distinct).toMatchObject({ outcome: "created_distinct", override_receipt_id: expect.any(String) });
+    expect(db.prepare(`SELECT briefing_id, logical_artifact_id, reason, actor_user_id, evidence_method, credential_id
+      FROM briefing_creation_overrides WHERE id = ?`).get(distinct.override_receipt_id)).toEqual({
+      briefing_id: distinct.briefing_id,
+      logical_artifact_id: distinct.logical_artifact_id,
+      reason: "Review the release candidate independently.",
+      actor_user_id: humanId,
+      evidence_method: "local_default",
+      credential_id: null,
+    });
+    expect(() => db.prepare("UPDATE briefing_creation_overrides SET reason = 'changed' WHERE id = ?")
+      .run(distinct.override_receipt_id)).toThrow(/immutable/);
+
+    const added = publish({
+      target_briefing_ref: first.briefing_id,
+      viewer: { userId: humanId, operator: true },
+      artifact_version_ref: secondVersion.id,
+    });
+    if (added.outcome === "active_candidates") throw new Error("targeted publication conflicted");
+    expect(added.outcome).toBe("round_added");
+    const replay = publish({
+      target_briefing_ref: first.briefing_id,
+      viewer: { userId: humanId, operator: true },
+      artifact_version_ref: secondVersion.id,
+    });
+    expect(replay).toMatchObject({ outcome: "round_reused", round_id: added.round_id });
+
+    const other = publish({ briefing_key: "different-logical-artifact", artifact_version_ref: sameBytesDifferentArtifact.id });
+    expect(other).toMatchObject({ outcome: "created" });
+    if (other.outcome === "active_candidates") throw new Error("different logical Artifact conflicted");
+    expect(other.logical_artifact_id).not.toBe(first.logical_artifact_id);
+
+    const viewer = { userId: humanId, operator: true };
+    setBriefingArchived(db, first.briefing_id, true, viewer, 2_000);
+    setBriefingArchived(db, distinct.briefing_id, true, viewer, 2_001);
+    const afterArchive = publish({ briefing_key: "lineage-after-archive", artifact_version_ref: secondVersion.id });
+    expect(afterArchive).toMatchObject({ outcome: "created", active_candidates: [] });
+    expect(afterArchive.archived_candidates.map((candidate) => candidate.briefing_id))
+      .toEqual(expect.arrayContaining([first.briefing_id, distinct.briefing_id]));
+  });
+
+  it("serializes competing default creators across independent database connections", async () => {
+    const dbPath = path.join(root, "concurrent.db");
+    const firstConnection = new Database(dbPath);
+    migrate(firstConnection);
+    setSetting(firstConnection, "artifact_root", root);
+    const responder = createUser(firstConnection, {
+      slug: "concurrent-human", kind: "human", display_name: "Concurrent human",
+    }).id;
+    const version = recordArtifactVersion(firstConnection, {
+      source_kind: "managed", content: "# Concurrent\n", series_key: "concurrent-lineage",
+      logical_name: "concurrent.md", role: "review-document", media_type: "text/markdown",
+    }).version;
+    const secondConnection = new Database(dbPath);
+    secondConnection.pragma("foreign_keys = ON");
+    secondConnection.pragma("busy_timeout = 5000");
+    const create = (connection: Db, key: string) => publishBriefingFromArtifactVersion(connection, {
+      briefing_key: key,
+      title: "Concurrent review",
+      artifact_version_ref: version.id,
+      profile: "mandible-briefing.v3",
+      responder_user_ids: [responder],
+    });
+    try {
+      const results = await Promise.all([
+        Promise.resolve().then(() => create(firstConnection, "concurrent-one")),
+        Promise.resolve().then(() => create(secondConnection, "concurrent-two")),
+      ]);
+      expect(results.map((result) => result.outcome).sort())
+        .toEqual(["active_candidates", "created"]);
+      expect(firstConnection.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 1 });
+      expect(firstConnection.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 1 });
+    } finally {
+      secondConnection.close();
+      firstConnection.close();
+    }
   });
 
 });

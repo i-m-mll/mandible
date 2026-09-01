@@ -14,7 +14,7 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--json]
+  mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --distinct-reason <text>] [--json]
   mandible briefing rename <briefing-ref> --title <text> [--json]
   mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]
   mandible briefing archive <briefing-ref> [--json]
@@ -31,10 +31,12 @@ Usage:
   mandible briefing group rename <group-ref> --name <text> [--json]
   mandible briefing group show <group-ref> [--json]
 
-Creates a new logical Briefing whose first round is bound to exactly the named
-artifact version. An optional comparison base is also resolved and pinned
-exactly at creation time. This command never resolves a logical artifact or
-series to latest and never adds a round to an existing Briefing.
+Creates a Briefing whose round is bound to exactly the named artifact version.
+If an active Briefing already owns that logical Artifact, the command reports
+every candidate with reuse/add-round guidance. Use --briefing to target one
+candidate, or --distinct-reason to create a separate identity with an
+authenticated durable receipt. Archived candidates are advisory. This command
+never resolves a logical artifact or series to latest.
 
 A Briefing bundle is only a named, manually ordered association. Creating or
 adding to one does not change member Briefings, rounds, artifacts, or review data.
@@ -141,12 +143,14 @@ emit_bundle() {
 }
 
 cmd_create() {
-  local artifact_version_ref="" comparison_base="" title="" description="" has_description=0 json=0 response payload
+  local artifact_version_ref="" comparison_base="" target_briefing="" distinct_reason="" title="" description="" has_description=0 has_target_briefing=0 has_distinct_reason=0 json=0 response payload
   while (( $# > 0 )); do
     case "$1" in
       --title) [[ $# -ge 2 ]] || die "--title requires a value" 2; title="$2"; shift 2 ;;
       --description) [[ $# -ge 2 ]] || die "--description requires a value" 2; description="$2"; has_description=1; shift 2 ;;
       --comparison-base) [[ $# -ge 2 ]] || die "--comparison-base requires a value" 2; comparison_base="$2"; shift 2 ;;
+      --briefing) [[ $# -ge 2 ]] || die "--briefing requires a value" 2; target_briefing="$2"; has_target_briefing=1; shift 2 ;;
+      --distinct-reason) [[ $# -ge 2 ]] || die "--distinct-reason requires a value" 2; distinct_reason="$2"; has_distinct_reason=1; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$artifact_version_ref" ]] || die "Unexpected argument: $1" 2; artifact_version_ref="$1"; shift ;;
@@ -158,17 +162,23 @@ cmd_create() {
     || die "--comparison-base requires one exact artifact-version:<id> ref" 2
   [[ -n "${title//[[:space:]]/}" ]] || die "create requires --title <text>" 2
   [[ $has_description -eq 0 || -n "${description//[[:space:]]/}" ]] || die "--description requires nonblank text" 2
+  [[ $has_target_briefing -eq 0 || -n "${target_briefing//[[:space:]]/}" ]] || die "--briefing requires a nonblank Briefing ref" 2
+  [[ $has_distinct_reason -eq 0 || -n "${distinct_reason//[[:space:]]/}" ]] || die "--distinct-reason requires nonblank text" 2
+  [[ $has_target_briefing -eq 0 || $has_distinct_reason -eq 0 ]] \
+    || die "--briefing and --distinct-reason are mutually exclusive" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
-  payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg comparison_base "$comparison_base" --arg title "$title" --arg description "$description" \
+  payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg comparison_base "$comparison_base" --arg target_briefing "$target_briefing" --arg distinct_reason "$distinct_reason" --arg title "$title" --arg description "$description" \
     '{artifact_version_ref:$artifact_version_ref,title:$title}
      + (if $description == "" then {} else {description:$description} end)
-     + (if $comparison_base == "" then {} else {comparison_base_artifact_version_ref:$comparison_base} end)')"
+     + (if $comparison_base == "" then {} else {comparison_base_artifact_version_ref:$comparison_base} end)
+     + (if $target_briefing == "" then {} else {target_briefing_ref:$target_briefing} end)
+     + (if $distinct_reason == "" then {} else {distinct_reason:$distinct_reason} end)')"
   response="$(api_send POST "/api/briefings" "$payload")" || die "Failed to create Briefing from exact artifact version." 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '"created briefing \(.briefing_id | mandible_short_id) round \(.round_id | mandible_short_id) from \(.artifact_version_id | mandible_typed_short_ref)"'
+      '"\(.outcome | gsub("_"; " ")) briefing \(.briefing_id | mandible_short_id) round \(.round_id | mandible_short_id) from \(.artifact_version_id | mandible_typed_short_ref)\(if (.archived_candidates | length) > 0 then "; archived advisories=" + ((.archived_candidates | length) | tostring) else "" end)"'
   fi
 }
 

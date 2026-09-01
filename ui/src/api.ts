@@ -2889,13 +2889,32 @@ export type ArtifactDiffResult = {
   reason?: string;
 };
 
+export type ArtifactBriefingCandidate = {
+  briefing_id: string;
+  title: string;
+  archived_at: number | null;
+  latest_round_id: string | null;
+  matching_round_id: string | null;
+  guidance: 'reuse_round' | 'add_round';
+};
+
 export type CreateBriefingFromArtifactVersionResult = {
+  outcome: 'created' | 'created_distinct' | 'round_added' | 'round_reused';
   receipt_id: string;
   briefing_id: string;
   run_id: string;
   round_id: string;
   artifact_version_id: string;
   quiet: false;
+  logical_artifact_id: string;
+  active_candidates: ArtifactBriefingCandidate[];
+  archived_candidates: ArtifactBriefingCandidate[];
+  override_receipt_id: string | null;
+} | {
+  outcome: 'active_candidates';
+  logical_artifact_id: string;
+  active_candidates: ArtifactBriefingCandidate[];
+  archived_candidates: ArtifactBriefingCandidate[];
 };
 
 export async function createBriefingFromArtifactVersion(input: {
@@ -2903,8 +2922,20 @@ export async function createBriefingFromArtifactVersion(input: {
   comparison_base_artifact_version_ref?: string;
   title: string;
 }): Promise<CreateBriefingFromArtifactVersionResult> {
-  const response = await apiPost('/api/briefings', input);
-  return (await parseMaybeJson(response)) as CreateBriefingFromArtifactVersionResult;
+  const response = await fetch('/api/briefings', {
+    method: 'POST',
+    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await parseMaybeJson(response) as CreateBriefingFromArtifactVersionResult & {
+    error?: string;
+    code?: string;
+  };
+  if (response.status === 409 && payload.code === 'briefing_active_candidates') return payload;
+  if (!response.ok) {
+    throw new ApiError(payload.error ?? `POST /api/briefings failed: ${response.status}`, response.status);
+  }
+  return payload;
 }
 
 export type KnowledgeBackrefRecord = {

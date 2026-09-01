@@ -60,6 +60,7 @@ describe("briefing CLI", () => {
   it("documents and validates exact-version creation", () => {
     expect(runOffline(["help"]).stdout).toContain("briefing create <version-ref>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing create");
+    expect(runOffline(["briefing", "--help"]).stdout).toContain("--briefing <briefing-ref> | --distinct-reason <text>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing rename");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing describe");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing archive");
@@ -73,6 +74,19 @@ describe("briefing CLI", () => {
       "--comparison-base", "artifact:logical"]);
     expect(logicalBase.status).toBe(2);
     expect(logicalBase.stderr).toContain("--comparison-base requires one exact artifact-version");
+    expect(runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
+      "--briefing", "briefing:one", "--distinct-reason", "Separate"]).stderr)
+      .toContain("mutually exclusive");
+    expect(runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
+      "--distinct-reason", "  "]).stderr).toContain("nonblank");
+    const contract = JSON.parse(fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.json"), "utf8")) as {
+      commands: Array<{ name: string; description: string }>;
+    };
+    const create = contract.commands.find((command) => command.name.startsWith("mandible briefing create "));
+    expect(create).toMatchObject({
+      name: expect.stringContaining("--briefing <briefing-ref> | --distinct-reason <text>"),
+      description: expect.stringContaining("Active Briefings for the same logical Artifact block default creation"),
+    });
   });
 
   it("posts the exact version and title through the supported API", async () => {
@@ -80,6 +94,30 @@ describe("briefing CLI", () => {
     expect(result.status).toBe(0);
     expect(result.requests).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ briefing_id: "briefing-1", round_id: "round-1" });
+  });
+
+  it("forwards explicit round-target and distinct-creation decisions", async () => {
+    for (const [option, value, expected] of [
+      ["--briefing", "briefing:existing", { target_briefing_ref: "briefing:existing" }],
+      ["--distinct-reason", "Independent approval boundary.", { distinct_reason: "Independent approval boundary." }],
+    ] as const) {
+      const result = await runRpc([
+        "briefing", "create", "artifact-version:exact", "--title", "Review", option, value, "--json",
+      ], (request) => {
+        expect(request).toMatchObject({ method: "POST", path: "/api/briefings", body: {
+          artifact_version_ref: "artifact-version:exact", title: "Review", ...expected,
+        } });
+        return { status: option === "--briefing" ? 200 : 201, body: {
+          outcome: option === "--briefing" ? "round_reused" : "created_distinct",
+          receipt_id: "round-1", briefing_id: "briefing-1", run_id: "artifact:exact",
+          round_id: "round-1", artifact_version_id: "artifact-version:exact", quiet: false,
+          logical_artifact_id: "artifact:logical", active_candidates: [], archived_candidates: [],
+          override_receipt_id: option === "--briefing" ? null : "override-1",
+        } };
+      });
+      expect(result.status).toBe(0);
+      expect(result.requests).toHaveLength(1);
+    }
   });
 
   it("renames an individual Briefing through the supported API", async () => {

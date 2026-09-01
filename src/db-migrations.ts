@@ -423,6 +423,55 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "retire_legacy_artifact_model",
     statements: RETIRE_LEGACY_ARTIFACT_MODEL,
   },
+  {
+    version: 161,
+    name: "briefing_logical_artifact_identity",
+    statements: [
+      `CREATE TEMP TABLE briefing_lineage_guard (
+         briefing_id TEXT PRIMARY KEY,
+         logical_artifact_count INTEGER NOT NULL CHECK(logical_artifact_count <= 1)
+       )`,
+      `INSERT INTO briefing_lineage_guard (briefing_id, logical_artifact_count)
+       SELECT r.briefing_id, COUNT(DISTINCT v.artifact_id)
+         FROM briefing_rounds r
+         JOIN artifact_version v ON v.id = r.artifact_version_id
+        GROUP BY r.briefing_id`,
+      "ALTER TABLE briefings ADD COLUMN logical_artifact_id TEXT REFERENCES artifact(id) ON DELETE RESTRICT",
+      `UPDATE briefings
+          SET logical_artifact_id = (
+            SELECT v.artifact_id
+              FROM briefing_rounds r
+              JOIN artifact_version v ON v.id = r.artifact_version_id
+             WHERE r.briefing_id = briefings.id
+             ORDER BY r.ordinal
+             LIMIT 1
+          )
+        WHERE EXISTS (SELECT 1 FROM briefing_rounds r WHERE r.briefing_id = briefings.id)`,
+      "CREATE INDEX idx_briefings_logical_artifact ON briefings(logical_artifact_id, archived_at) WHERE logical_artifact_id IS NOT NULL",
+      `CREATE TABLE briefing_creation_overrides (
+         id TEXT PRIMARY KEY,
+         briefing_id TEXT NOT NULL UNIQUE REFERENCES briefings(id) ON DELETE RESTRICT,
+         logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+         reason TEXT NOT NULL CHECK(trim(reason) != ''),
+         actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+         evidence_method TEXT NOT NULL CHECK(evidence_method IN (
+           'local_default','session_claim','external_import','credential_signature',
+           'hardware_presence','delegated_lease','system_internal','api_token'
+         )),
+         credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+         created_at INTEGER NOT NULL
+       )`,
+      `CREATE TRIGGER briefing_creation_overrides_immutable_update
+         BEFORE UPDATE ON briefing_creation_overrides BEGIN
+           SELECT RAISE(ABORT, 'briefing creation override receipts are immutable');
+         END`,
+      `CREATE TRIGGER briefing_creation_overrides_immutable_delete
+         BEFORE DELETE ON briefing_creation_overrides BEGIN
+           SELECT RAISE(ABORT, 'briefing creation override receipts are immutable');
+         END`,
+      "DROP TABLE briefing_lineage_guard",
+    ],
+  },
 ];
 
 /**

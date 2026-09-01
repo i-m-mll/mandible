@@ -179,8 +179,8 @@
       "description": "Resolve an artifact identity and render its ambiguity-safe short ref by default, or an HTTP URL, Markdown hyperlink, full canonical id, or structured JSON."
     },
     {
-      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--json]",
-      "description": "Create a new logical Briefing with an optional purpose/result description whose first round binds exactly the named artifact version and optional exact comparison base; never resolves latest or adds a round to an existing Briefing."
+      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --distinct-reason <text>] [--json]",
+      "description": "Bind exactly the named Artifact version to a Briefing. Active Briefings for the same logical Artifact block default creation and return reuse/add-round guidance; --briefing targets one candidate, while --distinct-reason creates a separate identity with an authenticated durable receipt. Archived candidates are advisory, and logical Artifact or series refs never resolve to latest."
     },
     {
       "name": "mandible briefing rename <briefing-ref> --title <text> [--json]",

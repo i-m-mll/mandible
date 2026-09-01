@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { getDb, type Db } from "../db.js";
 import {
@@ -222,7 +220,11 @@ function briefingLayoutViewer(db: Db, req: RequestLike): { userId: string; opera
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
   publisherUserId: string;
   responderUserId: string;
+  operator: boolean;
+  evidenceMethod: "api_token" | "local_default";
+  credentialId: string | null;
 } {
+  const identity = requireIdentity(req);
   const publisher = publicationPrincipal(db, req, {
     credentialCode: "briefing_publisher_credential_required",
     credentialMessage: "Exact-version Briefing publication requires a durable API token, not a session credential.",
@@ -230,14 +232,26 @@ function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
     agentMessage: "Exact-version Briefing publication requires an active agent identity.",
   });
   if (publisher.kind === "human") {
-    return { publisherUserId: publisher.publisherUserId, responderUserId: publisher.publisherUserId };
+    return {
+      publisherUserId: publisher.publisherUserId,
+      responderUserId: publisher.publisherUserId,
+      operator: publisher.operator,
+      evidenceMethod: identity.method === "api_token" ? "api_token" : "local_default",
+      credentialId: identity.credential_id,
+    };
   }
   const operator = configuredHumanOperator(
     db,
     "briefing_publication_operator_required",
     "Exact-version Briefing publication by an agent requires a configured active human operator responder.",
   );
-  return { publisherUserId: publisher.publisherUserId, responderUserId: operator.id };
+  return {
+    publisherUserId: publisher.publisherUserId,
+    responderUserId: operator.id,
+    operator: true,
+    evidenceMethod: "api_token",
+    credentialId: identity.credential_id,
+  };
 }
 
 function body(req: RequestLike): Record<string, unknown> {
@@ -501,6 +515,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
         .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref"
+          && key !== "target_briefing_ref" && key !== "distinct_reason"
           && key !== "title" && key !== "description");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
@@ -512,26 +527,54 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         ? null
         : typeof requestBody.comparison_base_artifact_version_ref === "string"
           ? requestBody.comparison_base_artifact_version_ref.trim() : "";
+      const targetBriefingRef = requestBody.target_briefing_ref === undefined
+        ? null
+        : typeof requestBody.target_briefing_ref === "string"
+          ? requestBody.target_briefing_ref.trim() : "";
       if (!artifactVersionRef) throw new BriefingStoreError("artifact_version_ref must be a nonblank exact artifact-version ref");
       if (requestBody.comparison_base_artifact_version_ref !== undefined && !comparisonBaseArtifactVersionRef) {
         throw new BriefingStoreError("comparison_base_artifact_version_ref must be a nonblank exact artifact-version ref");
       }
+      if (requestBody.target_briefing_ref !== undefined && !targetBriefingRef) {
+        throw new BriefingStoreError("target_briefing_ref must be a nonblank Briefing ref");
+      }
       if (!title) throw new BriefingStoreError("title must be a nonblank string");
-      const receipt = publishBriefingFromArtifactVersion(db, {
-        briefing_key: `manual:${randomUUID()}`,
+      const result = publishBriefingFromArtifactVersion(db, {
         title,
         ...(Object.hasOwn(requestBody, "description") ? { description: requestBody.description } : {}),
         artifact_version_ref: artifactVersionRef,
         comparison_base_artifact_version_ref: comparisonBaseArtifactVersionRef,
+        ...(targetBriefingRef ? { target_briefing_ref: targetBriefingRef } : {}),
+        ...(Object.hasOwn(requestBody, "distinct_reason")
+          ? { distinct_reason: requestBody.distinct_reason }
+          : {}),
         profile: "mandible-briefing.v3",
         responder_user_ids: [publication.responderUserId],
+        viewer: { userId: publication.responderUserId, operator: publication.operator },
+        creation_provenance: {
+          actor_user_id: publication.publisherUserId,
+          evidence_method: publication.evidenceMethod,
+          credential_id: publication.credentialId,
+        },
       });
-      broadcast(BRIEFING_EVENTS.created, { briefing_id: receipt.briefing_id });
-      broadcast(BRIEFING_EVENTS.roundPublished, {
-        briefing_id: receipt.briefing_id,
-        round_id: receipt.round_id,
-      });
-      sendJson(res, 201, receipt);
+      if (result.outcome === "active_candidates") {
+        sendJson(res, 409, {
+          error: "An active Briefing already owns this logical Artifact",
+          code: "briefing_active_candidates",
+          ...result,
+        });
+        return;
+      }
+      if (result.outcome === "created" || result.outcome === "created_distinct") {
+        broadcast(BRIEFING_EVENTS.created, { briefing_id: result.briefing_id });
+      }
+      if (result.outcome !== "round_reused") {
+        broadcast(BRIEFING_EVENTS.roundPublished, {
+          briefing_id: result.briefing_id,
+          round_id: result.round_id,
+        });
+      }
+      sendJson(res, result.outcome === "round_reused" ? 200 : 201, result);
     } catch (error) {
       handleError(res, error);
     }

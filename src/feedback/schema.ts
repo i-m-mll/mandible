@@ -71,7 +71,30 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     archived_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+    , logical_artifact_id TEXT REFERENCES artifact(id) ON DELETE RESTRICT)`,
+  `CREATE INDEX IF NOT EXISTS idx_briefings_logical_artifact
+    ON briefings(logical_artifact_id, archived_at) WHERE logical_artifact_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS briefing_creation_overrides (
+    id TEXT PRIMARY KEY,
+    briefing_id TEXT NOT NULL UNIQUE REFERENCES briefings(id) ON DELETE RESTRICT,
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    reason TEXT NOT NULL CHECK(trim(reason) != ''),
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN (
+      'local_default','session_claim','external_import','credential_signature',
+      'hardware_presence','delegated_lease','system_internal','api_token'
+    )),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL
   )`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_creation_overrides_immutable_update
+    BEFORE UPDATE ON briefing_creation_overrides BEGIN
+      SELECT RAISE(ABORT, 'briefing creation override receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_creation_overrides_immutable_delete
+    BEFORE DELETE ON briefing_creation_overrides BEGIN
+      SELECT RAISE(ABORT, 'briefing creation override receipts are immutable');
+    END`,
   `CREATE TABLE IF NOT EXISTS briefing_members (
     briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -381,4 +404,3 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
   "briefing_groups", "briefing_group_updates",
 ];
-
