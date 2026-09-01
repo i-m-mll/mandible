@@ -235,7 +235,7 @@ export function buildBriefingMarkdownModel(
       start: frontmatter.start,
       end: frontmatter.end,
       quote: frontmatter.raw,
-      label: 'Metadata',
+      label: 'Frontmatter',
       displayStart: -1,
       displayEnd: -1,
       headingAncestry: [],

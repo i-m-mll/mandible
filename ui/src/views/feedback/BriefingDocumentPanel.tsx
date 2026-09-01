@@ -180,7 +180,7 @@ function renderSourceMappedMarkdown(
       element.dataset.briefingChangedOrder = String(changedOrder);
       element.tabIndex = -1;
       element.setAttribute('aria-label', entity.kind === 'frontmatter'
-        ? 'Changed document metadata'
+        ? 'Changed document frontmatter'
         : `Changed ${entity.kind}: ${entity.label}`);
     }
     actionHost(document, element, 'briefingEntityAction', entityIndex);
@@ -647,7 +647,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const matches = annotationsForRange(start, end);
           return host ? createPortal(annotationAction(
             heading ? `Comment on section ${entity.label}`
-              : entity.kind === 'frontmatter' ? 'Comment on document metadata'
+              : entity.kind === 'frontmatter' ? 'Comment on document frontmatter'
                 : `Comment on ${entity.kind}: ${entity.label}`,
             heading ? 'Comment on whole section' : 'Comment on this Markdown block',
             { annotation: null, ...(heading ? { sectionHeading: entity.label } : {}), start, end, quote },

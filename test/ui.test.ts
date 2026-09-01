@@ -6412,7 +6412,7 @@ describe('ArtifactsView', () => {
         expect(screen.getByRole('link', { name: '7da339a' }).getAttribute('href')).toContain('issue=7da339a');
         expect(versionRequests).toEqual([]);
       } else {
-        await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe(artifact.metadata.title));
+        await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('typed-report.md'));
         await waitFor(() => expect(versionRequests).toHaveLength(1));
         await waitFor(() => {
           expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value)
@@ -6459,7 +6459,7 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialSeriesRef: artifactSeries.summary.ref, initialVersionNo: 1 }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-report.md'));
     await waitFor(() => expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0));
 
     changeSelect(screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement, '2');
@@ -6472,7 +6472,7 @@ describe('ArtifactsView', () => {
       headers: { 'content-type': 'application/json' },
     }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v2.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-report.md'));
     await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(v2.id)))).toBe(true));
   });
 
@@ -6514,7 +6514,7 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:pinned-series', initialVersionNo: 1 }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-report.md'));
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Version history' }));
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
@@ -6522,8 +6522,8 @@ describe('ArtifactsView', () => {
     fireEvent.input(screen.getByPlaceholderText('Search artifacts'), { target: { value: 'pinned' } });
 
     await waitFor(() => expect(seriesCalls).toBeGreaterThan(2));
-    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
-    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-report.md');
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1'));
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
     const pinnedRow = screen.getByRole('button', { name: /pinned-report\.md/ });
     expect(pinnedRow.textContent).toContain('pinned-');
@@ -6593,7 +6593,7 @@ describe('ArtifactsView', () => {
     rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
-    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1'));
   });
 
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {
