@@ -117,6 +117,37 @@ afterEach(() => {
 });
 
 describe('AuthQueueView daemon readiness gate', () => {
+  it('blocks from canonical dependency readiness and opens only for ready', () => {
+    const onApprove = vi.fn();
+    const blockedRequest: AuthRequest = {
+      ...pendingRequest,
+      depends_on_id: 'dependency-1',
+      dependency: {
+        state: 'unfinalized', requested_id: 'dependency-1',
+        request_id: 'dependency-1', status: 'completed', outcome: 'succeeded',
+        exit_code: 0, merge_finalized_at: null,
+      },
+    };
+    const props = {
+      queue: [blockedRequest], historyQueue: [], outputs: {}, selectedAuthId: 'req-1',
+      daemonReady: true, onApprove, onReject: () => undefined,
+      onRetry: () => undefined, onDismiss: () => undefined,
+    };
+    const { rerender } = render(<AuthQueueView {...props} />);
+
+    const blocked = screen.getByRole('button', { name: 'Blocked: dependency unfinalized' }) as HTMLButtonElement;
+    expect(blocked.disabled).toBe(true);
+    fireEvent.click(blocked);
+    expect(onApprove).not.toHaveBeenCalled();
+
+    rerender(<AuthQueueView {...props} queue={[{
+      ...blockedRequest,
+      dependency: { ...blockedRequest.dependency!, state: 'ready', merge_finalized_at: 10 },
+    }]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(onApprove).toHaveBeenCalledWith('req-1');
+  });
+
   it('disables Approve and fires no approval action while the daemon is not ready', () => {
     const onApprove = vi.fn();
     renderView(false, onApprove);

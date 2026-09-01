@@ -141,6 +141,30 @@ export type AuthRequestOutcome =
   | "expired"
   | null;
 
+export type AuthDependencyReadiness =
+  | "ready"
+  | "pending"
+  | "failed"
+  | "unfinalized"
+  | "missing"
+  | "ambiguous";
+
+export type AuthDependencyProjection = {
+  state: AuthDependencyReadiness;
+  requested_id: string;
+  request_id: string | null;
+  status: AuthRequestStatus | null;
+  outcome: AuthRequestOutcome;
+  exit_code: number | null;
+  merge_finalized_at: number | null;
+};
+
+export function isAuthDependencyReady(
+  dependency: AuthDependencyProjection | null | undefined,
+): boolean {
+  return dependency?.state === "ready";
+}
+
 /**
  * Bug 93c57c4 — derive the terminal outcome from lifecycle status plus exit
  * code at read time. `status` is the lifecycle; `outcome` is the result.
@@ -170,7 +194,7 @@ export function computeAuthRequestOutcome(
     case "needs_rebase":
       return "needs_rebase";
     case "completed":
-      return exitCode != null && exitCode !== 0 ? "failed" : "succeeded";
+      return exitCode === 0 ? "succeeded" : "failed";
     case "pending":
     case "executing":
     case "approved":
@@ -263,6 +287,7 @@ export type AuthRequest = {
   issue_ids?: string[] | null;
   issues?: string[] | null;
   depends_on_id?: string | null;
+  dependency?: AuthDependencyProjection | null;
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
   created_at: number;

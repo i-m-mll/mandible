@@ -40,6 +40,7 @@ import {
   type ReadUserIdentity,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
+import { isAuthDependencyReady, type AuthDependencyProjection } from '../../../src/contracts';
 
 export type AuthRequestType =
   | 'merge'
@@ -90,7 +91,7 @@ export type AuthRequest = {
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
   depends_on_id?: string | null;
-  depends_on_status?: string | null;
+  dependency?: AuthDependencyProjection | null;
   approval_source?: string;
   approval_lease_id?: string | null;
   requested_by_user_id?: string | null;
@@ -1010,7 +1011,9 @@ function AuthRequestDetail({
         <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
         <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
         <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
-        <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
+        <MetadataRow label="Dependency readiness" value={request.dependency?.state ?? null} />
+        <MetadataRow label="Dependency status" value={request.dependency?.status ?? null} />
+        <MetadataRow label="Dependency outcome" value={request.dependency?.outcome ?? null} />
         <MetadataRow label="Merge SHA" value={mergeSha} />
         <MetadataRow label="Finalized" value={finalizedAt} />
         <MetadataRow label="Session" value={sessionId ?? null} />
@@ -2247,10 +2250,6 @@ export function AuthQueueView({
     [dismissConfirmId, handleDismiss],
   );
 
-  // Bug: 544ce35 — dependency warning modal state: tracks the request ID
-  // we're about to approve when it has an incomplete dependency.
-  const [pendingApproveId, setPendingApproveId] = useState<string | null>(null);
-
   const [rejectConfirmId, setRejectConfirmId] = useState<string | null>(null);
   const rejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -2765,26 +2764,24 @@ export function AuthQueueView({
       );
     }
 
-    // Bug: 544ce35 — check dependency before approving; show warning modal if incomplete
-    const handleApproveClick = () => {
-      if (
-        request.depends_on_id &&
-        request.depends_on_status !== 'completed'
-      ) {
-        setPendingApproveId(id);
-        return;
-      }
-      handleApprove(id);
-    };
+    const dependencyBlocked = Boolean(
+      request.depends_on_id && !isAuthDependencyReady(request.dependency),
+    );
+    const dependencyState = request.dependency?.state ?? 'unavailable';
     return (
       <div className="auth-actions">
         <button
           type="button"
           className="btn btn--success"
-          onClick={handleApproveClick}
-          disabled={actionDisabled || mutationsBlocked}
+          onClick={() => {
+            if (!dependencyBlocked) handleApprove(id);
+          }}
+          disabled={actionDisabled || mutationsBlocked || dependencyBlocked}
+          title={dependencyBlocked
+            ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
+            : undefined}
         >
-          Approve
+          {dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>
         <button
           type="button"
@@ -3074,66 +3071,6 @@ export function AuthQueueView({
           );
         })()}
 
-        {/* Bug: 544ce35 — Dependency warning modal overlay (scoped to detail panel) */}
-        {pendingApproveId && (() => {
-          const pendingRequest = queue.find((r) => getAuthId(r) === pendingApproveId)
-            ?? (historyQueue ?? []).find((r) => getAuthId(r) === pendingApproveId);
-          if (!pendingRequest) return null;
-          const depId = pendingRequest.depends_on_id;
-          const depStatus = pendingRequest.depends_on_status ?? 'unknown';
-          const depHash = depId ? depId.slice(0, 8) : '';
-          return (
-            <div className="auth-dep-modal-overlay" onClick={() => setPendingApproveId(null)}>
-              <div className="auth-dep-modal" onClick={(e) => e.stopPropagation()}>
-                <h3 className="auth-dep-modal__title">Dependency not completed</h3>
-                <p className="auth-dep-modal__body">
-                  This request depends on <span className="auth-dep-modal__hash">{depHash}</span>{' '}
-                  which is currently <span className={`auth-dep-modal__status auth-dep-modal__status--${depStatus}`}>{depStatus}</span>.
-                  Approving out of order may cause merge conflicts or broken builds.
-                </p>
-                <div className="auth-dep-modal__actions">
-                  <button
-                    type="button"
-                    className="btn btn--warning"
-                    onClick={() => {
-                      const id = pendingApproveId;
-                      setPendingApproveId(null);
-                      handleApprove(id);
-                    }}
-                  >
-                    Approve anyway
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => {
-                      if (depId) {
-                        handleSelect(depId);
-                        // Scroll to the dependency in the sidebar
-                        setTimeout(() => {
-                          const el = document.querySelector(`[data-request-id="${depId}"]`);
-                          if (el) {
-                            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                          }
-                        }, 100);
-                      }
-                      setPendingApproveId(null);
-                    }}
-                  >
-                    Go to dependency
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => setPendingApproveId(null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
       </div>
     </div>
   );

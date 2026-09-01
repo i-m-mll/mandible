@@ -240,13 +240,6 @@ export function registerAuthRoutes(
       return;
     }
 
-    // Bug: 0b83252 — resolve dependency status to avoid a second round-trip from the UI
-    let dependsOnStatus: string | null = null;
-    if (request.depends_on_id) {
-      const dep = authQueue.getRequest(request.depends_on_id);
-      dependsOnStatus = dep ? dep.status : null;
-    }
-
     // Bug: 929c6d0 — include error_output: tail of executor output for failed requests
     const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
       ? tailLines(request.output, 20)
@@ -262,7 +255,7 @@ export function registerAuthRoutes(
       files_changed: request.files_changed ?? 0,
       additions: request.additions ?? 0,
       deletions: request.deletions ?? 0,
-      depends_on_status: dependsOnStatus,
+      dependency: authQueue.dependencyForRequest(request),
       error_output: errorOutput,
       signature_verification: authQueue.getSignatureVerification(request.id),
       // Issue 27241e6 — merged/convergence-complete vs pending vs failed.
@@ -397,13 +390,11 @@ export function registerAuthRoutes(
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
-    // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
     const attributionResolver = new AttributionReadResolver(getDb());
     const enriched = requests.map((r) => {
-      const dep = r.depends_on_id ? authQueue.getRequest(r.depends_on_id) : null;
       return {
         ...r,
-        depends_on_status: dep ? dep.status : null,
+        dependency: authQueue.dependencyForRequest(r),
         action_count: authQueue.countActions(r.id),
         // Issue 27241e6 — the queue row shows merged vs live, not just merged.
         convergence: authQueue.convergenceForRequest(r.id),
@@ -437,6 +428,7 @@ export function registerAuthRoutes(
     res.json({
       requests: requests.map((r) => ({
         ...r,
+        dependency: authQueue.dependencyForRequest(r),
         // Issue 27241e6 — history is where "was it actually delivered?" is
         // asked after the fact, so it carries convergence too.
         convergence: authQueue.convergenceForRequest(r.id),

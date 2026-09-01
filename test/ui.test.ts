@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import {
   appReducer,
+  authEventRequiresProjectionRefresh,
   applySSEEvent,
   initialState,
   selectBadgeCounts,
@@ -6616,6 +6617,13 @@ describe('conversation instruction message labels', () => {
 });
 
 describe('SSE handling', () => {
+  it('refetches canonical auth projections for every dependency transition event', () => {
+    expect([
+      'auth:new', 'auth:updated', 'auth:merged', 'auth:resolved', 'auth:finalized', 'auth:deleted',
+    ].every(authEventRequiresProjectionRefresh)).toBe(true);
+    expect(authEventRequiresProjectionRefresh('auth:output')).toBe(false);
+  });
+
   it('updates badge counts from SSE events', () => {
     let state = initialState;
     state = applySSEEvent(state, {
