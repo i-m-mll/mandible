@@ -245,17 +245,6 @@
   width: 100%;
 }
 
-.graph-toolbar__select {
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-10);
-  color: var(--text-primary);
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-family: var(--font-sans);
-  cursor: pointer;
-}
-
 .graph-toolbar__combobox-group {
   display: flex;
   flex-direction: column;

@@ -480,7 +480,7 @@
   color: var(--text-muted, #9a9a9a);
 }
 
-.space-canvas__input {
+.space-canvas__input:is(input) {
   width: 100%;
   border: 1px solid var(--border, #2a2a2a);
   border-radius: 6px;
@@ -488,6 +488,11 @@
   color: var(--text-primary);
   padding: 6px 8px;
   font: inherit;
+}
+
+select.space-canvas__input {
+  width: 100%;
+  min-height: 32px;
 }
 
 .space-canvas__edge-actions {

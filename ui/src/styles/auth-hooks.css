@@ -88,8 +88,12 @@
   letter-spacing: 0.5px;
 }
 
+.auth-hooks-panel__form-row select {
+  width: 100%;
+  min-height: 32px;
+}
+
 .auth-hooks-panel__form-row input,
-.auth-hooks-panel__form-row select,
 .auth-hooks-panel__form-row textarea {
   width: 100%;
   padding: 6px 10px;

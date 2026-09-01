@@ -1,0 +1,43 @@
+select {
+  box-sizing: border-box;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 8px;
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  font: 13px/1.2 var(--font-sans);
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+select:not([multiple]) {
+  appearance: none;
+  padding: 0 38px 0 10px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 21px) 50%,
+    calc(100% - 17px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+}
+
+select[multiple] {
+  padding: 8px 10px;
+}
+
+select:focus {
+  border-color: var(--accent-blue);
+}
+
+select:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

@@ -80,8 +80,11 @@
   color: var(--text-muted);
 }
 
-.spaces-tree__chooser-field input,
 .spaces-tree__chooser-select {
+  min-height: 30px;
+}
+
+.spaces-tree__chooser-field input {
   padding: 0.35rem 0.5rem;
   font-size: 0.8rem;
   color: var(--text-primary);
