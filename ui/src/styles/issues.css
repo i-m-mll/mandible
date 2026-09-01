@@ -50,8 +50,12 @@
   padding: 0;
 }
 
-.artifacts-advanced__input,
 .artifacts-advanced__field select {
+  width: 100%;
+  min-height: 34px;
+}
+
+.artifacts-advanced__input {
   width: 100%;
   background: var(--bg-primary);
   border: 1px solid var(--neutral-alpha-08);

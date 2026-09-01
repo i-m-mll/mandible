@@ -381,7 +381,7 @@
   color: var(--text-muted);
 }
 
-.new-session-dialog__input {
+.new-session-dialog__input:is(input) {
   background: var(--bg-secondary);
   border: 1px solid var(--neutral-alpha-10);
   border-radius: 10px;
@@ -390,6 +390,10 @@
   font-size: 14px;
   font-family: var(--font-sans);
   outline: none;
+}
+
+select.new-session-dialog__input {
+  min-height: 40px;
 }
 
 .new-session-dialog__options {
@@ -826,7 +830,10 @@
   font-size: 12px;
 }
 
-.session-controls__select,
+.session-controls__select {
+  min-height: 38px;
+}
+
 .session-controls__input {
   min-height: 38px;
   background: var(--bg-page);
@@ -1844,10 +1851,6 @@
 .session-controls__select--compact {
   width: min(220px, 30vw);
   min-height: 30px;
-  border-radius: 6px;
-  background: var(--surface-muted);
-  font-size: var(--text-sm);
-  padding: 4px 28px 4px 8px;
 }
 
 @media (max-width: 720px) {

@@ -334,18 +334,8 @@
 
 .settings-view__select {
   min-width: 180px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-08);
-  color: var(--text-primary);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-family: var(--font-sans);
-  font-size: 13px;
+  min-height: 32px;
   flex-shrink: 0;
-}
-
-.settings-view__select:disabled {
-  opacity: 0.6;
 }
 
 .settings-view__select--compact {

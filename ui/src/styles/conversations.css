@@ -49,13 +49,7 @@
 }
 
 .conv-sort {
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-08);
-  color: var(--text-primary);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-family: var(--font-sans);
-  font-size: 13px;
+  min-height: 32px;
 }
 
 .conv-filter-btn {
@@ -544,13 +538,7 @@
 .conv-compose__model {
   min-width: 120px;
   max-width: 220px;
-  background: transparent;
-  border: 1px solid var(--neutral-alpha-08);
-  border-radius: 7px;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  padding: 4px 8px;
+  min-height: 30px;
 }
 
 .conv-compose__controls {
