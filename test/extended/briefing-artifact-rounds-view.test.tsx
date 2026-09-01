@@ -1070,7 +1070,7 @@ describe('artifact-backed Briefing rounds', () => {
         responder_user_ids: [humanId],
         evidence: { series_ref: 'artifact-series:typed-ui-roundtrip', version: ordinal, digest: String(ordinal).repeat(64) },
         source_health: { source: 'arxiv-scan', status: 'healthy', detail: null, observed_at: ordinal },
-        document: { markdown: TYPED_SOURCE }, quiet_reason: null,
+        document: { markdown: ordinal === 1 ? TYPED_SOURCE : `${TYPED_SOURCE}\n\nRun ${ordinal}.` }, quiet_reason: null,
         occurrences: TYPED_DIRECTIVES.map((directive, index) => ({
           directive_key: directive.key, evidence_digest: (index + ordinal).toString(16).slice(-1).repeat(64), occurred_at: ordinal, metadata: {},
         })),

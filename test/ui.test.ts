@@ -5887,7 +5887,8 @@ describe('ArtifactsView', () => {
     expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
     expect(css).not.toMatch(/\.artifact-preview\.spec-panel\s*\{/);
-    expect(css).toMatch(/\.detail-pane-header :is\(button, select, a\):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
+    expect(css).toMatch(/\.detail-pane-header :is\(button, a\):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
+    expect(css).toMatch(/select:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     expect(css).not.toMatch(/\.artifact-detail__copy-button/);
   });
 
