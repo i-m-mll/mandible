@@ -46,6 +46,8 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerUserSettingsRoutes } from "./routes/user-settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { registerConversationControlRoutes } from "./routes/conversation-control.js";
+import { ConversationControlService } from "./conversation-control/service.js";
 import { registerConversationCustodyRoutes } from "./routes/conversation-custody.js";
 import { WorkScanner } from "./work-scanner.js";
 import { registerConsoleRoutes } from "./routes/console.js";
@@ -288,6 +290,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     undefined,
     clientAuth,
   );
+  const conversationControl = new ConversationControlService(db, {
+    onChange: (snapshot) => broadcast({
+      type: "conversation:control-updated",
+      event: "conversation:control-updated",
+      data: snapshot,
+    }),
+  });
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
@@ -323,6 +332,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
+  registerConversationControlRoutes(router, conversationControl);
   registerConversationCustodyRoutes(router, db);
 
   try {
@@ -419,6 +429,12 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     sessionManager.init({ readOnly: !operationalMutationsAllowed });
   } catch (error) {
     logger("warn", "session_manager_init_failed", { error: String(error) });
+  }
+  if (operationalMutationsAllowed) {
+    const reconciliation = await conversationControl.reconcileAfterRestart();
+    if (reconciliation.errors.length > 0) {
+      logger("warn", "conversation_control_reconciliation_errors", reconciliation);
+    }
   }
 
   // Self-health-check: periodically verify the server is still accepting
@@ -629,6 +645,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
 
     try { sessionManager.close(); } catch { /* best effort */ }
+    try {
+      await conversationControl.close();
+    } catch (error) {
+      logger("warn", "conversation_control_close_failed", { error: String(error) });
+    }
     wss.close();
     sse.closeAll();
     await stopIngestionGracefully();

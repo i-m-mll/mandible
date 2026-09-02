@@ -1,5 +1,6 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
+import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -515,6 +516,11 @@ export const MIGRATIONS: readonly Migration[] = [
           SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
         END`,
     ],
+  },
+  {
+    version: 163,
+    name: "authoritative_conversation_control",
+    statements: [...CONVERSATION_CONTROL_SCHEMA_SQL],
   },
 ];
 
