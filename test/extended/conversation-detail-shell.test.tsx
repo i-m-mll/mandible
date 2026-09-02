@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
+import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
   conversationAnchorFromHash,
@@ -153,11 +154,11 @@ function mockConversationDetail(
   return scopedConversation;
 }
 
-function renderConversationDetail(scopedConversation: Conversation): void {
+function renderConversationDetail(scopedConversation: Conversation, consoleSessions: ConsoleSession[] = []): void {
   render(
     <ConversationsView
       conversations={[scopedConversation]}
-      consoleSessions={[]}
+      consoleSessions={consoleSessions}
       initialConversationId={scopedConversation.id}
       initialSessionId={null}
       onSelectSession={() => undefined}
@@ -352,9 +353,13 @@ describe('compact detail pane shell', () => {
     expect(body?.querySelector('.context-usage')).toBeNull();
     expect(shell?.querySelectorAll('.context-usage')).toHaveLength(1);
     const runtime = footer?.querySelector('.conv-compose__runtime');
-    expect(runtime?.firstElementChild).toBe(screen.getByRole('combobox', { name: 'Model' }));
-    expect(runtime?.lastElementChild?.classList.contains('conv-compose__runtime-actions')).toBe(true);
-    expect(runtime?.lastElementChild?.lastElementChild?.classList.contains('context-usage')).toBe(true);
+    const runtimeLeading = runtime?.firstElementChild;
+    const runtimeActions = runtime?.lastElementChild;
+    expect(runtimeLeading?.classList.contains('conv-compose__runtime-leading')).toBe(true);
+    expect(runtimeActions?.classList.contains('conv-compose__runtime-actions')).toBe(true);
+    expect(runtimeActions?.firstElementChild?.classList.contains('context-usage')).toBe(true);
+    expect(runtimeActions?.querySelector('.conv-compose__model')).toBe(screen.getByRole('combobox', { name: 'Model' }));
+    expect(runtimeActions?.lastElementChild?.classList.contains('conv-compose__send')).toBe(true);
     expect(footer?.querySelector('.conv-compose__hint')).toBeNull();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
     expect(footer?.textContent).not.toContain('Sending will resume this session.');
@@ -387,6 +392,75 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Message filters' }));
     expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
+  });
+
+  it('places provider-neutral permission and effort controls around the composer runtime actions', async () => {
+    const linkedSession: ConsoleSession = {
+      id: 'console-codex-1',
+      label: 'Codex session',
+      agent_type: 'codex',
+      interaction_mode: 'direct',
+      pinned: false,
+      status: 'stopped',
+      is_operator: false,
+      provider_session_id: conversation.session_id,
+      unread_count: 0,
+      created_at: 1,
+      started_at: 1,
+      stopped_at: 2,
+      backend_type: 'acp',
+      transport_lane: 'acp',
+    };
+    const runOptions: api.SessionRunOptionsSnapshot = {
+      backendType: 'acp',
+      command: 'codex',
+      phase: 'ready',
+      revision: 1,
+      options: [
+        {
+          id: 'model', label: 'Model', category: 'model', kind: 'select', nullable: false, source: 'provider',
+          availability: 'available', currentValue: 'gpt-5.6-sol', allowedValues: [{ value: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }],
+          enforcement: { status: 'enforced', owner: 'provider', effectiveFrom: 'next_prompt' },
+        },
+        {
+          id: 'reasoning_effort', label: 'Reasoning effort', category: 'thought_level', kind: 'select', nullable: false, source: 'provider',
+          availability: 'available', currentValue: 'medium', allowedValues: [{ value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }],
+          enforcement: { status: 'enforced', owner: 'provider', effectiveFrom: 'next_prompt' },
+        },
+        {
+          id: 'mode', label: 'Mode', category: 'mode', kind: 'select', nullable: false, source: 'provider',
+          availability: 'available', currentValue: 'agent', allowedValues: [{ value: 'read-only', label: 'Read only' }, { value: 'agent', label: 'Agent' }],
+          enforcement: { status: 'enforced', owner: 'provider', effectiveFrom: 'next_prompt' },
+        },
+      ],
+    };
+    vi.spyOn(api, 'getConsoleSessionUsage').mockResolvedValue([]);
+    vi.spyOn(api, 'getConsoleSessionOptions').mockResolvedValue({ runOptions, mandibleControls: { allowedTools: null } });
+    vi.spyOn(api, 'updateConsoleSessionOptions').mockResolvedValue({ runOptions });
+    const ownedControl: ConversationControlSnapshot = {
+      ...defaultControl,
+      ownership: {
+        kind: 'mandible', generation: 1, controller_instance_id: 'controller-1', adapter_id: 'codex',
+        provider_session_id: conversation.session_id, last_authoritative_signal: 2,
+      },
+    };
+    const scopedConversation = mockConversationDetail(ownedControl);
+    renderConversationDetail(scopedConversation, [linkedSession]);
+
+    const permission = await screen.findByRole('combobox', { name: 'Permission mode' });
+    const effort = screen.getByRole('combobox', { name: 'Reasoning effort' });
+    const model = screen.getByRole('combobox', { name: 'Model' });
+    const runtime = document.querySelector('.conv-compose__runtime');
+    const leading = runtime?.querySelector('.conv-compose__runtime-leading');
+    const actions = runtime?.querySelector('.conv-compose__runtime-actions');
+    expect(leading?.contains(permission)).toBe(true);
+    expect(actions?.children[0]?.classList.contains('context-usage')).toBe(true);
+    expect(actions?.children[1]).toBe(model);
+    expect(actions?.children[2]).toBe(effort);
+    expect(actions?.children[3]?.classList.contains('conv-compose__send')).toBe(true);
+
+    expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['read-only', 'agent']);
+    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['medium', 'high']);
   });
 
   it('clamps the Chat header menu and dismisses with Escape, outside click, and focus restoration', async () => {
