@@ -70,7 +70,7 @@ describe('shared sidebar group presentation', () => {
     expect(projects.querySelector('em')).toBeNull();
     expect(projects.closest('section')?.classList.contains('sidebar-group-node--category')).toBe(true);
     expect(projects.closest('section')?.classList.contains('sidebar-group-node--without-count')).toBe(true);
-    const project = screen.getByRole('button', { name: /Mandible/ });
+    const project = screen.getByRole('button', { name: /^Mandible/ });
     const projectSection = project.closest('section');
     expect(projectSection?.classList.contains('sidebar-group-node--folder')).toBe(true);
     expect(projectSection?.classList.contains('sidebar-group-node--with-icon')).toBe(true);
@@ -130,11 +130,11 @@ describe('shared sidebar group presentation', () => {
     const heading = section.querySelector('.sidebar-group-node__heading') as HTMLElement;
     const disclosure = section.querySelector('.sidebar-group-node__disclosure') as HTMLElement;
     expect(Array.from(header.children)).toEqual([heading, disclosure]);
-    const selectableRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--selectable > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
+    const headingRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(selectableRule).toContain('flex: 0 1 auto');
-    expect(selectableRule).toContain('width: auto');
+    expect(headingRule).toContain('flex: 0 1 auto');
+    expect(headingRule).toContain('width: auto');
   });
 
   it('aligns category children and Show more to the heading text column without guide spines', () => {

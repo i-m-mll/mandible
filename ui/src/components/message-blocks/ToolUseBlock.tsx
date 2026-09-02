@@ -197,6 +197,11 @@ function ResultBody({ result, commandLike }: {
   );
 }
 
+function hasVisibleResult(result: ToolResultContentBlock): boolean {
+  const text = result.fullText ?? extractResultText(result.content);
+  return Boolean(text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
+}
+
 function JsonInputPanel({ input }: { input: Record<string, unknown> | string }): JSX.Element {
   return (
     <div className="tool-card__input">
@@ -358,7 +363,9 @@ export function ToolCard({
       {isExpanded ? (
         <div id={bodyId} role="region" aria-label={`${visual.verb} details`} className="tool-card__body">
           {renderInputPanel()}
-          {result && renderResult(<ResultBody result={result} commandLike={commandLike} />)}
+          {result && hasVisibleResult(result)
+            ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
+            : null}
         </div>
       ) : null}
     </section>

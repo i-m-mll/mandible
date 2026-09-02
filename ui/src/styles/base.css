@@ -288,6 +288,22 @@ a {
   grid-template-rows: minmax(0, 1fr) var(--app-bottom-panel-height, 340px);
 }
 
+/* In split views the bottom detail belongs only to the main pane. Overlay it
+ * there so its height never shortens the independent left ViewSidebar. */
+.app-layout--view-sidebar-open.app-layout--bottom-panel-open {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel--anchored-detail {
+  position: absolute;
+  left: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
+  right: 0;
+  bottom: 0;
+  height: var(--app-bottom-panel-active-height);
+  margin-left: 0;
+  z-index: 3;
+}
+
 .app-layout--view-sidebar-open .app-rail {
   box-shadow: none;
 }
@@ -444,6 +460,23 @@ a {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.app-rail__experimental {
+  margin-top: 19px;
+}
+
+.app-rail__experimental-header {
+  height: 19px;
+  display: flex;
+  align-items: center;
+  padding-inline: 10px;
+  color: var(--text-chrome-muted);
+}
+
+.app-layout--rail-icons .app-rail__experimental-header {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 .app-rail__footer {

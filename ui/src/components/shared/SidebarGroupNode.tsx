@@ -116,7 +116,7 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node sidebar-group-node--${presentation}${selection ? ' sidebar-group-node--selectable' : ''}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${expanded ? ' sidebar-group-node--expanded' : ''}${selection ? ' sidebar-group-node--selectable' : ''}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
       data-testid={testIds?.root}
     >
@@ -145,19 +145,17 @@ export function SidebarGroupNode({
           <strong>{label}</strong>
           {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
         </button>
-        {selection ? (
-          <button
-            id={disclosureId}
-            type="button"
-            className="sidebar-group-node__disclosure"
-            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-            aria-expanded={expanded}
-            aria-controls={bodyId}
-            onClick={onToggle}
-          >
-            <DisclosureChevronIcon expanded={expanded} />
-          </button>
-        ) : null}
+        <button
+          id={disclosureId}
+          type="button"
+          className="sidebar-group-node__disclosure"
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={onToggle}
+        >
+          <DisclosureChevronIcon expanded={expanded} />
+        </button>
         {action ? (
           <span className="sidebar-group-node__action-slot contextual-action-group">
             <ContextualAction

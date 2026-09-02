@@ -11,17 +11,6 @@ import { MessageActions } from '../shared/MessageActions';
 import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
 import { summarizeToolRun } from '../message-blocks/toolPresentation';
 
-/** Extract copyable text from a single content block. */
-function blockCopyText(block: ContentBlock): string {
-  switch (block.type) {
-    case 'text': return block.text ?? '';
-    case 'thinking': return (block as { type: 'thinking'; thinking: string }).thinking ?? '';
-    case 'plan': return (block as { type: 'plan'; text: string }).text ?? '';
-    case 'tool_use': return JSON.stringify((block as { type: 'tool_use'; input: unknown }).input, null, 2);
-    default: return '';
-  }
-}
-
 export function MessageGroup({
   turn,
   isStreaming,
@@ -114,8 +103,9 @@ export function MessageGroup({
 
     if (!inner) return null;
 
-    // Bug: 236d03b — Fix 5: Wrap each block with per-block MessageActions (copy)
-    const text = blockCopyText(block);
+    // Keep selection and provenance controls attached to their exact block.
+    // Copy lives in the shared group footer, so a second top-right copy action
+    // would duplicate the same operation and obscure message text on hover.
     const source = block.source;
     return (
       <div
@@ -125,7 +115,6 @@ export function MessageGroup({
       >
         {inner}
         <MessageActions
-          onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}
           onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
           isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
           selectMode={selectMode}
