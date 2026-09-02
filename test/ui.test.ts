@@ -2311,6 +2311,21 @@ describe('SettingsView', () => {
     }
   });
 
+  it('disables App theme without saving when operational mutations are rejected', () => {
+    const onSave = vi.fn(async () => undefined);
+
+    render(h(SettingsView, {
+      settings: { app_theme: 'system' },
+      onSave,
+      instance: previewInstance,
+    }));
+
+    const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
+    expect((themeSelect as HTMLSelectElement).disabled).toBe(true);
+    changeSelect(themeSelect, 'dark');
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('shows project restriction state and existing grants', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
