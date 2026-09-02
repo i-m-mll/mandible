@@ -5199,7 +5199,7 @@ describe('ArtifactsView', () => {
     expect(entityLink?.getAttribute('href')).toBe('#/issues?issue=abc123&repo=mandible');
   });
 
-  it('auto-formats compact JSON-like text previews with a local raw toggle', async () => {
+  it('auto-formats compact JSON-like text previews with header-owned raw state', async () => {
     const artifact = makeArtifactFixture('9', 'metrics.txt', {
       media_type: 'text/plain',
       metadata: {
@@ -5255,15 +5255,20 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
-    await waitFor(() => expect(screen.getByText('Auto-formatted JSON-like text')).toBeTruthy());
+    await waitFor(() => expect(document.querySelector('.artifact-preview code')?.textContent).toContain('\n  "loss": 0.125,'));
     expect(document.querySelector('.artifact-detail__repo')).toBeNull();
     const previewCode = document.querySelector('.artifact-preview code');
     expect(previewCode?.textContent).toContain('\n  "loss": 0.125,');
+    expect(screen.queryByText('Auto-formatted JSON-like text')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Show raw' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Formatted JSON' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Raw JSON' }));
 
     expect(document.querySelector('.artifact-preview code')?.textContent).toBe(compact);
-    expect(screen.getByRole('button', { name: 'Format' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Raw JSON' }).getAttribute('aria-checked')).toBe('true');
   });
 
   it('renders standalone managed HTML previews when legacy artifact history is absent', async () => {
@@ -5888,7 +5893,7 @@ describe('ArtifactsView', () => {
       ),
     );
     const canonicalLightArtifactPreviewRules = lightArtifactPreviewRules.filter((rule) =>
-      rule.selectors.includes("[data-theme='light'] .artifact-preview"),
+      rule.selectors.includes("[data-theme='light'] .artifact-preview:not(.artifact-preview--code)"),
     );
     expect(canonicalLightArtifactPreviewRules.some((rule) =>
       /background:\s*var\(--bg-card\)/.test(rule.body),
@@ -5899,6 +5904,12 @@ describe('ArtifactsView', () => {
       );
     }
     expect(css).not.toMatch(/\.artifact-preview-frame/);
+    const codePreviewRule = ruleBody(css, ':root[data-theme] .artifact-preview--code');
+    expect(codePreviewRule).toContain('background: transparent');
+    expect(codePreviewRule).toContain('color: var(--text-primary)');
+    expect(codePreviewRule).toContain('font-family: var(--font-mono)');
+    expect(codePreviewRule).toContain('padding: var(--space-3) 0');
+    expect(css).not.toMatch(/\.artifact-preview--code[^}]*color:\s*#/s);
     expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
     expect(css).not.toMatch(/\.artifact-preview\.spec-panel\s*\{/);
