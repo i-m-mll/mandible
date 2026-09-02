@@ -1,7 +1,7 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
-import { BRIEFING_COMPOSER_SCHEMA_SQL } from "./feedback/schema.js";
+import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -555,6 +555,12 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 166,
     name: "task_activation_health",
     statements: [...TASK_ACTIVATION_SCHEMA_SQL],
+  },
+  {
+    version: 167,
+    name: "human_reviewed_briefing_group_disposition",
+    statements: BRIEFING_GROUP_SCHEMA_SQL.filter((statement) =>
+      statement.includes("briefing_group_review_disposition")),
   },
 ];
 

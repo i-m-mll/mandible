@@ -4310,17 +4310,49 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  reviewCandidates?: BriefingGroupReviewCandidate[];
   history?: BriefingGroupDisposition[];
+};
+
+export type BriefingGroupReviewItem = {
+  position: number;
+  layoutPosition: number;
+  subgroupPosition: number;
+  proposalBriefingId: string;
+  proposalRoundId: string;
+  proposalArtifactVersionId: string;
+  proposalContentHash: string;
+  baseBriefingId: string | null;
+  baseRoundId: string | null;
+  baseArtifactVersionId: string | null;
+  baseContentHash: string | null;
+  changed: boolean;
+  submissionId: string | null;
+};
+
+export type BriefingGroupReviewCandidate = {
+  proposalBundleId: string;
+  expectedBaseBundleId: string | null;
+  compositionRunId: string | null;
+  bindingDigest: string | null;
+  ready: boolean;
+  blockerCode: string | null;
+  blockerMessage: string | null;
+  items: BriefingGroupReviewItem[];
 };
 
 export type BriefingGroupDisposition = {
   id: string;
-  kind: 'promoted' | 'dismissed';
+  kind: 'promoted' | 'dismissed' | 'accepted' | 'rejected';
   priorBase: BriefingBundle | null;
   proposal: BriefingBundle;
   resultingBase: BriefingBundle | null;
   authRequestId: string | null;
   mergeHeadSha: string | null;
+  reviewBindingDigest?: string | null;
+  compositionRunId?: string | null;
+  reviewItems?: BriefingGroupReviewItem[];
+  actorUserId?: string | null;
   createdAt: number;
 };
 
@@ -4394,13 +4426,58 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
     const updates = (Array.isArray(group.updates) ? group.updates : [])
       .map(normalizeBriefingBundle)
       .filter((update): update is BriefingBundle => update !== null);
+    const parseReviewItem = (entry: unknown): BriefingGroupReviewItem | null => {
+      const row = briefingRecord(entry);
+      const position = briefingOptionalNumber(row.position);
+      const layoutPosition = briefingOptionalNumber(row.layout_position);
+      const subgroupPosition = briefingOptionalNumber(row.subgroup_position);
+      const proposalBriefingId = briefingString(row.proposal_briefing_id);
+      const proposalRoundId = briefingString(row.proposal_round_id);
+      const proposalArtifactVersionId = briefingString(row.proposal_artifact_version_id);
+      const proposalContentHash = briefingString(row.proposal_content_hash);
+      if (position === null || layoutPosition === null || subgroupPosition === null
+          || !proposalBriefingId || !proposalRoundId || !proposalArtifactVersionId || !proposalContentHash) return null;
+      return {
+        position,
+        layoutPosition,
+        subgroupPosition,
+        proposalBriefingId,
+        proposalRoundId,
+        proposalArtifactVersionId,
+        proposalContentHash,
+        baseBriefingId: briefingOptionalString(row.base_briefing_id),
+        baseRoundId: briefingOptionalString(row.base_round_id),
+        baseArtifactVersionId: briefingOptionalString(row.base_artifact_version_id),
+        baseContentHash: briefingOptionalString(row.base_content_hash),
+        changed: row.changed === true,
+        submissionId: briefingOptionalString(row.submission_id),
+      };
+    };
+    const reviewCandidates = (Array.isArray(group.review_candidates) ? group.review_candidates : [])
+      .map((entry): BriefingGroupReviewCandidate | null => {
+        const row = briefingRecord(entry);
+        const proposalBundleId = briefingString(row.proposal_bundle_id);
+        const items = (Array.isArray(row.items) ? row.items : []).map(parseReviewItem)
+          .filter((item): item is BriefingGroupReviewItem => item !== null);
+        return proposalBundleId ? {
+          proposalBundleId,
+          expectedBaseBundleId: briefingOptionalString(row.expected_base_bundle_id),
+          compositionRunId: briefingOptionalString(row.composition_run_id),
+          bindingDigest: briefingOptionalString(row.binding_digest),
+          ready: row.ready === true,
+          blockerCode: briefingOptionalString(row.blocker_code),
+          blockerMessage: briefingOptionalString(row.blocker_message),
+          items,
+        } : null;
+      }).filter((entry): entry is BriefingGroupReviewCandidate => entry !== null);
     const history = (Array.isArray(group.history) ? group.history : []).map((entry): BriefingGroupDisposition | null => {
       const row = briefingRecord(entry);
       const dispositionId = briefingString(row.id);
       const priorBase = row.prior_base == null ? null : normalizeBriefingBundle(row.prior_base);
       const proposal = normalizeBriefingBundle(row.proposal);
       const resultingBase = row.resulting_base == null ? null : normalizeBriefingBundle(row.resulting_base);
-      const kind = row.kind === 'promoted' || row.kind === 'dismissed' ? row.kind : null;
+      const kind = row.kind === 'promoted' || row.kind === 'dismissed'
+        || row.kind === 'accepted' || row.kind === 'rejected' ? row.kind : null;
       return dispositionId && kind && proposal ? {
         id: dispositionId,
         kind,
@@ -4409,6 +4486,11 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
         resultingBase,
         authRequestId: briefingOptionalString(row.auth_request_id),
         mergeHeadSha: briefingOptionalString(row.merge_head_sha),
+        reviewBindingDigest: briefingOptionalString(row.review_binding_digest),
+        compositionRunId: briefingOptionalString(row.composition_run_id),
+        reviewItems: (Array.isArray(row.review_items) ? row.review_items : []).map(parseReviewItem)
+          .filter((item): item is BriefingGroupReviewItem => item !== null),
+        actorUserId: briefingOptionalString(row.actor_user_id),
         createdAt: briefingOptionalNumber(row.created_at) ?? 0,
       } : null;
     }).filter((entry): entry is BriefingGroupDisposition => entry !== null);
@@ -4420,6 +4502,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      reviewCandidates,
       history,
     } : null;
   }).filter((group): group is BriefingGroup => group !== null);
@@ -4465,6 +4548,34 @@ export async function getBriefingGroups(signal?: AbortSignal): Promise<BriefingG
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(BRIEFING_GROUPS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
   return normalizeBriefingGroups(payload);
+}
+
+export async function dispositionBriefingGroupProposal(
+  groupId: string,
+  input: {
+    decision: 'accepted' | 'rejected';
+    expectedBaseBundleId: string;
+    proposalBundleId: string;
+    bindingDigest: string;
+  },
+): Promise<{ group: BriefingGroup; disposition: BriefingGroupDisposition; changed: boolean }> {
+  const response = await apiPost(`/api/briefing-groups/${encodeURIComponent(groupId)}/review-dispositions`, {
+    decision: input.decision,
+    expected_base_bundle_ref: input.expectedBaseBundleId,
+    proposal_bundle_ref: input.proposalBundleId,
+    binding_digest: input.bindingDigest,
+  });
+  const root = briefingRecord(await parseMaybeJson(response));
+  const group = normalizeBriefingGroups({ groups: [root.group] })[0];
+  const rawDisposition = briefingRecord(root.disposition);
+  const disposition = group?.history?.find((entry) => entry.id === briefingString(rawDisposition.id));
+  if (!group || !disposition || typeof root.changed !== 'boolean') {
+    throw new Error('The Briefing proposal disposition response is invalid.');
+  }
+  invalidateApiGetCache(BRIEFING_GROUPS_PATH);
+  invalidateApiGetCache('/api/dashboard/badges');
+  getJsonCache.delete(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY);
+  return { group, disposition, changed: root.changed };
 }
 
 const BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY = cacheKeyForGet(
