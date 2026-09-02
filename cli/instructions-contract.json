@@ -1,7 +1,11 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 11,
+  "version": 12,
   "commands": [
+    {
+      "name": "mandible changes --project <ref> [--cursor <cursor>] [--limit <1-200>] [--schema mandible-ledger-change-feed@1] [--json]",
+      "description": "Read the bounded project-scoped ledger change feed. Omit --cursor only to establish a controlled resync point, then persist and reuse next_cursor. Retention gaps, truncation, schema mismatch, and inconsistent cursors fail closed."
+    },
     {
       "name": "mandible issue report <id> [--json]",
       "description": "Print deterministic issue context for handoff and planning."

@@ -69,6 +69,8 @@ describe("ledger schema", () => {
     expect(tables.map((row) => row.name)).toEqual([
       "ledger_auth_issue_links",
       "ledger_body_revisions",
+      "ledger_change_feed_state",
+      "ledger_change_log",
       "ledger_comments",
       "ledger_commit_issue_links",
       "ledger_events",
