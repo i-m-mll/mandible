@@ -1,0 +1,243 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type {
+  AdapterProbe,
+  ConversationControllerAdapter,
+  ControllerAcquisitionRequest,
+  ControllerAdapterCapabilities,
+} from "../src/conversation-control/adapter.js";
+import { ConversationControlService } from "../src/conversation-control/service.js";
+import { ConversationControlStore } from "../src/conversation-control/store.js";
+import type {
+  ConversationControlError,
+  ConversationLifecycleEvent,
+  ConversationOutboxItem,
+  Result,
+} from "../src/conversation-control/types.js";
+import { migrate, openDb, type Db } from "../src/db.js";
+
+const capabilities: ControllerAdapterCapabilities = {
+  resume_provider_session: true,
+  resume_message_anchor: false,
+  send: true,
+  steer: true,
+  queue: true,
+  stop: true,
+};
+
+class FakeAdapter implements ConversationControllerAdapter {
+  readonly id = "fake-codex";
+  readonly provider = "codex";
+  readonly capabilities = capabilities;
+  acquisitions = 0;
+  deliveries = 0;
+  delivered = new Set<string>();
+  deliveryProbe: "delivered" | "not-delivered" | "unknown" = "unknown";
+  probeResult: AdapterProbe = {
+    kind: "owned",
+    controller_instance_id: "controller-1",
+    provider_session_id: "provider-1",
+    state: "ready",
+  };
+  private listeners = new Set<(event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>>();
+
+  async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string }, ConversationControlError>> {
+    this.acquisitions += 1;
+    return {
+      ok: true,
+      value: {
+        controller_instance_id: input.controller_instance_id,
+        provider_session_id: input.kind === "start" ? "provider-1" : input.provider_session_id,
+      },
+    };
+  }
+
+  async deliver(item: ConversationOutboxItem): Promise<Result<{ provider_receipt_id: string }, ConversationControlError>> {
+    if (!this.delivered.has(item.id)) {
+      this.deliveries += 1;
+      this.delivered.add(item.id);
+    }
+    return { ok: true, value: { provider_receipt_id: `receipt:${item.id}` } };
+  }
+
+  async probe(): Promise<Result<AdapterProbe, ConversationControlError>> {
+    return { ok: true, value: this.probeResult };
+  }
+
+  async probeDelivery(): Promise<Result<"delivered" | "not-delivered" | "unknown", ConversationControlError>> {
+    return { ok: true, value: this.deliveryProbe };
+  }
+
+  async stop(): Promise<Result<void, ConversationControlError>> {
+    return { ok: true, value: undefined };
+  }
+
+  subscribe(listener: (event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(event: ConversationLifecycleEvent & { conversation_id: string; generation: number }): Result<void, ConversationControlError>[] {
+    return [...this.listeners].map((listener) => listener(event));
+  }
+
+  async close(): Promise<void> {}
+}
+
+let root = "";
+let db: Db;
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-control-"));
+  db = openDb(path.join(root, "mandible.db"));
+  migrate(db);
+  db.prepare(`INSERT INTO conversations (
+    id, source, source_path, source_hash, source_mtime, title, started_at,
+    block_count, session_id, created_at, updated_at
+  ) VALUES ('conversation-1', 'codex', '/tmp/transcript.jsonl', 'hash', 1, 'Test',
+    '2026-01-01T00:00:00Z', 0, 'provider-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
+});
+
+afterEach(() => {
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+function request(revision: number, idempotencyKey: string, generation = 0) {
+  return {
+    conversation_id: "conversation-1",
+    operation: "resume-provider-session" as const,
+    expected_revision: revision,
+    expected_generation: generation,
+    message: "hello",
+    idempotency_key: idempotencyKey,
+  };
+}
+
+describe("authoritative conversation control", () => {
+  it("does not derive control or capability from transcript activity", () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const before = service.getSnapshot("conversation-1");
+    expect(before.ok && before.value.capability.kind).toBe("provider-session-resume");
+
+    db.prepare("UPDATE conversations SET source_mtime = ?, ended_at = ? WHERE id = ?")
+      .run(Date.now(), null, "conversation-1");
+
+    expect(service.getSnapshot("conversation-1")).toEqual(before);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_control_state").get()).toEqual({ count: 0 });
+  });
+
+  it("atomically accepts one of two simultaneous submissions", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const initial = service.getSnapshot("conversation-1");
+    expect(initial.ok).toBe(true);
+    const revision = initial.ok ? initial.value.revision : -1;
+
+    const [first, second] = await Promise.all([
+      service.submit(request(revision, "request-a")),
+      service.submit(request(revision, "request-b")),
+    ]);
+
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    const refused = first.ok ? second : first;
+    expect(refused.ok ? null : refused.error.kind).toBe("capability-drift");
+    expect(adapter.acquisitions).toBe(1);
+    expect(adapter.deliveries).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_control_outbox").get()).toEqual({ count: 1 });
+
+    const acceptedRequest = first.ok ? request(revision, "request-a") : request(revision, "request-b");
+    const retried = await service.submit(acceptedRequest);
+    expect(retried.ok).toBe(true);
+    expect(adapter.acquisitions).toBe(1);
+    expect(adapter.deliveries).toBe(1);
+  });
+
+  it("rejects every lifecycle mutation from a stale fencing generation", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const first = await service.submit(request(0, "request-a"));
+    expect(first.ok).toBe(true);
+    const firstGeneration = first.ok ? first.value.snapshot.ownership.generation : -1;
+    expect((await service.stop("conversation-1", firstGeneration)).ok).toBe(true);
+    const released = service.getSnapshot("conversation-1");
+    const second = await service.submit(request(
+      released.ok ? released.value.revision : -1,
+      "request-b",
+      released.ok ? released.value.ownership.generation : -1,
+    ));
+    expect(second.ok).toBe(true);
+    const secondGeneration = second.ok ? second.value.snapshot.ownership.generation : -1;
+    expect(secondGeneration).toBeGreaterThan(firstGeneration);
+
+    const [stale] = adapter.emit({
+      conversation_id: "conversation-1",
+      generation: firstGeneration,
+      kind: "turn-completed",
+      turn_id: "stale-turn",
+      at: Date.now(),
+    });
+    expect(stale).toEqual({
+      ok: false,
+      error: { kind: "stale-generation", expected_generation: firstGeneration, actual_generation: secondGeneration },
+    });
+    expect(await service.stop("conversation-1", firstGeneration)).toEqual(stale);
+    expect(new ConversationControlStore(db).release("conversation-1", firstGeneration)).toEqual(stale);
+  });
+
+  it("reconciles an unprovable restart claim to unknown instead of free", async () => {
+    const running = new ConversationControlService(db);
+    running.registerAdapter(new FakeAdapter());
+    expect((await running.submit(request(0, "request-a"))).ok).toBe(true);
+
+    const restarted = new ConversationControlService(db);
+    await restarted.reconcileAfterRestart();
+    const snapshot = restarted.getSnapshot("conversation-1");
+    expect(snapshot.ok && snapshot.value.ownership).toMatchObject({
+      kind: "unknown",
+      prior_owner: "mandible",
+      reason: "adapter-unavailable",
+    });
+    expect(snapshot.ok && snapshot.value.capability.kind).toBe("blocked-ownership-unknown");
+  });
+
+  it("uses the adapter delivery probe before resolving an in-flight restart", async () => {
+    const store = new ConversationControlStore(db);
+    const prepared = store.prepareSubmission(request(0, "request-a"), capabilities, "fake-codex");
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const generation = prepared.value.snapshot.ownership.generation;
+    expect(store.publishAcquired("conversation-1", generation, "controller-1", "provider-1").ok).toBe(true);
+    expect(store.beginDelivery(prepared.value.delivery_id).ok).toBe(true);
+
+    const adapter = new FakeAdapter();
+    adapter.deliveryProbe = "delivered";
+    const restarted = new ConversationControlService(db);
+    restarted.registerAdapter(adapter);
+    await restarted.reconcileAfterRestart();
+
+    expect(adapter.deliveries).toBe(0);
+    expect(db.prepare("SELECT state FROM conversation_control_outbox WHERE id = ?").get(prepared.value.delivery_id))
+      .toEqual({ state: "delivered" });
+  });
+
+  it("blocks external ownership without exposing transcript-derived escape paths", () => {
+    const service = new ConversationControlService(db);
+    service.registerAdapter(new FakeAdapter());
+    expect(service.recordExternalOwnership("conversation-1", {
+      kind: "registered-channel",
+      reference: "channel-registration-1",
+    }).ok).toBe(true);
+    const snapshot = service.getSnapshot("conversation-1");
+    expect(snapshot.ok && snapshot.value.capability).toMatchObject({
+      kind: "blocked-external",
+      evidence_kind: "registered-channel",
+    });
+  });
+});
