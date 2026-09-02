@@ -29,6 +29,7 @@ export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   // dashboards need it to exchange their one-time bootstrap proof before any
   // identity-scoped reads can succeed.
   "POST /api/client-auth/handshake",
+  "POST /api/briefing-destination-routes/plan",
   "POST /api/timeline/project",
 ]);
 
@@ -42,6 +43,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/auth", category: "auth" },
   { prefix: "/api/backup", category: "backup" },
   { prefix: "/api/briefing-bundles", category: "briefing" },
+  { prefix: "/api/briefing-destination-routes", category: "briefing" },
   { prefix: "/api/briefing-groups", category: "briefing" },
   { prefix: "/api/briefings", category: "briefing" },
   { prefix: "/api/console", category: "console" },

@@ -10,6 +10,7 @@ import { BriefingStoreError, publishBriefingFromArtifactVersion } from "./briefi
 import { resolveGroupId } from "./briefing-groups.js";
 
 export const BRIEFING_COMPOSITION_SCHEMA = "mandible-briefing-composition@1" as const;
+export const BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA = "mandible-briefing-destination-routes@1" as const;
 
 type SlotType = "string" | "string_array" | "number" | "boolean";
 export type DestinationSlot = { type: SlotType; required?: boolean; max_length?: number; max_items?: number };
@@ -24,6 +25,57 @@ export type BriefingDestinationRouteInput = {
   contribution_template: string;
   slots: Record<string, DestinationSlot>;
   limits: { max_contributions: number; max_document_bytes: number; max_directives: number };
+};
+
+export type BriefingDestinationRouteDeclaration = Omit<
+  BriefingDestinationRouteInput,
+  "logical_artifact_id" | "template_version" | "contribution_template" | "slots"
+> & {
+  logical_artifact_ref: string;
+  template: {
+    version: number;
+    contribution_template: string;
+    slots: Record<string, DestinationSlot>;
+  };
+};
+
+export type BriefingDestinationRouteManifest = {
+  schema: typeof BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA;
+  routes: BriefingDestinationRouteDeclaration[];
+};
+
+export type BriefingDestinationRoutePlan = {
+  schema: typeof BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA;
+  changed: boolean;
+  routes: Array<{
+    route_key: string;
+    action: "create" | "update" | "unchanged";
+    group_id: string;
+    logical_artifact_id: string;
+    heading: string;
+    composer_kind: "deterministic" | "agentic";
+    active_template_version: number;
+    template_action: "create" | "reuse";
+    limits: { max_contributions: number; max_document_bytes: number; max_directives: number };
+  }>;
+};
+
+export type BriefingDestinationRouteInspection = {
+  schema: typeof BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA;
+  routes: Array<{
+    route_key: string;
+    group_id: string;
+    logical_artifact_id: string;
+    heading: string;
+    composer_kind: "deterministic" | "agentic";
+    active_template_version: number;
+    limits: { max_contributions: number; max_document_bytes: number; max_directives: number };
+    templates: Array<{
+      version: number;
+      contribution_template: string;
+      slots: Record<string, DestinationSlot>;
+    }>;
+  }>;
 };
 
 export type BriefingCompositionRequest = {
@@ -202,6 +254,53 @@ function validateSlotDefinitions(raw: Record<string, DestinationSlot>): Record<s
   return result;
 }
 
+export function parseBriefingDestinationRouteManifest(value: unknown): BriefingDestinationRouteManifest {
+  const manifest = object(value, "route manifest");
+  only(manifest, ["schema", "routes"], "route manifest");
+  if (manifest.schema !== BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA) {
+    throw new BriefingStoreError(`schema must be '${BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA}'`);
+  }
+  if (!Array.isArray(manifest.routes) || manifest.routes.length === 0) {
+    throw new BriefingStoreError("route manifest routes must be a non-empty array");
+  }
+  const routes = manifest.routes.map((raw, index) => {
+    const route = object(raw, `routes[${index}]`);
+    only(route, ["route_key", "group_ref", "logical_artifact_ref", "heading", "composer_kind", "template", "limits"],
+      `routes[${index}]`);
+    if (route.composer_kind !== "deterministic" && route.composer_kind !== "agentic") {
+      throw new BriefingStoreError(`routes[${index}].composer_kind must be deterministic or agentic`);
+    }
+    const template = object(route.template, `routes[${index}].template`);
+    only(template, ["version", "contribution_template", "slots"], `routes[${index}].template`);
+    if (typeof template.contribution_template !== "string") {
+      throw new BriefingStoreError(`routes[${index}].template.contribution_template must be a string`);
+    }
+    const limits = object(route.limits, `routes[${index}].limits`);
+    only(limits, ["max_contributions", "max_document_bytes", "max_directives"], `routes[${index}].limits`);
+    return {
+      route_key: nonblank(route.route_key, `routes[${index}].route_key`),
+      group_ref: nonblank(route.group_ref, `routes[${index}].group_ref`),
+      logical_artifact_ref: nonblank(route.logical_artifact_ref, `routes[${index}].logical_artifact_ref`),
+      heading: nonblank(route.heading, `routes[${index}].heading`),
+      composer_kind: route.composer_kind,
+      template: {
+        version: positiveInteger(template.version, `routes[${index}].template.version`),
+        contribution_template: template.contribution_template,
+        slots: validateSlotDefinitions(object(template.slots, `routes[${index}].template.slots`) as Record<string, DestinationSlot>),
+      },
+      limits: {
+        max_contributions: positiveInteger(limits.max_contributions, `routes[${index}].limits.max_contributions`),
+        max_document_bytes: positiveInteger(limits.max_document_bytes, `routes[${index}].limits.max_document_bytes`),
+        max_directives: positiveInteger(limits.max_directives, `routes[${index}].limits.max_directives`, true),
+      },
+    } satisfies BriefingDestinationRouteDeclaration;
+  });
+  const duplicate = routes.map((route) => route.route_key)
+    .find((routeKey, index, all) => all.indexOf(routeKey) !== index);
+  if (duplicate) throw new BriefingStoreError(`route manifest declares route_key '${duplicate}' more than once`);
+  return { schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA, routes };
+}
+
 function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical_artifact_id">): BaseDocument {
   const group = db.prepare(`SELECT id, name, current_bundle_id, archived_at FROM briefing_groups WHERE id = ?`)
     .get(route.group_id) as { id: string; name: string; current_bundle_id: string | null; archived_at: number | null } | undefined;
@@ -242,66 +341,216 @@ function routeRow(db: Db, routeKey: string): RouteRow {
   return row;
 }
 
-export function registerBriefingDestinationRoute(db: Db, input: BriefingDestinationRouteInput, now = Date.now()): void {
-  const routeKey = nonblank(input.route_key, "route_key");
+type ResolvedRouteDeclaration = {
+  route_key: string;
+  group_id: string;
+  logical_artifact_id: string;
+  heading: string;
+  composer_kind: "deterministic" | "agentic";
+  template_version: number;
+  contribution_template: string;
+  slots: Record<string, DestinationSlot>;
+  limits: { max_contributions: number; max_document_bytes: number; max_directives: number };
+};
+
+function resolveRouteDeclaration(db: Db, input: BriefingDestinationRouteDeclaration): ResolvedRouteDeclaration {
   const groupId = resolveGroupId(db, input.group_ref);
-  const logical = db.prepare("SELECT id FROM artifact WHERE id = ?").get(input.logical_artifact_id) as { id: string } | undefined;
-  if (!logical) throw new BriefingStoreError("logical_artifact_id must identify one logical Artifact", 404,
-    "artifact_not_found");
-  const slots = validateSlotDefinitions(input.slots);
-  const heading = nonblank(input.heading, "heading");
-  const version = positiveInteger(input.template_version, "template_version");
-  const limits = {
-    max_contributions: positiveInteger(input.limits.max_contributions, "limits.max_contributions"),
-    max_document_bytes: positiveInteger(input.limits.max_document_bytes, "limits.max_document_bytes"),
-    max_directives: positiveInteger(input.limits.max_directives, "limits.max_directives", true),
-  };
-  if (input.composer_kind === "deterministic" && !input.contribution_template.includes("{{evidence_ref}}")) {
+  const logical = resolveArtifactRefReadonlyFull(db, input.logical_artifact_ref);
+  if (logical.status !== "resolved" || logical.target_type !== "artifact" || !logical.target_id) {
+    throw new BriefingStoreError("logical_artifact_ref must resolve to one logical Artifact", 404,
+      "artifact_not_found");
+  }
+  if (input.composer_kind === "deterministic" && !input.template.contribution_template.includes("{{evidence_ref}}")) {
     throw new BriefingStoreError("deterministic contribution templates must render {{evidence_ref}}");
   }
-  const placeholders = [...input.contribution_template.matchAll(/{{([a-z][a-z0-9_]*)}}/g)].map((match) => match[1]);
-  const allowed = new Set(["route_key", "change_id", "evidence_ref", "evidence_digest", "occurred_at", ...Object.keys(slots)]);
+  const placeholders = [...input.template.contribution_template.matchAll(/{{([a-z][a-z0-9_]*)}}/g)]
+    .map((match) => match[1]);
+  const allowed = new Set(["route_key", "change_id", "evidence_ref", "evidence_digest", "occurred_at",
+    ...Object.keys(input.template.slots)]);
   const unknown = placeholders.find((placeholder) => !allowed.has(placeholder));
   if (unknown) throw new BriefingStoreError(`contribution template references unknown slot '${unknown}'`);
-  db.transaction(() => {
-    const existingRoute = db.prepare(`SELECT group_id, logical_artifact_id, heading, composer_kind
-      FROM briefing_destination_routes WHERE route_key = ?`).get(routeKey) as
-      { group_id: string; logical_artifact_id: string; heading: string; composer_kind: string } | undefined;
-    if (existingRoute && (existingRoute.group_id !== groupId || existingRoute.logical_artifact_id !== logical.id
-        || existingRoute.heading !== heading || existingRoute.composer_kind !== input.composer_kind)) {
-      throw new BriefingStoreError("stable destination route ownership cannot be reassigned", 409,
-        "briefing_destination_route_conflict");
-    }
-    const existingKind = db.prepare(`SELECT composer_kind FROM briefing_destination_routes
-      WHERE group_id = ? AND logical_artifact_id = ? LIMIT 1`).get(groupId, logical.id) as { composer_kind: string } | undefined;
-    if (existingKind && existingKind.composer_kind !== input.composer_kind) {
+  return {
+    route_key: input.route_key,
+    group_id: groupId,
+    logical_artifact_id: logical.target_id,
+    heading: input.heading,
+    composer_kind: input.composer_kind,
+    template_version: input.template.version,
+    contribution_template: input.template.contribution_template,
+    slots: input.template.slots,
+    limits: input.limits,
+  };
+}
+
+function planResolvedRoute(
+  db: Db,
+  route: ResolvedRouteDeclaration,
+): BriefingDestinationRoutePlan["routes"][number] {
+  const existing = db.prepare(`SELECT group_id, logical_artifact_id, heading, composer_kind,
+      active_template_version, max_contributions, max_document_bytes, max_directives
+    FROM briefing_destination_routes WHERE route_key = ?`).get(route.route_key) as {
+      group_id: string; logical_artifact_id: string; heading: string; composer_kind: string;
+      active_template_version: number; max_contributions: number; max_document_bytes: number; max_directives: number;
+    } | undefined;
+  if (existing && (existing.group_id !== route.group_id || existing.logical_artifact_id !== route.logical_artifact_id
+      || existing.heading !== route.heading || existing.composer_kind !== route.composer_kind)) {
+    throw new BriefingStoreError("stable destination route ownership cannot be reassigned", 409,
+      "briefing_destination_route_conflict");
+  }
+  const tupleOwner = db.prepare(`SELECT route_key, composer_kind FROM briefing_destination_routes
+    WHERE group_id = ? AND logical_artifact_id = ? AND heading = ? LIMIT 1`)
+    .get(route.group_id, route.logical_artifact_id, route.heading) as
+    { route_key: string; composer_kind: string } | undefined;
+  if (tupleOwner && tupleOwner.route_key !== route.route_key) {
+    throw new BriefingStoreError("destination document heading is already owned by another stable route", 409,
+      "briefing_destination_route_conflict");
+  }
+  const existingKind = db.prepare(`SELECT composer_kind FROM briefing_destination_routes
+    WHERE group_id = ? AND logical_artifact_id = ? LIMIT 1`).get(route.group_id, route.logical_artifact_id) as
+    { composer_kind: string } | undefined;
+  if (existingKind && existingKind.composer_kind !== route.composer_kind) {
+    throw new BriefingStoreError("all routes for one destination document must use one composer kind", 409,
+      "briefing_destination_composer_conflict");
+  }
+  if (existing && route.template_version < existing.active_template_version) {
+    throw new BriefingStoreError("active template version cannot move backwards", 409,
+      "briefing_destination_template_regression");
+  }
+  const existingTemplate = db.prepare(`SELECT contribution_template, slots_json
+    FROM briefing_destination_templates WHERE route_key = ? AND version = ?`)
+    .get(route.route_key, route.template_version) as { contribution_template: string; slots_json: string } | undefined;
+  const slotsJson = canonicalJson(route.slots);
+  if (existingTemplate && (existingTemplate.contribution_template !== route.contribution_template
+      || existingTemplate.slots_json !== slotsJson)) {
+    throw new BriefingStoreError("template versions are immutable", 409, "briefing_destination_template_conflict");
+  }
+  currentBaseDocument(db, { group_id: route.group_id, logical_artifact_id: route.logical_artifact_id });
+  const changed = !existing || existing.active_template_version !== route.template_version
+    || existing.max_contributions !== route.limits.max_contributions
+    || existing.max_document_bytes !== route.limits.max_document_bytes
+    || existing.max_directives !== route.limits.max_directives;
+  return {
+    route_key: route.route_key,
+    action: !existing ? "create" : changed ? "update" : "unchanged",
+    group_id: route.group_id,
+    logical_artifact_id: route.logical_artifact_id,
+    heading: route.heading,
+    composer_kind: route.composer_kind,
+    active_template_version: route.template_version,
+    template_action: existingTemplate ? "reuse" : "create",
+    limits: route.limits,
+  };
+}
+
+function resolveAndPlanBriefingDestinationRoutes(
+  db: Db,
+  manifest: BriefingDestinationRouteManifest,
+): { plan: BriefingDestinationRoutePlan; resolved: ResolvedRouteDeclaration[] } {
+  const resolved = manifest.routes.map((route) => resolveRouteDeclaration(db, route))
+    .sort((left, right) => left.route_key.localeCompare(right.route_key));
+  const ownership = new Map<string, { composerKind: string; headings: Map<string, string> }>();
+  for (const route of resolved) {
+    const key = `${route.group_id}\0${route.logical_artifact_id}`;
+    const prior = ownership.get(key);
+    if (prior && prior.composerKind !== route.composer_kind) {
       throw new BriefingStoreError("all routes for one destination document must use one composer kind", 409,
         "briefing_destination_composer_conflict");
     }
-    const existingTemplate = db.prepare(`SELECT contribution_template, slots_json FROM briefing_destination_templates
-      WHERE route_key = ? AND version = ?`).get(routeKey, version) as
-      { contribution_template: string; slots_json: string } | undefined;
-    const slotsJson = canonicalJson(slots);
-    if (existingTemplate && (existingTemplate.contribution_template !== input.contribution_template
-        || existingTemplate.slots_json !== slotsJson)) {
-      throw new BriefingStoreError("template versions are immutable", 409, "briefing_destination_template_conflict");
+    const priorRouteKey = prior?.headings.get(route.heading);
+    if (priorRouteKey && priorRouteKey !== route.route_key) {
+      throw new BriefingStoreError("destination document heading is declared by more than one stable route", 409,
+        "briefing_destination_route_conflict");
     }
-    db.prepare(`INSERT INTO briefing_destination_routes
-      (route_key, group_id, logical_artifact_id, heading, composer_kind, active_template_version,
-       max_contributions, max_document_bytes, max_directives, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(route_key) DO UPDATE SET group_id = excluded.group_id,
-        logical_artifact_id = excluded.logical_artifact_id, heading = excluded.heading,
-        composer_kind = excluded.composer_kind, active_template_version = excluded.active_template_version,
-        max_contributions = excluded.max_contributions, max_document_bytes = excluded.max_document_bytes,
-        max_directives = excluded.max_directives, updated_at = excluded.updated_at`)
-      .run(routeKey, groupId, logical.id, heading, input.composer_kind, version,
-        limits.max_contributions, limits.max_document_bytes, limits.max_directives, now, now);
-    db.prepare(`INSERT OR IGNORE INTO briefing_destination_templates
-      (route_key, version, contribution_template, slots_json, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .run(routeKey, version, input.contribution_template, slotsJson, now);
-    currentBaseDocument(db, { group_id: groupId, logical_artifact_id: logical.id });
+    if (prior) prior.headings.set(route.heading, route.route_key);
+    else ownership.set(key, { composerKind: route.composer_kind, headings: new Map([[route.heading, route.route_key]]) });
+  }
+  const routes = resolved.map((route) => planResolvedRoute(db, route));
+  return { resolved, plan: { schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA,
+    changed: routes.some((route) => route.action !== "unchanged"), routes } };
+}
+
+export function planBriefingDestinationRoutes(
+  db: Db,
+  manifest: BriefingDestinationRouteManifest,
+): BriefingDestinationRoutePlan {
+  return db.transaction(() => resolveAndPlanBriefingDestinationRoutes(db, manifest).plan).deferred();
+}
+
+export function reconcileBriefingDestinationRoutes(
+  db: Db,
+  manifest: BriefingDestinationRouteManifest,
+  now = Date.now(),
+): BriefingDestinationRoutePlan {
+  return db.transaction(() => {
+    const { plan, resolved } = resolveAndPlanBriefingDestinationRoutes(db, manifest);
+    const byKey = new Map(resolved.map((route) => [route.route_key, route]));
+    for (const planned of plan.routes) {
+      if (planned.action === "unchanged") continue;
+      const route = byKey.get(planned.route_key)!;
+      db.prepare(`INSERT INTO briefing_destination_routes
+        (route_key, group_id, logical_artifact_id, heading, composer_kind, active_template_version,
+         max_contributions, max_document_bytes, max_directives, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(route_key) DO UPDATE SET active_template_version = excluded.active_template_version,
+          max_contributions = excluded.max_contributions, max_document_bytes = excluded.max_document_bytes,
+          max_directives = excluded.max_directives, updated_at = excluded.updated_at`)
+        .run(route.route_key, route.group_id, route.logical_artifact_id, route.heading, route.composer_kind,
+          route.template_version, route.limits.max_contributions, route.limits.max_document_bytes,
+          route.limits.max_directives, now, now);
+      db.prepare(`INSERT OR IGNORE INTO briefing_destination_templates
+        (route_key, version, contribution_template, slots_json, created_at) VALUES (?, ?, ?, ?, ?)`)
+        .run(route.route_key, route.template_version, route.contribution_template, canonicalJson(route.slots), now);
+    }
+    return plan;
   }).immediate();
+}
+
+export function inspectBriefingDestinationRoutes(db: Db, routeKey?: string): BriefingDestinationRouteInspection {
+  return db.transaction(() => {
+    const rows = db.prepare(`SELECT route_key, group_id, logical_artifact_id, heading, composer_kind,
+        active_template_version, max_contributions, max_document_bytes, max_directives
+      FROM briefing_destination_routes ${routeKey === undefined ? "" : "WHERE route_key = ?"}
+      ORDER BY route_key`).all(...(routeKey === undefined ? [] : [nonblank(routeKey, "route_key")])) as Array<{
+        route_key: string; group_id: string; logical_artifact_id: string; heading: string;
+        composer_kind: "deterministic" | "agentic"; active_template_version: number;
+        max_contributions: number; max_document_bytes: number; max_directives: number;
+      }>;
+    if (routeKey !== undefined && rows.length === 0) {
+      throw new BriefingStoreError(`unknown destination route '${routeKey}'`, 404, "briefing_destination_unknown");
+    }
+    const templates = db.prepare(`SELECT version, contribution_template, slots_json
+      FROM briefing_destination_templates WHERE route_key = ? ORDER BY version`);
+    return { schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA, routes: rows.map((route) => ({
+      route_key: route.route_key,
+      group_id: route.group_id,
+      logical_artifact_id: route.logical_artifact_id,
+      heading: route.heading,
+      composer_kind: route.composer_kind,
+      active_template_version: route.active_template_version,
+      limits: { max_contributions: route.max_contributions, max_document_bytes: route.max_document_bytes,
+        max_directives: route.max_directives },
+      templates: (templates.all(route.route_key) as Array<{
+        version: number; contribution_template: string; slots_json: string;
+      }>).map((template) => ({ version: template.version, contribution_template: template.contribution_template,
+        slots: JSON.parse(template.slots_json) as Record<string, DestinationSlot> })),
+    })) };
+  }).deferred();
+}
+
+export function registerBriefingDestinationRoute(db: Db, input: BriefingDestinationRouteInput, now = Date.now()): void {
+  reconcileBriefingDestinationRoutes(db, parseBriefingDestinationRouteManifest({
+    schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA,
+    routes: [{
+      route_key: input.route_key,
+      group_ref: input.group_ref,
+      logical_artifact_ref: input.logical_artifact_id,
+      heading: input.heading,
+      composer_kind: input.composer_kind,
+      template: { version: input.template_version, contribution_template: input.contribution_template,
+        slots: input.slots },
+      limits: input.limits,
+    }],
+  }), now);
 }
 
 function exactVersionId(db: Db, ref: string): string {

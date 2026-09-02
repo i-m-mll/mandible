@@ -1,4 +1,4 @@
-import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
+import { ClientAuthzError, isOperator, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { getDb, type Db } from "../db.js";
 import {
   applyBriefingAnnotations,
@@ -43,8 +43,12 @@ import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 import {
   BRIEFING_COMPOSITION_SCHEMA,
+  inspectBriefingDestinationRoutes,
   parseBriefingCompositionRequest,
+  parseBriefingDestinationRouteManifest,
+  planBriefingDestinationRoutes,
   publishBriefingCompositionRun,
+  reconcileBriefingDestinationRoutes,
 } from "../feedback/briefing-composer.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
@@ -96,6 +100,14 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
     throw new ClientAuthzError(403, code, message);
   }
   return operator;
+}
+
+function destinationRouteOperator(db: Db, req: RequestLike): void {
+  const identity = requireOperator(db, req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(403, "briefing_destination_route_credential_required",
+      "Briefing destination route management requires the configured operator's durable API token.");
+  }
 }
 
 function renameViewer(
@@ -310,6 +322,34 @@ function placementOverride(req: RequestLike, requestBody: Record<string, unknown
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+  server.get("/api/briefing-destination-routes", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, inspectBriefingDestinationRoutes(db));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-destination-routes/:routeKey", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, inspectBriefingDestinationRoutes(db, req.params.routeKey));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-destination-routes/plan", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, planBriefingDestinationRoutes(db, parseBriefingDestinationRouteManifest(req.body)));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-destination-routes", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, reconcileBriefingDestinationRoutes(db, parseBriefingDestinationRouteManifest(req.body)));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
   server.post("/api/briefing-groups", (req, res) => {
     try {
       const publisher = publicationPrincipal(db, req, {
@@ -450,9 +490,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
-  for (const archived of [true, false]) server.post(
-    `/api/briefing-groups/:groupId/${archived ? "archive" : "restore"}`,
-    (req, res) => {
+  const setGroupArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
       try {
         const viewer = briefingOrganizationViewer(db, req);
         const requestBody = body(req);
@@ -462,8 +500,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           { group_id: result.group.id });
         sendJson(res, 200, result);
       } catch (error) { handleError(res, error); }
-    }, { fileRpc: "allow" },
-  );
+    };
+  server.post("/api/briefing-groups/:groupId/archive", setGroupArchiveState(true), { fileRpc: "allow" });
+  server.post("/api/briefing-groups/:groupId/restore", setGroupArchiveState(false), { fileRpc: "allow" });
 
   server.get("/api/briefing-groups", (req, res) => {
     try {

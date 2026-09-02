@@ -263,6 +263,18 @@
       "description": "Show one stable Briefing group with its distinct Base, ordered active proposals, and retained disposition history."
     },
     {
+      "name": "mandible briefing route inspect [<route-key>] [--json]",
+      "description": "Inspect the code-owned Briefing destination-route registry in stable route-key order, including exact canonical group and logical Artifact identities plus every immutable template version. Requires the configured operator's durable API token."
+    },
+    {
+      "name": "mandible briefing route plan <manifest.json|-> [--json]",
+      "description": "Resolve and validate one mandible-briefing-destination-routes@1 manifest without mutation. Reports deterministic create, update, or unchanged actions; ownership, identity, downgrade, and immutable-template drift fail closed."
+    },
+    {
+      "name": "mandible briefing route apply <manifest.json|-> [--json]",
+      "description": "Atomically reconcile one validated destination-route manifest through the authenticated operator API. Exact replay is idempotent, and runtime publication remains POST /api/briefings/runs."
+    },
+    {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",
       "description": "Refresh configured instruction targets, or update one explicit target. Configured targets support managed-block and standalone modes; tracked protected-branch writes are refused unless --force is explicit."
     },

@@ -908,7 +908,7 @@ api_operational_mutation_category() {
   # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
   # drift.
   case "${method} ${pathname}" in
-    "POST /api/auth/check"|"POST /api/client-auth/handshake"|"POST /api/timeline/project") return 1 ;;
+    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/client-auth/handshake"|"POST /api/timeline/project") return 1 ;;
   esac
 
   if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
@@ -923,6 +923,7 @@ api_operational_mutation_category() {
     /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
     /api/backup|/api/backup/*) printf 'backup'; return 0 ;;
     /api/briefing-bundles|/api/briefing-bundles/*) printf 'briefing'; return 0 ;;
+    /api/briefing-destination-routes|/api/briefing-destination-routes/*) printf 'briefing'; return 0 ;;
     /api/briefing-groups|/api/briefing-groups/*) printf 'briefing'; return 0 ;;
     /api/briefings|/api/briefings/*) printf 'briefing'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;
