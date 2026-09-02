@@ -277,7 +277,7 @@ describe('message action cards', () => {
     expect(seen).toEqual(['group:one', 'group:one']);
   });
 
-  it('keeps group and expanded leaf scroll positions and fade states independent', () => {
+  it('shows every grouped tool row while retaining independent fades inside expanded leaves', () => {
     const blocks = [
       { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: '/tmp/a' } },
       { type: 'tool_use', id: 'tool-2', name: 'Read', input: { path: '/tmp/b' } },
@@ -296,13 +296,10 @@ describe('message action cards', () => {
 
     const view = render(<MessageGroup turn={turn} isStreaming={false} />);
     fireEvent.click(screen.getByRole('button', { name: /Read some files/ }));
-    const outerFade = view.container.querySelector<HTMLElement>('.tool-call-group__body')!;
-    const outerScroll = outerFade.querySelector<HTMLElement>(':scope > .overflow-fade__scroll')!;
-    setScrollMetrics(outerScroll, 100, 240);
-    outerScroll.scrollTop = 40;
-    fireEvent.scroll(outerScroll);
-    expect(outerFade.classList.contains('overflow-fade--above')).toBe(true);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
+    const groupBody = view.container.querySelector<HTMLElement>('.tool-call-group__body')!;
+    expect(groupBody.classList.contains('overflow-fade')).toBe(false);
+    expect(groupBody.querySelector(':scope > .overflow-fade__scroll')).toBeNull();
+    expect(groupBody.querySelectorAll('.tool-card')).toHaveLength(2);
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card__header')!);
     expect(view.container.querySelectorAll('.tool-card__body > .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
@@ -321,22 +318,11 @@ describe('message action cards', () => {
     expect(leafFade.classList.contains('overflow-fade--above')).toBe(false);
     expect(leafFade.classList.contains('overflow-fade--below')).toBe(true);
     expect(inputScroll.scrollTop).toBe(20);
-    expect(outerScroll.scrollTop).toBe(40);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
 
     leafScroll.scrollTop = 100;
     fireEvent.scroll(leafScroll);
     expect(leafFade.classList.contains('overflow-fade--above')).toBe(true);
     expect(leafFade.classList.contains('overflow-fade--below')).toBe(false);
-    expect(outerScroll.scrollTop).toBe(40);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
-
-    act(() => {
-      outerScroll.scrollTop = 140;
-      fireEvent.scroll(outerScroll);
-    });
-    expect(outerFade.classList.contains('overflow-fade--above')).toBe(true);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(false);
     expect(leafScroll.scrollTop).toBe(100);
   });
 

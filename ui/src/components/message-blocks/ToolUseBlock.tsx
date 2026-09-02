@@ -343,6 +343,7 @@ export function ToolCard({
             {displayTarget}
           </span>
         )}
+        <span className="tool-card__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
         {diffStats && (
           <span className="tool-card__stat-chip">+{diffStats.additions} / -{diffStats.deletions}</span>
         )}
@@ -353,7 +354,6 @@ export function ToolCard({
         {status === 'failed' && (
           <span className="tool-card__status tool-card__status--failed">Failed</span>
         )}
-        <span className="tool-card__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
       {isExpanded ? (
         <div id={bodyId} role="region" aria-label={`${visual.verb} details`} className="tool-card__body">

@@ -50,4 +50,10 @@ describe('shared UI Markdown rendering', () => {
     expect(html).not.toContain('<script');
     expect(html).not.toContain('javascript:');
   });
+
+  it('never renders transcript form controls inside prose', () => {
+    const html = renderMarkdown('<codex_delegation><input>Proceed with the repair.</input></codex_delegation>');
+    expect(html).not.toContain('<input');
+    expect(html).toContain('Proceed with the repair.');
+  });
 });

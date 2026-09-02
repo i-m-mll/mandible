@@ -35,6 +35,9 @@ export interface SessionRunOptionDeclaration {
   category: string;
   kind: SessionRunOptionKind;
   nullable: boolean;
+  /** Effective value before a provider session exists, when the backend owns
+   * a concrete default rather than delegating the choice to the provider. */
+  defaultValue?: SessionRunOptionValue;
   discovery: SessionRunOptionDiscovery;
   support: SessionRunOptionSupport;
   applyOrder: number;
@@ -165,7 +168,7 @@ export function declaredRunOptionsSnapshot(
         nullable: option.nullable,
         source: "backend" as const,
         availability: providerOwned ? "awaiting_provider" as const : "available" as const,
-        currentValue: null,
+        currentValue: option.defaultValue ?? null,
         allowedValues: staticChoices(option.discovery),
         enforcement: option.support.status === "unsupported"
           ? { status: "unsupported" as const, reason: option.support.reason }
