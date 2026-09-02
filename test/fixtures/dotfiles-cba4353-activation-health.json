@@ -1,0 +1,119 @@
+{
+  "producer": {
+    "repository": "dotfiles",
+    "commit": "cba4353d5845830fb760e219626ced8d0af3bdb0",
+    "fixture_kind": "generated_from_producer_contract"
+  },
+  "inventory": {
+    "schema": "executor-inventory@3",
+    "executor": {
+      "name": "agent-schedule",
+      "version": "0.4.2+cba4353d5845",
+      "capabilities": [
+        "cron",
+        "kill-switch",
+        "circuit-breaker",
+        "retry-backoff",
+        "budget-ceiling",
+        "bundle-deploy",
+        "activation-state@1",
+        "executor-health@1",
+        "task-command@2"
+      ],
+      "health": {
+        "status": "healthy",
+        "condition": "healthy",
+        "attention": "none"
+      }
+    },
+    "observed_at": 1788382800000,
+    "tasks": [
+      {
+        "task_id": "task-health",
+        "display_name": "Task health",
+        "management_mode": "external",
+        "config_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "prompt_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "config": {
+          "schedule_text": "0 * * * *",
+          "not_before": "unknown",
+          "max_lateness_minutes": 30,
+          "missed_run_policy": "coalesce",
+          "timeout_seconds": 900,
+          "runner": "codex",
+          "runner_profile": "default",
+          "model": "gpt-5.6-sol",
+          "max_total_tokens": 20000,
+          "max_turns": 12,
+          "publish": false,
+          "output_as_source": true
+        },
+        "bundle": {
+          "commit": "cba4353d5845830fb760e219626ced8d0af3bdb0",
+          "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "execution_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "deployed_at": 1788382200000
+        },
+        "activation": {
+          "config_enabled": true,
+          "locally_activated": false,
+          "state": "deployment_invalidated",
+          "reason": "execution_hash_changed",
+          "changed_at": 1788382200000,
+          "previous_execution_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "required_execution_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "deployment_commit": "cba4353d5845830fb760e219626ced8d0af3bdb0",
+          "deployment_content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "deployed_at": 1788382200000,
+          "required_action": "dry_run",
+          "attention": "important"
+        },
+        "guards": {
+          "circuit": "closed",
+          "retry_attempt": 0,
+          "retry_next_at": "none",
+          "kill_switch": "clear",
+          "staleness": "fresh"
+        },
+        "last_run": "never",
+        "last_failure": "never"
+      }
+    ]
+  },
+  "incidents": {
+    "schema": "operational-incidents@2",
+    "executor": {
+      "name": "agent-schedule",
+      "version": "0.4.2+cba4353d5845"
+    },
+    "generation": {
+      "inventory_schema": "executor-inventory@3",
+      "inventory_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+      "observed_at": "2026-09-02T20:00:00.000Z"
+    },
+    "provenance": {
+      "basis": "scheduler_computed",
+      "verification": "unverified_by_mandible"
+    },
+    "events": [
+      {
+        "event_id": "01K45MST00ABCDEFGHJKMNPQRS",
+        "event_seq": 1,
+        "episode": {
+          "task": "task-health",
+          "condition": "failed_permanent",
+          "first_seen": "2026-09-02T19:59:00.000Z"
+        },
+        "observation": "active",
+        "observed_at": "2026-09-02T19:59:00.000Z",
+        "facts": {
+          "run_id": "184",
+          "run_status": "failed_permanent",
+          "exit_class": "validation",
+          "finished_at": "2026-09-02T19:58:59.000Z"
+        },
+        "recovery": null
+      }
+    ]
+  }
+}
