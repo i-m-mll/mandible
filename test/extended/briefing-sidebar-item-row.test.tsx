@@ -416,7 +416,9 @@ describe('Briefing sidebar row actions', () => {
     const groupLayout = group.querySelector(':scope > .sidebar-disclosure-region > .feedback-collections-sidebar__group-layout');
     expect(groupLayout).toBeTruthy();
     expect(group.classList.contains('feedback-collections-sidebar__group')).toBe(true);
-    expect(briefingStylesheet).toMatch(/\.feedback-collections-sidebar__group\.sidebar-group-node--category[\s\S]*?> \.sidebar-group-node__heading \{[^}]*color: var\(--text-primary\);/s);
+    expect(group.classList.contains('sidebar-group-node--nested')).toBe(true);
+    expect(group.classList.contains('sidebar-group-node--category')).toBe(false);
+    expect(briefingStylesheet).not.toContain('.feedback-collections-sidebar__group.sidebar-group-node--category');
     expect(within(group).getAllByRole('button', { name: /Select briefing/ }).map((button) => button.getAttribute('aria-label')))
       .toEqual([
         'Select briefing Global',

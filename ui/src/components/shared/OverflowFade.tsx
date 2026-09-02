@@ -7,9 +7,11 @@ export function OverflowFade({ children, className = '', lines = 10 }: {
   lines?: number;
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [hasAbove, setHasAbove] = useState(false);
   const [hasBelow, setHasBelow] = useState(false);
   const refresh = useCallback(() => {
     const node = scrollRef.current;
+    setHasAbove(Boolean(node && node.scrollTop > 1));
     setHasBelow(Boolean(node && node.scrollTop + node.clientHeight < node.scrollHeight - 1));
   }, []);
 
@@ -25,7 +27,7 @@ export function OverflowFade({ children, className = '', lines = 10 }: {
 
   return (
     <div
-      className={`overflow-fade${hasBelow ? ' overflow-fade--below' : ''}${className ? ` ${className}` : ''}`}
+      className={`overflow-fade${hasAbove ? ' overflow-fade--above' : ''}${hasBelow ? ' overflow-fade--below' : ''}${className ? ` ${className}` : ''}`}
       style={{ '--overflow-fade-lines': lines } as Record<string, number>}
     >
       <div ref={scrollRef} className="overflow-fade__scroll" onScroll={refresh}>{children}</div>

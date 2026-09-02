@@ -21,7 +21,7 @@ export function ToolCallGroup({ summary, expanded, onExpandedChange, children }:
   return (
     <section className={`tool-call-group${isExpanded ? ' tool-call-group--expanded' : ''}`}>
       <button type="button" className="tool-call-group__summary" aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>
-        <span>{summary}</span>
+        <span className="tool-call-group__summary-text">{summary}</span>
         <span className="tool-call-group__chevron"><SidebarDisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
       {isExpanded ? (

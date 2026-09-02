@@ -49,6 +49,13 @@ export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
     countVisibility?: never;
   }
   | {
+    presentation: 'nested';
+    leadingIcon?: never;
+    count?: never;
+    countLabel?: never;
+    countVisibility?: never;
+  }
+  | {
     presentation: 'folder';
     leadingIcon: ComponentChildren;
     count?: number;

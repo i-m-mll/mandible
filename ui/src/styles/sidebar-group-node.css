@@ -10,8 +10,8 @@
  *
  * Each disclosure region passes its content inset to descendant nodes through
  * --sidebar-title-column-inset. Root nodes receive the 7px fallback. Children
- * advance by the icon column for a folder. Category children stay in the
- * category heading's text column.
+ * advance by the icon column for a folder or a no-icon structural nesting
+ * node. Category children stay in the category heading's text column.
  */
 .sidebar-disclosure-region {
   overflow: hidden;
@@ -71,6 +71,10 @@
 }
 
 .sidebar-group-node--folder > .sidebar-group-node__header > .sidebar-group-node__heading {
+  color: var(--text-primary);
+}
+
+.sidebar-group-node--nested > .sidebar-group-node__header > .sidebar-group-node__heading {
   color: var(--text-primary);
 }
 
@@ -195,6 +199,10 @@
 }
 
 .sidebar-group-node--folder > .sidebar-disclosure-region {
+  --sidebar-title-column-inset: calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column));
+}
+
+.sidebar-group-node--nested > .sidebar-disclosure-region {
   --sidebar-title-column-inset: calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column));
 }
 
