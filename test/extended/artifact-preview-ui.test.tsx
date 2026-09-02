@@ -605,7 +605,7 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(pane?.querySelector('.artifact-preview-frame')).toBeNull();
   });
 
-  it('shows compact raw JSON after toggling without changing the code preview surface', () => {
+  it('moves formatted and exact raw JSON state into the header actions menu', () => {
     const jsonContent = content({
       kind: 'json',
       media_type: 'application/json',
@@ -630,11 +630,27 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(preview?.parentElement?.classList.contains('artifact-detail__pane')).toBe(true);
     expect(screen.queryByRole('region', { name: 'Preview' })).toBeNull();
     expect(preview?.textContent).toContain('"beta": true');
+    expect(screen.queryByText('Auto-formatted JSON')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Show raw' })).toBeNull();
+    expect(screen.queryByText('Editing is limited to safe text and Markdown artifacts.')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+    const actionsTrigger = screen.getByRole('button', { name: 'Artifact actions' });
+    fireEvent.click(actionsTrigger);
+    const formatted = screen.getByRole('menuitemradio', { name: 'Formatted JSON' });
+    const raw = screen.getByRole('menuitemradio', { name: 'Raw JSON' });
+    expect(formatted.getAttribute('aria-checked')).toBe('true');
+    expect(raw.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(raw);
 
     expect(container.querySelector('.artifact-preview')?.classList.contains('artifact-preview--code')).toBe(true);
-    expect(container.querySelector('.artifact-preview')?.textContent).toContain('{"alpha":1,"beta":true}');
+    expect(container.querySelector('.artifact-preview')?.textContent).toBe('{"alpha":1,"beta":true}');
+
+    fireEvent.click(actionsTrigger);
+    expect(screen.getByRole('menuitemradio', { name: 'Formatted JSON' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('menuitemradio', { name: 'Raw JSON' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menuitemradio', { name: 'Raw JSON' })).toBeNull();
+    expect(document.activeElement).toBe(actionsTrigger);
   });
 
   it('renders syntax-highlight markup for Python source previews', () => {
