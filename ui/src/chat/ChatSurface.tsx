@@ -20,7 +20,6 @@ import {
   deriveLiveLabel,
   deriveTokenCount,
   extractTurns,
-  extractToolResultText,
   formatElapsed,
   groupMessagesForDisplay,
   serializeDisplayGroupToMarkdown,
@@ -499,7 +498,6 @@ export function ChatSurface({
           >
             <UserBubble text={node.text} />
             <MessageActions
-              onCopy={() => copyText(node.text)}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
@@ -523,7 +521,6 @@ export function ChatSurface({
               isError={node.event.is_error}
             />
             <MessageActions
-              onCopy={() => copyText(node.event.content)}
               onSelect={onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={selectedBlockIds?.has(source.blockId)}
               selectMode={selectMode}
@@ -539,7 +536,6 @@ export function ChatSurface({
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <UnmatchedToolResultBlock result={node.result} />
             <MessageActions
-              onCopy={() => copyText(node.result.fullText ?? extractToolResultText(node.result.content))}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}

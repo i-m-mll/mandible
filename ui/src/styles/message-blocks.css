@@ -47,8 +47,8 @@
 .tool-call-group__summary,
 .tool-call-group__summary-text {
   font-family: var(--font-sans);
-  font-size: var(--text-md);
-  line-height: 1.6;
+  font-size: var(--text-lg);
+  line-height: 1.15;
   font-weight: 400;
 }
 
@@ -200,7 +200,7 @@
   --tool-activity-border: #464646;
   --tool-activity-box-text: #919191;
   width: 100%;
-  margin: 1px 0;
+  margin: 0;
   color: var(--tool-activity-text);
 }
 
@@ -222,15 +222,16 @@
 .tool-card__header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  min-height: 28px;
-  padding: 3px 0;
+  min-height: 22px;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
   font-family: var(--font-sans);
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
+  line-height: 1.15;
   text-align: left;
   cursor: pointer;
 }
@@ -279,7 +280,7 @@
 }
 
 .tool-card__verb {
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   font-weight: 500;
   color: inherit;
   white-space: nowrap;
@@ -301,7 +302,7 @@
   unicode-bidi: plaintext;
   text-align: left;
   font-family: var(--font-mono);
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   color: inherit;
 }
 
@@ -344,7 +345,7 @@
 
 .tool-card__body {
   width: 100%;
-  padding: 4px 0 6px;
+  padding: 2px 0 3px;
 }
 
 .tool-card__result-wrapper {
@@ -357,7 +358,7 @@
   border-radius: 6px;
   border: 1px solid var(--tool-activity-border);
   background: var(--tool-activity-background);
-  padding: 10px;
+  padding: 3px 10px;
   box-sizing: border-box;
   width: 100%;
   color: var(--tool-activity-box-text);
@@ -373,7 +374,7 @@
   word-break: break-word;
   color: var(--tool-activity-box-text);
   font-family: var(--font-mono);
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   line-height: 1.5;
 }
 
@@ -391,7 +392,7 @@
 }
 
 .tool-card__result {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .tool-card__result--error {
@@ -400,16 +401,16 @@
 
 .tool-call-group {
   width: 100%;
-  margin: 2px 0;
+  margin: 0;
 }
 
 .tool-call-group__summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  min-height: 30px;
-  padding: 3px 0;
+  min-height: 22px;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
@@ -431,6 +432,12 @@
 
 .tool-call-group__body > .message-block-wrapper {
   margin: 0;
+}
+
+.tool-call-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 .overflow-fade {

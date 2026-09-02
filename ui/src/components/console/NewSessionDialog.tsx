@@ -21,6 +21,12 @@ type TransportLaneOption = {
   note: string;
 };
 
+const DEFAULT_MODEL_SETTING_BY_BACKEND: Record<Backend, string> = {
+  claude: 'conversations.default_model.claude',
+  codex: 'conversations.default_model.codex',
+  gemini: 'conversations.default_model.gemini',
+};
+
 const ADVANCED_RUN_OPTION_IDS = new Set([
   'max_turns',
   'max_cost_usd',
@@ -201,6 +207,7 @@ export function NewSessionDialog({
   const [runOptions, setRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
   const [runOptionValues, setRunOptionValues] = useState<Record<string, SessionRunOptionValue>>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -211,11 +218,17 @@ export function NewSessionDialog({
       setRunOptions(snapshot);
       setRunOptionValues((current) => Object.fromEntries(snapshot.options
         .filter((option) => option.enforcement.status !== 'unsupported')
-        .map((option) => [option.id, current[option.id] ?? option.currentValue])
+        .map((option) => {
+          const configuredModel = option.id === 'model'
+            ? appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]]?.trim() || null
+            : null;
+          const concreteDefault = option.id === 'permission_mode' ? 'default' : null;
+          return [option.id, current[option.id] ?? option.currentValue ?? configuredModel ?? concreteDefault];
+        })
         .filter(([, value]) => value !== null)));
     }).catch(() => { if (active) setRunOptions(null); });
     return () => { active = false; };
-  }, [backend, open, transportLane]);
+  }, [appSettings, backend, open, transportLane]);
 
   // Bug: b5e1c51 — Check if API key is configured to determine default transport
   useEffect(() => {
@@ -227,6 +240,7 @@ export function NewSessionDialog({
         settings.anthropic_api_key || settings.ANTHROPIC_API_KEY,
       );
       setHasApiKey(apiKeyConfigured);
+      setAppSettings(settings);
     }).catch(() => {
       if (!cancelled) setHasApiKey(null);
     });
@@ -309,7 +323,7 @@ export function NewSessionDialog({
       {option.kind === 'select' && (option.allowedValues?.length ?? 0) > 0 ? (
         <select className="new-session-dialog__input" value={String(runOptionValues[option.id] ?? '')}
           onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.value || null }))}>
-          {option.nullable && <option value="">Provider default</option>}
+          {option.nullable && runOptionValues[option.id] == null && <option value="">Use app default</option>}
           {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
         </select>
       ) : option.kind === 'multi_select' && (option.allowedValues?.length ?? 0) > 0 ? (

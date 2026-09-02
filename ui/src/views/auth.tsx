@@ -560,7 +560,7 @@ function AuthActionBundle({
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
           const detail = action.outcome_detail || actionPayloadSummary(action);
-          const canExpand = Boolean(detail);
+          const canExpand = Boolean(detail) && (action.kind !== 'issue_close' || action.state !== 'staged');
           const expanded = canExpand && expandedIds.has(action.id);
           const summary = action.kind === 'issue_close' ? title : actionPayloadSummary(action);
           return (
@@ -744,7 +744,7 @@ function AuthRequestDetail({
   mutationsAllowed?: boolean;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
-  const [showSpec, setShowSpec] = useState(true);
+  const [showSpec, setShowSpec] = useState(false);
   const [diffViewActive, setDiffViewActive] = useState(false);
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [showConsole, setShowConsole] = useState(false);

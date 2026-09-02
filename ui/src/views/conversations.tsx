@@ -1492,7 +1492,10 @@ function ConversationDetail({
   }, [control, controlPresentation, conversation, latestDagUuid]);
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
-  const modelOptions = (sessionRunOptions?.options.find((option) => option.id === 'model')?.allowedValues ?? [])
+  const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
+  const thinkingRunOption = sessionRunOptions?.options.find((option) => option.id === 'thinking_effort');
+  const permissionRunOption = sessionRunOptions?.options.find((option) => option.id === 'permission_mode');
+  const modelOptions = (modelRunOption?.allowedValues ?? [])
     .map((choice) => choice.value)
     .filter((value): value is string => typeof value === 'string');
   const canShowSessionControls = linkedConsoleSession
@@ -1570,6 +1573,19 @@ function ConversationDetail({
       } else {
         await updateConsoleSession(linkedConsoleSession.id, { model: value || undefined });
       }
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    }
+  }, [canSaveComposerModel, linkedConsoleSession]);
+
+  const handleComposerRunOptionChange = useCallback(async (id: string, value: string) => {
+    if (!linkedConsoleSession || !canSaveComposerModel) return;
+    setContinueError(null);
+    try {
+      const result = await updateConsoleSessionOptions(linkedConsoleSession.id, {
+        runOptions: { [id]: value || null },
+      }) as { runOptions?: SessionRunOptionsSnapshot };
+      if (result.runOptions) setSessionRunOptions(result.runOptions);
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     }
@@ -1787,7 +1803,7 @@ function ConversationDetail({
         </div>
       ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
       <div className="conv-compose">
-        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
+        <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
@@ -1797,20 +1813,6 @@ function ConversationDetail({
             disabled={continueBusy || Boolean(continueDisabledReason)}
             rows={3}
           />
-          <button
-            type="submit"
-            className="conv-compose__send"
-            disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
-            title={controlPresentation?.submitLabel ?? 'Send'}
-            aria-label={controlPresentation?.submitLabel ?? 'Send'}
-          >
-            {continueBusy ? '…' : (
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="m6 12 6-6 6 6" />
-                <path d="M12 6v12" />
-              </svg>
-            )}
-          </button>
         </form>
         {(control?.capability.kind === 'blocked-external'
           || control?.capability.kind === 'blocked-ownership-unknown') && (
@@ -1828,34 +1830,81 @@ function ConversationDetail({
         )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
-            <select
-              className="conv-compose__model"
-              value={composerModel}
-              disabled={continueBusy || modelOptions.length === 0}
-              title="Model"
-              aria-label="Model"
-              onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
-            >
-              <option value={currentModel === 'default' ? '' : currentModel}>
-                {currentModel === 'default' ? 'Default' : currentModel}
-              </option>
-              {modelOptions
-                .filter((model) => model !== currentModel)
-                .map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-            </select>
-            <span className="conv-compose__runtime-actions">
+            <span className="conv-compose__runtime-leading">
+              {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
+                <select
+                  className="conv-compose__permission"
+                  value={String(permissionRunOption.currentValue ?? '')}
+                  disabled={continueBusy || permissionRunOption.availability !== 'available'}
+                  title="Permission mode"
+                  aria-label="Permission mode"
+                  onChange={(event) => { void handleComposerRunOptionChange('permission_mode', event.currentTarget.value); }}
+                >
+                  {permissionRunOption.nullable && <option value="">Use app default</option>}
+                  {(permissionRunOption.allowedValues ?? []).map((choice) => (
+                    <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
+                  ))}
+                </select>
+              ) : null}
               {canShowSessionControls && (
                 <button
                   type="button"
                   className="btn btn--ghost btn--sm"
                   onClick={() => setComposerControlsOpen((prev) => !prev)}
                 >
-                  Controls
+                  More
                 </button>
               )}
+            </span>
+            <span className="conv-compose__runtime-actions">
               <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
+              <select
+                className="conv-compose__model"
+                value={composerModel}
+                disabled={continueBusy || modelOptions.length === 0}
+                title="Model"
+                aria-label="Model"
+                onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
+              >
+                <option value={currentModel === 'default' ? '' : currentModel}>
+                  {currentModel === 'default' ? 'Use app default' : currentModel}
+                </option>
+                {modelOptions
+                  .filter((model) => model !== currentModel)
+                  .map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+              </select>
+              {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
+                <select
+                  className="conv-compose__effort"
+                  value={String(thinkingRunOption.currentValue ?? '')}
+                  disabled={continueBusy || thinkingRunOption.availability !== 'available'}
+                  title="Thinking effort"
+                  aria-label="Thinking effort"
+                  onChange={(event) => { void handleComposerRunOptionChange('thinking_effort', event.currentTarget.value); }}
+                >
+                  {thinkingRunOption.nullable && <option value="">Use app default</option>}
+                  {(thinkingRunOption.allowedValues ?? []).map((choice) => (
+                    <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
+                  ))}
+                </select>
+              ) : null}
+              <button
+                type="submit"
+                form={`conversation-compose-${conversation.id}`}
+                className="conv-compose__send"
+                disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
+                title={controlPresentation?.submitLabel ?? 'Send'}
+                aria-label={controlPresentation?.submitLabel ?? 'Send'}
+              >
+                {continueBusy ? '…' : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m6 12 6-6 6 6" />
+                    <path d="M12 6v12" />
+                  </svg>
+                )}
+              </button>
             </span>
           </div>
         </div>
@@ -1865,6 +1914,7 @@ function ConversationDetail({
               sessionId={linkedConsoleSession.id}
               runOptions={sessionRunOptions}
               allowedTools={linkedConsoleSession.allowed_tools}
+              hiddenOptionIds={['model', 'thinking_effort', 'permission_mode']}
             />
           </div>
         )}
