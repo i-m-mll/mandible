@@ -132,13 +132,14 @@ describe('message action cards', () => {
     }
     expect(css).toMatch(/\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
-    expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(css).toMatch(/\.msg-text-block,\s*\.tool-call-group__summary,\s*\.tool-call-group__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.6;[^}]*font-weight:\s*400;/s);
+    expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-md\);/s);
+    expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(css).toMatch(/\.tool-call-group__summary,\s*\.tool-call-group__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-md\);/s);
     expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);/s);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
-    expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
+    expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-md\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?background:\s*transparent;/);
     expect(css).toMatch(/:root :is\(\.tool-card__input, \.tool-card__terminal, \.tool-card__result\) :is\(pre, code\)\s*\{[^}]*background:\s*transparent;/s);
     expect(css).not.toContain('background: var(--status-danger-bg-soft)');

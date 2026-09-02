@@ -2469,7 +2469,7 @@ describe('SettingsView', () => {
 });
 
 describe('AuthQueueView', () => {
-  it('renders explicit entity times, requester name, branch code, and a clear session link in the header', () => {
+  it('renders creator-attributed entity times and branch code without a vague session link', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));
     const now = Date.now();
@@ -2498,11 +2498,10 @@ describe('AuthQueueView', () => {
 
     const header = document.querySelector('.auth-detail__header') as HTMLElement;
     const primaryMetadata = header.querySelector('.auth-detail__primary-metadata') as HTMLElement;
-    expect(primaryMetadata.textContent).toContain('updated 5m ago · created 2h ago');
-    expect(within(primaryMetadata).getByText('codex')).toBeTruthy();
-    expect(primaryMetadata.children).toHaveLength(2);
+    expect(primaryMetadata.textContent).toContain('created 2h ago by codex · updated 5m ago');
+    expect(primaryMetadata.children).toHaveLength(1);
     expect(header.textContent).not.toContain('Requested by');
-    expect(within(header).getByRole('link', { name: 'Requesting session' })).toBeTruthy();
+    expect(within(header).queryByRole('link', { name: 'Requesting session' })).toBeNull();
     const branchLine = header.querySelector('.auth-detail__subtitle-line') as HTMLElement;
     expect(Array.from(branchLine.querySelectorAll('code')).map((node) => node.textContent)).toEqual([
       'feature/header-metadata',
@@ -2602,7 +2601,7 @@ describe('AuthQueueView', () => {
     const rightColumn = document.querySelector('.auth-detail__right-col') as HTMLElement | null;
     expect(panels?.className).toContain('auth-detail__panels--with-actions');
     expect(panels?.className).not.toContain('auth-detail__panels--single');
-    expect(leftColumn?.textContent).toContain('Commit Message');
+    expect(leftColumn?.textContent).toContain('Commit message');
     expect(leftColumn?.textContent).toContain('Specification');
     expect(rightColumn?.querySelector('.auth-action-bundle')).toBeTruthy();
     expect(rightColumn?.textContent).toContain('On merge...');
@@ -2638,7 +2637,7 @@ describe('AuthQueueView', () => {
       }),
     );
 
-    const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
+    const commitPanel = screen.getByText('Commit message').closest('.collapsible-panel') as HTMLElement | null;
     const rendered = commitPanel?.querySelector('.rendered-markdown') as HTMLElement | null;
     expect(rendered?.querySelector('strong')?.textContent).toBe('structured prose');
     expect(rendered?.querySelector('[data-resource-ref="artifact:bbbbbbbbbbbb"]')).toBeTruthy();
@@ -2683,7 +2682,7 @@ describe('AuthQueueView', () => {
       }),
     );
 
-    const specPanel = screen.getByText('Specification').closest('.panel') as HTMLElement | null;
+    const specPanel = screen.getByText('Specification').closest('.collapsible-panel') as HTMLElement | null;
     const rendered = specPanel?.querySelector('.rendered-markdown') as HTMLElement | null;
     expect(rendered?.querySelector('h1')?.textContent).toBe('Intent');
     expect(rendered?.querySelector('h2')?.textContent).toBe('Scope');
@@ -2709,7 +2708,7 @@ describe('AuthQueueView', () => {
         onReject: () => undefined,
       }),
     );
-    const legacyPanel = screen.getByText('Specification').closest('.panel') as HTMLElement | null;
+    const legacyPanel = screen.getByText('Specification').closest('.collapsible-panel') as HTMLElement | null;
     expect(legacyPanel?.textContent).toContain('Intent: keep this exact one-line specification.');
     expect(legacyPanel?.querySelector('.rendered-markdown h1, .rendered-markdown h2')).toBeNull();
   });
@@ -6006,7 +6005,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line,\s*\.auth-diff-file \.d2h-code-side-line\s*\{[^}]*display:\s*flex;[^}]*height:\s*18px;[^}]*line-height:\s*18px;[^}]*overflow:\s*visible;[^}]*white-space:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-ctn\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 auto;[^}]*overflow-wrap:\s*normal;[^}]*white-space:\s*pre;[^}]*word-break:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-prefix\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 12px;[^}]*line-height:\s*18px;/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.collapsible-panel\s*\{[^}]*background:\s*#ffffff;[^}]*border-color:\s*var\(--neutral-alpha-08\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
   });
 

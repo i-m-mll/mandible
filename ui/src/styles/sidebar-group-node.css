@@ -62,6 +62,14 @@
   text-align: left;
 }
 
+/* A selectable group has separate selection and disclosure controls. Keep the
+ * standard chevron beside the heading instead of using the rest of the row as
+ * an artificial spacer; the header still owns the full-width selected paint. */
+.sidebar-group-node--selectable > .sidebar-group-node__header > .sidebar-group-node__heading {
+  flex: 0 1 auto;
+  width: auto;
+}
+
 .sidebar-group-node--category > .sidebar-group-node__header > .sidebar-group-node__heading {
   color: var(--text-chrome-muted);
 }

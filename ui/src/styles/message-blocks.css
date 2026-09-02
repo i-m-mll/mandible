@@ -37,11 +37,17 @@
   max-width: var(--chat-max-width);
 }
 
-.msg-text-block,
+.msg-text-block {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  font-weight: 400;
+}
+
 .tool-call-group__summary,
 .tool-call-group__summary-text {
   font-family: var(--font-sans);
-  font-size: var(--text-lg);
+  font-size: var(--text-md);
   line-height: 1.6;
   font-weight: 400;
 }
@@ -224,7 +230,7 @@
   background: transparent;
   color: var(--tool-activity-text);
   font-family: var(--font-sans);
-  font-size: var(--text-lg);
+  font-size: var(--text-md);
   text-align: left;
   cursor: pointer;
 }
@@ -271,7 +277,7 @@
 }
 
 .tool-card__verb {
-  font-size: var(--text-lg);
+  font-size: var(--text-md);
   font-weight: 500;
   color: var(--tool-activity-text);
   white-space: nowrap;
@@ -293,7 +299,7 @@
   unicode-bidi: plaintext;
   text-align: left;
   font-family: var(--font-mono);
-  font-size: var(--text-lg);
+  font-size: var(--text-md);
   color: var(--tool-activity-text);
 }
 
@@ -365,7 +371,7 @@
   word-break: break-word;
   color: var(--tool-activity-box-text);
   font-family: var(--font-mono);
-  font-size: var(--text-lg);
+  font-size: var(--text-md);
   line-height: 1.5;
 }
 

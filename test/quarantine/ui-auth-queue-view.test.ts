@@ -264,7 +264,7 @@ describe('AuthQueueView', () => {
     expect(canonicalHeader?.querySelector('.detail-pane-header__identity .type-badge')).toBeNull();
     expect(document.querySelector('.auth-detail-meta')).toBeNull();
     expect(document.querySelector('.auth-detail__header-side')).toBeNull();
-    expect(screen.getByText('merge · feature/detail → main')).toBeTruthy();
+    expect(document.querySelector('.auth-detail__subtitle-line')?.textContent).toBe('merge · feature/detail → main');
     expect(screen.getByText('Approve')).toBeTruthy();
 
     const topline = canonicalHeader?.querySelector('.detail-pane-header__topline') as HTMLElement | null;
@@ -300,10 +300,10 @@ describe('AuthQueueView', () => {
     expect(screen.queryByLabelText('Auth request changes')).toBeNull();
     expect(screen.queryByText('Changes')).toBeNull();
     expect(screen.getByText('Structured auth detail specification')).toBeTruthy();
-    const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
-    expect(commitPanel?.querySelector('.panel__header > .panel__toggle')?.textContent).toContain('Commit Message');
-    expect(commitPanel?.querySelector('.panel__header > .panel__edit-btn')?.textContent).toBe('edit');
-    expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
+    const commitPanel = screen.getByText('Commit message').closest('.collapsible-panel') as HTMLElement | null;
+    expect(commitPanel?.querySelector('.collapsible-panel__toggle')?.textContent).toContain('Commit message');
+    expect(commitPanel?.querySelector('.collapsible-panel__actions > .panel__edit-btn')?.textContent).toBe('edit');
+    expect(commitPanel?.querySelector('.collapsible-panel__toggle .panel__edit-btn')).toBeNull();
 
     fireEvent.click(copyButton);
     expect(writeText).toHaveBeenCalledWith('auth:req-stru');
@@ -360,4 +360,3 @@ describe('AuthQueueView', () => {
   });
 
 });
-

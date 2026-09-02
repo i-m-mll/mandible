@@ -13,6 +13,8 @@ import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { EntityTimestamps } from '../components/shared/EntityTimestamps';
+import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
+import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
@@ -170,8 +172,6 @@ const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
   fileBody: 'auth-diff-file__body',
   fileHtml: 'auth-diff-file__html',
   fileFallback: 'auth-diff-file__fallback',
-  chevron: 'panel__chevron',
-  chevronOpen: 'panel__chevron--open',
 };
 
 /** Returns true when the request type has meaningful diff stats to display. */
@@ -566,7 +566,7 @@ function AuthActionBundle({
           return (
             <div
               key={action.id}
-              className={`auth-action-row auth-action-row--${action.state}${expanded ? ' auth-action-row--expanded' : ''}`}
+              className={`auth-action-row auth-action-row--${action.state}${canExpand ? ' auth-action-row--expandable' : ''}${expanded ? ' auth-action-row--expanded' : ''}`}
               title={action.outcome_detail ?? undefined}
             >
               {canExpand ? (
@@ -577,13 +577,9 @@ function AuthActionBundle({
                   aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
                   onClick={() => toggleExpanded(action.id)}
                 >
-                  <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
-                    {'\u25B8'}
-                  </span>
+                  <DisclosureChevronIcon expanded={expanded} size={13} />
                 </button>
-              ) : (
-                <span className="auth-action-row__expand-placeholder" aria-hidden="true" />
-              )}
+              ) : null}
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
                   <span className="auth-action-row__kind">{formatActionKind(action.kind)}:</span>
@@ -838,7 +834,7 @@ function AuthRequestDetail({
     [request.issue_closures, request.issues]
   );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
-  const hasLinks = Boolean(sessionId) || ((referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink);
+  const hasLinks = (referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink;
 
   useEffect(() => {
     if (isApproved) {
@@ -1046,10 +1042,8 @@ function AuthRequestDetail({
                   <EntityTimestamps
                     createdAt={request.created_at}
                     updatedAt={request.updated_at}
+                    createdBy={requesterDisplayName}
                   />
-                  {requesterDisplayName && (
-                    <span className="auth-detail__requester-name">{requesterDisplayName}</span>
-                  )}
                 </span>
                 <span className="auth-detail__subtitle-line">
                   {typeMeta.label.toLowerCase()}
@@ -1089,14 +1083,6 @@ function AuthRequestDetail({
               )}
               {hasLinks && (
                 <div className="auth-detail__links">
-                  {sessionId && (
-                    <a
-                      className="auth-card__link"
-                      href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
-                    >
-                      Requesting session
-                    </a>
-                  )}
                   {referenceRefs.length > 0 && canIssueLink && (
                     <span className="auth-card__issue-group">
                       <span className="auth-card__issue-group-label">References</span>
@@ -1169,20 +1155,12 @@ function AuthRequestDetail({
         ) : (
           <div className={panelsClass}>
             <div className="auth-detail__left-col">
-              <div className="panel">
-                <div className="panel__header">
-                  <button
-                    type="button"
-                    className="panel__toggle"
-                    onClick={() => setShowCommit((prev) => !prev)}
-                  >
-                    <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
-                      {'\u25B8'}
-                    </span>
-                    Commit Message
-                  </button>
-                  {/* Issue 7d64d8f — a canonical message is immutable once it leaves pending. */}
-                  {onUpdateField && mutationsAllowed
+              <CollapsiblePanel
+                title="Commit message"
+                expanded={showCommit}
+                onExpandedChange={setShowCommit}
+                bodyClassName="spec-panel"
+                actions={onUpdateField && mutationsAllowed
                     && (status === 'pending' || (failedLike && !isCanonicalMessage))
                     && !editingCommitMsg && (
                     <button
@@ -1196,10 +1174,9 @@ function AuthRequestDetail({
                       edit
                     </button>
                   )}
-                </div>
-                {showCommit && (
-                  editingCommitMsg ? (
-                    <div className="panel__body spec-panel">
+              >
+                  {editingCommitMsg ? (
+                    <>
                       <textarea
                         className="panel__edit-textarea"
                         value={editCommitValue}
@@ -1230,43 +1207,35 @@ function AuthRequestDetail({
                           Cancel
                         </button>
                       </div>
-                    </div>
+                    </>
                   ) : commitHtml ? (
                     <div
-                      className="panel__body spec-panel rendered-markdown"
+                      className="rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
-                    <div className="panel__body spec-panel spec-panel--empty">
+                    <div className="spec-panel--empty">
                       No commit message provided. Merge will use git's default message.
                     </div>
-                  )
-                )}
-              </div>
-              <div className="panel">
-                <button
-                  type="button"
-                  className="panel__toggle"
-                  onClick={() => setShowSpec((prev) => !prev)}
-                >
-                  <span className={`panel__chevron${showSpec ? ' panel__chevron--open' : ''}`}>
-                    {'\u25B8'}
-                  </span>
-                  Specification
-                </button>
-                {showSpec && (
-                  specHtml ? (
+                  )}
+              </CollapsiblePanel>
+              <CollapsiblePanel
+                title="Specification"
+                expanded={showSpec}
+                onExpandedChange={setShowSpec}
+                bodyClassName="spec-panel"
+              >
+                {specHtml ? (
                     <div
-                      className="panel__body spec-panel rendered-markdown"
+                      className="rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: specHtml }}
                     />
                   ) : (
-                    <div className="panel__body spec-panel spec-panel--empty">
+                    <div className="spec-panel--empty">
                       No specification attached.
                     </div>
-                  )
-                )}
-              </div>
+                  )}
+              </CollapsiblePanel>
             </div>
             {hasActionBundle && (
               <div className="auth-detail__right-col">
@@ -1283,9 +1252,7 @@ function AuthRequestDetail({
               className="console-output__toggle"
               onClick={() => setShowConsole((prev) => !prev)}
             >
-              <span className={`panel__chevron${showConsole ? ' panel__chevron--open' : ''}`}>
-                {'\u25B8'}
-              </span>
+              <DisclosureChevronIcon expanded={showConsole} size={13} />
               {showConsole ? 'Hide output' : 'Show output'}
               {isApproved && (
                 <span className="console-output__live-dot" />

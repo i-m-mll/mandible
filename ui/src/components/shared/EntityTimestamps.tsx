@@ -5,6 +5,8 @@ type TimestampValue = string | number | null | undefined;
 export type EntityTimestampsProps = {
   createdAt?: TimestampValue;
   updatedAt?: TimestampValue;
+  createdBy?: string | null;
+  updatedBy?: string | null;
   style?: RelativeTimeStyle;
   className?: string;
 };
@@ -18,27 +20,32 @@ function timestampMs(value: TimestampValue): number | null {
 function Timestamp({
   label,
   value,
+  actor,
   style,
 }: {
   label: 'created' | 'updated';
   value: number;
+  actor?: string | null;
   style: RelativeTimeStyle;
 }): JSX.Element {
   const date = new Date(value);
   return (
     <time dateTime={date.toISOString()} title={date.toLocaleString()}>
-      {label} {formatRelativeTime(value, { style })}
+      {label} {formatRelativeTime(value, { style })}{actor ? ` by ${actor}` : ''}
     </time>
   );
 }
 
 /**
- * Shared entity timestamp presentation. Creation is always explicit; an
- * independently changed update time is shown first so recent activity leads.
+ * Shared entity timestamp presentation. Creation is always explicit; a
+ * distinct update follows it. Actor attribution is rendered only when the
+ * caller has authoritative provenance for that event.
  */
 export function EntityTimestamps({
   createdAt,
   updatedAt,
+  createdBy,
+  updatedBy,
   style = 'recent',
   className,
 }: EntityTimestampsProps): JSX.Element | null {
@@ -50,11 +57,11 @@ export function EntityTimestamps({
 
   return (
     <span className={className}>
-      {showUpdated && updated !== null && (
-        <Timestamp label="updated" value={updated} style={style} />
-      )}
+      {created !== null && <Timestamp label="created" value={created} actor={createdBy} style={style} />}
       {showUpdated && created !== null && ' · '}
-      {created !== null && <Timestamp label="created" value={created} style={style} />}
+      {showUpdated && updated !== null && (
+        <Timestamp label="updated" value={updated} actor={updatedBy} style={style} />
+      )}
     </span>
   );
 }

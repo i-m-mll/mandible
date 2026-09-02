@@ -1,5 +1,6 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { ContextualAction } from './ContextualAction';
+import { DisclosureChevronIcon } from './DisclosureChevronIcon';
 import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
 
 type SidebarGroupNodeCommonProps = {
@@ -115,7 +116,7 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${selection ? ' sidebar-group-node--selectable' : ''}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
       data-testid={testIds?.root}
     >
@@ -154,7 +155,7 @@ export function SidebarGroupNode({
             aria-controls={bodyId}
             onClick={onToggle}
           >
-            <SidebarDisclosureChevronIcon expanded={expanded} />
+            <DisclosureChevronIcon expanded={expanded} />
           </button>
         ) : null}
         {action ? (
@@ -181,25 +182,6 @@ export function SidebarGroupNode({
         {body}
       </SidebarDisclosureRegion>
     </section>
-  );
-}
-
-export function SidebarDisclosureChevronIcon({ expanded, size = 14 }: { expanded: boolean; size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      data-sidebar-disclosure-chevron={expanded ? 'down' : 'right'}
-    >
-      <path d={expanded ? 'm6 9 6 6 6-6' : 'm9 18 6-6-6-6'} />
-    </svg>
   );
 }
 

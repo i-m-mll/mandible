@@ -1,12 +1,14 @@
 // Bug: b5e1c51 — PTY+Channel transport option for channel-connected sessions
 import type { JSX } from 'preact/jsx-runtime';
+import { createPortal } from 'preact/compat';
 import { useEffect, useState } from 'preact/hooks';
-import type { SessionRunOptionsSnapshot, SessionRunOptionValue } from '../../api';
+import type { SessionRunOptionsSnapshot, SessionRunOptionState, SessionRunOptionValue } from '../../api';
 import {
   getConsoleRunOptions,
   getConsoleLanePolicy,
   getSettings,
 } from '../../api';
+import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
@@ -18,6 +20,13 @@ type TransportLaneOption = {
   description: string;
   note: string;
 };
+
+const ADVANCED_RUN_OPTION_IDS = new Set([
+  'max_turns',
+  'max_cost_usd',
+  'system_prompt',
+  'setting_sources',
+]);
 
 type NewSessionDialogProps = {
   open: boolean;
@@ -191,6 +200,7 @@ export function NewSessionDialog({
   // Bug: 8baedeb — convention-setting validation warnings
   const [runOptions, setRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
   const [runOptionValues, setRunOptionValues] = useState<Record<string, SessionRunOptionValue>>({});
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -273,6 +283,7 @@ export function NewSessionDialog({
     setTransportLane(defaultTransportLaneForBackend('claude'));
     setRunOptions(null);
     setRunOptionValues({});
+    setAdvancedOpen(false);
     onClose();
   };
 
@@ -282,10 +293,43 @@ export function NewSessionDialog({
     }
   };
 
-  return (
+  const supportedRunOptions = (runOptions?.options ?? [])
+    .filter((option) => option.enforcement.status !== 'unsupported');
+  const basicRunOptions = supportedRunOptions.filter((option) => !ADVANCED_RUN_OPTION_IDS.has(option.id));
+  const advancedRunOptions = supportedRunOptions.filter((option) => ADVANCED_RUN_OPTION_IDS.has(option.id));
+
+  const renderRunOption = (option: SessionRunOptionState): JSX.Element => (
+    <label key={option.id} className="new-session-dialog__run-option">
+      <span className="new-session-dialog__run-option-label">{option.label}</span>
+      {option.kind === 'select' && (option.allowedValues?.length ?? 0) > 0 ? (
+        <select className="new-session-dialog__input" value={String(runOptionValues[option.id] ?? '')}
+          onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.value || null }))}>
+          <option value="">Default</option>
+          {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
+        </select>
+      ) : option.kind === 'boolean' ? (
+        <input type="checkbox" checked={runOptionValues[option.id] === true}
+          onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.checked }))} />
+      ) : (
+        <input className="new-session-dialog__input"
+          type={option.kind === 'integer' || option.kind === 'number' ? 'number' : 'text'}
+          min={option.kind === 'integer' ? '1' : option.kind === 'number' ? '0' : undefined}
+          placeholder={option.availability === 'awaiting_provider' ? 'Validated when provider starts' : 'Default'}
+          value={String(runOptionValues[option.id] ?? '')}
+          onInput={(event) => {
+            const raw = event.currentTarget.value;
+            const value = option.kind === 'integer' || option.kind === 'number' ? (raw ? Number(raw) : null) : (raw || null);
+            setRunOptionValues((current) => raw ? { ...current, [option.id]: value } : Object.fromEntries(Object.entries(current).filter(([id]) => id !== option.id)));
+          }} />
+      )}
+      {option.description && <span className="new-session-dialog__option-note">{option.description}</span>}
+    </label>
+  );
+
+  const dialog = (
     <div className="new-session-dialog-overlay" onClick={handleOverlayClick}>
-      <div className="new-session-dialog">
-        <h3>New Agent Chat</h3>
+      <div className="new-session-dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-dialog-title">
+        <h3 id="new-session-dialog-title">New Agent Chat</h3>
         <p className="new-session-dialog__intro">
           Choose the chat role first, then the backend that will power it.
         </p>
@@ -306,41 +350,37 @@ export function NewSessionDialog({
             />
           </div>
 
-          {(runOptions?.options ?? []).some((option) => option.enforcement.status !== 'unsupported') && (
+          {supportedRunOptions.length > 0 && (
             <div className="new-session-dialog__field">
-              <div className="new-session-dialog__label">Run options</div>
-              {(runOptions?.options ?? []).filter((option) => option.enforcement.status !== 'unsupported').map((option) => (
-                <label key={option.id} className="new-session-dialog__field">
-                  <span className="new-session-dialog__label">{option.label}</span>
-                  {option.kind === 'select' && (option.allowedValues?.length ?? 0) > 0 ? (
-                    <select className="new-session-dialog__input" value={String(runOptionValues[option.id] ?? '')}
-                      onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.value || null }))}>
-                      <option value="">Default</option>
-                      {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
-                    </select>
-                  ) : option.kind === 'boolean' ? (
-                    <input type="checkbox" checked={runOptionValues[option.id] === true}
-                      onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.checked }))} />
-                  ) : (
-                    <input className="new-session-dialog__input"
-                      type={option.kind === 'integer' || option.kind === 'number' ? 'number' : 'text'}
-                      min={option.kind === 'integer' ? '1' : option.kind === 'number' ? '0' : undefined}
-                      placeholder={option.availability === 'awaiting_provider' ? 'Validated when provider starts' : 'Default'}
-                      value={String(runOptionValues[option.id] ?? '')}
-                      onInput={(event) => {
-                        const raw = event.currentTarget.value;
-                        const value = option.kind === 'integer' || option.kind === 'number' ? (raw ? Number(raw) : null) : (raw || null);
-                        setRunOptionValues((current) => raw ? { ...current, [option.id]: value } : Object.fromEntries(Object.entries(current).filter(([id]) => id !== option.id)));
-                      }} />
+              <div className="new-session-dialog__section-title">Run options</div>
+              {basicRunOptions.length > 0 && (
+                <div className="new-session-dialog__run-options">
+                  {basicRunOptions.map(renderRunOption)}
+                </div>
+              )}
+              {advancedRunOptions.length > 0 && (
+                <div className="new-session-dialog__advanced">
+                  <button
+                    type="button"
+                    className="new-session-dialog__advanced-toggle"
+                    aria-expanded={advancedOpen}
+                    onClick={() => setAdvancedOpen((value) => !value)}
+                  >
+                    <span>Advanced</span>
+                    <DisclosureChevronIcon expanded={advancedOpen} size={13} />
+                  </button>
+                  {advancedOpen && (
+                    <div className="new-session-dialog__run-options">
+                      {advancedRunOptions.map(renderRunOption)}
+                    </div>
                   )}
-                  {option.description && <span className="new-session-dialog__option-note">{option.description}</span>}
-                </label>
-              ))}
+                </div>
+              )}
             </div>
           )}
 
           <div className="new-session-dialog__field">
-            <div className="new-session-dialog__label">Kind</div>
+            <div className="new-session-dialog__section-title">Kind</div>
             <div className="new-session-dialog__options">
               {KIND_OPTIONS.map((option) => (
                 <OptionCard
@@ -355,7 +395,7 @@ export function NewSessionDialog({
           </div>
 
           <div className="new-session-dialog__field">
-            <div className="new-session-dialog__label">Backend</div>
+            <div className="new-session-dialog__section-title">Backend</div>
             <div className="new-session-dialog__options">
               {BACKEND_OPTIONS.map((option) => {
                 const disabled = kind === 'operator' && option.value !== 'claude';
@@ -378,7 +418,7 @@ export function NewSessionDialog({
           </div>
 
           <div className="new-session-dialog__field">
-            <div className="new-session-dialog__label">Transport lane</div>
+            <div className="new-session-dialog__section-title">Transport lane</div>
             <div className="new-session-dialog__options">
               {transportOptions.map((option) => (
                 <OptionCard
@@ -405,4 +445,5 @@ export function NewSessionDialog({
       </div>
     </div>
   );
+  return createPortal(dialog, document.body);
 }

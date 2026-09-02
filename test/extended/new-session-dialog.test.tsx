@@ -10,20 +10,31 @@ const getConsoleLanePolicy = vi.fn(async () => ({
   claude_default_backend_type: "sdk" as const,
   claude_pty_lane_enabled: false,
 }));
+const getConsoleRunOptions = vi.fn(async () => ({
+  backendType: 'sdk' as const,
+  command: 'claude',
+  phase: 'ready' as const,
+  revision: 1,
+  options: [],
+}));
 
 vi.mock("../../ui/src/api", () => ({
   getSettings: vi.fn(async () => ({})),
   getConsoleLanePolicy: (...args: []) => getConsoleLanePolicy(...args),
-  getConsoleRunOptions: vi.fn(async () => ({
-    backend: "test",
-    options: [],
-  })),
+  getConsoleRunOptions: (..._args: unknown[]) => getConsoleRunOptions(),
 }));
 
 beforeEach(() => {
   getConsoleLanePolicy.mockResolvedValue({
     claude_default_backend_type: "sdk",
     claude_pty_lane_enabled: false,
+  });
+  getConsoleRunOptions.mockResolvedValue({
+    backendType: 'sdk',
+    command: 'claude',
+    phase: 'ready',
+    revision: 1,
+    options: [],
   });
 });
 
@@ -33,6 +44,33 @@ afterEach(() => {
 });
 
 describe("NewSessionDialog transport lanes", () => {
+  it('keeps ordinary run options compact and places limits and overrides under Advanced', async () => {
+    getConsoleRunOptions.mockResolvedValue({
+      backendType: 'sdk',
+      command: 'claude',
+      phase: 'ready',
+      revision: 1,
+      options: [
+        { id: 'model', label: 'Model', category: 'model', kind: 'text', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: null, enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+        { id: 'max_turns', label: 'Maximum turns', category: 'limit', kind: 'integer', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: null, enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+        { id: 'max_cost_usd', label: 'Maximum cost (USD)', category: 'limit', kind: 'number', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: null, enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+        { id: 'system_prompt', label: 'System prompt', category: 'prompt', kind: 'text', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: null, enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+        { id: 'setting_sources', label: 'Setting sources', category: 'settings', kind: 'text', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: null, enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+      ],
+    });
+
+    render(<NewSessionDialog open onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    expect(await screen.findByText('Model')).toBeTruthy();
+    expect(screen.queryByText('Maximum turns')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    expect(screen.getByText('Maximum turns')).toBeTruthy();
+    expect(screen.getByText('Maximum cost (USD)')).toBeTruthy();
+    expect(screen.getByText('System prompt')).toBeTruthy();
+    expect(screen.getByText('Setting sources')).toBeTruthy();
+    expect(document.querySelector('.new-session-dialog-overlay')?.parentElement).toBe(document.body);
+  });
+
   it("defaults Claude sessions to the SDK transport lane", async () => {
     const onSubmit = vi.fn();
     render(<NewSessionDialog open onClose={vi.fn()} onSubmit={onSubmit} />);

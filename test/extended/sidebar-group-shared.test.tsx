@@ -111,6 +111,32 @@ describe('shared sidebar group presentation', () => {
     expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
   });
 
+  it('keeps a selectable group disclosure immediately after its heading content', () => {
+    render(
+      <SidebarGroupNode
+        presentation="nested"
+        id="briefing-group"
+        label="Sara's skill, breakdown"
+        expanded
+        onToggle={() => undefined}
+        selection={{ selected: true, label: "Open Sara's skill, breakdown", onSelect: () => undefined }}
+      >
+        <span>Global policy</span>
+      </SidebarGroupNode>,
+    );
+
+    const section = document.querySelector('.sidebar-group-node--selectable') as HTMLElement;
+    const header = section.querySelector('.sidebar-group-node__header') as HTMLElement;
+    const heading = section.querySelector('.sidebar-group-node__heading') as HTMLElement;
+    const disclosure = section.querySelector('.sidebar-group-node__disclosure') as HTMLElement;
+    expect(Array.from(header.children)).toEqual([heading, disclosure]);
+    const selectableRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--selectable > \.sidebar-group-node__header > \.sidebar-group-node__heading \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(selectableRule).toContain('flex: 0 1 auto');
+    expect(selectableRule).toContain('width: auto');
+  });
+
   it('aligns category children and Show more to the heading text column without guide spines', () => {
     const categoryRule = sidebarGroupStylesheet.match(
       /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,

@@ -3,7 +3,7 @@ import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
-import { SidebarDisclosureChevronIcon } from '../shared/SidebarGroupNode';
+import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
 import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
 
 export type ToolResultContent =
@@ -353,7 +353,7 @@ export function ToolCard({
         {status === 'failed' && (
           <span className="tool-card__status tool-card__status--failed">Failed</span>
         )}
-        <span className="tool-card__chevron"><SidebarDisclosureChevronIcon expanded={isExpanded} /></span>
+        <span className="tool-card__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
       {isExpanded ? (
         <div id={bodyId} role="region" aria-label={`${visual.verb} details`} className="tool-card__body">
