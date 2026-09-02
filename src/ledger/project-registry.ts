@@ -820,7 +820,14 @@ export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[
   { table: "auth_request_merge_succeeded_facts", columns: ["project_id"] },
   { table: "managed_tasks", columns: ["project_id"] },
   { table: "managed_task_events", columns: ["project_id"] },
+  { table: "ledger_change_feed_state", columns: ["project_id"] },
+  { table: "ledger_change_log", columns: ["project_id"] },
 ];
+
+const PROJECT_MERGE_SPECIAL_TABLES = new Set([
+  "ledger_change_feed_state",
+  "ledger_change_log",
+]);
 
 // Project-id-bearing columns that are DELIBERATELY not repointed on merge (kept
 // as historical records). Currently empty: every project-scoped column moves, so
@@ -930,6 +937,72 @@ function countMoves(db: Db, sourceId: string): Array<{ table: string; column: st
   return moves;
 }
 
+function mergeLedgerChangeFeed(db: Db, sourceId: string, targetId: string, now: number): void {
+  if (!tableExists(db, "ledger_change_feed_state") || !tableExists(db, "ledger_change_log")) return;
+  const readState = db.prepare(
+    `SELECT next_sequence, retained_from_sequence
+       FROM ledger_change_feed_state WHERE project_id = ?`,
+  );
+  const readRows = db.prepare(
+    `SELECT sequence, event_id FROM ledger_change_log
+      WHERE project_id = ? ORDER BY sequence`,
+  );
+  const sourceState = readState.get(sourceId) as
+    | { next_sequence: number; retained_from_sequence: number }
+    | undefined;
+  const targetState = readState.get(targetId) as
+    | { next_sequence: number; retained_from_sequence: number }
+    | undefined;
+  const sourceRows = readRows.all(sourceId) as Array<{ sequence: number; event_id: string }>;
+  const targetRows = readRows.all(targetId) as Array<{ sequence: number; event_id: string }>;
+
+  const assertContiguous = (
+    label: string,
+    state: { next_sequence: number; retained_from_sequence: number } | undefined,
+    rows: Array<{ sequence: number }>,
+  ): void => {
+    if (!state) {
+      if (rows.length > 0) {
+        throw new ProjectRegistryError(`${label} change feed has rows without state`, "foreign_key_violation");
+      }
+      return;
+    }
+    const expectedCount = state.next_sequence - state.retained_from_sequence;
+    if (rows.length !== expectedCount
+      || rows.some((row, index) => row.sequence !== state.retained_from_sequence + index)) {
+      throw new ProjectRegistryError(`${label} change feed is not contiguous`, "foreign_key_violation");
+    }
+  };
+  assertContiguous("source", sourceState, sourceRows);
+  assertContiguous("target", targetState, targetRows);
+
+  const targetNext = targetState?.next_sequence ?? 1;
+  const moveRow = db.prepare(
+    `UPDATE ledger_change_log SET project_id = ?, sequence = ?
+      WHERE project_id = ? AND event_id = ?`,
+  );
+  sourceRows.forEach((row, index) => {
+    moveRow.run(targetId, targetNext + index, sourceId, row.event_id);
+  });
+
+  if (sourceState) {
+    if (targetState) {
+      db.prepare(
+        `UPDATE ledger_change_feed_state
+            SET next_sequence = ?, updated_at = ?
+          WHERE project_id = ?`,
+      ).run(targetNext + sourceRows.length, now, targetId);
+    } else {
+      db.prepare(
+        `INSERT INTO ledger_change_feed_state (
+           project_id, next_sequence, retained_from_sequence, updated_at
+         ) VALUES (?, ?, 1, ?)`,
+      ).run(targetId, 1 + sourceRows.length, now);
+    }
+    db.prepare("DELETE FROM ledger_change_feed_state WHERE project_id = ?").run(sourceId);
+  }
+}
+
 /**
  * Guarded normalization. Always backfills missing keys (safe). When `merge` is
  * provided, plans (and, with `apply`, executes) moving every project-scoped row
@@ -990,7 +1063,9 @@ export function repairRegistry(
       const now = Date.now();
       const run = db.transaction(() => {
         db.pragma("foreign_keys = ON");
+        mergeLedgerChangeFeed(db, sourceId, targetId, now);
         for (const { table, columns } of PROJECT_ID_COLUMNS) {
+          if (PROJECT_MERGE_SPECIAL_TABLES.has(table)) continue;
           for (const column of columns) {
             if (!tableHasColumn(db, table, column)) continue;
             db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`).run(targetId, sourceId);
