@@ -49,12 +49,6 @@
   min-width: 0;
 }
 
-.feedback-collections-sidebar__group.sidebar-group-node--category
-  > .sidebar-group-node__header
-  > .sidebar-group-node__heading {
-  color: var(--text-primary);
-}
-
 .feedback-collections-sidebar__body > [data-testid="feedback-collections-sidebar"] {
   min-height: 100%;
 }

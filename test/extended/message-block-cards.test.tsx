@@ -123,7 +123,7 @@ describe('message action cards', () => {
     expect(screen.queryByText('complete')).toBeNull();
   });
 
-  it('uses the exact Codex tool tokens and full-width prose-scale bodies', () => {
+  it('uses exact Codex tool tokens on one coherent box and prose summary contract', () => {
     const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
     for (const token of ['#767778', '#F4F4F4', '#DADADB', '#88888A', '#A3A3A3', '#242424', '#464646', '#919191']) {
       expect(css).toContain(token);
@@ -131,11 +131,30 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(css).toMatch(/\.msg-text-block,\s*\.tool-call-group__summary,\s*\.tool-call-group__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.6;[^}]*font-weight:\s*400;/s);
+    expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);/s);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
+    expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
-    expect(css).toMatch(/\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
+    expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?background:\s*transparent;/);
+    expect(css).toMatch(/\.tool-card__input code,[\s\S]*?background:\s*transparent;/);
+    expect(css).not.toContain('background: var(--status-danger-bg-soft)');
+    expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
+    expect(css).toContain('var(--overflow-fade-color, var(--surface-app))');
+
+    const group = render(<MessageGroup turn={{
+      id: 'typography',
+      assistantEvent: {
+        type: 'assistant', session_id: 's1', parent_tool_use_id: null,
+        message: { role: 'assistant', content: [
+          { type: 'tool_use', id: 'one', name: 'Read', input: { path: 'one' } },
+          { type: 'tool_use', id: 'two', name: 'Read', input: { path: 'two' } },
+        ] },
+      },
+      toolResults: new Map(),
+    }} isStreaming={false} />);
+    expect(group.container.querySelector('.tool-call-group__summary > .tool-call-group__summary-text')).toBeTruthy();
   });
 
   it('groups only maximal consecutive tool runs and keeps leaves independently foldable', () => {
@@ -150,7 +169,7 @@ describe('message action cards', () => {
       id: 'turn-tools',
       assistantEvent: {
         type: 'assistant', session_id: 's1', parent_tool_use_id: null,
-        message: { role: 'assistant', content: blocks },
+        message: { role: 'assistant', content: blocks, usage: { input_tokens: 10, output_tokens: 5 } },
       },
       toolResults: new Map([
         ['tool-1', { type: 'tool_result', tool_use_id: 'tool-1', content: 'one' }],
@@ -176,6 +195,7 @@ describe('message action cards', () => {
     expect(leaves[1].getAttribute('aria-expanded')).toBe('false');
     expect(view.container.textContent).not.toContain('Success');
     expect(view.container.textContent).not.toContain('exit ok');
+    expect(view.container.textContent).not.toContain('tokens');
   });
 
   it('keeps a growing live tool run on the same persisted disclosure key', () => {
@@ -226,21 +246,32 @@ describe('message action cards', () => {
     setScrollMetrics(outerScroll, 100, 240);
     outerScroll.scrollTop = 40;
     fireEvent.scroll(outerScroll);
+    expect(outerFade.classList.contains('overflow-fade--above')).toBe(true);
     expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card__header')!);
     expect(view.container.querySelectorAll('.tool-card__body > .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
+    const inputFade = view.container.querySelector<HTMLElement>('.tool-card__input .overflow-fade')!;
+    const inputScroll = inputFade.querySelector<HTMLElement>('.overflow-fade__scroll')!;
+    setScrollMetrics(inputScroll, 40, 100);
+    inputScroll.scrollTop = 20;
+    fireEvent.scroll(inputScroll);
+    expect(inputFade.classList.contains('overflow-fade--above')).toBe(true);
+    expect(inputFade.classList.contains('overflow-fade--below')).toBe(true);
     const leafFade = view.container.querySelector<HTMLElement>('.tool-card__result .overflow-fade')!;
     const leafScroll = leafFade.querySelector<HTMLElement>('.overflow-fade__scroll')!;
     setScrollMetrics(leafScroll, 80, 180);
     leafScroll.scrollTop = 0;
     fireEvent.scroll(leafScroll);
+    expect(leafFade.classList.contains('overflow-fade--above')).toBe(false);
     expect(leafFade.classList.contains('overflow-fade--below')).toBe(true);
+    expect(inputScroll.scrollTop).toBe(20);
     expect(outerScroll.scrollTop).toBe(40);
     expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
 
     leafScroll.scrollTop = 100;
     fireEvent.scroll(leafScroll);
+    expect(leafFade.classList.contains('overflow-fade--above')).toBe(true);
     expect(leafFade.classList.contains('overflow-fade--below')).toBe(false);
     expect(outerScroll.scrollTop).toBe(40);
     expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
@@ -249,6 +280,7 @@ describe('message action cards', () => {
       outerScroll.scrollTop = 140;
       fireEvent.scroll(outerScroll);
     });
+    expect(outerFade.classList.contains('overflow-fade--above')).toBe(true);
     expect(outerFade.classList.contains('overflow-fade--below')).toBe(false);
     expect(leafScroll.scrollTop).toBe(100);
   });

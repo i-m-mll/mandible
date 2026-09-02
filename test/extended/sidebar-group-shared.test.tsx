@@ -127,6 +127,20 @@ describe('shared sidebar group presentation', () => {
     expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--category > .sidebar-disclosure-region::before');
   });
 
+  it('gives no-icon structural nesting its own shared child inset', () => {
+    render(
+      <SidebarGroupNode presentation="nested" id="policy" label="Policy" expanded onToggle={() => undefined}>
+        <span>Nested Briefing</span>
+      </SidebarGroupNode>,
+    );
+    expect(screen.getByRole('button', { name: 'Policy' }).closest('section')?.classList.contains('sidebar-group-node--nested')).toBe(true);
+    const nestedRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--nested > \.sidebar-disclosure-region \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(nestedRule).toContain('calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column))');
+    expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--nested > .sidebar-disclosure-region::before');
+  });
+
   it('shows and persists the default bounded Chat group size through generic settings', async () => {
     vi.spyOn(api, 'getInstructionDeliverySettings').mockResolvedValue({ targets: [], postExport: '' });
     vi.spyOn(api, 'listProjectsForPicker').mockResolvedValue([]);

@@ -348,7 +348,7 @@ export function CollectionsSidebar({
                 <SidebarGroupNode
                   key={group.id}
                   id={`briefing-group-${group.id}`}
-                  presentation="category"
+                  presentation="nested"
                   className="feedback-collections-sidebar__group"
                   bodyClassName="feedback-collections-sidebar__group-layout"
                   label={group.name}

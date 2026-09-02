@@ -33,10 +33,17 @@
 
 /* msg-text-block — unified markdown text block (replaces .stream-text-block + .block-markdown) */
 .msg-text-block {
-  line-height: 1.6;
-  font-size: var(--text-lg);
   color: var(--text-primary);
   max-width: var(--chat-max-width);
+}
+
+.msg-text-block,
+.tool-call-group__summary,
+.tool-call-group__summary-text {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  font-weight: 400;
 }
 
 /* user-bubble — unified user message bubble (replaces .user-prompt-bubble) */
@@ -345,6 +352,7 @@
   padding: 10px;
   box-sizing: border-box;
   width: 100%;
+  color: var(--tool-activity-box-text);
   --overflow-fade-color: var(--tool-activity-background);
 }
 
@@ -352,6 +360,7 @@
 .tool-card__terminal pre,
 .tool-card__result pre {
   margin: 0;
+  background: transparent;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--tool-activity-box-text);
@@ -365,14 +374,18 @@
   color: var(--tool-activity-box-text);
 }
 
+.tool-card__input code,
+.tool-card__terminal code,
+.tool-card__result code {
+  background: transparent;
+}
+
 .tool-card__result {
   margin-top: 4px;
-  color: var(--text-muted);
 }
 
 .tool-card__result--error {
   border-left: 3px solid var(--status-danger-fg);
-  background: var(--status-danger-bg-soft);
 }
 
 .tool-call-group {
@@ -390,8 +403,6 @@
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
-  font-family: var(--font-sans);
-  font-size: var(--text-lg);
   text-align: left;
   cursor: pointer;
 }
@@ -421,17 +432,30 @@
   overscroll-behavior: contain;
 }
 
+.overflow-fade::before,
 .overflow-fade::after {
   content: '';
   position: absolute;
   right: 0;
-  bottom: 0;
   left: 0;
   height: 4em;
-  background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-base)) 72%);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
+}
+
+.overflow-fade::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 28%, transparent 100%);
+}
+
+.overflow-fade::after {
+  bottom: 0;
+  background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 72%);
+}
+
+.overflow-fade--above::before {
+  opacity: 1;
 }
 
 .overflow-fade--below::after {

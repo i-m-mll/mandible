@@ -2,13 +2,12 @@
 // Bug: bce7370 — Adapted to use shared message-blocks components
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
-import { useMemo } from 'preact/hooks';
 import type { ContentBlock, MessageGroupProps, ToolResultContentBlock, ToolUseContentBlock } from './types';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
-import { MessageActions, type MessageActionsMeta } from '../shared/MessageActions';
+import { MessageActions } from '../shared/MessageActions';
 import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
 import { summarizeToolRun } from '../message-blocks/toolPresentation';
 
@@ -38,15 +37,6 @@ export function MessageGroup({
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   const newestPlanIndex = latestPlanIndex(blocks);
-
-  // Bug: 0a1ad82 — Thread turn-level metadata to per-block MessageActions
-  const turnMeta: MessageActionsMeta | undefined = useMemo(() => {
-    const msg = assistantEvent.message;
-    const usage = msg.usage;
-    if (!usage) return undefined;
-    const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : undefined;
-    return { tokenCount };
-  }, [assistantEvent]);
 
   function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
     let inner: JSX.Element | null = null;
@@ -142,7 +132,7 @@ export function MessageGroup({
           onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
           onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
           dagUuid={source?.dagUuid}
-          metadata={{ ...turnMeta, timestamp: source?.timestamp }}
+          metadata={{ timestamp: source?.timestamp }}
         />
       </div>
     );
