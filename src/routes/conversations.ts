@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
-import { deriveConversationAttachState } from "../conversation-attach-state.js";
 import {
   ClientAuthzError,
   operatorOnlyManagedSessionRoute,
@@ -25,7 +24,6 @@ import {
   type ConversationSidebarProject,
   type ConversationSidebarSort,
 } from "../conversations/sidebar-projection.js";
-import type { SessionManager } from "../session-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
@@ -86,7 +84,7 @@ interface BlockRow {
   dag_parent_uuid: string | null;
 }
 
-function mapConversation(row: ConversationRow, sessionManager?: SessionManager) {
+function mapConversation(row: ConversationRow) {
   let tags: string[] = [];
   try {
     const parsed: unknown = JSON.parse(row.tags);
@@ -120,7 +118,6 @@ function mapConversation(row: ConversationRow, sessionManager?: SessionManager) 
     is_sidechain: row.is_sidechain === 1,
     agent_id: row.agent_id ?? null,
     children_count: row.children_count ?? 0,
-    attach_state: deriveConversationAttachState(row, getDb(), sessionManager),
   };
 }
 
@@ -133,8 +130,8 @@ function maskSourceBackedConversationRow(row: ConversationRow): ConversationRow 
   };
 }
 
-function mapSearchConversation(row: ConversationRow, sessionManager?: SessionManager) {
-  return mapConversation(maskSourceBackedConversationRow(row), sessionManager);
+function mapSearchConversation(row: ConversationRow) {
+  return mapConversation(maskSourceBackedConversationRow(row));
 }
 
 type ProjectedConversationRow = ConversationRow & {
@@ -145,12 +142,11 @@ type ProjectedConversationRow = ConversationRow & {
 function mapSidebarConversation(
   row: ProjectedConversationRow,
   fullTextSearch: boolean,
-  sessionManager?: SessionManager,
 ) {
   return {
     ...(fullTextSearch
-      ? mapSearchConversation(row, sessionManager)
-      : mapConversation(row, sessionManager)),
+      ? mapSearchConversation(row)
+      : mapConversation(row)),
     canonical_project_id: row.canonical_project_id ?? null,
     canonical_project_key: row.canonical_project_key ?? null,
   };
@@ -451,7 +447,7 @@ function exportToJson(
 
 // --- Route registration ---
 
-export function registerConversationRoutes(server: RouteRegistrar, sessionManager?: SessionManager): void {
+export function registerConversationRoutes(server: RouteRegistrar): void {
   const db = getDb();
   const sourceReader = new ConversationSourceReader(db);
 
@@ -748,7 +744,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
           conversations: group.rows.map((row) => mapSidebarConversation(
             row,
             fullTextSearch,
-            sessionManager,
           )),
           next_cursor: group.next_cursor,
         })),
@@ -888,7 +883,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
       rows.sort((left, right) => (pageOrder.get(left.id) ?? 0) - (pageOrder.get(right.id) ?? 0));
       sendJson(res, 200, {
-        conversations: rows.map((row) => mapSearchConversation(row, sessionManager)),
+        conversations: rows.map((row) => mapSearchConversation(row)),
         total: ids.length,
         page,
         limit,
@@ -915,7 +910,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       .all(...params, limit, offset) as ConversationRow[];
 
     sendJson(res, 200, {
-      conversations: rows.map((row) => mapConversation(row, sessionManager)),
+      conversations: rows.map((row) => mapConversation(row)),
       total: countRow.total,
       page,
       limit,
@@ -975,7 +970,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         if (results.length >= limit) break;
         const snippet = makeSnippet(maskUnverifiedCandidates(conversation.title || "").text);
         if (snippet) {
-          results.push({ conversation: mapSearchConversation(conversation, sessionManager), block: null, snippet });
+          results.push({ conversation: mapSearchConversation(conversation), block: null, snippet });
         }
       }
       sendJson(res, 200, { results, total: results.length, limit });
@@ -996,7 +991,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       if (read.status !== "source" && read.status !== "legacy") continue;
       const block = read.value;
       results.push({
-        conversation: mapSearchConversation(conversation, sessionManager),
+        conversation: mapSearchConversation(conversation),
         // Search responses carry only structural block metadata plus the
         // verified masked snippet. Returning the complete durable body here
         // would duplicate the detail route and could bypass the cache's
@@ -1253,8 +1248,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     const startPosition = readableBlocks[0]?.position ?? null;
     const endPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
     const mapped = useSourceReader
-      ? mapConversation(maskSourceBackedConversationRow(conv), sessionManager)
-      : mapConversation(conv, sessionManager);
+      ? mapConversation(maskSourceBackedConversationRow(conv))
+      : mapConversation(conv);
     mapped.children_count = children.length;
     const hasBefore = startPosition !== null && (useSourceReader
       ? startPosition > 0
@@ -1495,150 +1490,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
   }), { fileRpc: "deny" });
 
-  // POST /api/conversations/:id/resume — Resume a conversation from a specific message
-  // Bug: 40f0298 — DAG branching: create a Console session resuming at a message
-  server.post("/api/conversations/:id/resume", operatorOnlyManagedSessionRoute(async (req, res) => {
-    const id = req.params.id;
-    if (!id) {
-      sendJson(res, 400, { error: "Missing conversation id" });
-      return;
-    }
-
-    const body = readBody<{
-      message_dag_uuid?: string;
-      label?: string;
-      model?: string;
-      fork?: boolean;
-    }>(req);
-    const conv = db
-      .prepare("SELECT * FROM conversations WHERE id = ?")
-      .get(id) as ConversationRow | undefined;
-    if (!conv) {
-      sendJson(res, 404, { error: "Conversation not found" });
-      return;
-    }
-
-    try {
-      if (!sessionManager) {
-        sendJson(res, 501, { error: "SessionManager not available" });
-        return;
-      }
-
-      const attachState = deriveConversationAttachState(conv, db, sessionManager);
-      if (body.fork === true) {
-        if (!body.message_dag_uuid) {
-          sendJson(res, 400, { error: "Missing message_dag_uuid", attach_state: attachState });
-          return;
-        }
-        if (conv.source !== "claude_code") {
-          sendJson(res, 501, {
-            error: "fork_unsupported",
-            message: "Fork is not supported for this provider.",
-            attach_state: attachState,
-          });
-          return;
-        }
-        const sdk = await import("@anthropic-ai/claude-agent-sdk");
-        if (typeof sdk.forkSession !== "function") {
-          sendJson(res, 501, {
-            error: "fork_unsupported",
-            message: "SDK does not support forkSession.",
-            attach_state: attachState,
-          });
-          return;
-        }
-        const result = await sdk.forkSession(conv.session_id, {
-          upToMessageId: body.message_dag_uuid,
-        });
-        sendJson(res, 200, { session_id: result.sessionId, attach_state: attachState });
-        return;
-      }
-
-      if (attachState.continuation.kind === "live-send") {
-        sendJson(res, 200, {
-          console_session_id: attachState.continuation.console_session_id,
-          attach_state: attachState,
-        });
-        return;
-      }
-
-      if (attachState.continuation.kind === "blocked") {
-        sendJson(res, 409, {
-          error: "resume_conflict",
-          reason: attachState.reason,
-          message: "This conversation appears live outside Mandible; resume is blocked to avoid interleaving transcripts.",
-          attach_state: attachState,
-        });
-        return;
-      }
-
-      if (attachState.continuation.kind === "hidden") {
-        sendJson(res, 409, {
-          error: "resume_unavailable",
-          reason: attachState.reason,
-          message: "This conversation is historical and cannot be resumed by the current provider.",
-          attach_state: attachState,
-        });
-        return;
-      }
-
-      if (attachState.continuation.kind === "message-anchor-resume" && !body.message_dag_uuid) {
-        sendJson(res, 409, {
-          error: "resume_unavailable",
-          reason: "no-message-anchor",
-          message: "This Claude conversation has no resumable message anchor.",
-          attach_state: attachState,
-        });
-        return;
-      }
-
-      const args: string[] = [];
-      const model = typeof body.model === "string" && body.model.trim()
-        ? body.model.trim()
-        : conv.model;
-      if (model) {
-        args.push("--model", model);
-      }
-
-      const command = conv.source === "codex"
-        ? "codex"
-        : conv.source === "gemini"
-          ? "gemini"
-          : "claude";
-      const backendType = command === "claude" ? "sdk" : command === "gemini" ? "acp" : "spawn";
-
-      const newSession = sessionManager.create({
-        label: body.label || conv.title || "Resumed conversation",
-        command,
-        args,
-        backend_type: backendType,
-        provider_session_id: conv.session_id,
-        resume_at_message: attachState.continuation.kind === "message-anchor-resume"
-          ? body.message_dag_uuid ?? null
-          : null,
-        cwd: conv.cwd ?? undefined,
-      });
-
-      sendJson(res, 200, {
-        console_session_id: newSession.id,
-        attach_state: {
-          ...attachState,
-          kind: "live-owned",
-          reason: "mandible-owned",
-          console_session_id: newSession.id,
-          continuation: { kind: "live-send", console_session_id: newSession.id },
-          checked_at: Date.now(),
-        },
-      });
-    } catch (error) {
-      sendJson(res, 500, {
-        error: "Resume failed",
-        message: error instanceof Error ? error.message : String(error),
-        details: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }), { fileRpc: "deny" });
-
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
   server.get("/api/conversations/:id/blocks", async (req, res) => {
     const requestedRef = req.params.id;
@@ -1796,7 +1647,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         return;
       }
       broadcast("conversation:updated", { id, updates: result.changedFields });
-      sendJson(res, 200, mapConversation(result.updated, sessionManager));
+      sendJson(res, 200, mapConversation(result.updated));
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid metadata update" });
     }

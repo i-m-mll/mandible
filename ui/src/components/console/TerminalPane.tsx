@@ -13,12 +13,10 @@ import { usePermissionQueue } from './usePermissionQueue';
 import { TerminalPaneHeader } from './TerminalPaneHeader';
 import { TerminalDebugOverlay } from './TerminalDebugOverlay';
 import { DetailPaneNotice } from '../shared/DetailPaneNotice';
-import {
-  cancelConsolePrompt,
-  sendConsolePrompt,
-} from '../../api';
-import type { ConsolePermissionDecision } from '../../api';
-import type { ComposerUsage, QueuedPrompt } from './Composer';
+import { submitConversationControl } from '../../api';
+import type { ConsolePermissionDecision, ConversationControlApiError, ConversationControlSnapshot } from '../../api';
+import type { ComposerUsage } from './Composer';
+import { conversationControlPresentation } from '../../chat/conversationControl';
 
 export type ViewMode = 'terminal' | 'rich' | 'events';
 type ActiveSubagent = {
@@ -42,6 +40,9 @@ type TerminalPaneProps = {
   transportBadge?: ConsoleSession['transport_badge'];
   attention?: ConsoleSession['attention'];
   providerSessionId: string | null;
+  conversationControl: ConversationControlSnapshot | null;
+  conversationMessageAnchor: string | null;
+  onConversationControlChange: (snapshot: ConversationControlSnapshot) => void;
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
@@ -208,6 +209,9 @@ export function TerminalPane({
   transportBadge,
   attention,
   providerSessionId,
+  conversationControl,
+  conversationMessageAnchor,
+  onConversationControlChange,
   isVisible,
   viewMode,
   onViewModeChange,
@@ -217,7 +221,6 @@ export function TerminalPane({
   const {
     streamEvents,
     setStreaming,
-    streaming,
     hydratingHistory,
     elapsedSeconds,
     beginLocalPrompt,
@@ -256,10 +259,8 @@ export function TerminalPane({
   const [channelEventCount, setChannelEventCount] = useState(0);
   const [unseenEventCount, setUnseenEventCount] = useState(0);
   const [prompt, setPrompt] = useState(() => readComposerDraft(sessionId));
-  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
-  const [stopBusy, setStopBusy] = useState(false);
+  const [controlError, setControlError] = useState<string | null>(null);
   const lastSeenEventCountRef = useRef(0);
-  const flushingQueueRef = useRef(false);
 
   // Reset unseen count when Events tab is activated
   useEffect(() => {
@@ -294,7 +295,6 @@ export function TerminalPane({
 
   useEffect(() => {
     setPrompt(readComposerDraft(sessionId));
-    setQueuedPrompts([]);
   }, [sessionId]);
 
   useEffect(() => {
@@ -320,25 +320,13 @@ export function TerminalPane({
     setSidebarTab('info');
   };
 
-  const submitRichPrompt = (submittedPrompt: string) => {
-    beginLocalPrompt(submittedPrompt);
-    void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-      setStreaming(false);
-    });
-  };
-
-  useEffect(() => {
-    if (streaming || viewMode !== 'rich' || queuedPrompts.length === 0 || flushingQueueRef.current) {
-      return;
-    }
-    flushingQueueRef.current = true;
-    const [nextPrompt, ...remainingPrompts] = queuedPrompts;
-    setQueuedPrompts(remainingPrompts);
-    submitRichPrompt(nextPrompt.text);
-    window.setTimeout(() => {
-      flushingQueueRef.current = false;
-    }, 0);
-  }, [queuedPrompts, streaming, viewMode]);
+  const controlPresentation = conversationControl
+    ? conversationControlPresentation(conversationControl)
+    : null;
+  const controlComposerEnabled = controlPresentation?.composer === 'enabled'
+    && (conversationControl?.capability.kind !== 'message-anchor-resume' || conversationMessageAnchor !== null);
+  const controlStreaming = conversationControl?.turn.kind === 'running'
+    || conversationControl?.turn.kind === 'waiting-permission';
 
   const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     e.preventDefault();
@@ -346,18 +334,20 @@ export function TerminalPane({
 
     if (viewMode === 'rich') {
       const submittedPrompt = prompt.trim();
-      setPrompt('');
-      if (streaming) {
-        setQueuedPrompts((current) => [
-          ...current,
-          {
-            id: `qp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            text: submittedPrompt,
-          },
-        ]);
-        return;
-      }
-      submitRichPrompt(submittedPrompt);
+      if (!conversationControl || !controlComposerEnabled) return;
+      setControlError(null);
+      void submitConversationControl(conversationControl, submittedPrompt, conversationMessageAnchor ?? undefined)
+        .then((result) => {
+          onConversationControlChange(result.snapshot);
+          beginLocalPrompt(submittedPrompt);
+          setPrompt('');
+        })
+        .catch((error: unknown) => {
+          const controlFailure = error as Partial<ConversationControlApiError>;
+          if (controlFailure.snapshot) onConversationControlChange(controlFailure.snapshot);
+          setControlError(controlFailure.controlError?.kind ?? (error instanceof Error ? error.message : String(error)));
+          setStreaming(false);
+        });
       return;
     }
 
@@ -366,27 +356,22 @@ export function TerminalPane({
     }
   };
 
-  const handleStop = () => {
-    if (stopBusy) return;
-    setStopBusy(true);
-    void cancelConsolePrompt(sessionId)
-      .then(() => {
-        setStreaming(false);
-      })
-      .catch(() => {
-        setStreaming(false);
-      })
-      .finally(() => {
-        setStopBusy(false);
-      });
-  };
-
-  const attentionSlot = permissionRequest ? (
+  const attentionSlot = controlError ? (
+    <div className="composer-attention composer-attention--state">
+      <span className="composer-attention__label">Control failed</span>
+      <span className="composer-attention__title">{controlError}</span>
+    </div>
+  ) : permissionRequest ? (
     <div className="composer-attention composer-attention--permission">
       <span className="composer-attention__label">Permission</span>
       <span className="composer-attention__title">
         {permissionRequest.display_name || permissionRequest.title || permissionRequest.tool_name}
       </span>
+    </div>
+  ) : controlPresentation ? (
+    <div className="composer-attention composer-attention--state">
+      <span className="composer-attention__label">{controlPresentation.status}</span>
+      <span className="composer-attention__title">{controlPresentation.title}</span>
     </div>
   ) : attention?.active ? (
     <div className="composer-attention composer-attention--state">
@@ -472,7 +457,7 @@ export function TerminalPane({
             backendType={backendType}
             activeSubagents={activeSubagents}
             streamEvents={streamEvents}
-            streaming={streaming}
+            streaming={controlStreaming}
             elapsedSeconds={elapsedSeconds}
             hydratingHistory={hydratingHistory}
             sessionId={sessionId}
@@ -485,21 +470,19 @@ export function TerminalPane({
             selectedMessageId={selectedMessageId}
             onSelectMessageInfo={handleSelectMessageInfo}
             usage={composerUsage}
-            queuedPrompts={queuedPrompts}
+            queuedPrompts={[]}
             transportLabel={transportLabel}
             transportTitle={transportTitle}
-            canStop={backendType === 'sdk' || backendType === 'acp'}
-            stopBusy={stopBusy}
+            submitLabel={controlPresentation?.submitLabel}
+            canStop={false}
             attentionSlot={attentionSlot}
             onModelSaved={setModel}
             prompt={prompt}
-            interactionMode={interactionMode}
+            interactionMode={controlComposerEnabled ? 'direct' : 'inbox_only'}
             onPromptChange={setPrompt}
             onPromptSubmit={handlePromptSubmit}
-            onQueuedPromptRemove={(id) => {
-              setQueuedPrompts((current) => current.filter((item) => item.id !== id));
-            }}
-            onStop={handleStop}
+            onQueuedPromptRemove={() => {}}
+            onStop={() => {}}
             sidebarOpen={sidebarOpen}
             workspaceMode={workspaceMode}
             sidebarTab={sidebarTab}

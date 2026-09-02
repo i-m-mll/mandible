@@ -40,39 +40,23 @@ export function computeLiveTail(
   historyEvents: StreamEvent[],
   memEvents: StreamEvent[],
 ): StreamEvent[] {
-  const historyAssistantCount = historyEvents.filter((e) => e.type === 'assistant').length;
-
-  if (historyAssistantCount === 0) {
-    return memEvents;
+  const historyIds = new Set(historyEvents.map(stableProviderEventIdentity).filter((id): id is string => id !== null));
+  let lastReconciled = -1;
+  for (let index = 0; index < memEvents.length; index += 1) {
+    const identity = stableProviderEventIdentity(memEvents[index]);
+    if (identity && historyIds.has(identity)) lastReconciled = index;
   }
+  return memEvents.slice(lastReconciled + 1).filter((event) => {
+    const identity = stableProviderEventIdentity(event);
+    return identity === null || !historyIds.has(identity);
+  });
+}
 
-  let assistantsSeen = 0;
-  let tailStart = memEvents.length;
-
-  for (let i = 0; i < memEvents.length; i++) {
-    if (memEvents[i].type === 'assistant') {
-      assistantsSeen++;
-    }
-    if (assistantsSeen === historyAssistantCount) {
-      tailStart = i + 1;
-      while (tailStart < memEvents.length) {
-        const next = memEvents[tailStart];
-        if (next.type === 'user' && 'message' in next) {
-          const content = (next as { message: { content?: unknown[] } }).message.content;
-          if (Array.isArray(content) && content.every((b) => (
-            typeof b === 'object' && b !== null && (b as Record<string, unknown>).type === 'tool_result'
-          ))) {
-            tailStart++;
-            continue;
-          }
-        }
-        break;
-      }
-      break;
-    }
-  }
-
-  return memEvents.slice(tailStart);
+export function stableProviderEventIdentity(event: StreamEvent): string | null {
+  const record = event as StreamEvent & { uuid?: unknown; message?: { id?: unknown } };
+  if (typeof record.uuid === 'string' && record.uuid) return `event:${record.uuid}`;
+  if (typeof record.message?.id === 'string' && record.message.id) return `message:${record.message.id}`;
+  return null;
 }
 
 function parseMetadata(json: string): Record<string, unknown> {

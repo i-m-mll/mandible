@@ -89,7 +89,7 @@ describe("CLI API route coverage", () => {
     expect(policies.get(routeKey("POST", "/api/conversations/ingest"))).toBe("deny");
     expect(policies.get(routeKey("POST", "/api/conversations/export/transform"))).toBe("deny");
     expect(policies.get(routeKey("POST", "/api/conversations/:id/fork"))).toBe("deny");
-    expect(policies.get(routeKey("POST", "/api/conversations/:id/resume"))).toBe("deny");
+    expect(policies.get(routeKey("POST", "/api/conversations/:id/control/submit"))).toBe("deny");
   });
 
   it("keeps the legacy file-RPC allow fixture backed by real registered route policies", () => {

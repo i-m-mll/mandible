@@ -60,7 +60,7 @@ export function registerConversationControlRoutes(server: RouteRegistrar, contro
     const result = await control.submit(request);
     if (!result.ok && result.error.kind === "capability-drift") {
       const refreshed = control.getSnapshot(request.conversation_id);
-      sendJson(res, statusFor(result.error), { ...result, capability: refreshed.ok ? refreshed.value.capability : null });
+      sendJson(res, statusFor(result.error), { ...result, snapshot: refreshed.ok ? refreshed.value : null });
       return;
     }
     sendJson(res, result.ok ? 202 : statusFor(result.error), result);

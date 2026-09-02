@@ -330,8 +330,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
-  // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
-  registerConversationRoutes(router, sessionManager);
+  registerConversationRoutes(router);
   registerConversationControlRoutes(router, conversationControl);
   registerConversationCustodyRoutes(router, db);
 
