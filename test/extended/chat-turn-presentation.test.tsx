@@ -48,11 +48,11 @@ describe('chat turn presentation', () => {
     expect(contextualActionCss).toContain('.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-group');
     expect(contextualActionCss).toContain('.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-group');
     expect(contextualActionCss).not.toContain(':focus-within) .contextual-action-group');
-    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 0;/s);
+    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
   });
 
   it('provides explicit hoverless and coarse-pointer access', () => {
     expect(contextualActionCss).toMatch(/@media \(hover: none\), \(pointer: coarse\)\s*{[^}]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/s);
-    expect(consoleCss).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.group-footer\s*{[^}]*height: auto;/);
+    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
   });
 });

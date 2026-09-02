@@ -75,7 +75,7 @@ describe("NewSessionDialog transport lanes", () => {
     const onSubmit = vi.fn();
     render(<NewSessionDialog open onClose={vi.fn()} onSubmit={onSubmit} />);
 
-    await waitFor(() => expect(screen.getByText("Claude SDK")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
     fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Claude local" } });
     fireEvent.click(screen.getByText("Create chat"));
 
@@ -106,9 +106,21 @@ describe("NewSessionDialog transport lanes", () => {
   it("hides the Claude PTY and Channel lanes when the daemon does not ship them", async () => {
     render(<NewSessionDialog open onClose={vi.fn()} onSubmit={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText("Claude SDK")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+    expect(screen.queryByText("Claude SDK")).toBeNull();
     expect(screen.queryByText(/Claude PTY/)).toBeNull();
     expect(screen.queryByText(/Claude Channel/)).toBeNull();
+  });
+
+  it("accepts a blank optional name and uses the visible fallback", async () => {
+    const onSubmit = vi.fn();
+    render(<NewSessionDialog open onClose={vi.fn()} onSubmit={onSubmit} />);
+
+    await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+    expect(screen.getByLabelText(/Name/).hasAttribute('required')).toBe(false);
+    fireEvent.click(screen.getByText("Create chat"));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ label: "New chat" }));
   });
 
   it("offers Channel as a channel-enabled PTY lane once the daemon enables it", async () => {

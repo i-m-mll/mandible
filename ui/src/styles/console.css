@@ -389,6 +389,11 @@
   color: var(--text-muted);
 }
 
+.new-session-dialog__optional {
+  color: var(--text-chrome-muted);
+  font-size: var(--text-xs);
+}
+
 .new-session-dialog__section-title,
 .new-session-dialog__advanced-toggle {
   color: var(--text-chrome-muted);
@@ -419,6 +424,21 @@
 
 .new-session-dialog__run-option > input[type='checkbox'] {
   justify-self: end;
+}
+
+.new-session-dialog__multi-select {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.new-session-dialog__multi-select-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .new-session-dialog__advanced {
@@ -1562,10 +1582,11 @@ select.new-session-dialog__input {
   background: transparent;
 }
 
-/* GroupFooter — turn-scoped aggregate actions without a reserved row. */
+/* GroupFooter — reserve one compact row so hover actions never overlap the
+ * next stream item. */
 .group-footer {
   align-self: stretch;
-  height: 0;
+  height: 24px;
   position: relative;
   z-index: 5;
 }
@@ -1594,13 +1615,6 @@ select.new-session-dialog__input {
   font-size: var(--text-xs);
   color: var(--text-muted);
   opacity: 0.5;
-}
-
-/* Hoverless/coarse pointers need an explicit, persistent action target. */
-@media (hover: none), (pointer: coarse) {
-  .group-footer {
-    height: auto;
-  }
 }
 
 /* Chat composer redesign */

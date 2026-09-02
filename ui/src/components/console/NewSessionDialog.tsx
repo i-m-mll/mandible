@@ -210,8 +210,9 @@ export function NewSessionDialog({
       if (!active) return;
       setRunOptions(snapshot);
       setRunOptionValues((current) => Object.fromEntries(snapshot.options
-        .filter((option) => option.enforcement.status !== 'unsupported' && current[option.id] !== undefined)
-        .map((option) => [option.id, current[option.id]])));
+        .filter((option) => option.enforcement.status !== 'unsupported')
+        .map((option) => [option.id, current[option.id] ?? option.currentValue])
+        .filter(([, value]) => value !== null)));
     }).catch(() => { if (active) setRunOptions(null); });
     return () => { active = false; };
   }, [backend, open, transportLane]);
@@ -265,10 +266,9 @@ export function NewSessionDialog({
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
-    if (!label.trim()) return;
     const backendType = backendTypeForLane(transportLane);
     onSubmit({
-      label: label.trim(),
+      label: label.trim() || 'New chat',
       backend,
       kind,
       backend_type: backendType,
@@ -294,7 +294,12 @@ export function NewSessionDialog({
   };
 
   const supportedRunOptions = (runOptions?.options ?? [])
-    .filter((option) => option.enforcement.status !== 'unsupported');
+    .filter((option) => option.enforcement.status !== 'unsupported')
+    // Provider-discovered choices do not exist until the provider session is
+    // initialized. Do not misrepresent an unconstrained text field as a model
+    // selector; the real selector appears in the running session once the
+    // provider advertises its inventory.
+    .filter((option) => option.kind !== 'select' || (option.allowedValues?.length ?? 0) > 0);
   const basicRunOptions = supportedRunOptions.filter((option) => !ADVANCED_RUN_OPTION_IDS.has(option.id));
   const advancedRunOptions = supportedRunOptions.filter((option) => ADVANCED_RUN_OPTION_IDS.has(option.id));
 
@@ -304,9 +309,35 @@ export function NewSessionDialog({
       {option.kind === 'select' && (option.allowedValues?.length ?? 0) > 0 ? (
         <select className="new-session-dialog__input" value={String(runOptionValues[option.id] ?? '')}
           onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.value || null }))}>
-          <option value="">Default</option>
+          {option.nullable && <option value="">Provider default</option>}
           {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
         </select>
+      ) : option.kind === 'multi_select' && (option.allowedValues?.length ?? 0) > 0 ? (
+        <span className="new-session-dialog__multi-select">
+          {(option.allowedValues ?? []).map((choice) => {
+            const selectedValues = runOptionValues[option.id];
+            const selected = Array.isArray(selectedValues) && selectedValues.includes(String(choice.value));
+            return (
+              <label key={String(choice.value)} className="new-session-dialog__multi-select-option">
+                <input type="checkbox" checked={selected} onChange={(event) => {
+                  const value = String(choice.value);
+                  const checked = event.currentTarget.checked;
+                  setRunOptionValues((current) => {
+                    const currentValue = current[option.id];
+                    const existing = Array.isArray(currentValue) ? currentValue : [];
+                    const next = checked
+                      ? [...existing, value]
+                      : existing.filter((item) => item !== value);
+                    return next.length > 0
+                      ? { ...current, [option.id]: next }
+                      : Object.fromEntries(Object.entries(current).filter(([id]) => id !== option.id));
+                  });
+                }} />
+                <span>{choice.label}</span>
+              </label>
+            );
+          })}
+        </span>
       ) : option.kind === 'boolean' ? (
         <input type="checkbox" checked={runOptionValues[option.id] === true}
           onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.checked }))} />
@@ -314,7 +345,7 @@ export function NewSessionDialog({
         <input className="new-session-dialog__input"
           type={option.kind === 'integer' || option.kind === 'number' ? 'number' : 'text'}
           min={option.kind === 'integer' ? '1' : option.kind === 'number' ? '0' : undefined}
-          placeholder={option.availability === 'awaiting_provider' ? 'Validated when provider starts' : 'Default'}
+          placeholder="Optional"
           value={String(runOptionValues[option.id] ?? '')}
           onInput={(event) => {
             const raw = event.currentTarget.value;
@@ -331,21 +362,58 @@ export function NewSessionDialog({
       <div className="new-session-dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-dialog-title">
         <h3 id="new-session-dialog-title">New Agent Chat</h3>
         <p className="new-session-dialog__intro">
-          Choose the chat role first, then the backend that will power it.
+          Choose a provider and chat role, then adjust any run options.
         </p>
         <form className="new-session-dialog__form" onSubmit={handleSubmit}>
           <div className="new-session-dialog__field">
+            <div className="new-session-dialog__section-title">Provider</div>
+            <div className="new-session-dialog__options">
+              {BACKEND_OPTIONS.map((option) => {
+                const disabled = kind === 'operator' && option.value !== 'claude';
+                return (
+                  <OptionCard
+                    key={option.value}
+                    title={option.title}
+                    description={option.description}
+                    note={disabled ? option.note : undefined}
+                    selected={backend === option.value}
+                    disabled={disabled}
+                    onClick={() => {
+                      setBackend(option.value);
+                      setTransportLane(defaultTransportLaneForBackend(option.value));
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="new-session-dialog__field">
+            <div className="new-session-dialog__section-title">Chat role</div>
+            <div className="new-session-dialog__options">
+              {KIND_OPTIONS.map((option) => (
+                <OptionCard
+                  key={option.value}
+                  title={option.title}
+                  description={option.description}
+                  selected={kind === option.value}
+                  onClick={() => setKind(option.value)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="new-session-dialog__field">
             <label htmlFor="console-session-label" className="new-session-dialog__label">
-              Name
+              Name <span className="new-session-dialog__optional">Optional</span>
             </label>
             <input
               id="console-session-label"
               type="text"
+              aria-label="Name"
               value={label}
               onInput={(e) => setLabel((e.target as HTMLInputElement).value)}
-              placeholder="e.g. Research thread, Operator"
-              required
-              autoFocus
+              placeholder="New chat"
               className="new-session-dialog__input"
             />
           </div>
@@ -379,59 +447,23 @@ export function NewSessionDialog({
             </div>
           )}
 
-          <div className="new-session-dialog__field">
-            <div className="new-session-dialog__section-title">Kind</div>
-            <div className="new-session-dialog__options">
-              {KIND_OPTIONS.map((option) => (
-                <OptionCard
-                  key={option.value}
-                  title={option.title}
-                  description={option.description}
-                  selected={kind === option.value}
-                  onClick={() => setKind(option.value)}
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="new-session-dialog__field">
-            <div className="new-session-dialog__section-title">Backend</div>
-            <div className="new-session-dialog__options">
-              {BACKEND_OPTIONS.map((option) => {
-                const disabled = kind === 'operator' && option.value !== 'claude';
-                return (
+          {transportOptions.length > 1 && (
+            <div className="new-session-dialog__field">
+              <div className="new-session-dialog__section-title">Connection</div>
+              <div className="new-session-dialog__options">
+                {transportOptions.map((option) => (
                   <OptionCard
                     key={option.value}
                     title={option.title}
                     description={option.description}
-                    note={disabled ? option.note : undefined}
-                    selected={backend === option.value}
-                    disabled={disabled}
-                    onClick={() => {
-                      setBackend(option.value);
-                      setTransportLane(defaultTransportLaneForBackend(option.value));
-                    }}
+                    note={option.note}
+                    selected={transportLane === option.value}
+                    onClick={() => setTransportLane(option.value)}
                   />
-                );
-              })}
+                ))}
+              </div>
             </div>
-          </div>
-
-          <div className="new-session-dialog__field">
-            <div className="new-session-dialog__section-title">Transport lane</div>
-            <div className="new-session-dialog__options">
-              {transportOptions.map((option) => (
-                <OptionCard
-                  key={option.value}
-                  title={option.title}
-                  description={option.description}
-                  note={option.note}
-                  selected={transportLane === option.value}
-                  onClick={() => setTransportLane(option.value)}
-                />
-              ))}
-            </div>
-          </div>
+          )}
 
           <div className="new-session-dialog__actions">
             <button type="button" onClick={onClose} className="new-session-dialog__button new-session-dialog__button--ghost">

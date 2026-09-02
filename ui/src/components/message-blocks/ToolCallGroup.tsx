@@ -1,6 +1,5 @@
 import type { ComponentChildren } from 'preact';
 import { useId, useState } from 'preact/hooks';
-import { OverflowFade } from '../shared/OverflowFade';
 import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
 
 export function ToolCallGroup({ summary, expanded, onExpandedChange, children }: {
@@ -25,8 +24,8 @@ export function ToolCallGroup({ summary, expanded, onExpandedChange, children }:
         <span className="tool-call-group__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
       {isExpanded ? (
-        <div id={bodyId} role="region" aria-label={`${summary} details`}>
-          <OverflowFade className="tool-call-group__body" lines={10}>{children}</OverflowFade>
+        <div id={bodyId} role="region" aria-label={`${summary} details`} className="tool-call-group__body">
+          {children}
         </div>
       ) : null}
     </section>

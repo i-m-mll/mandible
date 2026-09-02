@@ -59,4 +59,24 @@ describe("session run options", () => {
       expect(error).toMatchObject({ code: "unavailable_value", optionId: "model", backend: { type: "acp", command: "adapter" } });
     }
   });
+
+  it("exposes a backend-owned effective default before provider startup", () => {
+    const snapshot = declaredRunOptionsSnapshot({
+      backendType: "sdk",
+      command: "claude",
+      options: [{
+        id: "permission_mode",
+        label: "Permission mode",
+        category: "mode",
+        kind: "select",
+        nullable: true,
+        defaultValue: "default",
+        discovery: { kind: "static", allowedValues: [{ value: "default", label: "Ask for approval" }] },
+        support: { status: "supported", owner: "backend", effectiveFrom: "immediate" },
+        applyOrder: 10,
+      }],
+    });
+
+    expect(snapshot.options[0]).toMatchObject({ currentValue: "default", availability: "available" });
+  });
 });

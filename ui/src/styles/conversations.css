@@ -455,14 +455,19 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 8px;
-  background: var(--accent-blue);
-  color: var(--text-on-accent);
+  border-radius: 50%;
+  background: var(--text-primary);
+  color: var(--surface-app);
   cursor: pointer;
   font-family: var(--font-sans);
   font-size: 17px;
   font-weight: 700;
   line-height: 1;
+}
+
+.conv-compose__send svg {
+  width: 17px;
+  height: 17px;
 }
 
 .conv-compose__send:hover:not(:disabled) {

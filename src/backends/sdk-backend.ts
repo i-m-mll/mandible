@@ -110,8 +110,9 @@ const SDK_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
   },
   {
     id: "permission_mode", label: "Permission mode", category: "mode", kind: "select", nullable: true,
+    defaultValue: "default",
     discovery: { kind: "static", allowedValues: [
-      { value: "default", label: "Default" }, { value: "acceptEdits", label: "Accept edits" },
+      { value: "default", label: "Ask for approval" }, { value: "acceptEdits", label: "Accept edits" },
       { value: "bypassPermissions", label: "Bypass permissions" },
     ] },
     support: { status: "supported", owner: "backend", effectiveFrom: "immediate" }, applyOrder: 30,
