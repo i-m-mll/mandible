@@ -48,6 +48,7 @@ import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerConversationControlRoutes } from "./routes/conversation-control.js";
 import { ConversationControlService } from "./conversation-control/service.js";
+import { registerDefaultConversationControllers } from "./conversation-control/default-adapters.js";
 import { registerConversationCustodyRoutes } from "./routes/conversation-custody.js";
 import { WorkScanner } from "./work-scanner.js";
 import { registerConsoleRoutes } from "./routes/console.js";
@@ -297,6 +298,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       data: snapshot,
     }),
   });
+  registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);

@@ -137,7 +137,15 @@ export class ConversationControlService {
         acquired.value.controller_instance_id,
         acquired.value.provider_session_id,
       );
-      if (!published.ok) return published;
+      if (!published.ok) {
+        const rolledBack = await trapAdapterCall(adapter.id, () => adapter.stop({
+          conversation_id: request.conversation_id,
+          provider_session_id: acquired.value.provider_session_id,
+          controller_instance_id: acquired.value.controller_instance_id,
+          generation: prepared.value.snapshot.ownership.generation,
+        }));
+        return rolledBack.ok ? published : rolledBack;
+      }
       this.notify(request.conversation_id);
     }
     const delivered = await this.dispatch(prepared.value.delivery_id);
@@ -168,6 +176,10 @@ export class ConversationControlService {
       return { ok: false, error: { kind: "adapter-unavailable", adapter_id: snapshot.value.ownership.adapter_id, provider: snapshot.value.provider } };
     }
     const delivered = await trapAdapterCall(adapter.id, () => adapter.deliver(begun.value));
+    if (!delivered.ok && delivered.error.kind === "delivery-uncertain") {
+      const uncertain = this.store.markDeliveryUncertain(deliveryId, begun.value.generation);
+      return uncertain.ok ? delivered : uncertain;
+    }
     const finished = this.store.finishDelivery(deliveryId, delivered);
     if (!finished.ok) return finished;
     if (!delivered.ok && ["send", "resume-provider-session", "resume-message-anchor"].includes(begun.value.operation)) {
@@ -178,6 +190,12 @@ export class ConversationControlService {
         error: delivered.error,
       });
       if (!failed.ok) return failed;
+      const controllerFailed = this.store.publishLifecycle(begun.value.conversation_id, begun.value.generation, {
+        kind: "controller-failed",
+        at: Date.now(),
+        error: delivered.error,
+      });
+      if (!controllerFailed.ok) return controllerFailed;
       this.notify(begun.value.conversation_id);
     }
     return delivered.ok ? { ok: true, value: undefined } : delivered;
