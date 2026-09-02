@@ -13,6 +13,8 @@ import type { RenderedTurn } from '../../ui/src/components/stream-renderer/types
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  delete document.documentElement.dataset.theme;
+  document.head.querySelector('[data-tool-surface-styles]')?.remove();
 });
 
 function setScrollMetrics(element: HTMLElement, clientHeight: number, scrollHeight: number): void {
@@ -138,7 +140,7 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?background:\s*transparent;/);
-    expect(css).toMatch(/\.tool-card__input code,[\s\S]*?background:\s*transparent;/);
+    expect(css).toMatch(/:root :is\(\.tool-card__input, \.tool-card__terminal, \.tool-card__result\) :is\(pre, code\)\s*\{[^}]*background:\s*transparent;/s);
     expect(css).not.toContain('background: var(--status-danger-bg-soft)');
     expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
     expect(css).toContain('var(--overflow-fade-color, var(--surface-app))');
@@ -155,6 +157,58 @@ describe('message action cards', () => {
       toolResults: new Map(),
     }} isStreaming={false} />);
     expect(group.container.querySelector('.tool-call-group__summary > .tool-call-group__summary-text')).toBeTruthy();
+  });
+
+  it('wins the real light-theme pre fill without changing general code surfaces', () => {
+    const imports = readFileSync('ui/src/style.css', 'utf8');
+    const sharedCss = readFileSync('ui/src/styles/shared.css', 'utf8');
+    const toolCss = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+    const markdownCss = readFileSync('ui/src/styles/rendered-markdown.css', 'utf8');
+    expect(imports.indexOf('./styles/shared.css')).toBeLessThan(imports.indexOf('./styles/message-blocks.css'));
+    expect(imports.indexOf('./styles/message-blocks.css')).toBeLessThan(imports.indexOf('./styles/rendered-markdown.css'));
+    expect(sharedCss).toMatch(/:root\[data-theme='light'\] pre\s*\{[^}]*background:\s*var\(--surface-code\);/s);
+    expect(markdownCss).toMatch(/\.rendered-markdown pre\s*\{[^}]*background:\s*var\(--surface-code\);/s);
+    const toolNoFillRule = toolCss.match(
+      /:root :is\(\.tool-card__input, \.tool-card__terminal, \.tool-card__result\) :is\(pre, code\)\s*\{[^}]*\}/s,
+    )?.[0];
+    expect(toolNoFillRule).toBeTruthy();
+
+    const style = document.createElement('style');
+    style.dataset.toolSurfaceStyles = 'true';
+    style.textContent = `
+      :root[data-theme='light'] pre { background: rgba(15, 23, 42, 0.06); }
+      ${toolNoFillRule}
+      .rendered-markdown pre { background: rgba(15, 23, 42, 0.06); }
+    `;
+    document.head.append(style);
+    document.documentElement.dataset.theme = 'light';
+
+    const view = render(<>
+      <ToolUseBlock
+        toolName="Read"
+        input={{ path: '/tmp/example' }}
+        result={{ type: 'tool_result', tool_use_id: 'read', content: 'output' }}
+        defaultExpanded
+      />
+      <ToolUseBlock toolName="Bash" input={{ command: 'npm test' }} defaultExpanded />
+      <div className="rendered-markdown"><pre data-testid="general-code">general code</pre></div>
+    </>);
+
+    const toolPres = view.container.querySelectorAll<HTMLElement>(
+      '.tool-card__input pre, .tool-card__terminal pre, .tool-card__result pre',
+    );
+    expect(toolPres).toHaveLength(3);
+    const code = document.createElement('code');
+    toolPres[0].append(code);
+    for (const surface of [...toolPres, code]) {
+      expect(getComputedStyle(surface).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    }
+    expect(getComputedStyle(screen.getByTestId('general-code')).backgroundColor).toBe('rgba(15, 23, 42, 0.06)');
+
+    document.documentElement.dataset.theme = 'dark';
+    for (const surface of [...toolPres, code]) {
+      expect(getComputedStyle(surface).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    }
   });
 
   it('groups only maximal consecutive tool runs and keeps leaves independently foldable', () => {

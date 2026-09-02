@@ -374,9 +374,11 @@
   color: var(--tool-activity-box-text);
 }
 
-.tool-card__input code,
-.tool-card__terminal code,
-.tool-card__result code {
+/* Match the light-theme global pre selector's specificity while staying
+ * strictly inside tool boxes. This stylesheet loads after shared.css, and the
+ * extra class also keeps the later rendered-Markdown code rules from winning
+ * when a tool surface appears inside a prose owner. */
+:root :is(.tool-card__input, .tool-card__terminal, .tool-card__result) :is(pre, code) {
   background: transparent;
 }
 
