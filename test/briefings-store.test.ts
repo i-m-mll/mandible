@@ -63,6 +63,41 @@ function request(markdown = '# Daily\n\n:::spec-item{key="paper" type="verdict" 
   });
 }
 
+function seedPromotionFixture() {
+  const first = publishBriefingRun(db, request(), publisherId, 1_000);
+  const second = publishBriefingRun(db, request(request().document!.markdown, {
+    briefing_key: "second", run_id: "run-2", run_key: "run-key-2",
+  }), publisherId, 1_010);
+  const viewer = { userId: humanId, operator: true };
+  const base = createBriefingBundle(db, { name: "Original", briefingRefs: [first.briefing_id], viewer }, 1_100);
+  const proposal = createBriefingBundle(db, { name: "Proposed", briefingRefs: [second.briefing_id], viewer }, 1_110);
+  const group = createBriefingGroup(db, {
+    name: "Policy", currentBundleRef: base.id, bundleRefs: [proposal.id], viewer,
+  }, 1_200);
+  return { base, proposal, group, viewer };
+}
+
+function insertSuccessfulMergeAuth(authId: string, mergeHead: string): void {
+  db.prepare(`INSERT INTO auth_requests (
+    id, command, title, status, created_at, updated_at, resolved_at, expires_at,
+    exit_code, output, repo, base_branch, head_branch, type, merge_head_sha
+  ) VALUES (?, 'git merge', 'Merge policy', 'completed', 1, 2, 2, 999999,
+    0, '', 'dotfiles', 'main', 'feature/policy', 'merge', ?)`)
+    .run(authId, mergeHead);
+}
+
+function insertPromotionAction(
+  authId: string,
+  payload: { group_ref: string; expected_base_bundle_ref: string; proposal_bundle_ref: string },
+): void {
+  db.prepare(`INSERT INTO auth_request_actions (
+    id, auth_request_id, ordinal, kind, target_issue_ref, payload, state,
+    target_digest, staged_at, updated_at, applied_at, outcome_detail
+  ) VALUES (?, ?, 1, 'briefing_group_promote', 'policy-issue', ?, 'staged',
+    NULL, 1, 1, NULL, NULL)`)
+    .run(`${authId}-action`, authId, JSON.stringify(payload));
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefings-"));
   db = new Database(":memory:");
@@ -169,6 +204,16 @@ describe("artifact-backed Briefing rounds", () => {
     ) VALUES (?, 'git merge', 'Merge accepted policy', 'completed', 1, 2, 2, 999999,
       0, '', 'dotfiles', 'main', 'feature/policy', 'merge', ?)`)
       .run(authId, mergeHead);
+    db.prepare(`INSERT INTO auth_request_actions (
+      id, auth_request_id, ordinal, kind, target_issue_ref, payload, state,
+      target_digest, staged_at, updated_at, applied_at, outcome_detail
+    ) VALUES ('promotion-action', ?, 1, 'briefing_group_promote', 'policy-issue', ?, 'staged',
+      NULL, 1, 1, NULL, NULL)`)
+      .run(authId, JSON.stringify({
+        group_ref: group.id,
+        expected_base_bundle_ref: base.id,
+        proposal_bundle_ref: promoted.id,
+      }));
     db.prepare(`INSERT INTO auth_hook_executions (
       id, auth_request_id, hook_id, hook_label, command, command_digest, position, required,
       state, attempts, max_attempts, exit_code, output, attempt_history, started_at, finished_at,
@@ -210,8 +255,77 @@ describe("artifact-backed Briefing rounds", () => {
       proposalBundleRef: promoted.id,
       authRequestRef: authId,
       mergeHeadSha: mergeHead,
-    }, viewer, 1_500)).toThrowError(expect.objectContaining({ code: "promotion_replay_drift" }));
+    }, viewer, 1_500)).toThrowError(expect.objectContaining({ code: "promotion_authorization_mismatch" }));
     expect(db.prepare("SELECT COUNT(*) AS count FROM briefing_group_dispositions").get()).toEqual({ count: 1 });
+  });
+
+  it("rejects unrelated successful requests and exact-action drift", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const mergeHead = "b".repeat(40);
+    insertSuccessfulMergeAuth("unrelated-auth-request", mergeHead);
+    insertSuccessfulMergeAuth("drifted-auth-request", mergeHead);
+    insertPromotionAction("drifted-auth-request", {
+      group_ref: group.id,
+      expected_base_bundle_ref: proposal.id,
+      proposal_bundle_ref: proposal.id,
+    });
+
+    const promote = (authRequestRef: string) => promoteBriefingGroupProposal(db, {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      authRequestRef,
+      mergeHeadSha: mergeHead,
+    }, viewer, 1_300);
+    expect(() => promote("unrelated-auth-request"))
+      .toThrowError(expect.objectContaining({ code: "promotion_authorization_mismatch" }));
+    expect(() => promote("drifted-auth-request"))
+      .toThrowError(expect.objectContaining({ code: "promotion_authorization_mismatch" }));
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: base.id });
+  });
+
+  it("fails closed when promotion authorization or convergence schema is missing", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const authId = "missing-schema-auth-request";
+    const mergeHead = "c".repeat(40);
+    insertSuccessfulMergeAuth(authId, mergeHead);
+    const input = {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      authRequestRef: authId,
+      mergeHeadSha: mergeHead,
+    };
+
+    db.prepare("DROP TABLE auth_request_actions").run();
+    expect(() => promoteBriefingGroupProposal(db, input, viewer, 1_300))
+      .toThrowError(expect.objectContaining({ code: "promotion_authorization_unavailable" }));
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: base.id });
+  });
+
+  it("fails closed when auth hook convergence records are unavailable", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const authId = "missing-hooks-auth-request";
+    const mergeHead = "d".repeat(40);
+    insertSuccessfulMergeAuth(authId, mergeHead);
+    insertPromotionAction(authId, {
+      group_ref: group.id,
+      expected_base_bundle_ref: base.id,
+      proposal_bundle_ref: proposal.id,
+    });
+    db.prepare("DROP TABLE auth_hook_executions").run();
+
+    expect(() => promoteBriefingGroupProposal(db, {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      authRequestRef: authId,
+      mergeHeadSha: mergeHead,
+    }, viewer, 1_300)).toThrowError(expect.objectContaining({ code: "promotion_convergence_unavailable" }));
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: base.id });
   });
 
   it("archives group containment, restores atomically, and records only explicit active sharing", () => {
