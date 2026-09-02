@@ -371,6 +371,13 @@
 .new-session-dialog__form {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.new-session-dialog__content {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   min-height: 0;
   overflow-y: auto;
@@ -535,10 +542,7 @@ select.new-session-dialog__input {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
+  flex: 0 0 auto;
   padding-top: 12px;
   background: var(--bg-card);
 }

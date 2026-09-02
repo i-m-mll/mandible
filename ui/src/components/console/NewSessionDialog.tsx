@@ -365,6 +365,7 @@ export function NewSessionDialog({
           Choose a provider and chat role, then adjust any run options.
         </p>
         <form className="new-session-dialog__form" onSubmit={handleSubmit}>
+          <div className="new-session-dialog__content">
           <div className="new-session-dialog__field">
             <div className="new-session-dialog__section-title">Provider</div>
             <div className="new-session-dialog__options">
@@ -464,6 +465,7 @@ export function NewSessionDialog({
               </div>
             </div>
           )}
+          </div>
 
           <div className="new-session-dialog__actions">
             <button type="button" onClick={onClose} className="new-session-dialog__button new-session-dialog__button--ghost">
