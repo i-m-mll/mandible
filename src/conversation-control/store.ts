@@ -568,7 +568,7 @@ export class ConversationControlStore {
           : unavailable(revision, "unsupported-provider");
     } else if (["starting", "stopping", "failed", "unknown"].includes(controller.kind)) {
       capability = unavailable(revision, "controller-transition");
-    } else if (["queued"].includes(turn.kind)) {
+    } else if (["queued", "unknown"].includes(turn.kind)) {
       capability = unavailable(revision, "turn-transition");
     } else if (["running", "waiting-permission"].includes(turn.kind)) {
       capability = capabilities.steer

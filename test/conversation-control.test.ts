@@ -33,6 +33,8 @@ class FakeAdapter implements ConversationControllerAdapter {
   readonly capabilities = capabilities;
   acquisitions = 0;
   deliveries = 0;
+  stops = 0;
+  invalidateOnAcquire = false;
   delivered = new Set<string>();
   deliveryProbe: "delivered" | "not-delivered" | "unknown" = "unknown";
   probeResult: AdapterProbe = {
@@ -45,6 +47,15 @@ class FakeAdapter implements ConversationControllerAdapter {
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string }, ConversationControlError>> {
     this.acquisitions += 1;
+    if (this.invalidateOnAcquire) {
+      this.emit({
+        conversation_id: input.conversation_id,
+        generation: input.generation,
+        kind: "ownership-unknown",
+        reason: "probe-ambiguous",
+        at: Date.now(),
+      });
+    }
     return {
       ok: true,
       value: {
@@ -71,6 +82,7 @@ class FakeAdapter implements ConversationControllerAdapter {
   }
 
   async stop(): Promise<Result<void, ConversationControlError>> {
+    this.stops += 1;
     return { ok: true, value: undefined };
   }
 
@@ -239,5 +251,48 @@ describe("authoritative conversation control", () => {
       kind: "blocked-external",
       evidence_kind: "registered-channel",
     });
+  });
+
+  it("rolls back an acquired process when claim publication loses authority", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    adapter.invalidateOnAcquire = true;
+    service.registerAdapter(adapter);
+
+    const submitted = await service.submit(request(0, "request-a"));
+
+    expect(submitted.ok).toBe(false);
+    expect(adapter.acquisitions).toBe(1);
+    expect(adapter.stops).toBe(1);
+    const snapshot = service.getSnapshot("conversation-1");
+    expect(snapshot.ok && snapshot.value.ownership.kind).toBe("unknown");
+  });
+
+  it("keeps an ambiguous native turn blocked", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "request-a"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+
+    adapter.emit({
+      conversation_id: "conversation-1",
+      generation: submitted.value.snapshot.ownership.generation,
+      kind: "turn-started",
+      turn_id: submitted.value.turn_id,
+      at: Date.now(),
+    });
+    adapter.emit({
+      conversation_id: "conversation-1",
+      generation: submitted.value.snapshot.ownership.generation,
+      kind: "turn-unknown",
+      turn_id: submitted.value.turn_id,
+      reason: "probe-ambiguous",
+      at: Date.now(),
+    });
+
+    const snapshot = service.getSnapshot("conversation-1");
+    expect(snapshot.ok && snapshot.value.capability).toMatchObject({ kind: "unavailable", reason: "turn-transition" });
   });
 });
