@@ -67,6 +67,8 @@ describe("briefing CLI", () => {
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle create");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle replace");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle rename");
+    expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group accept");
+    expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group reject");
     const logical = runOffline(["briefing", "create", "artifact:logical", "--title", "Review"]);
     expect(logical.status).toBe(2);
     expect(logical.stderr).toContain("exact artifact-version");
@@ -87,6 +89,10 @@ describe("briefing CLI", () => {
       name: expect.stringContaining("--briefing <briefing-ref> | --distinct-reason <text>"),
       description: expect.stringContaining("Active Briefings for the same logical Artifact block default creation"),
     });
+    expect(contract.commands.find((command) => command.name.startsWith("mandible briefing group accept ")))
+      .toMatchObject({ description: expect.stringContaining("configured human operator") });
+    expect(contract.commands.find((command) => command.name.startsWith("mandible briefing group reject ")))
+      .toMatchObject({ description: expect.stringContaining("preserving Base") });
   });
 
   it("posts the exact version and title through the supported API", async () => {
@@ -333,6 +339,27 @@ describe("briefing CLI", () => {
     expect(runOffline(["briefing", "group", "promote", "group", "--expected-base", "base",
       "--proposal", "proposal", "--auth-request", "auth", "--merge-head", "main"]).stderr)
       .toContain("40-character");
+
+    const bindingDigest = "b".repeat(64);
+    for (const [action, decision] of [["accept", "accepted"], ["reject", "rejected"]] as const) {
+      const reviewed = await runRpc(["briefing", "group", action, "group-12345678",
+        "--expected-base", "bundle-current", "--proposal", "bundle-one",
+        "--binding-digest", bindingDigest, "--json"], (request) => {
+        expect(request).toMatchObject({ method: "POST",
+          path: "/api/briefing-groups/group-12345678/review-dispositions",
+          body: {
+            decision,
+            expected_base_bundle_ref: "bundle-current",
+            proposal_bundle_ref: "bundle-one",
+            binding_digest: bindingDigest,
+          } });
+        return { status: 200, body: { group: { ...group, current: bundle, updates: [], history: [] },
+          disposition: { kind: decision }, changed: true } };
+      });
+      expect(reviewed.status).toBe(0);
+    }
+    expect(runOffline(["briefing", "group", "accept", "group", "--expected-base", "base",
+      "--proposal", "proposal", "--binding-digest", "short"]).stderr).toContain("SHA-256");
 
     const renamed = await runRpc(["briefing", "group", "rename", "group-12345678", "--name", "Policy review", "--json"],
       (request) => {

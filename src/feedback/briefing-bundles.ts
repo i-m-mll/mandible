@@ -8,7 +8,7 @@ import type { Db } from "../db.js";
 import { BriefingStoreError, resolveBriefingId } from "./briefings.js";
 import { enforceActivePlacement, placementTargetForBundle, type PlacementOverride } from "./briefing-placement.js";
 
-export type BriefingBundleViewer = { userId: string; operator: boolean };
+export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean };
 
 function untypedRef(value: string, prefix: string): string {
   const trimmed = value.trim();

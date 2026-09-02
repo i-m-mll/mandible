@@ -571,6 +571,7 @@ describe("plural Briefing routes", () => {
   });
 
   it("dispatches normalized composition runs through the idempotent plural run endpoint", async () => {
+    setSetting(db, "user.operator_id", humanId);
     const source = "# Project\n\n## Maintenance\n\nExisting.\n";
     const artifact = recordArtifactVersion(db, { source_kind: "managed", content: source,
       series_key: "test:route-composer", logical_name: "Project.md", role: "briefing-document",
@@ -609,6 +610,52 @@ describe("plural Briefing routes", () => {
       targets: [{ group_id: group.id, outcome: "proposed", proposal_bundle_id: expect.any(String) }] } });
     expect(await router.invoke({ method: "POST", url: "/api/briefings/runs",
       body, credential: "agent-schedule" })).toEqual(first);
+    const proposalBundleId = (first.body as { targets: Array<{ proposal_bundle_id: string }> })
+      .targets[0].proposal_bundle_id;
+    const review = db.prepare(`SELECT b.id AS briefing_id, b.latest_round_id AS round_id
+      FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
+      JOIN briefing_rounds r ON r.id = b.latest_round_id
+      WHERE bm.bundle_id = ? AND r.artifact_version_id != ?`).get(proposalBundleId, artifact.version.id) as
+      { briefing_id: string; round_id: string };
+    db.prepare(`INSERT INTO briefing_submissions
+      (id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
+      VALUES ('route-review-submission', ?, ?, 1, NULL, ?, 2)`)
+      .run(review.round_id, review.briefing_id, humanId);
+    const shown = await router.invoke({ method: "GET", url: `/api/briefing-groups/${group.id}`,
+      credential: "human" });
+    const candidate = (shown.body as { group: { review_candidates: Array<{ binding_digest: string }> } })
+      .group.review_candidates[0];
+    expect(await router.invoke({ method: "GET", url: `/api/briefing-groups/${group.id}`,
+      credential: "agent-schedule" })).toMatchObject({ status: 200, body: { group: { review_candidates: [] } } });
+    const dispositionBody = {
+      decision: "accepted",
+      expected_base_bundle_ref: bundle.id,
+      proposal_bundle_ref: proposalBundleId,
+      binding_digest: candidate.binding_digest,
+    };
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/review-dispositions`,
+      credential: "session:human", body: dispositionBody })).toMatchObject({
+      status: 403, body: { code: "briefing_group_review_credential_required" },
+    });
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/review-dispositions`,
+      credential: "agent-schedule", body: dispositionBody })).toMatchObject({
+      status: 403, body: { code: "briefing_group_review_operator_required" },
+    });
+    const accepted = await router.invoke({ method: "POST",
+      url: `/api/briefing-groups/${group.id}/review-dispositions`, credential: "human", body: dispositionBody });
+    expect(accepted).toMatchObject({ status: 200, body: {
+      changed: true,
+      group: { current: { id: proposalBundleId }, updates: [] },
+      disposition: { kind: "accepted", review_items: [{ submission_id: "route-review-submission" }] },
+    } });
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/review-dispositions`,
+      credential: "human", body: dispositionBody })).toMatchObject({ status: 200, body: { changed: false } });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:group-proposal-accepted", {
+      group_id: group.id,
+      proposal_bundle_id: proposalBundleId,
+      prior_base_bundle_id: bundle.id,
+      review_binding_digest: candidate.binding_digest,
+    });
   });
 
   it("lists logical identities, selects rounds, and executes the actor-scoped answer/submit family", async () => {

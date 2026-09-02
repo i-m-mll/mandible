@@ -275,6 +275,64 @@ describe('Briefing sidebar row actions', () => {
     expect(screen.queryByRole('button', { name: /Preview proposed update/ })).toBeNull();
   });
 
+  it('shows operator actions only for an exact frozen human-review candidate', () => {
+    const selected = groupedUpdates.updates[0];
+    const readyGroup: BriefingGroup = {
+      ...groupedUpdates,
+      reviewCandidates: [{
+        proposalBundleId: selected.id,
+        expectedBaseBundleId: groupedUpdates.current!.id,
+        compositionRunId: 'composition-run-1',
+        bindingDigest: 'b'.repeat(64),
+        ready: true,
+        blockerCode: null,
+        blockerMessage: null,
+        items: [{
+          position: 0,
+          layoutPosition: 0,
+          subgroupPosition: -1,
+          proposalBriefingId: firstId,
+          proposalRoundId: roundId,
+          proposalArtifactVersionId: 'artifact-version-2',
+          proposalContentHash: 'b'.repeat(64),
+          baseBriefingId: firstId,
+          baseRoundId: 'base-round',
+          baseArtifactVersionId: 'artifact-version-1',
+          baseContentHash: 'a'.repeat(64),
+          changed: true,
+          submissionId: 'submission-1',
+        }],
+      }],
+    };
+    const view = render(
+      <BriefingGroupDetail group={readyGroup} selectedUpdateId={selected.id} onSelectUpdate={() => undefined} />,
+    );
+
+    expect(screen.getByText('Frozen review ready for 1 changed document.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Accept as Base' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reject proposal' })).toBeTruthy();
+
+    view.rerender(
+      <BriefingGroupDetail
+        group={{
+          ...readyGroup,
+          reviewCandidates: [{
+            ...readyGroup.reviewCandidates![0],
+            ready: false,
+            bindingDigest: null,
+            blockerCode: 'briefing_review_submission_required',
+            blockerMessage: 'A frozen operator submission is required.',
+          }],
+        }}
+        selectedUpdateId={selected.id}
+        onSelectUpdate={() => undefined}
+      />,
+    );
+    expect(screen.getByText('A frozen operator submission is required.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Accept as Base' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reject proposal' })).toBeNull();
+  });
+
   it('keeps promotion history collapsed but visibly available', () => {
     const priorBase = { ...groupedUpdates.current!, id: '33333333-1234-4123-8123-123456789abc', name: 'Original' };
     const group: BriefingGroup = {

@@ -57,6 +57,68 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_group_dispositions_group
     ON briefing_group_dispositions(group_id, created_at DESC, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_review_dispositions (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    decision TEXT NOT NULL CHECK(decision IN ('accepted','rejected')),
+    expected_base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    proposal_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    composition_run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    resulting_base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    binding_digest TEXT NOT NULL CHECK(length(binding_digest) = 64
+      AND binding_digest NOT GLOB '*[^0-9a-f]*'),
+    manifest_json TEXT NOT NULL CHECK(json_valid(manifest_json) AND json_type(manifest_json) = 'object'),
+    item_count INTEGER NOT NULL CHECK(item_count > 0),
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(group_id, proposal_bundle_id),
+    CHECK((decision = 'accepted' AND resulting_base_bundle_id = proposal_bundle_id)
+      OR (decision = 'rejected' AND resulting_base_bundle_id = expected_base_bundle_id))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_group_review_dispositions_group
+    ON briefing_group_review_dispositions(group_id, created_at DESC, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_review_disposition_items (
+    disposition_id TEXT NOT NULL REFERENCES briefing_group_review_dispositions(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    proposal_briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
+    proposal_round_id TEXT NOT NULL REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    proposal_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    base_briefing_id TEXT REFERENCES briefings(id) ON DELETE RESTRICT,
+    base_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    base_artifact_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
+    PRIMARY KEY(disposition_id, position),
+    CHECK((base_briefing_id IS NULL AND base_round_id IS NULL AND base_artifact_version_id IS NULL)
+      OR (base_briefing_id IS NOT NULL AND base_round_id IS NOT NULL AND base_artifact_version_id IS NOT NULL))
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_disposition_items_bounded_insert
+    BEFORE INSERT ON briefing_group_review_disposition_items BEGIN
+      SELECT CASE WHEN NEW.position >= (
+        SELECT item_count FROM briefing_group_review_dispositions WHERE id = NEW.disposition_id
+      ) OR (
+        SELECT COUNT(*) FROM briefing_group_review_disposition_items WHERE disposition_id = NEW.disposition_id
+      ) >= (
+        SELECT item_count FROM briefing_group_review_dispositions WHERE id = NEW.disposition_id
+      ) THEN RAISE(ABORT, 'Briefing group review disposition item manifest is complete') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_dispositions_immutable_update
+    BEFORE UPDATE ON briefing_group_review_dispositions BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_dispositions_immutable_delete
+    BEFORE DELETE ON briefing_group_review_dispositions BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_disposition_items_immutable_update
+    BEFORE UPDATE ON briefing_group_review_disposition_items BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition items are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_disposition_items_immutable_delete
+    BEFORE DELETE ON briefing_group_review_disposition_items BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition items are immutable');
+    END`,
   `CREATE TABLE IF NOT EXISTS briefing_collection_sharing_receipts (
     id TEXT PRIMARY KEY,
     operation TEXT NOT NULL CHECK(trim(operation) != ''),
@@ -506,7 +568,9 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_response_events", "briefing_annotation_events", "briefing_submissions",
   "briefing_submission_answers", "briefing_submission_annotations", "briefing_legacy_audit",
   "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
-  "briefing_groups", "briefing_group_updates", "briefing_collection_sharing_receipts",
+  "briefing_groups", "briefing_group_updates", "briefing_group_dispositions",
+  "briefing_group_review_dispositions", "briefing_group_review_disposition_items",
+  "briefing_collection_sharing_receipts",
   "briefing_destination_routes", "briefing_destination_templates", "briefing_composition_runs",
   "briefing_composition_inputs", "briefing_composition_contributions", "briefing_composition_targets",
 ];

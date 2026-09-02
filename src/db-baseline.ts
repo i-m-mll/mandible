@@ -13,7 +13,9 @@ import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.j
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 165;
+// v166 is owned by sibling issue 4fda30d. This branch intentionally supplies
+// the next schema step and is integrated after that sibling.
+export const BASELINE_SCHEMA_VERSION = 167;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (

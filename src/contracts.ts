@@ -1167,16 +1167,48 @@ export type BriefingGroup = {
   archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  review_candidates: BriefingGroupReviewCandidate[];
   history: BriefingGroupDisposition[];
+};
+export type BriefingGroupReviewItem = {
+  position: number;
+  layout_position: number;
+  subgroup_position: number;
+  proposal_briefing_id: string;
+  proposal_round_id: string;
+  proposal_artifact_version_id: string;
+  proposal_content_hash: string;
+  base_briefing_id: string | null;
+  base_round_id: string | null;
+  base_artifact_version_id: string | null;
+  base_content_hash: string | null;
+  changed: boolean;
+  submission_id: string | null;
+};
+export type BriefingGroupReviewCandidate = {
+  proposal_bundle_id: string;
+  expected_base_bundle_id: string | null;
+  composition_run_id: string | null;
+  binding_digest: string | null;
+  ready: boolean;
+  blocker_code: string | null;
+  blocker_message: string | null;
+  items: BriefingGroupReviewItem[];
 };
 export type BriefingGroupDisposition = {
   id: string;
-  kind: "promoted" | "dismissed";
+  kind: "promoted" | "dismissed" | "accepted" | "rejected";
   prior_base: BriefingBundle | null;
   proposal: BriefingBundle;
   resulting_base: BriefingBundle | null;
   auth_request_id: string | null;
   merge_head_sha: string | null;
+  review_binding_digest: string | null;
+  composition_run_id: string | null;
+  review_items: BriefingGroupReviewItem[];
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  credential_id: string | null;
   created_at: number;
 };
 export const BRIEFING_EVENTS = Object.freeze({
@@ -1189,6 +1221,8 @@ export const BRIEFING_EVENTS = Object.freeze({
   groupUpdateAdded: "briefing:group-update-added",
   groupConfigurationUpdated: "briefing:group-configuration-updated",
   groupProposalPromoted: "briefing:group-proposal-promoted",
+  groupProposalAccepted: "briefing:group-proposal-accepted",
+  groupProposalRejected: "briefing:group-proposal-rejected",
   groupNameUpdated: "briefing:group-name-updated",
   groupArchived: "briefing:group-archived",
   groupRestored: "briefing:group-restored",

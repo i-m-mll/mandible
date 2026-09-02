@@ -1,7 +1,7 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
-import { BRIEFING_COMPOSER_SCHEMA_SQL } from "./feedback/schema.js";
+import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -549,6 +549,15 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 165,
     name: "base_relative_briefing_composer",
     statements: [...BRIEFING_COMPOSER_SCHEMA_SQL],
+  },
+  {
+    // v166 is reserved by sibling issue 4fda30d and lands first on the parent
+    // integration branch. Keep this migration independent so neither lane is
+    // renumbered during integration.
+    version: 167,
+    name: "human_reviewed_briefing_group_disposition",
+    statements: BRIEFING_GROUP_SCHEMA_SQL.filter((statement) =>
+      statement.includes("briefing_group_review_disposition")),
   },
 ];
 

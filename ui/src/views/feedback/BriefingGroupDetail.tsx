@@ -1,4 +1,6 @@
-import type { BriefingGroup } from '../../api';
+import { useState } from 'preact/hooks';
+
+import { dispositionBriefingGroupProposal, type BriefingGroup } from '../../api';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { shortIdentityRef } from '../../identity-refs';
@@ -7,14 +9,45 @@ export type BriefingGroupDetailProps = {
   group: BriefingGroup;
   selectedUpdateId: string | null;
   onSelectUpdate(updateId: string | null): void;
+  onDisposition?(group: BriefingGroup): void;
 };
 
 export function BriefingGroupDetail({
   group,
   selectedUpdateId,
   onSelectUpdate,
+  onDisposition,
 }: BriefingGroupDetailProps): JSX.Element {
+  const [busy, setBusy] = useState<'accepted' | 'rejected' | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const baseName = group.current?.name === 'Original' ? 'Base' : group.current?.name;
+  const selectedProposal = group.updates.find((update) => update.id === selectedUpdateId) ?? null;
+  const reviewCandidate = group.reviewCandidates?.find((candidate) => candidate.proposalBundleId === selectedUpdateId) ?? null;
+  const disposition = async (decision: 'accepted' | 'rejected') => {
+    if (!selectedProposal || !group.current || !reviewCandidate?.ready || !reviewCandidate.bindingDigest || busy) return;
+    const verb = decision === 'accepted' ? 'accept' : 'reject';
+    if (typeof window !== 'undefined' && !window.confirm(
+      `${verb[0].toUpperCase()}${verb.slice(1)} “${selectedProposal.name}” against the current Base?`,
+    )) return;
+    setBusy(decision);
+    setStatus(null);
+    try {
+      const result = await dispositionBriefingGroupProposal(group.id, {
+        decision,
+        expectedBaseBundleId: group.current.id,
+        proposalBundleId: selectedProposal.id,
+        bindingDigest: reviewCandidate.bindingDigest,
+      });
+      setStatus(result.changed
+        ? `Proposal ${decision === 'accepted' ? 'accepted as Base' : 'rejected'}.`
+        : `Proposal was already ${decision}.`);
+      onDisposition?.(result.group);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
     <DetailPaneShell
       className="briefing-group-detail"
@@ -83,6 +116,26 @@ export function BriefingGroupDetail({
               })}
             </ul>
           )}
+          {selectedProposal ? (
+            <div className="briefing-group-detail__review" aria-label="Human review disposition">
+              {reviewCandidate?.ready ? (
+                <>
+                  <p>
+                    Frozen review ready for {reviewCandidate.items.filter((item) => item.changed).length} changed document{reviewCandidate.items.filter((item) => item.changed).length === 1 ? '' : 's'}.
+                  </p>
+                  <div className="briefing-group-detail__review-actions">
+                    <button type="button" className="briefing-group-detail__accept" disabled={busy !== null}
+                      onClick={() => void disposition('accepted')}>{busy === 'accepted' ? 'Accepting…' : 'Accept as Base'}</button>
+                    <button type="button" className="briefing-group-detail__reject" disabled={busy !== null}
+                      onClick={() => void disposition('rejected')}>{busy === 'rejected' ? 'Rejecting…' : 'Reject proposal'}</button>
+                  </div>
+                </>
+              ) : (
+                <p>{reviewCandidate?.blockerMessage ?? 'This proposal is not eligible for human-reviewed disposition.'}</p>
+              )}
+            </div>
+          ) : null}
+          {status ? <p className="briefing-group-detail__review-status" role="status">{status}</p> : null}
         </section>
         {(group.history?.length ?? 0) > 0 ? (
           <section className="briefing-group-detail__history" aria-label="History">
@@ -91,7 +144,9 @@ export function BriefingGroupDetail({
               <ul className="briefing-group-detail__history-list">
                 {(group.history ?? []).map((entry) => (
                   <li key={entry.id}>
-                    <span>{entry.kind === 'promoted' ? 'Promoted to Base' : 'Dismissed'}</span>
+                    <span>{entry.kind === 'promoted' ? 'Promoted to Base'
+                      : entry.kind === 'accepted' ? 'Accepted as Base'
+                        : entry.kind === 'rejected' ? 'Rejected' : 'Dismissed'}</span>
                     <strong>{entry.proposal.name}</strong>
                     <span>{new Date(entry.createdAt).toLocaleString()}</span>
                     {entry.priorBase ? <span>Previous Base: {entry.priorBase.name === 'Original' ? 'Base' : entry.priorBase.name}</span> : null}
