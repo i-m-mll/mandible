@@ -105,6 +105,7 @@ describe("chat render orchestration", () => {
       },
       {
         type: "assistant",
+        uuid: "assistant-1",
         uuid: "t1",
         session_id: "provider-1",
         parent_tool_use_id: null,
@@ -149,6 +150,7 @@ describe("chat render orchestration", () => {
     const historyEvents: StreamEvent[] = [
       {
         type: "assistant",
+        uuid: "assistant-tail-anchor",
         session_id: "s1",
         parent_tool_use_id: null,
         message: {
@@ -183,7 +185,7 @@ describe("chat render orchestration", () => {
       },
     ];
 
-    expect(computeLiveTail(historyEvents, memEvents)).toEqual(memEvents.slice(3));
+    expect(computeLiveTail(historyEvents, memEvents)).toEqual(memEvents.slice(2));
   });
 
   it.each(["codex", "claude", "agy/gemini"])(

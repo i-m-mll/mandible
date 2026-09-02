@@ -219,7 +219,6 @@ describe("exact conversation freshness", () => {
     expect(router.resolveFileRpcPolicy("POST", "/api/conversations/ingest")).toBe(false);
     expect(router.resolveFileRpcPolicy("POST", "/api/conversations/export/transform")).toBe(false);
     expect(router.resolveFileRpcPolicy("POST", "/api/conversations/concurrent-session/fork")).toBe(false);
-    expect(router.resolveFileRpcPolicy("POST", "/api/conversations/concurrent-session/resume")).toBe(false);
 
     const rpcDir = path.join(tempDir, "file-rpc");
     const transport = new FileRpcTransport({ router, dir: rpcDir, responseTtlMs: 60_000 });

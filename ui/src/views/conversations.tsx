@@ -21,7 +21,6 @@ import type { ConsoleSession } from '../state';
 import type {
   BlockType,
   Conversation,
-  ConversationAttachState,
   ConversationBlock,
   ConversationChild,
   InstanceInfo,
@@ -39,18 +38,20 @@ import {
   getConsoleSessionUsage,
   getConsoleSessionOptions,
   getConversationWindow,
+  getConversationControl,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
   navigateSession,
-  resumeConversation,
-  sendConsolePrompt,
+  submitConversationControl,
   updateConsoleSession,
   updateConsoleSessionOptions,
   updateConversation,
   type SessionRunOptionsSnapshot,
+  type ConversationControlApiError,
+  type ConversationControlSnapshot,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -86,67 +87,22 @@ import { reconcileShownProjects, useChatViewState } from './conversation-view-st
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
+import { conversationControlPresentation } from '../chat/conversationControl';
 
 // ── Toast notification ──
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
-type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
-
-export function getConversationAttachPresentation(
-  state: ConversationAttachState,
-): { label: string | null; title: string; composer: AttachComposerMode } {
-  if (state.continuation.kind === 'live-send') {
-    return {
-      label: 'Live',
-      title: 'Mandible owns the live process for this conversation.',
-      composer: 'enabled',
-    };
-  }
-  if (state.continuation.kind === 'blocked') {
-    return {
-      label: 'External',
-      title: 'This conversation appears live outside Mandible.',
-      composer: 'disabled',
-    };
-  }
-  if (state.continuation.kind === 'provider-session-resume' || state.continuation.kind === 'message-anchor-resume') {
-    return {
-      label: null,
-      title: 'Sending a message will resume this conversation.',
-      composer: 'enabled',
-    };
-  }
-  return {
-    label: 'History',
-    title: 'This conversation is read-only.',
-    composer: 'hidden',
-  };
-}
-
-type ResumeApiError = Error & {
-  status?: number;
-  body?: {
-    error?: string;
-    reason?: string;
-    message?: string;
-    details?: string;
-    attach_state?: ConversationAttachState;
-  };
-};
-
-function formatResumeApiError(err: unknown): { message: string; details: string | null; state: ConversationAttachState | null } {
+function formatControlApiError(err: unknown): { message: string; details: string | null; snapshot: ConversationControlSnapshot | null } {
   if (err instanceof Error) {
-    const apiError = err as ResumeApiError;
-    const reason = apiError.body?.reason ? ` (${apiError.body.reason})` : '';
-    const message = apiError.body?.message || apiError.message;
+    const apiError = err as Partial<ConversationControlApiError>;
     return {
-      message: `${message}${reason}`,
-      details: apiError.body?.details ?? (apiError.body ? JSON.stringify(apiError.body, null, 2) : null),
-      state: apiError.body?.attach_state ?? null,
+      message: apiError.controlError?.kind ?? apiError.message ?? 'Conversation control failed',
+      details: apiError.controlError ? JSON.stringify(apiError.controlError, null, 2) : null,
+      snapshot: apiError.snapshot ?? null,
     };
   }
-  return { message: String(err), details: null, state: null };
+  return { message: String(err), details: null, snapshot: null };
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
@@ -1001,11 +957,12 @@ function ConversationDetail({
   const [composerModel, setComposerModel] = useState('');
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
+  const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
 
-  // Fork/resume state
+  // Fork/control state
   const [toast, setToast] = useState<ToastState>(null);
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
@@ -1073,6 +1030,14 @@ function ConversationDetail({
   }, [anchorKey, conversationId, conversationRequestKey, effectiveAnchor, initialConversation, loadNonce]);
 
   useEffect(() => {
+    let active = true;
+    void getConversationControl(conversationId)
+      .then((snapshot) => { if (active) setControl(snapshot); })
+      .catch(() => { if (active) setControl(null); });
+    return () => { active = false; };
+  }, [conversationId]);
+
+  useEffect(() => {
     if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
     writePersistedDetail('conversations', conversationRequestKey, conversation);
   }, [conversation, conversationRequestKey, loadedConversationKey, loading]);
@@ -1097,6 +1062,11 @@ function ConversationDetail({
     const offWorkflowUpdated = client.on('workflow:updated', () => {
       setWorkflowNonce((prev) => prev + 1);
     });
+    const offControlUpdated = client.on('conversation:control-updated', (payload) => {
+      const snapshot = payload as unknown as ConversationControlSnapshot;
+      if (snapshot.conversation_id !== conversationId) return;
+      setControl(snapshot);
+    });
     // Reconnect resync: refetch the open conversation after a dropped stream so
     // any events missed during the gap are reconciled.
     const offState = client.onState((_state, { reconnected }) => {
@@ -1108,6 +1078,7 @@ function ConversationDetail({
         window.clearTimeout(refreshTimer);
       }
       offWorkflowUpdated();
+      offControlUpdated();
       offState();
       client.close();
     };
@@ -1282,7 +1253,7 @@ function ConversationDetail({
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  // Fork/resume handlers
+  // Fork handlers
   const handleFork = useCallback(async (dagUuid: string) => {
     try {
       await forkConversation(conversationId, dagUuid);
@@ -1292,28 +1263,6 @@ function ConversationDetail({
       setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
     } catch (err) {
       setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-    }
-  }, [conversationId]);
-
-  const handleResume = useCallback(async (dagUuid: string) => {
-    try {
-      const result = await resumeConversation(conversationId, dagUuid);
-      if (result.attach_state) {
-        setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
-      }
-      if (!result.console_session_id) {
-        throw new Error('Resume did not return a console session.');
-      }
-      setToast({ message: 'Resuming conversation in Console...', type: 'info' });
-      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-    } catch (err) {
-      const formatted = formatResumeApiError(err);
-      if (formatted.state) {
-        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
-      }
-      setContinueError(formatted.message);
-      setResumeErrorDetails(formatted.details);
-      setToast({ message: `Resume failed: ${formatted.message}`, type: 'error' });
     }
   }, [conversationId]);
 
@@ -1475,11 +1424,7 @@ function ConversationDetail({
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
   }, [consoleSessions, conversation?.session_id]);
 
-  const attachState = useMemo<ConversationAttachState | null>(() => {
-    return conversation?.attach_state ?? null;
-  }, [conversation]);
-
-  const attachPresentation = attachState ? getConversationAttachPresentation(attachState) : null;
+  const controlPresentation = control ? conversationControlPresentation(control) : null;
 
   const telemetry = useStatuslineTelemetry({
     sessionRef: linkedConsoleSession?.id ?? conversation?.session_id ?? null,
@@ -1537,24 +1482,26 @@ function ConversationDetail({
   }, [blocks]);
 
   const continueDisabledReason = useMemo(() => {
-    if (attachState?.continuation.kind === 'blocked') {
-      return 'Live in your terminal.';
+    if (!conversation) return null;
+    if (!controlPresentation) return 'Control state unavailable.';
+    if (control?.capability.kind === 'message-anchor-resume' && !latestDagUuid) {
+      return 'The required message anchor is unavailable.';
     }
-    if (linkedConsoleSession?.interaction_mode === 'inbox_only' && isLiveConsoleSession(linkedConsoleSession)) {
-      return 'Direct input is disabled for this session.';
-    }
-    return null;
-  }, [attachState?.continuation.kind, linkedConsoleSession]);
+    if (controlPresentation.composer === 'enabled') return null;
+    return controlPresentation.title;
+  }, [control, controlPresentation, conversation, latestDagUuid]);
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelOptions = (sessionRunOptions?.options.find((option) => option.id === 'model')?.allowedValues ?? [])
     .map((choice) => choice.value)
     .filter((value): value is string => typeof value === 'string');
   const canShowSessionControls = linkedConsoleSession
+    && control?.ownership.kind === 'mandible'
     && (linkedConsoleSession.backend_type === 'sdk'
       || linkedConsoleSession.backend_type === 'pty'
       || linkedConsoleSession.backend_type === 'acp');
   const canSaveComposerModel = Boolean(linkedConsoleSession)
+    && control?.ownership.kind === 'mandible'
     && (linkedConsoleSession?.backend_type === 'sdk'
       || linkedConsoleSession?.backend_type === 'pty'
       || linkedConsoleSession?.backend_type === 'spawn'
@@ -1578,32 +1525,25 @@ function ConversationDetail({
     setContinueError(null);
     setResumeErrorDetails(null);
     try {
-      const messageAnchor = attachState?.continuation.kind === 'message-anchor-resume'
+      if (!control) return;
+      const messageAnchor = control.capability.kind === 'message-anchor-resume'
         ? latestDagUuid ?? undefined
         : undefined;
-      const result = await resumeConversation(conversationId, messageAnchor, undefined, composerModel || undefined);
-      if (result.attach_state) {
-        setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
-      }
-      if (!result.console_session_id) {
-        throw new Error('Continuation did not return a Console session.');
-      }
-      const targetSessionId = result.console_session_id;
-      await sendConsolePrompt(targetSessionId, prompt);
+      const result = await submitConversationControl(control, prompt, messageAnchor);
+      setControl(result.snapshot);
       setContinueDraft('');
       setToast({ message: 'Message sent.', type: 'info' });
-      setLoadNonce((prev) => prev + 1);
     } catch (err) {
-      const formatted = formatResumeApiError(err);
-      if (formatted.state) {
-        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      const formatted = formatControlApiError(err);
+      if (formatted.snapshot) {
+        setControl(formatted.snapshot);
       }
       setContinueError(formatted.message);
       setResumeErrorDetails(formatted.details);
     } finally {
       setContinueBusy(false);
     }
-  }, [attachState?.continuation.kind, composerModel, continueDisabledReason, continueDraft, conversationId, latestDagUuid]);
+  }, [continueDisabledReason, continueDraft, control, latestDagUuid]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'ArrowUp' && shelfItems.length > 0 && event.currentTarget.selectionStart === 0) {
@@ -1635,8 +1575,14 @@ function ConversationDetail({
     }
   }, [canSaveComposerModel, linkedConsoleSession]);
 
+  const externalNavigationSession = useMemo(() => {
+    const ownership = control?.ownership;
+    if (ownership?.kind !== 'external') return null;
+    return consoleSessions.find((session) => session.id === ownership.evidence.reference) ?? null;
+  }, [consoleSessions, control]);
+
   const handleFocusExternalSession = useCallback(async () => {
-    const sessionId = attachState?.external_session_id;
+    const sessionId = externalNavigationSession?.id;
     if (!sessionId) return;
     setContinueError(null);
     setResumeErrorDetails(null);
@@ -1646,41 +1592,7 @@ function ConversationDetail({
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     }
-  }, [attachState?.external_session_id]);
-
-  const handleForkHere = useCallback(async () => {
-    if (!latestDagUuid) {
-      setContinueError('No fork point is available.');
-      return;
-    }
-    setContinueBusy(true);
-    setContinueError(null);
-    setResumeErrorDetails(null);
-    try {
-      const result = await resumeConversation(
-        conversationId,
-        latestDagUuid,
-        undefined,
-        composerModel || undefined,
-        { fork: true },
-      );
-      setToast({
-        message: result.session_id
-          ? 'Forked conversation — it will appear in History shortly.'
-          : 'Fork requested.',
-        type: 'info',
-      });
-    } catch (err) {
-      const formatted = formatResumeApiError(err);
-      if (formatted.state) {
-        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
-      }
-      setContinueError(formatted.message);
-      setResumeErrorDetails(formatted.details);
-    } finally {
-      setContinueBusy(false);
-    }
-  }, [composerModel, conversationId, latestDagUuid]);
+  }, [externalNavigationSession?.id]);
 
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
@@ -1818,6 +1730,20 @@ function ConversationDetail({
                 <button type="button" role="menuitem" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
                   Show in graph
                 </button>
+                {linkedConsoleSession
+                  && (control?.capability.kind === 'provider-session-resume'
+                    || control?.capability.kind === 'message-anchor-resume') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
+                      setActionsOpen(false);
+                    }}
+                  >
+                    Resume in terminal
+                  </button>
+                )}
                 <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
                   {showMessageFilters ? 'Hide message filters' : 'Message filters'}
                 </button>
@@ -1833,12 +1759,12 @@ function ConversationDetail({
           <span className="conv-detail__provider">
             {getConversationHeaderProviderLabel(conversation.source)}
           </span>
-          {attachPresentation?.label && attachState && (
+          {controlPresentation && control && (
             <span
-              className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
-              title={attachPresentation.title}
+              className={`conv-attach-badge conv-attach-badge--${control.capability.kind}`}
+              title={controlPresentation.title}
             >
-              {attachPresentation.label}
+              {controlPresentation.status}
             </span>
           )}
         </span>
@@ -1859,7 +1785,7 @@ function ConversationDetail({
         <div className="conv-compose conv-compose--readonly">
           <span>Read-only subagent transcript</span>
         </div>
-      ) : attachPresentation?.composer !== 'hidden' ? (
+      ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
       <div className="conv-compose">
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
@@ -1868,38 +1794,29 @@ function ConversationDetail({
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder="Message..."
-            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
+            disabled={continueBusy || Boolean(continueDisabledReason)}
             rows={3}
           />
           <button
             type="submit"
             className="conv-compose__send"
-            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
-            title="Send message"
-            aria-label="Send message"
+            disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
+            title={controlPresentation?.submitLabel ?? 'Send'}
+            aria-label={controlPresentation?.submitLabel ?? 'Send'}
           >
-            {continueBusy ? '...' : '↑'}
+            {continueBusy ? '...' : controlPresentation?.submitLabel ?? 'Send'}
           </button>
         </form>
-        {attachState?.continuation.kind === 'blocked' && (
+        {(control?.capability.kind === 'blocked-external'
+          || control?.capability.kind === 'blocked-ownership-unknown') && (
           <div className="conv-compose__actions">
-            {attachState.external_session_id && (
+            {externalNavigationSession && (
               <button
                 type="button"
                 className="btn btn--ghost btn--sm"
                 onClick={() => { void handleFocusExternalSession(); }}
               >
                 Go to terminal
-              </button>
-            )}
-            {attachState.can_fork && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={continueBusy || !latestDagUuid}
-                onClick={() => { void handleForkHere(); }}
-              >
-                Fork here
               </button>
             )}
           </div>
@@ -1963,7 +1880,7 @@ function ConversationDetail({
   );
   const shouldRenderDetailFooter = shelfItems.length > 0
     || isReadOnlyChild
-    || attachPresentation?.composer !== 'hidden';
+    || Boolean(controlPresentation && controlPresentation.composer !== 'hidden');
 
   const detailOverlays = (
     <>
@@ -2110,7 +2027,6 @@ function ConversationDetail({
           selectMode={selectMode}
           onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
           onFork={handleFork}
-          onResume={handleResume}
           onSelectMessageInfo={(turnId) => {
             window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
           }}
@@ -2259,6 +2175,61 @@ function LiveSessionDetail({
   session: ConsoleSession;
 }): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
+  const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
+  const [messageAnchor, setMessageAnchor] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session.provider_session_id) {
+      setControl(null);
+      setMessageAnchor(null);
+      return undefined;
+    }
+    let active = true;
+    void getConversations({ session_id: session.provider_session_id, limit: 1 })
+      .then(async ({ conversations }) => {
+        const conversation = conversations[0];
+        if (!conversation) return null;
+        const [snapshot, window] = await Promise.all([
+          getConversationControl(conversation.id),
+          getConversationWindow(conversation.id, { target: 'latest', limit: 1 }),
+        ]);
+        let latestMessageAnchor: string | null = null;
+        for (let index = window.blocks.length - 1; index >= 0; index -= 1) {
+          if (window.blocks[index].dag_uuid) {
+            latestMessageAnchor = window.blocks[index].dag_uuid ?? null;
+            break;
+          }
+        }
+        return {
+          snapshot,
+          messageAnchor: latestMessageAnchor,
+        };
+      })
+      .then((result) => {
+        if (!active) return;
+        setControl(result?.snapshot ?? null);
+        setMessageAnchor(result?.messageAnchor ?? null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setControl(null);
+        setMessageAnchor(null);
+      });
+    return () => { active = false; };
+  }, [session.provider_session_id]);
+
+  useEffect(() => {
+    if (!control || typeof EventSource === 'undefined') return undefined;
+    const client = acquireSharedSse();
+    const offControlUpdated = client.on('conversation:control-updated', (payload) => {
+      const snapshot = payload as unknown as ConversationControlSnapshot;
+      if (snapshot.conversation_id === control.conversation_id) setControl(snapshot);
+    });
+    client.connect();
+    return () => { offControlUpdated(); client.close(); };
+  }, [control?.conversation_id]);
+
+  const controlPresentation = control ? conversationControlPresentation(control) : null;
 
   return (
     <div className="chat-live-detail">
@@ -2266,12 +2237,12 @@ function LiveSessionDetail({
         <div className="chat-live-detail__title-group">
           <h2 className="chat-live-detail__title">{session.label || 'Untitled session'}</h2>
           <div className="chat-live-detail__meta">
-            <span className={`chat-live-session__status chat-live-session__status--${session.status}`} />
+            <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
             <span>{getAgentLabel(session.agent_type)}</span>
             {session.owner && (
               <span>{session.owner.display_name} · {session.owner.kind}</span>
             )}
-            <span>{session.status}</span>
+            <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
             <span title={session.transport_badge?.title}>
               {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
             </span>
@@ -2303,6 +2274,9 @@ function LiveSessionDetail({
           transportBadge={session.transport_badge}
           attention={session.attention}
           providerSessionId={session.provider_session_id}
+          conversationControl={control}
+          conversationMessageAnchor={messageAnchor}
+          onConversationControlChange={setControl}
           isVisible
           viewMode={viewMode}
           onViewModeChange={setViewMode}
