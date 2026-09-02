@@ -1493,8 +1493,8 @@ function ConversationDetail({
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
-  const thinkingRunOption = sessionRunOptions?.options.find((option) => option.id === 'thinking_effort');
-  const permissionRunOption = sessionRunOptions?.options.find((option) => option.id === 'permission_mode');
+  const thinkingRunOption = sessionRunOptions?.options.find((option) => option.category === 'thought_level');
+  const permissionRunOption = sessionRunOptions?.options.find((option) => option.category === 'mode');
   const modelOptions = (modelRunOption?.allowedValues ?? [])
     .map((choice) => choice.value)
     .filter((value): value is string => typeof value === 'string');
@@ -1838,7 +1838,7 @@ function ConversationDetail({
                   disabled={continueBusy || permissionRunOption.availability !== 'available'}
                   title="Permission mode"
                   aria-label="Permission mode"
-                  onChange={(event) => { void handleComposerRunOptionChange('permission_mode', event.currentTarget.value); }}
+                  onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}
                 >
                   {permissionRunOption.nullable && <option value="">Use app default</option>}
                   {(permissionRunOption.allowedValues ?? []).map((choice) => (
@@ -1880,9 +1880,9 @@ function ConversationDetail({
                   className="conv-compose__effort"
                   value={String(thinkingRunOption.currentValue ?? '')}
                   disabled={continueBusy || thinkingRunOption.availability !== 'available'}
-                  title="Thinking effort"
-                  aria-label="Thinking effort"
-                  onChange={(event) => { void handleComposerRunOptionChange('thinking_effort', event.currentTarget.value); }}
+                  title={thinkingRunOption.label}
+                  aria-label={thinkingRunOption.label}
+                  onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}
                 >
                   {thinkingRunOption.nullable && <option value="">Use app default</option>}
                   {(thinkingRunOption.allowedValues ?? []).map((choice) => (
@@ -1914,7 +1914,11 @@ function ConversationDetail({
               sessionId={linkedConsoleSession.id}
               runOptions={sessionRunOptions}
               allowedTools={linkedConsoleSession.allowed_tools}
-              hiddenOptionIds={['model', 'thinking_effort', 'permission_mode']}
+              hiddenOptionIds={[
+                modelRunOption?.id,
+                thinkingRunOption?.id,
+                permissionRunOption?.id,
+              ].filter((id): id is string => Boolean(id))}
             />
           </div>
         )}
