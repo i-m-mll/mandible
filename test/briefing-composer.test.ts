@@ -9,8 +9,12 @@ import { setSetting } from "../src/client-auth/settings-kv.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { migrate, type Db } from "../src/db.js";
 import {
+  inspectBriefingDestinationRoutes,
+  parseBriefingDestinationRouteManifest,
   parseBriefingCompositionRequest,
+  planBriefingDestinationRoutes,
   publishBriefingCompositionRun,
+  reconcileBriefingDestinationRoutes,
   registerBriefingDestinationRoute,
 } from "../src/feedback/briefing-composer.js";
 import { createBriefingBundle } from "../src/feedback/briefing-bundles.js";
@@ -89,6 +93,51 @@ afterEach(() => {
 });
 
 describe("Base-relative Briefing destination composer", () => {
+  it("plans and atomically reconciles canonical route manifests with fail-closed template upgrades", () => {
+    const destination = publishBase("Managed.md", "# Managed\n\n## Changes\n");
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Managed Base",
+      briefingRefs: [destination.published.briefing_id], viewer }, 100);
+    const group = createBriefingGroup(db, { name: "Managed", currentBundleRef: bundle.id,
+      bundleRefs: [], viewer }, 110);
+    const manifest = (version: number, contributionTemplate = "- {{summary}} ({{evidence_ref}})") =>
+      parseBriefingDestinationRouteManifest({
+        schema: "mandible-briefing-destination-routes@1",
+        routes: [{
+          route_key: "managed.changes",
+          group_ref: `briefing-group:${group.id}`,
+          logical_artifact_ref: destination.logicalArtifactId,
+          heading: "Changes",
+          composer_kind: "deterministic",
+          template: { version, contribution_template: contributionTemplate,
+            slots: { summary: { type: "string", required: true, max_length: 200 } } },
+          limits: { max_contributions: 10, max_document_bytes: 10_000, max_directives: 0 },
+        }],
+      });
+
+    expect(planBriefingDestinationRoutes(db, manifest(1))).toMatchObject({ changed: true, routes: [{
+      route_key: "managed.changes", action: "create", group_id: group.id,
+      logical_artifact_id: destination.logicalArtifactId, template_action: "create",
+    }] });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_routes").get()).toEqual({ n: 0 });
+    expect(reconcileBriefingDestinationRoutes(db, manifest(1), 120)).toMatchObject({ changed: true,
+      routes: [{ action: "create" }] });
+    expect(reconcileBriefingDestinationRoutes(db, manifest(1), 130)).toMatchObject({ changed: false,
+      routes: [{ action: "unchanged", template_action: "reuse" }] });
+    expect(planBriefingDestinationRoutes(db, manifest(2))).toMatchObject({ changed: true,
+      routes: [{ action: "update", active_template_version: 2, template_action: "create" }] });
+    reconcileBriefingDestinationRoutes(db, manifest(2), 140);
+    expect(inspectBriefingDestinationRoutes(db, "managed.changes")).toMatchObject({ routes: [{
+      group_id: group.id, logical_artifact_id: destination.logicalArtifactId,
+      active_template_version: 2, templates: [{ version: 1 }, { version: 2 }],
+    }] });
+    expect(() => planBriefingDestinationRoutes(db, manifest(1))).toThrowError(expect.objectContaining({
+      code: "briefing_destination_template_regression",
+    }));
+    expect(() => planBriefingDestinationRoutes(db, manifest(2, "changed {{evidence_ref}}")))
+      .toThrowError(expect.objectContaining({ code: "briefing_destination_template_conflict" }));
+  });
+
   it("routes normalized changes, clones Base layout, and queues behind the one active proposal", () => {
     const destination = publishBase("Project.md", "# Project\n\n## Maintenance\n\nExisting item.\n");
     const readme = publishBase("README.md", "# Project collection\n");

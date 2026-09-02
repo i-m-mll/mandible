@@ -74,6 +74,68 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("guards deterministic destination-route plan, apply, replay, and inspect behind the operator token", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    const source = path.join(root, "destination.md");
+    fs.writeFileSync(source, "# Digest\n\n## Since last review\n");
+    const recorded = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "destination.md", role: "briefing-document", media_type: "text/markdown" });
+    const published = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "destination-base", artifact_version_ref: recorded.version.id, title: "Digest",
+      profile: "mandible-briefing.v3", responder_user_ids: [humanId],
+    }, 100);
+    if (published.outcome === "active_candidates") throw new Error("destination fixture conflicted");
+    const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?").get(recorded.version.id) as
+      { artifact_id: string };
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Digest Base", briefingRefs: [published.briefing_id], viewer }, 110);
+    const group = createBriefingGroup(db, { name: "Digest", currentBundleRef: bundle.id,
+      bundleRefs: [], viewer }, 120);
+    const manifest = {
+      schema: "mandible-briefing-destination-routes@1",
+      routes: [{ route_key: "digest.since-last-review", group_ref: `briefing-group:${group.id}`,
+        logical_artifact_ref: logical.artifact_id, heading: "Since last review",
+        composer_kind: "agentic", template: { version: 1, contribution_template: "", slots: {} },
+        limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 } }],
+    };
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      body: manifest })).toMatchObject({ status: 401, body: { code: "authentication_required" } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      credential: "session:human", body: manifest })).toMatchObject({ status: 403,
+      body: { code: "briefing_destination_route_credential_required" } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      credential: "agent-schedule", body: manifest })).toMatchObject({ status: 403,
+      body: { code: "operator_required" } });
+    const rejectMode = new Router({
+      clientAuth: new SlugGate(() => db),
+      instance: resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
+        dbPath: path.join(root, "preview.db"), sourceDbPath: path.join(root, "source.db"),
+      }),
+    });
+    registerBriefingRoutes(rejectMode, db);
+    expect(await rejectMode.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true } });
+    expect(await rejectMode.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "human", body: manifest })).toMatchObject({ status: 403,
+      body: { error: "instance_mutation_forbidden" } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true,
+      routes: [{ action: "create", group_id: group.id, logical_artifact_id: logical.artifact_id }] } });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_routes").get()).toEqual({ n: 0 });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true,
+      routes: [{ action: "create" }] } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: false,
+      routes: [{ action: "unchanged" }] } });
+    expect(await router.invoke({ method: "GET", url: "/api/briefing-destination-routes/digest.since-last-review",
+      credential: "human" })).toMatchObject({ status: 200, body: { routes: [{
+      route_key: "digest.since-last-review", active_template_version: 1, templates: [{ version: 1 }],
+    }] } });
+  });
+
   it("keeps operator-visible Briefing reads authenticated", async () => {
     setSetting(db, "user.operator_id", humanId);
     expect(await router.invoke({ method: "GET", url: "/api/briefings" })).toMatchObject({
