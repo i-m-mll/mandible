@@ -2076,7 +2076,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               className="settings-view__select"
               aria-describedby="settings-app-theme-description"
               value={normalizeAppThemeMode(settings.app_theme)}
+              disabled={!operationalMutationsAllowed}
               onChange={async (e) => {
+                if (!operationalMutationsAllowed) return;
                 try {
                   await onSave('app_theme', normalizeAppThemeMode((e.target as HTMLSelectElement).value));
                 } catch { /* ignore */ }

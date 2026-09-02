@@ -10,6 +10,7 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
 import { addBinding, addCredential, createUser, removeBinding, setupOperator } from "../src/users/store.js";
 import { SessionManager } from "../src/session-manager.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 
 let tempDir = "";
 let db: Db;
@@ -41,6 +42,74 @@ afterEach(() => {
 });
 
 describe("client-auth gate: middleware resolution matrix", () => {
+  it("limits a process-bound preview proof to the dashboard handshake", () => {
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const previewRoot = path.join(tempDir, "preview");
+    fs.mkdirSync(previewRoot);
+    const previewDb = path.join(previewRoot, "copy.db");
+    const sourceDb = path.join(tempDir, "source.db");
+    fs.writeFileSync(previewDb, "preview");
+    fs.writeFileSync(sourceDb, "source");
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_PREVIEW_ROOT: previewRoot,
+      },
+      dbPath: previewDb,
+      sourceDbPath: sourceDb,
+    });
+    expect(instance.preview_browser_enrollment).toBe("allow");
+    const previewAuth = new ClientAuthenticator(db, {
+      secretsDir: path.join(previewRoot, "config", "client-auth"),
+      instance,
+      startupEpoch: "epoch-one",
+    });
+    previewAuth.publishPreviewBrowserEnrollmentProof();
+    const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
+    const proof = JSON.parse(fs.readFileSync(proofPath, "utf8")) as {
+      pid: number; startup_epoch: string; token: string;
+    };
+    expect(proof).toMatchObject({ pid: process.pid, startup_epoch: "epoch-one" });
+    expect(fs.statSync(proofPath).mode & 0o077).toBe(0);
+    expect(previewAuth.authenticate(proof.token, "http_bearer", {
+      method: "GET", pathname: "/api/briefings",
+    })).toBeNull();
+    const enrollmentIdentity = previewAuth.authenticate(proof.token, "http_bearer", {
+      method: "POST", pathname: "/api/client-auth/handshake",
+    });
+    expect(enrollmentIdentity).toMatchObject({
+      user_id: operator.id,
+      ephemeral_purpose: "preview_browser_enrollment:epoch-one",
+    });
+    const dashboard = previewAuth.issueDashboardToken(enrollmentIdentity!);
+    expect(previewAuth.authenticate(dashboard.token, "http_bearer", {
+      method: "GET", pathname: "/api/briefings",
+    })).toMatchObject({ user_id: operator.id, ephemeral_purpose: "dashboard_handshake" });
+
+    const otherProcess = new ClientAuthenticator(db, {
+      secretsDir: path.join(previewRoot, "other-client-auth"),
+      instance,
+      startupEpoch: "epoch-two",
+    });
+    expect(otherProcess.authenticate(proof.token, "http_bearer", {
+      method: "POST", pathname: "/api/client-auth/handshake",
+    })).toBeNull();
+
+    const mainRoot = path.join(tempDir, "main-instance");
+    fs.mkdirSync(mainRoot);
+    const mainAuth = new ClientAuthenticator(db, {
+      secretsDir: path.join(mainRoot, "client-auth"),
+      instance: resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "main", MANDIBLE_PREVIEW_ROOT: mainRoot },
+        dbPath: previewDb,
+        sourceDbPath: sourceDb,
+      }),
+      startupEpoch: "main-epoch",
+    });
+    expect(mainAuth.publishPreviewBrowserEnrollmentProof()).toBe(false);
+    expect(fs.existsSync(path.join(mainRoot, "preview-browser-enrollment.json"))).toBe(false);
+  });
   it("compat mode: allows unauthenticated mutation and counts it", async () => {
     const response = await router.invoke({ method: "POST", url: "/api/write", body: {}, transport: "http" });
     expect(response.status).toBe(200);

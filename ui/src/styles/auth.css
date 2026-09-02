@@ -19,36 +19,7 @@
 }
 
 .auth-toolbar__controls select {
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-08);
-  color: var(--text-primary);
-  border-radius: 10px;
-  padding: 6px 10px;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
-.auth-clearance-panel {
-  margin-bottom: 12px;
-}
-
-.auth-clearance-panel .panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.auth-clearance-panel__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 0;
-  border-top: 1px solid var(--neutral-alpha-08);
-  font-size: 12px;
+  min-height: 32px;
 }
 
 .auth-list {
@@ -194,6 +165,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  container: auth-detail / inline-size;
 }
 
 .auth-detail__header {
@@ -459,13 +431,19 @@
 
 .auth-detail__panels {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .auth-detail__panels--single {
   grid-template-columns: minmax(0, 1fr);
+}
+
+@container auth-detail (min-width: 1120px) {
+  .auth-detail__panels--with-actions {
+    grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  }
 }
 
 .auth-detail__left-col {
@@ -955,19 +933,7 @@
 
 .auth-sidebar__type-filter select {
   width: 100%;
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-08);
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.auth-sidebar__type-filter select:focus {
-  outline: none;
-  border-color: var(--accent-blue);
-  color: var(--text-primary);
+  min-height: 30px;
 }
 
 .stats-bar {
@@ -1208,28 +1174,6 @@
 .spec-panel--empty {
   color: var(--text-muted);
   font-style: italic;
-}
-
-/* Issue 7d64d8f — the canonical change message is the literal merge commit
-   message, so it is shown verbatim rather than rendered as prose. */
-.panel__badge {
-  margin-left: 8px;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: normal;
-  text-transform: lowercase;
-  color: var(--text-muted);
-}
-
-.canonical-message {
-  margin: 0;
-  font-family: var(--font-mono, monospace);
-  font-size: 13px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-primary);
 }
 
 /* Bug: 2c826ca — inline edit controls for auth request fields */
@@ -1958,13 +1902,7 @@
 }
 
 .auth-sidebar__sort select {
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-08);
-  color: var(--text-muted);
-  font-size: 11px;
-  padding: 3px 6px;
-  border-radius: 4px;
-  cursor: pointer;
+  min-height: 28px;
 }
 
 .auth-sidebar__list {
@@ -2226,74 +2164,6 @@
   right: 32px;
   z-index: 100;
   margin-bottom: 0;
-}
-
-/* Bug: 544ce35 — Dependency warning modal (scoped to auth detail panel) */
-.auth-dep-modal-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-  backdrop-filter: blur(2px);
-  border-radius: 12px;
-}
-
-.auth-dep-modal {
-  background: var(--bg-card);
-  border: 1px solid var(--neutral-alpha-10);
-  border-radius: 14px;
-  padding: 24px 28px;
-  max-width: 420px;
-  width: 90%;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-}
-
-.auth-dep-modal__title {
-  margin: 0 0 12px;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--accent-yellow);
-}
-
-.auth-dep-modal__body {
-  margin: 0 0 20px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-muted);
-}
-
-.auth-dep-modal__hash {
-  font-family: var(--font-mono);
-  color: var(--accent-blue);
-  font-size: 12px;
-}
-
-.auth-dep-modal__status {
-  font-weight: 500;
-  text-transform: capitalize;
-}
-
-.auth-dep-modal__status--pending { color: var(--accent-yellow); }
-.auth-dep-modal__status--approved { color: var(--accent-blue); }
-.auth-dep-modal__status--unknown { color: var(--text-muted); }
-
-.auth-dep-modal__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.auth-dep-modal__actions .btn--warning {
-  background: rgba(245, 194, 92, 0.15);
-  color: var(--accent-yellow);
-  border: 1px solid rgba(245, 194, 92, 0.3);
-}
-
-.auth-dep-modal__actions .btn--warning:hover {
-  background: rgba(245, 194, 92, 0.25);
 }
 
 /* Responsive: stack sidebar above detail on narrow screens */

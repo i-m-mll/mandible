@@ -13,7 +13,7 @@ import { normalizeSidebarGroupLimit } from '../../ui/src/components/shared/sideb
 import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import { compareConversationSidebarRows } from '../../src/conversations/sidebar-order.js';
-import { normalizeChatViewState } from '../../ui/src/views/conversation-view-state.js';
+import { normalizeChatViewState, reconcileShownProjects } from '../../ui/src/views/conversation-view-state.js';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -65,7 +65,7 @@ function conversation(id: string, title: string, starred = false): ConversationS
     model: null, cli_version: null, is_sidechain: false, agent_id: null, starred,
     tags: [], notes: null, parent_conversation_id: null, children_count: 0,
     canonical_project_id: null, canonical_project_key: null,
-    attach_state: { kind: 'historical', reason: 'no-session', resumable: false, can_fork: false, provider_session_id: null, checked_at: 1 },
+    attach_state: { kind: 'historical', reason: 'no-session', continuation: { kind: 'hidden', reason: 'unavailable' }, can_fork: false, provider_session_id: null, checked_at: 1 },
   };
 }
 
@@ -118,6 +118,19 @@ function renderView(
 }
 
 describe('conversation sidebar groups', () => {
+  it('preserves an explicitly empty shown-project selection and offers registered projects', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({ shownProjects: [] }));
+
+    renderView();
+
+    expect(await screen.findByText(/No projects shown/)).toBeTruthy();
+    expect(screen.getByText(/available/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add Project' })).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects).toEqual([]);
+  });
+
   it('sends bounded deduplicated full canonical project ids on the wire', async () => {
     const projectIds = Array.from({ length: 502 }, (_, index) => `prj-full-${index}`);
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ limit: 1, groups: [] }), {
@@ -153,6 +166,17 @@ describe('conversation sidebar groups', () => {
       pinnedConversationIds: [],
       previewPinOverrides: {},
     });
+  });
+
+  it('preserves selected projects when their checkout identity changes', () => {
+    expect(reconcileShownProjects([
+      { projectId: 'prj-mandible', checkoutId: 'checkout-retired' },
+      { projectId: 'prj-feedbax', checkoutId: 'checkout-feedbax' },
+      { projectId: 'prj-removed', checkoutId: 'checkout-removed' },
+    ], canonicalProjects)).toEqual([
+      { projectId: 'prj-mandible', checkoutId: 'checkout-mandible' },
+      { projectId: 'prj-feedbax', checkoutId: 'checkout-feedbax' },
+    ]);
   });
 
   it('drops removed registry selections without requesting or manufacturing their groups', async () => {

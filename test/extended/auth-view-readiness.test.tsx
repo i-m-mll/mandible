@@ -117,6 +117,37 @@ afterEach(() => {
 });
 
 describe('AuthQueueView daemon readiness gate', () => {
+  it('blocks from canonical dependency readiness and opens only for ready', () => {
+    const onApprove = vi.fn();
+    const blockedRequest: AuthRequest = {
+      ...pendingRequest,
+      depends_on_id: 'dependency-1',
+      dependency: {
+        state: 'unfinalized', requested_id: 'dependency-1',
+        request_id: 'dependency-1', status: 'completed', outcome: 'succeeded',
+        exit_code: 0, merge_finalized_at: null,
+      },
+    };
+    const props = {
+      queue: [blockedRequest], historyQueue: [], outputs: {}, selectedAuthId: 'req-1',
+      daemonReady: true, onApprove, onReject: () => undefined,
+      onRetry: () => undefined, onDismiss: () => undefined,
+    };
+    const { rerender } = render(<AuthQueueView {...props} />);
+
+    const blocked = screen.getByRole('button', { name: 'Blocked: dependency unfinalized' }) as HTMLButtonElement;
+    expect(blocked.disabled).toBe(true);
+    fireEvent.click(blocked);
+    expect(onApprove).not.toHaveBeenCalled();
+
+    rerender(<AuthQueueView {...props} queue={[{
+      ...blockedRequest,
+      dependency: { ...blockedRequest.dependency!, state: 'ready', merge_finalized_at: 10 },
+    }]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(onApprove).toHaveBeenCalledWith('req-1');
+  });
+
   it('disables Approve and fires no approval action while the daemon is not ready', () => {
     const onApprove = vi.fn();
     renderView(false, onApprove);
@@ -144,50 +175,39 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(onApprove).toHaveBeenCalledWith('req-1');
   });
 
-  it('creates, lists, and revokes scoped clearance from the selected request', async () => {
-    const clearance = {
-      id: 'clearance-12345678', issuer_user_id: 'operator-1', grantee_user_id: 'agent-1',
-      grantee_credential_id: 'credential-1234567890', project_id: 'project-1', base_branch: 'main',
-      issue_id: 'issue-1', head_branch: 'feature/x', action: 'merge' as const,
-      issued_at: Date.now(), expires_at: Date.now() + 60_000, max_uses: 1, consumed_uses: 0,
-      revoked_at: null, runtime_epoch: 'runtime-a',
-    };
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url.startsWith('/api/auth/clearances?') && method === 'GET') {
-        return Promise.resolve(new Response(JSON.stringify({ clearances: [clearance] }), {
-          status: 200, headers: { 'content-type': 'application/json' },
-        }));
-      }
-      if (url === '/api/auth/clearances' && method === 'POST') {
-        return Promise.resolve(new Response(JSON.stringify({ clearance }), {
-          status: 201, headers: { 'content-type': 'application/json' },
-        }));
-      }
-      if (url === `/api/auth/clearances/${clearance.id}/revoke` && method === 'POST') {
-        return Promise.resolve(new Response(JSON.stringify({ clearance: { ...clearance, revoked_at: Date.now() } }), {
-          status: 200, headers: { 'content-type': 'application/json' },
-        }));
-      }
-      return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
-    });
+  it('omits request-local clearance controls and queries while preserving audit metadata', async () => {
+    const fetchMock = vi.fn(() => Promise.reject(new Error('no network in test')));
     vi.stubGlobal('fetch', fetchMock);
-    renderView(true, vi.fn());
+    render(
+      <AuthQueueView
+        queue={[{
+          ...pendingRequest,
+          approval_source: 'clearance',
+          approval_lease_id: 'lease-1',
+          clearance_use_id: 'clearance-use-1',
+        }]}
+        historyQueue={[]}
+        outputs={{}}
+        selectedAuthId="req-1"
+        daemonReady={true}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+      />,
+    );
 
-    expect(await screen.findByText(/clearanc.*0\/1 uses/i)).toBeTruthy();
-    expect(screen.getByText(/Requester provenance: api_token/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Issue clearance' }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) =>
-      String(url) === '/api/auth/clearances' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true));
-    const createCall = fetchMock.mock.calls.find(([url, init]) =>
-      String(url) === '/api/auth/clearances' && (init as RequestInit | undefined)?.method === 'POST');
-    expect(JSON.parse(String((createCall?.[1] as RequestInit).body))).toMatchObject({
-      request_id: 'req-1', grantee: 'agent-1', issue: 'issue-1', head: 'feature/x',
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) =>
-      String(url) === `/api/auth/clearances/${clearance.id}/revoke`)).toBe(true));
+    expect(screen.queryByRole('button', { name: 'Issue clearance' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
+    expect(screen.queryByLabelText('Protected merge clearances')).toBeNull();
+    expect(document.querySelector('.auth-detail__panels')?.className).toContain('auth-detail__panels--single');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auth actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(screen.getByText('clearance-use-1')).toBeTruthy();
+    expect(screen.getByText('api_token')).toBeTruthy();
+    expect(screen.getByText('credential-1234567890')).toBeTruthy();
+    expect(screen.getByText('clearance')).toBeTruthy();
+    expect(screen.getByText('lease-1')).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/auth/clearances'))).toBe(false);
   });
 
   it('shows preview instance diagnostics and blocks approval actions', () => {

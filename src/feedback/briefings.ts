@@ -15,11 +15,17 @@ import {
 } from "./briefing-directives.js";
 import { resolveGroupDisplayComparisonBase } from "./briefing-groups.js";
 import { canonicalJson } from "../canonical-json.js";
+import { isEvidenceMethod, type EvidenceMethod } from "../users/types.js";
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
 
 export class BriefingStoreError extends Error {
-  constructor(message: string, public readonly status = 400, public readonly code = "invalid_briefing") {
+  constructor(
+    message: string,
+    public readonly status = 400,
+    public readonly code = "invalid_briefing",
+    public readonly details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "BriefingStoreError";
   }
@@ -263,15 +269,18 @@ export function publishBriefingRun(
   }
 
   return db.transaction(() => {
-    let briefing = db.prepare("SELECT id, latest_round_id, round_count FROM briefings WHERE briefing_key = ?")
-      .get(request.briefing_key) as { id: string; latest_round_id: string | null; round_count: number } | undefined;
+    let briefing = db.prepare(
+      "SELECT id, latest_round_id, round_count, logical_artifact_id FROM briefings WHERE briefing_key = ?",
+    ).get(request.briefing_key) as {
+      id: string; latest_round_id: string | null; round_count: number; logical_artifact_id: string | null;
+    } | undefined;
     if (!briefing) {
       const id = randomUUID();
       db.prepare(
         `INSERT INTO briefings (id, briefing_key, title, description, latest_round_id, round_count, created_at, updated_at)
          VALUES (?, ?, ?, ?, NULL, 0, ?, ?)`,
       ).run(id, request.briefing_key, request.title, request.description ?? null, now, now);
-      briefing = { id, latest_round_id: null, round_count: 0 };
+      briefing = { id, latest_round_id: null, round_count: 0, logical_artifact_id: null };
     } else {
       if (request.description === undefined) {
         db.prepare("UPDATE briefings SET title = ?, updated_at = ? WHERE id = ?")
@@ -304,15 +313,34 @@ export function publishBriefingRun(
           : null,
       }, now);
       artifactVersionId = artifact.version.id;
+      const logicalArtifactId = logicalArtifactForVersion(db, artifactVersionId);
+      if (briefing.logical_artifact_id === null) {
+        db.prepare("UPDATE briefings SET logical_artifact_id = ? WHERE id = ?")
+          .run(logicalArtifactId, briefing.id);
+        briefing.logical_artifact_id = logicalArtifactId;
+      } else if (briefing.logical_artifact_id !== logicalArtifactId) {
+        throw new BriefingStoreError(
+          "recurring run artifact does not belong to the Briefing logical Artifact",
+          409,
+          "briefing_artifact_lineage_mismatch",
+        );
+      }
       const directives = parseBriefingDirectives(request.document.markdown);
       const bindingDigest = roundBindingDigest(directives);
-      roundId = randomUUID();
-      db.prepare(
-        `INSERT INTO briefing_rounds
-          (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(roundId, briefing.id, briefing.round_count + 1, artifactVersionId,
-        briefing.latest_round_id, BRIEFING_PROFILE, bindingDigest, now);
+      const existingRound = db.prepare(
+        `SELECT id FROM briefing_rounds
+          WHERE briefing_id = ? AND artifact_version_id = ? AND profile = ?
+            AND comparison_base_artifact_version_id IS NULL`,
+      ).get(briefing.id, artifactVersionId, BRIEFING_PROFILE) as { id: string } | undefined;
+      roundId = existingRound?.id ?? randomUUID();
+      if (!existingRound) {
+        db.prepare(
+          `INSERT INTO briefing_rounds
+            (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(roundId, briefing.id, briefing.round_count + 1, artifactVersionId,
+          briefing.latest_round_id, BRIEFING_PROFILE, bindingDigest, now);
+      }
       directives.forEach((directive, position) => {
         let definition = db.prepare(
           "SELECT id FROM briefing_directive_definitions WHERE artifact_version_id = ? AND directive_key = ?",
@@ -329,21 +357,28 @@ export function publishBriefingRun(
             directive.start_offset, directive.end_offset,
             directive.body_start_offset, directive.body_end_offset, now);
         }
-        const instanceId = randomUUID();
-        db.prepare(
-          `INSERT INTO briefing_directive_instances
-            (id, round_id, briefing_id, artifact_version_id, definition_id, directive_key, position, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(instanceId, roundId, briefing.id, artifactVersionId, definition.id, directive.key, position, now);
+        const storedInstance = db.prepare(
+          "SELECT id FROM briefing_directive_instances WHERE round_id = ? AND directive_key = ?",
+        ).get(roundId, directive.key) as { id: string } | undefined;
+        const instanceId = storedInstance?.id ?? randomUUID();
+        if (!storedInstance) {
+          db.prepare(
+            `INSERT INTO briefing_directive_instances
+              (id, round_id, briefing_id, artifact_version_id, definition_id, directive_key, position, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(instanceId, roundId, briefing.id, artifactVersionId, definition.id, directive.key, position, now);
+        }
         instanceByKey.set(directive.key, instanceId);
       });
       const verified = verifyBriefingRoundBinding(db, roundId);
       if (!verified.valid) {
         throw new BriefingStoreError(`published round binding is invalid: ${verified.reason}`, 409, "invalid_round_binding");
       }
-      db.prepare(
-        "UPDATE briefings SET latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?",
-      ).run(roundId, now, briefing.id);
+      if (!existingRound) {
+        db.prepare(
+          "UPDATE briefings SET latest_round_id = ?, round_count = round_count + 1, updated_at = ? WHERE id = ?",
+        ).run(roundId, now, briefing.id);
+      }
     }
     const receiptId = randomUUID();
     db.prepare(
@@ -371,10 +406,41 @@ export function publishBriefingRun(
 }
 
 export type ExistingArtifactBriefingRequest = {
-  briefing_key: string; title: string; description?: unknown; artifact_version_ref: string;
+  briefing_key?: string; target_briefing_ref?: string; title: string; description?: unknown; artifact_version_ref: string;
   comparison_base_artifact_version_ref?: string | null;
   profile: typeof BRIEFING_PROFILE_V3; responder_user_ids: string[];
+  viewer?: BriefingViewer;
+  distinct_reason?: unknown;
+  creation_provenance?: {
+    actor_user_id: string;
+    evidence_method: EvidenceMethod;
+    credential_id: string | null;
+  };
 };
+
+export type ArtifactBriefingCandidate = {
+  briefing_id: string;
+  title: string;
+  archived_at: number | null;
+  latest_round_id: string | null;
+  matching_round_id: string | null;
+  guidance: "reuse_round" | "add_round";
+};
+
+export type ExistingArtifactBriefingResult =
+  | {
+      outcome: "active_candidates";
+      logical_artifact_id: string;
+      active_candidates: ArtifactBriefingCandidate[];
+      archived_candidates: ArtifactBriefingCandidate[];
+    }
+  | (BriefingRunReceipt & {
+      outcome: "created" | "created_distinct" | "round_added" | "round_reused";
+      logical_artifact_id: string;
+      active_candidates: ArtifactBriefingCandidate[];
+      archived_candidates: ArtifactBriefingCandidate[];
+      override_receipt_id: string | null;
+    });
 
 function resolveExactArtifactVersion(db: Db, ref: string, field: string): string {
   const resolved = resolveArtifactRefReadonlyFull(db, ref);
@@ -384,10 +450,83 @@ function resolveExactArtifactVersion(db: Db, ref: string, field: string): string
   return resolved.target_id;
 }
 
+function logicalArtifactForVersion(db: Db, versionId: string): string {
+  const row = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?")
+    .get(versionId) as { artifact_id: string } | undefined;
+  if (!row) throw new BriefingStoreError("artifact version has no logical Artifact", 409, "artifact_lineage_unavailable");
+  return row.artifact_id;
+}
+
+function artifactBriefingCandidates(
+  db: Db,
+  logicalArtifactId: string,
+  versionId: string,
+  profile: string,
+  comparisonBaseVersionId: string | null,
+): { active: ArtifactBriefingCandidate[]; archived: ArtifactBriefingCandidate[] } {
+  const rows = db.prepare(
+    `SELECT b.id AS briefing_id, b.title, b.archived_at, b.latest_round_id,
+            (SELECT r.id FROM briefing_rounds r
+              WHERE r.briefing_id = b.id AND r.artifact_version_id = ? AND r.profile = ?
+                AND r.comparison_base_artifact_version_id IS ?
+              ORDER BY r.ordinal LIMIT 1) AS matching_round_id
+       FROM briefings b
+      WHERE b.logical_artifact_id = ?
+      ORDER BY b.created_at, b.id`,
+  ).all(versionId, profile, comparisonBaseVersionId, logicalArtifactId) as Array<{
+    briefing_id: string; title: string; archived_at: number | null;
+    latest_round_id: string | null; matching_round_id: string | null;
+  }>;
+  const candidates = rows.map((row): ArtifactBriefingCandidate => ({
+    ...row,
+    guidance: row.matching_round_id ? "reuse_round" : "add_round",
+  }));
+  return {
+    active: candidates.filter((candidate) => candidate.archived_at === null),
+    archived: candidates.filter((candidate) => candidate.archived_at !== null),
+  };
+}
+
+function validateCreationProvenance(
+  db: Db,
+  provenance: ExistingArtifactBriefingRequest["creation_provenance"],
+): NonNullable<ExistingArtifactBriefingRequest["creation_provenance"]> {
+  if (!provenance || !isEvidenceMethod(provenance.evidence_method)) {
+    throw new BriefingStoreError(
+      "distinct creation requires authenticated provenance",
+      400,
+      "briefing_distinct_provenance_required",
+    );
+  }
+  const actor = db.prepare("SELECT status FROM users WHERE id = ?").get(provenance.actor_user_id) as
+    | { status: string }
+    | undefined;
+  if (!actor || actor.status !== "active") {
+    throw new BriefingStoreError(
+      "distinct creation actor must be active",
+      400,
+      "briefing_distinct_actor_invalid",
+    );
+  }
+  if (provenance.credential_id) {
+    const credential = db.prepare(
+      "SELECT user_id, status FROM user_credentials WHERE id = ?",
+    ).get(provenance.credential_id) as { user_id: string; status: string } | undefined;
+    if (!credential || credential.user_id !== provenance.actor_user_id || credential.status !== "active") {
+      throw new BriefingStoreError(
+        "distinct creation credential must be active and owned by the actor",
+        400,
+        "briefing_distinct_credential_invalid",
+      );
+    }
+  }
+  return provenance;
+}
+
 /** Bind an existing exact artifact version; this path never records or copies artifact bytes. */
 export function publishBriefingFromArtifactVersion(
   db: Db, request: ExistingArtifactBriefingRequest, now = Date.now(),
-): BriefingRunReceipt {
+): ExistingArtifactBriefingResult {
   if (request.profile !== BRIEFING_PROFILE_V3) throw new BriefingStoreError("existing artifact publication requires mandible-briefing.v3");
   const title = normalizeBriefingTitle(request.title);
   const descriptionProvided = Object.hasOwn(request, "description");
@@ -396,6 +535,14 @@ export function publishBriefingFromArtifactVersion(
   const comparisonBaseVersionId = request.comparison_base_artifact_version_ref
     ? resolveExactArtifactVersion(db, request.comparison_base_artifact_version_ref, "comparison_base_artifact_version_ref")
     : null;
+  const logicalArtifactId = logicalArtifactForVersion(db, versionId);
+  if (comparisonBaseVersionId && logicalArtifactForVersion(db, comparisonBaseVersionId) !== logicalArtifactId) {
+    throw new BriefingStoreError(
+      "comparison base must belong to the Briefing logical Artifact",
+      409,
+      "briefing_comparison_lineage_mismatch",
+    );
+  }
   const document = pinnedRoundDocument(db, versionId);
   if (comparisonBaseVersionId) pinnedRoundDocument(db, comparisonBaseVersionId);
   let directives: BriefingDirective[];
@@ -405,14 +552,107 @@ export function publishBriefingFromArtifactVersion(
     const user = db.prepare("SELECT kind, status FROM users WHERE id = ?").get(responder) as { kind: string; status: string } | undefined;
     if (!user || user.kind !== "human" || user.status !== "active") throw new BriefingStoreError(`responder '${responder}' is not an active human`);
   }
-  return db.transaction(() => {
-    let briefing = db.prepare("SELECT id, latest_round_id, round_count FROM briefings WHERE briefing_key = ?")
-      .get(request.briefing_key) as { id: string; latest_round_id: string | null; round_count: number } | undefined;
+  return db.transaction((): ExistingArtifactBriefingResult => {
+    const candidates = artifactBriefingCandidates(
+      db,
+      logicalArtifactId,
+      versionId,
+      request.profile,
+      comparisonBaseVersionId,
+    );
+    const requestedKey = request.briefing_key === undefined ? null : text(request.briefing_key, "briefing_key");
+    if (requestedKey && request.target_briefing_ref) {
+      throw new BriefingStoreError("briefing_key and target_briefing_ref are mutually exclusive");
+    }
+    type BriefingIdentityRow = {
+      id: string; latest_round_id: string | null; round_count: number; logical_artifact_id: string | null;
+    };
+    let briefing: BriefingIdentityRow | undefined;
+    if (requestedKey) {
+      briefing = db.prepare(
+        "SELECT id, latest_round_id, round_count, logical_artifact_id FROM briefings WHERE briefing_key = ?",
+      ).get(requestedKey) as BriefingIdentityRow | undefined;
+    } else if (request.target_briefing_ref) {
+      if (!request.viewer) throw new BriefingStoreError("target_briefing_ref requires a viewer");
+      const targetId = resolveBriefingId(db, request.target_briefing_ref, request.viewer);
+      briefing = db.prepare(
+        "SELECT id, latest_round_id, round_count, logical_artifact_id FROM briefings WHERE id = ?",
+      ).get(targetId) as BriefingIdentityRow | undefined;
+    }
+    let outcome: "created" | "created_distinct" | "round_added" | "round_reused";
+    let overrideReceiptId: string | null = null;
     if (!briefing) {
+      const distinctReason = request.distinct_reason === undefined
+        ? null
+        : text(request.distinct_reason, "distinct_reason");
+      if (candidates.active.length > 0 && !distinctReason) {
+        return {
+          outcome: "active_candidates",
+          logical_artifact_id: logicalArtifactId,
+          active_candidates: candidates.active,
+          archived_candidates: candidates.archived,
+        };
+      }
+      if (candidates.active.length === 0 && distinctReason) {
+        throw new BriefingStoreError(
+          "distinct_reason is only valid when active candidates block default creation",
+          400,
+          "briefing_distinct_reason_unnecessary",
+        );
+      }
       const id = randomUUID();
-      db.prepare(`INSERT INTO briefings (id, briefing_key, title, description, latest_round_id, round_count, created_at, updated_at)
-        VALUES (?, ?, ?, ?, NULL, 0, ?, ?)`).run(id, request.briefing_key, title, description, now, now);
-      briefing = { id, latest_round_id: null, round_count: 0 };
+      db.prepare(`INSERT INTO briefings
+        (id, briefing_key, logical_artifact_id, title, description, latest_round_id, round_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+        id,
+        requestedKey ?? `manual:${id}`,
+        logicalArtifactId,
+        title,
+        description,
+        now,
+        now,
+      );
+      briefing = { id, latest_round_id: null, round_count: 0, logical_artifact_id: logicalArtifactId };
+      if (distinctReason) {
+        const provenance = validateCreationProvenance(db, request.creation_provenance);
+        overrideReceiptId = randomUUID();
+        db.prepare(`INSERT INTO briefing_creation_overrides
+          (id, briefing_id, logical_artifact_id, reason, actor_user_id, evidence_method, credential_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          overrideReceiptId,
+          id,
+          logicalArtifactId,
+          distinctReason,
+          provenance.actor_user_id,
+          provenance.evidence_method,
+          provenance.credential_id,
+          now,
+        );
+        outcome = "created_distinct";
+      } else {
+        outcome = "created";
+      }
+    } else {
+      if (briefing.logical_artifact_id === null && briefing.round_count === 0) {
+        db.prepare("UPDATE briefings SET logical_artifact_id = ? WHERE id = ?")
+          .run(logicalArtifactId, briefing.id);
+        briefing.logical_artifact_id = logicalArtifactId;
+      }
+      if (briefing.logical_artifact_id !== logicalArtifactId) {
+        throw new BriefingStoreError(
+          "artifact version does not belong to the Briefing logical Artifact",
+          409,
+          "briefing_artifact_lineage_mismatch",
+        );
+      }
+      if (request.distinct_reason !== undefined) {
+        throw new BriefingStoreError(
+          "distinct_reason cannot be used when adding a round to an existing Briefing",
+          400,
+          "briefing_distinct_reason_with_target",
+        );
+      }
+      outcome = "round_added";
     }
     for (const responder of request.responder_user_ids) db.prepare(
       "INSERT OR IGNORE INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)",
@@ -425,7 +665,10 @@ export function publishBriefingFromArtifactVersion(
       const replayVerification = verifyBriefingRoundBinding(db, existing.id);
       if (!replayVerification.valid) throw new BriefingStoreError(`stored round binding is invalid: ${replayVerification.reason}`, 409, "invalid_round_binding");
       return { receipt_id: existing.id, briefing_id: briefing.id, run_id: `artifact:${versionId}`,
-        round_id: existing.id, artifact_version_id: versionId, quiet: false };
+        round_id: existing.id, artifact_version_id: versionId, quiet: false,
+        outcome: "round_reused", logical_artifact_id: logicalArtifactId,
+        active_candidates: candidates.active, archived_candidates: candidates.archived,
+        override_receipt_id: overrideReceiptId };
     }
     const roundId = randomUUID();
     db.prepare(`INSERT INTO briefing_rounds
@@ -460,7 +703,10 @@ export function publishBriefingFromArtifactVersion(
         .run(title, roundId, now, briefing.id);
     }
     return { receipt_id: roundId, briefing_id: briefing.id, run_id: `artifact:${versionId}`,
-      round_id: roundId, artifact_version_id: versionId, quiet: false };
+      round_id: roundId, artifact_version_id: versionId, quiet: false,
+      outcome, logical_artifact_id: logicalArtifactId,
+      active_candidates: candidates.active, archived_candidates: candidates.archived,
+      override_receipt_id: overrideReceiptId };
   }).immediate();
 }
 
@@ -471,7 +717,8 @@ export function briefingMemberAllows(db: Db, briefingId: string, actorUserId: st
 
 export function listBriefings(db: Db, viewer: { userId: string; operator: boolean }) {
   return db.prepare(
-    `SELECT b.id, b.briefing_key, b.title, b.description, b.latest_round_id, b.round_count, b.archived_at,
+    `SELECT b.id, b.briefing_key, b.logical_artifact_id, b.title, b.description,
+            b.latest_round_id, b.round_count, b.archived_at,
             b.created_at, b.updated_at,
             CASE WHEN EXISTS (
               SELECT 1 FROM users actor
@@ -730,7 +977,8 @@ export function readBriefing(
   },
 ) {
   const briefing = db.prepare(
-    `SELECT id, briefing_key, title, description, latest_round_id, round_count, archived_at, created_at, updated_at
+    `SELECT id, briefing_key, logical_artifact_id, title, description, latest_round_id,
+            round_count, archived_at, created_at, updated_at
        FROM briefings WHERE id = ?`,
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;

@@ -206,9 +206,13 @@ describe('renderDocumentText (repo-authoritative doc path)', () => {
     const doc = renderDocumentText('---\ntitle: Repo Doc\ntags:\n  - safe\n---\n\n# Body\n\n---\n\nAfter.');
     render(<DocumentBody document={doc} />);
 
-    const metadata = screen.getByLabelText('Document metadata');
-    expect(metadata.textContent).toContain('title: Repo Doc');
-    expect(metadata.textContent).toContain('- safe');
+    const metadata = screen.getByLabelText('Document frontmatter');
+    expect(within(metadata).getByText('Frontmatter')).toBeTruthy();
+    expect(within(metadata).getByText('title').tagName).toBe('DT');
+    expect(within(metadata).getByText('Repo Doc').tagName).toBe('DD');
+    expect(within(metadata).getByText('tags').tagName).toBe('DT');
+    expect(within(metadata).getByText('safe').tagName).toBe('DD');
+    expect(metadata.querySelector('pre, code')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Body' })).toBeTruthy();
     expect(screen.getByText('After.')).toBeTruthy();
   });

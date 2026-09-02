@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, openDb, type Db } from "../src/db.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 import {
   builtinAuthHooks,
   metaRows,
@@ -43,6 +44,49 @@ function createFloorDatabase(dbPath: string): void {
   } finally {
     db.close();
   }
+}
+
+function migrateFixtureThrough(db: Database.Database, targetVersion: number): void {
+  for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= targetVersion)) {
+    db.transaction(() => {
+      for (const statement of migration.statements) db.exec(statement);
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(migration.version));
+    }).immediate();
+  }
+}
+
+function seedBriefingLineage(db: Database.Database, mixed: boolean): { rounds: unknown[] } {
+  for (const [suffix, hash] of [["a", "a".repeat(64)], ["b", "b".repeat(64)]] as const) {
+    db.prepare(`INSERT INTO artifact_blob
+      (id, content_hash, size_bytes, metadata_json, custody_mode, availability,
+       retention_json, reference_json, created_at)
+      VALUES (?, ?, 1, '{}', 'managed', 'present', '{}', '{}', 1)`)
+      .run(`artifact-blob:${suffix}`, hash);
+    db.prepare(`INSERT INTO artifact
+      (id, identity_key, source_kind, logical_name, latest_version_id, version_count,
+       metadata_json, created_at, updated_at)
+      VALUES (?, ?, 'managed', ?, ?, 1, '{}', 1, 1)`)
+      .run(`artifact:${suffix}`, `lineage-${suffix}`, `${suffix}.md`, `artifact-version:${suffix}`);
+    db.prepare(`INSERT INTO artifact_version
+      (id, artifact_id, version_no, blob_id, source_kind, content_hash,
+       source_locator_json, custody_mode, metadata_json, created_at)
+      VALUES (?, ?, 1, ?, 'managed', ?, '{}', 'managed', '{}', 1)`)
+      .run(`artifact-version:${suffix}`, `artifact:${suffix}`, `artifact-blob:${suffix}`, hash);
+  }
+  db.prepare(`INSERT INTO briefings
+    (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
+    VALUES ('briefing-lineage', 'lineage', 'Lineage', 'round-2', 2, 1, 2)`).run();
+  db.prepare(`INSERT INTO briefing_rounds
+    (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
+     previous_round_id, profile, binding_digest, created_at)
+    VALUES ('round-1', 'briefing-lineage', 1, 'artifact-version:a', NULL, NULL,
+      'mandible-briefing.v3', ?, 1)`).run("1".repeat(64));
+  db.prepare(`INSERT INTO briefing_rounds
+    (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
+     previous_round_id, profile, binding_digest, created_at)
+    VALUES ('round-2', 'briefing-lineage', 2, ?, NULL, 'round-1',
+      'mandible-briefing.v3', ?, 2)`).run(mixed ? "artifact-version:b" : "artifact-version:a", "2".repeat(64));
+  return { rounds: db.prepare("SELECT * FROM briefing_rounds ORDER BY ordinal").all() };
 }
 
 describe.sequential("schema convergence", () => {
@@ -131,5 +175,35 @@ describe.sequential("schema convergence", () => {
     } finally {
       migrated.close();
     }
+  });
+
+  it("preserves one-lineage Briefings and refuses mixed logical Artifact history at v161", () => {
+    const validPath = path.join(tempDir, "briefing-valid.db");
+    createFloorDatabase(validPath);
+    const validSeed = new Database(validPath);
+    migrateFixtureThrough(validSeed, 160);
+    const before = seedBriefingLineage(validSeed, false);
+    validSeed.close();
+
+    const migrated = openDb(validPath);
+    expect(migrated.prepare("SELECT logical_artifact_id FROM briefings WHERE id = 'briefing-lineage'").get())
+      .toEqual({ logical_artifact_id: "artifact:a" });
+    expect(migrated.prepare("SELECT * FROM briefing_rounds ORDER BY ordinal").all()).toEqual(before.rounds);
+    expect(migrated.pragma("foreign_key_check")).toEqual([]);
+    migrated.close();
+
+    const mixedPath = path.join(tempDir, "briefing-mixed.db");
+    createFloorDatabase(mixedPath);
+    const mixedSeed = new Database(mixedPath);
+    migrateFixtureThrough(mixedSeed, 160);
+    seedBriefingLineage(mixedSeed, true);
+    mixedSeed.close();
+    expect(() => openDb(mixedPath)).toThrow(/briefing_lineage_guard|CHECK constraint failed/);
+    const refused = new Database(mixedPath);
+    expect(schemaVersion(refused)).toBe("160");
+    expect(refused.prepare("PRAGMA table_info(briefings)").all())
+      .not.toContainEqual(expect.objectContaining({ name: "logical_artifact_id" }));
+    expect(refused.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 2 });
+    refused.close();
   });
 });

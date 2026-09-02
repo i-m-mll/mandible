@@ -9,6 +9,7 @@ import type {
 } from '../../ui/src/api';
 import {
   ArtifactDetail,
+  artifactDetailIdentity,
   artifactHighlightLanguage,
   artifactPreview,
   highlightArtifactCode,
@@ -141,6 +142,66 @@ function renderArtifactDetail(
 }
 
 describe('artifact preview helpers', () => {
+  it.each([
+    {
+      projection: 'linked latest',
+      custodyMode: 'link',
+      selectedVersion: null,
+      versionPath: null,
+    },
+    {
+      projection: 'managed pinned version',
+      custodyMode: 'managed',
+      selectedVersion: version({ observed_path: '/skills/coordinate-umbrella/SKILL.md' }),
+      versionPath: 'SKILL.md',
+    },
+  ])('uses the logical Artifact title for the $projection projection', ({ custodyMode, selectedVersion, versionPath }) => {
+    const selectedArtifact = artifact({
+      custody_mode: custodyMode,
+      metadata: versionPath ? {} : { filename: 'SKILL.md' },
+      repo_locator: { repo_id: 'dotfiles', path: 'skills/coordinate-umbrella/SKILL.md' },
+    });
+
+    expect(artifactDetailIdentity(
+      selectedArtifact,
+      series({ title: 'Claude coordinate-umbrella skill', logical_name: 'coordinate-umbrella' }),
+      selectedVersion,
+    )).toEqual({
+      title: 'Claude coordinate-umbrella skill',
+      filename: 'SKILL.md',
+    });
+  });
+
+  it('renders filename provenance below the logical Artifact title without duplicating identity', () => {
+    const { rerender } = renderArtifactDetail(content(), {
+      artifact: artifact({ metadata: { filename: 'SKILL.md' } }),
+      series: series({ title: 'Claude coordinate-umbrella skill' }),
+    });
+
+    expect(screen.getByRole('heading', { name: 'Claude coordinate-umbrella skill' })).toBeTruthy();
+    expect(screen.getByText(/File: SKILL\.md/)).toBeTruthy();
+
+    rerender(<ArtifactDetail
+      artifact={artifact({ metadata: { filename: 'Claude coordinate-umbrella skill' } })}
+      resolution={null}
+      series={series({ title: 'Claude coordinate-umbrella skill' })}
+      versions={[]}
+      selectedVersion={null}
+      selectedVersionNo={null}
+      versionHistoryOpen={false}
+      onVersionChange={() => undefined}
+      onToggleVersionHistory={() => undefined}
+      onCloseVersionHistory={() => undefined}
+      content={content()}
+      contentLoading={false}
+      contentError={null}
+      knowledgeBackrefs={[]}
+      knowledgeLoading={false}
+      knowledgeError={null}
+    />);
+    expect(screen.queryByText(/File: Claude coordinate-umbrella skill/)).toBeNull();
+  });
+
   it('creates a Briefing from the exact selected materializable Markdown version', async () => {
     const selected = version({ id: 'artifact-version:exact-v1', version_no: 1 });
     const mockFetch = vi.fn((input: RequestInfo, init?: RequestInit) => {
@@ -179,6 +240,41 @@ describe('artifact preview helpers', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Create briefing' }));
     await waitFor(() => expect(window.location.hash).toBe('#/briefing?briefing=briefing-full&round=round-full'));
     expect(mockFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('shows store-authoritative reuse guidance when an active Briefing owns the Artifact', async () => {
+    const selected = version({ id: 'artifact-version:exact-v1', version_no: 1 });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/drafts') && !init?.method) {
+        return Promise.resolve(new Response(JSON.stringify({ draft: null }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/briefings' && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: 'An active Briefing already owns this logical Artifact',
+          code: 'briefing_active_candidates',
+          outcome: 'active_candidates',
+          logical_artifact_id: 'artifact:logical',
+          active_candidates: [{
+            briefing_id: 'briefing-existing', title: 'Existing review', archived_at: null,
+            latest_round_id: 'round-existing', matching_round_id: 'round-existing', guidance: 'reuse_round',
+          }],
+          archived_candidates: [],
+        }), { status: 409, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+    renderArtifactDetail(content({ kind: 'markdown', media_type: 'text/markdown' }), {
+      artifact: artifact({ metadata: { filename: 'AGENTS.review.md' }, media_type: 'text/markdown' }),
+      versions: [selected], selectedVersion: selected, selectedVersionNo: 1,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Create briefing' }));
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Existing review (briefing): reuse exact round');
   });
 
   it('disables Briefing creation without an exact materializable Markdown selection', () => {
@@ -509,7 +605,7 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(pane?.querySelector('.artifact-preview-frame')).toBeNull();
   });
 
-  it('shows compact raw JSON after toggling without changing the code preview surface', () => {
+  it('moves formatted and exact raw JSON state into the header actions menu', () => {
     const jsonContent = content({
       kind: 'json',
       media_type: 'application/json',
@@ -534,11 +630,27 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(preview?.parentElement?.classList.contains('artifact-detail__pane')).toBe(true);
     expect(screen.queryByRole('region', { name: 'Preview' })).toBeNull();
     expect(preview?.textContent).toContain('"beta": true');
+    expect(screen.queryByText('Auto-formatted JSON')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Show raw' })).toBeNull();
+    expect(screen.queryByText('Editing is limited to safe text and Markdown artifacts.')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+    const actionsTrigger = screen.getByRole('button', { name: 'Artifact actions' });
+    fireEvent.click(actionsTrigger);
+    const formatted = screen.getByRole('menuitemradio', { name: 'Formatted JSON' });
+    const raw = screen.getByRole('menuitemradio', { name: 'Raw JSON' });
+    expect(formatted.getAttribute('aria-checked')).toBe('true');
+    expect(raw.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(raw);
 
     expect(container.querySelector('.artifact-preview')?.classList.contains('artifact-preview--code')).toBe(true);
-    expect(container.querySelector('.artifact-preview')?.textContent).toContain('{"alpha":1,"beta":true}');
+    expect(container.querySelector('.artifact-preview')?.textContent).toBe('{"alpha":1,"beta":true}');
+
+    fireEvent.click(actionsTrigger);
+    expect(screen.getByRole('menuitemradio', { name: 'Formatted JSON' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('menuitemradio', { name: 'Raw JSON' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menuitemradio', { name: 'Raw JSON' })).toBeNull();
+    expect(document.activeElement).toBe(actionsTrigger);
   });
 
   it('renders syntax-highlight markup for Python source previews', () => {

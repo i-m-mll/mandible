@@ -2,13 +2,14 @@
 // Bug: bce7370 — Adapted to use shared message-blocks components
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
-import { useMemo } from 'preact/hooks';
-import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './types';
+import type { ContentBlock, MessageGroupProps, ToolResultContentBlock, ToolUseContentBlock } from './types';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
-import { MessageActions, type MessageActionsMeta } from '../shared/MessageActions';
+import { MessageActions } from '../shared/MessageActions';
+import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
+import { summarizeToolRun } from '../message-blocks/toolPresentation';
 
 /** Extract copyable text from a single content block. */
 function blockCopyText(block: ContentBlock): string {
@@ -36,15 +37,6 @@ export function MessageGroup({
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   const newestPlanIndex = latestPlanIndex(blocks);
-
-  // Bug: 0a1ad82 — Thread turn-level metadata to per-block MessageActions
-  const turnMeta: MessageActionsMeta | undefined = useMemo(() => {
-    const msg = assistantEvent.message;
-    const usage = msg.usage;
-    if (!usage) return undefined;
-    const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : undefined;
-    return { tokenCount };
-  }, [assistantEvent]);
 
   function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
     let inner: JSX.Element | null = null;
@@ -90,9 +82,9 @@ export function MessageGroup({
       case 'tool_use': {
         // Find the matching tool result from the user event
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
-        // While streaming and no result yet, the tool is in-progress
-        const isPendingStreaming = isStreaming && result === null;
-        const defaultExpanded = isPendingStreaming || result === null;
+        // Tool disclosures are initially folded in both live and persisted
+        // streams. Running state remains visible in the summary row.
+        const defaultExpanded = false;
         const expanded = getBlockExpanded?.(block, index, defaultExpanded);
         inner = (
           <ToolUseBlock
@@ -101,7 +93,6 @@ export function MessageGroup({
             toolUseId={block.id}
             input={block.input}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
-            // Expand while pending (streaming in progress), collapse after result
             defaultExpanded={defaultExpanded}
             expanded={expanded}
             onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
@@ -141,16 +132,56 @@ export function MessageGroup({
           onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
           onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
           dagUuid={source?.dagUuid}
-          metadata={{ ...turnMeta, timestamp: source?.timestamp }}
+          metadata={{ timestamp: source?.timestamp }}
         />
       </div>
     );
   }
 
+  function renderBlocks(): Array<JSX.Element | null> {
+    const rendered: Array<JSX.Element | null> = [];
+    let index = 0;
+    while (index < blocks.length) {
+      if (blocks[index].type !== 'tool_use') {
+        rendered.push(renderBlock(blocks[index], index));
+        index += 1;
+        continue;
+      }
+      let end = index + 1;
+      while (end < blocks.length && blocks[end].type === 'tool_use') end += 1;
+      const run = blocks.slice(index, end) as ToolUseContentBlock[];
+      if (run.length < 2) {
+        rendered.push(renderBlock(run[0], index));
+        index = end;
+        continue;
+      }
+
+      const groupBlock: ToolUseContentBlock = {
+        type: 'tool_use',
+        id: `group:${run[0].id}`,
+        name: 'tool-call-group',
+        input: {},
+      };
+      const expanded = getBlockExpanded?.(groupBlock, index, false);
+      rendered.push(
+        <ToolCallGroup
+          key={groupBlock.id}
+          summary={summarizeToolRun(run)}
+          expanded={expanded}
+          onExpandedChange={(next) => onBlockExpandedChange?.(groupBlock, index, next)}
+        >
+          {run.map((block, offset) => renderBlock(block, index + offset))}
+        </ToolCallGroup>,
+      );
+      index = end;
+    }
+    return rendered;
+  }
+
   return (
     <div className="message-group">
       <div className="message-group__content">
-        {blocks.map((block, i) => renderBlock(block, i))}
+        {renderBlocks()}
       </div>
     </div>
   );

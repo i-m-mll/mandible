@@ -174,6 +174,27 @@ describe("CodexParser", () => {
     });
   });
 
+  it("preserves opaque custom tool input byte-for-byte", async () => {
+    const parser = new CodexParser();
+    const rawInput = '{"path":"a\\nb","literal":"  x  ","shell":"$(never-run)"}';
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/custom-tool.jsonl",
+      raw: `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:06.000Z",
+        payload: { type: "custom_tool_call", name: "apply_patch", call_id: "custom-1", input: rawInput },
+      })}\n`,
+      baseBlockCount: 0,
+      sourceHash: "append:custom",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks[0]?.metadata).toMatchObject({
+      tool_kind: "custom_tool_call",
+      tool_input: rawInput,
+    });
+  });
+
   it("parses appended records at the requested base position", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-incremental");

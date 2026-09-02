@@ -76,6 +76,9 @@
 .timeline-control input {
   height: 32px;
   min-width: 0;
+}
+
+.timeline-control input {
   border: 1px solid var(--neutral-alpha-10);
   border-radius: 7px;
   padding: 0 9px;
@@ -1199,7 +1202,6 @@
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .timeline-control select,
 :root[data-theme='light'] .timeline-control input {
   background: var(--bg-secondary);
   border-color: var(--neutral-alpha-12);

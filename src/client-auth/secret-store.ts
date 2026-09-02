@@ -9,7 +9,9 @@
 //     0600 so a same-user CLI can authenticate without the token ever appearing
 //     on the wire or in the served HTML (finding 1).
 //
-// No secret is ever embedded in an HTTP response.
+// Preview instances also hold one process-bound browser-enrollment proof under
+// their isolated preview root. It is accepted only by the handshake and is
+// never created by the main daemon.
 
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -20,6 +22,7 @@ import { ensureMandibleConfigEntry } from "../platform-paths.js";
 const PEPPER_FILE = "pepper";
 const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
 const DASHBOARD_SESSION_FILE = "dashboard-session.json";
+export const PREVIEW_BROWSER_ENROLLMENT_FILE = "preview-browser-enrollment.json";
 export const MAX_DASHBOARD_SESSIONS = 8;
 /** Legacy location: the pepper used to live in the settings KV table. */
 const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
@@ -142,6 +145,26 @@ export function writeBootstrapTokenFile(token: string | null, dir: string = defa
 
 export function bootstrapTokenFilePath(dir: string = defaultClientAuthDir()): string {
   return path.join(dir, BOOTSTRAP_TOKEN_FILE);
+}
+
+export interface PreviewBrowserEnrollmentProof {
+  version: 1;
+  pid: number;
+  startup_epoch: string;
+  token: string;
+}
+
+export function writePreviewBrowserEnrollmentProof(
+  proof: PreviewBrowserEnrollmentProof | null,
+  previewRoot: string,
+): string {
+  const filePath = path.join(previewRoot, PREVIEW_BROWSER_ENROLLMENT_FILE);
+  if (proof) {
+    writeSecretFile(filePath, JSON.stringify(proof));
+  } else {
+    fs.rmSync(filePath, { force: true });
+  }
+  return filePath;
 }
 
 export interface StoredDashboardSession {

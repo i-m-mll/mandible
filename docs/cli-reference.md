@@ -43,7 +43,7 @@ mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue 
   [--type merge|commit|force-push|branch-delete|config-change|data-delete]
   [--message T | --message-file F] [--verification T]
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
-  [--commit-message T] [--diff-summary T] [--spec T] [--handoff T] [--repo R]
+  [--commit-message T] [--diff-summary T] [--spec T | --spec-file F] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--timeout N] [--no-watch] [--force|-f]
 mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon

@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import {
   appReducer,
+  authEventRequiresProjectionRefresh,
   applySSEEvent,
   initialState,
   selectBadgeCounts,
@@ -2310,6 +2311,21 @@ describe('SettingsView', () => {
     }
   });
 
+  it('disables App theme without saving when operational mutations are rejected', () => {
+    const onSave = vi.fn(async () => undefined);
+
+    render(h(SettingsView, {
+      settings: { app_theme: 'system' },
+      onSave,
+      instance: previewInstance,
+    }));
+
+    const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
+    expect((themeSelect as HTMLSelectElement).disabled).toBe(true);
+    changeSelect(themeSelect, 'dark');
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('shows project restriction state and existing grants', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -2554,6 +2570,102 @@ describe('AuthQueueView', () => {
     expect(screen.getByText('Add merged')).toBeTruthy();
     expect(screen.getByText('Set to done')).toBeTruthy();
     await waitFor(() => expect(screen.getByText('abc123 · Close umbrella')).toBeTruthy());
+  });
+
+  it('renders canonical commit messages through sanitized Markdown without an authorship badge', () => {
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-canonical-markdown',
+          title: 'Canonical Markdown auth',
+          repo: 'mandible',
+          base: 'main',
+          head: 'feature/canonical-markdown',
+          status: 'pending',
+          commit_message: 'Ship **structured prose** with [artifact:bbbbbbbbbbbb].\n\n<script>window.compromised = true</script>',
+          commit_message_digest: 'a'.repeat(64),
+        }],
+        outputs: {},
+        selectedAuthId: 'req-canonical-markdown',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
+    const rendered = commitPanel?.querySelector('.rendered-markdown') as HTMLElement | null;
+    expect(rendered?.querySelector('strong')?.textContent).toBe('structured prose');
+    expect(rendered?.querySelector('[data-resource-ref="artifact:bbbbbbbbbbbb"]')).toBeTruthy();
+    expect(rendered?.querySelector('script')).toBeNull();
+    expect(commitPanel?.querySelector('.panel__badge')).toBeNull();
+    expect(commitPanel?.querySelector('.canonical-message')).toBeNull();
+    expect(commitPanel?.querySelector('.panel__edit-btn')).toBeNull();
+  });
+
+  it('renders multiline specifications as sanitized block Markdown without rewriting legacy text', () => {
+    const multilineSpec = [
+      '# Intent',
+      '',
+      'Keep **review prose** readable.',
+      '',
+      '## Scope',
+      '',
+      '- Preserve paragraphs and lists.',
+      '- Reuse the Auth Markdown renderer.',
+      '',
+      '```text',
+      'operator-gate: none',
+      '```',
+      '',
+      '<img src=x onerror="window.compromised = true">',
+    ].join('\n');
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-multiline-spec',
+          title: 'Multiline specification',
+          repo: 'mandible',
+          base: 'main',
+          head: 'feature/multiline-spec',
+          status: 'pending',
+          spec_content: multilineSpec,
+        }],
+        outputs: {},
+        selectedAuthId: 'req-multiline-spec',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    const specPanel = screen.getByText('Specification').closest('.panel') as HTMLElement | null;
+    const rendered = specPanel?.querySelector('.rendered-markdown') as HTMLElement | null;
+    expect(rendered?.querySelector('h1')?.textContent).toBe('Intent');
+    expect(rendered?.querySelector('h2')?.textContent).toBe('Scope');
+    expect(rendered?.querySelectorAll('li')).toHaveLength(2);
+    expect(rendered?.querySelector('strong')?.textContent).toBe('review prose');
+    expect(rendered?.querySelector('code')?.textContent).toContain('operator-gate: none');
+    expect(rendered?.querySelector('img')?.getAttribute('src')).toBe('x');
+    expect(rendered?.innerHTML).not.toContain('onerror');
+
+    cleanup();
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-legacy-spec',
+          title: 'Legacy specification',
+          repo: 'mandible',
+          status: 'pending',
+          spec_content: 'Intent: keep this exact one-line specification.',
+        }],
+        outputs: {},
+        selectedAuthId: 'req-legacy-spec',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+    const legacyPanel = screen.getByText('Specification').closest('.panel') as HTMLElement | null;
+    expect(legacyPanel?.textContent).toContain('Intent: keep this exact one-line specification.');
+    expect(legacyPanel?.querySelector('.rendered-markdown h1, .rendered-markdown h2')).toBeNull();
   });
 
   it('toggles pending action veto state through the API', async () => {
@@ -5087,7 +5199,7 @@ describe('ArtifactsView', () => {
     expect(entityLink?.getAttribute('href')).toBe('#/issues?issue=abc123&repo=mandible');
   });
 
-  it('auto-formats compact JSON-like text previews with a local raw toggle', async () => {
+  it('auto-formats compact JSON-like text previews with header-owned raw state', async () => {
     const artifact = makeArtifactFixture('9', 'metrics.txt', {
       media_type: 'text/plain',
       metadata: {
@@ -5143,15 +5255,20 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
-    await waitFor(() => expect(screen.getByText('Auto-formatted JSON-like text')).toBeTruthy());
+    await waitFor(() => expect(document.querySelector('.artifact-preview code')?.textContent).toContain('\n  "loss": 0.125,'));
     expect(document.querySelector('.artifact-detail__repo')).toBeNull();
     const previewCode = document.querySelector('.artifact-preview code');
     expect(previewCode?.textContent).toContain('\n  "loss": 0.125,');
+    expect(screen.queryByText('Auto-formatted JSON-like text')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Show raw' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Formatted JSON' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Raw JSON' }));
 
     expect(document.querySelector('.artifact-preview code')?.textContent).toBe(compact);
-    expect(screen.getByRole('button', { name: 'Format' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Raw JSON' }).getAttribute('aria-checked')).toBe('true');
   });
 
   it('renders standalone managed HTML previews when legacy artifact history is absent', async () => {
@@ -5776,7 +5893,7 @@ describe('ArtifactsView', () => {
       ),
     );
     const canonicalLightArtifactPreviewRules = lightArtifactPreviewRules.filter((rule) =>
-      rule.selectors.includes("[data-theme='light'] .artifact-preview"),
+      rule.selectors.includes("[data-theme='light'] .artifact-preview:not(.artifact-preview--code)"),
     );
     expect(canonicalLightArtifactPreviewRules.some((rule) =>
       /background:\s*var\(--bg-card\)/.test(rule.body),
@@ -5787,10 +5904,17 @@ describe('ArtifactsView', () => {
       );
     }
     expect(css).not.toMatch(/\.artifact-preview-frame/);
+    const codePreviewRule = ruleBody(css, ':root[data-theme] .artifact-preview--code');
+    expect(codePreviewRule).toContain('background: transparent');
+    expect(codePreviewRule).toContain('color: var(--text-primary)');
+    expect(codePreviewRule).toContain('font-family: var(--font-mono)');
+    expect(codePreviewRule).toContain('padding: var(--space-3) 0');
+    expect(css).not.toMatch(/\.artifact-preview--code[^}]*color:\s*#/s);
     expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
     expect(css).not.toMatch(/\.artifact-preview\.spec-panel\s*\{/);
-    expect(css).toMatch(/\.detail-pane-header :is\(button, select, a\):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
+    expect(css).toMatch(/\.detail-pane-header :is\(button, a\):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
+    expect(css).toMatch(/select:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-blue\)/s);
     expect(css).not.toMatch(/\.artifact-detail__copy-button/);
   });
 
@@ -5822,8 +5946,12 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*20px 24px 24px;/s);
     expect(css).not.toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*padding:\s*20px 24px;/s);
     expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
-    expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
+    expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*container:\s*auth-detail \/ inline-size;/s);
+    expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/@container auth-detail \(min-width:\s*1120px\)\s*\{\s*\.auth-detail__panels--with-actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
     expect(css).toMatch(/\.auth-detail__panels--single\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).not.toMatch(/@media[^}]*\.auth-detail__panels\s*\{/s);
+    expect(css).not.toMatch(/\.panel__badge|\.canonical-message/);
     expect(css).toMatch(/\.auth-detail__right-col\s*\{[^}]*align-self:\s*start;/s);
     expect(css).toMatch(/\.auth-detail__right-col \.auth-action-bundle\s*\{[^}]*margin-top:\s*0;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-wrapper\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*auto hidden;/s);
@@ -6312,7 +6440,7 @@ describe('ArtifactsView', () => {
         expect(screen.getByRole('link', { name: '7da339a' }).getAttribute('href')).toContain('issue=7da339a');
         expect(versionRequests).toEqual([]);
       } else {
-        await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe(artifact.metadata.title));
+        await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('typed-report.md'));
         await waitFor(() => expect(versionRequests).toHaveLength(1));
         await waitFor(() => {
           expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value)
@@ -6359,7 +6487,7 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialSeriesRef: artifactSeries.summary.ref, initialVersionNo: 1 }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-report.md'));
     await waitFor(() => expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0));
 
     changeSelect(screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement, '2');
@@ -6372,7 +6500,7 @@ describe('ArtifactsView', () => {
       headers: { 'content-type': 'application/json' },
     }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v2.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-report.md'));
     await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(v2.id)))).toBe(true));
   });
 
@@ -6414,7 +6542,7 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:pinned-series', initialVersionNo: 1 }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-report.md'));
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Version history' }));
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
@@ -6422,8 +6550,8 @@ describe('ArtifactsView', () => {
     fireEvent.input(screen.getByPlaceholderText('Search artifacts'), { target: { value: 'pinned' } });
 
     await waitFor(() => expect(seriesCalls).toBeGreaterThan(2));
-    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
-    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-report.md');
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1'));
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
     const pinnedRow = screen.getByRole('button', { name: /pinned-report\.md/ });
     expect(pinnedRow.textContent).toContain('pinned-');
@@ -6493,7 +6621,7 @@ describe('ArtifactsView', () => {
     rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
-    expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1');
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1'));
   });
 
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {
@@ -6616,6 +6744,13 @@ describe('conversation instruction message labels', () => {
 });
 
 describe('SSE handling', () => {
+  it('refetches canonical auth projections for every dependency transition event', () => {
+    expect([
+      'auth:new', 'auth:updated', 'auth:merged', 'auth:resolved', 'auth:finalized', 'auth:deleted',
+    ].every(authEventRequiresProjectionRefresh)).toBe(true);
+    expect(authEventRequiresProjectionRefresh('auth:output')).toBe(false);
+  });
+
   it('updates badge counts from SSE events', () => {
     let state = initialState;
     state = applySSEEvent(state, {

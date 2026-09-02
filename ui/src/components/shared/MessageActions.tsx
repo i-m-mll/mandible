@@ -1,5 +1,5 @@
 // Bug: a0963df — Unified hover-revealed action bar for messages
-// Bug: 02d701a — P3: overflow menu, metadata row, onInfo callback
+// Bug: 02d701a — P3: overflow menu and onInfo callback
 
 import { useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
@@ -26,15 +26,6 @@ export type MessageActionsProps = {
   selectMode?: boolean;
 };
 
-/** Format elapsed milliseconds as "Xs" or "Xm Ys". */
-function formatElapsedMs(ms: number): string {
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}m ${s}s`;
-}
-
 export function MessageActions({
   onCopy,
   onResume,
@@ -43,7 +34,6 @@ export function MessageActions({
   dagUuid,
   showResume,
   showFork,
-  metadata,
   onSelect,
   isSelected = false,
   selectMode = false,
@@ -85,34 +75,11 @@ export function MessageActions({
     if (action) action();
   };
 
-  // Build metadata parts
-  const metaParts: string[] = [];
-  if (metadata?.tokenCount != null) {
-    metaParts.push(`${metadata.tokenCount.toLocaleString()} tokens`);
-  }
-  if (metadata?.elapsedMs != null) {
-    metaParts.push(formatElapsedMs(metadata.elapsedMs));
-  }
-  if (metadata?.model) {
-    metaParts.push(metadata.model);
-  }
-  if (metadata?.timestamp) {
-    const parsed = Date.parse(metadata.timestamp);
-    metaParts.push(Number.isNaN(parsed) ? metadata.timestamp : new Date(parsed).toLocaleString());
-  }
-
   return (
     <div
       className={`message-actions contextual-action-group${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
       data-dag-uuid={dagUuid}
     >
-      {/* Metadata — subdued text on left */}
-      {metaParts.length > 0 && (
-        <span className="message-actions__meta">
-          {metaParts.join(' \u00b7 ')}
-        </span>
-      )}
-
       {/* Primary actions — buttons on right */}
       {onSelect && (selectMode || isSelected) && (
         <button

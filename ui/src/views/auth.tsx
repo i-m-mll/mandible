@@ -19,20 +19,16 @@ import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
-  createAuthClearance,
   fetchAuthHooks,
   findIssue,
-  getAuthClearances,
   getAuthRequestActions,
   getAuthRequestDetail,
   isApiErrorStatus,
   createAuthHook,
-  revokeAuthClearance,
   setAuthRequestActionVeto,
   updateAuthHook,
   deleteAuthHook,
   type AuthRequestAction,
-  type AuthClearance,
   type AuthHook,
   type AttributionReadProjection,
   type MergeSignatureClaim,
@@ -40,6 +36,7 @@ import {
   type ReadUserIdentity,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
+import { isAuthDependencyReady, type AuthDependencyProjection } from '../../../src/contracts';
 
 export type AuthRequestType =
   | 'merge'
@@ -90,7 +87,7 @@ export type AuthRequest = {
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
   depends_on_id?: string | null;
-  depends_on_status?: string | null;
+  dependency?: AuthDependencyProjection | null;
   approval_source?: string;
   approval_lease_id?: string | null;
   requested_by_user_id?: string | null;
@@ -713,65 +710,6 @@ function MetadataRow({ label, value }: { label: string; value: string | JSX.Elem
   );
 }
 
-function AuthClearancePanel({
-  request,
-  clearances,
-  busy,
-  mutationsAllowed,
-  onCreate,
-  onRevoke,
-}: {
-  request: AuthRequest;
-  clearances: AuthClearance[];
-  busy: boolean;
-  mutationsAllowed: boolean;
-  onCreate: () => void;
-  onRevoke: (id: string) => void;
-}): JSX.Element {
-  const eligible = getAuthStatus(request) === 'pending'
-    && getAuthType(request) === 'merge'
-    && request.requester_evidence_method === 'api_token'
-    && Boolean(request.requester_credential_id);
-  return (
-    <section className="panel auth-clearance-panel" aria-label="Protected merge clearances">
-      <div className="panel__header">
-        <strong>Scoped clearance</strong>
-        {eligible && (
-          <button type="button" className="btn btn--active" disabled={busy || !mutationsAllowed} onClick={onCreate}>
-            {busy ? 'Waiting for YubiKey…' : 'Issue clearance'}
-          </button>
-        )}
-      </div>
-      <div className="panel__body">
-        <p className="text-muted">
-          Requester provenance: {request.requester_evidence_method ?? 'unverified'}
-          {request.requester_credential_id ? ` · ${request.requester_credential_id.slice(0, 12)}` : ''}
-        </p>
-        {!eligible && getAuthStatus(request) === 'pending' && (
-          <p className="text-muted">This request is not eligible for autonomous clearance execution.</p>
-        )}
-        {clearances.length === 0 ? (
-          <p className="text-muted">No clearance history for this request.</p>
-        ) : clearances.map((clearance) => {
-          const active = clearance.revoked_at == null
-            && clearance.expires_at > Date.now()
-            && clearance.consumed_uses < clearance.max_uses;
-          return (
-            <div className="auth-clearance-panel__row" key={clearance.id}>
-              <span>{clearance.id.slice(0, 8)} · {clearance.consumed_uses}/{clearance.max_uses} uses · {clearance.issue_id ? `issue ${clearance.issue_id.slice(0, 8)}` : clearance.head_branch}</span>
-              {active && (
-                <button type="button" className="btn btn--ghost" disabled={busy || !mutationsAllowed} onClick={() => onRevoke(clearance.id)}>
-                  Revoke
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
 async function copyAuthText(value: string): Promise<void> {
   if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
   await navigator.clipboard.writeText(value);
@@ -824,7 +762,8 @@ function AuthRequestDetail({
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
   // Issue 7d64d8f — a digest means these exact bytes are the merge commit
-  // message, so they are shown verbatim rather than rendered as Markdown.
+  // message. It controls editability only; display still uses the shared,
+  // sanitized Markdown pipeline without mutating the stored source bytes.
   const canonicalDigest =
     typeof request.commit_message_digest === 'string' && request.commit_message_digest
       ? request.commit_message_digest
@@ -1010,7 +949,9 @@ function AuthRequestDetail({
         <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
         <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
         <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
-        <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
+        <MetadataRow label="Dependency readiness" value={request.dependency?.state ?? null} />
+        <MetadataRow label="Dependency status" value={request.dependency?.status ?? null} />
+        <MetadataRow label="Dependency outcome" value={request.dependency?.outcome ?? null} />
         <MetadataRow label="Merge SHA" value={mergeSha} />
         <MetadataRow label="Finalized" value={finalizedAt} />
         <MetadataRow label="Session" value={sessionId ?? null} />
@@ -1228,11 +1169,6 @@ function AuthRequestDetail({
                     </span>
                     Commit Message
                   </button>
-                  {isCanonicalMessage && (
-                    <span className="panel__badge" title={`sha256 ${canonicalDigest}`}>
-                      agent-authored
-                    </span>
-                  )}
                   {/* Issue 7d64d8f — a canonical message is immutable once it leaves pending. */}
                   {onUpdateField && mutationsAllowed
                     && (status === 'pending' || (failedLike && !isCanonicalMessage))
@@ -1282,10 +1218,6 @@ function AuthRequestDetail({
                           Cancel
                         </button>
                       </div>
-                    </div>
-                  ) : isCanonicalMessage ? (
-                    <div className="panel__body spec-panel">
-                      <pre className="canonical-message">{commitMsg}</pre>
                     </div>
                   ) : commitHtml ? (
                     <div
@@ -2247,10 +2179,6 @@ export function AuthQueueView({
     [dismissConfirmId, handleDismiss],
   );
 
-  // Bug: 544ce35 — dependency warning modal state: tracks the request ID
-  // we're about to approve when it has an incomplete dependency.
-  const [pendingApproveId, setPendingApproveId] = useState<string | null>(null);
-
   const [rejectConfirmId, setRejectConfirmId] = useState<string | null>(null);
   const rejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -2537,61 +2465,6 @@ export function AuthQueueView({
     return hydration ? { ...selectedRequestRaw, ...hydration } : selectedRequestRaw;
   }, [selectedRequestRaw, hydratedBodies]);
 
-  const [clearances, setClearances] = useState<AuthClearance[]>([]);
-  const [clearanceBusy, setClearanceBusy] = useState(false);
-  const refreshClearances = useCallback((requestId: string) => {
-    getAuthClearances(requestId)
-      .then(setClearances)
-      .catch(() => setClearances([]));
-  }, []);
-  useEffect(() => {
-    if (!selectedRequest) {
-      setClearances([]);
-      return;
-    }
-    refreshClearances(getAuthId(selectedRequest));
-  }, [selectedRequest, refreshClearances]);
-
-  const handleCreateClearance = useCallback(async () => {
-    if (!selectedRequest?.requested_by_user_id || !operationalMutationsAllowed) return;
-    const requestId = getAuthId(selectedRequest);
-    const issue = selectedRequest.issue_closures?.[0]
-      ?? selectedRequest.issue_references?.[0]
-      ?? selectedRequest.issue_ids?.[0];
-    const head = selectedRequest.head_branch ?? selectedRequest.head;
-    if (!issue && !head) {
-      showToast('The selected request has no exact issue or head scope.');
-      return;
-    }
-    setClearanceBusy(true);
-    try {
-      await createAuthClearance({
-        request_id: requestId,
-        grantee: selectedRequest.requested_by_user_id,
-        ...(issue ? { issue } : {}),
-        ...(head ? { head } : {}),
-      });
-      refreshClearances(requestId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Clearance issuance failed.');
-    } finally {
-      setClearanceBusy(false);
-    }
-  }, [operationalMutationsAllowed, refreshClearances, selectedRequest, showToast]);
-
-  const handleRevokeClearance = useCallback(async (clearanceId: string) => {
-    if (!selectedRequest || !operationalMutationsAllowed) return;
-    setClearanceBusy(true);
-    try {
-      await revokeAuthClearance(clearanceId);
-      refreshClearances(getAuthId(selectedRequest));
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Clearance revocation failed.');
-    } finally {
-      setClearanceBusy(false);
-    }
-  }, [operationalMutationsAllowed, refreshClearances, selectedRequest, showToast]);
-
   useEffect(() => {
     if (!selectedRequest) return;
     const requestId = getAuthId(selectedRequest);
@@ -2765,26 +2638,24 @@ export function AuthQueueView({
       );
     }
 
-    // Bug: 544ce35 — check dependency before approving; show warning modal if incomplete
-    const handleApproveClick = () => {
-      if (
-        request.depends_on_id &&
-        request.depends_on_status !== 'completed'
-      ) {
-        setPendingApproveId(id);
-        return;
-      }
-      handleApprove(id);
-    };
+    const dependencyBlocked = Boolean(
+      request.depends_on_id && !isAuthDependencyReady(request.dependency),
+    );
+    const dependencyState = request.dependency?.state ?? 'unavailable';
     return (
       <div className="auth-actions">
         <button
           type="button"
           className="btn btn--success"
-          onClick={handleApproveClick}
-          disabled={actionDisabled || mutationsBlocked}
+          onClick={() => {
+            if (!dependencyBlocked) handleApprove(id);
+          }}
+          disabled={actionDisabled || mutationsBlocked || dependencyBlocked}
+          title={dependencyBlocked
+            ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
+            : undefined}
         >
-          Approve
+          {dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>
         <button
           type="button"
@@ -3046,27 +2917,15 @@ export function AuthQueueView({
               attemptCount={attemptCount}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
-              actionBundle={
-                <div>
-                  <AuthClearancePanel
-                    request={request}
-                    clearances={clearances}
-                    busy={clearanceBusy}
-                    mutationsAllowed={operationalMutationsAllowed}
-                    onCreate={() => void handleCreateClearance()}
-                    onRevoke={(clearanceId) => void handleRevokeClearance(clearanceId)}
-                  />
-                  {requestActions.length > 0 && (
-                    <AuthActionBundle
-                      request={request}
-                      actions={requestActions}
-                      inFlightActionIds={inFlightActionIds}
-                      mutationsAllowed={operationalMutationsAllowed}
-                      onToggleVeto={handleToggleActionVeto}
-                    />
-                  )}
-                </div>
-              }
+              actionBundle={requestActions.length > 0 ? (
+                <AuthActionBundle
+                  request={request}
+                  actions={requestActions}
+                  inFlightActionIds={inFlightActionIds}
+                  mutationsAllowed={operationalMutationsAllowed}
+                  onToggleVeto={handleToggleActionVeto}
+                />
+              ) : undefined}
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
               mutationsAllowed={operationalMutationsAllowed}
@@ -3074,66 +2933,6 @@ export function AuthQueueView({
           );
         })()}
 
-        {/* Bug: 544ce35 — Dependency warning modal overlay (scoped to detail panel) */}
-        {pendingApproveId && (() => {
-          const pendingRequest = queue.find((r) => getAuthId(r) === pendingApproveId)
-            ?? (historyQueue ?? []).find((r) => getAuthId(r) === pendingApproveId);
-          if (!pendingRequest) return null;
-          const depId = pendingRequest.depends_on_id;
-          const depStatus = pendingRequest.depends_on_status ?? 'unknown';
-          const depHash = depId ? depId.slice(0, 8) : '';
-          return (
-            <div className="auth-dep-modal-overlay" onClick={() => setPendingApproveId(null)}>
-              <div className="auth-dep-modal" onClick={(e) => e.stopPropagation()}>
-                <h3 className="auth-dep-modal__title">Dependency not completed</h3>
-                <p className="auth-dep-modal__body">
-                  This request depends on <span className="auth-dep-modal__hash">{depHash}</span>{' '}
-                  which is currently <span className={`auth-dep-modal__status auth-dep-modal__status--${depStatus}`}>{depStatus}</span>.
-                  Approving out of order may cause merge conflicts or broken builds.
-                </p>
-                <div className="auth-dep-modal__actions">
-                  <button
-                    type="button"
-                    className="btn btn--warning"
-                    onClick={() => {
-                      const id = pendingApproveId;
-                      setPendingApproveId(null);
-                      handleApprove(id);
-                    }}
-                  >
-                    Approve anyway
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => {
-                      if (depId) {
-                        handleSelect(depId);
-                        // Scroll to the dependency in the sidebar
-                        setTimeout(() => {
-                          const el = document.querySelector(`[data-request-id="${depId}"]`);
-                          if (el) {
-                            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                          }
-                        }, 100);
-                      }
-                      setPendingApproveId(null);
-                    }}
-                  >
-                    Go to dependency
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => setPendingApproveId(null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
       </div>
     </div>
   );

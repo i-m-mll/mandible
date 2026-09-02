@@ -141,6 +141,30 @@ export type AuthRequestOutcome =
   | "expired"
   | null;
 
+export type AuthDependencyReadiness =
+  | "ready"
+  | "pending"
+  | "failed"
+  | "unfinalized"
+  | "missing"
+  | "ambiguous";
+
+export type AuthDependencyProjection = {
+  state: AuthDependencyReadiness;
+  requested_id: string;
+  request_id: string | null;
+  status: AuthRequestStatus | null;
+  outcome: AuthRequestOutcome;
+  exit_code: number | null;
+  merge_finalized_at: number | null;
+};
+
+export function isAuthDependencyReady(
+  dependency: AuthDependencyProjection | null | undefined,
+): boolean {
+  return dependency?.state === "ready";
+}
+
 /**
  * Bug 93c57c4 — derive the terminal outcome from lifecycle status plus exit
  * code at read time. `status` is the lifecycle; `outcome` is the result.
@@ -170,7 +194,7 @@ export function computeAuthRequestOutcome(
     case "needs_rebase":
       return "needs_rebase";
     case "completed":
-      return exitCode != null && exitCode !== 0 ? "failed" : "succeeded";
+      return exitCode === 0 ? "succeeded" : "failed";
     case "pending":
     case "executing":
     case "approved":
@@ -263,6 +287,7 @@ export type AuthRequest = {
   issue_ids?: string[] | null;
   issues?: string[] | null;
   depends_on_id?: string | null;
+  dependency?: AuthDependencyProjection | null;
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
   created_at: number;
@@ -340,10 +365,17 @@ export type ConversationAttachReason =
   | "no-session"
   | "unsupported-provider";
 
+export type ConversationContinuationCapability =
+  | { kind: "live-send"; console_session_id: string }
+  | { kind: "provider-session-resume"; provider_session_id: string }
+  | { kind: "message-anchor-resume"; provider_session_id: string }
+  | { kind: "blocked"; reason: "external-live"; external_session_id: string | null }
+  | { kind: "hidden"; reason: "unavailable" };
+
 export type ConversationAttachState = {
   kind: ConversationAttachKind;
   reason: ConversationAttachReason;
-  resumable: boolean;
+  continuation: ConversationContinuationCapability;
   can_fork: boolean;
   provider_session_id: string | null;
   console_session_id?: string | null;
@@ -1150,6 +1182,7 @@ export type BriefingGroup = {
   name: string;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
   history: BriefingGroupDisposition[];
@@ -1175,6 +1208,8 @@ export const BRIEFING_EVENTS = Object.freeze({
   groupConfigurationUpdated: "briefing:group-configuration-updated",
   groupProposalPromoted: "briefing:group-proposal-promoted",
   groupNameUpdated: "briefing:group-name-updated",
+  groupArchived: "briefing:group-archived",
+  groupRestored: "briefing:group-restored",
   roundPublished: "briefing:round-published",
   answered: "briefing:answered",
   annotated: "briefing:annotated",

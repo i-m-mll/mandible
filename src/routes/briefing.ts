@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { getDb, type Db } from "../db.js";
 import {
@@ -37,6 +35,7 @@ import {
   listBriefingGroups,
   readBriefingGroup,
   promoteBriefingGroupProposal,
+  setBriefingGroupArchived,
   updateBriefingGroupName,
 } from "../feedback/briefing-groups.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
@@ -44,7 +43,8 @@ import { sendJson } from "./http.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof ClientAuthzError || error instanceof BriefingStoreError) {
-    sendJson(res, error.status, { error: error.message, code: error.code });
+    sendJson(res, error.status, { error: error.message, code: error.code,
+      ...(error instanceof BriefingStoreError && error.details ? error.details : {}) });
     return;
   }
   sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -222,7 +222,11 @@ function briefingLayoutViewer(db: Db, req: RequestLike): { userId: string; opera
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
   publisherUserId: string;
   responderUserId: string;
+  operator: boolean;
+  evidenceMethod: "api_token" | "local_default";
+  credentialId: string | null;
 } {
+  const identity = requireIdentity(req);
   const publisher = publicationPrincipal(db, req, {
     credentialCode: "briefing_publisher_credential_required",
     credentialMessage: "Exact-version Briefing publication requires a durable API token, not a session credential.",
@@ -230,14 +234,26 @@ function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
     agentMessage: "Exact-version Briefing publication requires an active agent identity.",
   });
   if (publisher.kind === "human") {
-    return { publisherUserId: publisher.publisherUserId, responderUserId: publisher.publisherUserId };
+    return {
+      publisherUserId: publisher.publisherUserId,
+      responderUserId: publisher.publisherUserId,
+      operator: publisher.operator,
+      evidenceMethod: identity.method === "api_token" ? "api_token" : "local_default",
+      credentialId: identity.credential_id,
+    };
   }
   const operator = configuredHumanOperator(
     db,
     "briefing_publication_operator_required",
     "Exact-version Briefing publication by an agent requires a configured active human operator responder.",
   );
-  return { publisherUserId: publisher.publisherUserId, responderUserId: operator.id };
+  return {
+    publisherUserId: publisher.publisherUserId,
+    responderUserId: operator.id,
+    operator: true,
+    evidenceMethod: "api_token",
+    credentialId: identity.credential_id,
+  };
 }
 
 function body(req: RequestLike): Record<string, unknown> {
@@ -245,6 +261,20 @@ function body(req: RequestLike): Record<string, unknown> {
     throw new BriefingStoreError("request body must be an object");
   }
   return req.body as Record<string, unknown>;
+}
+
+function placementOverride(req: RequestLike, requestBody: Record<string, unknown>, actorUserId: string) {
+  if (requestBody.sharing_reason === undefined) return undefined;
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(403, "briefing_collection_sharing_credential_required",
+      "Intentional cross-collection sharing requires a durable API token.");
+  }
+  if (typeof requestBody.sharing_reason !== "string" || !requestBody.sharing_reason.trim()) {
+    throw new BriefingStoreError("sharing_reason must be a nonblank string");
+  }
+  return { reason: requestBody.sharing_reason, actorUserId,
+    evidenceMethod: identity.method, credentialId: identity.credential_id };
 }
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
@@ -263,7 +293,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           "Briefing group publication by an agent requires a configured active human operator.").id, operator: true };
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "name" && key !== "current_bundle_ref" && key !== "bundle_refs");
+        .filter((key) => key !== "name" && key !== "current_bundle_ref" && key !== "bundle_refs" && key !== "sharing_reason");
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       if (requestBody.current_bundle_ref !== undefined && requestBody.current_bundle_ref !== null
           && (typeof requestBody.current_bundle_ref !== "string" || !requestBody.current_bundle_ref.trim())) {
@@ -271,7 +301,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }
       const group = createBriefingGroup(db, { name: typeof requestBody.name === "string" ? requestBody.name : "",
         currentBundleRef: requestBody.current_bundle_ref as string | null | undefined,
-        bundleRefs: requestBody.bundle_refs as string[], viewer });
+        bundleRefs: requestBody.bundle_refs as string[], viewer,
+        placementOverride: placementOverride(req, requestBody, publisher.publisherUserId) });
       broadcast(BRIEFING_EVENTS.groupCreated, { group_id: group.id });
       sendJson(res, 201, { group });
     } catch (error) { handleError(res, error); }
@@ -282,7 +313,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const viewer = groupUpdateViewer(db, req);
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "current_bundle_ref" && key !== "bundle_refs");
+        .filter((key) => key !== "current_bundle_ref" && key !== "bundle_refs" && key !== "sharing_reason");
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       if (!Object.hasOwn(requestBody, "current_bundle_ref") || !Object.hasOwn(requestBody, "bundle_refs")) {
         throw new BriefingStoreError("configuration requires current_bundle_ref and bundle_refs");
@@ -298,6 +329,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const result = configureBriefingGroup(db, req.params.groupId, {
         currentBundleRef: requestBody.current_bundle_ref as string | null,
         bundleRefs: requestBody.bundle_refs,
+        placementOverride: placementOverride(req, requestBody, requireIdentity(req).user_id),
       }, viewer);
       if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group.id });
       sendJson(res, 200, result);
@@ -308,10 +340,11 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     try {
       const viewer = groupUpdateViewer(db, req);
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "bundle_ref");
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "bundle_ref" && key !== "sharing_reason");
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       const result = addBriefingGroupUpdate(db, req.params.groupId,
-        typeof requestBody.bundle_ref === "string" ? requestBody.bundle_ref : "", viewer);
+        typeof requestBody.bundle_ref === "string" ? requestBody.bundle_ref : "", viewer, Date.now(),
+        placementOverride(req, requestBody, requireIdentity(req).user_id));
       if (result.added) broadcast(BRIEFING_EVENTS.groupUpdateAdded, {
         group_id: result.group.id, bundle_id: result.group.updates.at(-1)?.id,
       });
@@ -356,6 +389,21 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
+  for (const archived of [true, false]) server.post(
+    `/api/briefing-groups/:groupId/${archived ? "archive" : "restore"}`,
+    (req, res) => {
+      try {
+        const viewer = briefingOrganizationViewer(db, req);
+        const requestBody = body(req);
+        if (Object.keys(requestBody).length) throw new BriefingStoreError("request body must be empty");
+        const result = setBriefingGroupArchived(db, req.params.groupId, archived, viewer);
+        if (result.changed) broadcast(archived ? BRIEFING_EVENTS.groupArchived : BRIEFING_EVENTS.groupRestored,
+          { group_id: result.group.id });
+        sendJson(res, 200, result);
+      } catch (error) { handleError(res, error); }
+    }, { fileRpc: "allow" },
+  );
+
   server.get("/api/briefing-groups", (req, res) => {
     try {
       sendJson(res, 200, { groups: listBriefingGroups(db, briefingLayoutViewer(db, req)) });
@@ -384,7 +432,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           "Briefing bundle publication by an agent requires a configured active human operator.",
         ).id, operator: true };
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs");
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "name" && key !== "briefing_refs" && key !== "sharing_reason");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
@@ -396,6 +444,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         name: typeof requestBody.name === "string" ? requestBody.name : "",
         briefingRefs: requestBody.briefing_refs,
         viewer,
+        placementOverride: placementOverride(req, requestBody, publisher.publisherUserId),
       });
       broadcast(BRIEFING_EVENTS.bundleCreated, { bundle_id: bundle.id });
       sendJson(res, 201, { bundle });
@@ -406,9 +455,11 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.post("/api/briefing-bundles/:bundleId/briefings", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
       const requestBody = body(req);
-      const unexpected = Object.keys(requestBody).filter((key) => key !== "briefing_ref");
+      const sharing = requestBody.sharing_reason !== undefined;
+      const actor = sharing ? null : activeHuman(db, req);
+      const viewer = sharing ? bundleMembershipViewer(db, req) : { userId: actor!.user.id, operator: actor!.operator };
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "briefing_ref" && key !== "sharing_reason");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
@@ -416,7 +467,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         db,
         req.params.bundleId,
         typeof requestBody.briefing_ref === "string" ? requestBody.briefing_ref : "",
-        { userId: actor.user.id, operator: actor.operator },
+        viewer,
+        Date.now(),
+        placementOverride(req, requestBody, requireIdentity(req).user_id),
       );
       if (result.added) broadcast(BRIEFING_EVENTS.bundleMemberAdded, {
         bundle_id: result.bundle.id,
@@ -437,7 +490,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         : renameViewer(db, req, "Briefing bundle");
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "name" && key !== "briefing_refs" && key !== "layout");
+        .filter((key) => key !== "name" && key !== "briefing_refs" && key !== "layout" && key !== "sharing_reason");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       }
@@ -446,6 +499,10 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }
       if (requestBody.briefing_refs !== undefined && requestBody.layout !== undefined) {
         throw new BriefingStoreError("request body cannot contain both briefing_refs and layout");
+      }
+      if (requestBody.sharing_reason !== undefined
+          && requestBody.briefing_refs === undefined && requestBody.layout === undefined) {
+        throw new BriefingStoreError("sharing_reason requires a bundle membership change");
       }
       if (requestBody.briefing_refs !== undefined
           && (!Array.isArray(requestBody.briefing_refs)
@@ -460,7 +517,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           : updateBriefingBundleName(db, req.params.bundleId, requestBody.name, viewer);
         const replaced = briefingRefs === undefined && layout === undefined
           ? { bundle: renamed.bundle, changed: false }
-          : replaceBriefingBundleLayout(db, req.params.bundleId, { briefingRefs, layout }, viewer);
+          : replaceBriefingBundleLayout(db, req.params.bundleId, { briefingRefs, layout }, viewer, Date.now(),
+            placementOverride(req, requestBody, requireIdentity(req).user_id));
         return {
           bundle: replaced.bundle,
           changed: renamed.changed || replaced.changed,
@@ -501,6 +559,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
         .filter((key) => key !== "artifact_version_ref" && key !== "comparison_base_artifact_version_ref"
+          && key !== "target_briefing_ref" && key !== "distinct_reason"
           && key !== "title" && key !== "description");
       if (unexpected.length > 0) {
         throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
@@ -512,26 +571,54 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         ? null
         : typeof requestBody.comparison_base_artifact_version_ref === "string"
           ? requestBody.comparison_base_artifact_version_ref.trim() : "";
+      const targetBriefingRef = requestBody.target_briefing_ref === undefined
+        ? null
+        : typeof requestBody.target_briefing_ref === "string"
+          ? requestBody.target_briefing_ref.trim() : "";
       if (!artifactVersionRef) throw new BriefingStoreError("artifact_version_ref must be a nonblank exact artifact-version ref");
       if (requestBody.comparison_base_artifact_version_ref !== undefined && !comparisonBaseArtifactVersionRef) {
         throw new BriefingStoreError("comparison_base_artifact_version_ref must be a nonblank exact artifact-version ref");
       }
+      if (requestBody.target_briefing_ref !== undefined && !targetBriefingRef) {
+        throw new BriefingStoreError("target_briefing_ref must be a nonblank Briefing ref");
+      }
       if (!title) throw new BriefingStoreError("title must be a nonblank string");
-      const receipt = publishBriefingFromArtifactVersion(db, {
-        briefing_key: `manual:${randomUUID()}`,
+      const result = publishBriefingFromArtifactVersion(db, {
         title,
         ...(Object.hasOwn(requestBody, "description") ? { description: requestBody.description } : {}),
         artifact_version_ref: artifactVersionRef,
         comparison_base_artifact_version_ref: comparisonBaseArtifactVersionRef,
+        ...(targetBriefingRef ? { target_briefing_ref: targetBriefingRef } : {}),
+        ...(Object.hasOwn(requestBody, "distinct_reason")
+          ? { distinct_reason: requestBody.distinct_reason }
+          : {}),
         profile: "mandible-briefing.v3",
         responder_user_ids: [publication.responderUserId],
+        viewer: { userId: publication.responderUserId, operator: publication.operator },
+        creation_provenance: {
+          actor_user_id: publication.publisherUserId,
+          evidence_method: publication.evidenceMethod,
+          credential_id: publication.credentialId,
+        },
       });
-      broadcast(BRIEFING_EVENTS.created, { briefing_id: receipt.briefing_id });
-      broadcast(BRIEFING_EVENTS.roundPublished, {
-        briefing_id: receipt.briefing_id,
-        round_id: receipt.round_id,
-      });
-      sendJson(res, 201, receipt);
+      if (result.outcome === "active_candidates") {
+        sendJson(res, 409, {
+          error: "An active Briefing already owns this logical Artifact",
+          code: "briefing_active_candidates",
+          ...result,
+        });
+        return;
+      }
+      if (result.outcome === "created" || result.outcome === "created_distinct") {
+        broadcast(BRIEFING_EVENTS.created, { briefing_id: result.briefing_id });
+      }
+      if (result.outcome !== "round_reused") {
+        broadcast(BRIEFING_EVENTS.roundPublished, {
+          briefing_id: result.briefing_id,
+          round_id: result.round_id,
+        });
+      }
+      sendJson(res, result.outcome === "round_reused" ? 200 : 201, result);
     } catch (error) {
       handleError(res, error);
     }

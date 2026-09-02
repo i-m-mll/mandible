@@ -163,6 +163,7 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_bundle_members",
   "briefing_groups",
   "briefing_group_updates",
+  "briefing_collection_sharing_receipts",
   // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",
   // Executor task inventory receipts (issue 0bc2279, migration 124). Each row

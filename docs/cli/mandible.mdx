@@ -304,7 +304,8 @@ mandible auth request <branch> --title <text> [options]
 | `--verification <text>` | Machine-owned `Verification:` section (default `Not recorded`) |
 | `--commit-message <text>` | Legacy free-form review text; not used as the merge commit message |
 | `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
-| `--spec <text>` | Spec/design notes |
+| `--spec <text>` | Inline spec/review Markdown |
+| `--spec-file <file>` | Read spec/review Markdown from a file (`-` for stdin); mutually exclusive with `--spec` |
 | `--handoff <text>` | Post-merge handoff note for next session |
 | `--depends-on <id>` | Auth request ID that must complete first |
 | `--repo <name>` | Override auto-detected repo name |
@@ -349,6 +350,33 @@ re-verifies that digest against the exact bytes it fetched, asserts they are
 already canonical, and commits them on every merge path, aborting rather than
 falling back. With no message flag, nothing is stored and the merge keeps git's
 own default merge message.
+
+**Review specification:**
+
+For a non-trivial merge, prefer `--spec-file` and author a readable Markdown
+review packet. The CLI treats these bytes as opaque text: it does not parse,
+reflow, canonicalize, or infer headings, and legacy one-line `--spec` values
+remain valid unchanged. Use these sections:
+
+- `Intent` — the requested outcome and its issue or coordination record are the
+  source of truth.
+- `Design choices` — the final committed implementation and durable design
+  decisions are the source of truth.
+- `Scope`, including `Non-goals` — the issue boundary and final diff are the
+  source of truth.
+- `Verification`, including limitations — executed checks and observed results
+  are the source of truth; record gaps rather than predicting success.
+- `Delivery` — repository policy and the actual activation plan are the source
+  of truth. For Mandible, record `convergence: hook:builtin-mandible-rebuild`
+  and `operator-gate: none` unless a different gate truthfully applies.
+
+The canonical change message and review specification stay separate because
+they serve different contracts. The canonical message is concise, validated,
+SHA-256-bound, frozen review input that becomes the merge commit message. The
+specification is the detailed Markdown packet used to review intent, choices,
+scope, evidence, and activation. Supplying `--spec-file` does not alter message
+composition, verification-envelope ownership, digesting, freezing, trailers,
+closure behavior, or stored spec semantics.
 
 **Pre-flight checks:**
 

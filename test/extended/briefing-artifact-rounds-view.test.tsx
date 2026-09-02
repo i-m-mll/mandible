@@ -786,7 +786,7 @@ describe('artifact-backed Briefing rounds', () => {
 
   it.each([
     ['correction', 'Dismiss', { directive_key: 'decision', operation: 'set', expected_response_event_id: 'answer-old', value: { verdict: 'dismiss' } }],
-    ['retraction', 'Clear answer', { directive_key: 'decision', operation: 'retract', expected_response_event_id: 'answer-old' }],
+    ['retraction', 'Clear response', { directive_key: 'decision', operation: 'retract', expected_response_event_id: 'answer-old' }],
   ])('preserves the exact current response event ID for %s payloads', async (_label, action, expectedAnswer) => {
     const posts: any[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -794,7 +794,7 @@ describe('artifact-backed Briefing rounds', () => {
       if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
       if (!init?.method && url === `/api/briefings/briefing-1?round=${ROUND_ONE}`) {
         const payload = detail(ROUND_ONE) as any;
-        if (action === 'Clear answer') payload.selected_round.items[0].required = 0;
+        if (action === 'Clear response') payload.selected_round.items[0].required = 0;
         return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, source: null, preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -1070,7 +1070,7 @@ describe('artifact-backed Briefing rounds', () => {
         responder_user_ids: [humanId],
         evidence: { series_ref: 'artifact-series:typed-ui-roundtrip', version: ordinal, digest: String(ordinal).repeat(64) },
         source_health: { source: 'arxiv-scan', status: 'healthy', detail: null, observed_at: ordinal },
-        document: { markdown: TYPED_SOURCE }, quiet_reason: null,
+        document: { markdown: ordinal === 1 ? TYPED_SOURCE : `${TYPED_SOURCE}\n\nRun ${ordinal}.` }, quiet_reason: null,
         occurrences: TYPED_DIRECTIVES.map((directive, index) => ({
           directive_key: directive.key, evidence_digest: (index + ordinal).toString(16).slice(-1).repeat(64), occurred_at: ordinal, metadata: {},
         })),

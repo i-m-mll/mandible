@@ -43,6 +43,42 @@ describe("instance mutation policy", () => {
     }).briefing_response_mutations).toBe("allow");
   });
 
+  it("enables browser enrollment only for a reject-mode isolated preview copy under its root", () => {
+    const fixture = createDatabaseIdentityFixture();
+    const eligible = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_PREVIEW_ROOT: fixture.root,
+      },
+      dbPath: fixture.previewDbPath,
+      sourceDbPath: fixture.sourceDbPath,
+    });
+    expect(eligible.preview_browser_enrollment).toBe("allow");
+    for (const instance of [
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "main", MANDIBLE_PREVIEW_ROOT: fixture.root },
+        dbPath: fixture.previewDbPath, sourceDbPath: fixture.sourceDbPath,
+      }),
+      resolveInstanceInfo({
+        env: {
+          MANDIBLE_INSTANCE_ROLE: "preview",
+          MANDIBLE_OPERATIONAL_MUTATIONS: "allow",
+          MANDIBLE_PREVIEW_ROOT: fixture.root,
+        },
+        dbPath: fixture.previewDbPath, sourceDbPath: fixture.sourceDbPath,
+      }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_PREVIEW_ROOT: fixture.root },
+        dbPath: fixture.sourceDbPath, sourceDbPath: fixture.sourceDbPath,
+      }),
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_PREVIEW_ROOT: fixture.root },
+        dbPath: path.join(os.tmpdir(), "outside-preview.db"), sourceDbPath: fixture.sourceDbPath,
+      }),
+    ]) expect(instance.preview_browser_enrollment).toBe("reject");
+  });
+
   it("defaults to a main instance that accepts operational mutations", async () => {
     const router = new Router({
       instance: resolveInstanceInfo({ env: {}, dbPath: "/tmp/mandible-main.db" }),
@@ -527,6 +563,12 @@ describe("route mutation category table has one source", () => {
     },
     { method: "DELETE", pattern: "/api/sessions/:id", url: "/api/sessions/session-1", category: "sessions" },
     { method: "PATCH", pattern: "/api/settings", url: "/api/settings", category: "settings" },
+    {
+      method: "PUT",
+      pattern: "/api/settings/:key",
+      url: "/api/settings/app_theme",
+      category: "settings",
+    },
     { method: "PUT", pattern: "/api/projects/:id", url: "/api/projects/prj_1", category: "projects" },
     // Unknown API families fall back to the generic category in both gates.
     { method: "POST", pattern: "/api/new-control-plane/write", url: "/api/new-control-plane/write", category: "api" },

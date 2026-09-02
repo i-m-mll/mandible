@@ -89,6 +89,7 @@ import type { WorkBranch, WorkRepo } from './views/work';
 import type { GraphNodeType } from './views/graph';
 import {
   appReducer,
+  authEventRequiresProjectionRefresh,
   initialState,
   loadCachedState,
   saveCachedState,
@@ -1070,10 +1071,21 @@ function App(): JSX.Element {
         void loadVisibleRouteDataRef.current('issues');
       }, 1000);
     };
+    let authProjectionRefreshTimer: number | null = null;
+    const scheduleAuthProjectionRefresh = () => {
+      if (routeTabRef.current !== 'auth' || authProjectionRefreshTimer !== null) return;
+      authProjectionRefreshTimer = window.setTimeout(() => {
+        authProjectionRefreshTimer = null;
+        void loadVisibleRouteDataRef.current('auth');
+      }, 50);
+    };
     const handler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
+      if (authEventRequiresProjectionRefresh(payload.type)) {
+        scheduleAuthProjectionRefresh();
+      }
       scheduleBadgeRefresh();
     };
     // Briefing lifecycle events carry only a topic across this bridge. The
@@ -1297,6 +1309,8 @@ function App(): JSX.Element {
       // it reuses the resolved handler (terminal output flush + row dispatch).
       client.on('auth:merged', authResolvedHandler),
       client.on('auth:resolved', authResolvedHandler),
+      client.on('auth:finalized', handler),
+      client.on('auth:deleted', handler),
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
@@ -1344,9 +1358,8 @@ function App(): JSX.Element {
       client.on('auth:updated', graphRefreshHandler),
       client.on('auth:merged', graphRefreshHandler),
       client.on('auth:resolved', graphRefreshHandler),
-      // Issue 75f52ac — auth:finalized only invalidates cached graph/queue data
-      // (background finalizers landed); the row already flipped at auth:merged.
       client.on('auth:finalized', graphRefreshHandler),
+      client.on('auth:deleted', graphRefreshHandler),
       client.on('ledger:issue:created', graphRefreshHandler),
       client.on('ledger:issue:updated', graphRefreshHandler),
       client.on('ledger:issue:closed', graphRefreshHandler),
@@ -1401,6 +1414,7 @@ function App(): JSX.Element {
       if (badgeTimer !== null) window.clearTimeout(badgeTimer);
       if (graphTokenTimer !== null) window.clearTimeout(graphTokenTimer);
       if (issuesRefreshTimer !== null) window.clearTimeout(issuesRefreshTimer);
+      if (authProjectionRefreshTimer !== null) window.clearTimeout(authProjectionRefreshTimer);
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       offState();
       outputCoalescer.dispose();

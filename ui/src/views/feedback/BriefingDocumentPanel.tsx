@@ -143,10 +143,6 @@ function actionHost(document: Document, element: HTMLElement, slot: string, inde
   return host;
 }
 
-function usesCompactResponseRail(type: BriefingDirectiveItem['revision']['response_type']): boolean {
-  return type === 'verdict' || type === 'text_variant';
-}
-
 function renderSourceMappedMarkdown(
   model: BriefingMarkdownModel,
   changedEntityIndexes: readonly number[] = [],
@@ -180,7 +176,7 @@ function renderSourceMappedMarkdown(
       element.dataset.briefingChangedOrder = String(changedOrder);
       element.tabIndex = -1;
       element.setAttribute('aria-label', entity.kind === 'frontmatter'
-        ? 'Changed document metadata'
+        ? 'Changed document frontmatter'
         : `Changed ${entity.kind}: ${entity.label}`);
     }
     actionHost(document, element, 'briefingEntityAction', entityIndex);
@@ -201,16 +197,12 @@ function renderSourceMappedMarkdown(
     first.id = `briefing-directive-prompt-${directive.itemId}`.replace(/[^A-Za-z0-9_-]/g, '-');
     actionHost(document, first, 'briefingDirectiveAction', directiveIndex);
     const responseHost = document.createElement('div');
-    const compact = usesCompactResponseRail(directive.responseType);
-    responseHost.className = `briefing-directive__response-host briefing-directive__response-host--${compact ? 'rail' : 'flow'}`;
+    responseHost.className = 'briefing-directive__response-host';
     responseHost.dataset.briefingDirectiveIndex = String(directiveIndex);
     responseHost.dataset.briefingDirectiveResponse = String(directiveIndex);
-    if (compact) document.body.append(responseHost);
-    else {
-      const last = matches.at(-1)!.element!;
-      if (last.tagName === 'LI') last.append(responseHost);
-      else last.after(responseHost);
-    }
+    const last = matches.at(-1)!.element!;
+    if (last.tagName === 'LI') last.append(responseHost);
+    else last.after(responseHost);
   });
   return document.body.innerHTML;
 }
@@ -222,22 +214,10 @@ function alignBriefingRails(sourceTree: HTMLElement): void {
   const gutterX = sourceRect.left - DIRECTIVE_RAIL_GUTTER_OFFSET;
   const styles = globalThis.getComputedStyle(sourceTree);
   const contentRight = sourceRect.right - Number.parseFloat(styles.paddingRight || '0');
-  let responseRailBottom = 0;
   sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner').forEach((owner) => {
     const ownerRect = owner.getBoundingClientRect();
     owner.style.setProperty('--briefing-directive-rail-offset', `${gutterX - ownerRect.left}px`);
-    const responseHost = sourceTree.querySelector<HTMLElement>(
-      `[data-briefing-directive-response="${owner.dataset.briefingDirectiveIndex}"].briefing-directive__response-host--rail`,
-    );
-    if (responseHost) {
-      const responseRect = responseHost.getBoundingClientRect();
-      const responseTop = ownerRect.top - sourceRect.top;
-      responseHost.style.setProperty('--briefing-right-rail-top', `${responseTop}px`);
-      responseRailBottom = Math.max(responseRailBottom, responseTop + responseRect.height);
-    }
   });
-  const baseHeight = sourceRect.height - Number.parseFloat(styles.paddingBottom || '0');
-  sourceTree.style.setProperty('--briefing-right-rail-overflow', `${Math.max(0, responseRailBottom - baseHeight)}px`);
   sourceTree.querySelectorAll<HTMLElement>('[data-briefing-entity-action], [data-briefing-directive-action]').forEach((host) => {
     const owner = host.parentElement;
     const ownerRect = owner?.getBoundingClientRect();
@@ -246,7 +226,7 @@ function alignBriefingRails(sourceTree: HTMLElement): void {
       host.style.setProperty('--briefing-right-rail-top', '0px');
       owner.style.setProperty(
         '--briefing-right-rail-hover-width',
-        `calc(${Math.max(0, contentRight + 8 - ownerRect.right)}px + 1.3em)`,
+        `calc(${Math.max(0, contentRight + 8 - ownerRect.right)}px + var(--briefing-action-rail-width, 1.3em))`,
       );
     }
   });
@@ -414,12 +394,10 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     if (!sourceTree) return undefined;
     const updateRails = () => alignBriefingRails(sourceTree);
     const owners = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive--owner'));
-    const responseHosts = Array.from(sourceTree.querySelectorAll<HTMLElement>('.briefing-directive__response-host--rail'));
     updateRails();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateRails);
     observer?.observe(sourceTree);
     owners.forEach((owner) => observer?.observe(owner));
-    responseHosts.forEach((host) => observer?.observe(host));
     globalThis.addEventListener('resize', updateRails);
     globalThis.document.fonts?.addEventListener('loadingdone', updateRails);
     return () => {
@@ -494,12 +472,6 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     const errorId = `${controlId}-error`;
     const error = validationErrors[item.id];
     const describedBy = error ? errorId : undefined;
-    const clear = current ? (
-      <button type="button" className="briefing-directive__clear" aria-describedby={promptId} disabled={!canInteract} onClick={() => {
-        setTextEdits((edits) => ({ ...edits, [item.id]: '' }));
-        onDirectiveValue?.(item.id, null);
-      }}>Clear answer</button>
-    ) : null;
     let control: JSX.Element | null = null;
     if (type === 'verdict') {
       const verdict = current && 'verdict' in current ? current.verdict : null;
@@ -587,11 +559,22 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     return (
       <div className="briefing-directive__response">
         {control}
-        {clear}
         {error ? <span id={errorId} className="briefing-directive__error" role="alert" aria-describedby={promptId}>{error}</span> : null}
       </div>
     );
   };
+
+  const clearResponseAction = (item: BriefingDirectiveItem, current: BriefingResponseValue | null, promptId: string) => (
+    <span className="briefing-directive__clear-slot">
+      {current ? (
+        <ContextualAction className="briefing-directive__clear" aria-label="Clear response" title="Clear response"
+          aria-describedby={promptId} disabled={!canInteract} onClick={() => {
+            setTextEdits((edits) => ({ ...edits, [item.id]: '' }));
+            onDirectiveValue?.(item.id, null);
+          }}><ClearIcon /></ContextualAction>
+      ) : null}
+    </span>
+  );
 
   const renderProfileDocument = () => {
     if (source === null || documentIntegrityError || !markdownModel) return null;
@@ -647,7 +630,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const matches = annotationsForRange(start, end);
           return host ? createPortal(annotationAction(
             heading ? `Comment on section ${entity.label}`
-              : entity.kind === 'frontmatter' ? 'Comment on document metadata'
+              : entity.kind === 'frontmatter' ? 'Comment on document frontmatter'
                 : `Comment on ${entity.kind}: ${entity.label}`,
             heading ? 'Comment on whole section' : 'Comment on this Markdown block',
             { annotation: null, ...(heading ? { sectionHeading: entity.label } : {}), start, end, quote },
@@ -664,13 +647,16 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           const matches = annotationsForRange(mappedDirective.start, mappedDirective.end);
           return [
             actionHost ? createPortal(
-              annotationAction('Comment', 'Comment', {
-                annotation: null,
-                directiveItemId: item.id,
-                start: mappedDirective.start,
-                end: mappedDirective.end,
-                quote: mappedDirective.quote,
-              }, matches), actionHost,
+              <>
+                {clearResponseAction(item, current, promptId)}
+                {annotationAction('Comment', 'Comment', {
+                  annotation: null,
+                  directiveItemId: item.id,
+                  start: mappedDirective.start,
+                  end: mappedDirective.end,
+                  quote: mappedDirective.quote,
+                }, matches)}
+              </>, actionHost,
             ) : null,
             responseHost ? createPortal(responseControls(item, current, promptId), responseHost) : null,
           ];
@@ -856,6 +842,10 @@ function CheckIcon(): JSX.Element {
 
 function DismissIcon(): JSX.Element {
   return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" /></svg>;
+}
+
+function ClearIcon(): JSX.Element {
+  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 10.5 9.75 4.25a1.4 1.4 0 0 1 2 0l1 1a1.4 1.4 0 0 1 0 2L7.25 12.75H5.5zM8 6l3 3M7.25 12.75H13" /></svg>;
 }
 
 function CommentIcon(): JSX.Element {

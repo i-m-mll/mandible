@@ -1356,7 +1356,9 @@ function displayLabel(label: string): string {
 }
 
 function isMetadataLabel(label: string): boolean {
-  return label === 'merged';
+  return label === 'merged'
+    || label.startsWith('mandible:branch:')
+    || label.startsWith('mandible:status:');
 }
 
 function authEvidenceLinkLabel(auth: LedgerIssueDetailAuthRequest): string {

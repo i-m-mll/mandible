@@ -1,5 +1,6 @@
 import { normalizeOrderedPinIds } from '../components/shared/orderedPins';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import type { CanonicalProject, CanonicalProjectCheckout } from '../api';
 
 export const CHAT_VIEW_STATE_KEY = 'mandible.chat.viewState:v1';
 
@@ -46,6 +47,35 @@ export function normalizeChatViewState(value: unknown): ChatViewState {
       })).values()].slice(0, 500)
       : [],
   };
+}
+
+function checkoutPreference(project: CanonicalProject, checkout: CanonicalProjectCheckout): number {
+  let score = 0;
+  if (checkout.work_repo_id === project.project_key) score += 8;
+  if (checkout.default_branch) score += 4;
+  if (!/(?:^|\/)worktrees\//.test(checkout.root) && !checkout.root.startsWith('/sessions/')) score += 2;
+  if (checkout.name === project.project_key || checkout.name === project.display_name) score += 1;
+  return score;
+}
+
+/** Preserve project visibility when only the selected checkout has churned. */
+export function reconcileShownProjects(
+  shownProjects: readonly ShownChatProject[],
+  projects: readonly CanonicalProject[],
+): ShownChatProject[] {
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
+  return shownProjects.flatMap((shown) => {
+    const project = projectsById.get(shown.projectId);
+    if (!project || project.checkouts.length === 0) return [];
+    const exact = project.checkouts.find((checkout) => checkout.id === shown.checkoutId);
+    if (exact) return [shown];
+    const fallback = [...project.checkouts].sort((left, right) => (
+      checkoutPreference(project, right) - checkoutPreference(project, left)
+      || left.root.localeCompare(right.root)
+      || left.id.localeCompare(right.id)
+    ))[0];
+    return fallback ? [{ projectId: project.id, checkoutId: fallback.id }] : [];
+  });
 }
 
 export function useChatViewState() {

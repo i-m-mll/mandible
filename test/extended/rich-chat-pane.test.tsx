@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
@@ -69,7 +69,14 @@ describe('RichChatPane context usage', () => {
       />,
     );
 
-    await waitFor(() => expect(container.querySelectorAll('.context-ring')).toHaveLength(1));
+    await waitFor(() => expect(container.querySelectorAll('.context-usage')).toHaveLength(1));
     expect(container.querySelectorAll('.context-indicator')).toHaveLength(0);
+    const percentage = container.querySelector<HTMLButtonElement>('.context-usage')!;
+    expect(percentage.textContent).toMatch(/^~?\d+%$/);
+    expect(percentage.title).toContain('context');
+    percentage.focus();
+    expect(document.activeElement).toBe(percentage);
+    fireEvent.click(percentage);
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 });

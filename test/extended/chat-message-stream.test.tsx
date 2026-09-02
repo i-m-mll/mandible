@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -206,6 +207,36 @@ describe('ChatSurface stream behavior', () => {
     expect(await screen.findByRole('menu')).toBeTruthy();
     outside.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('keeps action metadata supported without rendering it on hover surfaces', () => {
+    render(
+      <MessageActions
+        onCopy={vi.fn()}
+        metadata={{ tokenCount: 1234, elapsedMs: 5000, model: 'test-model', timestamp: '2026-01-02T03:04:05Z' }}
+      />,
+    );
+
+    expect(screen.queryByText(/1,234 tokens/)).toBeNull();
+    expect(screen.queryByText('5s')).toBeNull();
+    expect(screen.queryByText('test-model')).toBeNull();
+    expect(screen.queryByText(/2026/)).toBeNull();
+    expect(document.querySelector('.message-actions__meta')).toBeNull();
+    expect(readFileSync('ui/src/styles/console.css', 'utf8')).not.toContain('.message-actions__meta');
+  });
+
+  it('does not copy turn tokens or persisted timestamps onto ordinary row actions', () => {
+    const events = conversationBlocksToStreamEvents('row-metadata', [
+      { id: 'u1', type: 'user_message', content: 'Prompt', timestamp: '2026-01-02T03:04:05Z', metadata_json: '{}' },
+      { id: 'a1', type: 'assistant_message', content: 'Answer', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ token_usage: { input: 10, output: 5 } }) },
+    ]);
+    const view = render(<ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'row-metadata' }} />);
+
+    const actionText = Array.from(view.container.querySelectorAll('.message-actions'))
+      .map((actions) => actions.textContent)
+      .join(' ');
+    expect(actionText).not.toContain('tokens');
+    expect(actionText).not.toContain('2026');
   });
 
   it('disengages scroll-follow while scrolled up and re-arms at bottom', () => {
@@ -549,7 +580,7 @@ describe('ChatSurface stream behavior', () => {
     render(<ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'tool' }} />);
 
     expect(screen.queryByText(/TAIL-MARKER/)).toBeNull();
-    fireEvent.click(screen.getByText('Bash'));
+    fireEvent.click(screen.getByRole('button', { name: /Ran a command/ }));
     expect(screen.getByRole('button', { name: /open full/i })).toBeTruthy();
     expect(screen.queryByText(/TAIL-MARKER/)).toBeNull();
 
@@ -582,8 +613,9 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.getByText('Stream failed')).toBeTruthy();
     expect(screen.getByText('Unmatched tool error')).toBeTruthy();
     expect(screen.getByText('provider_error')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Read a file/ }));
     expect(document.querySelector('[data-block-id="tr-paired"]')).toBeTruthy();
-    expect(screen.getAllByText(/2026/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/2026/)).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Deselect message' })).toHaveLength(2);
     fireEvent.click(screen.getAllByRole('button', { name: 'Deselect message' })[1]);
     expect(onToggle).toHaveBeenCalledWith('tr-paired', false);

@@ -6,6 +6,7 @@ import type {
 } from "../contracts.js";
 import type { Db } from "../db.js";
 import { BriefingStoreError, resolveBriefingId } from "./briefings.js";
+import { enforceActivePlacement, placementTargetForBundle, type PlacementOverride } from "./briefing-placement.js";
 
 export type BriefingBundleViewer = { userId: string; operator: boolean };
 
@@ -170,13 +171,17 @@ function writeLayout(db: Db, bundleId: string, layout: readonly ResolvedLayoutEn
 }
 
 export function createBriefingBundle(
-  db: Db, input: { name: string; briefingRefs: readonly string[]; viewer: BriefingBundleViewer }, now = Date.now(),
+  db: Db, input: { name: string; briefingRefs: readonly string[]; viewer: BriefingBundleViewer;
+    placementOverride?: PlacementOverride }, now = Date.now(),
 ): BriefingBundle {
   const name = input.name.trim();
   if (!name) throw new BriefingStoreError("name must be a nonblank string");
   const layout = flatLayout(db, input.briefingRefs, input.viewer);
   const bundleId = randomUUID();
   db.transaction(() => {
+    enforceActivePlacement(db, { operation: "bundle_create", target: { kind: "bundle", id: bundleId },
+      briefingIds: layout.flatMap((entry) => entry.kind === "briefing" ? [entry.briefingId] : entry.briefingIds),
+      override: input.placementOverride, now });
     db.prepare("INSERT INTO briefing_bundles (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
       .run(bundleId, name, now, now);
     writeLayout(db, bundleId, layout, now);
@@ -198,7 +203,7 @@ export function updateBriefingBundleName(
 
 export function replaceBriefingBundleLayout(
   db: Db, bundleRef: string, input: { briefingRefs?: readonly string[]; layout?: unknown },
-  viewer: BriefingBundleViewer, now = Date.now(),
+  viewer: BriefingBundleViewer, now = Date.now(), placementOverride?: PlacementOverride,
 ): { bundle: BriefingBundle; changed: boolean } {
   if ((input.briefingRefs === undefined) === (input.layout === undefined)) {
     throw new BriefingStoreError("provide exactly one of briefing_refs or layout");
@@ -207,6 +212,10 @@ export function replaceBriefingBundleLayout(
   const layout = input.layout === undefined ? flatLayout(db, input.briefingRefs ?? [], viewer) : resolveLayout(db, input.layout, viewer);
   const changed = db.transaction(() => {
     if (JSON.stringify(currentResolvedLayout(db, bundleId)) === JSON.stringify(layout)) return false;
+    const target = placementTargetForBundle(db, bundleId);
+    if (target) enforceActivePlacement(db, { operation: "bundle_replace", target,
+      briefingIds: layout.flatMap((entry) => entry.kind === "briefing" ? [entry.briefingId] : entry.briefingIds),
+      override: placementOverride, now });
     db.prepare("DELETE FROM briefing_bundle_members WHERE bundle_id = ?").run(bundleId);
     writeLayout(db, bundleId, layout, now);
     db.prepare("UPDATE briefing_bundles SET updated_at = ? WHERE id = ?").run(now, bundleId);
@@ -223,11 +232,15 @@ export function replaceBriefingBundleMembers(
 
 export function addBriefingBundleMember(
   db: Db, bundleRef: string, briefingRef: string, viewer: BriefingBundleViewer, now = Date.now(),
+  placementOverride?: PlacementOverride,
 ): { bundle: BriefingBundle; added: boolean } {
   const bundleId = resolveBundleId(db, bundleRef);
   const briefingId = resolveBriefingId(db, briefingRef, viewer);
   const added = db.transaction(() => {
     if (db.prepare("SELECT 1 FROM briefing_bundle_members WHERE bundle_id = ? AND briefing_id = ?").get(bundleId, briefingId)) return false;
+    const target = placementTargetForBundle(db, bundleId);
+    if (target) enforceActivePlacement(db, { operation: "bundle_add", target,
+      briefingIds: [briefingId], override: placementOverride, now });
     const row = db.prepare("SELECT COALESCE(MAX(layout_position), -1) + 1 AS position FROM briefing_bundle_members WHERE bundle_id = ?")
       .get(bundleId) as { position: number };
     db.prepare(`INSERT INTO briefing_bundle_members

@@ -154,7 +154,6 @@ type ArtifactPreview =
       value: string;
       rawValue: string;
       autoFormatted: boolean;
-      formatLabel: string;
       highlightLanguage: ArtifactHighlightLanguage | null;
       partial: boolean;
       previewBytes?: number;
@@ -908,6 +907,11 @@ export function ArtifactDetail({
   knowledgeError,
 }: ArtifactDetailProps): JSX.Element {
   const preview = content ? artifactPreview(content) : null;
+  const detailIdentity = artifactDetailIdentity(artifact, series, selectedVersion);
+  const formattedPreviewAvailable = Boolean(
+    preview && (preview.kind === 'json' || preview.kind === 'text') && preview.autoFormatted,
+  );
+  const [jsonView, setJsonView] = useState<'formatted' | 'raw'>('formatted');
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -987,6 +991,10 @@ export function ArtifactDetail({
   const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
   const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
   latestDraftRef.current = draft;
+
+  useEffect(() => {
+    setJsonView('formatted');
+  }, [content?.artifact_id]);
 
   useEffect(() => {
     if (!versionHistoryOpen) return undefined;
@@ -1112,6 +1120,16 @@ export function ArtifactDetail({
         artifact_version_ref: selectedVersion.id,
         title: artifactTitle(artifact),
       });
+      if (receipt.outcome === 'active_candidates') {
+        const guidance = receipt.active_candidates.map((candidate) =>
+          `${candidate.title} (${candidate.briefing_id.slice(0, 8)}): ${candidate.guidance === 'reuse_round' ? 'reuse exact round' : 'add a round'}`,
+        ).join('; ');
+        const archived = receipt.archived_candidates.length > 0
+          ? ` Archived advisories: ${receipt.archived_candidates.length}.`
+          : '';
+        setBriefingError(`Active Briefing candidates: ${guidance}.${archived}`);
+        return;
+      }
       if (typeof window !== 'undefined') {
         window.location.hash = briefingRoute(receipt.briefing_id, receipt.round_id).slice(1);
       }
@@ -1336,11 +1354,15 @@ export function ArtifactDetail({
             canonicalRef: headerCopyValue,
             copyLabel: headerCopyLabel,
           }}
-          title={artifactTitle(artifact)}
+          title={detailIdentity.title}
           supportingMetadata={(
             <div className="artifact-detail__header-context">
               <span className="artifact-detail__subline">
-                {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
+                {[
+                  detailIdentity.filename ? `File: ${detailIdentity.filename}` : '',
+                  artifact.custody_mode,
+                  artifact.role,
+                ].filter(Boolean).join(' · ')}
               </span>
               <span className="artifact-detail__dates">
                 <span>Created: {formatTime(createdUpdated.created)}</span>
@@ -1430,6 +1452,28 @@ export function ArtifactDetail({
                 >
                   Show metadata
                 </button>
+                {formattedPreviewAvailable && (
+                  <>
+                    <button
+                      type="button"
+                      className={`artifact-detail__actions-item${jsonView === 'formatted' ? ' artifact-detail__actions-item--active' : ''}`}
+                      role="menuitemradio"
+                      aria-checked={jsonView === 'formatted'}
+                      onClick={() => closeActionsAfter(() => setJsonView('formatted'))}
+                    >
+                      Formatted JSON
+                    </button>
+                    <button
+                      type="button"
+                      className={`artifact-detail__actions-item${jsonView === 'raw' ? ' artifact-detail__actions-item--active' : ''}`}
+                      role="menuitemradio"
+                      aria-checked={jsonView === 'raw'}
+                      onClick={() => closeActionsAfter(() => setJsonView('raw'))}
+                    >
+                      Raw JSON
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   className="artifact-detail__actions-item"
@@ -1513,7 +1557,7 @@ export function ArtifactDetail({
             />
           ) : (
             <>
-              {!editableState.editable && (
+              {!editableState.editable && editableState.showBodyHint && (
                 <div className="artifact-detail__hint artifact-detail__hint--edit">{editableState.reason}</div>
               )}
               {draft && (
@@ -1528,6 +1572,7 @@ export function ArtifactDetail({
                 content={content}
                 contentLoading={contentLoading}
                 contentError={contentError}
+                jsonView={jsonView}
               />
             </>
           )}
@@ -1630,6 +1675,7 @@ function useArtifactSpaceProject(artifact: ArtifactRecord): string | null {
 type ArtifactEditableState = {
   editable: boolean;
   reason: string;
+  showBodyHint: boolean;
   sourceText: string;
   mediaType: string | null;
 };
@@ -1643,6 +1689,7 @@ function artifactEditableState(
     return {
       editable: false,
       reason: 'Editing unavailable: external custody cannot be safely snapshotted.',
+      showBodyHint: true,
       sourceText: '',
       mediaType,
     };
@@ -1651,6 +1698,7 @@ function artifactEditableState(
     return {
       editable: false,
       reason: 'Editing unavailable until artifact text is materialized.',
+      showBodyHint: true,
       sourceText: '',
       mediaType,
     };
@@ -1659,6 +1707,7 @@ function artifactEditableState(
     return {
       editable: false,
       reason: 'Editing unavailable for partial previews; full text is required.',
+      showBodyHint: true,
       sourceText: '',
       mediaType,
     };
@@ -1666,7 +1715,8 @@ function artifactEditableState(
   if (content.kind !== 'text' && content.kind !== 'markdown') {
     return {
       editable: false,
-      reason: 'Editing is limited to safe text and Markdown artifacts.',
+      reason: 'Edit content is unavailable for this artifact type.',
+      showBodyHint: false,
       sourceText: '',
       mediaType,
     };
@@ -1676,6 +1726,7 @@ function artifactEditableState(
     reason: artifact.custody_mode === 'link'
       ? 'Publishing will snapshot the edited text as a managed artifact version.'
       : 'Editable text artifact.',
+    showBodyHint: false,
     sourceText: content.preview.text,
     mediaType,
   };
@@ -1777,17 +1828,18 @@ function PreviewSection({
   content,
   contentLoading,
   contentError,
+  jsonView,
 }: {
   preview: ArtifactPreview | null;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
   contentError: string | null;
+  jsonView: 'formatted' | 'raw';
 }): JSX.Element {
   const showPreview = !contentError && preview !== null;
-  const [autoFormatJson, setAutoFormatJson] = useState(true);
   const codePreview = preview && (preview.kind === 'json' || preview.kind === 'text') ? preview : null;
   const previewValue = codePreview
-    ? (codePreview.autoFormatted && !autoFormatJson ? codePreview.rawValue : codePreview.value)
+    ? (codePreview.autoFormatted && jsonView === 'raw' ? codePreview.rawValue : codePreview.value)
     : '';
   const highlightLanguage = codePreview
     && !codePreview.partial
@@ -1808,9 +1860,6 @@ function PreviewSection({
     'artifact-preview--code',
     codePreview?.partial ? 'artifact-preview--partial' : '',
   ].filter(Boolean).join(' ');
-  useEffect(() => {
-    setAutoFormatJson(true);
-  }, [content?.artifact_id]);
   return (
     <>
         {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
@@ -1819,17 +1868,6 @@ function PreviewSection({
         <div key={warning} className="artifact-detail__warning">{warning}</div>
         ))}
         {showPreview && preview.kind === 'bundle' && <BundlePreview preview={preview} />}
-        {showPreview && codePreview?.autoFormatted && (
-          <div className="artifact-preview-toolbar">
-            <span>{codePreview.formatLabel}</span>
-            <button
-              type="button"
-              onClick={() => setAutoFormatJson((enabled) => !enabled)}
-            >
-              {autoFormatJson ? 'Show raw' : 'Format'}
-            </button>
-          </div>
-        )}
         {showPreview && preview.kind === 'json' && (
           virtualizedPreview ? (
             <VirtualizedCodePreview value={previewValue} className={codePreviewClassName} codeClassName={codeClassName} />
@@ -2189,6 +2227,44 @@ function seriesTitle(series: ArtifactSeriesSummary): string {
     || seriesRef(series);
 }
 
+export type ArtifactDetailIdentity = {
+  title: string;
+  filename: string | null;
+};
+
+export function artifactDetailIdentity(
+  artifact: ArtifactRecord,
+  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null,
+  selectedVersion: ArtifactVersionRecord | null,
+): ArtifactDetailIdentity {
+  const logicalTitle = artifactTitleCandidate(series?.title ?? '')
+    || artifactTitleCandidate(series?.logical_name ?? '')
+    || artifactTitle(artifact);
+  const filename = artifactFilename(artifact, selectedVersion);
+  return {
+    title: logicalTitle,
+    filename: filename && filename !== logicalTitle ? filename : null,
+  };
+}
+
+function artifactFilename(
+  artifact: ArtifactRecord,
+  selectedVersion: ArtifactVersionRecord | null,
+): string {
+  const declared = typeof artifact.metadata.filename === 'string' ? artifact.metadata.filename.trim() : '';
+  if (declared) return basename(declared);
+  const locator = selectedVersion?.observed_path
+    || selectedVersion?.repo_path
+    || (typeof artifact.repo_locator.path === 'string' ? artifact.repo_locator.path : '')
+    || artifact.uri;
+  return basename(locator);
+}
+
+function basename(locator: string): string {
+  const withoutQuery = locator.trim().split(/[?#]/, 1)[0].replace(/[\\/]+$/, '');
+  return withoutQuery.split(/[\\/]/).pop() ?? '';
+}
+
 function artifactTitle(artifact: ArtifactRecord): string {
   const metadataTitle = typeof artifact.metadata.title === 'string' ? artifact.metadata.title : '';
   const filename = typeof artifact.metadata.filename === 'string' ? artifact.metadata.filename : '';
@@ -2261,7 +2337,6 @@ export function artifactPreview(content: ArtifactContentResult): ArtifactPreview
       value: content.preview.text,
       rawValue,
       autoFormatted: content.preview.formatted === 'json' && rawValue !== content.preview.text,
-      formatLabel: 'Auto-formatted JSON',
       highlightLanguage: content.preview.truncated ? null : 'json',
       partial: content.preview.truncated,
       previewBytes: content.preview.preview_bytes,
@@ -2292,7 +2367,6 @@ export function artifactPreview(content: ArtifactContentResult): ArtifactPreview
         value: formattedJson,
         rawValue: content.preview.text,
         autoFormatted: true,
-        formatLabel: 'Auto-formatted JSON-like text',
         highlightLanguage: 'json',
         partial: false,
         previewBytes: content.preview.preview_bytes,
@@ -2305,7 +2379,6 @@ export function artifactPreview(content: ArtifactContentResult): ArtifactPreview
       value: content.preview.text,
       rawValue: content.preview.text,
       autoFormatted: false,
-      formatLabel: '',
       highlightLanguage: content.preview.truncated ? null : artifactHighlightLanguage(content),
       partial: content.preview.truncated,
       previewBytes: content.preview.preview_bytes,

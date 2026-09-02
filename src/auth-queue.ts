@@ -25,7 +25,7 @@ import {
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
-import { computeAuthRequestOutcome } from "./contracts.js";
+import { computeAuthRequestOutcome, isAuthDependencyReady } from "./contracts.js";
 import { assertNever } from "./exhaustive.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
@@ -98,6 +98,7 @@ import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
   AuthConvergence,
+  AuthDependencyProjection,
   AuthHookRun,
   AuthOutputChunk,
   AuthRequest,
@@ -2122,6 +2123,72 @@ export class AuthQueue {
     return this.readRequestByExactId(resolved.id);
   }
 
+  dependencyForRequest(
+    request: Pick<AuthRequest, "depends_on_id">,
+  ): AuthDependencyProjection | null {
+    const requestedId = request.depends_on_id;
+    if (!requestedId) {
+      return null;
+    }
+
+    const resolved = resolvePrefix(this.db, "auth_requests", "id", requestedId);
+    if (!resolved.ok) {
+      return {
+        state: resolved.error === "not_found" ? "missing" : "ambiguous",
+        requested_id: requestedId,
+        request_id: null,
+        status: null,
+        outcome: null,
+        exit_code: null,
+        merge_finalized_at: null,
+      };
+    }
+
+    const dependency = this.readRequestByExactId(resolved.id);
+    if (!dependency) {
+      return {
+        state: "missing",
+        requested_id: requestedId,
+        request_id: null,
+        status: null,
+        outcome: null,
+        exit_code: null,
+        merge_finalized_at: null,
+      };
+    }
+
+    const outcome = computeAuthRequestOutcome(dependency.status, dependency.exit_code);
+    const state = dependency.status !== "completed"
+      ? (outcome === null ? "pending" : "failed")
+      : dependency.exit_code !== 0
+        ? "failed"
+        : dependency.merge_finalized_at == null
+          ? "unfinalized"
+          : "ready";
+    return {
+      state,
+      requested_id: requestedId,
+      request_id: dependency.id,
+      status: dependency.status,
+      outcome,
+      exit_code: dependency.exit_code,
+      merge_finalized_at: dependency.merge_finalized_at ?? null,
+    };
+  }
+
+  private enforceDependencyReadiness(request: AuthRequest): void {
+    const dependency = this.dependencyForRequest(request);
+    if (!dependency || isAuthDependencyReady(dependency)) {
+      return;
+    }
+    throw new AuthQueueError(
+      "invalid_status",
+      `Dependency ${dependency.requested_id} is ${dependency.state}; approval requires a successful, durably finalized dependency.`,
+      request.status,
+      dependency,
+    );
+  }
+
   getSignatureVerification(id: string): Record<string, unknown> | null {
     const request = this.requireRequest(id);
     return this.signatureVerificationForRequest(request);
@@ -2670,6 +2737,7 @@ export class AuthQueue {
         request.status
       );
     }
+    this.enforceDependencyReadiness(request);
 
     // Bug: 58d93ee — guard against null/empty command before spawning execution
     if (!request.command || !request.command.trim()) {
@@ -2809,6 +2877,7 @@ export class AuthQueue {
     if (request.status !== "pending") {
       throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
     }
+    this.enforceDependencyReadiness(request);
     if (!request.command?.trim()) {
       throw new AuthQueueError("invalid_command", "Auth request has no command set.");
     }

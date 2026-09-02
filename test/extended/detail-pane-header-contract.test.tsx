@@ -240,7 +240,10 @@ describe('canonical detail pane header', () => {
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s);
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__topline-controls\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s);
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__state\s*\{[^}]*color:\s*var\(--text-muted\);/s);
-    expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__selector-control select\s*\{[^}]*height:\s*30px;[^}]*max-width:\s*180px;[^}]*border:\s*1px solid var\(--neutral-alpha-10\);[^}]*border-radius:\s*999px;[^}]*padding:\s*0 30px 0 12px;[^}]*background:\s*var\(--bg-card\);[^}]*color:\s*var\(--text-secondary\);[^}]*font:\s*12px\/1\.2 var\(--font-sans\);/s);
+    const versionedSelectRule = css.match(/\.detail-pane-header--versioned \.detail-pane-header__selector-control select\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(versionedSelectRule).toMatch(/height:\s*30px;/);
+    expect(versionedSelectRule).toMatch(/max-width:\s*180px;/);
+    expect(versionedSelectRule).not.toMatch(/(?:background|border|color|font|padding|appearance|outline)\s*:/);
     expect(css).toMatch(/\.detail-pane-header--versioned \.detail-pane-header__title-row\s*\{[^}]*justify-content:\s*space-between;/s);
   });
 
@@ -276,7 +279,7 @@ describe('canonical detail pane header', () => {
     const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
     expect(css).toMatch(/\.detail-pane-header__display-ref\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
     expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__title\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
-    expect(css).toMatch(/\.detail-pane-header :is\(button, select, a\):focus-visible\s*\{[^}]*outline:/s);
+    expect(css).not.toMatch(/\.detail-pane-header [^{]*select[^{]*:focus-visible\s*\{/s);
     expect(css).toMatch(/@media \(max-width:\s*720px\)/);
     expect(css).toMatch(/@media \(pointer:\s*coarse\)\s*\{[^}]*\.detail-pane-header :is\(button, select, a\)\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
   });
