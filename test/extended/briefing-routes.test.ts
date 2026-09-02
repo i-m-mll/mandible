@@ -974,6 +974,16 @@ describe("plural Briefing routes", () => {
     ) VALUES (?, 'git merge', 'Merge proposal', 'completed', 1, 2, 2, 999999,
       0, '', 'dotfiles', 'main', 'feature/policy', 'merge', ?)`)
       .run(authId, mergeHead);
+    db.prepare(`INSERT INTO auth_request_actions (
+      id, auth_request_id, ordinal, kind, target_issue_ref, payload, state,
+      target_digest, staged_at, updated_at, applied_at, outcome_detail
+    ) VALUES ('route-promotion-action', ?, 1, 'briefing_group_promote', 'policy-issue', ?,
+      'staged', NULL, 1, 1, NULL, NULL)`)
+      .run(authId, JSON.stringify({
+        group_ref: groupId,
+        expected_base_bundle_ref: bundleId,
+        proposal_bundle_ref: secondBundleId,
+      }));
     const promoted = await router.invoke({ method: "POST",
       url: `/api/briefing-groups/${groupId}/promotions/apply`, credential: "human", body: {
         expected_base_bundle_ref: bundleId,

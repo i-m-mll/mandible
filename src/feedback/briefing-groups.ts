@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { BriefingGroup, BriefingGroupDisposition } from "../contracts.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
+import { parseJsonObject } from "../row-coerce.js";
 import { BriefingStoreError } from "./briefings.js";
 import { readBriefingBundle, resolveBundleId, type BriefingBundleViewer } from "./briefing-bundles.js";
 import { briefingIdsForBundles, enforceActivePlacement, type PlacementOverride } from "./briefing-placement.js";
@@ -103,6 +104,10 @@ export function validateBriefingGroupPromotionCandidate(
 function resolveAuthRequestId(db: Db, authRequestRef: string): string {
   const ref = authRequestRef.trim();
   if (!ref) throw new BriefingStoreError("auth_request_ref must be nonblank");
+  if (!tableExists(db, "auth_requests")) {
+    throw new BriefingStoreError("Auth request schema is unavailable", 409,
+      "promotion_authorization_unavailable");
+  }
   const rows = db.prepare("SELECT id FROM auth_requests ORDER BY id").all() as Array<{ id: string }>;
   const exact = rows.find((row) => row.id === ref);
   if (exact) return exact.id;
@@ -110,6 +115,36 @@ function resolveAuthRequestId(db: Db, authRequestRef: string): string {
   if (matches.length === 1) return matches[0].id;
   if (matches.length > 1) throw new BriefingStoreError("Auth request reference is ambiguous", 409, "ambiguous_ref");
   throw new BriefingStoreError("Auth request not found", 404, "not_found");
+}
+
+function requirePromotionAuthorization(
+  db: Db,
+  authRequestId: string,
+  input: { groupId: string; expectedBaseBundleId: string; proposalBundleId: string },
+): void {
+  if (!tableExists(db, "auth_request_actions")) {
+    throw new BriefingStoreError("Auth request action schema is unavailable", 409,
+      "promotion_authorization_unavailable");
+  }
+  const rows = db.prepare(
+    `SELECT state, payload FROM auth_request_actions
+     WHERE auth_request_id = ? AND kind = 'briefing_group_promote'`,
+  ).all(authRequestId) as Array<{ state: string; payload: string }>;
+  const exact = rows.some((row) => {
+    if (row.state !== "staged" && row.state !== "applied" && row.state !== "failed") return false;
+    const payload = parseJsonObject(row.payload);
+    return Object.keys(payload).length === 3
+      && payload.group_ref === input.groupId
+      && payload.expected_base_bundle_ref === input.expectedBaseBundleId
+      && payload.proposal_bundle_ref === input.proposalBundleId;
+  });
+  if (!exact) {
+    throw new BriefingStoreError(
+      "Auth request does not authorize this exact Briefing group promotion",
+      409,
+      "promotion_authorization_mismatch",
+    );
+  }
 }
 
 function requireSuccessfulMergeConvergence(db: Db, authRequestId: string, mergeHeadSha: string): void {
@@ -128,7 +163,10 @@ function requireSuccessfulMergeConvergence(db: Db, authRequestId: string, mergeH
     throw new BriefingStoreError("Auth request merge head does not match the guarded transition", 409,
       "promotion_merge_head_drift");
   }
-  if (!tableExists(db, "auth_hook_executions")) return;
+  if (!tableExists(db, "auth_hook_executions")) {
+    throw new BriefingStoreError("Auth request convergence schema is unavailable", 409,
+      "promotion_convergence_unavailable");
+  }
   const runs = db.prepare(
     "SELECT state, required FROM auth_hook_executions WHERE auth_request_id = ?",
   ).all(authRequestId) as Array<{ state: string; required: number }>;
@@ -150,6 +188,7 @@ export function promoteBriefingGroupProposal(
   const proposalBundleId = resolveBundleId(db, input.proposalBundleRef);
   const authRequestId = resolveAuthRequestId(db, input.authRequestRef);
   const mergeHeadSha = input.mergeHeadSha.trim().toLowerCase();
+  requirePromotionAuthorization(db, authRequestId, { groupId, expectedBaseBundleId, proposalBundleId });
   requireSuccessfulMergeConvergence(db, authRequestId, mergeHeadSha);
 
   const result = db.transaction(() => {
