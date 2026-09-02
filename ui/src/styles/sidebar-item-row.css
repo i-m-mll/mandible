@@ -103,13 +103,13 @@
   -webkit-mask-image: linear-gradient(
     to right,
     #000 0,
-    #000 calc(100% - var(--sidebar-item-row-reveal-width) - min(12px, var(--sidebar-item-row-reveal-width))),
+    #000 calc(100% - var(--sidebar-item-row-reveal-width) - 12px),
     transparent calc(100% - var(--sidebar-item-row-reveal-width))
   );
   mask-image: linear-gradient(
     to right,
     #000 0,
-    #000 calc(100% - var(--sidebar-item-row-reveal-width) - min(12px, var(--sidebar-item-row-reveal-width))),
+    #000 calc(100% - var(--sidebar-item-row-reveal-width) - 12px),
     transparent calc(100% - var(--sidebar-item-row-reveal-width))
   );
 }

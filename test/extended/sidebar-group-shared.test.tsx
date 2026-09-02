@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +7,8 @@ import { SidebarGroupNode, SidebarNewChatIcon } from '../../ui/src/components/sh
 import { SettingsView } from '../../ui/src/views/settings.js';
 import type { FeedbackCollection } from '../../ui/src/views/feedback/collection-model.js';
 import * as api from '../../ui/src/api.js';
+
+const sidebarGroupStylesheet = readFileSync('ui/src/styles/sidebar-group-node.css', 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -106,6 +109,22 @@ describe('shared sidebar group presentation', () => {
     expect(action.parentElement?.classList.contains('contextual-action-group')).toBe(true);
     expect(action.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
     expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
+  });
+
+  it('aligns category children and Show more to the heading text column without guide spines', () => {
+    const categoryRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,
+    )?.[1] ?? '';
+    const folderRule = sidebarGroupStylesheet.match(
+      /\.sidebar-group-node--folder > \.sidebar-disclosure-region \{([^}]*)\}/,
+    )?.[1] ?? '';
+    const showMoreRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__show-more \{([^}]*)\}/)?.[1] ?? '';
+
+    expect(categoryRule).toContain('--sidebar-title-column-inset: var(--sidebar-node-parent-inset)');
+    expect(categoryRule).not.toContain('position: relative');
+    expect(folderRule).toContain('calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column))');
+    expect(showMoreRule).toContain('var(--sidebar-title-column-inset, 7px)');
+    expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--category > .sidebar-disclosure-region::before');
   });
 
   it('shows and persists the default bounded Chat group size through generic settings', async () => {

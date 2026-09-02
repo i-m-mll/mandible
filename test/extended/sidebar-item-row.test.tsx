@@ -97,7 +97,7 @@ describe('SidebarItemRow', () => {
     expect(onSelect).toHaveBeenCalledOnce();
   });
 
-  it('overlays the measured trailing cluster without reserving width or showing an ellipsis', () => {
+  it('overlays the measured trailing cluster behind a short title fade without reserving width or showing an ellipsis', () => {
     const rowRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row \{([^}]*)\}/)?.[1] ?? '';
     const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
     const contentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__content \{([\s\S]*?)\n\}/)?.[1] ?? '';
@@ -114,7 +114,8 @@ describe('SidebarItemRow', () => {
     expect(contentRule).toContain('overflow: hidden');
     expect(contentRule).toContain('mask-image: linear-gradient');
     expect(contentRule).toContain('var(--sidebar-item-row-reveal-width)');
-    expect(contentRule).toContain('min(12px, var(--sidebar-item-row-reveal-width))');
+    expect(contentRule).toContain('calc(100% - var(--sidebar-item-row-reveal-width) - 12px)');
+    expect(contentRule).not.toContain('min(12px, var(--sidebar-item-row-reveal-width))');
     expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
     expect(labelRule).toContain('text-overflow: clip');
     expect(labelRule).not.toContain('text-overflow: ellipsis');

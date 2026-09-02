@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
-import { afterEach, describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
 import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
 import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../../ui/src/components/message-blocks/ToolUseBlock';
@@ -10,7 +10,17 @@ import { MessageGroup } from '../../ui/src/components/stream-renderer/MessageGro
 import type { ConsolePermissionRequest } from '../../ui/src/api';
 import type { RenderedTurn } from '../../ui/src/components/stream-renderer/types';
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+function setScrollMetrics(element: HTMLElement, clientHeight: number, scrollHeight: number): void {
+  Object.defineProperties(element, {
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollHeight: { configurable: true, value: scrollHeight },
+  });
+}
 
 describe('message action cards', () => {
   it('keeps assistant selection bare and gives both speakers one Markdown rhythm contract', () => {
@@ -120,6 +130,10 @@ describe('message action cards', () => {
     }
     expect(css).toMatch(/\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
+    expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
     expect(css).toMatch(/\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
   });
@@ -186,6 +200,57 @@ describe('message action cards', () => {
       <MessageGroup turn={turn([block('one'), block('two'), block('three')])} isStreaming getBlockExpanded={getBlockExpanded} />,
     );
     expect(seen).toEqual(['group:one', 'group:one']);
+  });
+
+  it('keeps group and expanded leaf scroll positions and fade states independent', () => {
+    const blocks = [
+      { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: '/tmp/a' } },
+      { type: 'tool_use', id: 'tool-2', name: 'Read', input: { path: '/tmp/b' } },
+    ] as RenderedTurn['assistantEvent']['message']['content'];
+    const turn: RenderedTurn = {
+      id: 'turn-scroll-owners',
+      assistantEvent: {
+        type: 'assistant', session_id: 's1', parent_tool_use_id: null,
+        message: { role: 'assistant', content: blocks },
+      },
+      toolResults: new Map([
+        ['tool-1', { type: 'tool_result', tool_use_id: 'tool-1', content: 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven' }],
+        ['tool-2', { type: 'tool_result', tool_use_id: 'tool-2', content: 'done' }],
+      ]),
+    };
+
+    const view = render(<MessageGroup turn={turn} isStreaming={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Read some files/ }));
+    const outerFade = view.container.querySelector<HTMLElement>('.tool-call-group__body')!;
+    const outerScroll = outerFade.querySelector<HTMLElement>(':scope > .overflow-fade__scroll')!;
+    setScrollMetrics(outerScroll, 100, 240);
+    outerScroll.scrollTop = 40;
+    fireEvent.scroll(outerScroll);
+    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
+
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card__header')!);
+    expect(view.container.querySelectorAll('.tool-card__body > .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
+    const leafFade = view.container.querySelector<HTMLElement>('.tool-card__result .overflow-fade')!;
+    const leafScroll = leafFade.querySelector<HTMLElement>('.overflow-fade__scroll')!;
+    setScrollMetrics(leafScroll, 80, 180);
+    leafScroll.scrollTop = 0;
+    fireEvent.scroll(leafScroll);
+    expect(leafFade.classList.contains('overflow-fade--below')).toBe(true);
+    expect(outerScroll.scrollTop).toBe(40);
+    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
+
+    leafScroll.scrollTop = 100;
+    fireEvent.scroll(leafScroll);
+    expect(leafFade.classList.contains('overflow-fade--below')).toBe(false);
+    expect(outerScroll.scrollTop).toBe(40);
+    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
+
+    act(() => {
+      outerScroll.scrollTop = 140;
+      fireEvent.scroll(outerScroll);
+    });
+    expect(outerFade.classList.contains('overflow-fade--below')).toBe(false);
+    expect(leafScroll.scrollTop).toBe(100);
   });
 
   it('gates permission decisions by backend capability when options are implicit', () => {
