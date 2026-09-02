@@ -45,6 +45,7 @@ export function RichChatPane({
   queuedPrompts,
   transportLabel,
   transportTitle,
+  submitLabel,
   canStop,
   stopBusy,
   attentionSlot,
@@ -80,6 +81,7 @@ export function RichChatPane({
   queuedPrompts: QueuedPrompt[];
   transportLabel: string;
   transportTitle?: string;
+  submitLabel?: string;
   canStop: boolean;
   stopBusy?: boolean;
   attentionSlot?: JSX.Element | null;
@@ -189,6 +191,7 @@ export function RichChatPane({
           queuedPrompts={queuedPrompts}
           transportLabel={transportLabel}
           transportTitle={transportTitle}
+          submitLabel={submitLabel}
           usage={usage}
           contextSlot={<ContextUsageRing usage={usageSummary} onClick={openUsage} />}
           modelSlot={backendType === 'sdk' ? (

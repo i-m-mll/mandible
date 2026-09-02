@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
-import type { Conversation, ConversationBlock, ConversationAttachState, ConversationPositionWindow } from '../../ui/src/api.js';
+import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
 import {
   ConversationsView,
@@ -62,14 +62,24 @@ const conversation: Conversation = {
   notes: null,
   parent_conversation_id: null,
   children_count: 0,
-  attach_state: {
-    kind: 'resumable',
-    reason: 'provider-resumable',
-    continuation: { kind: 'provider-session-resume', provider_session_id: 'session-detail-shell' },
-    can_fork: false,
-    provider_session_id: null,
-    checked_at: 1,
+};
+
+const defaultControl: ConversationControlSnapshot = {
+  conversation_id: conversation.id,
+  provider: 'codex',
+  provider_session_id: conversation.session_id,
+  revision: 0,
+  ownership: { kind: 'none', generation: 0 },
+  controller: { kind: 'stopped', at: 1 },
+  turn: { kind: 'none' },
+  capability: {
+    kind: 'provider-session-resume',
+    revision: 0,
+    generation: 0,
+    adapter_id: 'codex',
+    provider_session_id: conversation.session_id,
   },
+  updated_at: 1,
 };
 
 const transcriptBlock: ConversationBlock = {
@@ -108,11 +118,12 @@ function domRect(left: number, top: number, width: number, height: number): DOMR
 }
 
 function mockConversationDetail(
-  attachState: ConversationAttachState,
+  control: ConversationControlSnapshot,
   blocks: ConversationBlock[] = [transcriptBlock],
 ): Conversation {
-  const scopedConversation = { ...conversation, attach_state: attachState, block_count: blocks.length };
+  const scopedConversation = { ...conversation, block_count: blocks.length };
   vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [scopedConversation], total: 1 });
+  vi.spyOn(api, 'getConversationControl').mockResolvedValue(control);
   vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
     conversation: scopedConversation,
     body_source: 'legacy',
@@ -251,7 +262,7 @@ describe('compact detail pane shell', () => {
   it('anchors source_unavailable Retry outside the body and keeps it disabled while retrying', async () => {
     const sourceUnavailable = 'Conversation source unavailable (source_unavailable).';
     const retry = deferred<ConversationPositionWindow>();
-    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    const scopedConversation = mockConversationDetail(defaultControl);
     vi.mocked(api.getConversationWindow)
       .mockRejectedValueOnce(new Error(sourceUnavailable))
       .mockImplementationOnce(() => retry.promise);
@@ -302,7 +313,7 @@ describe('compact detail pane shell', () => {
       createObjectURL: vi.fn(() => 'blob:conversation-markdown'),
       revokeObjectURL: vi.fn(),
     });
-    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    const scopedConversation = mockConversationDetail(defaultControl);
     renderConversationDetail(scopedConversation);
 
     await screen.findByRole('heading', { name: conversation.title! });
@@ -386,7 +397,7 @@ describe('compact detail pane shell', () => {
       if (this.classList.contains('conv-actions__menu')) return domRect(0, 0, 240, 280);
       return domRect(0, 0, 0, 0);
     });
-    const scopedConversation = mockConversationDetail(conversation.attach_state);
+    const scopedConversation = mockConversationDetail(defaultControl);
     renderConversationDetail(scopedConversation);
 
     await screen.findByRole('heading', { name: conversation.title! });
@@ -417,53 +428,49 @@ describe('compact detail pane shell', () => {
   it.each([
     {
       label: 'live',
-      attachState: {
-        kind: 'live-owned',
-        reason: 'owned',
-        console_session_id: 'console-live',
-        continuation: { kind: 'live-send', console_session_id: 'console-live' },
-        can_fork: false,
-        provider_session_id: 'provider-live',
-        checked_at: 2,
-      } satisfies ConversationAttachState,
-      badge: 'Live',
+      control: {
+        ...defaultControl,
+        revision: 2,
+        ownership: { kind: 'mandible', generation: 1, controller_instance_id: 'controller-1', adapter_id: 'codex', provider_session_id: 'provider-live', last_authoritative_signal: 2 },
+        controller: { kind: 'running', since: 2 },
+        turn: { kind: 'running', turn_id: 'turn-1', since: 2 },
+        capability: { kind: 'live-steer', revision: 2, generation: 1 },
+      } satisfies ConversationControlSnapshot,
+      badge: 'Running',
       hasComposer: true,
     },
     {
       label: 'external live',
-      attachState: {
-        kind: 'live-external',
-        reason: 'transcript-recent',
-        external_session_id: 'external-live',
-        continuation: { kind: 'blocked', reason: 'external-live', external_session_id: 'external-live' },
-        can_fork: true,
-        provider_session_id: 'provider-external',
-        checked_at: 2,
-      } satisfies ConversationAttachState,
+      control: {
+        ...defaultControl,
+        revision: 2,
+        ownership: { kind: 'external', generation: 1, evidence: { kind: 'registered-process', reference: 'external-live' }, last_authoritative_signal: 2 },
+        controller: { kind: 'unknown', since: 2, reason: 'probe-ambiguous' },
+        turn: { kind: 'unknown', turn_id: null, since: 2, reason: 'probe-ambiguous' },
+        capability: { kind: 'blocked-external', revision: 2, evidence_kind: 'registered-process' },
+      } satisfies ConversationControlSnapshot,
       badge: 'External',
       hasComposer: true,
     },
     {
-      label: 'resumable',
-      attachState: conversation.attach_state,
-      badge: 'Codex',
+      label: 'stopped',
+      control: defaultControl,
+      badge: 'Stopped',
       hasComposer: true,
     },
     {
       label: 'historical',
-      attachState: {
-        kind: 'historical',
-        reason: 'complete',
-        continuation: { kind: 'hidden', reason: 'unavailable' },
-        can_fork: false,
+      control: {
+        ...defaultControl,
         provider_session_id: null,
-        checked_at: 3,
-      } satisfies ConversationAttachState,
-      badge: 'History',
+        ownership: { kind: 'none', generation: 0 },
+        capability: { kind: 'unavailable', revision: 0, reason: 'no-provider-session' },
+      } satisfies ConversationControlSnapshot,
+      badge: 'Unavailable',
       hasComposer: false,
     },
-  ])('keeps the simplified header and footer contract in $label state', async ({ attachState, badge, hasComposer }) => {
-    const scopedConversation = mockConversationDetail(attachState);
+  ])('keeps the simplified header and footer contract in $label state', async ({ control, badge, hasComposer }) => {
+    const scopedConversation = mockConversationDetail(control);
     renderConversationDetail(scopedConversation);
 
     await screen.findByRole('heading', { name: conversation.title! });
@@ -476,10 +483,10 @@ describe('compact detail pane shell', () => {
     expect(header.querySelector('.detail-pane-header__identity')).toBeNull();
     expect(header.querySelector('.conv-info-button')).toBeNull();
     expect(Boolean(document.querySelector('.conv-compose'))).toBe(hasComposer);
-    if (attachState.kind === 'live-external') {
+    if (control.capability.kind === 'blocked-external') {
       expect(document.querySelectorAll('.conv-compose__hint')).toHaveLength(0);
       expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).disabled).toBe(true);
-      expect(document.querySelector('.conv-compose')?.textContent?.match(/Live in your terminal\./g)).toHaveLength(1);
+      expect(document.querySelector('.conv-compose')?.textContent).toContain('Another controller owns this provider session.');
     }
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     expect(screen.getByRole('menuitem', { name: 'View metadata' })).toBeTruthy();
@@ -488,7 +495,7 @@ describe('compact detail pane shell', () => {
   });
 
   it('keeps exact-anchor loading last-request-wins', async () => {
-    const scopedConversation = mockConversationDetail(conversation.attach_state, []);
+    const scopedConversation = mockConversationDetail(defaultControl, []);
     const initial = deferred<ConversationPositionWindow>();
     const exact = deferred<ConversationPositionWindow>();
     vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => (
@@ -520,7 +527,7 @@ describe('compact detail pane shell', () => {
   });
 
   it('re-resolves the true end when an append arrives during Jump to latest', async () => {
-    const scopedConversation = mockConversationDetail(conversation.attach_state, []);
+    const scopedConversation = mockConversationDetail(defaultControl, []);
     const firstLatest = deferred<ConversationPositionWindow>();
     const trueLatest = deferred<ConversationPositionWindow>();
     let latestCalls = 0;

@@ -354,35 +354,18 @@ export type WorkUnitWithLiveness = WorkUnit & {
   liveness: WorkUnitLiveness;
 };
 
-export type ConversationAttachKind = "live-owned" | "live-external" | "resumable" | "historical";
-export type ConversationAttachReason =
-  | "mandible-owned"
-  | "transcript-recent"
-  | "channel-fresh"
-  | "session-active"
-  | "provider-resumable"
-  | "subagent"
-  | "no-session"
-  | "unsupported-provider";
+export type {
+  AcceptedConversationSubmission,
+  ControllerOwnership,
+  ControllerState,
+  ConversationContinuationCapability,
+  ConversationControlError,
+  ConversationControlOperation,
+  ConversationControlSnapshot,
+  ConversationSubmitRequest,
+  TurnState,
+} from "./conversation-control/types.js";
 
-export type ConversationContinuationCapability =
-  | { kind: "live-send"; console_session_id: string }
-  | { kind: "provider-session-resume"; provider_session_id: string }
-  | { kind: "message-anchor-resume"; provider_session_id: string }
-  | { kind: "blocked"; reason: "external-live"; external_session_id: string | null }
-  | { kind: "hidden"; reason: "unavailable" };
-
-export type ConversationAttachState = {
-  kind: ConversationAttachKind;
-  reason: ConversationAttachReason;
-  continuation: ConversationContinuationCapability;
-  can_fork: boolean;
-  provider_session_id: string | null;
-  console_session_id?: string | null;
-  external_session_id?: string | null;
-  source_mtime?: number | null;
-  checked_at: number;
-};
 
 export type StoredConversationBlock = {
   id: string;
@@ -420,7 +403,6 @@ export type Conversation = {
   notes: string | null;
   parent_conversation_id: string | null;
   children_count: number;
-  attach_state: ConversationAttachState;
 };
 
 export type ConversationChild = {

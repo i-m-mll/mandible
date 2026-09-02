@@ -73,14 +73,6 @@ const conversation: ConversationSidebarConversation = {
   children_count: 0,
   canonical_project_id: null,
   canonical_project_key: null,
-  attach_state: {
-    kind: 'historical',
-    reason: 'no-session',
-    continuation: { kind: 'hidden', reason: 'unavailable' },
-    can_fork: false,
-    provider_session_id: null,
-    checked_at: 1,
-  },
 };
 
 const existingPinnedConversation: ConversationSidebarConversation = {

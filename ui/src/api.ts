@@ -53,7 +53,10 @@ import type {
   UpdateSpaceOccurrenceRequest,
   BatchSpaceOccurrenceEntry,
   BatchSpaceOccurrenceResponse,
-  ConversationAttachState as ContractConversationAttachState,
+  AcceptedConversationSubmission as ContractAcceptedConversationSubmission,
+  ConversationControlError as ContractConversationControlError,
+  ConversationControlOperation as ContractConversationControlOperation,
+  ConversationControlSnapshot as ContractConversationControlSnapshot,
   OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
   OperationalIncidentAttention as ContractOperationalIncidentAttention,
   OperationalIncidentCondition as ContractOperationalIncidentCondition,
@@ -2412,14 +2415,44 @@ export async function forkConversation(
   return (await parseMaybeJson(resp)) as { session_id: string };
 }
 
-export async function resumeConversation(
-  conversationId: string,
-  messageDagUuid?: string,
-  label?: string,
-  model?: string,
-  options: { fork?: boolean } = {},
-): Promise<{ console_session_id?: string; session_id?: string; attach_state?: ConversationAttachState }> {
-  const path = `/api/conversations/${encodeURIComponent(conversationId)}/resume`;
+export type ConversationControlSnapshot = ContractConversationControlSnapshot;
+export type ConversationControlOperation = ContractConversationControlOperation;
+export type ConversationControlError = ContractConversationControlError;
+export type AcceptedConversationSubmission = ContractAcceptedConversationSubmission;
+
+export type ConversationControlApiError = Error & {
+  status: number;
+  controlError: ConversationControlError;
+  snapshot: ConversationControlSnapshot | null;
+};
+
+export async function getConversationControl(conversationId: string): Promise<ConversationControlSnapshot> {
+  const response = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/control`);
+  const result = await parseMaybeJson(response) as
+    | { ok: true; value: ConversationControlSnapshot }
+    | { ok: false; error: ConversationControlError };
+  if (!result.ok) throw new Error(result.error.kind);
+  return result.value;
+}
+
+export async function submitConversationControl(
+  snapshot: ConversationControlSnapshot,
+  message: string,
+  messageAnchor?: string,
+): Promise<AcceptedConversationSubmission> {
+  const capability = snapshot.capability;
+  const operation: ConversationControlOperation = capability.kind === 'live-send'
+    ? 'send'
+    : capability.kind === 'live-steer'
+      ? 'steer'
+      : capability.kind === 'owned-queue'
+        ? 'queue'
+        : capability.kind === 'provider-session-resume'
+          ? 'resume-provider-session'
+          : capability.kind === 'message-anchor-resume'
+            ? 'resume-message-anchor'
+            : (() => { throw new Error(`Conversation control is ${capability.kind}`); })();
+  const path = `/api/conversations/${encodeURIComponent(snapshot.conversation_id)}/control/submit`;
   const response = await fetch(path, {
     method: 'POST',
     headers: {
@@ -2427,32 +2460,27 @@ export async function resumeConversation(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      ...(messageDagUuid ? { message_dag_uuid: messageDagUuid } : {}),
-      label,
-      ...(model ? { model } : {}),
-      ...(options.fork ? { fork: true } : {}),
+      operation,
+      expected_revision: capability.revision,
+      expected_generation: snapshot.ownership.generation,
+      message,
+      ...(operation === 'resume-message-anchor' ? { message_anchor: messageAnchor } : {}),
+      idempotency_key: crypto.randomUUID(),
     }),
   });
-  const payload = await parseMaybeJson(response) as {
-    console_session_id?: string;
-    session_id?: string;
-    attach_state?: ConversationAttachState;
-    error?: string;
-    reason?: string;
-    message?: string;
-    details?: string;
-  };
+  const payload = await parseMaybeJson(response) as
+    | { ok: true; value: AcceptedConversationSubmission }
+    | { ok: false; error: ConversationControlError; snapshot?: ConversationControlSnapshot | null };
   if (!response.ok) {
-    const message = payload.message || payload.error || `POST ${path} failed: ${response.status}`;
-    const error = new Error(message) as Error & {
-      status?: number;
-      body?: typeof payload;
-    };
+    const failed = payload as Extract<typeof payload, { ok: false }>;
+    const error = new Error(failed.error.kind) as ConversationControlApiError;
     error.status = response.status;
-    error.body = payload;
+    error.controlError = failed.error;
+    error.snapshot = failed.snapshot ?? null;
     throw error;
   }
-  return payload;
+  if (!payload.ok) throw new Error(payload.error.kind);
+  return payload.value;
 }
 
 // ── Work Units API — Bug: 8a281b3 ──
@@ -2726,7 +2754,6 @@ export type BlockType = ContractBlockType;
 export type Role = ContractRole;
 export type ConversationSource = ContractConversationSource;
 
-export type ConversationAttachState = ContractConversationAttachState;
 
 export type ConversationBlock = ContractConversationBlock;
 

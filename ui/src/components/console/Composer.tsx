@@ -21,6 +21,7 @@ type ComposerProps = {
   queuedPrompts: QueuedPrompt[];
   transportLabel: string;
   transportTitle?: string;
+  submitLabel?: string;
   usage?: ComposerUsage;
   modelSlot?: JSX.Element | null;
   contextSlot?: JSX.Element | null;
@@ -58,6 +59,7 @@ export function Composer({
   queuedPrompts,
   transportLabel,
   transportTitle,
+  submitLabel,
   usage,
   modelSlot,
   contextSlot,
@@ -176,9 +178,9 @@ export function Composer({
             type="submit"
             className="composer__button composer__button--send"
             disabled={!prompt.trim() || disabled}
-            aria-label={streaming ? 'Queue message' : 'Send message'}
+            aria-label={submitLabel ?? (streaming ? 'Queue message' : 'Send message')}
           >
-            {streaming ? 'Queue' : 'Send'}
+            {submitLabel ?? (streaming ? 'Queue' : 'Send')}
           </button>
         </div>
       </form>

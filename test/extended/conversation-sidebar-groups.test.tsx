@@ -65,7 +65,6 @@ function conversation(id: string, title: string, starred = false): ConversationS
     model: null, cli_version: null, is_sidechain: false, agent_id: null, starred,
     tags: [], notes: null, parent_conversation_id: null, children_count: 0,
     canonical_project_id: null, canonical_project_key: null,
-    attach_state: { kind: 'historical', reason: 'no-session', continuation: { kind: 'hidden', reason: 'unavailable' }, can_fork: false, provider_session_id: null, checked_at: 1 },
   };
 }
 
