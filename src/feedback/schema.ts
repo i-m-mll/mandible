@@ -84,6 +84,84 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     END`,
 ];
 
+/** Canonical storage for stable destination routes and idempotent composition receipts. */
+export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS briefing_destination_routes (
+    route_key TEXT PRIMARY KEY CHECK(trim(route_key) != ''),
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    heading TEXT NOT NULL CHECK(trim(heading) != ''),
+    composer_kind TEXT NOT NULL CHECK(composer_kind IN ('deterministic','agentic')),
+    active_template_version INTEGER NOT NULL CHECK(active_template_version > 0),
+    max_contributions INTEGER NOT NULL CHECK(max_contributions > 0),
+    max_document_bytes INTEGER NOT NULL CHECK(max_document_bytes > 0),
+    max_directives INTEGER NOT NULL CHECK(max_directives >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(group_id, logical_artifact_id, heading)
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_destination_templates (
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    version INTEGER NOT NULL CHECK(version > 0),
+    contribution_template TEXT NOT NULL,
+    slots_json TEXT NOT NULL CHECK(json_valid(slots_json) AND json_type(slots_json) = 'object'),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(route_key, version)
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_runs (
+    id TEXT PRIMARY KEY,
+    publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    task_identity TEXT NOT NULL CHECK(trim(task_identity) != ''),
+    run_id TEXT NOT NULL CHECK(trim(run_id) != ''),
+    run_key TEXT NOT NULL CHECK(trim(run_key) != ''),
+    request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),
+    source_key TEXT NOT NULL CHECK(trim(source_key) != ''),
+    source_cursor TEXT NOT NULL CHECK(trim(source_cursor) != ''),
+    source_health_json TEXT NOT NULL CHECK(json_valid(source_health_json) AND json_type(source_health_json) = 'object'),
+    quiet INTEGER NOT NULL CHECK(quiet IN (0,1)),
+    quiet_reason TEXT,
+    received_at INTEGER NOT NULL,
+    UNIQUE(publisher_user_id, task_identity, run_key),
+    CHECK((quiet = 1 AND quiet_reason IS NOT NULL) OR (quiet = 0 AND quiet_reason IS NULL))
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_inputs (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    agentic_markdown TEXT,
+    PRIMARY KEY(run_id, route_key)
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_contributions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    source_key TEXT NOT NULL CHECK(trim(source_key) != ''),
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    change_id TEXT NOT NULL CHECK(trim(change_id) != ''),
+    evidence_ref TEXT NOT NULL CHECK(trim(evidence_ref) != ''),
+    evidence_digest TEXT NOT NULL CHECK(length(evidence_digest) = 64),
+    occurred_at INTEGER NOT NULL,
+    slots_json TEXT NOT NULL CHECK(json_valid(slots_json) AND json_type(slots_json) = 'object'),
+    observed_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK(state IN ('pending','composed')),
+    proposal_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(publisher_user_id, source_key, route_key, change_id, evidence_digest)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_composition_contributions_pending
+    ON briefing_composition_contributions(route_key, state, created_at, id)`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_targets (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    outcome TEXT NOT NULL CHECK(outcome IN ('queued','unchanged','proposed')),
+    base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    proposal_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    PRIMARY KEY(run_id, group_id),
+    CHECK((outcome = 'proposed' AND proposal_bundle_id IS NOT NULL)
+      OR (outcome != 'proposed' AND proposal_bundle_id IS NULL))
+  )`,
+];
+
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */
 export const BRIEFING_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefings (
@@ -392,6 +470,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
   )`,
   ...BRIEFING_BUNDLE_SCHEMA_SQL,
   ...BRIEFING_GROUP_SCHEMA_SQL,
+  ...BRIEFING_COMPOSER_SCHEMA_SQL,
 ];
 
 export const CANONICAL_AGENT_DISPATCH_SQL = `CREATE TABLE agent_dispatch_events (
@@ -428,4 +507,6 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_submission_answers", "briefing_submission_annotations", "briefing_legacy_audit",
   "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
   "briefing_groups", "briefing_group_updates", "briefing_collection_sharing_receipts",
+  "briefing_destination_routes", "briefing_destination_templates", "briefing_composition_runs",
+  "briefing_composition_inputs", "briefing_composition_contributions", "briefing_composition_targets",
 ];

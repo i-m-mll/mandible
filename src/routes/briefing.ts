@@ -40,6 +40,11 @@ import {
 } from "../feedback/briefing-groups.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
+import {
+  BRIEFING_COMPOSITION_SCHEMA,
+  parseBriefingCompositionRequest,
+  publishBriefingCompositionRun,
+} from "../feedback/briefing-composer.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof ClientAuthzError || error instanceof BriefingStoreError) {
@@ -627,13 +632,37 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.post("/api/briefings/runs", (req, res) => {
     try {
       requireIdentity(req);
-      const request = parseBriefingRunRequest(req.body);
       const publisher = requireDurableAgentPublisher(db, req, {
         credentialCode: "briefing_publisher_credential_required",
         credentialMessage: "Briefing publication requires a durable API token, not a session credential.",
         agentCode: "briefing_publisher_agent_required",
         agentMessage: "Briefing publication requires an agent identity.",
       });
+      const schema = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? (req.body as Record<string, unknown>).schema : null;
+      if (schema === BRIEFING_COMPOSITION_SCHEMA) {
+        const request = parseBriefingCompositionRequest(req.body);
+        if (!publisherMayIngest(db, publisher.slug, request.task_identity, [request.source_health.source])) {
+          throw new ClientAuthzError(403, "source_namespace_forbidden",
+            `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);
+        }
+        const replayed = Boolean(db.prepare(
+          "SELECT 1 FROM briefing_composition_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
+        ).get(publisher.userId, request.task_identity, request.run_key));
+        const receipt = publishBriefingCompositionRun(db, request, publisher.userId);
+        if (!replayed) {
+          for (const target of receipt.targets) {
+            if (target.outcome === "proposed" && target.proposal_bundle_id) {
+              broadcast(BRIEFING_EVENTS.groupUpdateAdded, {
+                group_id: target.group_id, bundle_id: target.proposal_bundle_id,
+              });
+            }
+          }
+        }
+        sendJson(res, 200, receipt);
+        return;
+      }
+      const request = parseBriefingRunRequest(req.body);
       if (!publisherMayIngest(db, publisher.slug, request.task_identity, [request.source_health.source])) {
         throw new ClientAuthzError(403, "source_namespace_forbidden",
           `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);

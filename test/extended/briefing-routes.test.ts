@@ -17,6 +17,7 @@ import { broadcast } from "../../src/sse.js";
 import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings.js";
 import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
 import { createBriefingGroup } from "../../src/feedback/briefing-groups.js";
+import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 
 class SlugGate implements ClientAuthGate {
@@ -567,6 +568,47 @@ describe("plural Briefing routes", () => {
     expect(vi.mocked(broadcast)).toHaveBeenCalledTimes(2);
     expect((await router.invoke({ method: "POST", url: "/api/briefing/ingest", body: payload(), credential: "agent-schedule" })).status).toBe(404);
     expect((await router.invoke({ method: "GET", url: "/api/asks/anything", credential: "human" })).status).toBe(404);
+  });
+
+  it("dispatches normalized composition runs through the idempotent plural run endpoint", async () => {
+    const source = "# Project\n\n## Maintenance\n\nExisting.\n";
+    const artifact = recordArtifactVersion(db, { source_kind: "managed", content: source,
+      series_key: "test:route-composer", logical_name: "Project.md", role: "briefing-document",
+      media_type: "text/markdown" });
+    const published = publishBriefingFromArtifactVersion(db, { briefing_key: "route-composer-base",
+      title: "Project", artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3",
+      responder_user_ids: [humanId] });
+    if (published.outcome === "active_candidates") throw new Error("base publication unexpectedly conflicted");
+    const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?").get(artifact.version.id) as
+      { artifact_id: string };
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Project Base",
+      briefingRefs: [published.briefing_id], viewer });
+    const group = createBriefingGroup(db, { name: "Project", currentBundleRef: bundle.id,
+      bundleRefs: [], viewer });
+    registerBriefingDestinationRoute(db, { route_key: "projects.example.maintenance", group_ref: group.id,
+      logical_artifact_id: logical.artifact_id, heading: "Maintenance", composer_kind: "deterministic",
+      template_version: 1, contribution_template: "- {{summary}} ([evidence]({{evidence_ref}}))",
+      slots: { summary: { type: "string", required: true, max_length: 200 } },
+      limits: { max_contributions: 10, max_document_bytes: 10_000, max_directives: 0 } });
+    const body = {
+      schema: "mandible-briefing-composition@1", task_identity: "agent-schedule/daily-digest",
+      run_id: "composition-run", run_key: "composition-key",
+      source: { key: "repo-maintenance", cursor: "cursor-1" },
+      source_health: { source: "arxiv-scan", status: "healthy", detail: null, observed_at: 1 },
+      responder_user_ids: [humanId], quiet_reason: null,
+      inputs: [{ route_key: "projects.example.maintenance",
+        expected_base_artifact_version_ref: artifact.version.id, agentic_markdown: null }],
+      contributions: [{ route_key: "projects.example.maintenance", change_id: "change-1",
+        evidence_ref: "issue:abc1234", evidence_digest: "a".repeat(64), occurred_at: 1,
+        slots: { summary: "Prune stale branches" } }],
+    };
+    const first = await router.invoke({ method: "POST", url: "/api/briefings/runs",
+      body, credential: "agent-schedule" });
+    expect(first).toMatchObject({ status: 200, body: { run_id: "composition-run", quiet: false,
+      targets: [{ group_id: group.id, outcome: "proposed", proposal_bundle_id: expect.any(String) }] } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings/runs",
+      body, credential: "agent-schedule" })).toEqual(first);
   });
 
   it("lists logical identities, selects rounds, and executes the actor-scoped answer/submit family", async () => {

@@ -1,6 +1,7 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { BRIEFING_COMPOSER_SCHEMA_SQL } from "./feedback/schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -521,6 +522,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 163,
     name: "authoritative_conversation_control",
     statements: [...CONVERSATION_CONTROL_SCHEMA_SQL],
+  },
+  {
+    version: 164,
+    name: "base_relative_briefing_composer",
+    statements: [...BRIEFING_COMPOSER_SCHEMA_SQL],
   },
 ];
 
