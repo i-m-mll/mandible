@@ -522,6 +522,28 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "authoritative_conversation_control",
     statements: [...CONVERSATION_CONTROL_SCHEMA_SQL],
   },
+  {
+    version: 164,
+    name: "bounded_ledger_change_feed",
+    statements: [
+      `CREATE TABLE ledger_change_feed_state (
+        project_id TEXT PRIMARY KEY REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        next_sequence INTEGER NOT NULL DEFAULT 1 CHECK(next_sequence >= 1),
+        retained_from_sequence INTEGER NOT NULL DEFAULT 1 CHECK(retained_from_sequence >= 1),
+        updated_at INTEGER NOT NULL,
+        CHECK(retained_from_sequence <= next_sequence)
+      )`,
+      `CREATE TABLE ledger_change_log (
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        sequence INTEGER NOT NULL CHECK(sequence >= 1),
+        event_id TEXT NOT NULL UNIQUE,
+        recorded_at INTEGER NOT NULL,
+        PRIMARY KEY(project_id, sequence)
+      )`,
+      `CREATE INDEX idx_ledger_change_log_event
+        ON ledger_change_log(event_id)`,
+    ],
+  },
 ];
 
 /**

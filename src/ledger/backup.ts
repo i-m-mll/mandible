@@ -17,6 +17,8 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_issue_relationship_sources",
   "ledger_relationship_edges",
   "ledger_events",
+  "ledger_change_feed_state",
+  "ledger_change_log",
   "ledger_reconciliation_reports",
   "ledger_reconciliation_mismatches",
   "ledger_work_unit_issue_links",

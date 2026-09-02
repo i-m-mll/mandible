@@ -36,6 +36,7 @@ const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DE
   ["GET", "/api/issues"],
   ["POST", "/api/issues/resolutions"],
   ["GET", "/api/ledger/issues/:issueId"],
+  ["GET", "/api/ledger/changes"],
   ["PATCH", "/api/ledger/issues/:issueId"],
   ["GET", "/api/ledger/issues/:issueId/umbrella-status"],
   ["POST", "/api/ledger/issues/:issueId/umbrella-adopt"],
