@@ -12,6 +12,7 @@ import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { EntityTimestamps } from '../components/shared/EntityTimestamps';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
@@ -84,6 +85,7 @@ export type AuthRequest = {
   issue_closures?: string[] | null;
   issue_ids?: string[] | null;
   created_at?: string | number;
+  updated_at?: string | number;
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
   depends_on_id?: string | null;
@@ -424,7 +426,7 @@ function actionPayloadSummary(action: AuthRequestAction): string {
     case 'issue_close':
       return payload.reason_comment
         ? `Reason: ${truncateSummary(String(payload.reason_comment), 160)}`
-        : 'Close target issue';
+        : '';
     case 'worker_status_set':
       return `Set to ${String(payload.value ?? '')}`;
     case 'label_add':
@@ -554,42 +556,49 @@ function AuthActionBundle({
           const title = (action as AuthRequestAction & { target_issue_title?: string }).target_issue_title
             ?? targetTitles[action.target_issue_ref]
             ?? '';
-          const expanded = expandedIds.has(action.id);
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
           const detail = action.outcome_detail || actionPayloadSummary(action);
+          const canExpand = Boolean(detail);
+          const expanded = canExpand && expandedIds.has(action.id);
+          const summary = action.kind === 'issue_close' ? title : actionPayloadSummary(action);
           return (
             <div
               key={action.id}
               className={`auth-action-row auth-action-row--${action.state}${expanded ? ' auth-action-row--expanded' : ''}`}
               title={action.outcome_detail ?? undefined}
             >
-              <button
-                type="button"
-                className="auth-action-row__expand"
-                aria-expanded={expanded}
-                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
-                onClick={() => toggleExpanded(action.id)}
-              >
-                <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
-                  {'\u25B8'}
-                </span>
-              </button>
+              {canExpand ? (
+                <button
+                  type="button"
+                  className="auth-action-row__expand"
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                  onClick={() => toggleExpanded(action.id)}
+                >
+                  <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
+                    {'\u25B8'}
+                  </span>
+                </button>
+              ) : (
+                <span className="auth-action-row__expand-placeholder" aria-hidden="true" />
+              )}
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
-                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
+                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}:</span>
                   <EntityPill
                     type="issue"
                     id={action.target_issue_ref}
                     repoId={repoId}
-                    label={title ? `${action.target_issue_ref} · ${title}` : action.target_issue_ref}
                   />
-                  <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
-                    {actionStateLabel(action.state)}
-                  </span>
+                  {action.state !== 'staged' && (
+                    <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
+                      {actionStateLabel(action.state)}
+                    </span>
+                  )}
                 </div>
-                <div className="auth-action-row__summary">{actionPayloadSummary(action)}</div>
+                {summary && <div className="auth-action-row__summary">{summary}</div>}
                 {expanded && detail && (
                   <div className="auth-action-row__detail">{detail}</div>
                 )}
@@ -720,7 +729,6 @@ function AuthRequestDetail({
   history,
   failureSummary,
   attemptCount,
-  timestampLabel,
   branchMerged,
   actionBundle,
   actions,
@@ -732,7 +740,6 @@ function AuthRequestDetail({
   history?: boolean;
   failureSummary?: string | null;
   attemptCount?: number | null;
-  timestampLabel?: string;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
   actions?: JSX.Element | null;
@@ -845,10 +852,6 @@ function AuthRequestDetail({
     }
   }, [showConsole, consoleText]);
 
-  const effectiveTimestampLabel = timestampLabel ?? (history
-    ? getResolvedTimestampLabel(request)
-    : getSubmissionTimestampLabel(request));
-
   const authType = getAuthType(request);
   const typeMeta = AUTH_TYPE_META[authType];
   const showDiffStats = typeHasDiffStats(authType);
@@ -857,11 +860,13 @@ function AuthRequestDetail({
   const statsSummary = showDiffStats && hasStats
     ? `${formatNumber(stats.files ?? 0)} files · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
     : null;
-  const primarySubtitle = [statsSummary, effectiveTimestampLabel].filter(Boolean).join(' · ');
-  const flowText = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : commitBranch;
-  const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
   const shortRef = requestHash || 'unknown';
   const requester = request.requester ?? null;
+  const requesterDisplayName = requester?.display_name
+    ? /^(codex|claude(?: code)?)$/i.test(requester.display_name.trim())
+      ? requester.display_name.toLowerCase().startsWith('codex') ? 'codex' : 'claude'
+      : requester.display_name
+    : null;
   const approver = request.approver ?? null;
   // A daemon that predates `merge_signature` sends nothing; absent evidence is
   // "none", never "verified".
@@ -938,6 +943,7 @@ function AuthRequestDetail({
         <MetadataRow label="Head branch" value={headBranch ?? null} />
         <MetadataRow label="Base branch" value={baseBranch ?? null} />
         <MetadataRow label="Created" value={createdAt} />
+        <MetadataRow label="Updated" value={formatMetadataTimestamp(request.updated_at ?? null)} />
         <MetadataRow label="Last executed" value={lastExecutedAt} />
         <MetadataRow label="Resolved" value={resolvedAt} />
         <MetadataRow label="Approval source" value={request.approval_source ?? null} />
@@ -1035,23 +1041,29 @@ function AuthRequestDetail({
           secondaryMetadata={(
             <div className="auth-detail__secondary-metadata">
               <div className="auth-detail__subtitle">
-                <span>{primarySubtitle}</span>
+                <span className="auth-detail__primary-metadata">
+                  {statsSummary && <span>{statsSummary}</span>}
+                  <EntityTimestamps
+                    createdAt={request.created_at}
+                    updatedAt={request.updated_at}
+                  />
+                  {requesterDisplayName && (
+                    <span className="auth-detail__requester-name">{requesterDisplayName}</span>
+                  )}
+                </span>
                 <span className="auth-detail__subtitle-line">
-                  {typeSubtitle}
+                  {typeMeta.label.toLowerCase()}
+                  {(headBranch && baseBranch) ? (
+                    <>
+                      {' · '}<code>{headBranch}</code>{' \u2192 '}<code>{baseBranch}</code>
+                    </>
+                  ) : commitBranch ? (
+                    <>{' · '}<code>{commitBranch}</code></>
+                  ) : null}
                 </span>
               </div>
-              {(requester || approver || signatureClaim.state !== 'none') && (
+              {(approver || signatureClaim.state !== 'none') && (
                 <div className="auth-detail__attribution" aria-label="Auth attribution">
-                  {requester && (
-                    <div>
-                      Requested by{' '}
-                      <AttributionIdentity
-                        display={requester.display_name}
-                        user={requester}
-                        source="auth_queue"
-                      />
-                    </div>
-                  )}
                   {approver && (
                     <div>
                       Approved by{' '}
@@ -1082,7 +1094,7 @@ function AuthRequestDetail({
                       className="auth-card__link"
                       href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
                     >
-                      Session
+                      Requesting session
                     </a>
                   )}
                   {referenceRefs.length > 0 && canIssueLink && (

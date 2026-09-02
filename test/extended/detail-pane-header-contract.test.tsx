@@ -5,15 +5,43 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DetailPaneHeader } from '../../ui/src/components/shared/DetailPaneHeader.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
+import { EntityTimestamps } from '../../ui/src/components/shared/EntityTimestamps.js';
 import { shortIdentityRef } from '../../ui/src/identity-refs.js';
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   document.head.querySelector('[data-test-compact-header-styles]')?.remove();
 });
 
 describe('canonical detail pane header', () => {
+  it('labels creation explicitly and leads with a distinct update time', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));
+    const now = Date.now();
+
+    const { rerender } = render(
+      <EntityTimestamps
+        createdAt={now - (20 * 60 * 1000)}
+        updatedAt={now - (20 * 60 * 1000)}
+      />,
+    );
+
+    expect(screen.getByText('created 20m ago')).toBeTruthy();
+    expect(screen.queryByText(/updated/)).toBeNull();
+
+    rerender(
+      <EntityTimestamps
+        createdAt={now - (2 * 60 * 60 * 1000)}
+        updatedAt={now - (5 * 60 * 1000)}
+      />,
+    );
+
+    expect(document.body.textContent).toContain('updated 5m ago · created 2h ago');
+    expect(document.querySelectorAll('time')).toHaveLength(2);
+  });
+
   it('renders standard semantics while keeping exact authority internal and copying the short ref', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
@@ -53,6 +81,9 @@ describe('canonical detail pane header', () => {
     expect(header.textContent).not.toContain(canonicalRef);
     expect(within(header).getByRole('group', { name: 'Detail actions' })).toBeTruthy();
     expect(within(body).queryByRole('group', { name: 'Detail actions' })).toBeNull();
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+    expect(css).toMatch(/\.detail-pane-header--standard \.detail-pane-header__topline-controls\s*\{[^}]*display:\s*flex;[^}]*margin-left:\s*auto;/s);
 
     fireEvent.click(within(header).getByRole('button', { name: 'Copy Issue reference' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('mandible/087857e'));

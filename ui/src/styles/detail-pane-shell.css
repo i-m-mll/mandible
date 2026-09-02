@@ -156,6 +156,18 @@
   display: contents;
 }
 
+.detail-pane-header--standard .detail-pane-header__topline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.detail-pane-header--standard .detail-pane-header__selector {
+  margin-left: 0;
+}
+
 .detail-pane-header__selector {
   gap: 8px;
   margin-left: auto;

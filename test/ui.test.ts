@@ -2469,6 +2469,48 @@ describe('SettingsView', () => {
 });
 
 describe('AuthQueueView', () => {
+  it('renders explicit entity times, requester name, branch code, and a clear session link in the header', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));
+    const now = Date.now();
+
+    render(
+      h(AuthQueueView, {
+        queue: [{
+          id: 'req-header',
+          title: 'Explicit header metadata',
+          type: 'merge',
+          repo: 'mandible',
+          base_branch: 'main',
+          head_branch: 'feature/header-metadata',
+          status: 'pending',
+          created_at: now - (2 * 60 * 60 * 1000),
+          updated_at: now - (5 * 60 * 1000),
+          session_id: 'session-123',
+          requester: { id: 'user-codex', display_name: 'Codex', kind: 'agent' },
+        }],
+        outputs: {},
+        selectedAuthId: 'req-header',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    const header = document.querySelector('.auth-detail__header') as HTMLElement;
+    const primaryMetadata = header.querySelector('.auth-detail__primary-metadata') as HTMLElement;
+    expect(primaryMetadata.textContent).toContain('updated 5m ago · created 2h ago');
+    expect(within(primaryMetadata).getByText('codex')).toBeTruthy();
+    expect(primaryMetadata.children).toHaveLength(2);
+    expect(header.textContent).not.toContain('Requested by');
+    expect(within(header).getByRole('link', { name: 'Requesting session' })).toBeTruthy();
+    const branchLine = header.querySelector('.auth-detail__subtitle-line') as HTMLElement;
+    expect(Array.from(branchLine.querySelectorAll('code')).map((node) => node.textContent)).toEqual([
+      'feature/header-metadata',
+      'main',
+    ]);
+    expect(branchLine.textContent).toBe('merge · feature/header-metadata → main');
+  });
+
   it('navigates between sidebar items', async () => {
     stubFetch();
     render(
@@ -2565,11 +2607,15 @@ describe('AuthQueueView', () => {
     expect(rightColumn?.querySelector('.auth-action-bundle')).toBeTruthy();
     expect(rightColumn?.textContent).toContain('On merge...');
     expect(rightColumn?.textContent).not.toContain('Commit Message');
-    expect(screen.getByText('Close issue')).toBeTruthy();
+    expect(screen.getByText('Close issue:')).toBeTruthy();
     expect(screen.getByText('Closeout comment body')).toBeTruthy();
     expect(screen.getByText('Add merged')).toBeTruthy();
     expect(screen.getByText('Set to done')).toBeTruthy();
-    await waitFor(() => expect(screen.getByText('abc123 · Close umbrella')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Close umbrella')).toBeTruthy());
+    const closeRow = screen.getByText('Close issue:').closest('.auth-action-row') as HTMLElement;
+    expect(within(closeRow).getByText('abc123')).toBeTruthy();
+    expect(closeRow.textContent).not.toContain('Close target issue');
+    expect(closeRow.textContent).not.toContain('Staged');
   });
 
   it('renders canonical commit messages through sanitized Markdown without an authorship badge', () => {
