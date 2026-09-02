@@ -2,6 +2,7 @@ import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baselin
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 import { BRIEFING_COMPOSER_SCHEMA_SQL } from "./feedback/schema.js";
+import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -549,6 +550,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 165,
     name: "base_relative_briefing_composer",
     statements: [...BRIEFING_COMPOSER_SCHEMA_SQL],
+  },
+  {
+    version: 166,
+    name: "task_activation_health",
+    statements: [...TASK_ACTIVATION_SCHEMA_SQL],
   },
 ];
 

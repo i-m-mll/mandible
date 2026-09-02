@@ -2,6 +2,7 @@ import type { Db } from "./db.js";
 import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 /**
  * The Mandible schema. This file is the single representation of the head shape
@@ -13,7 +14,7 @@ import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.j
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 165;
+export const BASELINE_SCHEMA_VERSION = 166;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -683,6 +684,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
   `CREATE INDEX idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`,
+  ...TASK_ACTIVATION_SCHEMA_SQL,
   TASK_COMMAND_REQUESTS_V2_SQL,
   TASK_COMMAND_V2_INDEX_SQL[0],
   TASK_COMMAND_EVENTS_V2_SQL,

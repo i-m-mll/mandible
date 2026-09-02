@@ -845,6 +845,8 @@ export type DashboardBadgeCounts = {
    * reason as `briefing` — absent means "not reported", not "zero".
    */
   incidents?: number;
+  /** Active deployment-invalidated task/execution-hash conditions. */
+  tasks?: number;
 };
 
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
@@ -5013,6 +5015,9 @@ import {
   type TaskCommandState,
   type TaskCommandVerb,
   type TaskActivationFacts,
+  type TaskActivationCondition,
+  type TaskActivationHealthFacts,
+  type TaskActivationObservation,
   type TaskBundleFacts,
   type TaskCircuitState,
   type TaskConfigFacts,
@@ -5039,6 +5044,9 @@ export {
 };
 export type {
   TaskActivationFacts,
+  TaskActivationCondition,
+  TaskActivationHealthFacts,
+  TaskActivationObservation,
   TaskBundleFacts,
   TaskConfigFacts,
   TaskExecutorFreshness,
@@ -5064,6 +5072,16 @@ const TASK_KILL_SWITCH_STATES: readonly TaskKillSwitchState[] = ['engaged', 'cle
 const TASK_STALENESS_CLAIMS: readonly TaskStalenessClaim[] = ['fresh', 'stale'];
 const TASK_RUN_OUTCOMES: readonly TaskRunOutcome[] = ['success', 'failure', 'timeout', 'cancelled'];
 const TASK_FRESHNESS: readonly TaskExecutorFreshness[] = ['current', 'stale', 'unknown'];
+const TASK_ACTIVATION_STATES = [
+  'never_activated', 'activated', 'operator_disabled', 'deployment_invalidated',
+] as const;
+const TASK_ACTIVATION_REASONS = [
+  'never_activated', 'operator_enabled', 'operator_disabled', 'execution_hash_changed',
+] as const;
+const TASK_ACTIVATION_ACTIONS = ['none', 'dry_run', 'enable'] as const;
+const TASK_EXECUTOR_HEALTH_CONDITIONS = [
+  'healthy', 'no_active_bundle', 'bundle_link_mismatch', 'execution_path_mismatch',
+] as const;
 
 /** Default horizon used only when the server omits `stale_after_ms`. */
 export const TASK_INVENTORY_DEFAULT_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
@@ -5102,9 +5120,83 @@ function normalizeTaskBundle(value: unknown): TaskBundleFacts | typeof TASK_INVE
 
 function normalizeTaskActivation(value: unknown): TaskActivationFacts {
   const row = briefingRecord(value);
-  return {
+  const legacy = {
     config_enabled: taskMaybeBoolean(row.config_enabled),
     locally_activated: taskMaybeBoolean(row.locally_activated),
+  };
+  const state = taskMaybeEnum(row.state, TASK_ACTIVATION_STATES);
+  const reason = taskMaybeEnum(row.reason, TASK_ACTIVATION_REASONS);
+  const requiredAction = taskMaybeEnum(row.required_action, TASK_ACTIVATION_ACTIONS);
+  if (state === TASK_INVENTORY_UNKNOWN
+    || reason === TASK_INVENTORY_UNKNOWN
+    || requiredAction === TASK_INVENTORY_UNKNOWN) return legacy;
+  return {
+    ...legacy,
+    state,
+    reason,
+    changed_at: row.changed_at === 'none' ? 'none' : taskMaybeNumber(row.changed_at),
+    previous_execution_hash: row.previous_execution_hash === 'none'
+      ? 'none' : taskMaybeString(row.previous_execution_hash),
+    required_execution_hash: row.required_execution_hash === 'none'
+      ? 'none' : taskMaybeString(row.required_execution_hash),
+    deployment_commit: row.deployment_commit === 'none'
+      ? 'none' : taskMaybeString(row.deployment_commit),
+    deployment_content_hash: row.deployment_content_hash === 'none'
+      ? 'none' : taskMaybeString(row.deployment_content_hash),
+    deployed_at: row.deployed_at === 'none' ? 'none' : taskMaybeNumber(row.deployed_at),
+    required_action: requiredAction,
+    attention: row.attention === 'important' ? 'important' : 'none',
+  } as TaskActivationHealthFacts;
+}
+
+function normalizeTaskExecutorHealth(value: unknown): ContractTaskExecutorSummary['health'] {
+  const row = briefingRecord(value);
+  const condition = taskMaybeEnum(row.condition, TASK_EXECUTOR_HEALTH_CONDITIONS);
+  if (condition === TASK_INVENTORY_UNKNOWN) return undefined;
+  const status = condition === 'healthy' ? 'healthy' : 'operational_failure';
+  const attention = condition === 'healthy' ? 'none' : 'important';
+  if (row.status !== status || row.attention !== attention) return undefined;
+  return { status, condition, attention };
+}
+
+function normalizeActivationObservation(value: unknown): TaskActivationObservation | null {
+  const row = briefingRecord(value);
+  const id = briefingOptionalString(row.id);
+  const generationId = briefingOptionalString(row.generation_id);
+  const state = taskMaybeEnum(row.state, TASK_ACTIVATION_STATES);
+  const reason = taskMaybeEnum(row.reason, TASK_ACTIVATION_REASONS);
+  const facts = normalizeTaskActivation(row.facts);
+  if (!id || !generationId || state === TASK_INVENTORY_UNKNOWN
+    || reason === TASK_INVENTORY_UNKNOWN || !('state' in facts)) return null;
+  return {
+    id,
+    generation_id: generationId,
+    state,
+    reason,
+    observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
+    recorded_at: briefingOptionalNumber(row.recorded_at) ?? 0,
+    facts,
+  };
+}
+
+function normalizeActivationCondition(value: unknown): TaskActivationCondition | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = briefingRecord(value);
+  const id = briefingOptionalString(row.id);
+  const dedupeKey = briefingOptionalString(row.dedupe_key);
+  const executionHash = briefingOptionalString(row.required_execution_hash);
+  if (!id || !dedupeKey || !executionHash || !/^[0-9a-f]{64}$/.test(executionHash)) return null;
+  return {
+    id,
+    dedupe_key: dedupeKey,
+    required_execution_hash: executionHash,
+    attention: 'important',
+    state: 'active',
+    next_action: row.next_action === 'enable' ? 'enable' : 'dry_run',
+    raised_at: briefingOptionalNumber(row.raised_at) ?? 0,
+    resolved_at: null,
+    resolution: null,
+    enable_command_id: null,
   };
 }
 
@@ -5188,10 +5280,12 @@ function normalizeTaskExecutorSummary(value: unknown): TaskExecutorSummary | nul
   const row = briefingContractRecord<ContractTaskExecutorSummary>(value);
   const name = briefingOptionalString(row.name);
   if (!name) return null;
+  const health = normalizeTaskExecutorHealth(row.health);
   return {
     name,
     version: taskMaybeString(row.version),
     capabilities: briefingStringArray(row.capabilities),
+    ...(health ? { health } : {}),
     observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
     observed_age_ms: briefingOptionalNumber(row.observed_age_ms) ?? 0,
     freshness: taskMaybeEnum(row.freshness, TASK_FRESHNESS) === TASK_INVENTORY_UNKNOWN
@@ -5242,6 +5336,12 @@ function normalizeTaskInventoryItem(value: unknown): TaskInventoryItem | null {
     observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
     observed_age_ms: briefingOptionalNumber(row.observed_age_ms) ?? 0,
     task,
+    activation_condition: normalizeActivationCondition(row.activation_condition),
+    activation_history: Array.isArray(row.activation_history)
+      ? row.activation_history
+        .map(normalizeActivationObservation)
+        .filter((entry): entry is TaskActivationObservation => entry !== null)
+      : [],
   };
 }
 

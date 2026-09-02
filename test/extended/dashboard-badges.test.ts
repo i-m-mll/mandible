@@ -50,6 +50,7 @@ describe("dashboard badge aggregate", () => {
       work: 1,
       briefing: 0,
       incidents: 0,
+      tasks: 0,
     });
   });
 
@@ -61,7 +62,7 @@ describe("dashboard badge aggregate", () => {
 
     expect(response).toEqual({
       status: 200,
-      body: { auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0 },
+      body: { auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 },
     });
   });
 

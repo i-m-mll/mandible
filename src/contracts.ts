@@ -1234,9 +1234,11 @@ export function isBriefingEvent(value: unknown): value is BriefingEvent {
 // The publisher-facing spec is docs/executor-inventory-contract.md.
 
 export const TASK_INVENTORY_SCHEMA_V1 = 'executor-inventory@1';
-export const TASK_INVENTORY_SCHEMA = 'executor-inventory@2';
+export const TASK_INVENTORY_SCHEMA_V2 = 'executor-inventory@2';
+export const TASK_INVENTORY_SCHEMA = 'executor-inventory@3';
 export type TaskInventorySchema =
   | typeof TASK_INVENTORY_SCHEMA_V1
+  | typeof TASK_INVENTORY_SCHEMA_V2
   | typeof TASK_INVENTORY_SCHEMA;
 
 /** The literal an executor sends when it cannot answer a field. */
@@ -1276,9 +1278,50 @@ export type TaskBundleFacts = {
  * conflate: what the checked-in configuration asks for, and what this host is
  * actually running right now.
  */
-export type TaskActivationFacts = {
+export type TaskActivationLegacyFacts = {
   config_enabled: TaskInventoryMaybe<boolean>;
   locally_activated: TaskInventoryMaybe<boolean>;
+};
+
+export type TaskActivationState =
+  | 'never_activated'
+  | 'activated'
+  | 'operator_disabled'
+  | 'deployment_invalidated';
+export type TaskActivationReason =
+  | 'never_activated'
+  | 'operator_enabled'
+  | 'operator_disabled'
+  | 'execution_hash_changed';
+export type TaskActivationAction = 'none' | 'dry_run' | 'enable';
+export type TaskAttention = 'none' | 'important';
+
+/** The v3 state machine and the deployment transition that produced it. */
+export type TaskActivationHealthFacts = TaskActivationLegacyFacts & {
+  state: TaskActivationState;
+  reason: TaskActivationReason;
+  changed_at: TaskInventoryMaybe<number | 'none'>;
+  previous_execution_hash: string | 'none';
+  required_execution_hash: string | 'none';
+  deployment_commit: string | 'none';
+  deployment_content_hash: string | 'none';
+  deployed_at: TaskInventoryMaybe<number | 'none'>;
+  required_action: TaskActivationAction;
+  attention: TaskAttention;
+};
+
+export type TaskActivationFacts = TaskActivationLegacyFacts | TaskActivationHealthFacts;
+
+export type TaskExecutorHealthCondition =
+  | 'healthy'
+  | 'no_active_bundle'
+  | 'bundle_link_mismatch'
+  | 'execution_path_mismatch';
+
+export type TaskExecutorHealth = {
+  status: 'healthy' | 'operational_failure';
+  condition: TaskExecutorHealthCondition;
+  attention: TaskAttention;
 };
 
 /** Executor-reported configuration that determines what fires and how. */
@@ -1353,6 +1396,8 @@ export type TaskExecutorIdentity = {
   version: TaskInventoryMaybe<string>;
   /** Free-form capability tokens; empty array means "declared none". */
   capabilities: string[];
+  /** Absent only on preserved executor-inventory@1/@2 generations. */
+  health?: TaskExecutorHealth;
 };
 
 /** One atomic inventory generation, exactly as posted. */
@@ -1382,6 +1427,8 @@ export type TaskExecutorSummary = {
   name: string;
   version: TaskInventoryMaybe<string>;
   capabilities: string[];
+  /** Absent only when the selected generation predates executor-inventory@3. */
+  health?: TaskExecutorHealth;
   observed_at: number;
   observed_age_ms: number;
   freshness: TaskExecutorFreshness;
@@ -1394,6 +1441,29 @@ export type TaskExecutorSummary = {
   task_count: number;
 };
 
+export type TaskActivationObservation = {
+  id: string;
+  generation_id: string;
+  state: TaskActivationState;
+  reason: TaskActivationReason;
+  observed_at: number;
+  recorded_at: number;
+  facts: TaskActivationHealthFacts;
+};
+
+export type TaskActivationCondition = {
+  id: string;
+  dedupe_key: string;
+  required_execution_hash: string;
+  attention: 'important';
+  state: 'active' | 'resolved' | 'superseded';
+  next_action: 'dry_run' | 'enable';
+  raised_at: number;
+  resolved_at: number | null;
+  resolution: 'matching_dry_run_and_enable' | null;
+  enable_command_id: string | null;
+};
+
 /** A task as reported by its executor, carrying that executor's view age. */
 export type ExecutorTaskInventoryView = {
   source_kind: 'executor';
@@ -1404,6 +1474,8 @@ export type ExecutorTaskInventoryView = {
   observed_at: number;
   observed_age_ms: number;
   task: TaskInventoryEntry;
+  activation_condition: TaskActivationCondition | null;
+  activation_history: TaskActivationObservation[];
 };
 
 /** A first-party reminder projected beside executor-owned tasks. */
@@ -1435,7 +1507,11 @@ export const TASK_INVENTORY_EVENTS = Object.freeze({
 
 // --- operational incidents (issue 5308097) ---------------------------------
 
-export const OPERATIONAL_INCIDENT_SCHEMA = 'operational-incidents@1';
+export const OPERATIONAL_INCIDENT_SCHEMA_V1 = 'operational-incidents@1';
+export const OPERATIONAL_INCIDENT_SCHEMA = 'operational-incidents@2';
+export type OperationalIncidentSchema =
+  | typeof OPERATIONAL_INCIDENT_SCHEMA_V1
+  | typeof OPERATIONAL_INCIDENT_SCHEMA;
 export const OPERATIONAL_INCIDENT_RECEIPT_SCHEMA = 'operational-incidents-receipt@1';
 
 export type OperationalIncidentCondition =
@@ -1488,10 +1564,10 @@ export type OperationalIncidentTelemetryEvent = {
 };
 
 export type OperationalIncidentIngestEnvelope = {
-  schema: typeof OPERATIONAL_INCIDENT_SCHEMA;
+  schema: OperationalIncidentSchema;
   executor: { name: string; version: string };
   generation: {
-    inventory_schema: 'executor-inventory@2';
+    inventory_schema: 'executor-inventory@2' | 'executor-inventory@3';
     inventory_digest: string;
     observed_at: number;
   };
@@ -1528,7 +1604,7 @@ export type OperationalIncidentProjection = {
     label: 'Executor-reported; not verified by Mandible';
     value: 'executor_asserted_unverified';
   };
-  latest_telemetry: { schema: typeof OPERATIONAL_INCIDENT_SCHEMA; event: unknown };
+  latest_telemetry: { schema: OperationalIncidentSchema; event: unknown };
   latest_telemetry_sha256: string;
   latest_observed_at: number;
   recovered_at: number | null;

@@ -10,7 +10,7 @@ import {
   TASK_COMMAND_EVENT_SCHEMA_V1,
   TASK_COMMAND_SCHEMA,
   TASK_COMMAND_SCHEMA_V1,
-  TASK_INVENTORY_SCHEMA,
+  TASK_INVENTORY_SCHEMA_V2,
   type TaskCommand,
 } from "../../src/contracts.js";
 import { migrate, setDb, type Db } from "../../src/db.js";
@@ -109,7 +109,7 @@ async function executorV2Event(
 
 function declareV2Capability(): void {
   recordTaskInventoryGeneration(db, parseTaskInventoryGeneration({
-    schema: TASK_INVENTORY_SCHEMA,
+    schema: TASK_INVENTORY_SCHEMA_V2,
     executor: {
       name: "agent-schedule",
       version: "test",

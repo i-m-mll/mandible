@@ -1,11 +1,11 @@
-# Executor inventory contract v1
+# Executor inventory contract v3
 
 Issue `0bc2279`. Publisher-facing spec for `POST /api/tasks/inventory`.
 
 Mandible does not run recurring tasks. An **executor** (the first one is
 `agent-schedule`) does, and it is the authority on which tasks exist and what
-state they are in. This contract is how an executor tells Mandible, and it is
-the whole write surface: there are no command, edit, or create routes.
+state they are in. This contract is how an executor reports that state. Operator
+commands use the separate immutable task-command protocol.
 
 What Mandible guarantees about anything shown in the Tasks view: **the identity
 of the publisher and the shape of the payload.** Not that a task ran, not that a
@@ -88,6 +88,32 @@ literal text `unknown` cannot be distinguished from an unknown commit. Accepted.
 ## 4. Payload v1
 
 `schema` must be exactly `"executor-inventory@1"`.
+
+Mandible still accepts this historical shape. `executor-inventory@2` adds the
+task configuration block and remains readable for already-ingested rollout
+data. Neither legacy version is interpreted as activation-health evidence.
+
+### Current activation health (`executor-inventory@3`)
+
+Version 3 adds `executor.health` and a strict activation transition record to
+every task. Activation state is one of `never_activated`, `activated`,
+`operator_disabled`, or `deployment_invalidated`; executor runtime failures are
+reported separately through `executor.health`, so an invalidated deployment is
+never presented as an operational crash.
+
+For `deployment_invalidated`, `required_execution_hash` is a 64-character
+lowercase hexadecimal identity and `required_action` progresses from `dry_run`
+to `enable`.
+Mandible raises one important condition per executor, task, and execution hash.
+It stores every distinct transition append-only and resolves only the current
+condition after the executor reports the matching dry run ready, a human issues
+the explicit enable command for that hash, the executor applies it, and a later
+v3 snapshot reports `activated`. Resolution never deletes its observations or
+condition events.
+
+Unknown schemas and malformed v3 records fail closed. The v2 compatibility path
+exists only to keep already-ingested inventory readable; it does not invent
+health facts that the producer never supplied.
 
 ```json
 {

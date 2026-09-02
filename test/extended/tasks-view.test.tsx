@@ -15,7 +15,11 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { TASK_INVENTORY_SCHEMA, type TaskInventoryResponse } from '../../src/contracts.js';
+import {
+  TASK_INVENTORY_SCHEMA,
+  TASK_INVENTORY_SCHEMA_V2,
+  type TaskInventoryResponse,
+} from '../../src/contracts.js';
 import { migrate, setDb, type Db } from '../../src/db.js';
 import {
   getTaskInventoryView,
@@ -33,6 +37,10 @@ import { taskFact, TasksView } from '../../ui/src/views/tasks';
 
 const HOUR = 60 * 60 * 1000;
 const EXECUTION_HASH = 'a'.repeat(64);
+const PRODUCER_INVENTORY = (JSON.parse(readFileSync(
+  'test/fixtures/dotfiles-cba4353-activation-health.json',
+  'utf8',
+)) as { inventory: Record<string, unknown> }).inventory;
 
 let db: Db;
 let publisherId: string;
@@ -140,11 +148,16 @@ function post(
   capabilities: string[] = ['cron'],
 ): void {
   const generation = parseTaskInventoryGeneration({
-    schema: TASK_INVENTORY_SCHEMA,
+    schema: TASK_INVENTORY_SCHEMA_V2,
     executor: { name: 'agent-schedule', version: '0.4.2', capabilities },
     observed_at: observedAt,
     tasks,
   });
+  recordTaskInventoryGeneration(db, generation, { postedByUserId: publisherId });
+}
+
+function postV3(body: Record<string, unknown> = PRODUCER_INVENTORY): void {
+  const generation = parseTaskInventoryGeneration(body);
   recordTaskInventoryGeneration(db, generation, { postedByUserId: publisherId });
 }
 
@@ -861,6 +874,53 @@ describe('TasksView', () => {
     expect(tasksCss).not.toMatch(/\.tasks-detail\s*\{[^}]*overflow(?:-y)?:/s);
     expect(readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8'))
       .toMatch(/\.detail-pane-shell__body\s*\{[^}]*overflow-y:\s*auto;/s);
+  });
+
+  it('surfaces the cba4353 invalidation as one important sequential recovery notice', async () => {
+    postV3();
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView initialTaskKey="agent-schedule/task-health" />);
+
+    expect(await screen.findByText('Important: activation invalidated')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Dry run' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Enable task' })).toBeNull();
+    expect(screen.getAllByText('Invalidated by deployment')).toHaveLength(2);
+    expect(screen.getByText('important')).toBeTruthy();
+    expect(screen.getByText('Activation history')).toBeTruthy();
+  });
+
+  it('keeps operator disablement separate from executor-path operational failure', async () => {
+    const tasks = PRODUCER_INVENTORY.tasks as Array<Record<string, unknown>>;
+    const activation = tasks[0].activation as Record<string, unknown>;
+    postV3({
+      ...PRODUCER_INVENTORY,
+      executor: {
+        ...(PRODUCER_INVENTORY.executor as object),
+        health: {
+          status: 'operational_failure',
+          condition: 'execution_path_mismatch',
+          attention: 'important',
+        },
+      },
+      tasks: [{
+        ...tasks[0],
+        activation: {
+          ...activation,
+          locally_activated: false,
+          state: 'operator_disabled',
+          reason: 'operator_disabled',
+          required_execution_hash: 'none',
+          required_action: 'none',
+          attention: 'none',
+        },
+      }],
+    });
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView initialTaskKey="agent-schedule/task-health" />);
+
+    expect(await screen.findByText('Executor operational failure')).toBeTruthy();
+    expect(screen.getAllByText('Disabled by operator').length).toBeGreaterThan(0);
+    expect(screen.getByText(/executor-path problem, not a task activation transition/i)).toBeTruthy();
   });
 });
 
