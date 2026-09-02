@@ -13,7 +13,7 @@ import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.j
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 164;
+export const BASELINE_SCHEMA_VERSION = 165;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (

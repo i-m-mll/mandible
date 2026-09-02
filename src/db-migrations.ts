@@ -1,6 +1,7 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { BRIEFING_COMPOSER_SCHEMA_SQL } from "./feedback/schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -543,6 +544,11 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX idx_ledger_change_log_event
         ON ledger_change_log(event_id)`,
     ],
+  },
+  {
+    version: 165,
+    name: "base_relative_briefing_composer",
+    statements: [...BRIEFING_COMPOSER_SCHEMA_SQL],
   },
 ];
 
