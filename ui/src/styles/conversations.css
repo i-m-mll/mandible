@@ -437,7 +437,7 @@
   margin: 0 18px 16px;
   padding: 10px;
   border: 1px solid var(--neutral-alpha-10);
-  border-radius: 14px;
+  border-radius: var(--radius-chat-surface);
   background: var(--bg-card);
   box-shadow: var(--shadow-composer);
 }

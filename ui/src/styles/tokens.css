@@ -56,6 +56,7 @@
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;
+  --radius-chat-surface: 18px;
 
   --neutral-alpha-01: rgba(255, 255, 255, 0.01);
   --neutral-alpha-02: rgba(255, 255, 255, 0.02);

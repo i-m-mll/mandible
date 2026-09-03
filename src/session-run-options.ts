@@ -159,6 +159,10 @@ export function declaredRunOptionsSnapshot(
     revision,
     options: declaration.options.map((option) => {
       const providerOwned = option.discovery.kind !== "static";
+      const bootstrapChoices = staticChoices(option.discovery);
+      const bootstrapAvailable = providerOwned
+        && bootstrapChoices !== null
+        && bootstrapChoices.length > 0;
       return {
         id: option.id,
         label: option.label,
@@ -167,17 +171,24 @@ export function declaredRunOptionsSnapshot(
         kind: option.kind,
         nullable: option.nullable,
         source: "backend" as const,
-        availability: providerOwned ? "awaiting_provider" as const : "available" as const,
+        availability: providerOwned && !bootstrapAvailable ? "awaiting_provider" as const : "available" as const,
         currentValue: option.defaultValue ?? null,
-        allowedValues: staticChoices(option.discovery),
+        allowedValues: bootstrapChoices,
         enforcement: option.support.status === "unsupported"
           ? { status: "unsupported" as const, reason: option.support.reason }
-          : providerOwned
+          : providerOwned && !bootstrapAvailable
             ? {
                 status: "awaiting_provider" as const,
                 owner: option.support.owner,
                 effectiveFrom: option.support.effectiveFrom,
               }
+            : providerOwned
+              ? {
+                  status: "pending" as const,
+                  owner: option.support.owner,
+                  effectiveFrom: option.support.effectiveFrom,
+                  detail: "Maintained bootstrap catalog; provider confirmation follows session start",
+                }
             : {
                 status: "enforced" as const,
                 owner: option.support.owner,

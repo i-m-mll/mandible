@@ -384,7 +384,11 @@ describe('compact detail pane shell', () => {
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     const composer = footer?.querySelector('.conv-compose');
     expect(composer).toBeTruthy();
-    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*14px;/s);
+    const tokensCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/tokens.css'), 'utf8');
+    const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
+    expect(tokensCss).toContain('--radius-chat-surface: 18px;');
+    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
+    expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
