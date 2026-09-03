@@ -13,7 +13,10 @@
 //   - What does the newest generation per executor say? The view is derived by
 //     query at read time. There is no projection table and no mutable task
 //     row, so a stale or reordered post cannot corrupt the view — the newest
-//     generation either wins whole or does not appear.
+//     generation either wins whole or does not appear. Activation transitions
+//     and their recovery episodes are the deliberate exception: v3 health is
+//     copied into immutable event tables so a newer snapshot cannot erase the
+//     operational history that led to an important notification.
 //
 // Everything else is the executor's word. Freshness is the one judgment
 // Mandible adds, and it is computed from `observed_at` alone.
@@ -27,12 +30,22 @@ import { getSetting } from "./client-auth/settings-kv.js";
 import {
   TASK_INVENTORY_SCHEMA,
   TASK_INVENTORY_SCHEMA_V1,
+  TASK_INVENTORY_SCHEMA_V2,
   TASK_INVENTORY_UNKNOWN,
   type TaskActivationFacts,
+  type TaskActivationHealthFacts,
+  type TaskActivationAction,
+  type TaskActivationCondition,
+  type TaskActivationReason,
+  type TaskActivationState,
+  type TaskActivationObservation,
+  type TaskAttention,
   type TaskBundleFacts,
   type TaskCircuitState,
   type TaskConfigFacts,
   type TaskExecutorFreshness,
+  type TaskExecutorHealth,
+  type TaskExecutorHealthCondition,
   type TaskExecutorIdentity,
   type TaskExecutorSummary,
   type TaskGuardFacts,
@@ -155,11 +168,25 @@ const KILL_SWITCH_STATES: readonly TaskKillSwitchState[] = ["engaged", "clear"];
 const STALENESS_CLAIMS: readonly TaskStalenessClaim[] = ["fresh", "stale"];
 const RUN_OUTCOMES: readonly TaskRunOutcome[] = ["success", "failure", "timeout", "cancelled"];
 const MANAGEMENT_MODES: readonly TaskManagementMode[] = ["external"];
+const ACTIVATION_STATES: readonly TaskActivationState[] = [
+  "never_activated", "activated", "operator_disabled", "deployment_invalidated",
+];
+const ACTIVATION_REASONS: readonly TaskActivationReason[] = [
+  "never_activated", "operator_enabled", "operator_disabled", "execution_hash_changed",
+];
+const ACTIVATION_ACTIONS: readonly TaskActivationAction[] = ["none", "dry_run", "enable"];
+const ATTENTION_STATES: readonly TaskAttention[] = ["none", "important"];
+const EXECUTOR_HEALTH_CONDITIONS: readonly TaskExecutorHealthCondition[] = [
+  "healthy", "no_active_bundle", "bundle_link_mismatch", "execution_path_mismatch",
+];
+const SHA256 = /^[0-9a-f]{64}$/;
 
 // --- generation validation --------------------------------------------------
 
 const GENERATION_KEYS = ["schema", "executor", "observed_at", "tasks"] as const;
 const EXECUTOR_KEYS = ["name", "version", "capabilities"] as const;
+const EXECUTOR_V3_KEYS = ["name", "version", "capabilities", "health"] as const;
+const EXECUTOR_HEALTH_KEYS = ["status", "condition", "attention"] as const;
 const TASK_KEYS = [
   "task_id",
   "display_name",
@@ -199,6 +226,11 @@ const CONFIG_KEYS = [
 ] as const;
 const BUNDLE_KEYS = ["commit", "content_hash", "execution_hash", "deployed_at"] as const;
 const ACTIVATION_KEYS = ["config_enabled", "locally_activated"] as const;
+const ACTIVATION_V3_KEYS = [
+  "config_enabled", "locally_activated", "state", "reason", "changed_at",
+  "previous_execution_hash", "required_execution_hash", "deployment_commit",
+  "deployment_content_hash", "deployed_at", "required_action", "attention",
+] as const;
 const GUARD_KEYS = [
   "circuit",
   "retry_attempt",
@@ -218,9 +250,27 @@ const RUN_KEYS = [
   "detail",
 ] as const;
 
-function parseExecutor(value: unknown): TaskExecutorIdentity {
+function parseExecutorHealth(value: unknown): TaskExecutorHealth {
+  const record = objectAt(value, "executor.health");
+  rejectUnknownKeys(record, EXECUTOR_HEALTH_KEYS, "executor.health");
+  const condition = enumParser(EXECUTOR_HEALTH_CONDITIONS)(
+    record.condition,
+    "executor.health.condition",
+  );
+  const status = condition === "healthy" ? "healthy" : "operational_failure";
+  if (record.status !== status) {
+    fail(`executor.health.status must be '${status}' for condition '${condition}'`);
+  }
+  const attention = condition === "healthy" ? "none" : "important";
+  if (record.attention !== attention) {
+    fail(`executor.health.attention must be '${attention}' for condition '${condition}'`);
+  }
+  return { status, condition, attention };
+}
+
+function parseExecutor(value: unknown, isV3: boolean): TaskExecutorIdentity {
   const record = objectAt(value, "executor");
-  rejectUnknownKeys(record, EXECUTOR_KEYS, "executor");
+  rejectUnknownKeys(record, isV3 ? EXECUTOR_V3_KEYS : EXECUTOR_KEYS, "executor");
   const capabilities = record.capabilities;
   if (!Array.isArray(capabilities)) {
     fail("executor.capabilities must be an array of strings (use [] for none)");
@@ -230,6 +280,7 @@ function parseExecutor(value: unknown): TaskExecutorIdentity {
     version: maybe(record.version, "executor.version", requireString),
     capabilities: capabilities.map((entry, index) =>
       requireString(entry, `executor.capabilities[${index}]`)),
+    ...(isV3 ? { health: parseExecutorHealth(record.health) } : {}),
   };
 }
 
@@ -245,13 +296,103 @@ function parseBundle(value: unknown, field: string): TaskBundleFacts | typeof TA
   };
 }
 
-function parseActivation(value: unknown, field: string): TaskActivationFacts {
+function sha256At(value: unknown, field: string): string {
+  if (typeof value !== "string" || !SHA256.test(value)) {
+    fail(`${field} must be a lowercase SHA-256 digest`);
+  }
+  return value;
+}
+
+function noneOrSha256(value: unknown, field: string): string | "none" {
+  return value === "none" ? "none" : sha256At(value, field);
+}
+
+function noneOrString(value: unknown, field: string): string | "none" {
+  return value === "none" ? "none" : requireString(value, field);
+}
+
+function activationInstant(value: unknown, field: string): number | "unknown" | "none" {
+  if (value === TASK_INVENTORY_UNKNOWN || value === "none") return value;
+  return requireIntegerMs(value, field);
+}
+
+function parseActivation(value: unknown, field: string, isV3: boolean): TaskActivationFacts {
   const record = objectAt(value, field);
-  rejectUnknownKeys(record, ACTIVATION_KEYS, field);
-  return {
+  rejectUnknownKeys(record, isV3 ? ACTIVATION_V3_KEYS : ACTIVATION_KEYS, field);
+  const legacy = {
     config_enabled: maybe(record.config_enabled, `${field}.config_enabled`, parseBoolean),
     locally_activated: maybe(record.locally_activated, `${field}.locally_activated`, parseBoolean),
   };
+  if (!isV3) return legacy;
+
+  const state = enumParser(ACTIVATION_STATES)(record.state, `${field}.state`);
+  const reason = enumParser(ACTIVATION_REASONS)(record.reason, `${field}.reason`);
+  const requiredAction = enumParser(ACTIVATION_ACTIONS)(
+    record.required_action,
+    `${field}.required_action`,
+  );
+  const attention = enumParser(ATTENTION_STATES)(record.attention, `${field}.attention`);
+  const requiredExecutionHash = noneOrSha256(
+    record.required_execution_hash,
+    `${field}.required_execution_hash`,
+  );
+  const expectedReason: Record<TaskActivationState, TaskActivationReason> = {
+    never_activated: "never_activated",
+    activated: "operator_enabled",
+    operator_disabled: "operator_disabled",
+    deployment_invalidated: "execution_hash_changed",
+  };
+  if (reason !== expectedReason[state]) {
+    fail(`${field}.reason must be '${expectedReason[state]}' for state '${state}'`);
+  }
+  if (state === "deployment_invalidated") {
+    if (requiredExecutionHash === "none") {
+      fail(`${field}.required_execution_hash must name the invalidated execution hash`);
+    }
+    if (requiredAction !== "dry_run" && requiredAction !== "enable") {
+      fail(`${field}.required_action must be 'dry_run' or 'enable' while invalidated`);
+    }
+    if (attention !== "important") {
+      fail(`${field}.attention must be 'important' while invalidated`);
+    }
+    if (legacy.locally_activated !== false) {
+      fail(`${field}.locally_activated must be false while invalidated`);
+    }
+  } else {
+    if (requiredAction !== "none") {
+      fail(`${field}.required_action must be 'none' for state '${state}'`);
+    }
+    if (attention !== "none") fail(`${field}.attention must be 'none' for state '${state}'`);
+    if (requiredExecutionHash !== "none") {
+      fail(`${field}.required_execution_hash must be 'none' for state '${state}'`);
+    }
+  }
+  if (state === "activated" && legacy.locally_activated !== true) {
+    fail(`${field}.locally_activated must be true while activated`);
+  }
+  if ((state === "never_activated" || state === "operator_disabled")
+    && legacy.locally_activated !== false) {
+    fail(`${field}.locally_activated must be false for state '${state}'`);
+  }
+  return {
+    ...legacy,
+    state,
+    reason,
+    changed_at: activationInstant(record.changed_at, `${field}.changed_at`),
+    previous_execution_hash: noneOrSha256(
+      record.previous_execution_hash,
+      `${field}.previous_execution_hash`,
+    ),
+    required_execution_hash: requiredExecutionHash,
+    deployment_commit: noneOrString(record.deployment_commit, `${field}.deployment_commit`),
+    deployment_content_hash: noneOrSha256(
+      record.deployment_content_hash,
+      `${field}.deployment_content_hash`,
+    ),
+    deployed_at: activationInstant(record.deployed_at, `${field}.deployed_at`),
+    required_action: requiredAction,
+    attention,
+  } satisfies TaskActivationHealthFacts;
 }
 
 function parseConfig(value: unknown, field: string): TaskConfigFacts {
@@ -334,8 +475,9 @@ function parseRunSlot(value: unknown, field: string): TaskRunSlot {
 function parseTask(value: unknown, index: number, schema: string): TaskInventoryEntry {
   const field = `tasks[${index}]`;
   const record = objectAt(value, field);
-  const isV2 = schema === TASK_INVENTORY_SCHEMA;
-  rejectUnknownKeys(record, isV2 ? TASK_V2_KEYS : TASK_KEYS, field);
+  const hasConfig = schema === TASK_INVENTORY_SCHEMA_V2 || schema === TASK_INVENTORY_SCHEMA;
+  const isV3 = schema === TASK_INVENTORY_SCHEMA;
+  rejectUnknownKeys(record, hasConfig ? TASK_V2_KEYS : TASK_KEYS, field);
   return {
     task_id: requireString(record.task_id, `${field}.task_id`),
     display_name: requireString(record.display_name, `${field}.display_name`),
@@ -343,13 +485,13 @@ function parseTask(value: unknown, index: number, schema: string): TaskInventory
       record.management_mode,
       `${field}.management_mode`,
     ),
-    ...(isV2 ? {
+    ...(hasConfig ? {
       config_hash: maybe(record.config_hash, `${field}.config_hash`, requireString),
       prompt_hash: maybe(record.prompt_hash, `${field}.prompt_hash`, requireString),
       config: parseConfig(record.config, `${field}.config`),
     } : {}),
     bundle: parseBundle(record.bundle, `${field}.bundle`),
-    activation: parseActivation(record.activation, `${field}.activation`),
+    activation: parseActivation(record.activation, `${field}.activation`, isV3),
     guards: parseGuards(record.guards, `${field}.guards`),
     last_run: parseRunSlot(record.last_run, `${field}.last_run`),
     last_failure: parseRunSlot(record.last_failure, `${field}.last_failure`),
@@ -365,10 +507,12 @@ export function parseTaskInventoryGeneration(body: unknown): TaskInventoryGenera
   const record = objectAt(body, "request body");
   rejectUnknownKeys(record, GENERATION_KEYS, "request body");
   const schema = requireString(record.schema, "schema");
-  if (schema !== TASK_INVENTORY_SCHEMA && schema !== TASK_INVENTORY_SCHEMA_V1) {
+  if (schema !== TASK_INVENTORY_SCHEMA
+    && schema !== TASK_INVENTORY_SCHEMA_V2
+    && schema !== TASK_INVENTORY_SCHEMA_V1) {
     throw new TaskInventoryValidationError(
-      `unsupported schema '${schema}'; expected '${TASK_INVENTORY_SCHEMA}' or `
-        + `'${TASK_INVENTORY_SCHEMA_V1}'`,
+      `unsupported schema '${schema}'; expected '${TASK_INVENTORY_SCHEMA}', `
+        + `'${TASK_INVENTORY_SCHEMA_V2}', or '${TASK_INVENTORY_SCHEMA_V1}'`,
     );
   }
   const tasks = record.tasks;
@@ -376,7 +520,7 @@ export function parseTaskInventoryGeneration(body: unknown): TaskInventoryGenera
 
   const parsed: TaskInventoryGeneration = {
     schema,
-    executor: parseExecutor(record.executor),
+    executor: parseExecutor(record.executor, schema === TASK_INVENTORY_SCHEMA),
     observed_at: requireIntegerMs(record.observed_at, "observed_at"),
     tasks: tasks.map((task, index) => parseTask(task, index, schema)),
   };
@@ -394,6 +538,190 @@ export function parseTaskInventoryGeneration(body: unknown): TaskInventoryGenera
 /** SHA-256 over the canonical (parser-ordered) generation. */
 export function taskInventoryDigest(generation: TaskInventoryGeneration): string {
   return createHash("sha256").update(JSON.stringify(generation)).digest("hex");
+}
+
+function activationFingerprint(activation: TaskActivationHealthFacts): string {
+  return createHash("sha256").update(JSON.stringify(activation)).digest("hex");
+}
+
+function activeActivationConditions(
+  db: Db,
+  executor: string,
+  taskId: string,
+): Array<{ id: string; required_execution_hash: string }> {
+  return db.prepare(
+    `SELECT c.id, c.required_execution_hash
+       FROM task_activation_conditions AS c
+      WHERE c.executor_name = ? AND c.task_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM task_activation_condition_events AS e
+           WHERE e.condition_id = c.id AND e.kind IN ('resolved','superseded')
+        )
+      ORDER BY c.raised_at DESC, c.rowid DESC`,
+  ).all(executor, taskId) as Array<{ id: string; required_execution_hash: string }>;
+}
+
+function appendConditionEvent(
+  db: Db,
+  conditionId: string,
+  kind: "raised" | "dry_run_ready" | "resolved" | "superseded",
+  options: { observationId?: string; commandId?: string; now: number },
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO task_activation_condition_events
+       (id, condition_id, kind, observation_id, command_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    randomUUID(),
+    conditionId,
+    kind,
+    options.observationId ?? null,
+    options.commandId ?? null,
+    options.now,
+  );
+}
+
+function appliedEnableCommand(
+  db: Db,
+  executor: string,
+  taskId: string,
+  executionHash: string,
+): string | null {
+  const row = db.prepare(
+    `SELECT request.id
+       FROM task_command_requests AS request
+       JOIN task_command_events AS event
+         ON event.command_id = request.id AND event.event_type = 'applied'
+      WHERE request.schema_id = 'task-command@2'
+        AND request.executor_name = ? AND request.task_id = ?
+        AND request.verb = 'enable'
+        AND json_extract(request.payload_json, '$.execution_hash') = ?
+      ORDER BY event.created_at DESC, request.rowid DESC
+      LIMIT 1`,
+  ).get(executor, taskId, executionHash) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+/** Resolve only from an activated v3 observation plus the matching recovery evidence. */
+export function reconcileTaskActivationCondition(
+  db: Db,
+  executor: string,
+  taskId: string,
+  now = Date.now(),
+): void {
+  const current = activeActivationConditions(db, executor, taskId)[0];
+  if (!current) return;
+  const ready = db.prepare(
+    `SELECT 1 FROM task_activation_condition_events
+      WHERE condition_id = ? AND kind = 'dry_run_ready'`,
+  ).get(current.id);
+  if (!ready) return;
+  const latest = db.prepare(
+    `SELECT id, payload_json
+       FROM task_activation_observations
+      WHERE executor_name = ? AND task_id = ?
+      ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT 1`,
+  ).get(executor, taskId) as { id: string; payload_json: string } | undefined;
+  if (!latest) return;
+  const facts = JSON.parse(latest.payload_json) as TaskActivationHealthFacts;
+  if (facts.state !== "activated") return;
+  const commandId = appliedEnableCommand(db, executor, taskId, current.required_execution_hash);
+  if (!commandId) return;
+  appendConditionEvent(db, current.id, "resolved", {
+    observationId: latest.id,
+    commandId,
+    now,
+  });
+}
+
+function recordActivationHealth(
+  db: Db,
+  generationId: string,
+  generation: TaskInventoryGeneration,
+  recordedAt: number,
+): void {
+  if (generation.schema !== TASK_INVENTORY_SCHEMA) return;
+  const latestGeneration = db.prepare(
+    `SELECT current.id
+       FROM task_inventory_generations AS current
+      WHERE current.executor_name = ?
+      ORDER BY ${generationRecencyOrder("current")}
+      LIMIT 1`,
+  ).get(generation.executor.name) as { id: string } | undefined;
+  const isCurrentGeneration = latestGeneration?.id === generationId;
+  for (const task of generation.tasks) {
+    const activation = task.activation as TaskActivationHealthFacts;
+    const fingerprint = activationFingerprint(activation);
+    db.prepare(
+      `INSERT OR IGNORE INTO task_activation_observations
+        (id, fingerprint, generation_id, executor_name, task_id, state, reason,
+         observed_at, payload_json, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      randomUUID(),
+      fingerprint,
+      generationId,
+      generation.executor.name,
+      task.task_id,
+      activation.state,
+      activation.reason,
+      generation.observed_at,
+      JSON.stringify(activation),
+      recordedAt,
+    );
+    const observation = db.prepare(
+      `SELECT id FROM task_activation_observations
+        WHERE executor_name = ? AND task_id = ? AND fingerprint = ?`,
+    ).get(generation.executor.name, task.task_id, fingerprint) as { id: string };
+
+    // Keep late observations as history, but never let an older complete
+    // snapshot replace the condition projected from the executor's current
+    // generation.
+    if (!isCurrentGeneration) continue;
+
+    if (activation.state === "deployment_invalidated") {
+      const executionHash = activation.required_execution_hash;
+      const active = activeActivationConditions(db, generation.executor.name, task.task_id);
+      const matching = active.find((row) => row.required_execution_hash === executionHash);
+      if (!matching) {
+        for (const row of active) {
+          appendConditionEvent(db, row.id, "superseded", {
+            observationId: observation.id,
+            now: recordedAt,
+          });
+        }
+        const conditionId = randomUUID();
+        const dedupeKey = `${generation.executor.name}/${task.task_id}/${executionHash}`;
+        db.prepare(
+          `INSERT INTO task_activation_conditions
+            (id, dedupe_key, source_observation_id, executor_name, task_id,
+             required_execution_hash, raised_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          conditionId,
+          dedupeKey,
+          observation.id,
+          generation.executor.name,
+          task.task_id,
+          executionHash,
+          generation.observed_at,
+        );
+        appendConditionEvent(db, conditionId, "raised", { now: recordedAt });
+        if (activation.required_action === "enable") {
+          appendConditionEvent(db, conditionId, "dry_run_ready", {
+            observationId: observation.id,
+            now: recordedAt,
+          });
+        }
+      } else if (activation.required_action === "enable") {
+        appendConditionEvent(db, matching.id, "dry_run_ready", {
+          observationId: observation.id,
+          now: recordedAt,
+        });
+      }
+    }
+    reconcileTaskActivationCondition(db, generation.executor.name, task.task_id, recordedAt);
+  }
 }
 
 // --- publisher mapping ------------------------------------------------------
@@ -509,6 +837,7 @@ export function recordTaskInventoryGeneration(
       options.postedByUserId,
       now,
     );
+    recordActivationHealth(db, id, generation, now);
     db.prepare(
       `DELETE FROM task_inventory_generations
         WHERE executor_name = ?
@@ -565,6 +894,91 @@ function parseStoredGeneration(row: GenerationRow): TaskInventoryGeneration | nu
   }
 }
 
+function activationHistory(
+  db: Db,
+  executor: string,
+  taskId: string,
+): TaskActivationObservation[] {
+  const rows = db.prepare(
+    `SELECT id, generation_id, state, reason, observed_at, recorded_at, payload_json
+       FROM task_activation_observations
+      WHERE executor_name = ? AND task_id = ?
+      ORDER BY observed_at DESC, recorded_at DESC, rowid DESC
+      LIMIT 20`,
+  ).all(executor, taskId) as Array<{
+    id: string;
+    generation_id: string;
+    state: TaskActivationState;
+    reason: TaskActivationReason;
+    observed_at: number;
+    recorded_at: number;
+    payload_json: string;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    generation_id: row.generation_id,
+    state: row.state,
+    reason: row.reason,
+    observed_at: row.observed_at,
+    recorded_at: row.recorded_at,
+    facts: JSON.parse(row.payload_json) as TaskActivationHealthFacts,
+  }));
+}
+
+function currentActivationCondition(
+  db: Db,
+  executor: string,
+  taskId: string,
+): TaskActivationCondition | null {
+  const condition = db.prepare(
+    `SELECT c.*
+       FROM task_activation_conditions AS c
+      WHERE c.executor_name = ? AND c.task_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM task_activation_condition_events AS terminal
+           WHERE terminal.condition_id = c.id
+             AND terminal.kind IN ('resolved','superseded')
+        )
+      ORDER BY c.raised_at DESC, c.rowid DESC LIMIT 1`,
+  ).get(executor, taskId) as {
+    id: string;
+    dedupe_key: string;
+    required_execution_hash: string;
+    raised_at: number;
+  } | undefined;
+  if (!condition) return null;
+  const ready = db.prepare(
+    `SELECT 1 FROM task_activation_condition_events
+      WHERE condition_id = ? AND kind = 'dry_run_ready'`,
+  ).get(condition.id);
+  return {
+    id: condition.id,
+    dedupe_key: condition.dedupe_key,
+    required_execution_hash: condition.required_execution_hash,
+    attention: "important",
+    state: "active",
+    next_action: ready ? "enable" : "dry_run",
+    raised_at: condition.raised_at,
+    resolved_at: null,
+    resolution: null,
+    enable_command_id: null,
+  };
+}
+
+/** Number of distinct task/execution-hash activation conditions still active. */
+export function countActiveTaskActivationConditions(db: Db = getDb()): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM task_activation_conditions AS c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM task_activation_condition_events AS terminal
+         WHERE terminal.condition_id = c.id
+           AND terminal.kind IN ('resolved','superseded')
+      )`,
+  ).get() as { count: number };
+  return Number(row.count);
+}
+
 export interface TaskInventoryViewOptions {
   now?: number;
   staleAfterMs?: number;
@@ -611,6 +1025,7 @@ export function getTaskInventoryView(
       name: row.executor_name,
       version: generation.executor.version,
       capabilities: generation.executor.capabilities,
+      ...(generation.executor.health ? { health: generation.executor.health } : {}),
       observed_at: row.observed_at,
       observed_age_ms: observedAgeMs,
       freshness,
@@ -630,6 +1045,8 @@ export function getTaskInventoryView(
         observed_at: row.observed_at,
         observed_age_ms: observedAgeMs,
         task,
+        activation_condition: currentActivationCondition(db, row.executor_name, task.task_id),
+        activation_history: activationHistory(db, row.executor_name, task.task_id),
       });
     }
   }

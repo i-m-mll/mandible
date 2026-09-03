@@ -30,8 +30,13 @@ Usage:
   mandible briefing group archive <group-ref> [--json]
   mandible briefing group restore <group-ref> [--json]
   mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]
+  mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]
+  mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]
   mandible briefing group rename <group-ref> --name <text> [--json]
   mandible briefing group show <group-ref> [--json]
+  mandible briefing route inspect [<route-key>] [--json]
+  mandible briefing route plan <manifest.json|-> [--json]
+  mandible briefing route apply <manifest.json|-> [--json]
 
 Creates a Briefing whose round is bound to exactly the named artifact version.
 If an active Briefing already owns that logical Artifact, the command reports
@@ -42,6 +47,12 @@ never resolves a logical artifact or series to latest.
 
 A Briefing bundle is only a named, manually ordered association. Creating or
 adding to one does not change member Briefings, rounds, artifacts, or review data.
+
+A destination-route manifest uses schema mandible-briefing-destination-routes@1.
+Plan resolves every Briefing group and logical Artifact ref without writing.
+Apply atomically creates or upgrades the declared routes. Exact replay is
+unchanged; ownership, identity, template downgrade, and same-version template
+drift fail closed.
 EOF
 }
 
@@ -395,6 +406,38 @@ cmd_group_promote() {
   fi
 }
 
+cmd_group_review_disposition() {
+  local action="$1" group_ref="" expected_base="" proposal="" binding_digest="" json=0 response payload decision
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
+      --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
+      --binding-digest) [[ $# -ge 2 ]] || die "--binding-digest requires a value" 2; binding_digest="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" ]] \
+    || die "Usage: mandible briefing group $action <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]" 2
+  [[ "$binding_digest" =~ '^[0-9a-fA-F]{64}$' ]] \
+    || die "--binding-digest requires one exact SHA-256 digest" 2
+  decision="$([[ "$action" == "accept" ]] && printf accepted || printf rejected)"
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(jq -n --arg decision "$decision" --arg expected "$expected_base" --arg proposal "$proposal" \
+    --arg binding "$binding_digest" \
+    '{decision:$decision,expected_base_bundle_ref:$expected,proposal_bundle_ref:$proposal,binding_digest:$binding}')"
+  response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/review-dispositions" "$payload")" \
+    || die "Failed to $action recurring Briefing proposal." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '"briefing-group:\(.group.id | mandible_short_id)  \(if .changed then .disposition.kind else "already \(.disposition.kind)" end)  proposal=\(.disposition.proposal.id | mandible_short_id)"'
+  fi
+}
+
 cmd_group_show() {
   local group_ref="" json=0 response
   while (( $# > 0 )); do
@@ -420,8 +463,13 @@ cmd_group_archive_state() {
     esac
   done
   [[ -n "$group_ref" ]] || die "Usage: mandible briefing group $action <group-ref> [--json]" 2
-  response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/$action" '{}')" \
-    || die "Failed to $action Briefing group." 1
+  case "$action" in
+    archive) response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/archive" '{}')" \
+      || die "Failed to archive Briefing group." 1 ;;
+    restore) response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/restore" '{}')" \
+      || die "Failed to restore Briefing group." 1 ;;
+    *) die "Unknown Briefing group archive state: $action" 2 ;;
+  esac
   emit_group "$response" "$json"
 }
 
@@ -433,8 +481,91 @@ cmd_group() {
     create) cmd_group_create "$@" ;; add) cmd_group_add "$@" ;; configure) cmd_group_configure "$@" ;;
     archive|restore) cmd_group_archive_state "$subcommand" "$@" ;;
     promote) cmd_group_promote "$@" ;;
+    accept|reject) cmd_group_review_disposition "$subcommand" "$@" ;;
     rename) cmd_group_rename "$@" ;;
     show) cmd_group_show "$@" ;; *) die "Unknown briefing group subcommand: $subcommand" 2 ;;
+  esac
+}
+
+emit_route_plan() {
+  local response="$1" json="$2"
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '(.routes[] | "\(.route_key)  \(.action)  group=\(.group_id | mandible_short_id)  artifact=\(.logical_artifact_id | mandible_short_id)  template=v\(.active_template_version) (\(.template_action))"),
+       "changed: \(.changed)"'
+  fi
+}
+
+read_route_manifest() {
+  local manifest_path="$1"
+  if [[ "$manifest_path" == "-" ]]; then
+    command cat
+    return
+  fi
+  [[ -f "$manifest_path" ]] || die "Route manifest not found: $manifest_path" 2
+  command cat -- "$manifest_path"
+}
+
+cmd_route_manifest() {
+  local action="$1" manifest_path="" json=0 response payload
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -) [[ -z "$manifest_path" ]] || die "Unexpected argument: $1" 2; manifest_path="$1"; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$manifest_path" ]] || die "Unexpected argument: $1" 2; manifest_path="$1"; shift ;;
+    esac
+  done
+  [[ -n "$manifest_path" ]] || die "Usage: mandible briefing route $action <manifest.json|-> [--json]" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  payload="$(read_route_manifest "$manifest_path")"
+  printf '%s\n' "$payload" | jq -e 'type == "object"' >/dev/null \
+    || die "Route manifest must be one JSON object." 2
+  case "$action" in
+    plan) response="$(api_send POST "/api/briefing-destination-routes/plan" "$payload")" \
+      || die "Failed to plan Briefing destination routes." 1 ;;
+    apply) response="$(api_send POST "/api/briefing-destination-routes" "$payload")" \
+      || die "Failed to apply Briefing destination routes." 1 ;;
+    *) die "Unknown Briefing destination route action: $action" 2 ;;
+  esac
+  emit_route_plan "$response" "$json"
+}
+
+cmd_route_inspect() {
+  local route_key="" json=0 response
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$route_key" ]] || die "Unexpected argument: $1" 2; route_key="$1"; shift ;;
+    esac
+  done
+  if [[ -z "$route_key" ]]; then
+    response="$(api_get "/api/briefing-destination-routes")" \
+      || die "Failed to inspect Briefing destination routes." 1
+  else
+    response="$(api_get "/api/briefing-destination-routes/$(urlencode "$route_key")")" \
+      || die "Failed to inspect Briefing destination route." 1
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '.routes[] | "\(.route_key)  group=\(.group_id | mandible_short_id)  artifact=\(.logical_artifact_id | mandible_short_id)  \(.composer_kind)  template=v\(.active_template_version)"'
+  fi
+}
+
+cmd_route() {
+  local subcommand="${1:-}"
+  case "$subcommand" in "") usage; exit 2 ;; -h|--help|help) usage; exit 0 ;; esac
+  shift
+  case "$subcommand" in
+    inspect) cmd_route_inspect "$@" ;;
+    plan|apply) cmd_route_manifest "$subcommand" "$@" ;;
+    *) die "Unknown briefing route subcommand: $subcommand" 2 ;;
   esac
 }
 
@@ -505,5 +636,6 @@ case "$subcommand" in
   restore) cmd_archive_state restore "$@" ;;
   bundle) cmd_bundle "$@" ;;
   group) cmd_group "$@" ;;
+  route) cmd_route "$@" ;;
   *) die "Unknown briefing subcommand: $subcommand" 2 ;;
 esac

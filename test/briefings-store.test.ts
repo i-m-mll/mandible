@@ -32,9 +32,12 @@ import {
   addBriefingGroupUpdate,
   configureBriefingGroup,
   createBriefingGroup,
+  dispositionBriefingGroupProposalByHumanReview,
   promoteBriefingGroupProposal,
+  readBriefingGroup,
   setBriefingGroupArchived,
 } from "../src/feedback/briefing-groups.js";
+import { METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 
@@ -61,6 +64,75 @@ function request(markdown = '# Daily\n\n:::spec-item{key="paper" type="verdict" 
     occurrences: [{ directive_key: "paper", evidence_digest: digest("b"), occurred_at: 99, metadata: { ref: "paper-1" } }],
     ...overrides,
   });
+}
+
+function seedPromotionFixture() {
+  const first = publishBriefingRun(db, request(), publisherId, 1_000);
+  const second = publishBriefingRun(db, request(request().document!.markdown, {
+    briefing_key: "second", run_id: "run-2", run_key: "run-key-2",
+  }), publisherId, 1_010);
+  const viewer = { userId: humanId, operator: true, humanReviewOperator: true };
+  const base = createBriefingBundle(db, { name: "Original", briefingRefs: [first.briefing_id], viewer }, 1_100);
+  const proposal = createBriefingBundle(db, { name: "Proposed", briefingRefs: [second.briefing_id], viewer }, 1_110);
+  const group = createBriefingGroup(db, {
+    name: "Policy", currentBundleRef: base.id, bundleRefs: [proposal.id], viewer,
+  }, 1_200);
+  return { base, proposal, group, viewer };
+}
+
+function insertSuccessfulMergeAuth(authId: string, mergeHead: string): void {
+  db.prepare(`INSERT INTO auth_requests (
+    id, command, title, status, created_at, updated_at, resolved_at, expires_at,
+    exit_code, output, repo, base_branch, head_branch, type, merge_head_sha
+  ) VALUES (?, 'git merge', 'Merge policy', 'completed', 1, 2, 2, 999999,
+    0, '', 'dotfiles', 'main', 'feature/policy', 'merge', ?)`)
+    .run(authId, mergeHead);
+}
+
+function insertPromotionAction(
+  authId: string,
+  payload: { group_ref: string; expected_base_bundle_ref: string; proposal_bundle_ref: string },
+): void {
+  db.prepare(`INSERT INTO auth_request_actions (
+    id, auth_request_id, ordinal, kind, target_issue_ref, payload, state,
+    target_digest, staged_at, updated_at, applied_at, outcome_detail
+  ) VALUES (?, ?, 1, 'briefing_group_promote', 'policy-issue', ?, 'staged',
+    NULL, 1, 1, NULL, NULL)`)
+    .run(`${authId}-action`, authId, JSON.stringify(payload));
+}
+
+function insertCompositionProvenance(
+  groupId: string,
+  baseBundleId: string,
+  proposalBundleId: string,
+  runId = "composition-review-run",
+): string {
+  db.prepare(`INSERT INTO briefing_composition_runs (
+    id, publisher_user_id, task_identity, run_id, run_key, request_digest, source_key,
+    source_cursor, source_health_json, quiet, quiet_reason, received_at
+  ) VALUES (?, ?, 'agent-schedule/review', ?, ?, ?, 'changes', 'cursor-1', '{}', 0, NULL, 1)`)
+    .run(runId, publisherId, runId, runId, digest("e"));
+  db.prepare(`INSERT INTO briefing_composition_targets
+    (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id)
+    VALUES (?, ?, 'proposed', ?, ?)`).run(runId, groupId, baseBundleId, proposalBundleId);
+  return runId;
+}
+
+function insertOperatorSubmission(bundleId: string, suffix = "one"): string {
+  const round = db.prepare(`SELECT b.id AS briefing_id, b.latest_round_id AS round_id
+    FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
+    WHERE bm.bundle_id = ? ORDER BY bm.layout_position, bm.subgroup_position LIMIT 1`)
+    .get(bundleId) as { briefing_id: string; round_id: string };
+  const ordinal = (db.prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS value FROM briefing_submissions WHERE round_id = ?")
+    .get(round.round_id) as { value: number }).value;
+  const id = `operator-submission-${suffix}`;
+  const prior = db.prepare(`SELECT id FROM briefing_submissions WHERE round_id = ? AND actor_user_id = ?
+    ORDER BY ordinal DESC LIMIT 1`).get(round.round_id, humanId) as { id: string } | undefined;
+  db.prepare(`INSERT INTO briefing_submissions
+    (id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, round.round_id, round.briefing_id, ordinal, prior?.id ?? null,
+      humanId, 1_250 + ordinal);
+  return id;
 }
 
 beforeEach(() => {
@@ -169,6 +241,16 @@ describe("artifact-backed Briefing rounds", () => {
     ) VALUES (?, 'git merge', 'Merge accepted policy', 'completed', 1, 2, 2, 999999,
       0, '', 'dotfiles', 'main', 'feature/policy', 'merge', ?)`)
       .run(authId, mergeHead);
+    db.prepare(`INSERT INTO auth_request_actions (
+      id, auth_request_id, ordinal, kind, target_issue_ref, payload, state,
+      target_digest, staged_at, updated_at, applied_at, outcome_detail
+    ) VALUES ('promotion-action', ?, 1, 'briefing_group_promote', 'policy-issue', ?, 'staged',
+      NULL, 1, 1, NULL, NULL)`)
+      .run(authId, JSON.stringify({
+        group_ref: group.id,
+        expected_base_bundle_ref: base.id,
+        proposal_bundle_ref: promoted.id,
+      }));
     db.prepare(`INSERT INTO auth_hook_executions (
       id, auth_request_id, hook_id, hook_label, command, command_digest, position, required,
       state, attempts, max_attempts, exit_code, output, attempt_history, started_at, finished_at,
@@ -210,8 +292,185 @@ describe("artifact-backed Briefing rounds", () => {
       proposalBundleRef: promoted.id,
       authRequestRef: authId,
       mergeHeadSha: mergeHead,
-    }, viewer, 1_500)).toThrowError(expect.objectContaining({ code: "promotion_replay_drift" }));
+    }, viewer, 1_500)).toThrowError(expect.objectContaining({ code: "promotion_authorization_mismatch" }));
     expect(db.prepare("SELECT COUNT(*) AS count FROM briefing_group_dispositions").get()).toEqual({ count: 1 });
+  });
+
+  it("rejects unrelated successful requests and exact-action drift", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const mergeHead = "b".repeat(40);
+    insertSuccessfulMergeAuth("unrelated-auth-request", mergeHead);
+    insertSuccessfulMergeAuth("drifted-auth-request", mergeHead);
+    insertPromotionAction("drifted-auth-request", {
+      group_ref: group.id,
+      expected_base_bundle_ref: proposal.id,
+      proposal_bundle_ref: proposal.id,
+    });
+
+    const promote = (authRequestRef: string) => promoteBriefingGroupProposal(db, {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      authRequestRef,
+      mergeHeadSha: mergeHead,
+    }, viewer, 1_300);
+    expect(() => promote("unrelated-auth-request"))
+      .toThrowError(expect.objectContaining({ code: "promotion_authorization_mismatch" }));
+    expect(() => promote("drifted-auth-request"))
+      .toThrowError(expect.objectContaining({ code: "promotion_authorization_mismatch" }));
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: base.id });
+  });
+
+  it("fails closed when promotion authorization or convergence schema is missing", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const authId = "missing-schema-auth-request";
+    const mergeHead = "c".repeat(40);
+    insertSuccessfulMergeAuth(authId, mergeHead);
+    const input = {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      authRequestRef: authId,
+      mergeHeadSha: mergeHead,
+    };
+
+    db.prepare("DROP TABLE auth_request_actions").run();
+    expect(() => promoteBriefingGroupProposal(db, input, viewer, 1_300))
+      .toThrowError(expect.objectContaining({ code: "promotion_authorization_unavailable" }));
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: base.id });
+  });
+
+  it("fails closed when auth hook convergence records are unavailable", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const authId = "missing-hooks-auth-request";
+    const mergeHead = "d".repeat(40);
+    insertSuccessfulMergeAuth(authId, mergeHead);
+    insertPromotionAction(authId, {
+      group_ref: group.id,
+      expected_base_bundle_ref: base.id,
+      proposal_bundle_ref: proposal.id,
+    });
+    db.prepare("DROP TABLE auth_hook_executions").run();
+
+    expect(() => promoteBriefingGroupProposal(db, {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      authRequestRef: authId,
+      mergeHeadSha: mergeHead,
+    }, viewer, 1_300)).toThrowError(expect.objectContaining({ code: "promotion_convergence_unavailable" }));
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: base.id });
+  });
+
+  it("accepts one exact Mandible-custodied recurring proposal and makes exact replay a no-op", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    const compositionRunId = insertCompositionProvenance(group.id, base.id, proposal.id);
+    const submissionId = insertOperatorSubmission(proposal.id);
+    const candidate = readBriefingGroup(db, group.id, viewer).review_candidates[0];
+    expect(candidate).toMatchObject({
+      ready: true,
+      expected_base_bundle_id: base.id,
+      proposal_bundle_id: proposal.id,
+      composition_run_id: compositionRunId,
+      binding_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      items: [{ changed: true, submission_id: submissionId }],
+    });
+    const input = {
+      groupRef: group.id,
+      expectedBaseBundleRef: base.id,
+      proposalBundleRef: proposal.id,
+      decision: "accepted" as const,
+      bindingDigest: candidate.binding_digest!,
+    };
+    const actor = { userId: humanId, evidenceMethod: "api_token" as const, credentialId: null };
+    const accepted = dispositionBriefingGroupProposalByHumanReview(db, input, actor, viewer, 1_300);
+    expect(accepted).toMatchObject({
+      changed: true,
+      group: { current: { id: proposal.id }, updates: [] },
+      disposition: {
+        kind: "accepted",
+        prior_base: { id: base.id },
+        proposal: { id: proposal.id },
+        resulting_base: { id: proposal.id },
+        review_binding_digest: candidate.binding_digest,
+        composition_run_id: compositionRunId,
+        review_items: [{ submission_id: submissionId, changed: true }],
+        actor_user_id: humanId,
+        evidence_method: "api_token",
+      },
+    });
+    expect(dispositionBriefingGroupProposalByHumanReview(db, input, actor, viewer, 1_400))
+      .toMatchObject({ changed: false, group: { current: { id: proposal.id } } });
+    expect(() => dispositionBriefingGroupProposalByHumanReview(db, {
+      ...input, decision: "rejected",
+    }, actor, viewer, 1_500)).toThrowError(expect.objectContaining({ code: "briefing_review_replay_drift" }));
+    const receipt = db.prepare("SELECT id FROM briefing_group_review_dispositions").get() as { id: string };
+    expect(() => db.prepare("UPDATE briefing_group_review_dispositions SET decision = 'rejected' WHERE id = ?")
+      .run(receipt.id)).toThrow(/immutable/);
+    expect(() => db.prepare("DELETE FROM briefing_group_review_disposition_items WHERE disposition_id = ?")
+      .run(receipt.id)).toThrow(/immutable/);
+  });
+
+  it("rejects without changing Base and fails closed on review, custody, and Base drift", () => {
+    const fixture = seedPromotionFixture();
+    insertCompositionProvenance(fixture.group.id, fixture.base.id, fixture.proposal.id);
+    insertOperatorSubmission(fixture.proposal.id, "first");
+    const initial = readBriefingGroup(db, fixture.group.id, fixture.viewer).review_candidates[0];
+    insertOperatorSubmission(fixture.proposal.id, "second");
+    const actor = { userId: humanId, evidenceMethod: "api_token" as const, credentialId: null };
+    expect(() => dispositionBriefingGroupProposalByHumanReview(db, {
+      groupRef: fixture.group.id, expectedBaseBundleRef: fixture.base.id,
+      proposalBundleRef: fixture.proposal.id, decision: "rejected", bindingDigest: initial.binding_digest!,
+    }, actor, fixture.viewer, 1_300)).toThrowError(expect.objectContaining({ code: "briefing_review_binding_drift" }));
+    const current = readBriefingGroup(db, fixture.group.id, fixture.viewer).review_candidates[0];
+    const rejected = dispositionBriefingGroupProposalByHumanReview(db, {
+      groupRef: fixture.group.id, expectedBaseBundleRef: fixture.base.id,
+      proposalBundleRef: fixture.proposal.id, decision: "rejected", bindingDigest: current.binding_digest!,
+    }, actor, fixture.viewer, 1_400);
+    expect(rejected).toMatchObject({ changed: true, group: {
+      current: { id: fixture.base.id }, updates: [], history: [{
+        kind: "rejected", prior_base: { id: fixture.base.id }, proposal: { id: fixture.proposal.id },
+        resulting_base: { id: fixture.base.id },
+      }],
+    } });
+
+  });
+
+  it("fails closed when Base changes after an operator freezes the review", () => {
+    const fixture = seedPromotionFixture();
+    insertCompositionProvenance(fixture.group.id, fixture.base.id, fixture.proposal.id);
+    insertOperatorSubmission(fixture.proposal.id, "drift");
+    const candidate = readBriefingGroup(db, fixture.group.id, fixture.viewer).review_candidates[0];
+    db.prepare("UPDATE briefing_groups SET current_bundle_id = NULL WHERE id = ?").run(fixture.group.id);
+    expect(() => dispositionBriefingGroupProposalByHumanReview(db, {
+      groupRef: fixture.group.id, expectedBaseBundleRef: fixture.base.id,
+      proposalBundleRef: fixture.proposal.id, decision: "accepted", bindingDigest: candidate.binding_digest!,
+    }, { userId: humanId, evidenceMethod: "api_token", credentialId: null }, fixture.viewer, 1_500))
+      .toThrowError(expect.objectContaining({ code: "briefing_review_base_drift" }));
+  });
+
+  it("keeps repository or mixed-lineage proposals on protected merge authorization", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    insertCompositionProvenance(group.id, base.id, proposal.id);
+    insertOperatorSubmission(proposal.id);
+    const version = db.prepare(`SELECT r.artifact_version_id, av.artifact_id
+      FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
+      JOIN briefing_rounds r ON r.id = b.latest_round_id JOIN artifact_version av ON av.id = r.artifact_version_id
+      WHERE bm.bundle_id = ?`).get(proposal.id) as { artifact_version_id: string; artifact_id: string };
+    db.prepare("UPDATE artifact SET source_kind = 'mixed' WHERE id = ?").run(version.artifact_id);
+    expect(readBriefingGroup(db, group.id, viewer).review_candidates[0]).toMatchObject({
+      ready: false,
+      binding_digest: null,
+      blocker_code: "briefing_review_repository_authority_required",
+    });
+    expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining([
+      "briefing_group_dispositions",
+      "briefing_group_review_dispositions",
+      "briefing_group_review_disposition_items",
+    ]));
   });
 
   it("archives group containment, restores atomically, and records only explicit active sharing", () => {

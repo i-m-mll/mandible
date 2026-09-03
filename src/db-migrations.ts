@@ -1,6 +1,8 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
+import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -521,6 +523,44 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 163,
     name: "authoritative_conversation_control",
     statements: [...CONVERSATION_CONTROL_SCHEMA_SQL],
+  },
+  {
+    version: 164,
+    name: "bounded_ledger_change_feed",
+    statements: [
+      `CREATE TABLE ledger_change_feed_state (
+        project_id TEXT PRIMARY KEY REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        next_sequence INTEGER NOT NULL DEFAULT 1 CHECK(next_sequence >= 1),
+        retained_from_sequence INTEGER NOT NULL DEFAULT 1 CHECK(retained_from_sequence >= 1),
+        updated_at INTEGER NOT NULL,
+        CHECK(retained_from_sequence <= next_sequence)
+      )`,
+      `CREATE TABLE ledger_change_log (
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        sequence INTEGER NOT NULL CHECK(sequence >= 1),
+        event_id TEXT NOT NULL UNIQUE,
+        recorded_at INTEGER NOT NULL,
+        PRIMARY KEY(project_id, sequence)
+      )`,
+      `CREATE INDEX idx_ledger_change_log_event
+        ON ledger_change_log(event_id)`,
+    ],
+  },
+  {
+    version: 165,
+    name: "base_relative_briefing_composer",
+    statements: [...BRIEFING_COMPOSER_SCHEMA_SQL],
+  },
+  {
+    version: 166,
+    name: "task_activation_health",
+    statements: [...TASK_ACTIVATION_SCHEMA_SQL],
+  },
+  {
+    version: 167,
+    name: "human_reviewed_briefing_group_disposition",
+    statements: BRIEFING_GROUP_SCHEMA_SQL.filter((statement) =>
+      statement.includes("briefing_group_review_disposition")),
   },
 ];
 

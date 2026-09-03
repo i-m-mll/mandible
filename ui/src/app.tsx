@@ -1994,6 +1994,8 @@ function App(): JSX.Element {
       href: '#/tasks',
       label: 'Tasks',
       title: 'Tasks',
+      badge: badges.tasks,
+      badgeClass: 'tab-badge--tasks-attention',
       icon: TasksIcon,
     },
   ];

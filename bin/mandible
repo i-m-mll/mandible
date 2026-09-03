@@ -9,6 +9,7 @@
 #   reminder <subcommand>            Create, show, list, and cancel reminders
 #   inbox [check|ack|watch|add]      Manage session inbox
 #   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
+#   changes --project <ref>          Read the bounded ledger change feed
 #   umbrella status <id>             Print coordinator fact packet
 #   description <subcommand>         Alias for issue description operations
 #   auth list [opts]                 List active auth requests
@@ -62,6 +63,7 @@ Commands:
   reminder create|show|list|cancel Durable one-shot reminders
   inbox [check|ack|watch|add]      Manage session inbox
   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
+  changes --project <ref>          Read the bounded ledger change feed
   umbrella status <id>             Print coordinator fact packet
   description <subcommand>         Alias for issue description operations
   auth list [opts]                 List active auth requests
@@ -119,6 +121,7 @@ case "${1:-}" in
   reminder) shift; exec "$MANDIBLE_CLI_DIR/reminder.sh" "$@" ;;
   inbox)   shift; exec "$MANDIBLE_CLI_DIR/inbox.sh" "$@" ;;
   issue)   shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
+  changes) shift; exec "$MANDIBLE_CLI_DIR/changes.sh" "$@" ;;
   umbrella) shift; exec "$MANDIBLE_CLI_DIR/umbrella.sh" "$@" ;;
   description) shift; exec "$MANDIBLE_CLI_DIR/issue.sh" description "$@" ;;
   auth)

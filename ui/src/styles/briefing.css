@@ -314,6 +314,52 @@
   font-size: var(--text-xs);
 }
 
+.briefing-group-detail__review {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+}
+
+.briefing-group-detail__review p,
+.briefing-group-detail__review-status {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.briefing-group-detail__review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.briefing-group-detail__review-actions button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+}
+
+.briefing-group-detail__review-actions button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.briefing-group-detail__accept {
+  background: var(--accent-blue);
+  color: var(--text-on-accent);
+}
+
+.briefing-group-detail__reject {
+  background: var(--surface-card);
+  color: var(--status-danger-fg);
+}
+
 .briefing-group-detail__history summary {
   color: var(--text-muted);
   cursor: pointer;

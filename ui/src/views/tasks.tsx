@@ -32,6 +32,7 @@ import {
   cancelTaskDisable,
   TASK_INVENTORY_UNKNOWN,
   type TaskActivationFacts,
+  type TaskActivationHealthFacts,
   type TaskBundleFacts,
   type TaskConfigFacts,
   type TaskExecutorFreshness,
@@ -82,6 +83,26 @@ function isUnknown(value: unknown): boolean {
   return value === TASK_INVENTORY_UNKNOWN;
 }
 
+function activationHealth(
+  activation: TaskActivationFacts,
+): TaskActivationHealthFacts | null {
+  return 'state' in activation ? activation : null;
+}
+
+const ACTIVATION_STATE_LABEL: Record<TaskActivationHealthFacts['state'], string> = {
+  never_activated: 'Never activated',
+  activated: 'Activated',
+  operator_disabled: 'Disabled by operator',
+  deployment_invalidated: 'Invalidated by deployment',
+};
+
+const EXECUTOR_HEALTH_LABEL = {
+  healthy: 'Healthy',
+  no_active_bundle: 'No active bundle',
+  bundle_link_mismatch: 'Active bundle link mismatch',
+  execution_path_mismatch: 'Execution path does not match the active bundle',
+} as const;
+
 /**
  * The single formatting rule for a reported scalar. Returns the text AND
  * whether it is an explicit unknown, so the caller can style it as absent
@@ -125,6 +146,9 @@ function Fact({
 }
 
 const formatMs = (value: never) => formatAbsoluteTime(value as unknown as number);
+const formatActivationMs = (value: never) => value === ('none' as never)
+  ? 'none'
+  : formatMs(value);
 
 function BundleSection({ bundle }: { bundle: TaskBundleFacts | typeof TASK_INVENTORY_UNKNOWN }): JSX.Element {
   if (isUnknown(bundle)) {
@@ -146,6 +170,7 @@ function BundleSection({ bundle }: { bundle: TaskBundleFacts | typeof TASK_INVEN
 }
 
 function ActivationSection({ activation }: { activation: TaskActivationFacts }): JSX.Element {
+  const health = activationHealth(activation);
   return (
     <>
       <dl className="tasks-facts">
@@ -153,10 +178,27 @@ function ActivationSection({ activation }: { activation: TaskActivationFacts }):
             the disagreement that matters: configured on, not running here. */}
         <Fact label="Enabled in config" value={activation.config_enabled} />
         <Fact label="Activated on this host" value={activation.locally_activated} />
+        {health ? <Fact label="Activation state" value={ACTIVATION_STATE_LABEL[health.state]} /> : null}
+        {health ? <Fact label="Changed" value={health.changed_at} format={formatActivationMs} /> : null}
+        {health ? <Fact label="Previous execution hash" value={health.previous_execution_hash} mono /> : null}
+        {health ? <Fact label="Required execution hash" value={health.required_execution_hash} mono /> : null}
+        {health ? <Fact label="Deployment commit" value={health.deployment_commit} mono /> : null}
+        {health ? <Fact label="Deployment content hash" value={health.deployment_content_hash} mono /> : null}
+        {health ? <Fact label="Deployed" value={health.deployed_at} format={formatActivationMs} /> : null}
       </dl>
-      {activation.config_enabled === true && activation.locally_activated === false ? (
+      {!health && activation.config_enabled === true && activation.locally_activated === false ? (
         <p className="tasks-note">
           Configured to run, but not activated on the reporting host.
+        </p>
+      ) : null}
+      {health?.state === 'never_activated' ? (
+        <p className="tasks-note">This task has never been activated on the reporting host.</p>
+      ) : health?.state === 'operator_disabled' ? (
+        <p className="tasks-note">An operator explicitly disabled this task on the reporting host.</p>
+      ) : health?.state === 'deployment_invalidated' ? (
+        <p className="tasks-note">
+          Deployment changed the executable bytes. The task stays disabled until those exact bytes
+          pass a dry run and an operator explicitly enables them.
         </p>
       ) : null}
     </>
@@ -288,6 +330,10 @@ function ExecutorFooter({ executor }: { executor: TaskExecutorSummary | null }):
           label="Capabilities"
           value={executor.capabilities.length > 0 ? executor.capabilities.join(', ') : 'none declared'}
         />
+        <Fact
+          label="Runtime health"
+          value={executor.health ? EXECUTOR_HEALTH_LABEL[executor.health.condition] : 'not reported'}
+        />
         <Fact label="Observed" value={executor.observed_at} format={formatMs} />
         <Fact label="Received" value={executor.received_at} format={formatMs} />
         <Fact label="Posted by" value={executor.posted_by_slug ?? executor.posted_by_user_id} />
@@ -386,9 +432,10 @@ function CommandSection({
 }
 
 function knownExecutionHash(item: ExecutorTaskInventoryItem): string | null {
-  const hash = item.task.bundle !== TASK_INVENTORY_UNKNOWN
+  const hash = item.activation_condition?.required_execution_hash
+    ?? (item.task.bundle !== TASK_INVENTORY_UNKNOWN
     ? item.task.bundle.execution_hash
-    : TASK_INVENTORY_UNKNOWN;
+    : TASK_INVENTORY_UNKNOWN);
   return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
 }
 
@@ -428,7 +475,7 @@ function ExecutorTaskHeaderActions({
       >
         {disableBusy ? 'Recording…' : 'Request disable'}
       </button>
-      {supportsV2 ? (
+      {supportsV2 && !item.activation_condition ? (
         <>
           <button type="button" className="btn" disabled={v2Busy} onClick={onDryRun}>
             Dry run
@@ -526,6 +573,20 @@ function ExecutorTaskDetail({
         <h3 className="tasks-section__title">Activation</h3>
         <ActivationSection activation={task.activation} />
       </section>
+
+      {item.activation_history.length > 0 ? (
+        <section className="tasks-section">
+          <h3 className="tasks-section__title">Activation history</h3>
+          <ol className="tasks-activation-history">
+            {item.activation_history.map((entry) => (
+              <li key={entry.id}>
+                <strong>{ACTIVATION_STATE_LABEL[entry.state]}</strong>
+                <span>{formatAbsoluteTime(entry.observed_at)}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
 
       <section className="tasks-section">
         <h3 className="tasks-section__title">Guards</h3>
@@ -1051,6 +1112,43 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   // are different facts and must not share a message.
   const neverRegistered = !loading && !error && executors.length === 0 && tasks.length === 0;
   const registeredButEmpty = !loading && !error && executors.length > 0 && tasks.length === 0;
+  const activationCondition = selectedExecutorTask?.activation_condition ?? null;
+  const executorHealth = selectedExecutor?.health;
+  const detailNotice = activationCondition && selectedExecutorTask ? (
+    <DetailPaneNotice
+      severity="warning"
+      density="compact"
+      title="Important: activation invalidated"
+      actions={(
+        <button
+          type="button"
+          className="btn"
+          disabled={v2Busy || !commandAvailable}
+          onClick={() => { void requestV2(activationCondition.next_action, {
+            executor: selectedExecutorTask.executor,
+            taskId: selectedExecutorTask.task.task_id,
+            executionHash: activationCondition.required_execution_hash,
+          }); }}
+        >
+          {activationCondition.next_action === 'dry_run' ? 'Dry run' : 'Enable task'}
+        </button>
+      )}
+    >
+      Deployment changed the execution hash to{' '}
+      <code>{activationCondition.required_execution_hash.slice(0, 12)}</code>. Run the dry run for
+      these exact bytes, then enable them explicitly. This alert is deduplicated by task and hash.
+    </DetailPaneNotice>
+  ) : executorHealth?.status === 'operational_failure' ? (
+    <DetailPaneNotice severity="warning" density="compact" title="Executor operational failure">
+      {EXECUTOR_HEALTH_LABEL[executorHealth.condition]}. This is an executor-path problem, not a
+      task activation transition.
+    </DetailPaneNotice>
+  ) : (
+    <DetailPaneNotice severity="info" density="compact" title="Execution testimony">
+      Reported by executor: those rows remain executor testimony. Mandible reminder rows are first-party
+      ledger records; neither row type implies external execution.
+    </DetailPaneNotice>
+  );
 
   return (
     <div className={`tasks-layout${sidebarHidden ? ' tasks-layout--sidebar-hidden' : ''}`}>
@@ -1172,6 +1270,14 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
                   </SidebarItemBadge>
                   <SidebarItemBadge>{item.reminder.lifecycle}</SidebarItemBadge>
                 </>
+              ) : item.activation_condition ? (
+                <SidebarItemBadge title="Important activation recovery required">
+                  important
+                </SidebarItemBadge>
+              ) : activationHealth(item.task.activation) ? (
+                <SidebarItemBadge>
+                  {ACTIVATION_STATE_LABEL[activationHealth(item.task.activation)!.state]}
+                </SidebarItemBadge>
               ) : undefined}
             />
           ))
@@ -1230,12 +1336,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         ) : (
           <DetailPaneHeader variant="compact" title="Tasks" />
         )}
-        notice={(
-          <DetailPaneNotice severity="info" density="compact" title="Execution testimony">
-            Reported by executor: those rows remain executor testimony. Mandible reminder rows are first-party
-            ledger records; neither row type implies external execution.
-          </DetailPaneNotice>
-        )}
+        notice={detailNotice}
         overlays={activeIntent ? (
           <TaskCommandModal
             intent={activeIntent}

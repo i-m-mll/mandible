@@ -195,6 +195,18 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     }));
   };
 
+  const updateDispositionedGroup = (nextGroup: BriefingGroup) => {
+    setSidebar((current) => ({
+      ...current,
+      groups: current.groups.map((group) => group.id === nextGroup.id ? nextGroup : group),
+    }));
+    setViewState((current) => {
+      const selectedGroupUpdateIds = { ...current.selectedGroupUpdateIds };
+      delete selectedGroupUpdateIds[nextGroup.id];
+      return { ...current, selectedGroupUpdateIds };
+    });
+  };
+
   return (
     <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
@@ -205,6 +217,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
           group={selectedGroup}
           selectedUpdateId={selectedGroupUpdateId}
           onSelectUpdate={(updateId) => selectGroupUpdate(selectedGroup.id, updateId)}
+          onDisposition={updateDispositionedGroup}
         />
       ) : !selected ? <p className="briefing-empty briefing-empty--selection">Select a Briefing or group.</p> : (
         <BriefingDocumentRenderer

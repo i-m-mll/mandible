@@ -13,7 +13,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setSetting } from "../../src/client-auth/settings-kv.js";
-import { TASK_INVENTORY_SCHEMA } from "../../src/contracts.js";
+import { TASK_INVENTORY_SCHEMA_V2 } from "../../src/contracts.js";
 import { migrate, setDb, type Db } from "../../src/db.js";
 import { resolveInstanceInfo } from "../../src/instance-policy.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
@@ -69,7 +69,7 @@ class SlugGate implements ClientAuthGate {
 
 function generation(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schema: TASK_INVENTORY_SCHEMA,
+    schema: TASK_INVENTORY_SCHEMA_V2,
     executor: { name: "agent-schedule", version: "0.4.2", capabilities: ["cron"] },
     observed_at: NOW,
     tasks: [
@@ -319,12 +319,12 @@ describe("POST /api/tasks/inventory", () => {
     expect((extra.body as { error: string }).error).toMatch(/unknown field\(s\): enabled/);
 
     const badSchema = await post(
-      generation({ schema: "executor-inventory@3" }),
+      generation({ schema: "executor-inventory@4" }),
       "agent-schedule",
     );
     expect(badSchema.status).toBe(400);
     expect((badSchema.body as { error: string }).error).toMatch(
-      /unsupported schema 'executor-inventory@3'; expected 'executor-inventory@2' or 'executor-inventory@1'/,
+      /unsupported schema 'executor-inventory@4'; expected 'executor-inventory@3', 'executor-inventory@2', or 'executor-inventory@1'/,
     );
 
     const nulled = await post(

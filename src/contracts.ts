@@ -1167,16 +1167,48 @@ export type BriefingGroup = {
   archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  review_candidates: BriefingGroupReviewCandidate[];
   history: BriefingGroupDisposition[];
+};
+export type BriefingGroupReviewItem = {
+  position: number;
+  layout_position: number;
+  subgroup_position: number;
+  proposal_briefing_id: string;
+  proposal_round_id: string;
+  proposal_artifact_version_id: string;
+  proposal_content_hash: string;
+  base_briefing_id: string | null;
+  base_round_id: string | null;
+  base_artifact_version_id: string | null;
+  base_content_hash: string | null;
+  changed: boolean;
+  submission_id: string | null;
+};
+export type BriefingGroupReviewCandidate = {
+  proposal_bundle_id: string;
+  expected_base_bundle_id: string | null;
+  composition_run_id: string | null;
+  binding_digest: string | null;
+  ready: boolean;
+  blocker_code: string | null;
+  blocker_message: string | null;
+  items: BriefingGroupReviewItem[];
 };
 export type BriefingGroupDisposition = {
   id: string;
-  kind: "promoted" | "dismissed";
+  kind: "promoted" | "dismissed" | "accepted" | "rejected";
   prior_base: BriefingBundle | null;
   proposal: BriefingBundle;
   resulting_base: BriefingBundle | null;
   auth_request_id: string | null;
   merge_head_sha: string | null;
+  review_binding_digest: string | null;
+  composition_run_id: string | null;
+  review_items: BriefingGroupReviewItem[];
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  credential_id: string | null;
   created_at: number;
 };
 export const BRIEFING_EVENTS = Object.freeze({
@@ -1189,6 +1221,8 @@ export const BRIEFING_EVENTS = Object.freeze({
   groupUpdateAdded: "briefing:group-update-added",
   groupConfigurationUpdated: "briefing:group-configuration-updated",
   groupProposalPromoted: "briefing:group-proposal-promoted",
+  groupProposalAccepted: "briefing:group-proposal-accepted",
+  groupProposalRejected: "briefing:group-proposal-rejected",
   groupNameUpdated: "briefing:group-name-updated",
   groupArchived: "briefing:group-archived",
   groupRestored: "briefing:group-restored",
@@ -1234,9 +1268,11 @@ export function isBriefingEvent(value: unknown): value is BriefingEvent {
 // The publisher-facing spec is docs/executor-inventory-contract.md.
 
 export const TASK_INVENTORY_SCHEMA_V1 = 'executor-inventory@1';
-export const TASK_INVENTORY_SCHEMA = 'executor-inventory@2';
+export const TASK_INVENTORY_SCHEMA_V2 = 'executor-inventory@2';
+export const TASK_INVENTORY_SCHEMA = 'executor-inventory@3';
 export type TaskInventorySchema =
   | typeof TASK_INVENTORY_SCHEMA_V1
+  | typeof TASK_INVENTORY_SCHEMA_V2
   | typeof TASK_INVENTORY_SCHEMA;
 
 /** The literal an executor sends when it cannot answer a field. */
@@ -1276,9 +1312,50 @@ export type TaskBundleFacts = {
  * conflate: what the checked-in configuration asks for, and what this host is
  * actually running right now.
  */
-export type TaskActivationFacts = {
+export type TaskActivationLegacyFacts = {
   config_enabled: TaskInventoryMaybe<boolean>;
   locally_activated: TaskInventoryMaybe<boolean>;
+};
+
+export type TaskActivationState =
+  | 'never_activated'
+  | 'activated'
+  | 'operator_disabled'
+  | 'deployment_invalidated';
+export type TaskActivationReason =
+  | 'never_activated'
+  | 'operator_enabled'
+  | 'operator_disabled'
+  | 'execution_hash_changed';
+export type TaskActivationAction = 'none' | 'dry_run' | 'enable';
+export type TaskAttention = 'none' | 'important';
+
+/** The v3 state machine and the deployment transition that produced it. */
+export type TaskActivationHealthFacts = TaskActivationLegacyFacts & {
+  state: TaskActivationState;
+  reason: TaskActivationReason;
+  changed_at: TaskInventoryMaybe<number | 'none'>;
+  previous_execution_hash: string | 'none';
+  required_execution_hash: string | 'none';
+  deployment_commit: string | 'none';
+  deployment_content_hash: string | 'none';
+  deployed_at: TaskInventoryMaybe<number | 'none'>;
+  required_action: TaskActivationAction;
+  attention: TaskAttention;
+};
+
+export type TaskActivationFacts = TaskActivationLegacyFacts | TaskActivationHealthFacts;
+
+export type TaskExecutorHealthCondition =
+  | 'healthy'
+  | 'no_active_bundle'
+  | 'bundle_link_mismatch'
+  | 'execution_path_mismatch';
+
+export type TaskExecutorHealth = {
+  status: 'healthy' | 'operational_failure';
+  condition: TaskExecutorHealthCondition;
+  attention: TaskAttention;
 };
 
 /** Executor-reported configuration that determines what fires and how. */
@@ -1353,6 +1430,8 @@ export type TaskExecutorIdentity = {
   version: TaskInventoryMaybe<string>;
   /** Free-form capability tokens; empty array means "declared none". */
   capabilities: string[];
+  /** Absent only on preserved executor-inventory@1/@2 generations. */
+  health?: TaskExecutorHealth;
 };
 
 /** One atomic inventory generation, exactly as posted. */
@@ -1382,6 +1461,8 @@ export type TaskExecutorSummary = {
   name: string;
   version: TaskInventoryMaybe<string>;
   capabilities: string[];
+  /** Absent only when the selected generation predates executor-inventory@3. */
+  health?: TaskExecutorHealth;
   observed_at: number;
   observed_age_ms: number;
   freshness: TaskExecutorFreshness;
@@ -1394,6 +1475,29 @@ export type TaskExecutorSummary = {
   task_count: number;
 };
 
+export type TaskActivationObservation = {
+  id: string;
+  generation_id: string;
+  state: TaskActivationState;
+  reason: TaskActivationReason;
+  observed_at: number;
+  recorded_at: number;
+  facts: TaskActivationHealthFacts;
+};
+
+export type TaskActivationCondition = {
+  id: string;
+  dedupe_key: string;
+  required_execution_hash: string;
+  attention: 'important';
+  state: 'active' | 'resolved' | 'superseded';
+  next_action: 'dry_run' | 'enable';
+  raised_at: number;
+  resolved_at: number | null;
+  resolution: 'matching_dry_run_and_enable' | null;
+  enable_command_id: string | null;
+};
+
 /** A task as reported by its executor, carrying that executor's view age. */
 export type ExecutorTaskInventoryView = {
   source_kind: 'executor';
@@ -1404,6 +1508,8 @@ export type ExecutorTaskInventoryView = {
   observed_at: number;
   observed_age_ms: number;
   task: TaskInventoryEntry;
+  activation_condition: TaskActivationCondition | null;
+  activation_history: TaskActivationObservation[];
 };
 
 /** A first-party reminder projected beside executor-owned tasks. */
@@ -1435,7 +1541,11 @@ export const TASK_INVENTORY_EVENTS = Object.freeze({
 
 // --- operational incidents (issue 5308097) ---------------------------------
 
-export const OPERATIONAL_INCIDENT_SCHEMA = 'operational-incidents@1';
+export const OPERATIONAL_INCIDENT_SCHEMA_V1 = 'operational-incidents@1';
+export const OPERATIONAL_INCIDENT_SCHEMA = 'operational-incidents@2';
+export type OperationalIncidentSchema =
+  | typeof OPERATIONAL_INCIDENT_SCHEMA_V1
+  | typeof OPERATIONAL_INCIDENT_SCHEMA;
 export const OPERATIONAL_INCIDENT_RECEIPT_SCHEMA = 'operational-incidents-receipt@1';
 
 export type OperationalIncidentCondition =
@@ -1488,10 +1598,10 @@ export type OperationalIncidentTelemetryEvent = {
 };
 
 export type OperationalIncidentIngestEnvelope = {
-  schema: typeof OPERATIONAL_INCIDENT_SCHEMA;
+  schema: OperationalIncidentSchema;
   executor: { name: string; version: string };
   generation: {
-    inventory_schema: 'executor-inventory@2';
+    inventory_schema: 'executor-inventory@2' | 'executor-inventory@3';
     inventory_digest: string;
     observed_at: number;
   };
@@ -1528,7 +1638,7 @@ export type OperationalIncidentProjection = {
     label: 'Executor-reported; not verified by Mandible';
     value: 'executor_asserted_unverified';
   };
-  latest_telemetry: { schema: typeof OPERATIONAL_INCIDENT_SCHEMA; event: unknown };
+  latest_telemetry: { schema: OperationalIncidentSchema; event: unknown };
   latest_telemetry_sha256: string;
   latest_observed_at: number;
   recovered_at: number | null;

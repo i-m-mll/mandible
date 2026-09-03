@@ -17,6 +17,8 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_issue_relationship_sources",
   "ledger_relationship_edges",
   "ledger_events",
+  "ledger_change_feed_state",
+  "ledger_change_log",
   "ledger_reconciliation_reports",
   "ledger_reconciliation_mismatches",
   "ledger_work_unit_issue_links",
@@ -163,6 +165,9 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_bundle_members",
   "briefing_groups",
   "briefing_group_updates",
+  "briefing_group_dispositions",
+  "briefing_group_review_dispositions",
+  "briefing_group_review_disposition_items",
   "briefing_collection_sharing_receipts",
   // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",

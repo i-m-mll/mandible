@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   TASK_INVENTORY_SCHEMA,
   TASK_INVENTORY_SCHEMA_V1,
+  TASK_INVENTORY_SCHEMA_V2,
   type TaskInventoryEntry,
   type TaskInventoryGeneration,
 } from "../src/contracts.js";
@@ -64,7 +65,20 @@ function taskFixture(overrides: Partial<TaskInventoryEntry> = {}): Record<string
       execution_hash: "sha256:execution",
       deployed_at: NOW - 4 * HOUR,
     },
-    activation: { config_enabled: true, locally_activated: true },
+    activation: {
+      config_enabled: true,
+      locally_activated: true,
+      state: "activated",
+      reason: "operator_enabled",
+      changed_at: NOW - 4 * HOUR,
+      previous_execution_hash: "none",
+      required_execution_hash: "none",
+      deployment_commit: "none",
+      deployment_content_hash: "none",
+      deployed_at: "unknown",
+      required_action: "none",
+      attention: "none",
+    },
     guards: {
       circuit: "closed",
       retry_attempt: 0,
@@ -89,12 +103,23 @@ function taskFixture(overrides: Partial<TaskInventoryEntry> = {}): Record<string
 }
 
 function generationFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const schema = overrides.schema ?? TASK_INVENTORY_SCHEMA;
+  const executor = {
+    name: "agent-schedule",
+    version: "0.4.2",
+    capabilities: ["cron"],
+    ...(schema === TASK_INVENTORY_SCHEMA ? {
+      health: { status: "healthy", condition: "healthy", attention: "none" },
+    } : {}),
+    ...((overrides.executor as Record<string, unknown> | undefined) ?? {}),
+  };
   return {
-    schema: TASK_INVENTORY_SCHEMA,
-    executor: { name: "agent-schedule", version: "0.4.2", capabilities: ["cron"] },
+    schema,
+    executor,
     observed_at: NOW,
     tasks: [taskFixture()],
     ...overrides,
+    executor,
   };
 }
 
@@ -176,6 +201,7 @@ describe("generation validation", () => {
       name: "agent-schedule",
       version: "0.4.2",
       capabilities: ["cron"],
+      health: { status: "healthy", condition: "healthy", attention: "none" },
     });
     expect(parsed.tasks).toHaveLength(1);
     expect(parsed.tasks[0].last_failure).toBe("never");
@@ -219,6 +245,7 @@ describe("generation validation", () => {
     delete legacyTask.config_hash;
     delete legacyTask.prompt_hash;
     delete legacyTask.config;
+    legacyTask.activation = { config_enabled: true, locally_activated: true };
     const parsed = parseTaskInventoryGeneration(generationFixture({
       schema: TASK_INVENTORY_SCHEMA_V1,
       tasks: [legacyTask],
@@ -254,8 +281,19 @@ describe("generation validation", () => {
   });
 
   it("rejects a schema it does not implement", () => {
-    expect(() => parseTaskInventoryGeneration(generationFixture({ schema: "executor-inventory@3" })))
-      .toThrow(/unsupported schema 'executor-inventory@3'/);
+    expect(() => parseTaskInventoryGeneration(generationFixture({ schema: "executor-inventory@4" })))
+      .toThrow(/unsupported schema 'executor-inventory@4'/);
+  });
+
+  it("keeps already-ingested v2 generations readable during rollout", () => {
+    const legacyTask = taskFixture();
+    legacyTask.activation = { config_enabled: true, locally_activated: true };
+    const parsed = parseTaskInventoryGeneration(generationFixture({
+      schema: TASK_INVENTORY_SCHEMA_V2,
+      tasks: [legacyTask],
+    }));
+    expect(parsed.schema).toBe(TASK_INVENTORY_SCHEMA_V2);
+    expect(parsed.executor).not.toHaveProperty("health");
   });
 
   it("rejects prototype-shaped and deep unknown keys with their exact paths", () => {
@@ -413,7 +451,12 @@ describe("receipts", () => {
     const reordered = parseTaskInventoryGeneration({
       tasks: [taskFixture()],
       observed_at: NOW,
-      executor: { capabilities: ["cron"], name: "agent-schedule", version: "0.4.2" },
+      executor: {
+        health: { attention: "none", condition: "healthy", status: "healthy" },
+        capabilities: ["cron"],
+        name: "agent-schedule",
+        version: "0.4.2",
+      },
       schema: TASK_INVENTORY_SCHEMA,
     });
     expect(taskInventoryDigest(reordered)).toBe(

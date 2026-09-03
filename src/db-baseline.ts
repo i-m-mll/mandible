@@ -2,6 +2,7 @@ import type { Db } from "./db.js";
 import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 /**
  * The Mandible schema. This file is the single representation of the head shape
@@ -13,7 +14,7 @@ import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.j
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 163;
+export const BASELINE_SCHEMA_VERSION = 167;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -211,6 +212,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE ledger_auth_issue_links (\n        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'references',\n        source TEXT NOT NULL DEFAULT 'auth_queue',\n        created_at INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (auth_request_id, issue_id, link_type)\n      )",
   "CREATE TABLE ledger_body_revisions (\n        id TEXT PRIMARY KEY,\n        entity_type TEXT NOT NULL CHECK(entity_type IN ('issue_body','comment_body')),\n        entity_id TEXT NOT NULL,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        revision_no INTEGER NOT NULL,\n        event_id TEXT UNIQUE REFERENCES ledger_events(id) ON DELETE SET NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        reason TEXT NOT NULL DEFAULT 'edit'\n          CHECK(reason IN ('create','edit','import_snapshot','external_update','normalize','migration_snapshot','restore')),\n        occurred_at INTEGER NOT NULL,\n        observed_at INTEGER NOT NULL,\n        base_revision_id TEXT REFERENCES ledger_body_revisions(id) ON DELETE SET NULL,\n        base_hash TEXT,\n        new_hash TEXT NOT NULL,\n        snapshot_body TEXT NOT NULL,\n        patch_format TEXT,\n        patch_text TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        redacted_at INTEGER,\n        redacted_by_actor_id TEXT,\n        redaction_reason TEXT, actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, redacted_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,\n        UNIQUE(entity_type, entity_id, revision_no)\n      )",
   "CREATE TABLE ledger_comments (\n        id TEXT PRIMARY KEY,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        ordinal INTEGER NOT NULL DEFAULT 0,\n        body TEXT NOT NULL,\n        author_actor_id TEXT,\n        author_actor_type TEXT NOT NULL\n          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),\n        author_display TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER,\n        deleted_at INTEGER\n      , author_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL)",
+  "CREATE TABLE ledger_change_feed_state (\n        project_id TEXT PRIMARY KEY REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        next_sequence INTEGER NOT NULL DEFAULT 1 CHECK(next_sequence >= 1),\n        retained_from_sequence INTEGER NOT NULL DEFAULT 1 CHECK(retained_from_sequence >= 1),\n        updated_at INTEGER NOT NULL,\n        CHECK(retained_from_sequence <= next_sequence)\n      )",
+  "CREATE TABLE ledger_change_log (\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        sequence INTEGER NOT NULL CHECK(sequence >= 1),\n        event_id TEXT NOT NULL UNIQUE,\n        recorded_at INTEGER NOT NULL,\n        PRIMARY KEY(project_id, sequence)\n      )",
   "CREATE TABLE ledger_commit_issue_links (\n        commit_sha TEXT NOT NULL,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'fixed_by',\n        source TEXT NOT NULL DEFAULT 'auth_queue',\n        created_at INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (commit_sha, issue_id, link_type)\n      )",
   "CREATE TABLE ledger_events (\n        id TEXT PRIMARY KEY,\n        entity_type TEXT NOT NULL,\n        entity_id TEXT NOT NULL,\n        event_type TEXT NOT NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL\n          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        payload_json TEXT NOT NULL DEFAULT '{}',\n        occurred_at INTEGER NOT NULL,\n        observed_at INTEGER NOT NULL\n      , actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL)",
   "CREATE TABLE ledger_issue_aliases (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        alias_kind TEXT NOT NULL,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,\n        alias TEXT NOT NULL,\n        external_id TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL,\n        is_primary INTEGER NOT NULL DEFAULT 0,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (alias_kind, project_id, alias)\n      )",
@@ -366,6 +369,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_ledger_events_actor_user\n        ON ledger_events(actor_user_id) WHERE actor_user_id IS NOT NULL",
   "CREATE INDEX idx_ledger_events_entity\n        ON ledger_events(entity_type, entity_id, occurred_at)",
   "CREATE INDEX idx_ledger_events_occurred\n        ON ledger_events(occurred_at DESC)",
+  "CREATE INDEX idx_ledger_change_log_event\n        ON ledger_change_log(event_id)",
   "CREATE INDEX idx_ledger_issue_aliases_alias\n        ON ledger_issue_aliases(alias)",
   "CREATE INDEX idx_ledger_issue_aliases_issue\n        ON ledger_issue_aliases(issue_id)",
   "CREATE INDEX idx_ledger_issue_checkpoints_issue_created\n        ON ledger_issue_checkpoints(issue_id, created_at DESC)",
@@ -680,6 +684,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
   `CREATE INDEX idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`,
+  ...TASK_ACTIVATION_SCHEMA_SQL,
   TASK_COMMAND_REQUESTS_V2_SQL,
   TASK_COMMAND_V2_INDEX_SQL[0],
   TASK_COMMAND_EVENTS_V2_SQL,

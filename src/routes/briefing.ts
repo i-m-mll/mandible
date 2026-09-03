@@ -1,4 +1,4 @@
-import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
+import { ClientAuthzError, isOperator, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { getDb, type Db } from "../db.js";
 import {
   applyBriefingAnnotations,
@@ -32,6 +32,7 @@ import {
   addBriefingGroupUpdate,
   configureBriefingGroup,
   createBriefingGroup,
+  dispositionBriefingGroupProposalByHumanReview,
   listBriefingGroups,
   readBriefingGroup,
   promoteBriefingGroupProposal,
@@ -40,6 +41,15 @@ import {
 } from "../feedback/briefing-groups.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
+import {
+  BRIEFING_COMPOSITION_SCHEMA,
+  inspectBriefingDestinationRoutes,
+  parseBriefingCompositionRequest,
+  parseBriefingDestinationRouteManifest,
+  planBriefingDestinationRoutes,
+  publishBriefingCompositionRun,
+  reconcileBriefingDestinationRoutes,
+} from "../feedback/briefing-composer.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
   if (error instanceof ClientAuthzError || error instanceof BriefingStoreError) {
@@ -92,6 +102,14 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
   return operator;
 }
 
+function destinationRouteOperator(db: Db, req: RequestLike): void {
+  const identity = requireOperator(db, req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(403, "briefing_destination_route_credential_required",
+      "Briefing destination route management requires the configured operator's durable API token.");
+  }
+}
+
 function renameViewer(
   db: Db,
   req: RequestLike,
@@ -141,6 +159,23 @@ function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator
   });
   return { userId: configuredHumanOperator(db, "briefing_group_update_operator_required",
     "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
+}
+
+function humanReviewOperator(db: Db, req: RequestLike) {
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(403, "briefing_group_review_credential_required",
+      "Briefing proposal disposition requires the configured human operator's durable API token.");
+  }
+  const caller = getUserById(db, identity.user_id);
+  if (!caller || caller.status !== "active" || caller.kind !== "human" || !isOperator(db, identity)) {
+    throw new ClientAuthzError(403, "briefing_group_review_operator_required",
+      "Only the configured active human operator may accept or reject a recurring Briefing proposal.");
+  }
+  return {
+    actor: { userId: caller.id, evidenceMethod: "api_token" as const, credentialId: identity.credential_id },
+    viewer: { userId: caller.id, operator: true as const, humanReviewOperator: true as const },
+  };
 }
 
 function briefingOrganizationViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
@@ -200,7 +235,9 @@ function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; ope
   ).id, operator: true };
 }
 
-function briefingLayoutViewer(db: Db, req: RequestLike): { userId: string; operator: boolean } {
+function briefingLayoutViewer(db: Db, req: RequestLike): {
+  userId: string; operator: boolean; humanReviewOperator: boolean;
+} {
   const identity = requireIdentity(req);
   const caller = getUserById(db, identity.user_id);
   if (identity.method === "api_token" && caller?.status === "active" && caller.kind === "agent") {
@@ -214,9 +251,15 @@ function briefingLayoutViewer(db: Db, req: RequestLike): { userId: string; opera
       db,
       "briefing_layout_operator_required",
       "Operator-visible Briefing layout reads require a configured active human operator.",
-    ).id, operator: true };
+    ).id, operator: true, humanReviewOperator: false };
   }
-  return { userId: identity.user_id, operator: isOperator(db, identity) };
+  const operator = isOperator(db, identity);
+  return {
+    userId: identity.user_id,
+    operator,
+    humanReviewOperator: identity.method === "api_token"
+      && caller?.status === "active" && caller.kind === "human" && operator,
+  };
 }
 
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
@@ -279,6 +322,34 @@ function placementOverride(req: RequestLike, requestBody: Record<string, unknown
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
 export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+  server.get("/api/briefing-destination-routes", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, inspectBriefingDestinationRoutes(db));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.get("/api/briefing-destination-routes/:routeKey", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, inspectBriefingDestinationRoutes(db, req.params.routeKey));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-destination-routes/plan", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, planBriefingDestinationRoutes(db, parseBriefingDestinationRouteManifest(req.body)));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-destination-routes", (req, res) => {
+    try {
+      destinationRouteOperator(db, req);
+      sendJson(res, 200, reconcileBriefingDestinationRoutes(db, parseBriefingDestinationRouteManifest(req.body)));
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
   server.post("/api/briefing-groups", (req, res) => {
     try {
       const publisher = publicationPrincipal(db, req, {
@@ -377,6 +448,36 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
+  server.post("/api/briefing-groups/:groupId/review-dispositions", (req, res) => {
+    try {
+      const principal = humanReviewOperator(db, req);
+      const requestBody = body(req);
+      const allowed = ["decision", "expected_base_bundle_ref", "proposal_bundle_ref", "binding_digest"];
+      const unexpected = Object.keys(requestBody).filter((key) => !allowed.includes(key));
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      if (requestBody.decision !== "accepted" && requestBody.decision !== "rejected") {
+        throw new BriefingStoreError("decision must be 'accepted' or 'rejected'");
+      }
+      const result = dispositionBriefingGroupProposalByHumanReview(db, {
+        groupRef: req.params.groupId,
+        expectedBaseBundleRef: typeof requestBody.expected_base_bundle_ref === "string"
+          ? requestBody.expected_base_bundle_ref : "",
+        proposalBundleRef: typeof requestBody.proposal_bundle_ref === "string"
+          ? requestBody.proposal_bundle_ref : "",
+        decision: requestBody.decision,
+        bindingDigest: typeof requestBody.binding_digest === "string" ? requestBody.binding_digest : "",
+      }, principal.actor, principal.viewer);
+      if (result.changed) broadcast(result.disposition.kind === "accepted"
+        ? BRIEFING_EVENTS.groupProposalAccepted : BRIEFING_EVENTS.groupProposalRejected, {
+        group_id: result.group.id,
+        proposal_bundle_id: result.disposition.proposal.id,
+        prior_base_bundle_id: result.disposition.prior_base?.id ?? null,
+        review_binding_digest: result.disposition.review_binding_digest,
+      });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
   server.patch("/api/briefing-groups/:groupId", (req, res) => {
     try {
       const viewer = renameViewer(db, req, "Briefing group");
@@ -389,9 +490,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
-  for (const archived of [true, false]) server.post(
-    `/api/briefing-groups/:groupId/${archived ? "archive" : "restore"}`,
-    (req, res) => {
+  const setGroupArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
       try {
         const viewer = briefingOrganizationViewer(db, req);
         const requestBody = body(req);
@@ -401,8 +500,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           { group_id: result.group.id });
         sendJson(res, 200, result);
       } catch (error) { handleError(res, error); }
-    }, { fileRpc: "allow" },
-  );
+    };
+  server.post("/api/briefing-groups/:groupId/archive", setGroupArchiveState(true), { fileRpc: "allow" });
+  server.post("/api/briefing-groups/:groupId/restore", setGroupArchiveState(false), { fileRpc: "allow" });
 
   server.get("/api/briefing-groups", (req, res) => {
     try {
@@ -627,13 +727,37 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.post("/api/briefings/runs", (req, res) => {
     try {
       requireIdentity(req);
-      const request = parseBriefingRunRequest(req.body);
       const publisher = requireDurableAgentPublisher(db, req, {
         credentialCode: "briefing_publisher_credential_required",
         credentialMessage: "Briefing publication requires a durable API token, not a session credential.",
         agentCode: "briefing_publisher_agent_required",
         agentMessage: "Briefing publication requires an agent identity.",
       });
+      const schema = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? (req.body as Record<string, unknown>).schema : null;
+      if (schema === BRIEFING_COMPOSITION_SCHEMA) {
+        const request = parseBriefingCompositionRequest(req.body);
+        if (!publisherMayIngest(db, publisher.slug, request.task_identity, [request.source_health.source])) {
+          throw new ClientAuthzError(403, "source_namespace_forbidden",
+            `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);
+        }
+        const replayed = Boolean(db.prepare(
+          "SELECT 1 FROM briefing_composition_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
+        ).get(publisher.userId, request.task_identity, request.run_key));
+        const receipt = publishBriefingCompositionRun(db, request, publisher.userId);
+        if (!replayed) {
+          for (const target of receipt.targets) {
+            if (target.outcome === "proposed" && target.proposal_bundle_id) {
+              broadcast(BRIEFING_EVENTS.groupUpdateAdded, {
+                group_id: target.group_id, bundle_id: target.proposal_bundle_id,
+              });
+            }
+          }
+        }
+        sendJson(res, 200, receipt);
+        return;
+      }
+      const request = parseBriefingRunRequest(req.body);
       if (!publisherMayIngest(db, publisher.slug, request.task_identity, [request.source_health.source])) {
         throw new ClientAuthzError(403, "source_namespace_forbidden",
           `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);

@@ -41,6 +41,7 @@ import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
+import { registerLedgerChangeRoutes } from "./routes/ledger-changes.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerUserSettingsRoutes } from "./routes/user-settings.js";
@@ -269,6 +270,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
   registerIssueRoutes(router, workScanner, issueDeps);
+  registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   registerUserSettingsRoutes(router, db);

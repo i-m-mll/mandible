@@ -25,6 +25,7 @@ import { listManagedReminders } from "../managed-reminders.js";
 import {
   getTaskInventoryView,
   parseTaskInventoryGeneration,
+  reconcileTaskActivationCondition,
   recordTaskInventoryGeneration,
   TaskInventoryValidationError,
 } from "../task-inventory.js";
@@ -215,6 +216,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
         event,
         executor.userId,
       );
+      reconcileTaskActivationCondition(db, command.executor, command.task_id);
       if (result.stored) broadcast(TASK_COMMAND_EVENTS.changed, { command_id: result.command.id });
       sendJson(res, 200, result);
     } catch (error) {

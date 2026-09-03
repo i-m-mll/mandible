@@ -1,6 +1,7 @@
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
 import { countOperationalIncidents } from "../operational-incidents.js";
+import { countActiveTaskActivationConditions } from "../task-inventory.js";
 import type { RouteRegistrar } from "../server.js";
 import { countGlobalInboxBadge } from "./inbox.js";
 import { sendJson } from "./http.js";
@@ -13,6 +14,8 @@ export type DashboardBadgeCounts = {
   briefing: number;
   /** Active, unresolved, unacknowledged operational incidents only. */
   incidents: number;
+  /** Distinct deployment-invalidated task/execution-hash conditions still active. */
+  tasks: number;
 };
 
 export function readDashboardBadgeCounts(
@@ -40,6 +43,7 @@ export function readDashboardBadgeCounts(
        WHERE NOT EXISTS (SELECT 1 FROM briefing_submissions s WHERE s.round_id = r.id)`,
     ).get() as { count: number }).count),
     incidents: countOperationalIncidents(db).active_unacknowledged,
+    tasks: countActiveTaskActivationConditions(db),
   };
 }
 

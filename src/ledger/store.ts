@@ -2419,6 +2419,25 @@ export class LedgerStore {
       observedAt,
     );
 
+    this.db.prepare(
+      `INSERT INTO ledger_change_feed_state (
+        project_id, next_sequence, retained_from_sequence, updated_at
+      ) VALUES (?, 1, 1, ?)
+      ON CONFLICT(project_id) DO NOTHING`,
+    ).run(input.project_id, observedAt);
+    const state = this.db.prepare(
+      `SELECT next_sequence FROM ledger_change_feed_state WHERE project_id = ?`,
+    ).get(input.project_id) as { next_sequence: number };
+    this.db.prepare(
+      `INSERT INTO ledger_change_log (project_id, sequence, event_id, recorded_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(input.project_id, state.next_sequence, id, observedAt);
+    this.db.prepare(
+      `UPDATE ledger_change_feed_state
+       SET next_sequence = next_sequence + 1, updated_at = ?
+       WHERE project_id = ? AND next_sequence = ?`,
+    ).run(observedAt, input.project_id, state.next_sequence);
+
 
     return this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id) as LedgerEvent;
   }

@@ -1,7 +1,11 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 11,
+  "version": 12,
   "commands": [
+    {
+      "name": "mandible changes --project <ref> [--cursor <cursor>] [--limit <1-200>] [--schema mandible-ledger-change-feed@1] [--json]",
+      "description": "Read the bounded project-scoped ledger change feed. Omit --cursor only to establish a controlled resync point, then persist and reuse next_cursor. Retention gaps, truncation, schema mismatch, and inconsistent cursors fail closed."
+    },
     {
       "name": "mandible issue report <id> [--json]",
       "description": "Print deterministic issue context for handoff and planning."
@@ -243,12 +247,32 @@
       "description": "Guardedly apply or replay one completed successful merge transition. The exact auth request, merge head, expected prior Base, group, and active proposal must match; convergence must have succeeded. Retries are no-ops and drift fails closed."
     },
     {
+      "name": "mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]",
+      "description": "Accept one exact recurring, Mandible-custodied proposal through the configured human operator. The digest binds the Base, proposal, composition receipt, frozen Artifact versions, and frozen review submissions; exact replay is a no-op and drift fails closed."
+    },
+    {
+      "name": "mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]",
+      "description": "Reject one exact recurring, Mandible-custodied proposal through the configured human operator while preserving Base, proposal custody, review submissions, and immutable disposition history."
+    },
+    {
       "name": "mandible briefing group rename <group-ref> --name <text> [--json]",
       "description": "Rename one stable Briefing group without changing its ordered proposed updates. Human use requires the configured operator; agent use requires a durable active-agent token."
     },
     {
       "name": "mandible briefing group show <group-ref> [--json]",
       "description": "Show one stable Briefing group with its distinct Base, ordered active proposals, and retained disposition history."
+    },
+    {
+      "name": "mandible briefing route inspect [<route-key>] [--json]",
+      "description": "Inspect the code-owned Briefing destination-route registry in stable route-key order, including exact canonical group and logical Artifact identities plus every immutable template version. Requires the configured operator's durable API token."
+    },
+    {
+      "name": "mandible briefing route plan <manifest.json|-> [--json]",
+      "description": "Resolve and validate one mandible-briefing-destination-routes@1 manifest without mutation. Reports deterministic create, update, or unchanged actions; ownership, identity, downgrade, and immutable-template drift fail closed."
+    },
+    {
+      "name": "mandible briefing route apply <manifest.json|-> [--json]",
+      "description": "Atomically reconcile one validated destination-route manifest through the authenticated operator API. Exact replay is idempotent, and runtime publication remains POST /api/briefings/runs."
     },
     {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",

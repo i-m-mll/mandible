@@ -845,6 +845,8 @@ export type DashboardBadgeCounts = {
    * reason as `briefing` — absent means "not reported", not "zero".
    */
   incidents?: number;
+  /** Active deployment-invalidated task/execution-hash conditions. */
+  tasks?: number;
 };
 
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
@@ -4308,17 +4310,49 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  reviewCandidates?: BriefingGroupReviewCandidate[];
   history?: BriefingGroupDisposition[];
+};
+
+export type BriefingGroupReviewItem = {
+  position: number;
+  layoutPosition: number;
+  subgroupPosition: number;
+  proposalBriefingId: string;
+  proposalRoundId: string;
+  proposalArtifactVersionId: string;
+  proposalContentHash: string;
+  baseBriefingId: string | null;
+  baseRoundId: string | null;
+  baseArtifactVersionId: string | null;
+  baseContentHash: string | null;
+  changed: boolean;
+  submissionId: string | null;
+};
+
+export type BriefingGroupReviewCandidate = {
+  proposalBundleId: string;
+  expectedBaseBundleId: string | null;
+  compositionRunId: string | null;
+  bindingDigest: string | null;
+  ready: boolean;
+  blockerCode: string | null;
+  blockerMessage: string | null;
+  items: BriefingGroupReviewItem[];
 };
 
 export type BriefingGroupDisposition = {
   id: string;
-  kind: 'promoted' | 'dismissed';
+  kind: 'promoted' | 'dismissed' | 'accepted' | 'rejected';
   priorBase: BriefingBundle | null;
   proposal: BriefingBundle;
   resultingBase: BriefingBundle | null;
   authRequestId: string | null;
   mergeHeadSha: string | null;
+  reviewBindingDigest?: string | null;
+  compositionRunId?: string | null;
+  reviewItems?: BriefingGroupReviewItem[];
+  actorUserId?: string | null;
   createdAt: number;
 };
 
@@ -4392,13 +4426,58 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
     const updates = (Array.isArray(group.updates) ? group.updates : [])
       .map(normalizeBriefingBundle)
       .filter((update): update is BriefingBundle => update !== null);
+    const parseReviewItem = (entry: unknown): BriefingGroupReviewItem | null => {
+      const row = briefingRecord(entry);
+      const position = briefingOptionalNumber(row.position);
+      const layoutPosition = briefingOptionalNumber(row.layout_position);
+      const subgroupPosition = briefingOptionalNumber(row.subgroup_position);
+      const proposalBriefingId = briefingString(row.proposal_briefing_id);
+      const proposalRoundId = briefingString(row.proposal_round_id);
+      const proposalArtifactVersionId = briefingString(row.proposal_artifact_version_id);
+      const proposalContentHash = briefingString(row.proposal_content_hash);
+      if (position === null || layoutPosition === null || subgroupPosition === null
+          || !proposalBriefingId || !proposalRoundId || !proposalArtifactVersionId || !proposalContentHash) return null;
+      return {
+        position,
+        layoutPosition,
+        subgroupPosition,
+        proposalBriefingId,
+        proposalRoundId,
+        proposalArtifactVersionId,
+        proposalContentHash,
+        baseBriefingId: briefingOptionalString(row.base_briefing_id),
+        baseRoundId: briefingOptionalString(row.base_round_id),
+        baseArtifactVersionId: briefingOptionalString(row.base_artifact_version_id),
+        baseContentHash: briefingOptionalString(row.base_content_hash),
+        changed: row.changed === true,
+        submissionId: briefingOptionalString(row.submission_id),
+      };
+    };
+    const reviewCandidates = (Array.isArray(group.review_candidates) ? group.review_candidates : [])
+      .map((entry): BriefingGroupReviewCandidate | null => {
+        const row = briefingRecord(entry);
+        const proposalBundleId = briefingString(row.proposal_bundle_id);
+        const items = (Array.isArray(row.items) ? row.items : []).map(parseReviewItem)
+          .filter((item): item is BriefingGroupReviewItem => item !== null);
+        return proposalBundleId ? {
+          proposalBundleId,
+          expectedBaseBundleId: briefingOptionalString(row.expected_base_bundle_id),
+          compositionRunId: briefingOptionalString(row.composition_run_id),
+          bindingDigest: briefingOptionalString(row.binding_digest),
+          ready: row.ready === true,
+          blockerCode: briefingOptionalString(row.blocker_code),
+          blockerMessage: briefingOptionalString(row.blocker_message),
+          items,
+        } : null;
+      }).filter((entry): entry is BriefingGroupReviewCandidate => entry !== null);
     const history = (Array.isArray(group.history) ? group.history : []).map((entry): BriefingGroupDisposition | null => {
       const row = briefingRecord(entry);
       const dispositionId = briefingString(row.id);
       const priorBase = row.prior_base == null ? null : normalizeBriefingBundle(row.prior_base);
       const proposal = normalizeBriefingBundle(row.proposal);
       const resultingBase = row.resulting_base == null ? null : normalizeBriefingBundle(row.resulting_base);
-      const kind = row.kind === 'promoted' || row.kind === 'dismissed' ? row.kind : null;
+      const kind = row.kind === 'promoted' || row.kind === 'dismissed'
+        || row.kind === 'accepted' || row.kind === 'rejected' ? row.kind : null;
       return dispositionId && kind && proposal ? {
         id: dispositionId,
         kind,
@@ -4407,6 +4486,11 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
         resultingBase,
         authRequestId: briefingOptionalString(row.auth_request_id),
         mergeHeadSha: briefingOptionalString(row.merge_head_sha),
+        reviewBindingDigest: briefingOptionalString(row.review_binding_digest),
+        compositionRunId: briefingOptionalString(row.composition_run_id),
+        reviewItems: (Array.isArray(row.review_items) ? row.review_items : []).map(parseReviewItem)
+          .filter((item): item is BriefingGroupReviewItem => item !== null),
+        actorUserId: briefingOptionalString(row.actor_user_id),
         createdAt: briefingOptionalNumber(row.created_at) ?? 0,
       } : null;
     }).filter((entry): entry is BriefingGroupDisposition => entry !== null);
@@ -4418,6 +4502,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      reviewCandidates,
       history,
     } : null;
   }).filter((group): group is BriefingGroup => group !== null);
@@ -4463,6 +4548,34 @@ export async function getBriefingGroups(signal?: AbortSignal): Promise<BriefingG
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(BRIEFING_GROUPS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
   return normalizeBriefingGroups(payload);
+}
+
+export async function dispositionBriefingGroupProposal(
+  groupId: string,
+  input: {
+    decision: 'accepted' | 'rejected';
+    expectedBaseBundleId: string;
+    proposalBundleId: string;
+    bindingDigest: string;
+  },
+): Promise<{ group: BriefingGroup; disposition: BriefingGroupDisposition; changed: boolean }> {
+  const response = await apiPost(`/api/briefing-groups/${encodeURIComponent(groupId)}/review-dispositions`, {
+    decision: input.decision,
+    expected_base_bundle_ref: input.expectedBaseBundleId,
+    proposal_bundle_ref: input.proposalBundleId,
+    binding_digest: input.bindingDigest,
+  });
+  const root = briefingRecord(await parseMaybeJson(response));
+  const group = normalizeBriefingGroups({ groups: [root.group] })[0];
+  const rawDisposition = briefingRecord(root.disposition);
+  const disposition = group?.history?.find((entry) => entry.id === briefingString(rawDisposition.id));
+  if (!group || !disposition || typeof root.changed !== 'boolean') {
+    throw new Error('The Briefing proposal disposition response is invalid.');
+  }
+  invalidateApiGetCache(BRIEFING_GROUPS_PATH);
+  invalidateApiGetCache('/api/dashboard/badges');
+  getJsonCache.delete(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY);
+  return { group, disposition, changed: root.changed };
 }
 
 const BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY = cacheKeyForGet(
@@ -5013,6 +5126,9 @@ import {
   type TaskCommandState,
   type TaskCommandVerb,
   type TaskActivationFacts,
+  type TaskActivationCondition,
+  type TaskActivationHealthFacts,
+  type TaskActivationObservation,
   type TaskBundleFacts,
   type TaskCircuitState,
   type TaskConfigFacts,
@@ -5039,6 +5155,9 @@ export {
 };
 export type {
   TaskActivationFacts,
+  TaskActivationCondition,
+  TaskActivationHealthFacts,
+  TaskActivationObservation,
   TaskBundleFacts,
   TaskConfigFacts,
   TaskExecutorFreshness,
@@ -5064,6 +5183,16 @@ const TASK_KILL_SWITCH_STATES: readonly TaskKillSwitchState[] = ['engaged', 'cle
 const TASK_STALENESS_CLAIMS: readonly TaskStalenessClaim[] = ['fresh', 'stale'];
 const TASK_RUN_OUTCOMES: readonly TaskRunOutcome[] = ['success', 'failure', 'timeout', 'cancelled'];
 const TASK_FRESHNESS: readonly TaskExecutorFreshness[] = ['current', 'stale', 'unknown'];
+const TASK_ACTIVATION_STATES = [
+  'never_activated', 'activated', 'operator_disabled', 'deployment_invalidated',
+] as const;
+const TASK_ACTIVATION_REASONS = [
+  'never_activated', 'operator_enabled', 'operator_disabled', 'execution_hash_changed',
+] as const;
+const TASK_ACTIVATION_ACTIONS = ['none', 'dry_run', 'enable'] as const;
+const TASK_EXECUTOR_HEALTH_CONDITIONS = [
+  'healthy', 'no_active_bundle', 'bundle_link_mismatch', 'execution_path_mismatch',
+] as const;
 
 /** Default horizon used only when the server omits `stale_after_ms`. */
 export const TASK_INVENTORY_DEFAULT_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
@@ -5102,9 +5231,83 @@ function normalizeTaskBundle(value: unknown): TaskBundleFacts | typeof TASK_INVE
 
 function normalizeTaskActivation(value: unknown): TaskActivationFacts {
   const row = briefingRecord(value);
-  return {
+  const legacy = {
     config_enabled: taskMaybeBoolean(row.config_enabled),
     locally_activated: taskMaybeBoolean(row.locally_activated),
+  };
+  const state = taskMaybeEnum(row.state, TASK_ACTIVATION_STATES);
+  const reason = taskMaybeEnum(row.reason, TASK_ACTIVATION_REASONS);
+  const requiredAction = taskMaybeEnum(row.required_action, TASK_ACTIVATION_ACTIONS);
+  if (state === TASK_INVENTORY_UNKNOWN
+    || reason === TASK_INVENTORY_UNKNOWN
+    || requiredAction === TASK_INVENTORY_UNKNOWN) return legacy;
+  return {
+    ...legacy,
+    state,
+    reason,
+    changed_at: row.changed_at === 'none' ? 'none' : taskMaybeNumber(row.changed_at),
+    previous_execution_hash: row.previous_execution_hash === 'none'
+      ? 'none' : taskMaybeString(row.previous_execution_hash),
+    required_execution_hash: row.required_execution_hash === 'none'
+      ? 'none' : taskMaybeString(row.required_execution_hash),
+    deployment_commit: row.deployment_commit === 'none'
+      ? 'none' : taskMaybeString(row.deployment_commit),
+    deployment_content_hash: row.deployment_content_hash === 'none'
+      ? 'none' : taskMaybeString(row.deployment_content_hash),
+    deployed_at: row.deployed_at === 'none' ? 'none' : taskMaybeNumber(row.deployed_at),
+    required_action: requiredAction,
+    attention: row.attention === 'important' ? 'important' : 'none',
+  } as TaskActivationHealthFacts;
+}
+
+function normalizeTaskExecutorHealth(value: unknown): ContractTaskExecutorSummary['health'] {
+  const row = briefingRecord(value);
+  const condition = taskMaybeEnum(row.condition, TASK_EXECUTOR_HEALTH_CONDITIONS);
+  if (condition === TASK_INVENTORY_UNKNOWN) return undefined;
+  const status = condition === 'healthy' ? 'healthy' : 'operational_failure';
+  const attention = condition === 'healthy' ? 'none' : 'important';
+  if (row.status !== status || row.attention !== attention) return undefined;
+  return { status, condition, attention };
+}
+
+function normalizeActivationObservation(value: unknown): TaskActivationObservation | null {
+  const row = briefingRecord(value);
+  const id = briefingOptionalString(row.id);
+  const generationId = briefingOptionalString(row.generation_id);
+  const state = taskMaybeEnum(row.state, TASK_ACTIVATION_STATES);
+  const reason = taskMaybeEnum(row.reason, TASK_ACTIVATION_REASONS);
+  const facts = normalizeTaskActivation(row.facts);
+  if (!id || !generationId || state === TASK_INVENTORY_UNKNOWN
+    || reason === TASK_INVENTORY_UNKNOWN || !('state' in facts)) return null;
+  return {
+    id,
+    generation_id: generationId,
+    state,
+    reason,
+    observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
+    recorded_at: briefingOptionalNumber(row.recorded_at) ?? 0,
+    facts,
+  };
+}
+
+function normalizeActivationCondition(value: unknown): TaskActivationCondition | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = briefingRecord(value);
+  const id = briefingOptionalString(row.id);
+  const dedupeKey = briefingOptionalString(row.dedupe_key);
+  const executionHash = briefingOptionalString(row.required_execution_hash);
+  if (!id || !dedupeKey || !executionHash || !/^[0-9a-f]{64}$/.test(executionHash)) return null;
+  return {
+    id,
+    dedupe_key: dedupeKey,
+    required_execution_hash: executionHash,
+    attention: 'important',
+    state: 'active',
+    next_action: row.next_action === 'enable' ? 'enable' : 'dry_run',
+    raised_at: briefingOptionalNumber(row.raised_at) ?? 0,
+    resolved_at: null,
+    resolution: null,
+    enable_command_id: null,
   };
 }
 
@@ -5188,10 +5391,12 @@ function normalizeTaskExecutorSummary(value: unknown): TaskExecutorSummary | nul
   const row = briefingContractRecord<ContractTaskExecutorSummary>(value);
   const name = briefingOptionalString(row.name);
   if (!name) return null;
+  const health = normalizeTaskExecutorHealth(row.health);
   return {
     name,
     version: taskMaybeString(row.version),
     capabilities: briefingStringArray(row.capabilities),
+    ...(health ? { health } : {}),
     observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
     observed_age_ms: briefingOptionalNumber(row.observed_age_ms) ?? 0,
     freshness: taskMaybeEnum(row.freshness, TASK_FRESHNESS) === TASK_INVENTORY_UNKNOWN
@@ -5242,6 +5447,12 @@ function normalizeTaskInventoryItem(value: unknown): TaskInventoryItem | null {
     observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
     observed_age_ms: briefingOptionalNumber(row.observed_age_ms) ?? 0,
     task,
+    activation_condition: normalizeActivationCondition(row.activation_condition),
+    activation_history: Array.isArray(row.activation_history)
+      ? row.activation_history
+        .map(normalizeActivationObservation)
+        .filter((entry): entry is TaskActivationObservation => entry !== null)
+      : [],
   };
 }
 

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   OPERATIONAL_INCIDENT_RECEIPT_SCHEMA,
   OPERATIONAL_INCIDENT_SCHEMA,
+  OPERATIONAL_INCIDENT_SCHEMA_V1,
   type OperationalIncidentAttention,
   type OperationalIncidentAcknowledgementResponse,
   type OperationalIncidentCondition,
@@ -240,7 +241,13 @@ function parseEvent(value: unknown, index: number): OperationalIncidentTelemetry
 export function parseOperationalIncidentEnvelope(value: unknown): OperationalIncidentIngestEnvelope {
   const record = objectAt(value, "payload");
   exactKeys(record, ["schema", "executor", "generation", "provenance", "events"], "payload");
-  literalAt(record.schema, OPERATIONAL_INCIDENT_SCHEMA, "schema");
+  if (record.schema !== OPERATIONAL_INCIDENT_SCHEMA
+    && record.schema !== OPERATIONAL_INCIDENT_SCHEMA_V1) {
+    fail(
+      `schema must be '${OPERATIONAL_INCIDENT_SCHEMA}' or '${OPERATIONAL_INCIDENT_SCHEMA_V1}'`,
+    );
+  }
+  const schema = record.schema;
 
   const executor = objectAt(record.executor, "executor");
   exactKeys(executor, ["name", "version"], "executor");
@@ -257,7 +264,7 @@ export function parseOperationalIncidentEnvelope(value: unknown): OperationalInc
   }
 
   return {
-    schema: OPERATIONAL_INCIDENT_SCHEMA,
+    schema,
     executor: {
       name: stringAt(executor.name, "executor.name"),
       version: stringAt(executor.version, "executor.version"),
@@ -265,7 +272,9 @@ export function parseOperationalIncidentEnvelope(value: unknown): OperationalInc
     generation: {
       inventory_schema: literalAt(
         generation.inventory_schema,
-        "executor-inventory@2",
+        schema === OPERATIONAL_INCIDENT_SCHEMA
+          ? "executor-inventory@3"
+          : "executor-inventory@2",
         "generation.inventory_schema",
       ),
       inventory_digest: digestAt(generation.inventory_digest, "generation.inventory_digest"),
@@ -298,8 +307,11 @@ function canonicalJson(value: unknown): string {
   fail("canonical JSON values must not contain undefined or non-finite numbers");
 }
 
-function canonicalTelemetry(event: OperationalIncidentTelemetryEvent): string {
-  return canonicalJson({ schema: OPERATIONAL_INCIDENT_SCHEMA, event });
+function canonicalTelemetry(
+  schema: OperationalIncidentIngestEnvelope["schema"],
+  event: OperationalIncidentTelemetryEvent,
+): string {
+  return canonicalJson({ schema, event });
 }
 
 function sha256(value: string): string {
@@ -366,7 +378,7 @@ export function ingestOperationalIncidentEnvelope(
   const apply = db.transaction(() => {
     const accepted: OperationalIncidentIngestResponse["accepted"] = [];
     for (const event of envelope.events) {
-      const telemetryJson = canonicalTelemetry(event);
+      const telemetryJson = canonicalTelemetry(envelope.schema, event);
       const telemetrySha256 = sha256(telemetryJson);
       const bySource = sourceEvent(db, event.event_id);
       if (bySource) {
