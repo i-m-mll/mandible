@@ -37,6 +37,82 @@
   max-width: var(--chat-max-width);
 }
 
+.provider-directive {
+  --tool-activity-background: #242424;
+  --tool-activity-border: #464646;
+  --tool-activity-box-text: #919191;
+  width: 100%;
+  margin-top: var(--space-2);
+  color: var(--tool-activity-text, var(--text-muted));
+}
+
+:root[data-theme='light'] .provider-directive {
+  --tool-activity-background: #F4F4F4;
+  --tool-activity-border: #DADADB;
+  --tool-activity-box-text: #88888A;
+}
+
+.provider-directive__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 400 var(--text-lg)/1.15 var(--font-sans);
+}
+
+.provider-directive__summary:hover,
+.provider-directive__summary:focus-visible {
+  color: var(--text-primary);
+}
+
+.provider-directive__icon,
+.provider-directive__chevron {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-directive__icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.provider-directive__body {
+  margin-top: 3px;
+  padding: 7px 10px;
+  border: 1px solid var(--tool-activity-border);
+  border-radius: 6px;
+  background: var(--tool-activity-background);
+  color: var(--tool-activity-box-text);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.provider-directive__body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.provider-directive__body code {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.provider-directive__task-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
 .msg-text-block {
   font-family: var(--font-sans);
   font-size: var(--text-lg);
@@ -404,6 +480,13 @@
   margin: 0;
 }
 
+/* Give complete tool runs a small amount of breathing room between prose
+ * blocks without loosening the compact rows inside a multi-tool run. */
+.message-group__content > .tool-call-group,
+.message-group__content > .message-block-wrapper:has(> .tool-card) {
+  margin-block: 2px;
+}
+
 .tool-call-group__summary {
   display: flex;
   align-items: center;
@@ -456,7 +539,7 @@
   position: absolute;
   right: 0;
   left: 0;
-  height: 4em;
+  height: 1.35em;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -464,12 +547,12 @@
 
 .overflow-fade::before {
   top: 0;
-  background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 28%, transparent 100%);
+  background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 4%, transparent 100%);
 }
 
 .overflow-fade::after {
   bottom: 0;
-  background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 72%);
+  background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 96%);
 }
 
 .overflow-fade--above::before {

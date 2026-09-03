@@ -330,7 +330,7 @@
 /* ── New session dialog ── */
 
 .new-session-dialog-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: rgba(0,0,0,0.6);
   display: flex;
@@ -545,6 +545,22 @@ select.new-session-dialog__input {
   flex: 0 0 auto;
   padding-top: 12px;
   background: var(--bg-card);
+}
+
+.new-session-dialog__error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--status-danger-border-soft);
+  border-radius: 8px;
+  background: var(--status-danger-bg-soft);
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.new-session-dialog__button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .new-session-dialog__button {

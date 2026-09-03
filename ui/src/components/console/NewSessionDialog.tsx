@@ -1,7 +1,7 @@
 // Bug: b5e1c51 — PTY+Channel transport option for channel-connected sessions
 import type { JSX } from 'preact/jsx-runtime';
 import { createPortal } from 'preact/compat';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { SessionRunOptionsSnapshot, SessionRunOptionState, SessionRunOptionValue } from '../../api';
 import {
   getConsoleRunOptions,
@@ -37,6 +37,7 @@ const ADVANCED_RUN_OPTION_IDS = new Set([
 type NewSessionDialogProps = {
   open: boolean;
   cwd?: string;
+  portalTarget?: HTMLElement | null;
   onClose: () => void;
   onSubmit: (input: {
     label: string;
@@ -47,7 +48,7 @@ type NewSessionDialogProps = {
     channel_enabled?: boolean;
     runOptions?: Record<string, SessionRunOptionValue>;
     cwd?: string;
-  }) => void;
+  }) => Promise<void>;
 };
 
 const KIND_OPTIONS: Array<{
@@ -193,6 +194,7 @@ function OptionCard({
 export function NewSessionDialog({
   open,
   cwd,
+  portalTarget,
   onClose,
   onSubmit,
 }: NewSessionDialogProps): JSX.Element | null {
@@ -208,24 +210,33 @@ export function NewSessionDialog({
   const [runOptionValues, setRunOptionValues] = useState<Record<string, SessionRunOptionValue>>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const runOptionScopeRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (open) setSubmitError(null);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     let active = true;
     const backendType = backendTypeForLane(transportLane);
+    const optionScope = `${backendType}:${backend}`;
     void getConsoleRunOptions(backendType, backend).then((snapshot) => {
       if (!active) return;
       setRunOptions(snapshot);
-      setRunOptionValues((current) => Object.fromEntries(snapshot.options
-        .filter((option) => option.enforcement.status !== 'unsupported')
-        .map((option) => {
-          const configuredModel = option.id === 'model'
-            ? appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]]?.trim() || null
-            : null;
-          const concreteDefault = option.id === 'permission_mode' ? 'default' : null;
-          return [option.id, current[option.id] ?? option.currentValue ?? configuredModel ?? concreteDefault];
-        })
-        .filter(([, value]) => value !== null)));
+      setRunOptionValues((current) => {
+        const sameScope = runOptionScopeRef.current === optionScope;
+        runOptionScopeRef.current = optionScope;
+        return Object.fromEntries(snapshot.options
+          .filter((option) => option.enforcement.status !== 'unsupported')
+          .map((option) => {
+            const concreteDefault = option.id === 'permission_mode' ? 'default' : null;
+            return [option.id, (sameScope ? current[option.id] : null) ?? option.currentValue ?? concreteDefault];
+          })
+          .filter(([, value]) => value !== null));
+      });
     }).catch(() => { if (active) setRunOptions(null); });
     return () => { active = false; };
   }, [appSettings, backend, open, transportLane]);
@@ -278,31 +289,47 @@ export function NewSessionDialog({
 
   const transportOptions = availableTransportLanes(backend, hasApiKey, claudePtyLaneEnabled);
 
-  const handleSubmit = (e: Event) => {
+  const handleSubmit = async (e: Event) => {
     e.preventDefault();
+    if (submitting) return;
     const backendType = backendTypeForLane(transportLane);
-    onSubmit({
-      label: label.trim() || 'New chat',
-      backend,
-      kind,
-      backend_type: backendType,
-      transport_lane: transportLane,
-      channel_enabled: transportLane === 'channel' || undefined,
-      runOptions: Object.keys(runOptionValues).length > 0 ? runOptionValues : undefined,
-      cwd,
-    });
-    setLabel('');
-    setKind('agent');
-    setBackend('claude');
-    setTransportLane(defaultTransportLaneForBackend('claude'));
-    setRunOptions(null);
-    setRunOptionValues({});
-    setAdvancedOpen(false);
-    onClose();
+    const effectiveRunOptions = { ...runOptionValues };
+    const configuredModel = appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]]?.trim();
+    if (configuredModel && effectiveRunOptions.model == null) effectiveRunOptions.model = configuredModel;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onSubmit({
+        label: label.trim() || 'New chat',
+        backend,
+        kind,
+        backend_type: backendType,
+        transport_lane: transportLane,
+        channel_enabled: transportLane === 'channel' || undefined,
+        runOptions: Object.keys(effectiveRunOptions).length > 0 ? effectiveRunOptions : undefined,
+        cwd,
+      });
+      setLabel('');
+      setKind('agent');
+      setBackend('claude');
+      setTransportLane(defaultTransportLaneForBackend('claude'));
+      setRunOptions(null);
+      setRunOptionValues({});
+      runOptionScopeRef.current = null;
+      setAdvancedOpen(false);
+      onClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSubmitError(message === 'instance_mutation_forbidden'
+        ? 'This preview cannot create chats. Open the main Mandible instance to start one.'
+        : `Could not create chat: ${message}`);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleOverlayClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) {
+    if (e.target === e.currentTarget && !submitting) {
       onClose();
     }
   };
@@ -323,7 +350,17 @@ export function NewSessionDialog({
       {option.kind === 'select' && (option.allowedValues?.length ?? 0) > 0 ? (
         <select className="new-session-dialog__input" value={String(runOptionValues[option.id] ?? '')}
           onChange={(event) => setRunOptionValues((current) => ({ ...current, [option.id]: event.currentTarget.value || null }))}>
-          {option.nullable && runOptionValues[option.id] == null && <option value="">Use app default</option>}
+          {option.nullable && (
+            <option value="">
+              {option.id === 'model'
+                ? `Use app default (${appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]]?.trim() || 'provider default'})`
+                : 'Use app default'}
+            </option>
+          )}
+          {option.id === 'model' && appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]]?.trim()
+            && !(option.allowedValues ?? []).some((choice) => String(choice.value) === appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]]?.trim())
+            ? <option value={appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]].trim()}>{appSettings[DEFAULT_MODEL_SETTING_BY_BACKEND[backend]].trim()}</option>
+            : null}
           {(option.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
         </select>
       ) : option.kind === 'multi_select' && (option.allowedValues?.length ?? 0) > 0 ? (
@@ -481,17 +518,18 @@ export function NewSessionDialog({
           )}
           </div>
 
+          {submitError ? <div className="new-session-dialog__error" role="alert">{submitError}</div> : null}
           <div className="new-session-dialog__actions">
-            <button type="button" onClick={onClose} className="new-session-dialog__button new-session-dialog__button--ghost">
+            <button type="button" onClick={onClose} disabled={submitting} className="new-session-dialog__button new-session-dialog__button--ghost">
               Cancel
             </button>
-            <button type="submit" className="new-session-dialog__button new-session-dialog__button--primary">
-              Create chat
+            <button type="submit" disabled={submitting} className="new-session-dialog__button new-session-dialog__button--primary">
+              {submitting ? 'Creating…' : 'Create chat'}
             </button>
           </div>
         </form>
       </div>
     </div>
   );
-  return createPortal(dialog, document.body);
+  return createPortal(dialog, portalTarget ?? document.body);
 }
