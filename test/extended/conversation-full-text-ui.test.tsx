@@ -20,6 +20,12 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit(): void {} dispose():
 
 beforeEach(() => {
   vi.spyOn(api, "listCanonicalProjects").mockResolvedValue([]);
+  vi.spyOn(api, "getChatShownProjectsPreference").mockResolvedValue({
+    version: 1, key: "chat_shown_projects", value: [], revision: 0,
+  });
+  vi.spyOn(api, "updateChatShownProjectsPreference").mockImplementation(async (value, revision) => ({
+    version: 1, key: "chat_shown_projects", value, revision: revision + 1,
+  }));
 });
 
 afterEach(() => {
