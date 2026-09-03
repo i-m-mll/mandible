@@ -18,6 +18,7 @@ type SidebarGroupNodeCommonProps = {
   bodyAs?: 'div' | 'ul';
   className?: string;
   bodyClassName?: string;
+  showDisclosure?: boolean;
   canShowMore?: boolean;
   loadingMore?: boolean;
   onShowMore?(): void;
@@ -81,6 +82,7 @@ export function SidebarGroupNode({
   bodyAs = 'div',
   className = '',
   bodyClassName = '',
+  showDisclosure = true,
   canShowMore = false,
   loadingMore = false,
   onShowMore,
@@ -91,7 +93,7 @@ export function SidebarGroupNode({
   const headingId = `${id}-heading`;
   const disclosureId = `${id}-disclosure`;
   const bodyId = `${id}-body`;
-  const controllerId = selection ? disclosureId : headingId;
+  const controllerId = selection && showDisclosure ? disclosureId : headingId;
   const showMore = canShowMore && onShowMore ? (
     <button
       type="button"
@@ -145,17 +147,19 @@ export function SidebarGroupNode({
           <strong>{label}</strong>
           {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
         </button>
-        <button
-          id={disclosureId}
-          type="button"
-          className="sidebar-group-node__disclosure"
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-          aria-expanded={expanded}
-          aria-controls={bodyId}
-          onClick={onToggle}
-        >
-          <DisclosureChevronIcon expanded={expanded} />
-        </button>
+        {showDisclosure ? (
+          <button
+            id={disclosureId}
+            type="button"
+            className="sidebar-group-node__disclosure"
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            onClick={onToggle}
+          >
+            <DisclosureChevronIcon expanded={expanded} />
+          </button>
+        ) : null}
         {action ? (
           <span className="sidebar-group-node__action-slot contextual-action-group">
             <ContextualAction

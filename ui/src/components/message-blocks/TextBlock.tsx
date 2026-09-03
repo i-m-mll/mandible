@@ -6,21 +6,27 @@
 
 import { useMemo } from 'preact/hooks';
 import { renderMarkdown } from '../../lib/markdown';
+import { ProviderDirectiveBlock, splitProviderDirectives } from './ProviderDirectiveBlock';
 
 export type TextBlockProps = {
   content: string;
 };
 
 export function TextBlock({ content }: TextBlockProps): JSX.Element {
-  const html = useMemo(() => {
-    return renderMarkdown(content);
-  }, [content]);
+  const segments = useMemo(() => splitProviderDirectives(content), [content]);
 
   return (
-    <div
-      className="msg-text-block rendered-markdown"
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className="msg-text-block rendered-markdown">
+      {segments.map((segment, index) => segment.kind === 'directive' ? (
+        <ProviderDirectiveBlock key={`directive-${index}`} directive={segment.directive} />
+      ) : (
+        <div
+          key={`text-${index}`}
+          className="provider-directive__prose"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(segment.content) }}
+        />
+      ))}
+    </div>
   );
 }

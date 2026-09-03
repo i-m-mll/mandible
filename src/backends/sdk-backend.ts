@@ -95,7 +95,17 @@ export interface SDKBackendOptions {
 const SDK_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
   {
     id: "model", label: "Model", category: "model", kind: "select", nullable: true,
-    discovery: { kind: "provider", protocol: "sdk_supported_models", providerOptionId: "model", fallbackAllowedValues: null },
+    discovery: {
+      kind: "static_then_provider", protocol: "sdk_supported_models", providerOptionId: "model",
+      // Claude Code accepts these stable aliases and resolves each to the
+      // provider's current matching release. The live session replaces this
+      // bootstrap list with its exact advertised inventory after startup.
+      staticAllowedValues: [
+        { value: "sonnet", label: "Sonnet" },
+        { value: "opus", label: "Opus" },
+        { value: "haiku", label: "Haiku" },
+      ],
+    },
     support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" }, applyOrder: 10,
     legacyRequestKeys: ["model"],
   },
@@ -137,8 +147,13 @@ const SDK_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
     legacyRequestKeys: ["systemPrompt"],
   },
   {
-    id: "setting_sources", label: "Setting sources", category: "settings", kind: "multi_select", nullable: true,
-    discovery: { kind: "static", allowedValues: ["user", "project", "local"].map((value) => ({ value, label: value })) },
+    id: "setting_sources", label: "Claude settings", category: "settings", kind: "multi_select", nullable: true,
+    description: "Choose which Claude Code settings files to load. User is your global settings; Project is the shared project settings; Local is this checkout's unshared settings. These sources can affect permissions, hooks, plugins, and other SDK behavior; they do not add instruction files to the system prompt.",
+    discovery: { kind: "static", allowedValues: [
+      { value: "user", label: "User" },
+      { value: "project", label: "Project" },
+      { value: "local", label: "Local" },
+    ] },
     support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 70,
     legacyRequestKeys: ["settingSourcesOverride"],
   },

@@ -96,19 +96,6 @@ function storageSet(key: string, value: string): void {
   }
 }
 
-function readExpandState(key: string): Record<string, boolean> {
-  const raw = storageGet(key);
-  if (!raw) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, boolean> : {};
-  } catch {
-    return {};
-  }
-}
-
 function blockId(turnId: string, block: ContentBlock, index: number): string {
   if (block.type === 'tool_use') {
     return `${turnId}:tool:${block.id}`;
@@ -216,16 +203,13 @@ export function ChatSurface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const storageScope = sessionInfo?.sessionId ?? 'default';
   const scrollStorageKey = `mandible:chat-scroll:${storageScope}`;
-  const expandStorageKey = `mandible:chat-expanded:${storageScope}`;
 
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
   const [isFollowing, setIsFollowing] = useState(true);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
-  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => (
-    readExpandState(expandStorageKey)
-  ));
+  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const scrollTopRef = useRef(0);
   const isFollowingRef = useRef(true);
   const rowHeightsRef = useRef<Record<string, number>>({});
@@ -260,9 +244,12 @@ export function ChatSurface({
     viewportHeight,
   );
 
+  // Chat disclosures are transient reading state. A new conversation or page
+  // refresh starts from each block's declared default instead of reviving old
+  // tool/thinking expansion choices from browser storage.
   useEffect(() => {
-    setExpandedBlocks(readExpandState(expandStorageKey));
-  }, [expandStorageKey]);
+    setExpandedBlocks({});
+  }, [storageScope]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -468,9 +455,7 @@ export function ChatSurface({
 
   function setBlockExpanded(id: string, expanded: boolean): void {
     setExpandedBlocks((current) => {
-      const next = { ...current, [id]: expanded };
-      storageSet(expandStorageKey, JSON.stringify(next));
-      return next;
+      return { ...current, [id]: expanded };
     });
   }
 

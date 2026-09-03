@@ -1838,7 +1838,7 @@ function App(): JSX.Element {
         agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
       } as ConsoleSession;
       const id = session.id;
-      if (!id) return;
+      if (!id) throw new Error('The server created a chat without a session ID.');
 
       // Optimistic upsert: add the session immediately so the tab appears
       // without waiting for the SSE console:session:created event to arrive.
@@ -1851,8 +1851,8 @@ function App(): JSX.Element {
 
       // Instruction selections are sent with the create request so SDK sessions
       // can configure immediately and PTY/Channel sessions can apply launch-time prompts.
-    } catch {
-      return;
+    } catch (error) {
+      throw error;
     }
   };
 

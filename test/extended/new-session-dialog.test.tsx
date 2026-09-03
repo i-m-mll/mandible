@@ -17,9 +17,10 @@ const getConsoleRunOptions = vi.fn(async () => ({
   revision: 1,
   options: [],
 }));
+const getSettings = vi.fn(async () => ({} as Record<string, string>));
 
 vi.mock("../../ui/src/api", () => ({
-  getSettings: vi.fn(async () => ({})),
+  getSettings: (..._args: unknown[]) => getSettings(),
   getConsoleLanePolicy: (...args: []) => getConsoleLanePolicy(...args),
   getConsoleRunOptions: (..._args: unknown[]) => getConsoleRunOptions(),
 }));
@@ -36,6 +37,7 @@ beforeEach(() => {
     revision: 1,
     options: [],
   });
+  getSettings.mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -161,5 +163,50 @@ describe("NewSessionDialog transport lanes", () => {
       backend_type: "acp",
       transport_lane: "acp",
     }));
+  });
+
+  it('keeps the app default available after choosing a concrete effort and exposes the configured model', async () => {
+    getSettings.mockResolvedValue({ 'conversations.default_model.claude': 'claude-sonnet-4-6' });
+    getConsoleRunOptions.mockResolvedValue({
+      backendType: 'sdk',
+      command: 'claude',
+      phase: 'ready',
+      revision: 1,
+      options: [
+        { id: 'model', label: 'Model', category: 'model', kind: 'select', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: [{ value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' }], enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+        { id: 'thinking_effort', label: 'Thinking effort', category: 'reasoning', kind: 'select', nullable: true, source: 'backend', availability: 'available', currentValue: null, allowedValues: [{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }], enforcement: { status: 'enforced', owner: 'backend', effectiveFrom: 'next_prompt' } },
+      ],
+    });
+
+    render(<NewSessionDialog open onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    const effort = await screen.findByLabelText('Thinking effort') as HTMLSelectElement;
+    const model = screen.getByLabelText('Model') as HTMLSelectElement;
+    expect(Array.from(model.options).map((option) => option.textContent)).toContain('Use app default (claude-sonnet-4-6)');
+    fireEvent.change(effort, { target: { value: 'high' } });
+    expect(effort.value).toBe('high');
+    expect(Array.from(effort.options).map((option) => option.textContent)).toContain('Use app default');
+    fireEvent.change(effort, { target: { value: '' } });
+    expect(effort.value).toBe('');
+  });
+
+  it('keeps the dialog open and explains preview mutation rejection', async () => {
+    const onClose = vi.fn();
+    const onSubmit = vi.fn(async () => { throw new Error('instance_mutation_forbidden'); });
+    render(<NewSessionDialog open onClose={onClose} onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByText('Create chat'));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('This preview cannot create chats');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('renders inside an explicit detail-pane portal target', () => {
+    const detailPane = document.createElement('div');
+    document.body.append(detailPane);
+    render(<NewSessionDialog open portalTarget={detailPane} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    expect(document.querySelector('.new-session-dialog-overlay')?.parentElement).toBe(detailPane);
+    detailPane.remove();
   });
 });

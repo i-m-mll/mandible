@@ -180,7 +180,19 @@ function stripMarkdownText(src: string | null | undefined): string {
 
 export function getConversationTitle(conversation: Conversation | null | undefined): string {
   const raw = conversation?.title || 'Untitled';
+  if (/^\s*<(?:codex_delegation|system|developer)\b/i.test(raw)
+      || /^\s*[0-9a-f]{8}-[0-9a-f-]{27,}(?:\s|$|<)/i.test(raw)) {
+    const provider = conversation?.source ? SOURCE_LABELS[conversation.source] : null;
+    return provider ? `${provider} chat` : 'Untitled chat';
+  }
   return stripMarkdownText(raw) || 'Untitled';
+}
+
+function getConsoleSessionTitle(session: ConsoleSession | null | undefined): string {
+  const raw = stripMarkdownText(session?.label);
+  if (raw && !/^[0-9a-f]{8}-[0-9a-f-]{27,}(?:\s|$|<)/i.test(raw)) return raw;
+  const source = session ? sourceFromSession(session) : null;
+  return source ? `${SOURCE_LABELS[source]} chat` : 'Untitled chat';
 }
 
 export function parseConversationTagsInput(value: string): string[] {
@@ -418,7 +430,7 @@ export type ConversationsViewProps = {
     channel_enabled?: boolean;
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
     cwd?: string;
-  }) => void;
+  }) => Promise<void>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -2148,7 +2160,7 @@ function ChatEntryItem({
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
-  const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
+  const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
@@ -2360,6 +2372,7 @@ export function ConversationsView({
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
+  const detailPortalRef = useRef<HTMLDivElement>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
@@ -3031,7 +3044,7 @@ export function ConversationsView({
     }
   };
 
-  const handleNewSession = (input: {
+  const handleNewSession = async (input: {
     label: string;
     backend: string;
     kind: string;
@@ -3041,7 +3054,7 @@ export function ConversationsView({
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
     cwd?: string;
   }) => {
-    onNewSession(input);
+    await onNewSession(input);
     setDialogOpen(false);
     setNewSessionCwd(undefined);
   };
@@ -3307,6 +3320,7 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
+                    showDisclosure={false}
                     action={group.exactRoot
                       ? { label: `New chat in ${group.label}`, icon: <SidebarNewChatIcon />, onPress: () => openNewSession(group.exactRoot) }
                       : undefined}
@@ -3352,7 +3366,7 @@ export function ConversationsView({
       </ViewSidebar>
 
       {/* Detail pane */}
-      <div className="chat-history-detail">
+      <div ref={detailPortalRef} className="chat-history-detail">
         {selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
@@ -3376,6 +3390,7 @@ export function ConversationsView({
       <NewSessionDialog
         open={dialogOpen}
         cwd={newSessionCwd}
+        portalTarget={detailPortalRef.current}
         onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
         onSubmit={handleNewSession}
       />
