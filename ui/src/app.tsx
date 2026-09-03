@@ -455,9 +455,9 @@ function BriefingIcon({ size = 18 }: { size?: number }): JSX.Element {
   );
 }
 
-function ExperimentalIcon({ size = 14 }: { size?: number }): JSX.Element {
+function ExperimentalIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M9 3h6" />
       <path d="M10 3v6l-5 9a2 2 0 0 0 1.75 3h10.5A2 2 0 0 0 19 18l-5-9V3" />
       <path d="M8 15h8" />

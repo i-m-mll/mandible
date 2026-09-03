@@ -323,8 +323,10 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body.conv-detail__body');
     const footer = shell?.querySelector(':scope > .detail-pane-shell__footer.conv-detail__footer');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
+    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
     expect(getComputedStyle(shell!).overflow).toBe('clip');
     expect(getComputedStyle(body!).position).toBe('relative');
+    expect(conversationCss).toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-20px;/s);
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
     expect(canonicalHeader?.textContent).not.toContain('Conversation');
     expect(canonicalHeader?.textContent).not.toContain('01a01639');
@@ -377,7 +379,9 @@ describe('compact detail pane shell', () => {
     expect(projectLabel.parentElement?.textContent).toBe('ProjectUnscoped');
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation metadata' }));
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
-    expect(footer?.querySelector('.conv-compose')).toBeTruthy();
+    const composer = footer?.querySelector('.conv-compose');
+    expect(composer).toBeTruthy();
+    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*14px;/s);
     expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
