@@ -1,6 +1,13 @@
 import { normalizeOrderedPinIds } from '../components/shared/orderedPins';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import type { Dispatch, StateUpdater } from 'preact/hooks';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import type { CanonicalProject, CanonicalProjectCheckout } from '../api';
+import {
+  getChatShownProjectsPreference,
+  isApiErrorStatus,
+  updateChatShownProjectsPreference,
+} from '../api';
 
 export const CHAT_VIEW_STATE_KEY = 'mandible.chat.viewState:v1';
 
@@ -12,16 +19,16 @@ export type ShownChatProject = {
 export type ChatViewState = {
   pinnedConversationIds: string[];
   previewPinOverrides: Record<string, boolean>;
-  shownProjects: ShownChatProject[];
 };
 
 export const DEFAULT_CHAT_VIEW_STATE: ChatViewState = {
   pinnedConversationIds: [],
   previewPinOverrides: {},
-  shownProjects: [],
 };
 
-export function normalizeChatViewState(value: unknown): ChatViewState {
+export type LegacyChatViewState = ChatViewState & { shownProjects: ShownChatProject[] };
+
+export function normalizeChatViewState(value: unknown): LegacyChatViewState {
   const row = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
@@ -81,7 +88,145 @@ export function reconcileShownProjects(
 export function useChatViewState() {
   return usePersistedViewState(
     CHAT_VIEW_STATE_KEY,
-    normalizeChatViewState,
+    (value) => {
+      const normalized = normalizeChatViewState(value);
+      return {
+        pinnedConversationIds: normalized.pinnedConversationIds,
+        previewPinOverrides: normalized.previewPinOverrides,
+      };
+    },
     DEFAULT_CHAT_VIEW_STATE,
   );
+}
+
+export type ChatProjectSelectionState = {
+  ready: boolean;
+  notice: string | null;
+};
+
+function readLegacyShownProjects(): ShownChatProject[] {
+  try {
+    if (typeof window === 'undefined') return [];
+    const raw = window.localStorage.getItem(CHAT_VIEW_STATE_KEY);
+    return raw === null ? [] : normalizeChatViewState(JSON.parse(raw)).shownProjects;
+  } catch {
+    return [];
+  }
+}
+
+function removeLegacyShownProjects(): void {
+  try {
+    if (typeof window === 'undefined') return;
+    const raw = window.localStorage.getItem(CHAT_VIEW_STATE_KEY);
+    if (raw === null) return;
+    const normalized = normalizeChatViewState(JSON.parse(raw));
+    window.localStorage.setItem(CHAT_VIEW_STATE_KEY, JSON.stringify({
+      pinnedConversationIds: normalized.pinnedConversationIds,
+      previewPinOverrides: normalized.previewPinOverrides,
+    }));
+  } catch {
+    // Host persistence is authoritative; unavailable browser storage does not
+    // prevent using it.
+  }
+}
+
+/**
+ * Revision-safe host/user project selection shared by main and preview ports.
+ * The old localStorage field is only an import source and is removed after the
+ * host authority has either supplied or accepted the value.
+ */
+export function useChatProjectSelection(): [
+  ShownChatProject[],
+  Dispatch<StateUpdater<ShownChatProject[]>>,
+  ChatProjectSelectionState,
+] {
+  const legacyRef = useRef<ShownChatProject[] | null>(null);
+  if (legacyRef.current === null) legacyRef.current = readLegacyShownProjects();
+  const [shownProjects, setShownProjects] = useState<ShownChatProject[]>(legacyRef.current);
+  const [state, setState] = useState<ChatProjectSelectionState>({ ready: false, notice: null });
+  const desiredRef = useRef(legacyRef.current);
+  const revisionRef = useRef(0);
+  const writeQueueRef = useRef(Promise.resolve());
+  const activeRef = useRef(true);
+
+  useEffect(() => {
+    activeRef.current = true;
+    void getChatShownProjectsPreference().then(async (snapshot) => {
+      let resolved = snapshot;
+      let importedLegacy = false;
+      if (snapshot.revision === 0 && legacyRef.current!.length > 0) {
+        try {
+          resolved = await updateChatShownProjectsPreference(legacyRef.current!, 0);
+          importedLegacy = true;
+        } catch (error) {
+          if (!isApiErrorStatus(error, 409)) throw error;
+          resolved = await getChatShownProjectsPreference();
+        }
+      }
+      if (!activeRef.current) return;
+      desiredRef.current = resolved.value;
+      revisionRef.current = resolved.revision;
+      setShownProjects(resolved.value);
+      removeLegacyShownProjects();
+      setState({
+        ready: true,
+        notice: importedLegacy
+          ? 'Imported this browser’s saved project selection to the shared host preference.'
+          : null,
+      });
+    }).catch(() => {
+      if (!activeRef.current) return;
+      setShownProjects([]);
+      setState({
+        ready: false,
+        notice: 'Saved project selection is unavailable. No project preference was changed.',
+      });
+    });
+    return () => { activeRef.current = false; };
+  }, []);
+
+  const update = useCallback<Dispatch<StateUpdater<ShownChatProject[]>>>((next) => {
+    if (!state.ready) return;
+    const previous = desiredRef.current;
+    const value = typeof next === 'function'
+      ? (next as (current: ShownChatProject[]) => ShownChatProject[])(previous)
+      : next;
+    desiredRef.current = value;
+    setShownProjects(value);
+    writeQueueRef.current = writeQueueRef.current.then(async () => {
+      const expectedRevision = revisionRef.current;
+      const intendedValue = desiredRef.current;
+      try {
+        const saved = await updateChatShownProjectsPreference(intendedValue, expectedRevision);
+        if (!activeRef.current) return;
+        revisionRef.current = saved.revision;
+        if (desiredRef.current === intendedValue) setShownProjects(saved.value);
+        setState({ ready: true, notice: null });
+      } catch (error) {
+        if (!activeRef.current) return;
+        if (isApiErrorStatus(error, 409)) {
+          try {
+            const current = await getChatShownProjectsPreference();
+            if (!activeRef.current) return;
+            desiredRef.current = current.value;
+            revisionRef.current = current.revision;
+            setShownProjects(current.value);
+            setState({
+              ready: true,
+              notice: 'Project selection changed in another Mandible window. Loaded the newer saved selection.',
+            });
+            return;
+          } catch {
+            // Fall through to the fail-closed unavailable state.
+          }
+        }
+        setState({
+          ready: false,
+          notice: 'Project selection could not be saved. Reload to recover the shared host preference.',
+        });
+      }
+    });
+  }, [state.ready]);
+
+  return [shownProjects, update, state];
 }

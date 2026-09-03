@@ -46,6 +46,12 @@ beforeEach(() => {
   } as Storage;
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
+  vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
+    version: 1, key: 'chat_shown_projects', value: [], revision: 0,
+  });
+  vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
+  }));
 });
 
 afterEach(() => {
@@ -133,7 +139,7 @@ describe('conversation sidebar groups', () => {
     expect(await screen.findByText(/No projects shown/)).toBeTruthy();
     expect(screen.getByText(/available/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Add Project' })).toBeTruthy();
-    expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects).toEqual([]);
+    expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}')).not.toHaveProperty('shownProjects');
   });
 
   it('sends bounded deduplicated full canonical project ids on the wire', async () => {
@@ -196,8 +202,7 @@ describe('conversation sidebar groups', () => {
     });
     renderView();
 
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
-      .toEqual([]));
+    await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith([], 1));
     await waitFor(() => expect(requests.length).toBeGreaterThan(0));
     expect(requests.every((request) => !request.project_ids?.includes('prj-removed'))).toBe(true);
     expect(screen.queryByRole('button', { name: /^Removed/ })).toBeNull();
@@ -320,8 +325,10 @@ describe('conversation sidebar groups', () => {
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible-alt' }));
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
-      .toEqual([{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' }]));
+    await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith(
+      [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' }],
+      expect.any(Number),
+    ));
   });
 
   it('cannot manufacture a project group from a legacy directory label or path', async () => {

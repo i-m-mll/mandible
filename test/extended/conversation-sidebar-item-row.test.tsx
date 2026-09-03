@@ -40,6 +40,12 @@ beforeEach(() => {
   } as Storage;
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
+  vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
+    version: 1, key: 'chat_shown_projects', value: [], revision: 0,
+  });
+  vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
+  }));
 });
 
 afterEach(() => {

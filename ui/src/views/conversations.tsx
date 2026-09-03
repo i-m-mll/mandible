@@ -85,7 +85,7 @@ import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import { reconcileShownProjects, useChatViewState } from './conversation-view-state';
+import { reconcileShownProjects, useChatProjectSelection, useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
@@ -2425,6 +2425,8 @@ export function ConversationsView({
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [chatViewState, setChatViewState] = useChatViewState();
+  const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
+  const [shownProjectsReconcileNotice, setShownProjectsReconcileNotice] = useState<string | null>(null);
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
@@ -2569,31 +2571,32 @@ export function ConversationsView({
   );
 
   useEffect(() => {
-    if (!canonicalProjectsLoaded) return;
-    setChatViewState((current) => {
-      const shownProjects = reconcileShownProjects(current.shownProjects, canonicalProjects);
-      return shownProjects.length === current.shownProjects.length
-        && shownProjects.every((shown, index) => (
-          shown.projectId === current.shownProjects[index].projectId
-          && shown.checkoutId === current.shownProjects[index].checkoutId
-        ))
-        ? current
-        : { ...current, shownProjects };
-    });
-  }, [canonicalProjects, canonicalProjectsLoaded, setChatViewState]);
+    if (!canonicalProjectsLoaded || !shownProjectsState.ready) return;
+    const reconciled = reconcileShownProjects(shownProjects, canonicalProjects);
+    const unchanged = reconciled.length === shownProjects.length
+      && reconciled.every((shown, index) => (
+        shown.projectId === shownProjects[index].projectId
+        && shown.checkoutId === shownProjects[index].checkoutId
+      ));
+    if (unchanged) return;
+    setShownProjectsReconcileNotice(
+      'Saved project selection referenced a changed or removed checkout. The shared preference was updated.',
+    );
+    setShownProjects(reconciled);
+  }, [canonicalProjects, canonicalProjectsLoaded, setShownProjects, shownProjects, shownProjectsState.ready]);
 
   const selectedProjectIds = useMemo(() => {
-    if (!canonicalProjectsReady) return [];
+    if (!canonicalProjectsReady || !shownProjectsState.ready) return [];
     if (!canonicalProjectsLoaded) {
-      return [...new Set(chatViewState.shownProjects.map((shown) => shown.projectId))];
+      return [...new Set(shownProjects.map((shown) => shown.projectId))];
     }
     const registeredSelections = new Set(registeredProjects.map((project) => (
       `${project.id}\0${project.checkoutId}`
     )));
-    return [...new Set(chatViewState.shownProjects
+    return [...new Set(shownProjects
       .filter((shown) => registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`))
       .map((shown) => shown.projectId))];
-  }, [canonicalProjectsLoaded, canonicalProjectsReady, chatViewState.shownProjects, registeredProjects]);
+  }, [canonicalProjectsLoaded, canonicalProjectsReady, registeredProjects, shownProjects, shownProjectsState.ready]);
 
   const sidebarRequestParams = useCallback((limit: number, projectIds = selectedProjectIds) => {
     const params: Parameters<typeof getConversationSidebar>[0] = {
@@ -2612,7 +2615,7 @@ export function ConversationsView({
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
   const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
-    if (!canonicalProjectsReady) return;
+    if (!canonicalProjectsReady || !shownProjectsState.ready) return;
     const generation = ++fetchGenerationRef.current;
     setLoading(true);
     try {
@@ -2650,7 +2653,7 @@ export function ConversationsView({
     } finally {
       if (generation === fetchGenerationRef.current) setLoading(false);
     }
-  }, [canonicalProjectsReady, selectedProjectIds, sidebarGroupLimit, sidebarRequestParams]);
+  }, [canonicalProjectsReady, selectedProjectIds, shownProjectsState.ready, sidebarGroupLimit, sidebarRequestParams]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
@@ -2729,7 +2732,7 @@ export function ConversationsView({
 
   // Debounced fetch on filter changes
   useEffect(() => {
-    if (!canonicalProjectsReady) return undefined;
+    if (!canonicalProjectsReady || !shownProjectsState.ready) return undefined;
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
       fetchConversationGroups();
@@ -2737,7 +2740,7 @@ export function ConversationsView({
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [canonicalProjectsReady, fetchConversationGroups]);
+  }, [canonicalProjectsReady, fetchConversationGroups, shownProjectsState.ready]);
 
   const selectedConversationSummary = selection?.type === 'conversation'
     ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
@@ -2773,7 +2776,7 @@ export function ConversationsView({
 
   const chatSections = useMemo<ChatSidebarSections>(() => {
     type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
-    const selectedCheckoutByProject = new Map(chatViewState.shownProjects.flatMap((shown) => {
+    const selectedCheckoutByProject = new Map(shownProjects.flatMap((shown) => {
       const registered = registeredProjects.find((project) => (
         project.id === shown.projectId && project.checkoutId === shown.checkoutId
       ));
@@ -2894,7 +2897,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, sort]);
+  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3123,17 +3126,14 @@ export function ConversationsView({
     ));
     if (!project) return;
     const isNewProject = !selectedProjectIds.includes(project.id);
-    setChatViewState((current) => {
+    setShownProjects((current) => {
       const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
-      const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
+      const existingIndex = current.findIndex((shown) => shown.projectId === project.id);
       if (existingIndex < 0) {
-        return { ...current, shownProjects: [...current.shownProjects, nextSelection] };
+        return [...current, nextSelection];
       }
-      if (current.shownProjects[existingIndex].checkoutId === project.checkoutId) return current;
-      return {
-        ...current,
-        shownProjects: current.shownProjects.map((shown, index) => index === existingIndex ? nextSelection : shown),
-      };
+      if (current[existingIndex].checkoutId === project.checkoutId) return current;
+      return current.map((shown, index) => index === existingIndex ? nextSelection : shown);
     });
     setProjectChooserOpen(false);
     if (isNewProject) {
@@ -3335,6 +3335,11 @@ export function ConversationsView({
                   </select>
                   <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
+                </div>
+              ) : null}
+              {shownProjectsState.notice || shownProjectsReconcileNotice ? (
+                <div className="chat-projects-empty" role="status">
+                  {shownProjectsState.notice ?? shownProjectsReconcileNotice}
                 </div>
               ) : null}
               {chatSections.projects.length === 0 && registeredProjects.length > 0 ? (

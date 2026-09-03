@@ -1793,6 +1793,55 @@ export async function updateUserTypographySetting(
   return parseUserTypographySetting(key, await parseMaybeJson(response));
 }
 
+export type ChatShownProjectPreferenceValue = {
+  projectId: string;
+  checkoutId: string;
+};
+
+export type ChatShownProjectsPreference = {
+  version: 1;
+  key: 'chat_shown_projects';
+  value: ChatShownProjectPreferenceValue[];
+  revision: number;
+};
+
+function parseChatShownProjectsPreference(payload: unknown): ChatShownProjectsPreference {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'chat_shown_projects'
+    || !Array.isArray(record.value)
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+    || record.value.some((candidate) => (
+      !candidate
+      || typeof candidate !== 'object'
+      || Array.isArray(candidate)
+      || typeof (candidate as Record<string, unknown>).projectId !== 'string'
+      || typeof (candidate as Record<string, unknown>).checkoutId !== 'string'
+    ))
+  ) throw new Error('Invalid Chat shown-project preference response');
+  return record as ChatShownProjectsPreference;
+}
+
+export async function getChatShownProjectsPreference(): Promise<ChatShownProjectsPreference> {
+  const response = await apiGet('/api/host-preferences/chat-shown-projects');
+  return parseChatShownProjectsPreference(await parseMaybeJson(response));
+}
+
+export async function updateChatShownProjectsPreference(
+  value: ChatShownProjectPreferenceValue[],
+  expectedRevision: number,
+): Promise<ChatShownProjectsPreference> {
+  const response = await apiPut('/api/host-preferences/chat-shown-projects', {
+    value,
+    expected_revision: expectedRevision,
+  });
+  return parseChatShownProjectsPreference(await parseMaybeJson(response));
+}
+
 /**
  * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
  * (terminal driving) is local-only and off by default, and the gate is

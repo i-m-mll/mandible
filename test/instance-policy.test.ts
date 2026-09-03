@@ -538,6 +538,12 @@ describe("route mutation category table has one source", () => {
     // Exempt in both gates: read-only in effect despite the unsafe method.
     { method: "POST", pattern: "/api/auth/check", url: "/api/auth/check", category: null },
     { method: "POST", pattern: "/api/timeline/project", url: "/api/timeline/project", category: null },
+    {
+      method: "PUT",
+      pattern: "/api/host-preferences/chat-shown-projects",
+      url: "/api/host-preferences/chat-shown-projects",
+      category: null,
+    },
     // Still an operational mutation: only the exact exempt route is exempt.
     { method: "POST", pattern: "/api/timeline/rows", url: "/api/timeline/rows", category: "timeline" },
     {
