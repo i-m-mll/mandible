@@ -30,6 +30,7 @@ describe('message action cards', () => {
     const markdownCss = readFileSync('ui/src/styles/rendered-markdown.css', 'utf8');
     const messageCss = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
     expect(consoleCss).toMatch(/\.stream-turn--selected\s*\{[^}]*border-left:\s*0;[^}]*background:\s*transparent;/s);
+    expect(consoleCss).toMatch(/\.stream-turn-node\s*\{[^}]*width:\s*100%;/s);
     expect(markdownCss).toContain('.rendered-markdown blockquote');
     expect(markdownCss).toContain('.rendered-markdown table');
     expect(markdownCss).toContain('.rendered-markdown li + li');
