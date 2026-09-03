@@ -45,7 +45,7 @@ import {
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
-  navigateSession,
+  openConversationExternally,
   submitConversationControl,
   updateConsoleSession,
   updateConsoleSessionOptions,
@@ -1639,24 +1639,17 @@ function ConversationDetail({
     }
   }, [canSaveComposerModel, linkedConsoleSession, permissionRunOption?.id, thinkingRunOption?.id]);
 
-  const externalNavigationSession = useMemo(() => {
-    const ownership = control?.ownership;
-    if (ownership?.kind !== 'external') return null;
-    return consoleSessions.find((session) => session.id === ownership.evidence.reference) ?? null;
-  }, [consoleSessions, control]);
-
-  const handleFocusExternalSession = useCallback(async () => {
-    const sessionId = externalNavigationSession?.id;
-    if (!sessionId) return;
+  const handleOpenExternally = useCallback(async () => {
+    if (!conversation?.external_navigation) return;
     setContinueError(null);
     setResumeErrorDetails(null);
     try {
-      await navigateSession(sessionId);
-      setToast({ message: 'Terminal focus requested.', type: 'info' });
+      await openConversationExternally(conversation.id);
+      setToast({ message: `${conversation.external_navigation.label} requested.`, type: 'info' });
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     }
-  }, [externalNavigationSession?.id]);
+  }, [conversation?.external_navigation, conversation?.id]);
 
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
@@ -1805,7 +1798,7 @@ function ConversationDetail({
                       setActionsOpen(false);
                     }}
                   >
-                    Resume in terminal
+                    Resume in Mandible
                   </button>
                 )}
                 <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
@@ -1865,13 +1858,13 @@ function ConversationDetail({
         {(control?.capability.kind === 'blocked-external'
           || control?.capability.kind === 'blocked-ownership-unknown') && (
           <div className="conv-compose__actions">
-            {externalNavigationSession && (
+            {conversation.external_navigation && (
               <button
                 type="button"
                 className="btn btn--ghost btn--sm"
-                onClick={() => { void handleFocusExternalSession(); }}
+                onClick={() => { void handleOpenExternally(); }}
               >
-                Go to terminal
+                {conversation.external_navigation.label}
               </button>
             )}
           </div>
@@ -2185,6 +2178,7 @@ function ChatEntryItem({
   pinActionRef,
   onEditTags,
   onRenameSession,
+  onOpenExternally,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2194,6 +2188,7 @@ function ChatEntryItem({
   pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
+  onOpenExternally?: () => void;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
@@ -2201,7 +2196,7 @@ function ChatEntryItem({
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
-  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
+  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
@@ -2225,6 +2220,9 @@ function ChatEntryItem({
   };
 
   const overflowActions: SidebarItemOverflowAction[] = [];
+  if (onOpenExternally) {
+    overflowActions.push({ id: 'open-externally', label: 'Open externally', onSelect: onOpenExternally });
+  }
   if (onEditTags) {
     overflowActions.push({ id: 'edit-tags', label: 'Edit tags', onSelect: handleEditTags });
   }
@@ -2435,6 +2433,7 @@ export function ConversationsView({
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -3084,6 +3083,16 @@ export function ConversationsView({
     }
   };
 
+  const handleOpenExternally = async (entry: ChatEntry) => {
+    if (!entry.conversation?.external_navigation) return;
+    try {
+      await openConversationExternally(entry.conversation.id);
+      setSidebarToast({ message: `${entry.conversation.external_navigation.label} requested.`, type: 'info' });
+    } catch (error) {
+      setSidebarToast({ message: error instanceof Error ? error.message : String(error), type: 'error' });
+    }
+  };
+
   const handleNewSession = async (input: {
     idempotency_key: string;
     label: string;
@@ -3162,6 +3171,9 @@ export function ConversationsView({
       onRenameSession={!entry.conversation && entry.session
         ? (label) => { void handleRenameSession(entry, label); }
         : undefined}
+      onOpenExternally={entry.conversation?.external_navigation
+        ? () => { void handleOpenExternally(entry); }
+        : undefined}
       onClick={() => {
         if (entry.kind === 'conversation' && entry.conversation) {
           setSelection({ type: 'conversation', id: entry.conversation.id });
@@ -3181,6 +3193,7 @@ export function ConversationsView({
 
   return (
     <div className="chat-history-view">
+      <Toast toast={sidebarToast} onDismiss={() => setSidebarToast(null)} />
       <ViewSidebar
         {...VIEW_SIDEBAR_GEOMETRY.console}
         className="chat-history-sidebar"

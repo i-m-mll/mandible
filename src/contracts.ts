@@ -391,6 +391,20 @@ export type StoredConversationBlock = {
   dag_parent_uuid?: string | null;
 };
 
+export type ConversationExternalNavigation =
+  | {
+      kind: "codex-desktop-task";
+      provider_session_id: string;
+      label: "Open in Codex";
+    }
+  | {
+      kind: "claude-native-background";
+      provider_session_id: string;
+      session_id: string;
+      terminal: "iterm";
+      label: "Go to terminal";
+    };
+
 export type Conversation = {
   id: string;
   source: ConversationSource;
@@ -413,6 +427,11 @@ export type Conversation = {
   notes: string | null;
   parent_conversation_id: string | null;
   children_count: number;
+  /**
+   * Server-projected exact navigation. Absence means that no external action
+   * was proven for this conversation; clients must not infer one from source.
+   */
+  external_navigation?: ConversationExternalNavigation;
 };
 
 export type ConversationChild = {
