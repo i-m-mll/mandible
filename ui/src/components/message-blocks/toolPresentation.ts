@@ -128,3 +128,9 @@ export function summarizeToolRun(
   const summary = labels.join(', ');
   return summary.charAt(0).toUpperCase() + summary.slice(1);
 }
+
+export function toolRunIcons(
+  tools: ReadonlyArray<{ name: string; input: Record<string, unknown> | string }>,
+): string[] {
+  return Array.from(new Set(tools.map((tool) => DEFINITIONS[classifyTool(tool.name)].icon)));
+}

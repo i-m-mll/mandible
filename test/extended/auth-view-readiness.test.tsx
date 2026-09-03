@@ -268,7 +268,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onUpdateField = vi.fn();
     renderView(true, onApprove, previewInstance, onUpdateField);
 
-    expect(screen.getByText('Commit Message')).toBeTruthy();
+    expect(screen.getByText('Commit message')).toBeTruthy();
     expect(screen.queryByText('edit')).toBeNull();
   });
 
@@ -391,7 +391,7 @@ describe('AuthQueueView persisted action expansion', () => {
 });
 
 describe('AuthQueueView attribution', () => {
-  it('shows requester, approver, and credential-signature verification', () => {
+  it('attributes creation plainly while retaining approver credential verification', () => {
     const attributedRequest: AuthRequest = {
       ...pendingRequest,
       requester: { id: 'user-agent', display_name: 'Request Agent', kind: 'agent' },
@@ -418,7 +418,8 @@ describe('AuthQueueView attribution', () => {
       />,
     );
 
-    expect(screen.getByLabelText('Show attribution for Request Agent')).toBeTruthy();
+    expect(screen.getByText(/created .* by Request Agent/)).toBeTruthy();
+    expect(screen.queryByLabelText('Show attribution for Request Agent')).toBeNull();
     expect(screen.getByLabelText('Show attribution for Human Approver')).toBeTruthy();
     expect(screen.getByText('Verified signature')).toBeTruthy();
     fireEvent.click(screen.getByLabelText('Show attribution for Human Approver'));

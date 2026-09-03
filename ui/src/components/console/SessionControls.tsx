@@ -15,6 +15,7 @@ type SessionControlsProps = {
   availableTools?: string[];
   onModelSaved?: (model: string | undefined) => void;
   hideModel?: boolean;
+  hiddenOptionIds?: readonly string[];
   /** Retained while callers migrate; descriptors, never this value, drive rendering. */
   backendType?: 'pty' | 'sdk' | 'acp';
   model?: string;
@@ -123,11 +124,14 @@ function OptionControl({ option, value, disabled, onChange }: {
 
 export function SessionControls({
   sessionId, runOptions, allowedTools, availableTools = [], onModelSaved, hideModel = false,
+  hiddenOptionIds = [],
 }: SessionControlsProps): JSX.Element {
   const [snapshot, setSnapshot] = useRunOptions(sessionId, runOptions);
   const editable = useMemo(() => (snapshot?.options ?? []).filter((option) =>
-    option.enforcement.status !== 'unsupported' && (!hideModel || option.id !== 'model')),
-  [hideModel, snapshot]);
+    option.enforcement.status !== 'unsupported'
+    && (!hideModel || option.id !== 'model')
+    && !hiddenOptionIds.includes(option.id)),
+  [hiddenOptionIds, hideModel, snapshot]);
   const [draft, setDraft] = useState<Record<string, SessionRunOptionValue>>({});
   const [draftAllowedTools, setDraftAllowedTools] = useState<string[]>(allowedTools ?? []);
   const [saving, setSaving] = useState(false);

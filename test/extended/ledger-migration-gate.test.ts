@@ -399,6 +399,16 @@ describe("ledger issue routes", () => {
       "2026-06-12T12:05:00.000Z",
       "2026-06-12T12:05:00.000Z",
     );
+    db.prepare(
+      "INSERT INTO sessions (id, app, status, created_at, updated_at, last_active) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(
+      "sess-new",
+      "codex",
+      "stopped",
+      "2026-06-12T11:00:00.000Z",
+      "2026-06-12T11:05:00.000Z",
+      "2026-06-12T11:05:00.000Z",
+    );
     store.addIssueCheckpoint(issue.id, {
       ...SYSTEM_ACTOR,
       kind: "parent-role",

@@ -56,6 +56,7 @@ import type {
   AcceptedConversationSubmission as ContractAcceptedConversationSubmission,
   ConversationControlError as ContractConversationControlError,
   ConversationControlOperation as ContractConversationControlOperation,
+  ConversationRuntimeOptions as ContractConversationRuntimeOptions,
   ConversationControlSnapshot as ContractConversationControlSnapshot,
   OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
   OperationalIncidentAttention as ContractOperationalIncidentAttention,
@@ -476,6 +477,7 @@ const BRIEFING_EVENTS = new Set([
   'briefing:bundle-member-added',
   'briefing:bundle-members-replaced',
   'briefing:bundle-name-updated',
+  'briefing:bundle-deleted',
   'briefing:round-published',
   'briefing:answered',
   'briefing:annotated',
@@ -2419,6 +2421,7 @@ export async function forkConversation(
 
 export type ConversationControlSnapshot = ContractConversationControlSnapshot;
 export type ConversationControlOperation = ContractConversationControlOperation;
+export type ConversationRuntimeOptions = ContractConversationRuntimeOptions;
 export type ConversationControlError = ContractConversationControlError;
 export type AcceptedConversationSubmission = ContractAcceptedConversationSubmission;
 
@@ -2441,6 +2444,7 @@ export async function submitConversationControl(
   snapshot: ConversationControlSnapshot,
   message: string,
   messageAnchor?: string,
+  runtimeOptions?: ConversationRuntimeOptions,
 ): Promise<AcceptedConversationSubmission> {
   const capability = snapshot.capability;
   const operation: ConversationControlOperation = capability.kind === 'live-send'
@@ -2467,6 +2471,7 @@ export async function submitConversationControl(
       expected_generation: snapshot.ownership.generation,
       message,
       ...(operation === 'resume-message-anchor' ? { message_anchor: messageAnchor } : {}),
+      ...(runtimeOptions && Object.keys(runtimeOptions).length > 0 ? { runtime_options: runtimeOptions } : {}),
       idempotency_key: crypto.randomUUID(),
     }),
   });

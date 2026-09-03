@@ -20,6 +20,7 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { ContextualAction } from '../components/shared/ContextualAction';
+import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
@@ -568,19 +569,20 @@ function BranchAuditPanel({
 }): JSX.Element {
   const entries = Array.isArray(audit?.entries) ? audit.entries : [];
   return (
-    <section className="work-audit" aria-labelledby="work-audit-title">
-      <div className="work-audit__header">
-        <button
-          type="button"
-          className="work-audit__toggle"
-          aria-expanded={open}
-          aria-controls="work-audit-content"
-          onClick={onToggle}
-        >
-          <span aria-hidden="true">{open ? '\u25be' : '\u25b8'}</span>
-          <span id="work-audit-title">Branch audit</span>
+    <CollapsiblePanel
+      className="work-audit"
+      headerClassName="work-audit__header"
+      toggleClassName="work-audit__toggle"
+      bodyClassName="work-audit__content"
+      title={(
+        <>
+          <span>Branch audit</span>
           {audit ? <span className="work-audit__count">{entries.length}</span> : null}
-        </button>
+        </>
+      )}
+      expanded={open}
+      onExpandedChange={onToggle}
+      actions={(
         <button
           type="button"
           className="btn btn--xs btn--ghost"
@@ -589,8 +591,8 @@ function BranchAuditPanel({
         >
           {loadState.loading ? 'Auditing\u2026' : 'Refresh audit'}
         </button>
-      </div>
-      {notice ? (
+      )}
+      persistentContent={notice ? (
         <div
           className={`work-audit__notice work-audit__notice--${notice.kind}`}
           role={notice.kind === 'error' ? 'alert' : 'status'}
@@ -599,8 +601,7 @@ function BranchAuditPanel({
           {notice.text}
         </div>
       ) : null}
-      {open ? (
-        <div id="work-audit-content" className="work-audit__content">
+    >
           <p className="work-audit__intro">
             Review one local branch at a time. Eligible branches move into reversible Mandible custody;
             remote branches are never deleted here.
@@ -730,9 +731,7 @@ function BranchAuditPanel({
               );
             })
           )}
-        </div>
-      ) : null}
-    </section>
+    </CollapsiblePanel>
   );
 }
 

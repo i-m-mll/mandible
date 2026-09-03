@@ -37,12 +37,102 @@
   max-width: var(--chat-max-width);
 }
 
-.msg-text-block,
+.provider-directive {
+  --tool-activity-background: #242424;
+  --tool-activity-border: #464646;
+  --tool-activity-box-text: #919191;
+  width: 100%;
+  margin-top: var(--space-2);
+  color: var(--tool-activity-text, var(--text-muted));
+}
+
+:root[data-theme='light'] .provider-directive {
+  --tool-activity-background: #F4F4F4;
+  --tool-activity-border: #DADADB;
+  --tool-activity-box-text: #88888A;
+}
+
+.provider-directive__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 400 var(--text-lg)/1.15 var(--font-sans);
+}
+
+.provider-directive__summary:hover,
+.provider-directive__summary:focus-visible {
+  color: var(--text-primary);
+}
+
+.provider-directive__icon,
+.provider-directive__chevron {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-directive__icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.provider-directive__body {
+  margin-top: 3px;
+  padding: 7px 10px;
+  border: 1px solid var(--tool-activity-border);
+  border-radius: 6px;
+  background: var(--tool-activity-background);
+  color: var(--tool-activity-box-text);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.provider-directive__body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.provider-directive__body code {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.provider-directive__task-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.msg-text-block {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+/* TextBlock introduces a semantic segment wrapper between rendered-markdown
+ * and its prose. End the final Markdown block inside that wrapper so its
+ * bottom margin cannot collapse into the message-flow gap and make a
+ * following tool row look farther away than the prose after it. */
+.provider-directive__prose > :last-child {
+  margin-block-end: 0;
+}
+
 .tool-call-group__summary,
 .tool-call-group__summary-text {
   font-family: var(--font-sans);
   font-size: var(--text-lg);
-  line-height: 1.6;
+  line-height: 1.15;
   font-weight: 400;
 }
 
@@ -194,7 +284,7 @@
   --tool-activity-border: #464646;
   --tool-activity-box-text: #919191;
   width: 100%;
-  margin: 1px 0;
+  margin: 0;
   color: var(--tool-activity-text);
 }
 
@@ -216,27 +306,30 @@
 .tool-card__header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  min-height: 28px;
-  padding: 3px 0;
+  min-height: 22px;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
   font-family: var(--font-sans);
   font-size: var(--text-lg);
+  line-height: 1.15;
   text-align: left;
   cursor: pointer;
 }
 
-.tool-card__header:hover {
-  color: var(--tool-activity-text);
+.tool-card__header:hover,
+.tool-card__header:focus-visible {
+  color: var(--text-primary);
 }
 
 .tool-card__chevron {
   display: inline-flex;
   width: 16px;
-  color: var(--tool-activity-text);
+  flex: 0 0 16px;
+  color: inherit;
 }
 
 .tool-card__icon,
@@ -261,7 +354,7 @@
   height: 16px;
   border-radius: 0;
   background: transparent;
-  color: var(--tool-activity-text);
+  color: inherit;
   font-weight: 500;
 }
 
@@ -273,7 +366,7 @@
 .tool-card__verb {
   font-size: var(--text-lg);
   font-weight: 500;
-  color: var(--tool-activity-text);
+  color: inherit;
   white-space: nowrap;
 }
 
@@ -294,7 +387,7 @@
   text-align: left;
   font-family: var(--font-mono);
   font-size: var(--text-lg);
-  color: var(--tool-activity-text);
+  color: inherit;
 }
 
 .tool-card__spacer {
@@ -336,7 +429,7 @@
 
 .tool-card__body {
   width: 100%;
-  padding: 4px 0 6px;
+  padding: 2px 0 3px;
 }
 
 .tool-card__result-wrapper {
@@ -349,7 +442,7 @@
   border-radius: 6px;
   border: 1px solid var(--tool-activity-border);
   background: var(--tool-activity-background);
-  padding: 10px;
+  padding: 3px 10px;
   box-sizing: border-box;
   width: 100%;
   color: var(--tool-activity-box-text);
@@ -383,7 +476,7 @@
 }
 
 .tool-card__result {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .tool-card__result--error {
@@ -392,16 +485,24 @@
 
 .tool-call-group {
   width: 100%;
-  margin: 2px 0;
+  margin: 0;
+}
+
+/* Give complete tool runs a small amount of breathing room between prose
+ * blocks without loosening the compact rows inside a multi-tool run. */
+.message-group__content > .tool-call-group,
+.message-group__content > .message-block-wrapper:has(> .tool-card) {
+  margin-block: 0;
+  padding-block: 3px;
 }
 
 .tool-call-group__summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  min-height: 30px;
-  padding: 3px 0;
+  min-height: 22px;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
@@ -409,19 +510,41 @@
   cursor: pointer;
 }
 
-.tool-call-group__summary:hover {
-  color: var(--tool-activity-text);
+.tool-call-group__icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tool-call-group__icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-call-group__summary:hover,
+.tool-call-group__summary:focus-visible {
+  color: var(--text-primary);
 }
 
 .tool-call-group__chevron {
   display: inline-flex;
   width: 16px;
-  margin-left: auto;
-  color: var(--tool-activity-text);
+  flex: 0 0 16px;
+  color: inherit;
 }
 
-.tool-call-group__body .message-block-wrapper {
+.tool-call-group__body > .message-block-wrapper {
   margin: 0;
+}
+
+.tool-call-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 .overflow-fade {
@@ -440,7 +563,7 @@
   position: absolute;
   right: 0;
   left: 0;
-  height: 4em;
+  height: 1.35em;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -448,12 +571,12 @@
 
 .overflow-fade::before {
   top: 0;
-  background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 28%, transparent 100%);
+  background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 4%, transparent 100%);
 }
 
 .overflow-fade::after {
   bottom: 0;
-  background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 72%);
+  background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 96%);
 }
 
 .overflow-fade--above::before {

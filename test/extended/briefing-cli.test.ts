@@ -60,13 +60,14 @@ describe("briefing CLI", () => {
   it("documents and validates exact-version creation", () => {
     expect(runOffline(["help"]).stdout).toContain("briefing create <version-ref>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing create");
-    expect(runOffline(["briefing", "--help"]).stdout).toContain("--briefing <briefing-ref> | --distinct-reason <text>");
+    expect(runOffline(["briefing", "--help"]).stdout).toContain("--briefing <briefing-ref> | --reason <text>");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing rename");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing describe");
     expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing archive");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle create");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle replace");
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle rename");
+    expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle delete");
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group accept");
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group reject");
     expect(runOffline(["briefing", "route", "--help"]).stdout).toContain("mandible briefing route plan");
@@ -78,16 +79,16 @@ describe("briefing CLI", () => {
     expect(logicalBase.status).toBe(2);
     expect(logicalBase.stderr).toContain("--comparison-base requires one exact artifact-version");
     expect(runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
-      "--briefing", "briefing:one", "--distinct-reason", "Separate"]).stderr)
+      "--briefing", "briefing:one", "--reason", "Separate"]).stderr)
       .toContain("mutually exclusive");
     expect(runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
-      "--distinct-reason", "  "]).stderr).toContain("nonblank");
+      "--reason", "  "]).stderr).toContain("nonblank");
     const contract = JSON.parse(fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.json"), "utf8")) as {
       commands: Array<{ name: string; description: string }>;
     };
     const create = contract.commands.find((command) => command.name.startsWith("mandible briefing create "));
     expect(create).toMatchObject({
-      name: expect.stringContaining("--briefing <briefing-ref> | --distinct-reason <text>"),
+      name: expect.stringContaining("--briefing <briefing-ref> | --reason <text>"),
       description: expect.stringContaining("Active Briefings for the same logical Artifact block default creation"),
     });
     expect(contract.commands.find((command) => command.name.startsWith("mandible briefing group accept ")))
@@ -147,7 +148,7 @@ describe("briefing CLI", () => {
   it("forwards explicit round-target and distinct-creation decisions", async () => {
     for (const [option, value, expected] of [
       ["--briefing", "briefing:existing", { target_briefing_ref: "briefing:existing" }],
-      ["--distinct-reason", "Independent approval boundary.", { distinct_reason: "Independent approval boundary." }],
+      ["--reason", "Independent approval boundary.", { distinct_reason: "Independent approval boundary." }],
     ] as const) {
       const result = await runRpc([
         "briefing", "create", "artifact-version:exact", "--title", "Review", option, value, "--json",
@@ -320,6 +321,13 @@ describe("briefing CLI", () => {
     });
     expect(shown.status).toBe(0);
     expect(JSON.parse(shown.stdout).bundle.members).toHaveLength(1);
+
+    const deleted = await runRpc(["briefing", "bundle", "delete", "bundle-empty", "--json"], (request) => {
+      expect(request).toMatchObject({ method: "DELETE", path: "/api/briefing-bundles/bundle-empty", body: {} });
+      return { status: 200, body: { bundle_id: "bundle-empty", name: "Empty", deleted: true } };
+    });
+    expect(deleted.status).toBe(0);
+    expect(JSON.parse(deleted.stdout)).toMatchObject({ bundle_id: "bundle-empty", deleted: true });
   });
 
   it("supports create, append, rename, and show for stable Briefing groups", async () => {

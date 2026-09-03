@@ -183,8 +183,8 @@
       "description": "Resolve an artifact identity and render its ambiguity-safe short ref by default, or an HTTP URL, Markdown hyperlink, full canonical id, or structured JSON."
     },
     {
-      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --distinct-reason <text>] [--json]",
-      "description": "Bind exactly the named Artifact version to a Briefing. Active Briefings for the same logical Artifact block default creation and return reuse/add-round guidance; --briefing targets one candidate, while --distinct-reason creates a separate identity with an authenticated durable receipt. Archived candidates are advisory, and logical Artifact or series refs never resolve to latest."
+      "name": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --reason <text>] [--json]",
+      "description": "Bind exactly the named Artifact version to a Briefing. Active Briefings for the same logical Artifact block default creation and return reuse/add-round guidance; --briefing targets one candidate, while --reason creates a separate identity with an authenticated durable receipt. Archived candidates are advisory, and logical Artifact or series refs never resolve to latest."
     },
     {
       "name": "mandible briefing rename <briefing-ref> --title <text> [--json]",
@@ -217,6 +217,10 @@
     {
       "name": "mandible briefing bundle rename <bundle-ref> --name <text> [--json]",
       "description": "Rename one existing Briefing bundle in place without changing its identity or ordered membership. Human use requires the configured operator; agent use requires a durable active-agent token and retains the configured operator visibility boundary."
+    },
+    {
+      "name": "mandible briefing bundle delete <bundle-ref> [--json]",
+      "description": "Delete only an empty standalone Briefing bundle. Active group placement and retained disposition, review, or composition history block deletion; members are never cascaded. Human use requires the configured operator; agent use requires a durable active-agent token."
     },
     {
       "name": "mandible briefing bundle show <bundle-ref> [--json]",

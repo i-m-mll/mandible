@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
@@ -69,5 +69,43 @@ describe('issue detail label presentation', () => {
     }
     expect(screen.queryByText('error')).toBeNull();
     expect(screen.getByText('bug').textContent).toBe('bug');
+  });
+
+  it('starts secondary issue shelves in shared collapsed panels', () => {
+    const projection = detail(['umbrella']);
+    projection.relationships = [
+      {
+        id: 'child-edge', direction: 'outgoing', relationship_type: 'parent_child',
+        related_issue: { id: 'child', display_id: 'child-1', title: 'Child issue', status: 'open', resolution: null },
+      },
+      {
+        id: 'reference-edge', direction: 'outgoing', relationship_type: 'references',
+        related_issue: { id: 'reference', display_id: 'ref-1', title: 'Referenced issue', status: 'open', resolution: null },
+      },
+    ] as LedgerIssueDetailProjection['relationships'];
+    projection.associated_artifacts = [{
+      id: 'artifact-1', ref: 'artifact:artifact-1', title: 'Decision brief', logical_name: null,
+      uri: 'file:///tmp/decision.md', content_hash: 'a'.repeat(64), role: 'reference', media_type: 'text/markdown',
+      provider_id: null, availability: 'present', refs: [], links: [],
+    }] as LedgerIssueDetailProjection['associated_artifacts'];
+
+    render(<LedgerIssueDetail detail={projection} />);
+
+    const children = screen.getByRole('button', { name: /Children/ });
+    const relationships = screen.getByRole('button', { name: /Relationships/ });
+    const artifacts = screen.getByRole('button', { name: /Associated Artifacts/ });
+    expect(children.getAttribute('aria-expanded')).toBe('false');
+    expect(relationships.getAttribute('aria-expanded')).toBe('false');
+    expect(artifacts.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Child issue')).toBeNull();
+    expect(screen.queryByText('Referenced issue')).toBeNull();
+    expect(screen.queryByText('Decision brief')).toBeNull();
+
+    fireEvent.click(children);
+    fireEvent.click(relationships);
+    fireEvent.click(artifacts);
+    expect(screen.getByText('Child issue').textContent).toBe('Child issue');
+    expect(screen.getByText('ref-1 Referenced issue').textContent).toBe('ref-1 Referenced issue');
+    expect(screen.getByText('Decision brief').textContent).toBe('Decision brief');
   });
 });

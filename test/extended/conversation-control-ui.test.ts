@@ -63,6 +63,24 @@ describe("shared conversation control presentation", () => {
     expect(requests.map((request) => request.operation)).toEqual(["steer", "queue"]);
   });
 
+  it("binds composer runtime choices to the exact provider turn", async () => {
+    let request: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_path: string, init: RequestInit) => {
+      request = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ok: true, value: {
+        kind: "accepted", delivery_id: "delivery-1", turn_id: "turn-1", snapshot: owned,
+      } }), { status: 202, headers: { "content-type": "application/json" } });
+    }));
+
+    await submitConversationControl(base, "resume", undefined, {
+      model: "gpt-5.6-sol", effort: "xhigh", permission_mode: "agent-full-access",
+    });
+    expect(request).toMatchObject({
+      operation: "resume-provider-session",
+      runtime_options: { model: "gpt-5.6-sol", effort: "xhigh", permission_mode: "agent-full-access" },
+    });
+  });
+
   it("returns the refreshed non-mutating snapshot on capability drift", async () => {
     const refreshed = { ...owned, revision: 2, capability: { kind: "live-steer", revision: 2, generation: 1 } as const };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({

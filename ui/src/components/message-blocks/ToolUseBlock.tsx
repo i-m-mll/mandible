@@ -3,8 +3,9 @@ import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
-import { SidebarDisclosureChevronIcon } from '../shared/SidebarGroupNode';
+import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
 import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
+import { ToolActivityIcon } from './ToolActivityIcon';
 
 export type ToolResultContent =
   | string
@@ -197,6 +198,11 @@ function ResultBody({ result, commandLike }: {
   );
 }
 
+function hasVisibleResult(result: ToolResultContentBlock): boolean {
+  const text = result.fullText ?? extractResultText(result.content);
+  return Boolean(text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
+}
+
 function JsonInputPanel({ input }: { input: Record<string, unknown> | string }): JSX.Element {
   return (
     <div className="tool-card__input">
@@ -215,15 +221,6 @@ function CommandInputPanel({ input, inputObj }: {
     <div className="tool-card__terminal">
       <OverflowFade lines={10}><pre><AnsiText text={command} /></pre></OverflowFade>
     </div>
-  );
-}
-
-function TerminalIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="1.75" y="2.5" width="12.5" height="11" rx="2" />
-      <path d="m4.25 6 2 2-2 2M8.25 10h3" />
-    </svg>
   );
 }
 
@@ -326,6 +323,7 @@ export function ToolCard({
       data-tool={toolName}
       data-tool-kind={visual.kind}
       data-id={toolUseId}
+      data-block-id={result?.source?.blockId}
     >
       <button
         type="button"
@@ -335,7 +333,7 @@ export function ToolCard({
         onClick={() => setExpandedValue(!isExpanded)}
       >
         <span className="tool-card__icon" aria-hidden="true">
-          {visual.kind === 'execute' ? <TerminalIcon /> : visual.icon}
+          <ToolActivityIcon icon={visual.icon} />
         </span>
         <span className="tool-card__verb">{visual.verb}</span>
         {target && (
@@ -343,6 +341,7 @@ export function ToolCard({
             {displayTarget}
           </span>
         )}
+        <span className="tool-card__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
         {diffStats && (
           <span className="tool-card__stat-chip">+{diffStats.additions} / -{diffStats.deletions}</span>
         )}
@@ -353,12 +352,13 @@ export function ToolCard({
         {status === 'failed' && (
           <span className="tool-card__status tool-card__status--failed">Failed</span>
         )}
-        <span className="tool-card__chevron"><SidebarDisclosureChevronIcon expanded={isExpanded} /></span>
       </button>
       {isExpanded ? (
         <div id={bodyId} role="region" aria-label={`${visual.verb} details`} className="tool-card__body">
           {renderInputPanel()}
-          {result && renderResult(<ResultBody result={result} commandLike={commandLike} />)}
+          {result && hasVisibleResult(result)
+            ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
+            : null}
         </div>
       ) : null}
     </section>

@@ -23,6 +23,7 @@ import { BRIEFING_EVENTS } from "../contracts.js";
 import {
   addBriefingBundleMember,
   createBriefingBundle,
+  deleteEmptyBriefingBundle,
   listBriefingBundles,
   readBriefingBundle,
   replaceBriefingBundleLayout,
@@ -631,6 +632,22 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       if (result.membership_changed) {
         broadcast(BRIEFING_EVENTS.bundleMembersReplaced, { bundle_id: result.bundle.id });
       }
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.delete("/api/briefing-bundles/:bundleId", (req, res) => {
+    try {
+      renameViewer(db, req, "Briefing bundle");
+      const requestBody = req.body === undefined ? {} : body(req);
+      const unexpected = Object.keys(requestBody);
+      if (unexpected.length > 0) {
+        throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      }
+      const result = deleteEmptyBriefingBundle(db, req.params.bundleId);
+      broadcast(BRIEFING_EVENTS.bundleDeleted, { bundle_id: result.bundle_id });
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);

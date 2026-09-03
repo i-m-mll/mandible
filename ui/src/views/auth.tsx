@@ -12,6 +12,9 @@ import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { EntityTimestamps } from '../components/shared/EntityTimestamps';
+import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
+import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
@@ -84,6 +87,7 @@ export type AuthRequest = {
   issue_closures?: string[] | null;
   issue_ids?: string[] | null;
   created_at?: string | number;
+  updated_at?: string | number;
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
   depends_on_id?: string | null;
@@ -168,8 +172,6 @@ const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
   fileBody: 'auth-diff-file__body',
   fileHtml: 'auth-diff-file__html',
   fileFallback: 'auth-diff-file__fallback',
-  chevron: 'panel__chevron',
-  chevronOpen: 'panel__chevron--open',
 };
 
 /** Returns true when the request type has meaningful diff stats to display. */
@@ -424,7 +426,7 @@ function actionPayloadSummary(action: AuthRequestAction): string {
     case 'issue_close':
       return payload.reason_comment
         ? `Reason: ${truncateSummary(String(payload.reason_comment), 160)}`
-        : 'Close target issue';
+        : '';
     case 'worker_status_set':
       return `Set to ${String(payload.value ?? '')}`;
     case 'label_add':
@@ -554,42 +556,45 @@ function AuthActionBundle({
           const title = (action as AuthRequestAction & { target_issue_title?: string }).target_issue_title
             ?? targetTitles[action.target_issue_ref]
             ?? '';
-          const expanded = expandedIds.has(action.id);
           const vetoed = action.state === 'vetoed';
           const vetoBusy = inFlightActionIds.has(action.id);
           const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
           const detail = action.outcome_detail || actionPayloadSummary(action);
+          const canExpand = Boolean(detail) && (action.kind !== 'issue_close' || action.state !== 'staged');
+          const expanded = canExpand && expandedIds.has(action.id);
+          const summary = action.kind === 'issue_close' ? title : actionPayloadSummary(action);
           return (
             <div
               key={action.id}
-              className={`auth-action-row auth-action-row--${action.state}${expanded ? ' auth-action-row--expanded' : ''}`}
+              className={`auth-action-row auth-action-row--${action.state}${canExpand ? ' auth-action-row--expandable' : ''}${expanded ? ' auth-action-row--expanded' : ''}`}
               title={action.outcome_detail ?? undefined}
             >
-              <button
-                type="button"
-                className="auth-action-row__expand"
-                aria-expanded={expanded}
-                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
-                onClick={() => toggleExpanded(action.id)}
-              >
-                <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
-                  {'\u25B8'}
-                </span>
-              </button>
+              {canExpand ? (
+                <button
+                  type="button"
+                  className="auth-action-row__expand"
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                  onClick={() => toggleExpanded(action.id)}
+                >
+                  <DisclosureChevronIcon expanded={expanded} size={13} />
+                </button>
+              ) : null}
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
-                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
+                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}:</span>
                   <EntityPill
                     type="issue"
                     id={action.target_issue_ref}
                     repoId={repoId}
-                    label={title ? `${action.target_issue_ref} · ${title}` : action.target_issue_ref}
                   />
-                  <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
-                    {actionStateLabel(action.state)}
-                  </span>
+                  {action.state !== 'staged' && (
+                    <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
+                      {actionStateLabel(action.state)}
+                    </span>
+                  )}
                 </div>
-                <div className="auth-action-row__summary">{actionPayloadSummary(action)}</div>
+                {summary && <div className="auth-action-row__summary">{summary}</div>}
                 {expanded && detail && (
                   <div className="auth-action-row__detail">{detail}</div>
                 )}
@@ -720,7 +725,6 @@ function AuthRequestDetail({
   history,
   failureSummary,
   attemptCount,
-  timestampLabel,
   branchMerged,
   actionBundle,
   actions,
@@ -732,7 +736,6 @@ function AuthRequestDetail({
   history?: boolean;
   failureSummary?: string | null;
   attemptCount?: number | null;
-  timestampLabel?: string;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
   actions?: JSX.Element | null;
@@ -741,7 +744,7 @@ function AuthRequestDetail({
   mutationsAllowed?: boolean;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
-  const [showSpec, setShowSpec] = useState(true);
+  const [showSpec, setShowSpec] = useState(false);
   const [diffViewActive, setDiffViewActive] = useState(false);
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [showConsole, setShowConsole] = useState(false);
@@ -831,7 +834,7 @@ function AuthRequestDetail({
     [request.issue_closures, request.issues]
   );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
-  const hasLinks = Boolean(sessionId) || ((referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink);
+  const hasLinks = (referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink;
 
   useEffect(() => {
     if (isApproved) {
@@ -845,10 +848,6 @@ function AuthRequestDetail({
     }
   }, [showConsole, consoleText]);
 
-  const effectiveTimestampLabel = timestampLabel ?? (history
-    ? getResolvedTimestampLabel(request)
-    : getSubmissionTimestampLabel(request));
-
   const authType = getAuthType(request);
   const typeMeta = AUTH_TYPE_META[authType];
   const showDiffStats = typeHasDiffStats(authType);
@@ -857,11 +856,13 @@ function AuthRequestDetail({
   const statsSummary = showDiffStats && hasStats
     ? `${formatNumber(stats.files ?? 0)} files · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
     : null;
-  const primarySubtitle = [statsSummary, effectiveTimestampLabel].filter(Boolean).join(' · ');
-  const flowText = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : commitBranch;
-  const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
   const shortRef = requestHash || 'unknown';
   const requester = request.requester ?? null;
+  const requesterDisplayName = requester?.display_name
+    ? /^(codex|claude(?: code)?)$/i.test(requester.display_name.trim())
+      ? requester.display_name.toLowerCase().startsWith('codex') ? 'codex' : 'claude'
+      : requester.display_name
+    : null;
   const approver = request.approver ?? null;
   // A daemon that predates `merge_signature` sends nothing; absent evidence is
   // "none", never "verified".
@@ -938,6 +939,7 @@ function AuthRequestDetail({
         <MetadataRow label="Head branch" value={headBranch ?? null} />
         <MetadataRow label="Base branch" value={baseBranch ?? null} />
         <MetadataRow label="Created" value={createdAt} />
+        <MetadataRow label="Updated" value={formatMetadataTimestamp(request.updated_at ?? null)} />
         <MetadataRow label="Last executed" value={lastExecutedAt} />
         <MetadataRow label="Resolved" value={resolvedAt} />
         <MetadataRow label="Approval source" value={request.approval_source ?? null} />
@@ -1035,23 +1037,27 @@ function AuthRequestDetail({
           secondaryMetadata={(
             <div className="auth-detail__secondary-metadata">
               <div className="auth-detail__subtitle">
-                <span>{primarySubtitle}</span>
+                <span className="auth-detail__primary-metadata">
+                  {statsSummary && <span>{statsSummary}</span>}
+                  <EntityTimestamps
+                    createdAt={request.created_at}
+                    updatedAt={request.updated_at}
+                    createdBy={requesterDisplayName}
+                  />
+                </span>
                 <span className="auth-detail__subtitle-line">
-                  {typeSubtitle}
+                  {typeMeta.label.toLowerCase()}
+                  {(headBranch && baseBranch) ? (
+                    <>
+                      {' · '}<code>{headBranch}</code>{' \u2192 '}<code>{baseBranch}</code>
+                    </>
+                  ) : commitBranch ? (
+                    <>{' · '}<code>{commitBranch}</code></>
+                  ) : null}
                 </span>
               </div>
-              {(requester || approver || signatureClaim.state !== 'none') && (
+              {(approver || signatureClaim.state !== 'none') && (
                 <div className="auth-detail__attribution" aria-label="Auth attribution">
-                  {requester && (
-                    <div>
-                      Requested by{' '}
-                      <AttributionIdentity
-                        display={requester.display_name}
-                        user={requester}
-                        source="auth_queue"
-                      />
-                    </div>
-                  )}
                   {approver && (
                     <div>
                       Approved by{' '}
@@ -1077,14 +1083,6 @@ function AuthRequestDetail({
               )}
               {hasLinks && (
                 <div className="auth-detail__links">
-                  {sessionId && (
-                    <a
-                      className="auth-card__link"
-                      href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
-                    >
-                      Session
-                    </a>
-                  )}
                   {referenceRefs.length > 0 && canIssueLink && (
                     <span className="auth-card__issue-group">
                       <span className="auth-card__issue-group-label">References</span>
@@ -1157,20 +1155,12 @@ function AuthRequestDetail({
         ) : (
           <div className={panelsClass}>
             <div className="auth-detail__left-col">
-              <div className="panel">
-                <div className="panel__header">
-                  <button
-                    type="button"
-                    className="panel__toggle"
-                    onClick={() => setShowCommit((prev) => !prev)}
-                  >
-                    <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
-                      {'\u25B8'}
-                    </span>
-                    Commit Message
-                  </button>
-                  {/* Issue 7d64d8f — a canonical message is immutable once it leaves pending. */}
-                  {onUpdateField && mutationsAllowed
+              <CollapsiblePanel
+                title="Commit message"
+                expanded={showCommit}
+                onExpandedChange={setShowCommit}
+                bodyClassName="spec-panel"
+                actions={onUpdateField && mutationsAllowed
                     && (status === 'pending' || (failedLike && !isCanonicalMessage))
                     && !editingCommitMsg && (
                     <button
@@ -1184,10 +1174,9 @@ function AuthRequestDetail({
                       edit
                     </button>
                   )}
-                </div>
-                {showCommit && (
-                  editingCommitMsg ? (
-                    <div className="panel__body spec-panel">
+              >
+                  {editingCommitMsg ? (
+                    <>
                       <textarea
                         className="panel__edit-textarea"
                         value={editCommitValue}
@@ -1218,43 +1207,35 @@ function AuthRequestDetail({
                           Cancel
                         </button>
                       </div>
-                    </div>
+                    </>
                   ) : commitHtml ? (
                     <div
-                      className="panel__body spec-panel rendered-markdown"
+                      className="rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
-                    <div className="panel__body spec-panel spec-panel--empty">
+                    <div className="spec-panel--empty">
                       No commit message provided. Merge will use git's default message.
                     </div>
-                  )
-                )}
-              </div>
-              <div className="panel">
-                <button
-                  type="button"
-                  className="panel__toggle"
-                  onClick={() => setShowSpec((prev) => !prev)}
-                >
-                  <span className={`panel__chevron${showSpec ? ' panel__chevron--open' : ''}`}>
-                    {'\u25B8'}
-                  </span>
-                  Specification
-                </button>
-                {showSpec && (
-                  specHtml ? (
+                  )}
+              </CollapsiblePanel>
+              <CollapsiblePanel
+                title="Specification"
+                expanded={showSpec}
+                onExpandedChange={setShowSpec}
+                bodyClassName="spec-panel"
+              >
+                {specHtml ? (
                     <div
-                      className="panel__body spec-panel rendered-markdown"
+                      className="rendered-markdown"
                       dangerouslySetInnerHTML={{ __html: specHtml }}
                     />
                   ) : (
-                    <div className="panel__body spec-panel spec-panel--empty">
+                    <div className="spec-panel--empty">
                       No specification attached.
                     </div>
-                  )
-                )}
-              </div>
+                  )}
+              </CollapsiblePanel>
             </div>
             {hasActionBundle && (
               <div className="auth-detail__right-col">
@@ -1271,9 +1252,7 @@ function AuthRequestDetail({
               className="console-output__toggle"
               onClick={() => setShowConsole((prev) => !prev)}
             >
-              <span className={`panel__chevron${showConsole ? ' panel__chevron--open' : ''}`}>
-                {'\u25B8'}
-              </span>
+              <DisclosureChevronIcon expanded={showConsole} size={13} />
               {showConsole ? 'Hide output' : 'Show output'}
               {isApproved && (
                 <span className="console-output__live-dot" />

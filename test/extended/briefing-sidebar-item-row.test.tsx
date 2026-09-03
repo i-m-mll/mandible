@@ -218,7 +218,7 @@ describe('Briefing sidebar row actions', () => {
     expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
 
     fireEvent.click(groupSelect);
-    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByRole('heading', { name: 'Release review' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Base' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
@@ -232,6 +232,7 @@ describe('Briefing sidebar row actions', () => {
     fireEvent.click(secondProposal);
     expect(currentLayout.getAttribute('aria-pressed')).toBe('false');
     expect(secondProposal.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(disclosure);
     expect(within(group).queryByRole('button', { name: 'Select briefing First briefing' })).toBeNull();
     expect(within(group).getAllByRole('button', { name: /Select briefing/ }).map((button) => button.getAttribute('aria-label')))
       .toEqual(['Select briefing Second briefing', 'Select briefing Third briefing']);
@@ -245,7 +246,7 @@ describe('Briefing sidebar row actions', () => {
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').selectedGroupUpdateIds).toEqual({});
 
     fireEvent.click(secondProposal);
-    const subgroupToggle = within(group).getByRole('button', { name: /Research/ });
+    const subgroupToggle = within(group).getByRole('button', { name: 'Collapse Research' });
     fireEvent.click(subgroupToggle);
     expect(subgroupToggle.getAttribute('aria-expanded')).toBe('false');
     expect(within(group).queryByRole('button', { name: 'Select briefing Second briefing' })).toBeNull();
@@ -420,7 +421,7 @@ describe('Briefing sidebar row actions', () => {
       />,
     );
 
-    expect(within(agentPolicy()).getByRole('button', { name: /Research/ })).toBeTruthy();
+    expect(within(agentPolicy()).getByRole('button', { name: 'Collapse Research' })).toBeTruthy();
     expect(within(agentPolicy()).getAllByRole('button', { name: /Select briefing/ })
       .map((button) => button.getAttribute('aria-label'))).toEqual([
       'Select briefing Second briefing',
@@ -487,8 +488,8 @@ describe('Briefing sidebar row actions', () => {
         'Select briefing Squeeze',
         'Select briefing Strict engineering',
       ]);
-    expect(within(group).getByRole('button', { name: /Skills/ })).toBeTruthy();
-    expect(within(group).queryByRole('button', { name: /Policy/ })).toBeNull();
+    expect(within(group).getByRole('button', { name: 'Collapse Skills' })).toBeTruthy();
+    expect(within(group).queryByRole('button', { name: /^(?:Expand|Collapse) Policy$/ })).toBeNull();
     const unrelatedTopLevelList = within(sidebar).getByRole('button', { name: 'Select briefing First briefing' }).closest('ul');
     expect(group.contains(unrelatedTopLevelList)).toBe(false);
     expect(unrelatedTopLevelList?.classList.contains('feedback-collections-sidebar__group-layout')).toBe(false);
@@ -508,7 +509,7 @@ describe('Briefing sidebar row actions', () => {
     };
     render(<Harness bundles={[bundle]} initialViewState={{ pinnedCollectionIds: [] }} />);
 
-    const toggle = screen.getByRole('button', { name: /Agent policy review/ });
+    const toggle = screen.getByRole('button', { name: 'Collapse Agent policy review' });
     const group = toggle.closest('.sidebar-group-node');
     expect(group?.classList.contains('sidebar-group-node--folder')).toBe(true);
     expect(group?.querySelector('[data-sidebar-group-icon="briefing-bundle"][data-sidebar-group-icon-state="layers"]')).toBeTruthy();

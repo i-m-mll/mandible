@@ -14,7 +14,7 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --distinct-reason <text>] [--json]
+  mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --reason <text>] [--json]
   mandible briefing rename <briefing-ref> --title <text> [--json]
   mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]
   mandible briefing archive <briefing-ref> [--json]
@@ -23,6 +23,7 @@ Usage:
   mandible briefing bundle add <bundle-ref> <briefing-ref> [--sharing-reason <text>] [--json]
   mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--sharing-reason <text>] [--json]
   mandible briefing bundle rename <bundle-ref> --name <text> [--json]
+  mandible briefing bundle delete <bundle-ref> [--json]
   mandible briefing bundle show <bundle-ref> [--json]
   mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]
   mandible briefing group add <group-ref> <bundle-ref> [--sharing-reason <text>] [--json]
@@ -41,7 +42,7 @@ Usage:
 Creates a Briefing whose round is bound to exactly the named artifact version.
 If an active Briefing already owns that logical Artifact, the command reports
 every candidate with reuse/add-round guidance. Use --briefing to target one
-candidate, or --distinct-reason to create a separate identity with an
+candidate, or --reason to create a separate identity with an
 authenticated durable receipt. Archived candidates are advisory. This command
 never resolves a logical artifact or series to latest.
 
@@ -163,7 +164,7 @@ cmd_create() {
       --description) [[ $# -ge 2 ]] || die "--description requires a value" 2; description="$2"; has_description=1; shift 2 ;;
       --comparison-base) [[ $# -ge 2 ]] || die "--comparison-base requires a value" 2; comparison_base="$2"; shift 2 ;;
       --briefing) [[ $# -ge 2 ]] || die "--briefing requires a value" 2; target_briefing="$2"; has_target_briefing=1; shift 2 ;;
-      --distinct-reason) [[ $# -ge 2 ]] || die "--distinct-reason requires a value" 2; distinct_reason="$2"; has_distinct_reason=1; shift 2 ;;
+      --reason) [[ $# -ge 2 ]] || die "--reason requires a value" 2; distinct_reason="$2"; has_distinct_reason=1; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$artifact_version_ref" ]] || die "Unexpected argument: $1" 2; artifact_version_ref="$1"; shift ;;
@@ -176,9 +177,9 @@ cmd_create() {
   [[ -n "${title//[[:space:]]/}" ]] || die "create requires --title <text>" 2
   [[ $has_description -eq 0 || -n "${description//[[:space:]]/}" ]] || die "--description requires nonblank text" 2
   [[ $has_target_briefing -eq 0 || -n "${target_briefing//[[:space:]]/}" ]] || die "--briefing requires a nonblank Briefing ref" 2
-  [[ $has_distinct_reason -eq 0 || -n "${distinct_reason//[[:space:]]/}" ]] || die "--distinct-reason requires nonblank text" 2
+  [[ $has_distinct_reason -eq 0 || -n "${distinct_reason//[[:space:]]/}" ]] || die "--reason requires nonblank text" 2
   [[ $has_target_briefing -eq 0 || $has_distinct_reason -eq 0 ]] \
-    || die "--briefing and --distinct-reason are mutually exclusive" 2
+    || die "--briefing and --reason are mutually exclusive" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg artifact_version_ref "$artifact_version_ref" --arg comparison_base "$comparison_base" --arg target_briefing "$target_briefing" --arg distinct_reason "$distinct_reason" --arg title "$title" --arg description "$description" \
     '{artifact_version_ref:$artifact_version_ref,title:$title}
@@ -604,6 +605,26 @@ cmd_bundle_rename() {
   emit_bundle "$response" "$json"
 }
 
+cmd_bundle_delete() {
+  local bundle_ref="" json=0 response
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$bundle_ref" ]] || die "Usage: mandible briefing bundle delete <bundle-ref> [--json]" 2
+  response="$(api_send DELETE "/api/briefing-bundles/$(urlencode "$bundle_ref")" '{}')" \
+    || die "Failed to delete empty standalone Briefing bundle." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human \
+      '"deleted briefing-bundle:\(.bundle_id | mandible_short_id)  \(.name)"'
+  fi
+}
+
 cmd_bundle() {
   local subcommand="${1:-}"
   case "$subcommand" in
@@ -616,6 +637,7 @@ cmd_bundle() {
     add) cmd_bundle_add "$@" ;;
     replace) cmd_bundle_replace "$@" ;;
     rename) cmd_bundle_rename "$@" ;;
+    delete) cmd_bundle_delete "$@" ;;
     show) cmd_bundle_show "$@" ;;
     *) die "Unknown briefing bundle subcommand: $subcommand" 2 ;;
   esac

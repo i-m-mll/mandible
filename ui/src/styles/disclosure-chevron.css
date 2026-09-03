@@ -1,0 +1,23 @@
+/* Canonical textual disclosure behavior. A folded caret is a hover/focus hint;
+ * an expanded caret remains visible because it communicates current state. */
+[data-disclosure-chevron='right'] {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+button:is(:hover, :focus-visible) [data-disclosure-chevron='right'],
+.sidebar-group-node__header:is(:hover, :focus-within) [data-disclosure-chevron='right'] {
+  opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  [data-disclosure-chevron='right'] {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-disclosure-chevron='right'] {
+    transition: none;
+  }
+}

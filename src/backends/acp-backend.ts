@@ -89,19 +89,29 @@ const ACP_RUNTIME_POLICY = {
 
 const CODEX_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
   {
-    id: "model", label: "Model", category: "model", kind: "select", nullable: false,
-    discovery: { kind: "provider", protocol: "acp_session_config", providerOptionId: "model", fallbackAllowedValues: null },
+    id: "model", label: "Model", category: "model", kind: "select", nullable: true,
+    discovery: { kind: "provider", protocol: "acp_session_config", providerOptionId: "model", fallbackAllowedValues: [
+      { value: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { value: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+      { value: "gpt-5.6-luna", label: "gpt-5.6-luna" },
+      { value: "gpt-5.5", label: "gpt-5.5" },
+      { value: "gpt-5.4", label: "gpt-5.4" },
+      { value: "gpt-5.4-mini", label: "gpt-5.4-mini" },
+      { value: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
+    ] },
     support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" },
     applyOrder: 10, legacyRequestKeys: ["model"],
   },
   {
-    id: "reasoning_effort", label: "Reasoning effort", category: "thought_level", kind: "select", nullable: false,
-    discovery: { kind: "provider", protocol: "acp_session_config", providerOptionId: "reasoning_effort", fallbackAllowedValues: null },
+    id: "reasoning_effort", label: "Reasoning effort", category: "thought_level", kind: "select", nullable: true,
+    discovery: { kind: "provider", protocol: "acp_session_config", providerOptionId: "reasoning_effort", fallbackAllowedValues:
+      ["low", "medium", "high", "xhigh", "max", "ultra"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) })) },
     support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" },
     applyOrder: 20, applyAfter: ["model"],
   },
   {
-    id: "mode", label: "Mode", category: "mode", kind: "select", nullable: false,
+    id: "mode", label: "Permission mode", category: "mode", kind: "select", nullable: true,
+    defaultValue: "agent",
     discovery: {
       kind: "static_then_provider", protocol: "acp_session_config", providerOptionId: "mode",
       staticAllowedValues: [

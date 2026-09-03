@@ -152,7 +152,7 @@ describe('SidebarDisclosureRegion through typed SidebarGroupNode consumers', () 
     expect(region.style.height).toBe('172px');
     finishHeightTransition(region);
     expect(region.style.height).toBe('auto');
-    expect(screen.getByRole('button', { name: /Mandible/ }).closest('section')?.classList)
+    expect(screen.getByRole('button', { name: /^Mandible/ }).closest('section')?.classList)
       .toContain('sidebar-group-node--folder');
     expect(screen.getByRole('button', { name: 'Project chat' })).toBeTruthy();
   });

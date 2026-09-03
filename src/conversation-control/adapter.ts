@@ -2,6 +2,7 @@ import type {
   ConversationControlError,
   ConversationLifecycleEvent,
   ConversationOutboxItem,
+  ConversationRuntimeOptions,
   Result,
 } from "./types.js";
 
@@ -20,9 +21,9 @@ export type ControllerLease = {
 };
 
 export type ControllerAcquisitionRequest =
-  | { kind: "start"; conversation_id: string; generation: number; controller_instance_id: string }
-  | { kind: "resume-provider-session"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string }
-  | { kind: "resume-message-anchor"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; message_anchor: string };
+  | { kind: "start"; conversation_id: string; generation: number; controller_instance_id: string; runtime_options?: ConversationRuntimeOptions }
+  | { kind: "resume-provider-session"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; runtime_options?: ConversationRuntimeOptions }
+  | { kind: "resume-message-anchor"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; message_anchor: string; runtime_options?: ConversationRuntimeOptions };
 
 export type AdapterProbe =
   | { kind: "owned"; controller_instance_id: string; provider_session_id: string; state: "ready" | "running" | "waiting" | "stopping" }

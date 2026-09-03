@@ -193,6 +193,7 @@ export class ConversationControlStore {
 
   prepareSubmission(request: ConversationSubmitRequest, capabilities: ControllerAdapterCapabilities, adapterId: string): Result<PreparedSubmission, ConversationControlError> {
     const transaction = this.db.transaction((): Result<PreparedSubmission, ConversationControlError> => {
+      const runtimeOptionsJson = JSON.stringify(request.runtime_options ?? {});
       const boundaryResult = this.getBoundary(request.conversation_id);
       if (!boundaryResult.ok) return boundaryResult;
       const boundary = boundaryResult.value;
@@ -202,7 +203,9 @@ export class ConversationControlStore {
         "SELECT * FROM conversation_control_outbox WHERE conversation_id = ? AND idempotency_key = ?",
       ).get(request.conversation_id, request.idempotency_key) as Record<string, unknown> | undefined;
       if (existing) {
-        if (existing.message !== request.message || existing.operation !== request.operation || (existing.message_anchor ?? null) !== (request.message_anchor ?? null)) {
+        if (existing.message !== request.message || existing.operation !== request.operation
+            || (existing.message_anchor ?? null) !== (request.message_anchor ?? null)
+            || String(existing.runtime_options_json ?? "{}") !== runtimeOptionsJson) {
           return { ok: false, error: { kind: "invalid-request", field: "idempotency_key", message: "Idempotency key was already used for a different submission" } };
         }
         const current = this.row(request.conversation_id)!;
@@ -241,6 +244,9 @@ export class ConversationControlStore {
       if (request.operation === "resume-message-anchor" && !request.message_anchor) {
         return { ok: false, error: { kind: "invalid-request", field: "message_anchor", message: "Message-anchor resume requires an exact anchor" } };
       }
+      if ((request.operation === "steer" || request.operation === "queue") && Object.keys(request.runtime_options ?? {}).length > 0) {
+        return { ok: false, error: { kind: "invalid-request", field: "runtime_options", message: "Runtime options apply only when starting a new provider turn" } };
+      }
 
       const acquisitionRequired = row.owner_kind === "none";
       const generation = acquisitionRequired ? row.generation + 1 : row.generation;
@@ -271,10 +277,11 @@ export class ConversationControlStore {
         `).run(revision, turnId, deliveryId, now, request.conversation_id, generation);
       }
       this.db.prepare(`INSERT INTO conversation_control_outbox (
-        id, conversation_id, generation, turn_id, operation, message, message_anchor,
+        id, conversation_id, generation, turn_id, operation, message, message_anchor, runtime_options_json,
         idempotency_key, state, attempts, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-      `).run(deliveryId, request.conversation_id, generation, turnId, request.operation, request.message, request.message_anchor ?? null, request.idempotency_key, now, now);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+      `).run(deliveryId, request.conversation_id, generation, turnId, request.operation, request.message,
+        request.message_anchor ?? null, runtimeOptionsJson, request.idempotency_key, now, now);
       this.journal(request.conversation_id, revision, generation, "turn-queued", { turn_id: turnId, delivery_id: deliveryId, operation: request.operation }, now);
       const current = this.row(request.conversation_id)!;
       return {
@@ -674,6 +681,9 @@ export class ConversationControlStore {
       operation: row.operation as ConversationControlOperation,
       message: String(row.message),
       message_anchor: row.message_anchor == null ? null : String(row.message_anchor),
+      runtime_options: parseObject<ConversationOutboxItem["runtime_options"]>(
+        row.runtime_options_json == null ? "{}" : String(row.runtime_options_json),
+      ),
       idempotency_key: String(row.idempotency_key),
       state: row.state as ConversationOutboxItem["state"],
       attempts: Number(row.attempts),

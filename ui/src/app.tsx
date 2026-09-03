@@ -134,6 +134,7 @@ import {
   reconcileAppRailOrder,
   serializeAppRailOrderSetting,
   writeAppRailPreviewOrder,
+  type AppRailGroup,
   type AppRailOrderPreference,
 } from './app-rail-order';
 
@@ -450,6 +451,16 @@ function BriefingIcon({ size = 18 }: { size?: number }): JSX.Element {
       <path d="M7 8h7" />
       <path d="M7 12h7" />
       <path d="M7 16h4" />
+    </svg>
+  );
+}
+
+function ExperimentalIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 3h6" />
+      <path d="M10 3v6l-5 9a2 2 0 0 0 1.75 3h10.5A2 2 0 0 0 19 18l-5-9V3" />
+      <path d="M8 15h8" />
     </svg>
   );
 }
@@ -1827,7 +1838,7 @@ function App(): JSX.Element {
         agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
       } as ConsoleSession;
       const id = session.id;
-      if (!id) return;
+      if (!id) throw new Error('The server created a chat without a session ID.');
 
       // Optimistic upsert: add the session immediately so the tab appears
       // without waiting for the SSE console:session:created event to arrive.
@@ -1840,8 +1851,8 @@ function App(): JSX.Element {
 
       // Instruction selections are sent with the create request so SDK sessions
       // can configure immediately and PTY/Channel sessions can apply launch-time prompts.
-    } catch {
-      return;
+    } catch (error) {
+      throw error;
     }
   };
 
@@ -2012,19 +2023,28 @@ function App(): JSX.Element {
     ? previewRailOrder
     : parseAppRailOrderSetting(railOrderSetting);
 
+  const experimentalTabs = new Set<Route['tab']>(['timeline', 'graph', 'spaces']);
   const canonicalRailItems = [...primaryNavItems, ...remainingUpperNavItems];
+  const canonicalPrimaryRailItems = canonicalRailItems.filter((item) => !experimentalTabs.has(item.tab));
+  const experimentalOrder: Route['tab'][] = ['timeline', 'graph', 'spaces'];
+  const canonicalExperimentalRailItems = experimentalOrder
+    .map((tab) => canonicalRailItems.find((item) => item.tab === tab))
+    .filter((item): item is NavItem => Boolean(item));
   const persistedRailOrder: AppRailPreviewOrder = reconcileAppRailOrder(
-    canonicalRailItems.map((item) => item.tab),
-    [...railOrderPreference.groups.primary, ...railOrderPreference.groups.secondary],
-  );
+    canonicalPrimaryRailItems.map((item) => item.tab),
+    railOrderPreference.groups.primary,
+  ).concat(reconcileAppRailOrder(
+    canonicalExperimentalRailItems.map((item) => item.tab),
+    railOrderPreference.groups.secondary,
+  ));
   // Pointer movement previews only the insertion marker. Keeping DOM order
   // stable until pointerup preserves native pointer capture and link identity.
   const visibleRailOrder = pendingRailOrder ?? persistedRailOrder;
-  const orderedRailItems = (): NavItem[] => {
+  const orderedRailItems = (experimental: boolean): NavItem[] => {
     const byId = new Map(canonicalRailItems.map((item) => [item.tab, item]));
     return visibleRailOrder
       .map((id) => byId.get(id as Route['tab']))
-      .filter((item): item is NavItem => Boolean(item));
+      .filter((item): item is NavItem => Boolean(item) && experimentalTabs.has(item!.tab) === experimental);
   };
 
   const focusRailItem = (itemId: string) => {
@@ -2049,8 +2069,8 @@ function App(): JSX.Element {
     const preference: AppRailOrderPreference = {
       version: DEFAULT_APP_RAIL_ORDER.version,
       groups: {
-        primary: [...order],
-        secondary: [],
+        primary: order.filter((id) => !experimentalTabs.has(id as Route['tab'])),
+        secondary: order.filter((id) => experimentalTabs.has(id as Route['tab'])),
       },
     };
     const value = serializeAppRailOrderSetting(preference);
@@ -2197,14 +2217,17 @@ function App(): JSX.Element {
     if (!directCommand || !railOrderReady || railMutationPendingRef.current) return;
 
     event.preventDefault();
-    const ids = visibleRailOrder;
+    const itemIsExperimental = experimentalTabs.has(item.tab);
+    const ids = visibleRailOrder.filter((id) => experimentalTabs.has(id as Route['tab']) === itemIsExperimental);
     const index = ids.indexOf(item.tab);
     const targetIndex = Math.max(0, Math.min(ids.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
     if (index === targetIndex) {
       setRailAnnouncement(`${item.title} is already at position ${index + 1} of ${ids.length}.`);
       return;
     }
-    const nextIds = moveAppRailItem(ids, item.tab, ids[targetIndex]);
+    const nextGroupIds = moveAppRailItem(ids, item.tab, ids[targetIndex]);
+    const otherIds = visibleRailOrder.filter((id) => experimentalTabs.has(id as Route['tab']) !== itemIsExperimental);
+    const nextIds = itemIsExperimental ? [...otherIds, ...nextGroupIds] : [...nextGroupIds, ...otherIds];
     void persistRailOrder(
       nextIds,
       `${item.title} moved to position ${targetIndex + 1} of ${ids.length}.`,
@@ -2212,7 +2235,7 @@ function App(): JSX.Element {
     );
   };
 
-  const renderRailItem = (item: NavItem, reorderable = false): JSX.Element => {
+  const renderRailItem = (item: NavItem, reorderable = false, group: AppRailGroup = 'primary'): JSX.Element => {
     const Icon = item.icon;
     const active = route.tab === item.tab;
     const dragging = railDrag?.active && railDrag.itemId === item.tab;
@@ -2227,7 +2250,7 @@ function App(): JSX.Element {
         aria-describedby={reorderable ? 'app-rail-reorder-instructions app-rail-reorder-status' : undefined}
         aria-keyshortcuts={reorderable ? 'Control+Shift+ArrowUp Control+Shift+ArrowDown' : undefined}
         data-rail-item={reorderable ? item.tab : undefined}
-        data-rail-group={reorderable ? 'upper' : undefined}
+        data-rail-group={reorderable ? group : undefined}
         draggable={reorderable ? false : undefined}
         onPointerDown={reorderable ? (event) => beginRailPointer(event, item.tab) : undefined}
         onPointerMove={reorderable ? moveRailPointer : undefined}
@@ -2423,8 +2446,18 @@ function App(): JSX.Element {
                 aria-label="Main navigation"
               >
                 <div className="app-rail__group" data-rail-group="upper">
-                  {orderedRailItems().map((item) => renderRailItem(item, true))}
+                  {orderedRailItems(false).map((item) => renderRailItem(item, true, 'primary'))}
                 </div>
+                {state.settings.show_experimental_features !== 'false' ? (
+                  <div className="app-rail__experimental" aria-label="Experimental features">
+                    <div className="app-rail__experimental-header" title="Experimental features">
+                      <ExperimentalIcon />
+                    </div>
+                    <div className="app-rail__group" data-rail-group="experimental">
+                      {orderedRailItems(true).map((item) => renderRailItem(item, true, 'secondary'))}
+                    </div>
+                  </div>
+                ) : null}
                 <span id="app-rail-reorder-instructions" className="sr-only">
                   To reorder, press Control Shift Up Arrow or Control Shift Down Arrow. Enter opens the destination normally.
                 </span>
