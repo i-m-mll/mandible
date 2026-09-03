@@ -37,6 +37,7 @@ import {
   forkConversation,
   getConsoleSessionUsage,
   getConsoleSessionOptions,
+  getConsoleRunOptions,
   getConversationWindow,
   getConversationControl,
   getConversationSidebar,
@@ -50,6 +51,7 @@ import {
   updateConsoleSessionOptions,
   updateConversation,
   type SessionRunOptionsSnapshot,
+  type ConversationRuntimeOptions,
   type ConversationControlApiError,
   type ConversationControlSnapshot,
 } from '../api.js';
@@ -978,6 +980,8 @@ function ConversationDetail({
   const [showMessageFilters, setShowMessageFilters] = useState(false);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerModel, setComposerModel] = useState('');
+  const [composerEffort, setComposerEffort] = useState('');
+  const [composerPermission, setComposerPermission] = useState('');
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
@@ -1486,13 +1490,19 @@ function ConversationDetail({
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
   useEffect(() => {
-    if (!linkedConsoleSession) { setSessionRunOptions(null); return; }
     let active = true;
-    void getConsoleSessionOptions(linkedConsoleSession.id).then((result) => {
-      if (active) setSessionRunOptions(result.runOptions);
+    const runOptions = linkedConsoleSession
+      ? getConsoleSessionOptions(linkedConsoleSession.id).then((result) => result.runOptions)
+      : conversation?.source === 'codex'
+        ? getConsoleRunOptions('acp', 'codex')
+        : conversation?.source === 'claude_code'
+          ? getConsoleRunOptions('sdk', 'claude')
+          : Promise.resolve(null);
+    void runOptions.then((result) => {
+      if (active) setSessionRunOptions(result);
     }).catch(() => { if (active) setSessionRunOptions(null); });
     return () => { active = false; };
-  }, [linkedConsoleSession?.id]);
+  }, [conversation?.source, linkedConsoleSession?.id]);
 
   const latestDagUuid = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
@@ -1537,6 +1547,12 @@ function ConversationDetail({
     setComposerModel(currentModel === 'default' ? '' : currentModel);
   }, [conversationId, currentModel]);
 
+  useEffect(() => {
+    setComposerEffort(String(thinkingRunOption?.currentValue ?? ''));
+    setComposerPermission(String(permissionRunOption?.currentValue ?? ''));
+  }, [conversationId, thinkingRunOption?.id, thinkingRunOption?.currentValue,
+    permissionRunOption?.id, permissionRunOption?.currentValue]);
+
   const handleContinueSubmit = useCallback(async (event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     event.preventDefault();
     const prompt = continueDraft.trim();
@@ -1555,7 +1571,12 @@ function ConversationDetail({
       const messageAnchor = control.capability.kind === 'message-anchor-resume'
         ? latestDagUuid ?? undefined
         : undefined;
-      const result = await submitConversationControl(control, prompt, messageAnchor);
+      const runtimeOptions: ConversationRuntimeOptions = {
+        ...(composerModel ? { model: composerModel } : {}),
+        ...(composerEffort ? { effort: composerEffort } : {}),
+        ...(composerPermission ? { permission_mode: composerPermission as ConversationRuntimeOptions['permission_mode'] } : {}),
+      };
+      const result = await submitConversationControl(control, prompt, messageAnchor, runtimeOptions);
       setControl(result.snapshot);
       setContinueDraft('');
       setToast({ message: 'Message sent.', type: 'info' });
@@ -1569,7 +1590,7 @@ function ConversationDetail({
     } finally {
       setContinueBusy(false);
     }
-  }, [continueDisabledReason, continueDraft, control, latestDagUuid]);
+  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control, latestDagUuid]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'ArrowUp' && shelfItems.length > 0 && event.currentTarget.selectionStart === 0) {
@@ -1602,6 +1623,8 @@ function ConversationDetail({
   }, [canSaveComposerModel, linkedConsoleSession]);
 
   const handleComposerRunOptionChange = useCallback(async (id: string, value: string) => {
+    if (id === thinkingRunOption?.id) setComposerEffort(value);
+    if (id === permissionRunOption?.id) setComposerPermission(value);
     if (!linkedConsoleSession || !canSaveComposerModel) return;
     setContinueError(null);
     try {
@@ -1612,7 +1635,7 @@ function ConversationDetail({
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     }
-  }, [canSaveComposerModel, linkedConsoleSession]);
+  }, [canSaveComposerModel, linkedConsoleSession, permissionRunOption?.id, thinkingRunOption?.id]);
 
   const externalNavigationSession = useMemo(() => {
     const ownership = control?.ownership;
@@ -1857,7 +1880,7 @@ function ConversationDetail({
               {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
                 <select
                   className="conv-compose__permission"
-                  value={String(permissionRunOption.currentValue ?? '')}
+                  value={composerPermission}
                   disabled={continueBusy || permissionRunOption.availability !== 'available'}
                   title="Permission mode"
                   aria-label="Permission mode"
@@ -1901,7 +1924,7 @@ function ConversationDetail({
               {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
                 <select
                   className="conv-compose__effort"
-                  value={String(thinkingRunOption.currentValue ?? '')}
+                  value={composerEffort}
                   disabled={continueBusy || thinkingRunOption.availability !== 'available'}
                   title={thinkingRunOption.label}
                   aria-label={thinkingRunOption.label}

@@ -562,6 +562,14 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: BRIEFING_GROUP_SCHEMA_SQL.filter((statement) =>
       statement.includes("briefing_group_review_disposition")),
   },
+  {
+    version: 168,
+    name: "conversation_turn_runtime_options",
+    statements: [
+      `ALTER TABLE conversation_control_outbox ADD COLUMN runtime_options_json TEXT NOT NULL DEFAULT '{}'
+        CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object')`,
+    ],
+  },
 ];
 
 /**

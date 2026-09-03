@@ -63,6 +63,7 @@ export const CONVERSATION_CONTROL_SCHEMA_SQL: readonly string[] = [
     operation TEXT NOT NULL CHECK(operation IN ('send','steer','queue','resume-provider-session','resume-message-anchor')),
     message TEXT NOT NULL CHECK(length(trim(message)) > 0),
     message_anchor TEXT,
+    runtime_options_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object'),
     idempotency_key TEXT NOT NULL CHECK(length(trim(idempotency_key)) > 0),
     state TEXT NOT NULL CHECK(state IN ('pending','delivering','delivered','failed','uncertain')),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),

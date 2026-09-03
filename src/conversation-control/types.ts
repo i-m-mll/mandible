@@ -103,6 +103,12 @@ export type ConversationControlOperation =
   | "resume-provider-session"
   | "resume-message-anchor";
 
+export type ConversationRuntimeOptions = {
+  model?: string;
+  effort?: string;
+  permission_mode?: "read-only" | "agent" | "agent-full-access" | "default" | "acceptEdits" | "bypassPermissions";
+};
+
 export type ConversationSubmitRequest = {
   conversation_id: string;
   operation: ConversationControlOperation;
@@ -110,6 +116,7 @@ export type ConversationSubmitRequest = {
   expected_generation: number;
   message: string;
   message_anchor?: string;
+  runtime_options?: ConversationRuntimeOptions;
   idempotency_key: string;
 };
 
@@ -147,6 +154,7 @@ export type ConversationOutboxItem = {
   operation: ConversationControlOperation;
   message: string;
   message_anchor: string | null;
+  runtime_options: ConversationRuntimeOptions;
   idempotency_key: string;
   state: OutboxDeliveryState;
   attempts: number;

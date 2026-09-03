@@ -139,6 +139,19 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
           threadId: controller.providerSessionId,
           clientUserMessageId: item.idempotency_key,
           input: [{ type: "text", text: item.message, text_elements: [] }],
+          ...(item.runtime_options?.model ? { model: item.runtime_options.model } : {}),
+          ...(item.runtime_options?.effort ? { effort: item.runtime_options.effort } : {}),
+          ...(item.runtime_options?.permission_mode === "read-only" ? {
+            approvalPolicy: "on-request" as const,
+            sandboxPolicy: { type: "readOnly" as const, networkAccess: false },
+          } : item.runtime_options?.permission_mode === "agent-full-access" ? {
+            approvalPolicy: "never" as const,
+            sandboxPolicy: { type: "dangerFullAccess" as const },
+          } : item.runtime_options?.permission_mode === "agent" ? {
+            approvalPolicy: "on-request" as const,
+            sandboxPolicy: { type: "workspaceWrite" as const, writableRoots: [], networkAccess: false,
+              excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          } : {}),
         };
         const result = await controller.client.request("turn/start", params);
         const turn = responseTurn(result);

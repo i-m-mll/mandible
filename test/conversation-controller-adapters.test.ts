@@ -48,6 +48,7 @@ function delivery(operation: "resume-provider-session" | "send" | "steer", turnI
     operation,
     message,
     message_anchor: null,
+    runtime_options: {},
     idempotency_key: `key-${turnId}`,
     state: "delivering",
     attempts: 1,
@@ -76,7 +77,10 @@ describe("structured conversation controller adapters", () => {
     adapters.push(adapter);
     const events = lifecycle(adapter);
 
-    expect((await adapter.acquire(acquisition("claude-session"))).ok).toBe(true);
+    expect((await adapter.acquire({
+      ...acquisition("claude-session"),
+      runtime_options: { model: "claude-opus-4-1", effort: "high", permission_mode: "bypassPermissions" },
+    })).ok).toBe(true);
     expect(calls[0]).toEqual({
       command: "claude",
       args: [
@@ -86,6 +90,9 @@ describe("structured conversation controller adapters", () => {
         "--verbose",
         "--include-partial-messages",
         "--replay-user-messages",
+        "--model", "claude-opus-4-1",
+        "--effort", "high",
+        "--permission-mode", "bypassPermissions",
         "--resume", "claude-session",
       ],
     });
