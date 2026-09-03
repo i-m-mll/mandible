@@ -622,7 +622,7 @@ afterAll(() => {
 function listenForHealth(
   health: unknown,
   proofPath?: string,
-  options: { verifiedHuman?: boolean } = {},
+  options: { verifiedHuman?: boolean; applicationShell?: boolean } = {},
 ): Promise<number> {
   let dashboardSequence = 0;
   const dashboardTokens = new Set<string>();
@@ -630,6 +630,21 @@ function listenForHealth(
     if (req.method === "GET" && req.url === "/api/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(health));
+      return;
+    }
+    if (options.applicationShell !== false && req.method === "GET" && req.url === "/") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><link rel="stylesheet" href="./dist/app.css"></head><body><div id="app"></div><script id="mandible-bootstrap" type="application/json"></script><script type="module" src="./dist/app.js"></script></body></html>`);
+      return;
+    }
+    if (options.applicationShell !== false && req.method === "GET" && req.url === "/dist/app.css") {
+      res.writeHead(200, { "Content-Type": "text/css; charset=utf-8" });
+      res.end("#app { display: block; }");
+      return;
+    }
+    if (options.applicationShell !== false && req.method === "GET" && req.url === "/dist/app.js") {
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
+      res.end("export {};");
       return;
     }
     if (req.method === "POST" && req.url === "/api/client-auth/handshake" && proofPath) {
@@ -1403,6 +1418,72 @@ describe("iab-preview launcher", () => {
     expect(payload.status).toBe("dry-run");
     expect(payload.mode).toBe("current-integration");
     expect(payload.instanceEnv.MANDIBLE_FILE_RPC_DIR).toBe(path.join(previewRoot, "agent-rpc"));
+  });
+
+  it("rejects health-200/root-404 listeners for reuse and cleanup readiness", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    const fileRpcDir = path.join(previewRoot, "agent-rpc");
+    fs.mkdirSync(fileRpcDir, { recursive: true });
+    const db = path.join(previewRoot, "mandible-20260818-100000.db");
+    const sourceDb = path.join(repo, "source.db");
+    const pidFile = path.join(previewRoot, "mandible.pid");
+    fs.writeFileSync(db, "preview database", "utf8");
+    fs.writeFileSync(sourceDb, "source database", "utf8");
+    fs.writeFileSync(pidFile, `${UNREACHABLE_PID}\n`, "utf8");
+    fs.symlinkSync(db, path.join(previewRoot, "current.db"));
+    const currentHead = gitOutput(["rev-parse", "HEAD"], repo);
+    const port = await listenForHealth({
+      ready: true,
+      warm: true,
+      startup_commit: { hash: currentHead, summary: "current", date: "" },
+      instance: {
+        role: "preview",
+        operational_mutations: "reject",
+        preview_browser_enrollment: "allow",
+        db_path: db,
+        db_path_source: "iab-preview-copy",
+        source_db_path: sourceDb,
+      },
+      file_rpc_dir: fileRpcDir,
+    }, undefined, { applicationShell: false });
+    fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify({
+      status: "started",
+      branch: "integration/test-preview",
+      worktree: repo,
+      port,
+      db,
+      sourceDb,
+      previewRoot,
+      pidFile,
+      instanceEnv: previewContractEnv({ port, db, sourceDb, previewRoot, pidFile }),
+    }), "utf8");
+
+    const reuse = await execFileAsync(process.execPath, [SCRIPT, "--dry-run", "--json"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+    });
+    expect(JSON.parse(reuse.stdout)).toMatchObject({
+      status: "dry-run",
+      mode: "current-integration",
+    });
+
+    const cleanup = await execFileAsync(process.execPath, [
+      SCRIPT, "cleanup", "--preview-base-dir", previewBase, "--json",
+    ], { cwd: repo, encoding: "utf8", env: process.env });
+    const entry = JSON.parse(cleanup.stdout).entries.find((candidate: { path: string }) => {
+      return candidate.path === previewRoot;
+    });
+    expect(entry).toMatchObject({
+      action: "skip",
+      shellReadiness: { ok: false, reason: "application root returned HTTP 404" },
+    });
+    expect(entry.reason).toContain("failed application shell readiness");
+    expect(entry.reason).not.toContain("passed health and application shell readiness");
   });
 
   it("exchanges the process proof and returns only a verified dashboard session fragment", async () => {
