@@ -5,15 +5,47 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DetailPaneHeader } from '../../ui/src/components/shared/DetailPaneHeader.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
+import { EntityTimestamps } from '../../ui/src/components/shared/EntityTimestamps.js';
+import { CollapsiblePanel } from '../../ui/src/components/shared/CollapsiblePanel.js';
 import { shortIdentityRef } from '../../ui/src/identity-refs.js';
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   document.head.querySelector('[data-test-compact-header-styles]')?.remove();
 });
 
 describe('canonical detail pane header', () => {
+  it('labels creation first and attributes only actors supplied for each event', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));
+    const now = Date.now();
+
+    const { rerender } = render(
+      <EntityTimestamps
+        createdAt={now - (20 * 60 * 1000)}
+        updatedAt={now - (20 * 60 * 1000)}
+        createdBy="codex"
+      />,
+    );
+
+    expect(screen.getByText('created 20m ago by codex')).toBeTruthy();
+    expect(screen.queryByText(/updated/)).toBeNull();
+
+    rerender(
+      <EntityTimestamps
+        createdAt={now - (2 * 60 * 60 * 1000)}
+        updatedAt={now - (5 * 60 * 1000)}
+        createdBy="codex"
+        updatedBy="claude"
+      />,
+    );
+
+    expect(document.body.textContent).toContain('created 2h ago by codex · updated 5m ago by claude');
+    expect(document.querySelectorAll('time')).toHaveLength(2);
+  });
+
   it('renders standard semantics while keeping exact authority internal and copying the short ref', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
@@ -53,6 +85,9 @@ describe('canonical detail pane header', () => {
     expect(header.textContent).not.toContain(canonicalRef);
     expect(within(header).getByRole('group', { name: 'Detail actions' })).toBeTruthy();
     expect(within(body).queryByRole('group', { name: 'Detail actions' })).toBeNull();
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+    expect(css).toMatch(/\.detail-pane-header--standard \.detail-pane-header__topline-controls\s*\{[^}]*display:\s*flex;[^}]*margin-left:\s*auto;/s);
 
     fireEvent.click(within(header).getByRole('button', { name: 'Copy Issue reference' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('mandible/087857e'));
@@ -282,6 +317,29 @@ describe('canonical detail pane header', () => {
     expect(css).not.toMatch(/\.detail-pane-header [^{]*select[^{]*:focus-visible\s*\{/s);
     expect(css).toMatch(/@media \(max-width:\s*720px\)/);
     expect(css).toMatch(/@media \(pointer:\s*coarse\)\s*\{[^}]*\.detail-pane-header :is\(button, select, a\)\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
+  });
+});
+
+describe('shared collapsible panel', () => {
+  it('places the canonical disclosure chevron directly after a normal-case subdued title', () => {
+    const onExpandedChange = vi.fn();
+    render(
+      <CollapsiblePanel title="Commit message" expanded={false} onExpandedChange={onExpandedChange}>
+        Hidden body
+      </CollapsiblePanel>,
+    );
+
+    const toggle = screen.getByRole('button', { name: 'Commit message' });
+    expect(toggle.children[0]?.textContent).toBe('Commit message');
+    expect(toggle.children[1]?.getAttribute('data-disclosure-chevron')).toBe('right');
+    expect(document.querySelector('.collapsible-panel__body')).toBeNull();
+    fireEvent.click(toggle);
+    expect(onExpandedChange).toHaveBeenCalledWith(true);
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/collapsible-panel.css'), 'utf8');
+    expect(css).toMatch(/\.collapsible-panel\s*\{[^}]*padding:\s*12px;/s);
+    expect(css).toMatch(/\.collapsible-panel__toggle\s*\{[^}]*color:\s*var\(--text-chrome-muted\);/s);
+    expect(css).not.toMatch(/text-transform:\s*uppercase/);
   });
 });
 

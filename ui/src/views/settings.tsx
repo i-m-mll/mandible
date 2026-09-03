@@ -236,9 +236,12 @@ function ToggleRow(props: {
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
   warning?: string;
+  defaultEnabled?: boolean;
 }) {
   const [toggling, setToggling] = useState(false);
-  const enabled = props.settings[props.settingKey] === 'true';
+  const enabled = props.settings[props.settingKey] == null
+    ? props.defaultEnabled === true
+    : props.settings[props.settingKey] === 'true';
 
   const handleToggle = useCallback(async () => {
     setToggling(true);
@@ -395,6 +398,47 @@ function SelectInput(props: {
           <option key={opt} value={opt}>{opt}</option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function TextSettingInput(props: {
+  label: string;
+  desc: string;
+  settingKey: string;
+  placeholder: string;
+  settings: Record<string, string>;
+  onSave: (key: string, value: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState(props.settings[props.settingKey] ?? '');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setValue(props.settings[props.settingKey] ?? ''), [props.settingKey, props.settings]);
+  const save = async () => {
+    setSaving(true);
+    try { await props.onSave(props.settingKey, value.trim()); } catch { /* parent surfaces save errors */ }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="settings-view__text-row">
+      <div className="settings-view__text-info">
+        <label className="settings-view__text-label" htmlFor={`settings-${props.settingKey}`}>{props.label}</label>
+        <span className="settings-view__text-desc">{props.desc}</span>
+      </div>
+      <div className="settings-view__text-controls">
+        <input
+          id={`settings-${props.settingKey}`}
+          className="settings-view__input settings-view__input--wide"
+          value={value}
+          placeholder={props.placeholder}
+          onInput={(event) => setValue(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); void save(); }
+          }}
+        />
+        <button type="button" className="btn btn--active btn--sm" disabled={saving} onClick={() => void save()}>
+          {saving ? '…' : 'Save'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1874,6 +1918,21 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             defaultValue={SIDEBAR_GROUP_LIMIT_DEFAULT}
             normalize={normalizeSidebarGroupLimit}
           />
+          {([
+            ['claude', 'Claude default model'],
+            ['codex', 'Codex default model'],
+            ['gemini', 'Gemini default model'],
+          ] as const).map(([provider, label]) => (
+            <TextSettingInput
+              key={provider}
+              label={label}
+              desc="Used for new chats until that provider publishes its live model inventory."
+              settingKey={`conversations.default_model.${provider}`}
+              placeholder="Provider default"
+              settings={settings}
+              onSave={onSave}
+            />
+          ))}
         </div>
       </SettingsSectionShell>
 
@@ -2089,6 +2148,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               ))}
             </select>
           </div>
+          <ToggleRow
+            title="Experimental features"
+            desc="Show Timeline, Graph, and Workspaces in the experimental navigation group."
+            settingKey="show_experimental_features"
+            settings={settings}
+            onSave={onSave}
+            defaultEnabled
+          />
           {/* Bug: 914e9d7 — Header tab display mode */}
           <div className="settings-view__select-row">
             <div className="settings-view__select-info">

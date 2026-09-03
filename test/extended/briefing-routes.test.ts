@@ -332,6 +332,53 @@ describe("plural Briefing routes", () => {
     });
   });
 
+  it("deletes only empty standalone bundles without cascading retained state", async () => {
+    const source = path.join(root, "delete-bundle.md");
+    fs.writeFileSync(source, "# Retained member\n");
+    const version = recordArtifactVersion(db, { source_kind: "local_only", path: source,
+      logical_name: "delete-bundle.md", role: "review-document", media_type: "text/markdown" }).version;
+    const briefing = await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { artifact_version_ref: version.id, title: "Retained member" } });
+    const briefingId = (briefing.body as { briefing_id: string }).briefing_id;
+
+    const empty = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
+      body: { name: "Empty standalone", briefing_refs: [] } });
+    const emptyId = (empty.body as { bundle: { id: string } }).bundle.id;
+    expect(await router.invoke({ method: "DELETE", url: `/api/briefing-bundles/${emptyId}` }))
+      .toMatchObject({ status: 401 });
+    setSetting(db, "user.operator_id", humanId);
+    expect(await router.invoke({ method: "DELETE", url: `/api/briefing-bundles/${emptyId}`,
+      credential: "human", body: { cascade: true } })).toMatchObject({
+      status: 400, body: { error: expect.stringContaining("unsupported field") },
+    });
+    expect(await router.invoke({ method: "DELETE", url: `/api/briefing-bundles/${emptyId}`,
+      credential: "human" })).toMatchObject({ status: 200, body: {
+      bundle_id: emptyId, name: "Empty standalone", deleted: true,
+    } });
+    expect(db.prepare("SELECT 1 FROM briefing_bundles WHERE id = ?").get(emptyId)).toBeUndefined();
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:bundle-deleted", { bundle_id: emptyId });
+
+    const populated = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
+      body: { name: "Populated", briefing_refs: [] } });
+    const populatedId = (populated.body as { bundle: { id: string } }).bundle.id;
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-bundles/${populatedId}/briefings`,
+      credential: "human", body: { briefing_ref: briefingId } })).toMatchObject({ status: 200 });
+    expect(await router.invoke({ method: "DELETE", url: `/api/briefing-bundles/${populatedId}`,
+      credential: "human" })).toMatchObject({
+      status: 409, body: { code: "briefing_bundle_not_empty" },
+    });
+
+    const grouped = await router.invoke({ method: "POST", url: "/api/briefing-bundles", credential: "human",
+      body: { name: "Configured empty", briefing_refs: [] } });
+    const groupedId = (grouped.body as { bundle: { id: string } }).bundle.id;
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
+      body: { name: "Keeps bundle", current_bundle_ref: groupedId, bundle_refs: [] } })).toMatchObject({ status: 201 });
+    expect(await router.invoke({ method: "DELETE", url: `/api/briefing-bundles/${groupedId}`,
+      credential: "human" })).toMatchObject({
+      status: 409, body: { code: "briefing_bundle_referenced", reference_kind: "group configuration" },
+    });
+  });
+
   it("lets a durable agent publish an ordered bundle for the configured operator without changing members", async () => {
     const source = path.join(root, "agent-bundle.md");
     fs.writeFileSync(source, "# Bundle member\n");

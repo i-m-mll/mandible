@@ -378,7 +378,7 @@ describe("console prompt route", () => {
     db.close();
   });
 
-  it("rejects SDK xhigh because the installed capability does not advertise it", async () => {
+  it("accepts SDK xhigh when the installed capability advertises it", async () => {
     const db = openDb(":memory:"); setDb(db);
     const { server, routes } = makeRegistrar();
     const manager = { get: vi.fn(() => ({ meta: { id: "sdk-session", command: "provider", is_operator: false, backend_type: "sdk" } })), updateOptions: vi.fn() };
@@ -386,10 +386,8 @@ describe("console prompt route", () => {
     const route = routes.find((item) => item.method === "PATCH" && item.path === "/api/console/sessions/:id/options");
     const { res, payloads } = makeJsonResponse();
     await route?.handler({ params: { id: "sdk-session" }, body: { thinkingEffort: "xhigh" } } as never, res as never);
-    expect(manager.updateOptions).not.toHaveBeenCalled();
-    expect(payloads).toEqual([{ code: 422, payload: expect.objectContaining({
-      error: "unavailable_session_option_value", option: "thinking_effort",
-    }) }]);
+    expect(manager.updateOptions).toHaveBeenCalledWith("sdk-session", { thinkingEffort: "xhigh" });
+    expect(payloads).toEqual([{ code: 200, payload: { session: undefined } }]);
     db.close();
   });
 

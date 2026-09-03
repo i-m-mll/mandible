@@ -66,6 +66,11 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       "--verbose",
       "--include-partial-messages",
       "--replay-user-messages",
+      ...(input.runtime_options?.model ? ["--model", input.runtime_options.model] : []),
+      ...(input.runtime_options?.effort ? ["--effort", input.runtime_options.effort] : []),
+      ...(input.runtime_options?.permission_mode
+        && ["default", "acceptEdits", "bypassPermissions"].includes(input.runtime_options.permission_mode)
+        ? ["--permission-mode", input.runtime_options.permission_mode] : []),
       input.kind === "start" ? "--session-id" : "--resume",
       providerSessionId,
     ];

@@ -5,9 +5,9 @@
   transition: opacity 120ms ease;
 }
 
-.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-group,
-.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-group,
-.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-scope > .contextual-action-group,
+.contextual-action-owner:hover > .contextual-action-group,
+.contextual-action-owner:hover > .contextual-action-scope > .contextual-action-group,
+.contextual-action-owner:hover > .contextual-action-scope > .contextual-action-scope > .contextual-action-group,
 .contextual-action-group:focus-within,
 .contextual-action-group--persistent {
   opacity: 1;
@@ -29,9 +29,9 @@
   transition: color 120ms ease;
 }
 
-:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-group) .contextual-action,
-:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
-:where(.contextual-action-owner:is(:hover, :focus-within)) > :where(.contextual-action-scope) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:hover) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:hover) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
+:where(.contextual-action-owner:hover) > :where(.contextual-action-scope) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
 :where(.contextual-action-group:is(:focus-within, .contextual-action-group--persistent)) .contextual-action {
   color: var(--chrome-icon-hover-indirect);
 }

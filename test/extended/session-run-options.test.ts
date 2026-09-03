@@ -6,6 +6,7 @@ import {
   validateRunOptionsPatch,
   type BackendRunOptionDeclaration,
 } from "../../src/session-run-options.js";
+import { getSdkRunOptionDeclaration } from "../../src/backends/sdk-backend.js";
 
 const declaration: BackendRunOptionDeclaration = {
   backendType: "acp",
@@ -58,5 +59,41 @@ describe("session run options", () => {
       expect(error).toBeInstanceOf(SessionRunOptionError);
       expect(error).toMatchObject({ code: "unavailable_value", optionId: "model", backend: { type: "acp", command: "adapter" } });
     }
+  });
+
+  it("exposes a backend-owned effective default before provider startup", () => {
+    const snapshot = declaredRunOptionsSnapshot({
+      backendType: "sdk",
+      command: "claude",
+      options: [{
+        id: "permission_mode",
+        label: "Permission mode",
+        category: "mode",
+        kind: "select",
+        nullable: true,
+        defaultValue: "default",
+        discovery: { kind: "static", allowedValues: [{ value: "default", label: "Ask for approval" }] },
+        support: { status: "supported", owner: "backend", effectiveFrom: "immediate" },
+        applyOrder: 10,
+      }],
+    });
+
+    expect(snapshot.options[0]).toMatchObject({ currentValue: "default", availability: "available" });
+  });
+
+  it("offers the maintained Claude bootstrap catalog before provider discovery", () => {
+    const snapshot = declaredRunOptionsSnapshot(getSdkRunOptionDeclaration("claude"));
+    const models = snapshot.options.find((option) => option.id === "model");
+    const efforts = snapshot.options.find((option) => option.id === "thinking_effort");
+
+    expect(models?.allowedValues).toEqual([
+      { value: "fable", label: "Fable 5.1" },
+      { value: "opus", label: "Opus 5" },
+      { value: "sonnet", label: "Sonnet 5" },
+      { value: "haiku", label: "Haiku 4.5" },
+    ]);
+    expect(efforts?.allowedValues?.map((choice) => choice.value)).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ]);
   });
 });

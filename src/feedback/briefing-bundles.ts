@@ -79,6 +79,53 @@ export function listBriefingBundles(db: Db, viewer: BriefingBundleViewer): Brief
   return bundles.map((bundle) => ({ ...bundle, ...projectLayout(layoutRows(db, bundle.id, viewer)) }));
 }
 
+export type DeletedBriefingBundle = { bundle_id: string; name: string; deleted: true };
+
+/**
+ * Remove only a truly empty, standalone bundle. Historical and configured
+ * references are deliberately retained by the schema and block deletion.
+ */
+export function deleteEmptyBriefingBundle(db: Db, bundleRef: string): DeletedBriefingBundle {
+  const bundleId = resolveBundleId(db, bundleRef);
+  return db.transaction(() => {
+    const bundle = db.prepare("SELECT name FROM briefing_bundles WHERE id = ?").get(bundleId) as { name: string };
+    if (db.prepare("SELECT 1 FROM briefing_bundle_members WHERE bundle_id = ? LIMIT 1").get(bundleId)) {
+      throw new BriefingStoreError("Briefing bundle must be empty before deletion", 409, "briefing_bundle_not_empty");
+    }
+
+    const references = [
+      ["group configuration", `SELECT 1 FROM briefing_groups
+        WHERE current_bundle_id = ? LIMIT 1`, [bundleId]],
+      ["group proposal", `SELECT 1 FROM briefing_group_updates
+        WHERE bundle_id = ? LIMIT 1`, [bundleId]],
+      ["group disposition history", `SELECT 1 FROM briefing_group_dispositions
+        WHERE prior_base_bundle_id = ? OR proposal_bundle_id = ? OR resulting_base_bundle_id = ? LIMIT 1`,
+        [bundleId, bundleId, bundleId]],
+      ["group review history", `SELECT 1 FROM briefing_group_review_dispositions
+        WHERE expected_base_bundle_id = ? OR proposal_bundle_id = ? OR resulting_base_bundle_id = ? LIMIT 1`,
+        [bundleId, bundleId, bundleId]],
+      ["composition contribution history", `SELECT 1 FROM briefing_composition_contributions
+        WHERE proposal_bundle_id = ? LIMIT 1`, [bundleId]],
+      ["composition target history", `SELECT 1 FROM briefing_composition_targets
+        WHERE base_bundle_id = ? OR proposal_bundle_id = ? LIMIT 1`, [bundleId, bundleId]],
+    ] as const;
+    for (const [label, sql, params] of references) {
+      if (db.prepare(sql).get(...params)) {
+        throw new BriefingStoreError(
+          `Briefing bundle is retained by ${label} and cannot be deleted`,
+          409,
+          "briefing_bundle_referenced",
+          { reference_kind: label },
+        );
+      }
+    }
+
+    const result = db.prepare("DELETE FROM briefing_bundles WHERE id = ?").run(bundleId);
+    if (result.changes !== 1) throw new BriefingStoreError("Briefing bundle not found", 404, "not_found");
+    return { bundle_id: bundleId, name: bundle.name, deleted: true as const };
+  }).immediate();
+}
+
 type ResolvedLayoutEntry =
   | { kind: "briefing"; briefingId: string }
   | { kind: "subgroup"; name: string; briefingIds: string[] };

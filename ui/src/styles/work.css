@@ -185,6 +185,7 @@
 
 .work-audit {
   margin-bottom: 18px;
+  padding: 0;
   border: 1px solid var(--neutral-alpha-08);
   border-radius: 10px;
   background: var(--neutral-alpha-02);
@@ -212,6 +213,12 @@
   font-weight: 650;
 }
 
+.work-audit__toggle > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .work-audit__count {
   min-width: 20px;
   padding: 1px 6px;
@@ -225,6 +232,7 @@
 .work-audit__content {
   display: grid;
   gap: 14px;
+  margin-top: 0;
   padding: 12px;
 }
 

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
 import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
 import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../../ui/src/components/message-blocks/ToolUseBlock';
-import { presentTool, summarizeToolRun } from '../../ui/src/components/message-blocks/toolPresentation';
+import { presentTool, summarizeToolRun, toolRunIcons } from '../../ui/src/components/message-blocks/toolPresentation';
 import { PermissionApprovalCard, permissionActionsForRequest } from '../../ui/src/components/console/PermissionApprovalCard';
 import { MessageGroup } from '../../ui/src/components/stream-renderer/MessageGroup';
 import type { ConsolePermissionRequest } from '../../ui/src/api';
@@ -30,6 +30,7 @@ describe('message action cards', () => {
     const markdownCss = readFileSync('ui/src/styles/rendered-markdown.css', 'utf8');
     const messageCss = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
     expect(consoleCss).toMatch(/\.stream-turn--selected\s*\{[^}]*border-left:\s*0;[^}]*background:\s*transparent;/s);
+    expect(consoleCss).toMatch(/\.stream-turn-node\s*\{[^}]*width:\s*100%;/s);
     expect(markdownCss).toContain('.rendered-markdown blockquote');
     expect(markdownCss).toContain('.rendered-markdown table');
     expect(markdownCss).toContain('.rendered-markdown li + li');
@@ -125,6 +126,19 @@ describe('message action cards', () => {
     expect(screen.queryByText('complete')).toBeNull();
   });
 
+  it('does not render an empty result surface', () => {
+    const view = render(
+      <ToolUseBlock
+        toolName="Bash"
+        input={{ command: 'true' }}
+        result={{ type: 'tool_result', tool_use_id: 'bash', content: '' }}
+        defaultExpanded
+      />,
+    );
+
+    expect(view.container.querySelector('.tool-card__result-wrapper')).toBeNull();
+  });
+
   it('uses exact Codex tool tokens on one coherent box and prose summary contract', () => {
     const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
     for (const token of ['#767778', '#F4F4F4', '#DADADB', '#88888A', '#A3A3A3', '#242424', '#464646', '#919191']) {
@@ -132,9 +146,10 @@ describe('message action cards', () => {
     }
     expect(css).toMatch(/\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
-    expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(css).toMatch(/\.msg-text-block,\s*\.tool-call-group__summary,\s*\.tool-call-group__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.6;[^}]*font-weight:\s*400;/s);
-    expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*3px 0;[^}]*color:\s*var\(--tool-activity-text\);/s);
+    expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
+    expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(css).toMatch(/\.tool-call-group__summary,\s*\.tool-call-group__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
+    expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);/s);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
@@ -142,7 +157,7 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?background:\s*transparent;/);
     expect(css).toMatch(/:root :is\(\.tool-card__input, \.tool-card__terminal, \.tool-card__result\) :is\(pre, code\)\s*\{[^}]*background:\s*transparent;/s);
     expect(css).not.toContain('background: var(--status-danger-bg-soft)');
-    expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
+    expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*1\.35em;/s);
     expect(css).toContain('var(--overflow-fade-color, var(--surface-app))');
 
     const group = render(<MessageGroup turn={{
@@ -157,6 +172,15 @@ describe('message action cards', () => {
       toolResults: new Map(),
     }} isStreaming={false} />);
     expect(group.container.querySelector('.tool-call-group__summary > .tool-call-group__summary-text')).toBeTruthy();
+    expect(group.container.querySelectorAll('.tool-call-group__icons .tool-call-group__icon')).toHaveLength(1);
+  });
+
+  it('gives grouped tool runs one icon for each represented tool category', () => {
+    expect(toolRunIcons([
+      { name: 'Read', input: { path: 'one' } },
+      { name: 'Read', input: { path: 'two' } },
+      { name: 'Bash', input: { command: 'true' } },
+    ])).toEqual(['↗', 'terminal']);
   });
 
   it('wins the real light-theme pre fill without changing general code surfaces', () => {
@@ -276,7 +300,7 @@ describe('message action cards', () => {
     expect(seen).toEqual(['group:one', 'group:one']);
   });
 
-  it('keeps group and expanded leaf scroll positions and fade states independent', () => {
+  it('shows every grouped tool row while retaining independent fades inside expanded leaves', () => {
     const blocks = [
       { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: '/tmp/a' } },
       { type: 'tool_use', id: 'tool-2', name: 'Read', input: { path: '/tmp/b' } },
@@ -295,13 +319,10 @@ describe('message action cards', () => {
 
     const view = render(<MessageGroup turn={turn} isStreaming={false} />);
     fireEvent.click(screen.getByRole('button', { name: /Read some files/ }));
-    const outerFade = view.container.querySelector<HTMLElement>('.tool-call-group__body')!;
-    const outerScroll = outerFade.querySelector<HTMLElement>(':scope > .overflow-fade__scroll')!;
-    setScrollMetrics(outerScroll, 100, 240);
-    outerScroll.scrollTop = 40;
-    fireEvent.scroll(outerScroll);
-    expect(outerFade.classList.contains('overflow-fade--above')).toBe(true);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
+    const groupBody = view.container.querySelector<HTMLElement>('.tool-call-group__body')!;
+    expect(groupBody.classList.contains('overflow-fade')).toBe(false);
+    expect(groupBody.querySelector(':scope > .overflow-fade__scroll')).toBeNull();
+    expect(groupBody.querySelectorAll('.tool-card')).toHaveLength(2);
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card__header')!);
     expect(view.container.querySelectorAll('.tool-card__body > .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
@@ -320,22 +341,11 @@ describe('message action cards', () => {
     expect(leafFade.classList.contains('overflow-fade--above')).toBe(false);
     expect(leafFade.classList.contains('overflow-fade--below')).toBe(true);
     expect(inputScroll.scrollTop).toBe(20);
-    expect(outerScroll.scrollTop).toBe(40);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
 
     leafScroll.scrollTop = 100;
     fireEvent.scroll(leafScroll);
     expect(leafFade.classList.contains('overflow-fade--above')).toBe(true);
     expect(leafFade.classList.contains('overflow-fade--below')).toBe(false);
-    expect(outerScroll.scrollTop).toBe(40);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(true);
-
-    act(() => {
-      outerScroll.scrollTop = 140;
-      fireEvent.scroll(outerScroll);
-    });
-    expect(outerFade.classList.contains('overflow-fade--above')).toBe(true);
-    expect(outerFade.classList.contains('overflow-fade--below')).toBe(false);
     expect(leafScroll.scrollTop).toBe(100);
   });
 

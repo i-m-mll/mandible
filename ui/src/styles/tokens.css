@@ -87,14 +87,15 @@
   --shadow-rail: 10px 0 30px rgba(0, 0, 0, 0.18);
   --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
+  --shadow-composer: 0 0 18px rgba(0, 0, 0, 0.093);
   --app-boundary-shadow-offset: 8px;
   --app-boundary-shadow-blur: 36px;
   --app-boundary-shadow-spread: 0px;
-  --app-boundary-shadow-intensity-scale: 0.7;
+  --app-boundary-shadow-intensity-scale: 0.35;
   --app-boundary-shadow-color: rgba(0, 0, 0, calc(0.0375 * var(--app-boundary-shadow-intensity-scale)));
   /* The measured falloff is fully additive: layout reserves no gutter while
-     paint retains its independent 17px profile. One shared scale reduces the
-     exact candidate alpha curve (0.0054 / 0.0156 / 0.0375) by 30%. */
+     paint retains its independent 17px profile. The chrome edge is deliberately
+     half the original 0.7-strength treatment. */
   --app-shadow-gutter-width: 0px;
   --app-boundary-shadow-paint-width: 17px;
   --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, calc(0.0054 * var(--app-boundary-shadow-intensity-scale))) 24%, rgba(0, 0, 0, calc(0.0156 * var(--app-boundary-shadow-intensity-scale))) 59%, var(--app-boundary-shadow-color) 100%;

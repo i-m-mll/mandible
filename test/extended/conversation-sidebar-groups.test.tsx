@@ -8,7 +8,7 @@ import type {
   ConversationSidebarGroup,
   InstanceInfo,
 } from '../../ui/src/api.js';
-import { ConversationsView } from '../../ui/src/views/conversations.js';
+import { ConversationsView, getConversationTitle } from '../../ui/src/views/conversations.js';
 import { normalizeSidebarGroupLimit } from '../../ui/src/components/shared/sidebar-group-settings.js';
 import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
@@ -117,6 +117,12 @@ function renderView(
 }
 
 describe('conversation sidebar groups', () => {
+  it('never exposes raw provider ids or machine envelopes as conversation titles', () => {
+    expect(getConversationTitle(conversation('raw-id', '01a05d81-ba7c-7a63-b593-1e87e2bd8e3d <in'))).toBe('Codex chat');
+    expect(getConversationTitle(conversation('envelope', '<codex_delegation>\n<source_thread_id>01a05d81</source_thread_id>'))).toBe('Codex chat');
+    expect(getConversationTitle(conversation('normal', 'Feedbax remediation'))).toBe('Feedbax remediation');
+  });
+
   it('preserves an explicitly empty shown-project selection and offers registered projects', async () => {
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });

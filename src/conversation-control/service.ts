@@ -90,6 +90,7 @@ export class ConversationControlService {
           provider_session_id: prepared.value.provider_session_id,
           generation: prepared.value.snapshot.ownership.generation,
           message_anchor: request.message_anchor!,
+          runtime_options: request.runtime_options,
         }
         : {
           kind: "resume-provider-session",
@@ -97,6 +98,7 @@ export class ConversationControlService {
           controller_instance_id: prepared.value.controller_instance_id,
           provider_session_id: prepared.value.provider_session_id,
           generation: prepared.value.snapshot.ownership.generation,
+          runtime_options: request.runtime_options,
         };
       const acquiredCall = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
       const acquired: typeof acquiredCall = acquiredCall.ok && (

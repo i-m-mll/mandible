@@ -20,7 +20,6 @@ import {
   deriveLiveLabel,
   deriveTokenCount,
   extractTurns,
-  extractToolResultText,
   formatElapsed,
   groupMessagesForDisplay,
   serializeDisplayGroupToMarkdown,
@@ -94,19 +93,6 @@ function storageSet(key: string, value: string): void {
     window.localStorage.setItem(key, value);
   } catch {
     // Ignore private-mode and SSR storage failures.
-  }
-}
-
-function readExpandState(key: string): Record<string, boolean> {
-  const raw = storageGet(key);
-  if (!raw) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, boolean> : {};
-  } catch {
-    return {};
   }
 }
 
@@ -217,16 +203,13 @@ export function ChatSurface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const storageScope = sessionInfo?.sessionId ?? 'default';
   const scrollStorageKey = `mandible:chat-scroll:${storageScope}`;
-  const expandStorageKey = `mandible:chat-expanded:${storageScope}`;
 
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
   const [isFollowing, setIsFollowing] = useState(true);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
-  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => (
-    readExpandState(expandStorageKey)
-  ));
+  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const scrollTopRef = useRef(0);
   const isFollowingRef = useRef(true);
   const rowHeightsRef = useRef<Record<string, number>>({});
@@ -261,9 +244,12 @@ export function ChatSurface({
     viewportHeight,
   );
 
+  // Chat disclosures are transient reading state. A new conversation or page
+  // refresh starts from each block's declared default instead of reviving old
+  // tool/thinking expansion choices from browser storage.
   useEffect(() => {
-    setExpandedBlocks(readExpandState(expandStorageKey));
-  }, [expandStorageKey]);
+    setExpandedBlocks({});
+  }, [storageScope]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -469,9 +455,7 @@ export function ChatSurface({
 
   function setBlockExpanded(id: string, expanded: boolean): void {
     setExpandedBlocks((current) => {
-      const next = { ...current, [id]: expanded };
-      storageSet(expandStorageKey, JSON.stringify(next));
-      return next;
+      return { ...current, [id]: expanded };
     });
   }
 
@@ -499,7 +483,6 @@ export function ChatSurface({
           >
             <UserBubble text={node.text} />
             <MessageActions
-              onCopy={() => copyText(node.text)}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
@@ -523,7 +506,6 @@ export function ChatSurface({
               isError={node.event.is_error}
             />
             <MessageActions
-              onCopy={() => copyText(node.event.content)}
               onSelect={onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={selectedBlockIds?.has(source.blockId)}
               selectMode={selectMode}
@@ -539,7 +521,6 @@ export function ChatSurface({
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <UnmatchedToolResultBlock result={node.result} />
             <MessageActions
-              onCopy={() => copyText(node.result.fullText ?? extractToolResultText(node.result.content))}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}

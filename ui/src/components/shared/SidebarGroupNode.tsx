@@ -1,5 +1,6 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { ContextualAction } from './ContextualAction';
+import { DisclosureChevronIcon } from './DisclosureChevronIcon';
 import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
 
 type SidebarGroupNodeCommonProps = {
@@ -17,6 +18,7 @@ type SidebarGroupNodeCommonProps = {
   bodyAs?: 'div' | 'ul';
   className?: string;
   bodyClassName?: string;
+  showDisclosure?: boolean;
   canShowMore?: boolean;
   loadingMore?: boolean;
   onShowMore?(): void;
@@ -80,6 +82,7 @@ export function SidebarGroupNode({
   bodyAs = 'div',
   className = '',
   bodyClassName = '',
+  showDisclosure = true,
   canShowMore = false,
   loadingMore = false,
   onShowMore,
@@ -90,7 +93,7 @@ export function SidebarGroupNode({
   const headingId = `${id}-heading`;
   const disclosureId = `${id}-disclosure`;
   const bodyId = `${id}-body`;
-  const controllerId = selection ? disclosureId : headingId;
+  const controllerId = selection && showDisclosure ? disclosureId : headingId;
   const showMore = canShowMore && onShowMore ? (
     <button
       type="button"
@@ -112,10 +115,19 @@ export function SidebarGroupNode({
       {showMore ? <div className="sidebar-group-node__show-more-row">{showMore}</div> : null}
     </>
   );
+  const toggleFromHeader = (event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    const target = event.target as Element;
+    if (target.closest('button, a, input, select, textarea, [role="button"]')) return;
+    onToggle();
+  };
+  const activateHeading = () => {
+    selection?.onSelect();
+    onToggle();
+  };
 
   return (
     <section
-      className={`sidebar-group-node sidebar-group-node--${presentation}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${expanded ? ' sidebar-group-node--expanded' : ''}${selection ? ' sidebar-group-node--selectable' : ''}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
       data-testid={testIds?.root}
     >
@@ -127,6 +139,7 @@ export function SidebarGroupNode({
         onDragOver={drag?.onOver}
         onDrop={drag?.onDrop}
         onDragEnd={drag?.onEnd}
+        onClick={toggleFromHeader}
       >
         <button
           id={headingId}
@@ -138,13 +151,13 @@ export function SidebarGroupNode({
           aria-label={selection?.label}
           aria-description={headingDescription}
           data-testid={testIds?.heading}
-          onClick={selection?.onSelect ?? onToggle}
+          onClick={activateHeading}
         >
           {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
           <strong>{label}</strong>
           {count === undefined ? null : <em className="sidebar-group-node__count" aria-label={countLabel}>{count}</em>}
         </button>
-        {selection ? (
+        {showDisclosure ? (
           <button
             id={disclosureId}
             type="button"
@@ -154,7 +167,7 @@ export function SidebarGroupNode({
             aria-controls={bodyId}
             onClick={onToggle}
           >
-            <SidebarDisclosureChevronIcon expanded={expanded} />
+            <DisclosureChevronIcon expanded={expanded} />
           </button>
         ) : null}
         {action ? (
@@ -181,25 +194,6 @@ export function SidebarGroupNode({
         {body}
       </SidebarDisclosureRegion>
     </section>
-  );
-}
-
-export function SidebarDisclosureChevronIcon({ expanded, size = 14 }: { expanded: boolean; size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      data-sidebar-disclosure-chevron={expanded ? 'down' : 'right'}
-    >
-      <path d={expanded ? 'm6 9 6 6 6-6' : 'm9 18 6-6-6-6'} />
-    </svg>
   );
 }
 
