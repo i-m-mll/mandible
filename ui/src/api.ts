@@ -808,6 +808,10 @@ export async function navigateSession(sessionId: string): Promise<void> {
   }
 }
 
+export async function openConversationExternally(conversationId: string): Promise<void> {
+  await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/open-external`);
+}
+
 export async function killSession(sessionId: string): Promise<void> {
   await apiPost(`/api/sessions/${encodeURIComponent(sessionId)}/kill`);
 }

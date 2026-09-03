@@ -208,6 +208,53 @@ describe('conversation sidebar labeled-item rows', () => {
     }));
   });
 
+  it('shows Open externally only from a typed server capability and dispatches the exact conversation', async () => {
+    const navigable: ConversationSidebarConversation = {
+      ...conversation,
+      external_navigation: {
+        kind: 'codex-desktop-task',
+        provider_session_id: 'existing-codex-task',
+        label: 'Open in Codex',
+      },
+    };
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse([navigable]));
+    vi.spyOn(api, 'getConversationWindow').mockResolvedValue(positionWindow(navigable));
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+    const openExternally = vi.spyOn(api, 'openConversationExternally').mockResolvedValue();
+
+    render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    await screen.findByRole('button', { name: `Open conversation ${navigable.title}` });
+    fireEvent.click(screen.getByRole('button', { name: `Chat actions for ${navigable.title}` }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open externally' }));
+    await waitFor(() => expect(openExternally).toHaveBeenCalledWith(navigable.id));
+
+    cleanup();
+    const unavailable = { ...conversation, id: 'without-capability', external_navigation: undefined };
+    vi.mocked(api.getConversationSidebar).mockResolvedValue(sidebarResponse([unavailable]));
+    render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+    await screen.findByRole('button', { name: `Open conversation ${unavailable.title}` });
+    fireEvent.click(screen.getByRole('button', { name: `Chat actions for ${unavailable.title}` }));
+    expect(screen.queryByRole('menuitem', { name: 'Open externally' })).toBeNull();
+  });
+
   it('reconciles Pin and Unpin into visible sections while preserving order, selection, focus, and reload state', async () => {
     let serverRows = [conversation, existingPinnedConversation];
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => sidebarResponse(serverRows));

@@ -334,7 +334,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
-  registerConversationRoutes(router);
+  registerConversationRoutes(router, sessionRegistry);
   registerConversationControlRoutes(router, conversationControl);
   registerConversationCustodyRoutes(router, db);
 
