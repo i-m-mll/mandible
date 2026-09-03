@@ -323,6 +323,7 @@ export function ToolCard({
       data-tool={toolName}
       data-tool-kind={visual.kind}
       data-id={toolUseId}
+      data-block-id={result?.source?.blockId}
     >
       <button
         type="button"

@@ -66,7 +66,7 @@ const setOptionBehavior = ${JSON.stringify(setOptionBehavior)};
 const config = { model: "gpt-5.3-codex", reasoning_effort: "medium", mode: "agent" };
 const inventory = () => [
   { id: "model", name: "Model", category: "model", type: "select", currentValue: config.model,
-    options: [{ value: "gpt-5.3-codex", name: "Codex" }, { value: "gpt-next", name: "Next" }] },
+    options: [{ value: "gpt-5.3-codex", name: "Codex" }, { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" }] },
   { id: "reasoning_effort", name: "Reasoning effort", category: "thought_level", type: "select", currentValue: config.reasoning_effort,
     options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
   { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: config.mode,
@@ -177,11 +177,11 @@ describe("AcpBackend", () => {
       command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
     }), vi.fn());
     const pending = backend.applyRunOptions({ values: {
-      model: "gpt-next", reasoning_effort: "high", mode: "read-only",
+      model: "gpt-5.6-sol", reasoning_effort: "high", mode: "read-only",
     } }, { phase: "initial" });
     backend.sendPrompt("first prompt");
     await expect(pending).resolves.toMatchObject({ applied: [
-      { id: "model", currentValue: "gpt-next" },
+      { id: "model", currentValue: "gpt-5.6-sol" },
       { id: "reasoning_effort", currentValue: "high" },
       { id: "mode", currentValue: "read-only" },
     ] });
@@ -206,7 +206,7 @@ describe("AcpBackend", () => {
     const backend = new AcpBackend(makeMeta({
       command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
     }), vi.fn());
-    const pending = backend.applyRunOptions({ values: { model: "gpt-next" } }, { phase: "initial" });
+    const pending = backend.applyRunOptions({ values: { model: "gpt-5.6-sol" } }, { phase: "initial" });
     backend.sendPrompt("must remain gated");
     await expect(pending).rejects.toMatchObject({ code, optionId: "model" });
     const log = await fs.readFile(fake.logPath, "utf8");
@@ -223,7 +223,7 @@ describe("AcpBackend", () => {
     backend.start();
     await waitFor(() => backend.getRunOptions().phase === "ready");
 
-    const pending = backend.applyRunOptions({ values: { model: "gpt-next" } }, { phase: "runtime" });
+    const pending = backend.applyRunOptions({ values: { model: "gpt-5.6-sol" } }, { phase: "runtime" });
     await expect(pending).rejects.toMatchObject({ code: "provider_timeout", optionId: "model" });
     expect(backend.getRunOptions()).toMatchObject({
       phase: "blocked",

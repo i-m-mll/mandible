@@ -561,7 +561,7 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.queryByText('Need to inspect state')).toBeNull();
   });
 
-  it('keeps full tool output out of the DOM until open-full is requested', () => {
+  it('keeps oversized tool output inside the expanded tool card scroll region', () => {
     const fullText = `${'line\n'.repeat(2600)}TAIL-MARKER`;
     const toolResult: ToolResultContentBlock = {
       type: 'tool_result',
@@ -594,11 +594,9 @@ describe('ChatSurface stream behavior', () => {
 
     expect(screen.queryByText(/TAIL-MARKER/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Ran a command/ }));
-    expect(screen.getByRole('button', { name: /open full/i })).toBeTruthy();
-    expect(screen.queryByText(/TAIL-MARKER/)).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /open full/i }));
+    expect(document.querySelector('.tool-card__body .overflow-fade__scroll')).toBeTruthy();
     expect(screen.getByText(/TAIL-MARKER/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /open full/i })).toBeNull();
   });
 
   it('ignores legacy persisted chat disclosure state and starts tools folded', () => {

@@ -305,9 +305,10 @@ export function ChatSurface({
             if (node.kind === 'semantic_event') return node.event.source.blockId === navigationTarget.blockId;
             if (node.kind === 'unmatched_tool_result') return node.result.source?.blockId === navigationTarget.blockId;
             if (node.kind === 'assistant_turn') {
+              const matchedResult = Array.from(node.turn.toolResults.entries())
+                .find(([, result]) => result.source?.blockId === navigationTarget.blockId);
               return node.turn.assistantEvent.message.content.some((block) => block.source?.blockId === navigationTarget.blockId)
-                || Array.from(node.turn.toolResults.values())
-                  .some((result) => result.source?.blockId === navigationTarget.blockId);
+                || Boolean(matchedResult);
             }
             return false;
           })

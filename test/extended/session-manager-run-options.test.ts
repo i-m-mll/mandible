@@ -20,14 +20,14 @@ describe("SessionManager run options", () => {
       args: ["--flag", "kept", "--model", "old"], allowed_tools: ["Read"],
     });
     const result = await manager.updateOptions(session.id, {
-      runOptions: { model: "new", thinking_effort: "high" },
+      runOptions: { model: "fable", thinking_effort: "high" },
       allowedTools: ["Read", "Write"],
     });
     expect(result.applied.map((option) => option.id)).toEqual(["model", "thinking_effort"]);
     const row = db.prepare("SELECT args_json, run_options_json, allowed_tools FROM console_sessions WHERE id = ?")
       .get(session.id) as { args_json: string; run_options_json: string; allowed_tools: string };
-    expect(JSON.parse(row.args_json)).toEqual(["--flag", "kept", "--model", "new"]);
-    expect(JSON.parse(row.run_options_json)).toEqual({ model: "new", thinking_effort: "high" });
+    expect(JSON.parse(row.args_json)).toEqual(["--flag", "kept", "--model", "fable"]);
+    expect(JSON.parse(row.run_options_json)).toEqual({ model: "fable", thinking_effort: "high" });
     expect(JSON.parse(row.allowed_tools)).toEqual(["Read", "Write"]);
   });
 
