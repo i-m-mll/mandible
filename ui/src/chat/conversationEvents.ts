@@ -1,4 +1,4 @@
-import type { ConversationBlock } from '../api';
+import type { ConversationBlock, ProviderLiveProjection } from '../api';
 import { classifyTranscriptBlock } from '../../../src/parsers/transcript-visibility';
 import type {
   AssistantEvent,
@@ -54,9 +54,31 @@ export function computeLiveTail(
 
 export function stableProviderEventIdentity(event: StreamEvent): string | null {
   const record = event as StreamEvent & { uuid?: unknown; message?: { id?: unknown } };
-  if (typeof record.uuid === 'string' && record.uuid) return `event:${record.uuid}`;
   if (typeof record.message?.id === 'string' && record.message.id) return `message:${record.message.id}`;
+  if (typeof record.uuid === 'string' && record.uuid) return `event:${record.uuid}`;
   return null;
+}
+
+export function reconcileProviderProjection(
+  historyEvents: StreamEvent[],
+  projection: ProviderLiveProjection | null,
+): StreamEvent[] {
+  if (!projection || projection.events.length === 0) return historyEvents;
+  const historyIds = new Set(historyEvents.map(stableProviderEventIdentity).filter((id): id is string => id !== null));
+  const latest = new Map<string, Extract<ProviderLiveProjection['events'][number], { kind: 'provisional-content' }>>();
+  for (const candidate of projection.events) {
+    if (candidate.kind !== 'provisional-content' || historyIds.has(candidate.identity)) continue;
+    const prior = latest.get(candidate.identity);
+    if (!prior
+      || candidate.generation > prior.generation
+      || (candidate.generation === prior.generation && candidate.sequence > prior.sequence)) {
+      latest.set(candidate.identity, candidate);
+    }
+  }
+  const provisional = [...latest.values()]
+    .sort((left, right) => left.generation - right.generation || left.sequence - right.sequence)
+    .map((candidate) => candidate.event as StreamEvent);
+  return provisional.length > 0 ? [...historyEvents, ...provisional] : historyEvents;
 }
 
 function parseMetadata(json: string): Record<string, unknown> {
@@ -113,9 +135,12 @@ export function conversationBlocksToStreamEvents(
 
     if (block.type === 'user_message') {
       flushAssistant();
+      const providerMessageId = typeof metadata.provider_message_id === 'string'
+        ? metadata.provider_message_id
+        : block.dag_uuid ?? block.id;
       events.push({
         type: 'user',
-        uuid: block.id,
+        uuid: providerMessageId,
         session_id: providerSessionId,
         parent_tool_use_id: null,
         message: {
@@ -127,6 +152,10 @@ export function conversationBlocksToStreamEvents(
     }
 
     if (block.type === 'assistant_message') {
+      const providerMessageId = typeof metadata.provider_message_id === 'string'
+        ? metadata.provider_message_id
+        : block.dag_uuid ?? block.id;
+      if (!assistantTurnStartId) assistantTurnStartId = providerMessageId;
       if (!assistantUsage && metadata.token_usage && typeof metadata.token_usage === 'object') {
         const tokenUsage = metadata.token_usage as Record<string, unknown>;
         assistantUsage = {
@@ -136,7 +165,7 @@ export function conversationBlocksToStreamEvents(
           cache_creation_input_tokens: tokenUsage.cache_creation ?? tokenUsage.cache_creation_input_tokens,
         };
       }
-      pushAssistantBlock(block.id, { type: 'text', text: block.content, source });
+      pushAssistantBlock(providerMessageId, { type: 'text', text: block.content, source });
       continue;
     }
 

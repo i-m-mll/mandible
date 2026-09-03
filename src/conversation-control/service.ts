@@ -6,12 +6,16 @@ import {
   type ConversationControllerAdapter,
 } from "./adapter.js";
 import { ConversationControlStore } from "./store.js";
+import { emptyProviderLiveProjection, mergeProviderLiveProjection } from "./provider-live.js";
 import type {
   AcceptedConversationSubmission,
   ConversationControlError,
   ConversationControlReconciliationReport,
   ConversationControlSnapshot,
   ConversationSubmitRequest,
+  ProviderAdapterEvent,
+  ProviderDeliveryReceipt,
+  ProviderLiveProjection,
   Result,
   TurnState,
 } from "./types.js";
@@ -30,10 +34,17 @@ export class ConversationControlService {
   private readonly store: ConversationControlStore;
 
   private readonly onChange: ((snapshot: ConversationControlSnapshot) => void) | undefined;
+  private readonly onProviderEvent: ((event: ProviderAdapterEvent) => void) | undefined;
+  private readonly liveProjection = new Map<string, ProviderLiveProjection>();
 
-  constructor(db: Db, options: { now?: () => number; onChange?: (snapshot: ConversationControlSnapshot) => void } = {}) {
+  constructor(private readonly db: Db, options: {
+    now?: () => number;
+    onChange?: (snapshot: ConversationControlSnapshot) => void;
+    onProviderEvent?: (event: ProviderAdapterEvent) => void;
+  } = {}) {
     this.store = new ConversationControlStore(db, options.now);
     this.onChange = options.onChange;
+    this.onProviderEvent = options.onProviderEvent;
   }
 
   registerAdapter(adapter: ConversationControllerAdapter): () => void {
@@ -50,7 +61,12 @@ export class ConversationControlService {
       if (result.ok) this.notify(conversation_id);
       return result;
     });
+    const unsubscribeProviderEvents = adapter.subscribeProviderEvents((event) => {
+      this.projectProviderEvent(event);
+      this.onProviderEvent?.(event);
+    });
     return () => {
+      unsubscribeProviderEvents();
       unsubscribe();
       unregister();
     };
@@ -77,6 +93,7 @@ export class ConversationControlService {
         kind: "accepted",
         delivery_id: prepared.value.delivery_id,
         turn_id: prepared.value.turn_id,
+        provider_receipt: null,
         snapshot: prepared.value.snapshot,
       } };
     }
@@ -159,14 +176,15 @@ export class ConversationControlService {
       kind: "accepted",
       delivery_id: prepared.value.delivery_id,
       turn_id: prepared.value.turn_id,
+      provider_receipt: delivered.value,
       snapshot: snapshot.value,
     } };
   }
 
-  async dispatch(deliveryId: string): Promise<Result<void, ConversationControlError>> {
+  async dispatch(deliveryId: string): Promise<Result<ProviderDeliveryReceipt | null, ConversationControlError>> {
     const begun = this.store.beginDelivery(deliveryId);
     if (!begun.ok) return begun;
-    if (begun.value.state === "delivered") return { ok: true, value: undefined };
+    if (begun.value.state === "delivered") return { ok: true, value: null };
     const snapshot = this.getSnapshot(begun.value.conversation_id);
     if (!snapshot.ok) return snapshot;
     if (snapshot.value.ownership.kind !== "mandible") {
@@ -200,7 +218,7 @@ export class ConversationControlService {
       if (!controllerFailed.ok) return controllerFailed;
       this.notify(begun.value.conversation_id);
     }
-    return delivered.ok ? { ok: true, value: undefined } : delivered;
+    return delivered;
   }
 
   async reconcileAfterRestart(): Promise<ConversationControlReconciliationReport> {
@@ -342,6 +360,12 @@ export class ConversationControlService {
     return result;
   }
 
+  getLiveProjection(conversationId: string): Result<ProviderLiveProjection, ConversationControlError> {
+    const boundary = this.store.getBoundary(conversationId);
+    if (!boundary.ok) return boundary;
+    return { ok: true, value: this.liveProjection.get(conversationId) ?? emptyProviderLiveProjection(conversationId) };
+  }
+
   async close(): Promise<void> {
     await Promise.all(this.adapters.all().map((adapter) => adapter.close()));
   }
@@ -350,5 +374,41 @@ export class ConversationControlService {
     if (!this.onChange) return;
     const snapshot = this.getSnapshot(conversationId);
     if (snapshot.ok) this.onChange(snapshot.value);
+  }
+
+  private projectProviderEvent(event: ProviderAdapterEvent): void {
+    if (event.kind === "provider-lineage") this.materializeExactLineage(event);
+    const current = this.liveProjection.get(event.conversation_id) ?? null;
+    const next = mergeProviderLiveProjection(current, event);
+    if (next !== current) this.liveProjection.set(event.conversation_id, next);
+  }
+
+  private materializeExactLineage(event: Extract<ProviderAdapterEvent, { kind: "provider-lineage" }>): void {
+    if (!event.sender_provider_session_id || !event.receiver_provider_session_id) return;
+    this.db.prepare(`
+      UPDATE conversations AS child
+         SET parent_conversation_id = (
+           SELECT parent.id
+             FROM conversations AS parent
+            WHERE parent.id = ? AND parent.source = 'codex' AND parent.session_id = ?
+            ORDER BY parent.created_at ASC, parent.id ASC
+            LIMIT 1
+         ),
+             is_sidechain = 1,
+             updated_at = datetime('now')
+       WHERE child.source = 'codex'
+         AND child.session_id = ?
+         AND child.parent_conversation_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM conversations AS parent
+            WHERE parent.id = ? AND parent.source = 'codex' AND parent.session_id = ?
+         )
+    `).run(
+      event.conversation_id,
+      event.sender_provider_session_id,
+      event.receiver_provider_session_id,
+      event.conversation_id,
+      event.sender_provider_session_id,
+    );
   }
 }

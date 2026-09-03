@@ -76,6 +76,8 @@ const defaultControl: ConversationControlSnapshot = {
   conversation_id: conversation.id,
   provider: 'codex',
   provider_session_id: conversation.session_id,
+  provider_mode: null,
+  provider_capabilities: null,
   revision: 0,
   ownership: { kind: 'none', generation: 0 },
   controller: { kind: 'stopped', at: 1 },

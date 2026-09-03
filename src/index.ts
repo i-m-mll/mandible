@@ -302,6 +302,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       event: "conversation:control-updated",
       data: snapshot,
     }),
+    onProviderEvent: (event) => broadcast({
+      type: "conversation:provider-event",
+      event: "conversation:provider-event",
+      data: event,
+    }),
   });
   registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness

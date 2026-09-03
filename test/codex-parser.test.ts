@@ -224,6 +224,31 @@ describe("CodexParser", () => {
     });
   });
 
+  it("preserves exact provider message identity for live reconciliation", async () => {
+    const parser = new CodexParser();
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/provider-message.jsonl",
+      raw: `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:06.000Z",
+        payload: {
+          type: "message",
+          id: "provider-message-1",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Reconciled answer." }],
+        },
+      })}\n`,
+      baseBlockCount: 0,
+      sourceHash: "append:provider-message",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks[0]).toMatchObject({
+      dag_uuid: "provider-message-1",
+      metadata: { provider_message_id: "provider-message-1" },
+    });
+  });
+
   it("surfaces exact context metadata from token_count events", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-context");

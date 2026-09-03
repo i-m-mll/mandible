@@ -45,6 +45,7 @@ interface CodexContentBlock {
 
 interface CodexResponsePayload {
   type: string;
+  id?: string;
   role?: string | null;
   content?: CodexContentBlock[];
   // function_call fields
@@ -592,6 +593,13 @@ export class CodexParser implements ConversationParser {
       for (let index = firstRecordBlock; index < blocks.length; index += 1) {
         blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
         blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
+        if (rec.type === "response_item") {
+          const providerMessageId = (rec.payload as CodexResponsePayload).id;
+          if (typeof providerMessageId === "string" && providerMessageId) {
+            blocks[index].metadata.provider_message_id = providerMessageId;
+            blocks[index].dag_uuid = providerMessageId;
+          }
+        }
       }
     }
 

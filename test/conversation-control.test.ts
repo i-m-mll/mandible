@@ -19,12 +19,20 @@ import type {
 import { migrate, openDb, type Db } from "../src/db.js";
 
 const capabilities: ControllerAdapterCapabilities = {
+  mode: "app-server-managed",
   resume_provider_session: true,
   resume_message_anchor: false,
   send: true,
   steer: true,
   queue: true,
   stop: true,
+  remove: false,
+  structured_deltas: true,
+  lifecycle_callbacks: true,
+  permission_callbacks: true,
+  terminal_attach: false,
+  logs: false,
+  initial_message_acceptance: "provider-protocol",
 };
 
 class FakeAdapter implements ConversationControllerAdapter {
@@ -44,6 +52,7 @@ class FakeAdapter implements ConversationControllerAdapter {
     state: "ready",
   };
   private listeners = new Set<(event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>>();
+  private providerListeners = new Set<(event: import("../src/conversation-control/types.js").ProviderAdapterEvent) => void>();
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string }, ConversationControlError>> {
     this.acquisitions += 1;
@@ -65,12 +74,15 @@ class FakeAdapter implements ConversationControllerAdapter {
     };
   }
 
-  async deliver(item: ConversationOutboxItem): Promise<Result<{ provider_receipt_id: string }, ConversationControlError>> {
+  async deliver(item: ConversationOutboxItem): Promise<Result<import("../src/conversation-control/types.js").ProviderDeliveryReceipt, ConversationControlError>> {
     if (!this.delivered.has(item.id)) {
       this.deliveries += 1;
       this.delivered.add(item.id);
     }
-    return { ok: true, value: { provider_receipt_id: `receipt:${item.id}` } };
+    return { ok: true, value: {
+      provider_receipt_id: `receipt:${item.id}`,
+      acceptance: { kind: "codex-turn-response", provider_session_id: "provider-1", provider_turn_id: item.turn_id },
+    } };
   }
 
   async probe(): Promise<Result<AdapterProbe, ConversationControlError>> {
@@ -89,6 +101,15 @@ class FakeAdapter implements ConversationControllerAdapter {
   subscribe(listener: (event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeProviderEvents(listener: (event: import("../src/conversation-control/types.js").ProviderAdapterEvent) => void): () => void {
+    this.providerListeners.add(listener);
+    return () => this.providerListeners.delete(listener);
+  }
+
+  emitProvider(event: import("../src/conversation-control/types.js").ProviderAdapterEvent): void {
+    for (const listener of this.providerListeners) listener(event);
   }
 
   emit(event: ConversationLifecycleEvent & { conversation_id: string; generation: number }): Result<void, ConversationControlError>[] {
@@ -161,6 +182,10 @@ describe("authoritative conversation control", () => {
     expect(refused.ok ? null : refused.error.kind).toBe("capability-drift");
     expect(adapter.acquisitions).toBe(1);
     expect(adapter.deliveries).toBe(1);
+    const accepted = first.ok ? first : second;
+    expect(accepted.ok && accepted.value.provider_receipt).toMatchObject({
+      acceptance: { kind: "codex-turn-response", provider_session_id: "provider-1" },
+    });
     expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_control_outbox").get()).toEqual({ count: 1 });
 
     const acceptedRequest = first.ok ? request(revision, "request-a") : request(revision, "request-b");
@@ -168,6 +193,65 @@ describe("authoritative conversation control", () => {
     expect(retried.ok).toBe(true);
     expect(adapter.acquisitions).toBe(1);
     expect(adapter.deliveries).toBe(1);
+  });
+
+  it("retains the newest provisional event across duplicates and reordering", () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const event = (sequence: number, text: string) => ({
+      kind: "provisional-content" as const,
+      conversation_id: "conversation-1",
+      provider_session_id: "provider-1",
+      generation: 1,
+      sequence,
+      observed_at: sequence,
+      identity: "message:native-1",
+      event: {
+        type: "assistant",
+        uuid: "native-1",
+        message: { id: "native-1", role: "assistant", content: [{ type: "text", text }] },
+      },
+    });
+
+    adapter.emitProvider(event(2, "complete"));
+    adapter.emitProvider(event(1, "stale"));
+    adapter.emitProvider(event(2, "duplicate"));
+
+    expect(service.getLiveProjection("conversation-1")).toMatchObject({
+      ok: true,
+      value: {
+        revision: 1,
+        events: [{ sequence: 2, event: { message: { content: [{ text: "complete" }] } } }],
+      },
+    });
+  });
+
+  it("materializes a child relationship only from exact Codex lineage identities", () => {
+    db.prepare(`INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title, started_at,
+      block_count, session_id, created_at, updated_at
+    ) VALUES ('conversation-child', 'codex', '/tmp/child.jsonl', 'child-hash', 1, 'Child',
+      '2026-01-01T00:00:01Z', 0, 'provider-child', '2026-01-01T00:00:01Z', '2026-01-01T00:00:01Z')`).run();
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+
+    adapter.emitProvider({
+      kind: "provider-lineage",
+      conversation_id: "conversation-1",
+      provider_session_id: "provider-1",
+      generation: 1,
+      sequence: 1,
+      observed_at: 1,
+      provider_event_id: "spawn-1",
+      relation: "spawned-child",
+      sender_provider_session_id: "provider-1",
+      receiver_provider_session_id: "provider-child",
+    });
+
+    expect(db.prepare("SELECT parent_conversation_id, is_sidechain FROM conversations WHERE id = 'conversation-child'").get())
+      .toEqual({ parent_conversation_id: "conversation-1", is_sidechain: 1 });
   });
 
   it("rejects every lifecycle mutation from a stale fencing generation", async () => {

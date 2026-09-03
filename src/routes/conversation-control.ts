@@ -50,6 +50,11 @@ export function registerConversationControlRoutes(server: RouteRegistrar, contro
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
   }, { fileRpc: "allow" });
 
+  server.get("/api/conversations/:id/control/live", (req, res) => {
+    const result = control.getLiveProjection(req.params.id);
+    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
+  }, { fileRpc: "allow" });
+
   server.post("/api/conversations/:id/control/submit", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
     const operation = typeof body.operation === "string" ? body.operation : "";
