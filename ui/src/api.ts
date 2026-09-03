@@ -1934,7 +1934,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
+  options?: { idempotency_key?: string; initial_message?: string; channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -1982,6 +1982,12 @@ export async function createConsoleSession(
   if (options?.transport_lane) {
     body.transport_lane = options.transport_lane;
   }
+  if (!body.transport_lane) {
+    body.transport_lane = backendType === 'sdk' ? 'sdk'
+      : backendType === 'pty' ? 'pty'
+        : backendType === 'spawn' ? 'spawn'
+          : 'acp';
+  }
   if (options?.runOptions) body.runOptions = options.runOptions;
   // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
   // which gates tools through canUseTool and Mandible's permission cards.
@@ -2008,7 +2014,29 @@ export async function createConsoleSession(
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
-  const response = await apiPost('/api/console/sessions', body);
+  const projects = options?.cwd ? await listCanonicalProjects() : [];
+  const checkout = projects.flatMap((project) => project.checkouts.map((candidate) => ({ project, checkout: candidate })))
+    .find((candidate) => candidate.checkout.root === options?.cwd);
+  if (options?.cwd && !checkout) throw new Error('The selected checkout is not registered with Mandible.');
+  const provider = backend === 'claude' ? 'claude_code' : backend;
+  const response = await apiPost('/api/conversation-spawns', {
+    schema: 'mandible-conversation-spawn-request@1',
+    idempotency_key: options?.idempotency_key ?? crypto.randomUUID(),
+    provider,
+    label,
+    initial_message: options?.initial_message ?? label,
+    placement: checkout
+      ? { project_id: checkout.project.id, checkout_id: checkout.checkout.id }
+      : { project_id: null, checkout_id: null },
+    topology: { kind: 'top-level' },
+    command: {
+      name: body.command,
+      backend_type: body.backend_type,
+      transport_lane: body.transport_lane,
+      channel_enabled: body.channel_enabled === true,
+      run_options: body.runOptions ?? {},
+    },
+  });
   const json = await parseMaybeJson(response);
   return json as {
     session: {

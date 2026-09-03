@@ -367,6 +367,15 @@ export type {
   TurnState,
 } from "./conversation-control/types.js";
 
+export type {
+  ConversationSpawnError,
+  ConversationSpawnProvider,
+  ConversationSpawnReceipt,
+  ConversationSpawnRequest,
+  ConversationSpawnState,
+  ConversationSpawnTopology,
+} from "./conversation-spawn/types.js";
+
 
 export type StoredConversationBlock = {
   id: string;

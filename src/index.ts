@@ -48,6 +48,7 @@ import { registerUserSettingsRoutes } from "./routes/user-settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerConversationControlRoutes } from "./routes/conversation-control.js";
+import { registerConversationSpawnRoutes } from "./routes/conversation-spawn.js";
 import { ConversationControlService } from "./conversation-control/service.js";
 import { registerDefaultConversationControllers } from "./conversation-control/default-adapters.js";
 import { registerConversationCustodyRoutes } from "./routes/conversation-custody.js";
@@ -307,6 +308,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
+  registerConversationSpawnRoutes(router, db, sessionManager);
   registerHookRoutes(router);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);

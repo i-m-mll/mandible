@@ -435,7 +435,9 @@ export type ConversationsViewProps = {
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
@@ -3083,7 +3085,9 @@ export function ConversationsView({
   };
 
   const handleNewSession = async (input: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';

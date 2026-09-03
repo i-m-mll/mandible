@@ -785,6 +785,8 @@ export interface ConsoleSession {
 }
 
 export interface ConsoleSessionInput {
+  /** Mandible reservation identity. Only the spawn authority supplies this. */
+  id?: string;
   label: string;
   command: string;
   args?: string[];

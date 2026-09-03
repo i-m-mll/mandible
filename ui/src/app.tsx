@@ -1804,7 +1804,9 @@ function App(): JSX.Element {
   };
 
   const handleConsoleNewSession = async ({
+    idempotency_key,
     label,
+    initial_message,
     backend,
     kind,
     backend_type,
@@ -1813,7 +1815,9 @@ function App(): JSX.Element {
     runOptions,
     cwd,
   }: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
@@ -1824,6 +1828,8 @@ function App(): JSX.Element {
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type, {
+        idempotency_key,
+        initial_message,
         channel_enabled,
         transport_lane,
         runOptions,

@@ -12,10 +12,7 @@ import { SDKBackend, getSdkRunOptionDeclaration } from "../backends/sdk-backend.
 import { AcpBackend, getAcpRunOptionDeclaration } from "../backends/acp-backend.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type {
-  ConsoleInteractionMode,
   ConsoleSession,
-  ConsoleSessionInput,
-  ConsoleTransportLane,
 } from "../types.js";
 import { sendJson } from "./http.js";
 import {
@@ -47,16 +44,6 @@ function stripModelArgs(args: string[]): string[] {
     next.push(args[i]);
   }
   return next;
-}
-
-function parseTransportLane(value: unknown): ConsoleTransportLane | undefined {
-  return value === "sdk"
-    || value === "pty"
-    || value === "channel"
-    || value === "acp"
-    || value === "spawn"
-    ? value
-    : undefined;
 }
 
 function parseStringArray(value: unknown): { ok: true; value: string[] } | { ok: false } | undefined {
@@ -142,13 +129,6 @@ function sendRunOptionError(res: ResponseLike, error: SessionRunOptionError): vo
     payload.requestedValue = error.details.requestedValue;
   }
   sendJson(res, status, payload);
-}
-
-function creationOptionFields(body: unknown): Record<string, unknown> {
-  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  const keys = ["runOptions", "allowedTools", "model", "thinkingEffort", "permissionMode",
-    "maxTurns", "maxCostUsd", "systemPrompt", "settingSourcesOverride"];
-  return Object.fromEntries(keys.filter((key) => record[key] !== undefined).map((key) => [key, record[key]]));
 }
 
 function resolveDeclaration(
@@ -295,102 +275,15 @@ export function registerConsoleRoutes(
   }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
-  // POST /api/console/sessions — create a new session
+  // POST /api/console/sessions — retired; creation has one Mandible authority
   // ------------------------------------------------------------------
-  server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", async (req, res) => {
-    const body = (req.body ?? {}) as Partial<ConsoleSessionInput & { interaction_mode?: string }>;
-
-    if (!body.label || typeof body.label !== "string") {
-      sendJson(res, 400, { error: "missing_label" });
-      return;
-    }
-    if (!body.command || typeof body.command !== "string") {
-      sendJson(res, 400, { error: "missing_command" });
-      return;
-    }
-    // Issue 708dc4c — operator-session identity is an internal daemon role,
-    // never a caller-selectable console flag. Otherwise an anonymous compat
-    // caller or ordinary strict identity could make the spawner inject the
-    // operator credential into an arbitrary child process.
-    if (body.is_operator === true) {
-      sendJson(res, 403, { error: "operator_session_reserved" });
-      return;
-    }
-    const input: ConsoleSessionInput = {
-      label: body.label,
-      command: body.command,
-      args: Array.isArray(body.args) ? body.args as string[] : [],
-      cwd: typeof body.cwd === "string" ? body.cwd : process.cwd(),
-      env: body.env && typeof body.env === "object" ? body.env as Record<string, string> : {},
-      cols: typeof body.cols === "number" ? body.cols : 120,
-      rows: typeof body.rows === "number" ? body.rows : 30,
-      auto_restart: body.auto_restart === true,
-      is_operator: false,
-      interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
-        ? body.interaction_mode as ConsoleInteractionMode
-        : "both",
-      // Issue 8aadf70 — Claude defaults to the sanctioned Agent SDK lane. The
-      // Mandible-owned Claude PTY lane is local-only and rejected below unless
-      // `claude_pty_lane_enabled` is explicitly set.
-      backend_type: body.backend_type === "pty"
-        || body.backend_type === "sdk"
-        || body.backend_type === "spawn"
-        || body.backend_type === "acp"
-        ? body.backend_type
-        : (body.command === "claude"
-          ? DEFAULT_CLAUDE_BACKEND_TYPE
-          : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
-      transport_lane: parseTransportLane((body as Record<string, unknown>).transport_lane),
-      // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
-      channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
-    };
-
-    try {
-      const declaration = resolveDeclaration(manager, input.backend_type!, input.command);
-      const parsed = parseSessionOptionsBody(declaration, creationOptionFields(req.body));
-      if (!parsed.ok) {
-        sendJson(res, 400, { error: parsed.error });
-        return;
-      }
-      input.runOptions = parsed.options.runOptions;
-      input.allowed_tools = parsed.options.allowedTools ?? null;
-    } catch (error) {
-      if (error instanceof SessionRunOptionError) {
-        sendRunOptionError(res, error);
-        return;
-      }
-      throw error;
-    }
-
-    let session: ConsoleSession;
-    try {
-      session = manager.create(input);
-    } catch (error) {
-      // Issue 8aadf70 — asking for a lane the release build does not ship is a
-      // client error with a specific, actionable message, not a 500.
-      if (error instanceof ClaudeLaneDisabledError) {
-        sendJson(res, error.status, { error: error.code, message: error.message });
-        return;
-      }
-      throw error;
-    }
-    const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
-    // Start immediately for: operators, non-structured-chat (shell), and structured
-    // sessions (they just wait for the first prompt — no process to allocate).
-    if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn" || input.backend_type === "acp") {
-      manager.start(session.id);
-    }
-    try {
-      const runOptions = await manager.waitForInitialRunOptions(session.id);
-      res.status(201).json({ session: manager.get(session.id)?.meta ?? session, runOptions });
-    } catch (error) {
-      if (error instanceof SessionRunOptionError) {
-        sendRunOptionError(res, error);
-        return;
-      }
-      throw error;
-    }
+  server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", async (_req, res) => {
+    sendJson(res, 410, {
+      error: "conversation_spawn_authority_required",
+      message: "Create conversations through POST /api/conversation-spawns with the versioned Mandible request contract.",
+    });
   }, { authenticated: true }), { fileRpc: "deny" });
+
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id — single session
