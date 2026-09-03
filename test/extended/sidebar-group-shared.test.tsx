@@ -80,13 +80,14 @@ describe('shared sidebar group presentation', () => {
 
   it('keeps a separate group action on its exact header line', () => {
     const onPress = vi.fn();
+    const onToggle = vi.fn();
     render(
       <SidebarGroupNode
         presentation="category"
         id="chats"
         label="Chats"
         expanded
-        onToggle={() => undefined}
+        onToggle={onToggle}
         action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress }}
         testIds={{ root: 'chats-group', heading: 'chats-heading', action: 'chats-action' }}
       >
@@ -106,20 +107,25 @@ describe('shared sidebar group presentation', () => {
     expect(screen.getByTestId('descendant').closest('.sidebar-group-node__header')).toBeNull();
     fireEvent.click(action);
     expect(onPress).toHaveBeenCalledOnce();
+    expect(onToggle).not.toHaveBeenCalled();
+    fireEvent.click(action.closest('.sidebar-group-node__header') as HTMLElement);
+    expect(onToggle).toHaveBeenCalledOnce();
     expect(action.parentElement?.classList.contains('contextual-action-group')).toBe(true);
     expect(action.querySelector('[data-sidebar-action-icon="new-chat"]')).toBeTruthy();
     expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
   });
 
   it('keeps a selectable group disclosure immediately after its heading content', () => {
+    const onSelect = vi.fn();
+    const onToggle = vi.fn();
     render(
       <SidebarGroupNode
         presentation="nested"
         id="briefing-group"
         label="Sara's skill, breakdown"
         expanded
-        onToggle={() => undefined}
-        selection={{ selected: true, label: "Open Sara's skill, breakdown", onSelect: () => undefined }}
+        onToggle={onToggle}
+        selection={{ selected: true, label: "Open Sara's skill, breakdown", onSelect }}
       >
         <span>Global policy</span>
       </SidebarGroupNode>,
@@ -137,6 +143,11 @@ describe('shared sidebar group presentation', () => {
     expect(headingRule).toContain('width: auto');
     expect(sidebarGroupStylesheet).toContain('.sidebar-group-node--expanded > .sidebar-group-node__header:hover > .sidebar-group-node__disclosure');
     expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--expanded > .sidebar-group-node__header:is(:hover, :focus-within)');
+    fireEvent.click(heading);
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onToggle).toHaveBeenCalledOnce();
+    fireEvent.click(disclosure);
+    expect(onToggle).toHaveBeenCalledTimes(2);
   });
 
   it('aligns category children and Show more to the heading text column without guide spines', () => {

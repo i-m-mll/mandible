@@ -115,6 +115,15 @@ export function SidebarGroupNode({
       {showMore ? <div className="sidebar-group-node__show-more-row">{showMore}</div> : null}
     </>
   );
+  const toggleFromHeader = (event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    const target = event.target as Element;
+    if (target.closest('button, a, input, select, textarea, [role="button"]')) return;
+    onToggle();
+  };
+  const activateHeading = () => {
+    selection?.onSelect();
+    onToggle();
+  };
 
   return (
     <section
@@ -130,6 +139,7 @@ export function SidebarGroupNode({
         onDragOver={drag?.onOver}
         onDrop={drag?.onDrop}
         onDragEnd={drag?.onEnd}
+        onClick={toggleFromHeader}
       >
         <button
           id={headingId}
@@ -141,7 +151,7 @@ export function SidebarGroupNode({
           aria-label={selection?.label}
           aria-description={headingDescription}
           data-testid={testIds?.heading}
-          onClick={selection?.onSelect ?? onToggle}
+          onClick={activateHeading}
         >
           {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
           <strong>{label}</strong>
