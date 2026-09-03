@@ -14,6 +14,7 @@ import {
 } from "../provider-artifacts.js";
 import type { ArtifactRecord, WorkUnit } from "../types.js";
 import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
+import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
 import type {
   LedgerActorType,
@@ -1401,17 +1402,15 @@ function displayIssueId(issue: Pick<LedgerIssue, "id" | "short_id">, _aliases: L
   return issue.short_id || issue.id.slice(0, 7);
 }
 
-const ARTIFACT_REF_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob):[^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
 
 function extractArtifactRefs(sources: string[]): string[] {
   const refs: string[] = [];
   const seen = new Set<string>();
   for (const source of sources) {
-    ARTIFACT_REF_PATTERN.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = ARTIFACT_REF_PATTERN.exec(source))) {
-      const ref = normalizeAuthoredArtifactRef(trimTrailingPunctuation(match[1] ?? match[2] ?? match[0]));
+    for (const match of parseAuthoredReferences(source, { includeProtected: true })) {
+      if (!match.kind.startsWith("artifact")) continue;
+      const ref = normalizeAuthoredArtifactRef(trimTrailingPunctuation(`${match.kind}:${match.target}`));
       if (!isArtifactLikeRef(ref) || seen.has(ref)) continue;
       seen.add(ref);
       refs.push(ref);

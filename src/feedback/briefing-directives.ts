@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { unified } from "unified";
 import remarkDirective from "remark-directive";
 import remarkParse from "remark-parse";
+import { parseAuthoredReferences } from "../ledger/authored-references.js";
 
 export const BRIEFING_PROFILE = "mandible-briefing.v2" as const;
 export const BRIEFING_PROFILE_V3 = "mandible-briefing.v3" as const;
@@ -169,7 +170,8 @@ export function parseBriefingDirectives(
   profile: BriefingProfile = BRIEFING_PROFILE,
   options: { allowEmpty?: boolean } = {},
 ): BriefingDirective[] {
-  const tree = unified().use(remarkParse).use(remarkDirective).parse(source) as unknown as Node;
+  const directiveSource = maskAuthoredReferenceColons(source);
+  const tree = unified().use(remarkParse).use(remarkDirective).parse(directiveSource) as unknown as Node;
   const directives: BriefingDirective[] = [];
   const seen = new Set<string>();
   const walk = (node: Node, topLevel: boolean): void => {
@@ -225,4 +227,12 @@ export function parseBriefingDirectives(
     throw new BriefingDirectiveError("briefing document has no spec-item directives");
   }
   return directives;
+}
+
+function maskAuthoredReferenceColons(source: string): string {
+  const references = parseAuthoredReferences(source);
+  if (references.length === 0) return source;
+  const masked = source.split("");
+  for (const reference of references) masked[reference.start + reference.kind.length + 1] = "：";
+  return masked.join("");
 }
