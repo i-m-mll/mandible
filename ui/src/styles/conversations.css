@@ -235,7 +235,7 @@
 .conv-detail__footer {
   position: relative;
   z-index: 2;
-  margin-top: -18px;
+  margin-top: -20px;
   pointer-events: none;
 }
 
@@ -437,7 +437,7 @@
   margin: 0 18px 16px;
   padding: 10px;
   border: 1px solid var(--neutral-alpha-10);
-  border-radius: 10px;
+  border-radius: 14px;
   background: var(--bg-card);
   box-shadow: var(--shadow-composer);
 }

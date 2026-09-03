@@ -595,7 +595,8 @@ describe('Briefing document panel', () => {
     expect(briefingStylesheet).toMatch(/\.briefing-directive__compact-controls \{[^}]*grid-auto-columns: 2em[^}]*column-gap: var\(--space-1\)[^}]*white-space: nowrap/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, max-content\) 2em/s);
     expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:is\(:hover, :focus-within\) > \.contextual-action-group/);
+    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:hover > \.contextual-action-group/);
+    expect(contextualActionStylesheet).not.toContain('.contextual-action-owner:is(:hover, :focus-within)');
     expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
   });
 

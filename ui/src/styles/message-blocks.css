@@ -120,6 +120,14 @@
   font-weight: 400;
 }
 
+/* TextBlock introduces a semantic segment wrapper between rendered-markdown
+ * and its prose. End the final Markdown block inside that wrapper so its
+ * bottom margin cannot collapse into the message-flow gap and make a
+ * following tool row look farther away than the prose after it. */
+.provider-directive__prose > :last-child {
+  margin-block-end: 0;
+}
+
 .tool-call-group__summary,
 .tool-call-group__summary-text {
   font-family: var(--font-sans);
