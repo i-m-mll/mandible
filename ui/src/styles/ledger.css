@@ -413,6 +413,15 @@
   background: var(--neutral-alpha-05);
 }
 
+.ledger-collapsible-panel__count {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--neutral-alpha-05);
+  color: var(--text-muted);
+  font: 400 10px/1.3 var(--font-mono);
+  font-style: normal;
+}
+
 .ledger-issue-detail__empty {
   padding: 10px;
   border-radius: 6px;

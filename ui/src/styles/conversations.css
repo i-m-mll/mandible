@@ -1,5 +1,16 @@
 /* Conversations and conversation detail surface */
 
+/* Dense conversation lists remain scannable without spending a full control
+ * row on each title. This is intentionally scoped to Chat's sidebar. */
+.chat-history-sidebar .sidebar-item-row,
+.chat-history-sidebar .sidebar-item-row__select {
+  min-height: 24px;
+}
+
+.chat-history-sidebar .sidebar-item-row__select {
+  padding-block: 3px;
+}
+
 /* ── Conversations view (legacy list classes, still used by detail) ── */
 
 .conv-list-view {
@@ -218,6 +229,20 @@
   overflow: hidden;
 }
 
+/* Let the transcript continue one text line behind the opaque composer rather
+ * than stopping noticeably above it. The composer remains the interaction
+ * owner and its shadow makes the overlap legible. */
+.conv-detail__footer {
+  position: relative;
+  z-index: 2;
+  margin-top: -20px;
+  pointer-events: none;
+}
+
+.conv-detail__footer > * {
+  pointer-events: auto;
+}
+
 .conv-detail__shell-header {
   display: flex;
   flex-direction: column;
@@ -412,8 +437,9 @@
   margin: 0 18px 16px;
   padding: 10px;
   border: 1px solid var(--neutral-alpha-10);
-  border-radius: 10px;
+  border-radius: 14px;
   background: var(--bg-card);
+  box-shadow: var(--shadow-composer);
 }
 
 .conv-compose__form {
@@ -455,14 +481,19 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 8px;
-  background: var(--accent-blue);
-  color: var(--text-on-accent);
+  border-radius: 50%;
+  background: var(--text-primary);
+  color: var(--surface-app);
   cursor: pointer;
   font-family: var(--font-sans);
   font-size: 17px;
   font-weight: 700;
   line-height: 1;
+}
+
+.conv-compose__send svg {
+  width: 17px;
+  height: 17px;
 }
 
 .conv-compose__send:hover:not(:disabled) {
@@ -540,10 +571,24 @@
   gap: 8px;
 }
 
-.conv-compose__model {
+.conv-compose__runtime-leading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.conv-compose__model,
+.conv-compose__effort,
+.conv-compose__permission {
   min-width: 120px;
   max-width: 220px;
   min-height: 30px;
+}
+
+.conv-compose__effort,
+.conv-compose__permission {
+  min-width: 108px;
 }
 
 .conv-compose__controls {
@@ -605,7 +650,26 @@
   gap: 18px;
   max-height: none;
   overflow-y: auto;
-  padding: 20px 28px;
+  padding: 0 18px 20px;
+}
+
+/* The transcript owns the same outer inset as the composer. Avoid adding a
+ * second inner gutter in the shared stream renderer. */
+.conv-transcript .stream-renderer__scroll {
+  padding-inline: 0;
+}
+
+/* Conversation prose and its tool disclosures share one readable body size;
+ * the generic detail-pane font setting must not shrink only assistant turns. */
+.conv-detail__body .msg-text-block.rendered-markdown,
+.conv-detail__body .msg-text-block.rendered-markdown :where(p, li, blockquote, dd),
+.conv-detail__body .user-bubble__text,
+.conv-detail__body .tool-call-group__summary,
+.conv-detail__body .tool-call-group__summary-text,
+.conv-detail__body .tool-card__header,
+.conv-detail__body .tool-card__verb,
+.conv-detail__body .tool-card__target {
+  font-size: var(--text-lg);
 }
 
 /* ── Export panel ── */

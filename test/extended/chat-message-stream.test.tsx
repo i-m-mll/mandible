@@ -11,6 +11,7 @@ import {
 } from '../../ui/src/chat';
 import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
+import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
 
 function installBrowserStubs(): void {
@@ -101,6 +102,18 @@ afterEach(() => {
 });
 
 describe('chat message stream render model', () => {
+  it('renders provider memory citations as a folded semantic activity row', () => {
+    render(<TextBlock content={`Done.\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:10-12|note=[prior decision]\n</citation_entries>\n<rollout_ids>\n01a01212-fbc2-7480-a434-5f2ff69aca7b\n</rollout_ids>\n</oai-mem-citation>`} />);
+
+    expect(screen.getByText('Done.')).toBeTruthy();
+    const summary = screen.getByRole('button', { name: /Used memory/i });
+    expect(summary.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('prior decision')).toBeNull();
+    fireEvent.click(summary);
+    expect(screen.getByText(/prior decision/)).toBeTruthy();
+    expect(screen.queryByText(/oai-mem-citation/)).toBeNull();
+  });
+
   it('preserves the stable logical turn id when a bounded window starts mid-turn', () => {
     const events = conversationBlocksToStreamEvents('session', [{
       id: 'visible-middle-block',
@@ -586,6 +599,25 @@ describe('ChatSurface stream behavior', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /open full/i }));
     expect(screen.getByText(/TAIL-MARKER/)).toBeTruthy();
+  });
+
+  it('ignores legacy persisted chat disclosure state and starts tools folded', () => {
+    localStorage.setItem('mandible:chat-expanded:tool-defaults', JSON.stringify({ 'a1:tool:tool-1': true }));
+    const events: StreamEvent[] = [{
+      type: 'assistant',
+      uuid: 'a1',
+      session_id: 's1',
+      parent_tool_use_id: null,
+      message: {
+        id: 'a1',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'npm test' } }],
+      },
+    }, result()];
+
+    render(<ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'tool-defaults' }} />);
+
+    expect(screen.getByRole('button', { name: /Ran a command/ }).getAttribute('aria-expanded')).toBe('false');
   });
 
   it('renders persisted events and unmatched results through canonical selectable nodes', () => {

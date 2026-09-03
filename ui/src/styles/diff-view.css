@@ -56,10 +56,16 @@
 }
 
 .diff-viewer__file {
+  padding: 0;
   overflow: hidden;
   border: 1px solid var(--neutral-alpha-08);
   border-radius: 8px;
   background: var(--bg-card);
+}
+
+.diff-viewer__file > .collapsible-panel__header {
+  border-bottom: 1px solid var(--neutral-alpha-06);
+  background: var(--neutral-alpha-04);
 }
 
 .diff-viewer__file-header {
@@ -68,8 +74,6 @@
   gap: 8px;
   width: 100%;
   border: none;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-  background: var(--neutral-alpha-04);
   color: var(--text-primary);
   cursor: pointer;
   font-family: var(--font-mono);
@@ -77,15 +81,6 @@
   line-height: 1.35;
   padding: 9px 12px;
   text-align: left;
-}
-
-.diff-viewer__chevron {
-  display: inline-block;
-  transition: transform 0.12s ease;
-}
-
-.diff-viewer__chevron--open {
-  transform: rotate(90deg);
 }
 
 .diff-viewer__file-path {
@@ -96,6 +91,7 @@
 }
 
 .diff-viewer__file-body {
+  margin-top: 0;
   overflow: auto;
   max-width: 100%;
 }

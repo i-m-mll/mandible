@@ -47,7 +47,8 @@
 }
 
 .sidebar-group-node__heading {
-  width: 100%;
+  width: auto;
+  flex: 0 1 auto;
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -61,6 +62,9 @@
   font: 400 var(--text-md)/1.35 var(--font-sans);
   text-align: left;
 }
+
+/* Every foldable heading keeps its dedicated disclosure immediately after its
+ * text. The remaining row is not an artificial spacer for the chevron. */
 
 .sidebar-group-node--category > .sidebar-group-node__header > .sidebar-group-node__heading {
   color: var(--text-chrome-muted);
@@ -135,6 +139,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  margin-left: auto;
   margin-right: 4px;
 }
 
@@ -154,8 +159,24 @@
 }
 
 .sidebar-group-node__disclosure:hover {
-  background: var(--surface-hover);
+  background: transparent;
   color: var(--text-primary);
+}
+
+/* Sidebar disclosures intentionally use the inverse visibility contract from
+ * transcript tools: folded state is always explicit; an open caret becomes a
+ * quiet hover affordance. Direct hover emphasizes only the symbol. */
+.sidebar-group-node:not(.sidebar-group-node--expanded) > .sidebar-group-node__header > .sidebar-group-node__disclosure [data-disclosure-chevron='right'] {
+  opacity: 1;
+}
+
+.sidebar-group-node--expanded > .sidebar-group-node__header > .sidebar-group-node__disclosure [data-disclosure-chevron='down'] {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.sidebar-group-node--expanded > .sidebar-group-node__header:hover > .sidebar-group-node__disclosure [data-disclosure-chevron='down'] {
+  opacity: 1;
 }
 
 .sidebar-group-node__disclosure:focus-visible {

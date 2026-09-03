@@ -330,13 +330,15 @@
 /* ── New session dialog ── */
 
 .new-session-dialog-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: rgba(0,0,0,0.6);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: calc(var(--z-anchored-menu) + 1);
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 .new-session-dialog {
@@ -345,6 +347,8 @@
   border-radius: 16px;
   padding: 24px;
   width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -367,7 +371,18 @@
 .new-session-dialog__form {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.new-session-dialog__content {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
 .new-session-dialog__field {
@@ -379,6 +394,81 @@
 .new-session-dialog__label {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+.new-session-dialog__optional {
+  color: var(--text-chrome-muted);
+  font-size: var(--text-xs);
+}
+
+.new-session-dialog__section-title,
+.new-session-dialog__advanced-toggle {
+  color: var(--text-chrome-muted);
+  font: 400 var(--text-md)/1.35 var(--font-sans);
+}
+
+.new-session-dialog__run-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.new-session-dialog__run-option {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: 8px 16px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.new-session-dialog__run-option > .new-session-dialog__input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.new-session-dialog__run-option > input[type='checkbox'] {
+  justify-self: end;
+}
+
+.new-session-dialog__multi-select {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.new-session-dialog__multi-select-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.new-session-dialog__advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.new-session-dialog__advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.new-session-dialog__advanced-toggle:hover,
+.new-session-dialog__advanced-toggle:focus-visible {
+  color: var(--text-primary);
 }
 
 .new-session-dialog__input:is(input) {
@@ -452,7 +542,25 @@ select.new-session-dialog__input {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  flex: 0 0 auto;
+  padding-top: 12px;
+  background: var(--bg-card);
+}
+
+.new-session-dialog__error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--status-danger-border-soft);
+  border-radius: 8px;
+  background: var(--status-danger-bg-soft);
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.new-session-dialog__button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .new-session-dialog__button {
@@ -478,7 +586,8 @@ select.new-session-dialog__input {
 
 /* Muted note under a run-option field */
 .new-session-dialog__option-note {
-  margin-top: 6px;
+  grid-column: 2;
+  margin-top: -4px;
   font-size: 11px;
   color: var(--text-secondary, rgba(255, 255, 255, 0.45));
   line-height: 1.4;
@@ -1160,6 +1269,7 @@ select.new-session-dialog__input {
 
 /* Bug: a654b69 — P4: individual nodes within a grouped turn */
 .stream-turn-node {
+  width: 100%;
   margin-bottom: var(--space-2);
 }
 .stream-turn-node:last-child {
@@ -1493,10 +1603,11 @@ select.new-session-dialog__input {
   background: transparent;
 }
 
-/* GroupFooter — turn-scoped aggregate actions without a reserved row. */
+/* GroupFooter — reserve one compact row so hover actions never overlap the
+ * next stream item. */
 .group-footer {
   align-self: stretch;
-  height: 0;
+  height: 24px;
   position: relative;
   z-index: 5;
 }
@@ -1525,13 +1636,6 @@ select.new-session-dialog__input {
   font-size: var(--text-xs);
   color: var(--text-muted);
   opacity: 0.5;
-}
-
-/* Hoverless/coarse pointers need an explicit, persistent action target. */
-@media (hover: none), (pointer: coarse) {
-  .group-footer {
-    height: auto;
-  }
 }
 
 /* Chat composer redesign */

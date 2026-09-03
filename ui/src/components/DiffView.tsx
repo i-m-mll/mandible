@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { html as diff2htmlHtml } from 'diff2html';
+import { CollapsiblePanel } from './shared/CollapsiblePanel';
 
 export type DiffViewMode = 'split' | 'unified';
 
@@ -25,8 +26,6 @@ export type DiffViewClassNames = {
   fileBody?: string;
   fileHtml?: string;
   fileFallback?: string;
-  chevron?: string;
-  chevronOpen?: string;
 };
 
 export type DiffViewProps = {
@@ -209,51 +208,36 @@ export function DiffView({
             const expanded = expandedFiles.has(index);
             const diffHtml = renderedSections[index];
             return (
-              <div
+              <CollapsiblePanel
                 key={`${section.filename}-${index}`}
                 className={cx('diff-viewer__file', classNames?.file)}
-              >
-                <button
-                  type="button"
-                  className={cx('diff-viewer__file-header', classNames?.fileHeader)}
-                  aria-expanded={expanded}
-                  onClick={() => toggleFile(index)}
-                >
-                  <span
-                    className={cx(
-                      'diff-viewer__chevron',
-                      classNames?.chevron,
-                      expanded && 'diff-viewer__chevron--open',
-                      expanded && classNames?.chevronOpen,
-                    )}
-                  >
-                    {'\u25B8'}
-                  </span>
+                toggleClassName={cx('diff-viewer__file-header', classNames?.fileHeader)}
+                bodyClassName={cx('diff-viewer__file-body', classNames?.fileBody)}
+                title={(
                   <span
                     className={cx('diff-viewer__file-path', classNames?.filePath)}
                     title={section.filename}
                   >
                     {section.filename}
                   </span>
-                </button>
-                {expanded && (
-                  <div className={cx('diff-viewer__file-body', classNames?.fileBody)}>
-                    {diffHtml ? (
-                      <div
-                        className={cx('diff-viewer__file-html', classNames?.fileHtml)}
-                        dangerouslySetInnerHTML={{ __html: diffHtml }}
-                      />
-                    ) : (
-                      <div
-                        className={cx('diff-viewer__file-fallback', classNames?.fileFallback)}
-                        dangerouslySetInnerHTML={{
-                          __html: renderUnifiedDiffFallbackHtml(section.hunks),
-                        }}
-                      />
-                    )}
-                  </div>
                 )}
-              </div>
+                expanded={expanded}
+                onExpandedChange={() => toggleFile(index)}
+              >
+                {diffHtml ? (
+                  <div
+                    className={cx('diff-viewer__file-html', classNames?.fileHtml)}
+                    dangerouslySetInnerHTML={{ __html: diffHtml }}
+                  />
+                ) : (
+                  <div
+                    className={cx('diff-viewer__file-fallback', classNames?.fileFallback)}
+                    dangerouslySetInnerHTML={{
+                      __html: renderUnifiedDiffFallbackHtml(section.hunks),
+                    }}
+                  />
+                )}
+              </CollapsiblePanel>
             );
           })}
         </>

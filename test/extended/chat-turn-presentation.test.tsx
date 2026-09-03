@@ -43,16 +43,21 @@ describe('chat turn presentation', () => {
     expect(messageBlocksCss).toMatch(/:root\[data-theme='light'\] \.user-bubble__text\s*{[^}]*background: #F3F3F4;/s);
   });
 
-  it('scopes fine-pointer reveal to owners and keeps keyboard focus visible', () => {
+  it('scopes pointer reveal to owner hover without retaining it on owner focus', () => {
     expect(consoleCss).not.toContain('*:hover > .message-actions');
-    expect(contextualActionCss).toContain('.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-group');
-    expect(contextualActionCss).toContain('.contextual-action-owner:is(:hover, :focus-within) > .contextual-action-scope > .contextual-action-group');
-    expect(contextualActionCss).not.toContain(':focus-within) .contextual-action-group');
-    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 0;/s);
+    expect(contextualActionCss).toContain('.contextual-action-owner:hover > .contextual-action-group');
+    expect(contextualActionCss).toContain('.contextual-action-owner:hover > .contextual-action-scope > .contextual-action-group');
+    expect(contextualActionCss).not.toContain('.contextual-action-owner:is(:hover, :focus-within)');
+    expect(contextualActionCss).toContain('.contextual-action-group:focus-within');
+    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
+  });
+
+  it('removes the final segmented prose margin before a tool row', () => {
+    expect(messageBlocksCss).toMatch(/\.provider-directive__prose > :last-child\s*\{[^}]*margin-block-end: 0;/s);
   });
 
   it('provides explicit hoverless and coarse-pointer access', () => {
     expect(contextualActionCss).toMatch(/@media \(hover: none\), \(pointer: coarse\)\s*{[^}]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/s);
-    expect(consoleCss).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.group-footer\s*{[^}]*height: auto;/);
+    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
   });
 });

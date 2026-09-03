@@ -59,8 +59,7 @@
   gap: 4px;
   min-width: 116px;
   color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.1;
+  font: 400 var(--text-md)/1.35 var(--font-sans);
 }
 
 .timeline-control--wide {
@@ -68,8 +67,9 @@
 }
 
 .timeline-control span {
-  font-weight: 650;
-  text-transform: uppercase;
+  color: var(--text-chrome-muted);
+  font-weight: 400;
+  text-transform: none;
 }
 
 .timeline-control select,

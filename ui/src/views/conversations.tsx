@@ -180,7 +180,19 @@ function stripMarkdownText(src: string | null | undefined): string {
 
 export function getConversationTitle(conversation: Conversation | null | undefined): string {
   const raw = conversation?.title || 'Untitled';
+  if (/^\s*<(?:codex_delegation|system|developer)\b/i.test(raw)
+      || /^\s*[0-9a-f]{8}-[0-9a-f-]{27,}(?:\s|$|<)/i.test(raw)) {
+    const provider = conversation?.source ? SOURCE_LABELS[conversation.source] : null;
+    return provider ? `${provider} chat` : 'Untitled chat';
+  }
   return stripMarkdownText(raw) || 'Untitled';
+}
+
+function getConsoleSessionTitle(session: ConsoleSession | null | undefined): string {
+  const raw = stripMarkdownText(session?.label);
+  if (raw && !/^[0-9a-f]{8}-[0-9a-f-]{27,}(?:\s|$|<)/i.test(raw)) return raw;
+  const source = session ? sourceFromSession(session) : null;
+  return source ? `${SOURCE_LABELS[source]} chat` : 'Untitled chat';
 }
 
 export function parseConversationTagsInput(value: string): string[] {
@@ -399,6 +411,17 @@ export function conversationAnchorHref(
   return `#/console?${params.toString()}`;
 }
 
+export function conversationTurnSelectionHref(
+  conversationId: string,
+  selectedTurnId: string | null,
+  nextTurnId: string,
+): string {
+  if (selectedTurnId === nextTurnId) {
+    return `#/console?${new URLSearchParams({ conversation: conversationId }).toString()}`;
+  }
+  return conversationAnchorHref(conversationId, { turn: nextTurnId });
+}
+
 // ── Props ──
 
 export type ConversationsViewProps = {
@@ -418,7 +441,7 @@ export type ConversationsViewProps = {
     channel_enabled?: boolean;
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
     cwd?: string;
-  }) => void;
+  }) => Promise<void>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -1492,7 +1515,10 @@ function ConversationDetail({
   }, [control, controlPresentation, conversation, latestDagUuid]);
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
-  const modelOptions = (sessionRunOptions?.options.find((option) => option.id === 'model')?.allowedValues ?? [])
+  const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
+  const thinkingRunOption = sessionRunOptions?.options.find((option) => option.category === 'thought_level');
+  const permissionRunOption = sessionRunOptions?.options.find((option) => option.category === 'mode');
+  const modelOptions = (modelRunOption?.allowedValues ?? [])
     .map((choice) => choice.value)
     .filter((value): value is string => typeof value === 'string');
   const canShowSessionControls = linkedConsoleSession
@@ -1570,6 +1596,19 @@ function ConversationDetail({
       } else {
         await updateConsoleSession(linkedConsoleSession.id, { model: value || undefined });
       }
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    }
+  }, [canSaveComposerModel, linkedConsoleSession]);
+
+  const handleComposerRunOptionChange = useCallback(async (id: string, value: string) => {
+    if (!linkedConsoleSession || !canSaveComposerModel) return;
+    setContinueError(null);
+    try {
+      const result = await updateConsoleSessionOptions(linkedConsoleSession.id, {
+        runOptions: { [id]: value || null },
+      }) as { runOptions?: SessionRunOptionsSnapshot };
+      if (result.runOptions) setSessionRunOptions(result.runOptions);
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     }
@@ -1787,7 +1826,7 @@ function ConversationDetail({
         </div>
       ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
       <div className="conv-compose">
-        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
+        <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
@@ -1797,15 +1836,6 @@ function ConversationDetail({
             disabled={continueBusy || Boolean(continueDisabledReason)}
             rows={3}
           />
-          <button
-            type="submit"
-            className="conv-compose__send"
-            disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
-            title={controlPresentation?.submitLabel ?? 'Send'}
-            aria-label={controlPresentation?.submitLabel ?? 'Send'}
-          >
-            {continueBusy ? '...' : controlPresentation?.submitLabel ?? 'Send'}
-          </button>
         </form>
         {(control?.capability.kind === 'blocked-external'
           || control?.capability.kind === 'blocked-ownership-unknown') && (
@@ -1823,34 +1853,81 @@ function ConversationDetail({
         )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
-            <select
-              className="conv-compose__model"
-              value={composerModel}
-              disabled={continueBusy || modelOptions.length === 0}
-              title="Model"
-              aria-label="Model"
-              onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
-            >
-              <option value={currentModel === 'default' ? '' : currentModel}>
-                {currentModel === 'default' ? 'Default' : currentModel}
-              </option>
-              {modelOptions
-                .filter((model) => model !== currentModel)
-                .map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-            </select>
-            <span className="conv-compose__runtime-actions">
+            <span className="conv-compose__runtime-leading">
+              {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
+                <select
+                  className="conv-compose__permission"
+                  value={String(permissionRunOption.currentValue ?? '')}
+                  disabled={continueBusy || permissionRunOption.availability !== 'available'}
+                  title="Permission mode"
+                  aria-label="Permission mode"
+                  onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}
+                >
+                  {permissionRunOption.nullable && <option value="">Use app default</option>}
+                  {(permissionRunOption.allowedValues ?? []).map((choice) => (
+                    <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
+                  ))}
+                </select>
+              ) : null}
               {canShowSessionControls && (
                 <button
                   type="button"
                   className="btn btn--ghost btn--sm"
                   onClick={() => setComposerControlsOpen((prev) => !prev)}
                 >
-                  Controls
+                  More
                 </button>
               )}
+            </span>
+            <span className="conv-compose__runtime-actions">
               <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
+              <select
+                className="conv-compose__model"
+                value={composerModel}
+                disabled={continueBusy || modelOptions.length === 0}
+                title="Model"
+                aria-label="Model"
+                onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
+              >
+                <option value={currentModel === 'default' ? '' : currentModel}>
+                  {currentModel === 'default' ? 'Use app default' : currentModel}
+                </option>
+                {modelOptions
+                  .filter((model) => model !== currentModel)
+                  .map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+              </select>
+              {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
+                <select
+                  className="conv-compose__effort"
+                  value={String(thinkingRunOption.currentValue ?? '')}
+                  disabled={continueBusy || thinkingRunOption.availability !== 'available'}
+                  title={thinkingRunOption.label}
+                  aria-label={thinkingRunOption.label}
+                  onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}
+                >
+                  {thinkingRunOption.nullable && <option value="">Use app default</option>}
+                  {(thinkingRunOption.allowedValues ?? []).map((choice) => (
+                    <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
+                  ))}
+                </select>
+              ) : null}
+              <button
+                type="submit"
+                form={`conversation-compose-${conversation.id}`}
+                className="conv-compose__send"
+                disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
+                title={controlPresentation?.submitLabel ?? 'Send'}
+                aria-label={controlPresentation?.submitLabel ?? 'Send'}
+              >
+                {continueBusy ? '…' : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m6 12 6-6 6 6" />
+                    <path d="M12 6v12" />
+                  </svg>
+                )}
+              </button>
             </span>
           </div>
         </div>
@@ -1860,6 +1937,11 @@ function ConversationDetail({
               sessionId={linkedConsoleSession.id}
               runOptions={sessionRunOptions}
               allowedTools={linkedConsoleSession.allowed_tools}
+              hiddenOptionIds={[
+                modelRunOption?.id,
+                thinkingRunOption?.id,
+                permissionRunOption?.id,
+              ].filter((id): id is string => Boolean(id))}
             />
           </div>
         )}
@@ -2028,7 +2110,11 @@ function ConversationDetail({
           onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
           onFork={handleFork}
           onSelectMessageInfo={(turnId) => {
-            window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
+            window.location.hash = conversationTurnSelectionHref(
+              conversationId,
+              conversation.position_window.target.turn_id,
+              turnId,
+            );
           }}
           sessionInfo={{
             sessionId: conversation.session_id,
@@ -2089,7 +2175,7 @@ function ChatEntryItem({
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
-  const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || 'Untitled';
+  const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
@@ -2301,6 +2387,7 @@ export function ConversationsView({
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
+  const detailPortalRef = useRef<HTMLDivElement>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
@@ -2972,7 +3059,7 @@ export function ConversationsView({
     }
   };
 
-  const handleNewSession = (input: {
+  const handleNewSession = async (input: {
     label: string;
     backend: string;
     kind: string;
@@ -2982,7 +3069,7 @@ export function ConversationsView({
     runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
     cwd?: string;
   }) => {
-    onNewSession(input);
+    await onNewSession(input);
     setDialogOpen(false);
     setNewSessionCwd(undefined);
   };
@@ -3248,6 +3335,7 @@ export function ConversationsView({
                     countVisibility="interaction"
                     expanded={!collapsed}
                     onToggle={() => toggleProject(group.key)}
+                    showDisclosure={false}
                     action={group.exactRoot
                       ? { label: `New chat in ${group.label}`, icon: <SidebarNewChatIcon />, onPress: () => openNewSession(group.exactRoot) }
                       : undefined}
@@ -3293,7 +3381,7 @@ export function ConversationsView({
       </ViewSidebar>
 
       {/* Detail pane */}
-      <div className="chat-history-detail">
+      <div ref={detailPortalRef} className="chat-history-detail">
         {selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
@@ -3317,6 +3405,7 @@ export function ConversationsView({
       <NewSessionDialog
         open={dialogOpen}
         cwd={newSessionCwd}
+        portalTarget={detailPortalRef.current}
         onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
         onSubmit={handleNewSession}
       />
