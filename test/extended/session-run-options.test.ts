@@ -6,6 +6,7 @@ import {
   validateRunOptionsPatch,
   type BackendRunOptionDeclaration,
 } from "../../src/session-run-options.js";
+import { getAcpRunOptionDeclaration } from "../../src/backends/acp-backend.js";
 import { getSdkRunOptionDeclaration } from "../../src/backends/sdk-backend.js";
 
 const declaration: BackendRunOptionDeclaration = {
@@ -95,5 +96,23 @@ describe("session run options", () => {
     expect(efforts?.allowedValues?.map((choice) => choice.value)).toEqual([
       "low", "medium", "high", "xhigh", "max",
     ]);
+    expect(models).toMatchObject({ availability: "available", enforcement: { status: "pending" } });
+    expect(efforts).toMatchObject({ availability: "available", enforcement: { status: "pending" } });
+  });
+
+  it("offers the maintained Codex turn catalog before provider discovery", () => {
+    const snapshot = declaredRunOptionsSnapshot(getAcpRunOptionDeclaration("codex"));
+    expect(snapshot.options.find((option) => option.id === "model")).toMatchObject({
+      availability: "available",
+      enforcement: { status: "pending", effectiveFrom: "next_prompt" },
+    });
+    expect(snapshot.options.find((option) => option.id === "reasoning_effort")).toMatchObject({
+      availability: "available",
+      enforcement: { status: "pending", effectiveFrom: "next_prompt" },
+    });
+    expect(snapshot.options.find((option) => option.id === "mode")).toMatchObject({
+      availability: "available",
+      enforcement: { status: "pending", effectiveFrom: "next_prompt" },
+    });
   });
 });

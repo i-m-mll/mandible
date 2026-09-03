@@ -652,9 +652,7 @@ implements
   private async refreshSupportedModels(query: ClaudeQuery, selectedModel?: string): Promise<void> {
     try {
       const models = await query.supportedModels();
-      const selected = models.find((model) => (
-        model.value === selectedModel || model.resolvedModel === selectedModel
-      )) ?? models[0];
+      const selected = models.find((model) => model.value === selectedModel) ?? models[0];
       const efforts = selected?.supportedEffortLevels
         ?? Array.from(new Set(models.flatMap((model) => model.supportedEffortLevels ?? [])));
       const provider: ProviderRunOption[] = [

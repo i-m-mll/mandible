@@ -145,7 +145,7 @@
 .user-bubble__text {
   background: #222222;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-chat-surface);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-lg);
   color: var(--text-primary);
