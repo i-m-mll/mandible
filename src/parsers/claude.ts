@@ -35,6 +35,7 @@ interface ClaudeUsage {
 }
 
 interface ClaudeMessage {
+  id?: string;
   role?: string;
   content?: string | ClaudeContentBlock[];
   model?: string;
@@ -491,6 +492,9 @@ export class ClaudeParser implements ConversationParser {
 
 function buildAssistantMetadata(rec: ClaudeRecord): BlockMetadata {
   const meta: BlockMetadata = {};
+  if (rec.message?.id) {
+    meta.provider_message_id = rec.message.id;
+  }
   if (rec.message?.model) {
     meta.model = rec.message.model;
   }

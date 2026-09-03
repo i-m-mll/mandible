@@ -58,6 +58,8 @@ import type {
   ConversationControlOperation as ContractConversationControlOperation,
   ConversationRuntimeOptions as ContractConversationRuntimeOptions,
   ConversationControlSnapshot as ContractConversationControlSnapshot,
+  ProviderAdapterEvent as ContractProviderAdapterEvent,
+  ProviderLiveProjection as ContractProviderLiveProjection,
   OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
   OperationalIncidentAttention as ContractOperationalIncidentAttention,
   OperationalIncidentCondition as ContractOperationalIncidentCondition,
@@ -2424,6 +2426,8 @@ export type ConversationControlOperation = ContractConversationControlOperation;
 export type ConversationRuntimeOptions = ContractConversationRuntimeOptions;
 export type ConversationControlError = ContractConversationControlError;
 export type AcceptedConversationSubmission = ContractAcceptedConversationSubmission;
+export type ProviderAdapterEvent = ContractProviderAdapterEvent;
+export type ProviderLiveProjection = ContractProviderLiveProjection;
 
 export type ConversationControlApiError = Error & {
   status: number;
@@ -2435,6 +2439,15 @@ export async function getConversationControl(conversationId: string): Promise<Co
   const response = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/control`);
   const result = await parseMaybeJson(response) as
     | { ok: true; value: ConversationControlSnapshot }
+    | { ok: false; error: ConversationControlError };
+  if (!result.ok) throw new Error(result.error.kind);
+  return result.value;
+}
+
+export async function getConversationLiveProjection(conversationId: string): Promise<ProviderLiveProjection> {
+  const response = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/control/live`);
+  const result = await parseMaybeJson(response) as
+    | { ok: true; value: ProviderLiveProjection }
     | { ok: false; error: ConversationControlError };
   if (!result.ok) throw new Error(result.error.kind);
   return result.value;

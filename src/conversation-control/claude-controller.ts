@@ -6,13 +6,21 @@ import type {
   ControllerAdapterCapabilities,
   ControllerLease,
 } from "./adapter.js";
-import { AdapterLifecycle, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
+import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
+import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
 import { StructuredJsonProcess, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
-import type { ConversationControlError, ConversationLifecycleEvent, ConversationOutboxItem, Result } from "./types.js";
+import type {
+  ConversationControlError,
+  ConversationLifecycleEvent,
+  ConversationOutboxItem,
+  ProviderAdapterEvent,
+  ProviderDeliveryReceipt,
+  Result,
+} from "./types.js";
 
 type PendingClaudeDelivery = {
   item: ConversationOutboxItem;
-  resolve: () => void;
+  resolve: (receipt: ProviderDeliveryReceipt) => void;
   reject: (error: ConversationControlError) => void;
   timer: NodeJS.Timeout;
 };
@@ -26,8 +34,11 @@ type ClaudeController = {
   state: "ready" | "running" | "waiting" | "stopping";
   activeTurnId: string | null;
   pending: PendingClaudeDelivery | null;
-  delivered: Set<string>;
+  delivered: Map<string, ProviderDeliveryReceipt>;
   intentionalStop: boolean;
+  providerSequence: number;
+  liveMessageId: string | null;
+  liveText: string;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -35,18 +46,12 @@ function object(value: unknown): Record<string, unknown> | null {
 }
 
 export class ClaudeStreamControllerAdapter implements ConversationControllerAdapter {
-  readonly id = "claude-stream-json-v1";
-  readonly provider = "claude";
-  readonly capabilities: ControllerAdapterCapabilities = {
-    resume_provider_session: true,
-    resume_message_anchor: false,
-    send: true,
-    steer: true,
-    queue: false,
-    stop: true,
-  };
+  readonly id = CLAUDE_SDK_MANAGED_PROFILE.adapter_id;
+  readonly provider = CLAUDE_SDK_MANAGED_PROFILE.provider;
+  readonly capabilities: ControllerAdapterCapabilities = CLAUDE_SDK_MANAGED_PROFILE.capabilities;
 
   private readonly lifecycle = new AdapterLifecycle();
+  private readonly providerEvents = new AdapterProviderEvents();
   private readonly controllers = new Map<string, ClaudeController>();
   private readonly spawnProcess: StructuredProcessSpawner | undefined;
 
@@ -86,8 +91,11 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
         state: "ready",
         activeTurnId: null,
         pending: null,
-        delivered: new Set(),
+        delivered: new Map(),
         intentionalStop: false,
+        providerSequence: 0,
+        liveMessageId: null,
+        liveText: "",
       };
       processOwner.onRecord((record) => this.acceptRecord(controller, record));
       processOwner.onMalformed(() => this.markAmbiguous(controller));
@@ -100,12 +108,11 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     }
   }
 
-  async deliver(item: ConversationOutboxItem): Promise<Result<{ provider_receipt_id: string }, ConversationControlError>> {
+  async deliver(item: ConversationOutboxItem): Promise<Result<ProviderDeliveryReceipt, ConversationControlError>> {
     const controller = this.current(item);
     if (!controller.ok) return controller;
-    if (controller.value.delivered.has(item.id)) {
-      return { ok: true, value: { provider_receipt_id: `claude:user:${item.id}` } };
-    }
+    const priorReceipt = controller.value.delivered.get(item.id);
+    if (priorReceipt) return { ok: true, value: priorReceipt };
     if (controller.value.pending) {
       return { ok: false, error: adapterFailure(this.id, "delivery-in-flight", "Another Claude delivery is awaiting native acknowledgement", { retryable: true }) };
     }
@@ -116,7 +123,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       return { ok: false, error: adapterFailure(this.id, "unsupported-operation", item.operation) };
     }
 
-    const acknowledged = new Promise<void>((resolve, reject) => {
+    const acknowledged = new Promise<ProviderDeliveryReceipt>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (controller.value.pending?.item.id === item.id) controller.value.pending = null;
         reject({ kind: "delivery-uncertain", delivery_id: item.id } satisfies ConversationControlError);
@@ -130,9 +137,9 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
         message: { role: "user", content: [{ type: "text", text: item.message }] },
         parent_tool_use_id: null,
       });
-      await acknowledged;
-      controller.value.delivered.add(item.id);
-      return { ok: true, value: { provider_receipt_id: `claude:user:${item.id}` } };
+      const receipt = await acknowledged;
+      controller.value.delivered.set(item.id, receipt);
+      return { ok: true, value: receipt };
     } catch (error) {
       return { ok: false, error: this.controlError(error, "delivery-failed", item.id) };
     }
@@ -181,6 +188,10 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     return this.lifecycle.subscribe(listener);
   }
 
+  subscribeProviderEvents(listener: (event: ProviderAdapterEvent) => void): () => void {
+    return this.providerEvents.subscribe(listener);
+  }
+
   async close(): Promise<void> {
     const controllers = [...this.controllers.values()];
     this.controllers.clear();
@@ -205,7 +216,16 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       return;
     }
     if (record.type === "user") {
-      this.acknowledgeUser(controller);
+      this.publishClaudeRecord(controller, record);
+      this.acknowledgeUser(controller, record);
+      return;
+    }
+    if (record.type === "assistant") {
+      this.publishClaudeRecord(controller, record);
+      return;
+    }
+    if (record.type === "stream_event") {
+      this.acceptStreamDelta(controller, record);
       return;
     }
     if (record.type === "control_request" && controller.activeTurnId) {
@@ -216,12 +236,18 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
       return;
     }
-    if (record.type === "result") this.finishTurn(controller, record);
+    if (record.type === "result") {
+      this.finishTurn(controller, record);
+    }
   }
 
-  private acknowledgeUser(controller: ClaudeController): void {
+  private acknowledgeUser(controller: ClaudeController, record: Record<string, unknown>): void {
     const pending = controller.pending;
     if (!pending) return;
+    const message = object(record.message);
+    const content = Array.isArray(message?.content) ? message.content : [];
+    const echoedText = content.map((block) => object(block)?.text).filter((text): text is string => typeof text === "string").join("\n");
+    if (echoedText !== pending.item.message) return;
     controller.pending = null;
     clearTimeout(pending.timer);
     if (pending.item.operation !== "steer") {
@@ -230,7 +256,71 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
       this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: pending.item.turn_id, at: Date.now() }));
     }
-    pending.resolve();
+    const providerMessageId = typeof record.uuid === "string" && record.uuid ? record.uuid : null;
+    pending.resolve({
+      provider_receipt_id: providerMessageId
+        ? `claude:message:${providerMessageId}`
+        : `claude:user-echo:${controller.providerSessionId}:${pending.item.id}`,
+      acceptance: {
+        kind: "claude-stream-user-echo",
+        provider_session_id: controller.providerSessionId,
+        provider_message_id: providerMessageId,
+      },
+    });
+  }
+
+  private acceptStreamDelta(controller: ClaudeController, record: Record<string, unknown>): void {
+    const stream = object(record.event);
+    if (!stream || typeof stream.type !== "string") return;
+    if (stream.type === "message_start") {
+      const message = object(stream.message);
+      controller.liveMessageId = typeof message?.id === "string" ? message.id : controller.activeTurnId;
+      controller.liveText = "";
+      return;
+    }
+    if (stream.type === "content_block_delta") {
+      const delta = object(stream.delta);
+      if (delta?.type !== "text_delta" || typeof delta.text !== "string") return;
+      controller.liveText += delta.text;
+      const identity = controller.liveMessageId ?? controller.activeTurnId;
+      if (!identity) return;
+      this.emitContent(controller, `message:${identity}`, {
+        type: "assistant",
+        uuid: identity,
+        session_id: controller.providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          id: identity,
+          role: "assistant",
+          content: [{ type: "text", text: controller.liveText }],
+        },
+      });
+    }
+  }
+
+  private publishClaudeRecord(controller: ClaudeController, record: Record<string, unknown>): void {
+    const messageId = object(record.message)?.id;
+    const uuid = typeof record.uuid === "string" && record.uuid ? record.uuid : null;
+    const identity = typeof messageId === "string" && messageId
+      ? `message:${messageId}`
+      : uuid
+        ? `event:${uuid}`
+        : null;
+    if (!identity) return;
+    this.emitContent(controller, identity, record as { type: string; [key: string]: unknown });
+  }
+
+  private emitContent(controller: ClaudeController, identity: string, event: { type: string; [key: string]: unknown }): void {
+    this.providerEvents.emit({
+      kind: "provisional-content",
+      conversation_id: controller.conversationId,
+      provider_session_id: controller.providerSessionId,
+      generation: controller.generation,
+      sequence: ++controller.providerSequence,
+      observed_at: Date.now(),
+      identity,
+      event,
+    });
   }
 
   private finishTurn(controller: ClaudeController, record: Record<string, unknown>): void {

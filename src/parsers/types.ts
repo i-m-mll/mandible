@@ -35,6 +35,8 @@ export interface BlockMetadata {
   visibility?: "default_hidden" | "default_visible";
   truncated?: boolean;
   signature?: string;
+  /** Exact provider item/message identity used to reconcile provisional live output. */
+  provider_message_id?: string;
   /** Zero-based native record ordinal used by the verified source reader. */
   source_record_ordinal?: number;
   /** Stable order when one native record normalizes into several blocks. */

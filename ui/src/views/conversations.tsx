@@ -40,6 +40,7 @@ import {
   getConsoleRunOptions,
   getConversationWindow,
   getConversationControl,
+  getConversationLiveProjection,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
@@ -54,6 +55,8 @@ import {
   type ConversationRuntimeOptions,
   type ConversationControlApiError,
   type ConversationControlSnapshot,
+  type ProviderAdapterEvent,
+  type ProviderLiveProjection,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -70,6 +73,7 @@ import {
   Shelf,
   UsageModal,
   conversationBlocksToStreamEvents,
+  reconcileProviderProjection,
   buildStreamState,
   deriveChatUsageSummary,
   serializeConversationToMarkdown,
@@ -90,6 +94,7 @@ import { compareConversationSidebarRows } from '../../../src/conversations/sideb
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
+import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
 
 // ── Toast notification ──
 
@@ -985,6 +990,7 @@ function ConversationDetail({
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
+  const [liveProjection, setLiveProjection] = useState<ProviderLiveProjection | null>(null);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1058,9 +1064,13 @@ function ConversationDetail({
 
   useEffect(() => {
     let active = true;
+    setLiveProjection(null);
     void getConversationControl(conversationId)
       .then((snapshot) => { if (active) setControl(snapshot); })
       .catch(() => { if (active) setControl(null); });
+    void getConversationLiveProjection(conversationId)
+      .then((projection) => { if (active) setLiveProjection(projection); })
+      .catch(() => { if (active) setLiveProjection(null); });
     return () => { active = false; };
   }, [conversationId]);
 
@@ -1094,10 +1104,19 @@ function ConversationDetail({
       if (snapshot.conversation_id !== conversationId) return;
       setControl(snapshot);
     });
+    const offProviderEvent = client.on('conversation:provider-event', (payload) => {
+      const providerEvent = payload as unknown as ProviderAdapterEvent;
+      if (providerEvent.conversation_id !== conversationId) return;
+      if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
+      setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
+    });
     // Reconnect resync: refetch the open conversation after a dropped stream so
     // any events missed during the gap are reconciled.
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) scheduleRefresh();
+      if (reconnected) {
+        scheduleRefresh();
+        void getConversationLiveProjection(conversationId).then(setLiveProjection).catch(() => {});
+      }
     });
     client.connect();
     return () => {
@@ -1106,6 +1125,7 @@ function ConversationDetail({
       }
       offWorkflowUpdated();
       offControlUpdated();
+      offProviderEvent();
       offState();
       client.close();
     };
@@ -1299,7 +1319,7 @@ function ConversationDetail({
     () => blocks.filter((b) => visibleTypes.has(b.type)),
     [blocks, visibleTypes],
   );
-  const chatEvents = useMemo(
+  const historyEvents = useMemo(
     () => {
       const targetTurnId = conversation?.position_window.target.turn_id ?? null;
       const leadingAssistantTurnId = targetTurnId
@@ -1316,6 +1336,14 @@ function ConversationDetail({
     },
     [conversation?.position_window.target.turn_id, conversation?.session_id, conversationId, visibleBlocks],
   );
+  const chatEvents = useMemo(
+    () => reconcileProviderProjection(historyEvents, liveProjection),
+    [historyEvents, liveProjection],
+  );
+  const providerStreaming = control?.turn.kind === 'queued'
+    || control?.turn.kind === 'running'
+    || control?.turn.kind === 'waiting-user'
+    || control?.turn.kind === 'waiting-permission';
   const shelfItems = useMemo(
     () => [
       ...buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
@@ -2121,7 +2149,7 @@ function ConversationDetail({
       <div className="conv-transcript">
         <ChatSurface
           events={chatEvents}
-          streaming={false}
+          streaming={providerStreaming}
           emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
           unmaterializedAfterCount={conversation.position_window.window.after_count}
           onJumpToLatest={handleJumpToLatest}

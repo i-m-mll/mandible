@@ -364,6 +364,11 @@ export type {
   ConversationRuntimeOptions,
   ConversationControlSnapshot,
   ConversationSubmitRequest,
+  ProviderAdapterCapabilities,
+  ProviderAdapterEvent,
+  ProviderAdapterMode,
+  ProviderDeliveryReceipt,
+  ProviderLiveProjection,
   TurnState,
 } from "./conversation-control/types.js";
 

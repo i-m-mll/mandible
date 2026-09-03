@@ -88,6 +88,8 @@ export type ConversationControlSnapshot = {
   conversation_id: string;
   provider: string;
   provider_session_id: string | null;
+  provider_mode: ProviderAdapterMode | null;
+  provider_capabilities: ProviderAdapterCapabilities | null;
   revision: number;
   ownership: ControllerOwnership;
   controller: ControllerState;
@@ -124,7 +126,89 @@ export type AcceptedConversationSubmission = {
   kind: "accepted";
   delivery_id: string;
   turn_id: string;
+  /** Null only when replaying an already-completed idempotent submission. */
+  provider_receipt: ProviderDeliveryReceipt | null;
   snapshot: ConversationControlSnapshot;
+};
+
+export type ProviderAdapterMode = "sdk-managed" | "native-background" | "app-server-managed";
+
+/**
+ * Provider features are evidence, not an affordance wish-list. A caller must
+ * render and execute an operation only when the selected adapter advertises it.
+ */
+export type ProviderAdapterCapabilities = {
+  mode: ProviderAdapterMode;
+  resume_provider_session: boolean;
+  resume_message_anchor: boolean;
+  send: boolean;
+  steer: boolean;
+  queue: boolean;
+  stop: boolean;
+  remove: boolean;
+  structured_deltas: boolean;
+  lifecycle_callbacks: boolean;
+  permission_callbacks: boolean;
+  terminal_attach: boolean;
+  logs: boolean;
+  initial_message_acceptance: "provider-protocol" | "unavailable";
+};
+
+export type ProviderProtocolEvidence =
+  | {
+      kind: "claude-stream-user-echo";
+      provider_session_id: string;
+      provider_message_id: string | null;
+    }
+  | {
+      kind: "codex-turn-response";
+      provider_session_id: string;
+      provider_turn_id: string;
+    };
+
+export type ProviderDeliveryReceipt = {
+  provider_receipt_id: string;
+  acceptance: ProviderProtocolEvidence;
+};
+
+export type ProviderLiveStreamEvent = {
+  type: string;
+  uuid?: string;
+  session_id?: string;
+  message?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type ProviderLiveContentEvent = {
+  kind: "provisional-content";
+  conversation_id: string;
+  provider_session_id: string;
+  generation: number;
+  sequence: number;
+  observed_at: number;
+  identity: string;
+  event: ProviderLiveStreamEvent;
+};
+
+export type ProviderLineageEvent = {
+  kind: "provider-lineage";
+  conversation_id: string;
+  provider_session_id: string;
+  generation: number;
+  sequence: number;
+  observed_at: number;
+  provider_event_id: string;
+  relation: "spawned-child";
+  sender_provider_session_id: string;
+  receiver_provider_session_id: string;
+};
+
+export type ProviderAdapterEvent = ProviderLiveContentEvent | ProviderLineageEvent;
+
+export type ProviderLiveProjection = {
+  conversation_id: string;
+  revision: number;
+  events: ProviderAdapterEvent[];
 };
 
 export type ConversationLifecycleEvent =

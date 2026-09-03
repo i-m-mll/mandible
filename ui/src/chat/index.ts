@@ -38,4 +38,5 @@ export {
   conversationBlocksToStreamEvents,
   deriveStreamingState,
   flushPendingSSE,
+  reconcileProviderProjection,
 } from './conversationEvents';
