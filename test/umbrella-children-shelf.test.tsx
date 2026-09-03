@@ -10,7 +10,7 @@
  * predicate is actually wired into the pane, and queries by accessible text
  * rather than markup so it does not pin presentation — see test/README.md.
  */
-import { cleanup, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it } from "vitest";
 import { h } from "preact";
 
@@ -155,7 +155,7 @@ describe("umbrella children shelf", () => {
   it("is wired into the pane: an umbrella lists its child exactly once", () => {
     render(h(LedgerIssueDetail, { detail: detail() }));
 
-    expect(screen.getByText("Children")).toBeTruthy();
+    fireEvent.click(screen.getByText("Children").closest("button")!);
     expect(rowsNaming("d894231")).toHaveLength(1);
     expect(screen.queryByText("Relationships")).toBeNull();
   });
@@ -174,8 +174,8 @@ describe("umbrella children shelf", () => {
       }),
     }));
 
-    expect(screen.getByText("Children")).toBeTruthy();
-    expect(screen.getByText("Relationships")).toBeTruthy();
+    fireEvent.click(screen.getByText("Children").closest("button")!);
+    fireEvent.click(screen.getByText("Relationships").closest("button")!);
     expect(rowsNaming("d894231")).toHaveLength(1);
     expect(rowsNaming("7abe784")).toHaveLength(1);
   });
@@ -184,7 +184,7 @@ describe("umbrella children shelf", () => {
     render(h(LedgerIssueDetail, { detail: detail({ labels: ["ui"] }) }));
 
     expect(screen.queryByText("Children")).toBeNull();
-    expect(screen.getByText("Relationships")).toBeTruthy();
+    fireEvent.click(screen.getByText("Relationships").closest("button")!);
     expect(rowsNaming("d894231")).toHaveLength(1);
   });
 });
