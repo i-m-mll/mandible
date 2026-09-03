@@ -61,7 +61,7 @@ describe("console prompt route", () => {
     expect(payloads).toEqual([{ code: 200, payload: { runOptions: snapshot } }]);
   });
 
-  it("rejects caller-selected operator sessions before invoking the spawner", () => {
+  it("rejects the superseded provider-specific creation endpoint", () => {
     const db = openDb(":memory:");
     setDb(db);
     const operator = setupOperator(db, { display_name: "Operator" });
@@ -86,7 +86,10 @@ describe("console prompt route", () => {
     } as never, res as never);
 
     expect(manager.create).not.toHaveBeenCalled();
-    expect(payloads).toEqual([{ code: 403, payload: { error: "operator_session_reserved" } }]);
+    expect(payloads).toEqual([{ code: 410, payload: {
+      error: "conversation_spawn_authority_required",
+      message: "Create conversations through POST /api/conversation-spawns with the versioned Mandible request contract.",
+    } }]);
     db.close();
   });
 

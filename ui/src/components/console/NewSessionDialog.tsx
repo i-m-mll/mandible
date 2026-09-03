@@ -40,7 +40,9 @@ type NewSessionDialogProps = {
   portalTarget?: HTMLElement | null;
   onClose: () => void;
   onSubmit: (input: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: Backend;
     kind: AgentKind;
     backend_type: Transport;
@@ -199,6 +201,8 @@ export function NewSessionDialog({
   onSubmit,
 }: NewSessionDialogProps): JSX.Element | null {
   const [label, setLabel] = useState('');
+  const [initialMessage, setInitialMessage] = useState('');
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
   const [transportLane, setTransportLane] = useState<TransportLane>('sdk');
@@ -300,7 +304,9 @@ export function NewSessionDialog({
     setSubmitError(null);
     try {
       await onSubmit({
+        idempotency_key: idempotencyKey,
         label: label.trim() || 'New chat',
+        initial_message: initialMessage.trim() || label.trim() || 'New chat',
         backend,
         kind,
         backend_type: backendType,
@@ -310,6 +316,8 @@ export function NewSessionDialog({
         cwd,
       });
       setLabel('');
+      setInitialMessage('');
+      setIdempotencyKey(crypto.randomUUID());
       setKind('agent');
       setBackend('claude');
       setTransportLane(defaultTransportLaneForBackend('claude'));
@@ -438,6 +446,21 @@ export function NewSessionDialog({
                 );
               })}
             </div>
+          </div>
+
+          <div className="new-session-dialog__field">
+            <label htmlFor="console-session-message" className="new-session-dialog__label">
+              First message
+            </label>
+            <textarea
+              id="console-session-message"
+              aria-label="First message"
+              value={initialMessage}
+              onInput={(e) => setInitialMessage((e.target as HTMLTextAreaElement).value)}
+              placeholder="What should this chat do?"
+              className="new-session-dialog__input"
+              rows={4}
+            />
           </div>
 
           <div className="new-session-dialog__field">

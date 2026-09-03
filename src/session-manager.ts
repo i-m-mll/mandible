@@ -538,7 +538,7 @@ export class SessionManager {
       throw new Error("Operator sessions may only be created by SessionManager.startOperator().");
     }
     const db = getDb();
-    const id = randomUUID();
+    const id = input.id ?? randomUUID();
     const now = Date.now();
 
     const args = input.args ?? [];

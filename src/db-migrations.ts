@@ -1,6 +1,7 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
@@ -569,6 +570,11 @@ export const MIGRATIONS: readonly Migration[] = [
       `ALTER TABLE conversation_control_outbox ADD COLUMN runtime_options_json TEXT NOT NULL DEFAULT '{}'
         CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object')`,
     ],
+  },
+  {
+    version: 169,
+    name: "mandible_conversation_spawn_authority",
+    statements: [...CONVERSATION_SPAWN_SCHEMA_SQL],
   },
 ];
 

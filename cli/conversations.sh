@@ -21,6 +21,7 @@ Usage:
   mandible conversations tag add <conversation-ref|--current> <tag...> [--json]
   mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]
   mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]
+  mandible conversations spawn --provider <claude|codex|gemini> --message <text> [--label <name>] [--project-id <id> --checkout-id <id>] [--topology <top-level|autonomous|child|sibling|successor> --target <conversation-id>] [--idempotency-key <key>] [--json]
   mandible conversations storage prepare [--apply] [--limit N] [--json]
   mandible conversations custody status <id|session-id> [--json]
   mandible conversations custody capture <id|session-id> [--rewind] [--mirroring] [--json]
@@ -46,6 +47,61 @@ The session-scoped predicate is reserved for a future persisted shape. Use
 --dry-run to report without recording or revoking. No token material is ever
 printed or stored.
 EOF
+}
+
+conversation_spawn_command() {
+  local provider="" message="" label="New chat" project_id="" checkout_id="" topology="top-level" target="" idempotency_key="" json=0
+  local command backend lane payload response topology_json placement_json
+  while (( $# > 0 )); do
+    case "$1" in
+      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
+      --message|-m) message="${2:?--message requires a value}"; shift 2 ;;
+      --label) label="${2:?--label requires a value}"; shift 2 ;;
+      --project-id) project_id="${2:?--project-id requires a value}"; shift 2 ;;
+      --checkout-id) checkout_id="${2:?--checkout-id requires a value}"; shift 2 ;;
+      --topology) topology="${2:?--topology requires a value}"; shift 2 ;;
+      --target) target="${2:?--target requires a value}"; shift 2 ;;
+      --idempotency-key) idempotency_key="${2:?--idempotency-key requires a value}"; shift 2 ;;
+      --json) json=1; shift ;;
+      -h|--help) usage; return 0 ;;
+      *) echo "Unknown option: $1" >&2; return 2 ;;
+    esac
+  done
+  [[ -n "$message" ]] || { echo "Error: --message is required." >&2; return 2; }
+  [[ "$provider" == "claude" || "$provider" == "codex" || "$provider" == "gemini" ]] || {
+    echo "Error: --provider must be claude, codex, or gemini." >&2; return 2;
+  }
+  [[ -z "$project_id" && -z "$checkout_id" || -n "$project_id" && -n "$checkout_id" ]] || {
+    echo "Error: --project-id and --checkout-id must be supplied together." >&2; return 2;
+  }
+  if [[ "$topology" == "top-level" ]]; then
+    [[ -z "$target" ]] || { echo "Error: top-level topology does not accept --target." >&2; return 2; }
+    topology_json='{"kind":"top-level"}'
+  elif [[ "$topology" == "autonomous" ]]; then
+    topology_json=$(jq -nc --arg target "$target" '{kind:"autonomous",sponsor_conversation_id:(if $target == "" then null else $target end)}')
+  else
+    [[ "$topology" == "child" || "$topology" == "sibling" || "$topology" == "successor" ]] || { echo "Error: invalid topology." >&2; return 2; }
+    [[ -n "$target" ]] || { echo "Error: --target is required for $topology topology." >&2; return 2; }
+    local target_key="${topology}_conversation_id"
+    [[ "$topology" == "successor" ]] && target_key="predecessor_conversation_id"
+    topology_json=$(jq -nc --arg kind "$topology" --arg key "$target_key" --arg target "$target" '{kind:$kind} + {($key):$target}')
+  fi
+  if [[ -n "$project_id" ]]; then
+    placement_json=$(jq -nc --arg project "$project_id" --arg checkout "$checkout_id" '{project_id:$project,checkout_id:$checkout}')
+  else
+    placement_json='{"project_id":null,"checkout_id":null}'
+  fi
+  [[ -n "$idempotency_key" ]] || idempotency_key="cli-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  command="$provider"; backend="acp"; lane="acp"
+  [[ "$provider" == "claude" ]] && { command="claude"; backend="sdk"; lane="sdk"; provider="claude_code"; }
+  payload=$(jq -nc --arg schema "mandible-conversation-spawn-request@1" --arg key "$idempotency_key" \
+    --arg provider "$provider" --arg label "$label" --arg message "$message" --arg command "$command" \
+    --arg backend "$backend" --arg lane "$lane" --argjson placement "$placement_json" --argjson topology "$topology_json" \
+    '{schema:$schema,idempotency_key:$key,provider:$provider,label:$label,initial_message:$message,placement:$placement,topology:$topology,command:{name:$command,backend_type:$backend,transport_lane:$lane,channel_enabled:false,run_options:{}}}')
+  response=$(api_send POST "/api/conversation-spawns" "$payload") || return $?
+  if (( json )); then printf '%s\n' "$response" | jq .; else
+    printf '%s\n' "$response" | api_jq_human '"\(.spawn.reservation_id | mandible_short_id): \(.spawn.state) [\(.spawn.request.provider)]\ninitial message: \(.spawn.initial_message_state)"'
+  fi
 }
 
 conversation_custody_command() {
@@ -467,6 +523,7 @@ file_rpc_main() {
 if api_is_file_rpc; then
   case "${1:-}" in
     star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
+    spawn) shift; conversation_spawn_command "$@"; exit $? ;;
     custody) shift; conversation_custody_command "$@"; exit $? ;;
   esac
   file_rpc_main "$@"
@@ -479,6 +536,7 @@ case "${1:-}" in
     exec node "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-storage.js" "$@" --db "$MANDIBLE_DB"
     ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
+  spawn) shift; conversation_spawn_command "$@"; exit $? ;;
   custody) shift; conversation_custody_command "$@"; exit $? ;;
 esac
 
