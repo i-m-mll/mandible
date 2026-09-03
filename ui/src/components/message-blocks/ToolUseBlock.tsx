@@ -5,6 +5,7 @@ import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
 import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
 import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
+import { ToolActivityIcon } from './ToolActivityIcon';
 
 export type ToolResultContent =
   | string
@@ -223,15 +224,6 @@ function CommandInputPanel({ input, inputObj }: {
   );
 }
 
-function TerminalIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="1.75" y="2.5" width="12.5" height="11" rx="2" />
-      <path d="m4.25 6 2 2-2 2M8.25 10h3" />
-    </svg>
-  );
-}
-
 function WriteInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
   const content = typeof input.content === 'string' ? input.content : JSON.stringify(input, null, 2);
   return (
@@ -340,7 +332,7 @@ export function ToolCard({
         onClick={() => setExpandedValue(!isExpanded)}
       >
         <span className="tool-card__icon" aria-hidden="true">
-          {visual.kind === 'execute' ? <TerminalIcon /> : visual.icon}
+          <ToolActivityIcon icon={visual.icon} />
         </span>
         <span className="tool-card__verb">{visual.verb}</span>
         {target && (

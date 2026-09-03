@@ -135,6 +135,8 @@ describe('shared sidebar group presentation', () => {
     )?.[1] ?? '';
     expect(headingRule).toContain('flex: 0 1 auto');
     expect(headingRule).toContain('width: auto');
+    expect(sidebarGroupStylesheet).toContain('.sidebar-group-node--expanded > .sidebar-group-node__header:hover > .sidebar-group-node__disclosure');
+    expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--expanded > .sidebar-group-node__header:is(:hover, :focus-within)');
   });
 
   it('aligns category children and Show more to the heading text column without guide spines', () => {

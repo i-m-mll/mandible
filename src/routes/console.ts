@@ -29,6 +29,7 @@ import {
   requireOperator,
 } from "../client-auth/authz.js";
 import {
+  declaredRunOptionsSnapshot,
   normalizeLegacyRunOptions,
   SessionRunOptionError,
   validateRunOptionsPatch,
@@ -104,7 +105,7 @@ function parseSessionOptionsBody(
     return { ok: false, error: String(error).includes("conflicting_session_option")
       ? "conflicting_session_option" : "invalid_run_options" };
   }
-  validateRunOptionsPatch(declaration, declaredSnapshot(declaration), patch);
+  validateRunOptionsPatch(declaration, declaredRunOptionsSnapshot(declaration), patch);
 
   const allowedTools = parseStringArray(record.allowedTools);
   if (allowedTools !== undefined && !allowedTools.ok) {
@@ -114,24 +115,6 @@ function parseSessionOptionsBody(
     runOptions: patch.values,
     ...(allowedTools?.ok ? { allowedTools: allowedTools.value } : {}),
   } };
-}
-
-function declaredSnapshot(declaration: BackendRunOptionDeclaration) {
-  return {
-    backendType: declaration.backendType, command: declaration.command, phase: "declared" as const, revision: 0,
-    options: declaration.options.map((option) => ({
-      id: option.id, label: option.label, description: option.description, category: option.category,
-      kind: option.kind, nullable: option.nullable, source: "backend" as const,
-      availability: option.discovery.kind === "static" ? "available" as const : "awaiting_provider" as const,
-      currentValue: null,
-      allowedValues: option.discovery.kind === "static" ? option.discovery.allowedValues
-        : option.discovery.kind === "static_then_provider" ? option.discovery.staticAllowedValues
-          : option.discovery.fallbackAllowedValues,
-      enforcement: option.support.status === "unsupported" ? option.support
-        : { status: option.discovery.kind === "static" ? "enforced" as const : "awaiting_provider" as const,
-            owner: option.support.owner, effectiveFrom: option.support.effectiveFrom },
-    })),
-  };
 }
 
 function sendRunOptionError(res: ResponseLike, error: SessionRunOptionError): void {

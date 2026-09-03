@@ -653,6 +653,12 @@
   padding: 0 18px 20px;
 }
 
+/* The transcript owns the same outer inset as the composer. Avoid adding a
+ * second inner gutter in the shared stream renderer. */
+.conv-transcript .stream-renderer__scroll {
+  padding-inline: 0;
+}
+
 /* Conversation prose and its tool disclosures share one readable body size;
  * the generic detail-pane font setting must not shrink only assistant turns. */
 .conv-detail__body .msg-text-block.rendered-markdown,

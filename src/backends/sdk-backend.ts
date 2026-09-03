@@ -58,6 +58,10 @@ import {
   type SessionRunOptionsSnapshot,
   type SessionRunOptionsUpdateResult,
 } from "../session-run-options.js";
+import {
+  CLAUDE_CODE_BOOTSTRAP_EFFORTS,
+  CLAUDE_CODE_BOOTSTRAP_MODELS,
+} from "../provider-run-option-catalog.js";
 import { extractModel } from "./cli-args.js";
 
 const EVENT_LOG_LIMIT = 2000;
@@ -97,14 +101,7 @@ const SDK_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
     id: "model", label: "Model", category: "model", kind: "select", nullable: true,
     discovery: {
       kind: "static_then_provider", protocol: "sdk_supported_models", providerOptionId: "model",
-      // Claude Code accepts these stable aliases and resolves each to the
-      // provider's current matching release. The live session replaces this
-      // bootstrap list with its exact advertised inventory after startup.
-      staticAllowedValues: [
-        { value: "sonnet", label: "Sonnet" },
-        { value: "opus", label: "Opus" },
-        { value: "haiku", label: "Haiku" },
-      ],
+      staticAllowedValues: CLAUDE_CODE_BOOTSTRAP_MODELS,
     },
     support: { status: "supported", owner: "provider", effectiveFrom: "next_prompt" }, applyOrder: 10,
     legacyRequestKeys: ["model"],
@@ -113,7 +110,7 @@ const SDK_RUN_OPTIONS: BackendRunOptionDeclaration["options"] = [
     id: "thinking_effort", label: "Thinking effort", category: "thought_level", kind: "select", nullable: true,
     discovery: {
       kind: "static_then_provider", protocol: "sdk_supported_models", providerOptionId: "thinking_effort",
-      staticAllowedValues: ["low", "medium", "high", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) })),
+      staticAllowedValues: CLAUDE_CODE_BOOTSTRAP_EFFORTS,
     },
     support: { status: "supported", owner: "backend", effectiveFrom: "next_prompt" }, applyOrder: 20,
     applyAfter: ["model"], legacyRequestKeys: ["thinkingEffort"],
@@ -655,7 +652,9 @@ implements
   private async refreshSupportedModels(query: ClaudeQuery, selectedModel?: string): Promise<void> {
     try {
       const models = await query.supportedModels();
-      const selected = models.find((model) => model.value === selectedModel) ?? models[0];
+      const selected = models.find((model) => (
+        model.value === selectedModel || model.resolvedModel === selectedModel
+      )) ?? models[0];
       const efforts = selected?.supportedEffortLevels
         ?? Array.from(new Set(models.flatMap((model) => model.supportedEffortLevels ?? [])));
       const provider: ProviderRunOption[] = [
