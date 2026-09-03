@@ -1,4 +1,4 @@
-export const CONVERSATION_CONTROL_SCHEMA_SQL: readonly string[] = [
+const conversationControlSchemaSql = (includeRuntimeOptions: boolean): readonly string[] => [
   `CREATE TABLE conversation_control_state (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE RESTRICT,
     provider TEXT NOT NULL,
@@ -63,7 +63,6 @@ export const CONVERSATION_CONTROL_SCHEMA_SQL: readonly string[] = [
     operation TEXT NOT NULL CHECK(operation IN ('send','steer','queue','resume-provider-session','resume-message-anchor')),
     message TEXT NOT NULL CHECK(length(trim(message)) > 0),
     message_anchor TEXT,
-    runtime_options_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object'),
     idempotency_key TEXT NOT NULL CHECK(length(trim(idempotency_key)) > 0),
     state TEXT NOT NULL CHECK(state IN ('pending','delivering','delivered','failed','uncertain')),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
@@ -71,9 +70,16 @@ export const CONVERSATION_CONTROL_SCHEMA_SQL: readonly string[] = [
     error_json TEXT CHECK(error_json IS NULL OR (json_valid(error_json) AND json_type(error_json) = 'object')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    ${includeRuntimeOptions ? "runtime_options_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object')," : ""}
     UNIQUE(conversation_id, idempotency_key),
     UNIQUE(conversation_id, turn_id)
   )`,
   `CREATE INDEX idx_conversation_control_outbox_dispatch
     ON conversation_control_outbox(state, updated_at)`,
 ];
+
+/** Historical v163 shape used only by the v163 migration. */
+export const CONVERSATION_CONTROL_SCHEMA_V163_SQL = conversationControlSchemaSql(false);
+
+/** Current head shape used by fresh databases. */
+export const CONVERSATION_CONTROL_SCHEMA_SQL = conversationControlSchemaSql(true);

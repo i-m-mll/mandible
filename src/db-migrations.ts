@@ -1,6 +1,6 @@
 import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
 import type { Db } from "./db.js";
-import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
 import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
@@ -522,7 +522,7 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     version: 163,
     name: "authoritative_conversation_control",
-    statements: [...CONVERSATION_CONTROL_SCHEMA_SQL],
+    statements: [...CONVERSATION_CONTROL_SCHEMA_V163_SQL],
   },
   {
     version: 164,
