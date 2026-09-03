@@ -165,7 +165,7 @@
 
 /* Sidebar disclosures intentionally use the inverse visibility contract from
  * transcript tools: folded state is always explicit; an open caret becomes a
- * quiet hover/focus affordance. Direct hover emphasizes only the symbol. */
+ * quiet hover affordance. Direct hover emphasizes only the symbol. */
 .sidebar-group-node:not(.sidebar-group-node--expanded) > .sidebar-group-node__header > .sidebar-group-node__disclosure [data-disclosure-chevron='right'] {
   opacity: 1;
 }
@@ -175,7 +175,7 @@
   transition: opacity 120ms ease;
 }
 
-.sidebar-group-node--expanded > .sidebar-group-node__header:is(:hover, :focus-within) > .sidebar-group-node__disclosure [data-disclosure-chevron='down'] {
+.sidebar-group-node--expanded > .sidebar-group-node__header:hover > .sidebar-group-node__disclosure [data-disclosure-chevron='down'] {
   opacity: 1;
 }
 

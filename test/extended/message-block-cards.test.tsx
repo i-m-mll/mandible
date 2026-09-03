@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
 import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
 import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../../ui/src/components/message-blocks/ToolUseBlock';
-import { presentTool, summarizeToolRun } from '../../ui/src/components/message-blocks/toolPresentation';
+import { presentTool, summarizeToolRun, toolRunIcons } from '../../ui/src/components/message-blocks/toolPresentation';
 import { PermissionApprovalCard, permissionActionsForRequest } from '../../ui/src/components/console/PermissionApprovalCard';
 import { MessageGroup } from '../../ui/src/components/stream-renderer/MessageGroup';
 import type { ConsolePermissionRequest } from '../../ui/src/api';
@@ -156,7 +156,7 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?background:\s*transparent;/);
     expect(css).toMatch(/:root :is\(\.tool-card__input, \.tool-card__terminal, \.tool-card__result\) :is\(pre, code\)\s*\{[^}]*background:\s*transparent;/s);
     expect(css).not.toContain('background: var(--status-danger-bg-soft)');
-    expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*4em;/s);
+    expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*1\.35em;/s);
     expect(css).toContain('var(--overflow-fade-color, var(--surface-app))');
 
     const group = render(<MessageGroup turn={{
@@ -171,6 +171,15 @@ describe('message action cards', () => {
       toolResults: new Map(),
     }} isStreaming={false} />);
     expect(group.container.querySelector('.tool-call-group__summary > .tool-call-group__summary-text')).toBeTruthy();
+    expect(group.container.querySelectorAll('.tool-call-group__icons .tool-call-group__icon')).toHaveLength(1);
+  });
+
+  it('gives grouped tool runs one icon for each represented tool category', () => {
+    expect(toolRunIcons([
+      { name: 'Read', input: { path: 'one' } },
+      { name: 'Read', input: { path: 'two' } },
+      { name: 'Bash', input: { command: 'true' } },
+    ])).toEqual(['↗', 'terminal']);
   });
 
   it('wins the real light-theme pre fill without changing general code surfaces', () => {

@@ -1,9 +1,11 @@
 import type { ComponentChildren } from 'preact';
 import { useId, useState } from 'preact/hooks';
 import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
+import { ToolActivityIcon } from './ToolActivityIcon';
 
-export function ToolCallGroup({ summary, expanded, onExpandedChange, children }: {
+export function ToolCallGroup({ summary, icons, expanded, onExpandedChange, children }: {
   summary: string;
+  icons: readonly string[];
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   children: ComponentChildren;
@@ -20,6 +22,9 @@ export function ToolCallGroup({ summary, expanded, onExpandedChange, children }:
   return (
     <section className={`tool-call-group${isExpanded ? ' tool-call-group--expanded' : ''}`}>
       <button type="button" className="tool-call-group__summary" aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>
+        <span className="tool-call-group__icons" aria-hidden="true">
+          {icons.map((icon) => <ToolActivityIcon key={icon} icon={icon} className="tool-call-group__icon" />)}
+        </span>
         <span className="tool-call-group__summary-text">{summary}</span>
         <span className="tool-call-group__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
       </button>

@@ -484,7 +484,8 @@
  * blocks without loosening the compact rows inside a multi-tool run. */
 .message-group__content > .tool-call-group,
 .message-group__content > .message-block-wrapper:has(> .tool-card) {
-  margin-block: 2px;
+  margin-block: 0;
+  padding-block: 3px;
 }
 
 .tool-call-group__summary {
@@ -499,6 +500,21 @@
   color: var(--tool-activity-text);
   text-align: left;
   cursor: pointer;
+}
+
+.tool-call-group__icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tool-call-group__icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
 }
 
 .tool-call-group__summary:hover,
