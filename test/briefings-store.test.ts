@@ -691,6 +691,28 @@ describe("artifact-backed Briefing rounds", () => {
     expect(() => publishBriefingRun(db, request("# Plain run\n"), publisherId)).toThrow(/no spec-item directives/);
   });
 
+  it("publishes the rlrmp2 typed-reference reproduction from an exact artifact version", () => {
+    const source = [
+      "# Experiment report",
+      "",
+      "The current authority is [issue:a55b4b3].",
+      "See [comment:rlrmp2/db381cc#18] and [artifact-series:rlrmp2/perturbation-bank@2].",
+    ].join("\n");
+    const artifact = recordArtifactVersion(db, {
+      source_kind: "managed", content: source, series_key: "typed-reference-report",
+      logical_name: "report.md", role: "review-document", media_type: "text/markdown",
+    });
+    const receipt = publishBriefingFromArtifactVersion(db, {
+      briefing_key: "typed-reference-report", title: "Experiment report",
+      artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3",
+      responder_user_ids: [humanId],
+    });
+    expect(receipt.artifact_version_id).toBe(artifact.version.id);
+    expect(readBriefing(db, receipt.briefing_id, {
+      roundId: receipt.round_id!, actorUserId: humanId, operator: false,
+    })).toMatchObject({ selected_round: { items: [], document: { source } } });
+  });
+
   it("renders Base without highlights and surviving proposals against the present Base", () => {
     const sourcePath = path.join(root, "policy.md");
     const record = (source: string) => {

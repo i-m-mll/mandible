@@ -1,3 +1,5 @@
+import { parseAuthoredReferences } from "./authored-references.js";
+
 export type IssueReferenceKind = "issue" | "comment";
 
 export interface ParsedIssueReference {
@@ -9,11 +11,8 @@ export interface ParsedIssueReference {
   commentRef?: string;
 }
 
-const EXPLICIT_REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]/g;
-
 export function parseIssueReferences(source: string): ParsedIssueReference[] {
   if (!source) return [];
-  const protectedRanges = collectProtectedRanges(source);
   const refs: ParsedIssueReference[] = [];
   const seen = new Set<string>();
   const add = (ref: ParsedIssueReference) => {
@@ -23,9 +22,9 @@ export function parseIssueReferences(source: string): ParsedIssueReference[] {
     refs.push(ref);
   };
 
-  for (const match of source.matchAll(EXPLICIT_REF_PATTERN)) {
-    if (isProtected(protectedRanges, match.index ?? 0)) continue;
-    const ref = parseExplicitReference(match[1], match[2], match[0]);
+  for (const match of parseAuthoredReferences(source)) {
+    if (match.kind !== "issue" && match.kind !== "comment") continue;
+    const ref = parseExplicitReference(match.kind, match.target, match.raw);
     if (ref) add(ref);
   }
 
@@ -67,36 +66,4 @@ function parseExplicitReference(type: string, ref: string, raw: string): ParsedI
     };
   }
   return null;
-}
-
-interface ProtectedRange {
-  start: number;
-  end: number;
-}
-
-function collectProtectedRanges(source: string): ProtectedRange[] {
-  const ranges: ProtectedRange[] = [];
-  collectRanges(source, /```[\s\S]*?```/g, ranges);
-  collectInlineCodeRanges(source, ranges);
-  collectRanges(source, /\[[^\]]+\]\([^)]+\)/g, ranges);
-  collectRanges(source, /https?:\/\/\S+/g, ranges);
-  return ranges.sort((a, b) => a.start - b.start);
-}
-
-function collectRanges(source: string, pattern: RegExp, ranges: ProtectedRange[]): void {
-  for (const match of source.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    ranges.push({ start, end: start + match[0].length });
-  }
-}
-
-function collectInlineCodeRanges(source: string, ranges: ProtectedRange[]): void {
-  for (const match of source.matchAll(/`([^`\n]+)`/g)) {
-    const start = match.index ?? 0;
-    ranges.push({ start, end: start + match[0].length });
-  }
-}
-
-function isProtected(ranges: ProtectedRange[], index: number): boolean {
-  return ranges.some((range) => index >= range.start && index < range.end);
 }

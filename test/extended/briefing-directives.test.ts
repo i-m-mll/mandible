@@ -3,6 +3,22 @@ import { describe, expect, it } from "vitest";
 import { BRIEFING_PROFILE_V3, BriefingDirectiveError, parseBriefingDirectives } from "../../src/feedback/briefing-directives.js";
 
 describe("mandible-briefing.v2 directives", () => {
+  it("keeps canonical typed references out of the directive grammar", () => {
+    const references = [
+      "[issue:a55b4b3]", "[issue:rlrmp2/28ed941]",
+      "[comment:db381cc#18]", "[comment:rlrmp2/db381cc#18]",
+      "[artifact:alpha-report]", "[artifact:rlrmp2/alpha-report]",
+      "[artifact-version:av_01Kabc]", "[artifact-version:rlrmp2/av_01Kabc]",
+      "[artifact-series:alpha-report@2]", "[artifact-series:rlrmp2/alpha-report@2]",
+      "[artifact-blob:abcdef1]", "[artifact-blob:rlrmp2/abcdef1]",
+    ];
+    const source = `${references.join("\n")} 😀\n\n:::spec-item{key="ship" type="verdict" required="false"}\nShip it?\n:::`;
+    const directives = parseBriefingDirectives(source, BRIEFING_PROFILE_V3);
+    expect(directives.map((directive) => directive.key)).toEqual(["ship"]);
+    expect(source.slice(directives[0].start_offset, directives[0].end_offset))
+      .toBe(':::spec-item{key="ship" type="verdict" required="false"}\nShip it?\n:::');
+  });
+
   it("keeps v2 frozen while v3 parses exact text alternatives", () => {
     const source = `# Policy
 
@@ -52,6 +68,14 @@ Second nonblank Markdown body.
     expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"yes\"}\nx\n:::"))
       .toThrow(BriefingDirectiveError);
     expect(() => parseBriefingDirectives(":::spec-item{key=\"a\" type=\"verdict\" required=\"false\"}\nx\n::::"))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives(":unsupported[text]", BRIEFING_PROFILE_V3, { allowEmpty: true }))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives("::unsupported[text]", BRIEFING_PROFILE_V3, { allowEmpty: true }))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives("[issue:repo/issue/extra]", BRIEFING_PROFILE_V3, { allowEmpty: true }))
+      .toThrow(BriefingDirectiveError);
+    expect(() => parseBriefingDirectives("[artifact:sha256:abcdef1]", BRIEFING_PROFILE_V3, { allowEmpty: true }))
       .toThrow(BriefingDirectiveError);
   });
 
