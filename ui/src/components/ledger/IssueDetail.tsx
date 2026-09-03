@@ -27,6 +27,7 @@ import { AttributionIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../shared/DetailPaneHeader';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailPaneShell } from '../shared/DetailPaneShell';
+import { CollapsiblePanel } from '../shared/CollapsiblePanel';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
 const LEDGER_TIME_OPTIONS = { zeroIsEmpty: true } as const;
@@ -138,6 +139,9 @@ export function LedgerIssueDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
+  const [childrenExpanded, setChildrenExpanded] = useState(false);
+  const [relationshipsExpanded, setRelationshipsExpanded] = useState(false);
+  const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   // Launch-agent (issue ce83a84) is confirm-first: this flag only opens the
   // confirmation dialog, which previews the exact prompt before anything is
   // written or spawned. Distinct from `onStartAgent`, which is the
@@ -182,6 +186,12 @@ export function LedgerIssueDetail({
     onAddToSpace,
   );
   const projectRef = issueProjectRef(detail);
+
+  useEffect(() => {
+    setChildrenExpanded(false);
+    setRelationshipsExpanded(false);
+    setArtifactsExpanded(false);
+  }, [detail.id]);
 
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
@@ -304,10 +314,14 @@ export function LedgerIssueDetail({
       ariaBusy={hydrating}
     >
         {umbrellaChildren.length > 0 && (
-          <section className="ledger-issue-detail__section">
-            <SectionTitle title="Children" count={umbrellaChildren.length} />
+          <CollapsiblePanel
+            className="ledger-issue-detail__section ledger-issue-detail__collapsible"
+            title={<ShelfTitle title="Children" count={umbrellaChildren.length} />}
+            expanded={childrenExpanded}
+            onExpandedChange={setChildrenExpanded}
+          >
             <UmbrellaChildrenShelf rows={umbrellaChildren} onOpenEntity={onOpenEntity} />
-          </section>
+          </CollapsiblePanel>
         )}
 
         <section className="ledger-issue-detail__section">
@@ -355,17 +369,25 @@ export function LedgerIssueDetail({
         </section>
 
         {otherRelationships.length > 0 && (
-          <section className="ledger-issue-detail__section">
-            <SectionTitle title="Relationships" count={otherRelationships.length} />
+          <CollapsiblePanel
+            className="ledger-issue-detail__section ledger-issue-detail__collapsible"
+            title={<ShelfTitle title="Relationships" count={otherRelationships.length} />}
+            expanded={relationshipsExpanded}
+            onExpandedChange={setRelationshipsExpanded}
+          >
             <RelationshipList relationships={otherRelationships} onOpenEntity={onOpenEntity} />
-          </section>
+          </CollapsiblePanel>
         )}
 
         {associatedArtifacts.length > 0 && (
-          <section className="ledger-issue-detail__section">
-            <SectionTitle title="Associated Artifacts" count={associatedArtifacts.length} />
+          <CollapsiblePanel
+            className="ledger-issue-detail__section ledger-issue-detail__collapsible"
+            title={<ShelfTitle title="Associated Artifacts" count={associatedArtifacts.length} />}
+            expanded={artifactsExpanded}
+            onExpandedChange={setArtifactsExpanded}
+          >
             <AssociatedArtifactList artifacts={associatedArtifacts} />
-          </section>
+          </CollapsiblePanel>
         )}
 
         {(activeSessions.length > 0 || historicalSessions.length > 0) && (
@@ -1217,6 +1239,15 @@ function SectionTitle({ title, count }: { title: string; count?: number }): JSX.
       <span>{title}</span>
       {count !== undefined && <em>{count}</em>}
     </h3>
+  );
+}
+
+function ShelfTitle({ title, count }: { title: string; count: number }): JSX.Element {
+  return (
+    <>
+      <span>{title}</span>
+      <em className="ledger-collapsible-panel__count">{count}</em>
+    </>
   );
 }
 

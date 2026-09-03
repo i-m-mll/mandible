@@ -470,6 +470,7 @@ a {
   height: 19px;
   display: flex;
   align-items: center;
+  margin-bottom: 5px;
   padding-inline: 10px;
   color: var(--text-chrome-muted);
 }

@@ -411,6 +411,17 @@ export function conversationAnchorHref(
   return `#/console?${params.toString()}`;
 }
 
+export function conversationTurnSelectionHref(
+  conversationId: string,
+  selectedTurnId: string | null,
+  nextTurnId: string,
+): string {
+  if (selectedTurnId === nextTurnId) {
+    return `#/console?${new URLSearchParams({ conversation: conversationId }).toString()}`;
+  }
+  return conversationAnchorHref(conversationId, { turn: nextTurnId });
+}
+
 // ── Props ──
 
 export type ConversationsViewProps = {
@@ -2099,7 +2110,11 @@ function ConversationDetail({
           onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
           onFork={handleFork}
           onSelectMessageInfo={(turnId) => {
-            window.location.hash = conversationAnchorHref(conversationId, { turn: turnId });
+            window.location.hash = conversationTurnSelectionHref(
+              conversationId,
+              conversation.position_window.target.turn_id,
+              turnId,
+            );
           }}
           sessionInfo={{
             sessionId: conversation.session_id,

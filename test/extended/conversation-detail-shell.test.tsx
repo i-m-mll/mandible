@@ -11,6 +11,7 @@ import {
   ConversationsView,
   conversationAnchorFromHash,
   conversationAnchorHref,
+  conversationTurnSelectionHref,
   getConversationHeaderProviderLabel,
 } from '../../ui/src/views/conversations.js';
 
@@ -217,6 +218,8 @@ describe('compact detail pane shell', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
     expect(conversationAnchorFromHash('#/console?conversation=conv')).toBeNull();
     expect(conversationAnchorHref('conv 1', { block: 'block/42' })).toBe('#/console?conversation=conv+1&block=block%2F42');
+    expect(conversationTurnSelectionHref('conv 1', 'turn-9', 'turn-9')).toBe('#/console?conversation=conv+1');
+    expect(conversationTurnSelectionHref('conv 1', null, 'turn-9')).toBe('#/console?conversation=conv+1&turn=turn-9');
   });
 
   it('uses the compact-header provider presentation contract', () => {
