@@ -591,6 +591,18 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE user_settings_v169",
     ],
   },
+  {
+    version: 171,
+    name: "remove_chat_bottom_shelf_user_setting",
+    statements: [
+      "ALTER TABLE user_settings RENAME TO user_settings_v170",
+      USER_SETTINGS_SCHEMA_SQL,
+      `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
+       SELECT user_id, key, value, revision, updated_at FROM user_settings_v170
+       WHERE key <> 'chat_bottom_shelf'`,
+      "DROP TABLE user_settings_v170",
+    ],
+  },
 ];
 
 /**

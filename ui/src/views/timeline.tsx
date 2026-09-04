@@ -2,7 +2,8 @@ import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
-import { useAppShell, useRegisterAppBottomPanel } from '../app-shell';
+import { useAppShell, useRegisterAppRightSidebar } from '../app-shell';
+import { useAppRightSidebarState } from '../right-sidebar-state';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -834,6 +835,14 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     normalizePersistedTimelineState,
     DEFAULT_TIMELINE_VIEW_STATE,
   );
+  const [inspectorSidebar, updateInspectorSidebar] = useAppRightSidebarState(`timeline:${projectRef}`, {
+    open: viewState.panes.inspector,
+    width: viewState.panes.inspectorWidth,
+  }, {
+    minWidth: MIN_INSPECTOR_WIDTH,
+    maxWidth: MAX_INSPECTOR_WIDTH,
+    migrate: () => ({ open: viewState.panes.inspector, width: viewState.panes.inspectorWidth }),
+  });
   const [projection, setProjection] = useState<ProjectTimelineProjection | null>(null);
   const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
   const [status, setStatus] = useState<ProjectionStatus>('loading');
@@ -1359,31 +1368,34 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx, suppressTimelineScrollEvents]);
 
   const selectEvent = useCallback((event: TimelineEvent, options: { preserveCluster?: boolean } = {}) => {
+    updateInspectorSidebar({ open: true });
     updateState({
       selectedEventId: event.id,
       selectedRowOccurrenceId: event.row_id,
       selectedClusterId: options.preserveCluster ? viewState.selectedClusterId : null,
-      panes: { ...viewState.panes, inspector: true },
+      panes: viewState.panes,
     });
-  }, [updateState, viewState.panes, viewState.selectedClusterId]);
+  }, [updateInspectorSidebar, updateState, viewState.panes, viewState.selectedClusterId]);
 
   const selectRow = useCallback((row: TimelineRowOccurrence) => {
+    updateInspectorSidebar({ open: true });
     updateState({
       selectedRowOccurrenceId: row.id,
       selectedEventId: null,
       selectedClusterId: null,
-      panes: { ...viewState.panes, inspector: true },
+      panes: viewState.panes,
     });
-  }, [updateState, viewState.panes]);
+  }, [updateInspectorSidebar, updateState, viewState.panes]);
 
   const selectCluster = useCallback((cluster: TimelineClusterMark) => {
+    updateInspectorSidebar({ open: true });
     updateState({
       selectedClusterId: cluster.id,
       selectedRowOccurrenceId: cluster.rowId,
       selectedEventId: null,
-      panes: { ...viewState.panes, inspector: true },
+      panes: viewState.panes,
     });
-  }, [updateState, viewState.panes]);
+  }, [updateInspectorSidebar, updateState, viewState.panes]);
 
   const expandEvent = useCallback((eventId: string) => {
     updateState({ expandedEventIds: unique([...viewState.expandedEventIds, eventId]) });
@@ -1758,29 +1770,21 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     visibleSelectedRowEvents,
     zoomToCluster,
   ]);
-  const bottomPanelDescriptor = useMemo(() => ({
+  const inspectorDescriptor = useMemo(() => ({
     id: 'timeline-inspector',
+    kind: 'panel' as const,
     title: 'inspector',
     ariaLabel: 'Timeline inspector',
-    open: viewState.panes.inspector,
-    height: viewState.panes.inspectorWidth,
-    minHeight: MIN_INSPECTOR_WIDTH,
-    maxHeight: MAX_INSPECTOR_WIDTH,
-    onOpenChange: (open: boolean) => {
-      updateState({ panes: { ...viewState.panes, inspector: open } });
-    },
-    onHeightChange: (height: number) => {
-      updateState({
-        panes: {
-          ...viewState.panes,
-          inspectorWidth: normalizeInspectorWidth(height),
-        },
-      });
-    },
+    open: inspectorSidebar.open,
+    width: inspectorSidebar.width,
+    minWidth: MIN_INSPECTOR_WIDTH,
+    maxWidth: MAX_INSPECTOR_WIDTH,
+    onOpenChange: (open: boolean) => updateInspectorSidebar({ open }),
+    onWidthChange: (width: number) => updateInspectorSidebar({ width }),
     content: inspectorContent,
-  }), [inspectorContent, updateState, viewState.panes]);
+  }), [inspectorContent, inspectorSidebar, updateInspectorSidebar]);
 
-  useRegisterAppBottomPanel(bottomPanelDescriptor);
+  useRegisterAppRightSidebar(inspectorDescriptor);
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">

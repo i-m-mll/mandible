@@ -1,7 +1,7 @@
 // Bug: b949700 — Console tab: xterm.js terminal pane with WebSocket PTY and SSE stream events
 // Bug: 1d286c1 — console tab overhaul: reconnect, overlay, SSE events, xterm rendering
 import type { JSX } from 'preact/jsx-runtime';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleSession } from '../../state';
 import type { StreamEvent } from '../stream-renderer/types';
 import { ChannelEventsPane } from './ChannelEventsPane';
@@ -17,6 +17,10 @@ import { submitConversationControl } from '../../api';
 import type { ConsolePermissionDecision, ConversationControlApiError, ConversationControlSnapshot } from '../../api';
 import type { ComposerUsage } from './Composer';
 import { conversationControlPresentation } from '../../chat/conversationControl';
+import { useRegisterAppRightSidebar } from '../../app-shell';
+import { useAppRightSidebarState } from '../../right-sidebar-state';
+import { SessionControls } from './SessionControls';
+import { MessageInfoPanel } from './MessageInfoPanel';
 
 export type ViewMode = 'terminal' | 'rich' | 'events';
 type ActiveSubagent = {
@@ -250,9 +254,7 @@ export function TerminalPane({
     handlePermissionResponse,
   } = usePermissionQueue({ backendType, sessionId });
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
-  // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  // Bug: 60b1fd7 — Sidebar tab state: settings vs info panel
+  const [sidebarState, updateSidebarState] = useAppRightSidebarState(`console:${sessionId}`, { open: false, width: 360 });
   const [sidebarTab, setSidebarTab] = useState<'settings' | 'info'>('settings');
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   // Bug: b5e1c51 — Unseen channel event badge tracking
@@ -271,7 +273,7 @@ export function TerminalPane({
   }, [viewMode, channelEventCount]);
 
   const providerFamily = isOperator ? 'claude' : command;
-  const availableTools = collectAvailableTools(streamEvents);
+  const availableTools = useMemo(() => collectAvailableTools(streamEvents), [streamEvents]);
   const composerUsage = collectComposerUsage(streamEvents);
   const transportLabel = transportBadge?.label ?? transportLane ?? backendType;
   const transportTitle = transportBadge?.title;
@@ -316,9 +318,36 @@ export function TerminalPane({
       return;
     }
     setSelectedMessageId(turnId);
-    setSidebarOpen(true);
+    updateSidebarState({ open: true });
     setSidebarTab('info');
   };
+
+  const sidebarDescriptor = useMemo(() => isVisible && viewMode === 'rich' ? ({
+    id: `console-session-${sessionId}`,
+    kind: 'tabs' as const,
+    ariaLabel: 'Console session sidebar',
+    open: sidebarState.open,
+    width: sidebarState.width,
+    minWidth: 300,
+    maxWidth: 680,
+    onOpenChange: (open: boolean) => updateSidebarState({ open }),
+    onWidthChange: (width: number) => updateSidebarState({ width }),
+    activeTab: sidebarTab,
+    onActiveTabChange: (tab: string) => setSidebarTab(tab === 'info' ? 'info' : 'settings'),
+    tabs: [
+      {
+        id: 'settings',
+        label: 'Session Settings',
+        content: <SessionControls sessionId={sessionId} allowedTools={optimisticAllowedTools} availableTools={availableTools} onModelSaved={setModel} hideModel={backendType === 'sdk'} />,
+      },
+      {
+        id: 'info',
+        label: 'Message Info',
+        content: <MessageInfoPanel selectedMessageId={selectedMessageId} streamEvents={streamEvents} />,
+      },
+    ],
+  }) : null, [availableTools, backendType, isVisible, optimisticAllowedTools, selectedMessageId, sessionId, sidebarState, sidebarTab, streamEvents, updateSidebarState, viewMode]);
+  useRegisterAppRightSidebar(sidebarDescriptor);
 
   const controlPresentation = conversationControl
     ? conversationControlPresentation(conversationControl)
@@ -400,7 +429,6 @@ export function TerminalPane({
         unseenEventCount={unseenEventCount}
         workspaceMode={workspaceMode}
         providerSessionId={providerSessionId}
-        onSidebarToggle={() => setSidebarOpen((prev) => !prev)}
       />
 
       {interactionMode === 'inbox_only' && (
@@ -464,7 +492,6 @@ export function TerminalPane({
             providerFamily={providerFamily}
             model={model}
             allowedTools={optimisticAllowedTools}
-            availableTools={availableTools}
             permissionRequest={permissionRequest}
             onPermissionRespond={handleRichPermissionResponse}
             selectedMessageId={selectedMessageId}
@@ -483,11 +510,7 @@ export function TerminalPane({
             onPromptSubmit={handlePromptSubmit}
             onQueuedPromptRemove={() => {}}
             onStop={() => {}}
-            sidebarOpen={sidebarOpen}
-            workspaceMode={workspaceMode}
-            sidebarTab={sidebarTab}
-            onSidebarTabChange={setSidebarTab}
-            onSidebarOpenChange={setSidebarOpen}
+            onOpenSettings={() => { setSidebarTab('settings'); updateSidebarState({ open: true }); }}
           />
         )}
       </div>

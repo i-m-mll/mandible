@@ -28,8 +28,8 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 import { appColors } from '../theme';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { useRegisterAppBottomPanel } from '../app-shell';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { useRegisterAppRightSidebar } from '../app-shell';
+import { useAppRightSidebarState } from '../right-sidebar-state';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -222,13 +222,13 @@ const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
 const DEFAULT_GRAPH_PRESET: GraphMode = 'issue';
 const GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY = 'mandible_graph_detail_panel_open:v1';
 const GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY = 'mandible_graph_detail_panel_height:v1';
-const DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT = 340;
-const MIN_GRAPH_DETAIL_PANEL_HEIGHT = 240;
-const MAX_GRAPH_DETAIL_PANEL_HEIGHT = 520;
+const DEFAULT_GRAPH_DETAIL_PANEL_WIDTH = 380;
+const MIN_GRAPH_DETAIL_PANEL_WIDTH = 280;
+const MAX_GRAPH_DETAIL_PANEL_WIDTH = 720;
 
 // Shared empty collections for the pending-payload placeholder. Reusing these
 // keeps `payload.nodes` / `payload.edges` referentially stable while a graph
-// request is in flight, which the memoized layout and bottom-panel descriptor
+// request is in flight, which the memoized layout and sidebar descriptor
 // depend on (issue 80ced49).
 const EMPTY_GRAPH_NODES: GraphNode[] = [];
 const EMPTY_GRAPH_EDGES: GraphEdge[] = [];
@@ -264,18 +264,6 @@ function typeLabel(type: string): string {
 function compactId(id: string): string {
   const parts = id.split(':');
   return parts[parts.length - 1]?.slice(0, 12) || id.slice(0, 12);
-}
-
-function normalizeStoredBoolean(value: unknown, fallback: Readonly<boolean>): boolean {
-  return typeof value === 'boolean' ? value : fallback;
-}
-
-function normalizeGraphDetailPanelHeight(value: unknown, fallback: Readonly<number>): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.min(
-    MAX_GRAPH_DETAIL_PANEL_HEIGHT,
-    Math.max(MIN_GRAPH_DETAIL_PANEL_HEIGHT, Math.trunc(value)),
-  );
 }
 
 function reactFlowId(id: string): string {
@@ -959,16 +947,24 @@ export function GraphView({
     branches: [],
   });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [detailPanelOpen, setDetailPanelOpen] = usePersistedViewState(
-    GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY,
-    normalizeStoredBoolean,
-    true,
-  );
-  const [detailPanelHeight, setDetailPanelHeight] = usePersistedViewState(
-    GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY,
-    normalizeGraphDetailPanelHeight,
-    DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT,
-  );
+  const [detailPanelState, updateDetailPanelState] = useAppRightSidebarState('graph', {
+    open: true,
+    width: DEFAULT_GRAPH_DETAIL_PANEL_WIDTH,
+  }, {
+    minWidth: MIN_GRAPH_DETAIL_PANEL_WIDTH,
+    maxWidth: MAX_GRAPH_DETAIL_PANEL_WIDTH,
+    removeKeys: [GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY],
+    migrate: () => {
+      const open = window.localStorage.getItem(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY);
+      const width = window.localStorage.getItem(GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY);
+      return {
+        open: open === null ? true : JSON.parse(open) === true,
+        width: width === null ? DEFAULT_GRAPH_DETAIL_PANEL_WIDTH : Number(JSON.parse(width)),
+      };
+    },
+  });
+  const detailPanelOpen = detailPanelState.open;
+  const setDetailPanelOpen = (open: boolean) => updateDetailPanelState({ open });
   const lastFocusedNodeOpenedRef = useRef<string | null>(null);
   const graphRequest = useMemo<GraphFetchParams>(() => ({
     mode: spec.preset,
@@ -987,7 +983,7 @@ export function GraphView({
   // Issue 80ced49: the pending-payload placeholder must keep a stable identity
   // across renders. A fresh object literal here gave `payload.nodes` and
   // `payload.edges` new identities on every render, which invalidated the
-  // memoized bottom-panel descriptor, re-ran the registration effect, set app
+  // memoized sidebar descriptor, re-ran the registration effect, set app
   // shell state, and re-rendered this view — an unbounded synchronous render
   // loop that pinned a core whenever the graph request had not resolved yet.
   const pendingPayload = useMemo<GraphPayload>(
@@ -1118,18 +1114,19 @@ export function GraphView({
 
   const detailPanelDescriptor = useMemo(() => ({
     id: 'graph-detail',
+    kind: 'panel' as const,
     title: 'Graph detail',
     ariaLabel: 'Graph detail',
     open: detailPanelOpen,
-    height: detailPanelHeight,
-    minHeight: MIN_GRAPH_DETAIL_PANEL_HEIGHT,
-    maxHeight: MAX_GRAPH_DETAIL_PANEL_HEIGHT,
-    onOpenChange: setDetailPanelOpen,
-    onHeightChange: setDetailPanelHeight,
+    width: detailPanelState.width,
+    minWidth: MIN_GRAPH_DETAIL_PANEL_WIDTH,
+    maxWidth: MAX_GRAPH_DETAIL_PANEL_WIDTH,
+    onOpenChange: (open: boolean) => updateDetailPanelState({ open }),
+    onWidthChange: (width: number) => updateDetailPanelState({ width }),
     content: selectedNode ? detailPanelContent : null,
-  }), [detailPanelContent, detailPanelHeight, detailPanelOpen, selectedNode]);
+  }), [detailPanelContent, detailPanelOpen, detailPanelState.width, selectedNode, updateDetailPanelState]);
 
-  useRegisterAppBottomPanel(detailPanelDescriptor);
+  useRegisterAppRightSidebar(detailPanelDescriptor);
 
   const updateSpec = (patch: Partial<GraphSpecState>) => {
     setSpec((current) => ({ ...current, ...patch }));

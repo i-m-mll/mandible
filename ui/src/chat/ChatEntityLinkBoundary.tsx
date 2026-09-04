@@ -124,7 +124,7 @@ export function ChatEntityLinkBoundary({
           style={menuStyle}
         >
           <button type="button" role="menuitem" onClick={() => { onPreview(menu.target); setMenu(null); }}>
-            Preview in footer
+            Preview in sidebar
           </button>
           <button type="button" role="menuitem" onClick={() => { onOpenNormally(menu.target); setMenu(null); }}>
             Open normally

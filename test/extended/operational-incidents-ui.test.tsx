@@ -268,8 +268,8 @@ function renderRegion(): ReturnType<typeof render> {
 
 function shell(overrides: Partial<AppShellContextValue> = {}): AppShellContextValue {
   return {
-    bottomPanel: null,
-    registerBottomPanel: () => () => undefined,
+    rightSidebar: null,
+    registerRightSidebar: () => () => undefined,
     setViewSidebarWidth: () => undefined,
     active: true,
     ...overrides,
