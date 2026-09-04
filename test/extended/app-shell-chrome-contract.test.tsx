@@ -118,6 +118,8 @@ describe('shared app-shell chrome contract', () => {
     expect(ruleBody(base, '.app-bottom-panel')).toContain('grid-column: 2');
     expect(ruleBody(base, '.app-layout--view-sidebar-open .app-bottom-panel--anchored-detail'))
       .toContain('margin-left: var(--app-view-sidebar-outer-width)');
+    expect(ruleBody(base, '.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel--anchored-detail'))
+      .toContain('left: var(--app-view-sidebar-outer-width)');
     expect(ruleBody(base, '.app-bottom-panel--anchored-detail .app-bottom-panel__content'))
       .toContain('overflow: hidden');
     expect(ruleBody(base, '.app-bottom-panel__content')).toContain('overflow: auto');

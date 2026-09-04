@@ -1164,23 +1164,6 @@
 /* ── Responsive: conversations ── */
 
 @media (max-width: 900px) {
-  .chat-history-view {
-    flex-direction: column;
-    height: auto;
-  }
-
-  .chat-history-sidebar {
-    width: 100%;
-    min-width: 0;
-    max-height: 40vh;
-    border-right: none;
-    border-bottom: 1px solid var(--neutral-alpha-06);
-  }
-
-  .chat-history-detail {
-    min-height: 50vh;
-  }
-
   .conv-grid {
     grid-template-columns: 1fr;
   }

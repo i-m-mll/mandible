@@ -296,7 +296,7 @@ a {
 
 .app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel--anchored-detail {
   position: absolute;
-  left: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
+  left: var(--app-view-sidebar-outer-width);
   right: 0;
   bottom: 0;
   height: var(--app-bottom-panel-active-height);

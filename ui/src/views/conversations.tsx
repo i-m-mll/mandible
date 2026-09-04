@@ -3470,9 +3470,15 @@ export function ConversationsView({
             session={selectedLiveSession}
           />
         ) : (
-          <div className="chat-history-detail__empty">
-            Select a conversation to view it
-          </div>
+          <DetailPaneShell
+            as="section"
+            variant="compact"
+            header={<DetailPaneHeader variant="compact" title="Chat" />}
+          >
+            <div className="chat-history-detail__empty">
+              Select a conversation to view it
+            </div>
+          </DetailPaneShell>
         )}
       </div>
       <NewSessionDialog

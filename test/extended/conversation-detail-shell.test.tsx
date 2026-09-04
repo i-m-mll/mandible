@@ -32,6 +32,7 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose():
 
 beforeEach(() => {
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
+  vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ groups: [], limit: 50 });
   vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
     version: 1, key: 'chat_shown_projects', value: [], revision: 0,
   });
@@ -221,6 +222,29 @@ function deferred<T>() {
 }
 
 describe('compact detail pane shell', () => {
+  it('renders the unselected Chat main area through the canonical compact shell', () => {
+    const { container } = render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const detail = container.querySelector('.chat-history-detail');
+    const shell = detail?.querySelector(':scope > .detail-pane-shell--compact');
+    const header = shell?.querySelector(':scope > .detail-pane-shell__header');
+    const body = shell?.querySelector(':scope > .detail-pane-shell__body');
+
+    expect(shell?.getAttribute('data-app-surface')).toBe('main');
+    expect(header?.querySelector('[data-detail-pane-header-variant="compact"]')).toBeTruthy();
+    expect(header?.textContent).toBe('Chat');
+    expect(body?.textContent).toContain('Select a conversation to view it');
+    expect(detail?.querySelector(':scope > .chat-history-detail__empty')).toBeNull();
+  });
+
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&block=block-42')).toEqual({ block: 'block-42' });
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
