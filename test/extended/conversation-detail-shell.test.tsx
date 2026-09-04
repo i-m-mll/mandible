@@ -244,6 +244,26 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function MountedBottomPanelShell({ children }: { children: ComponentChildren }): JSX.Element {
+  const [panel, setPanel] = useState<AppBottomPanelDescriptor | null>(null);
+  const registerBottomPanel = useCallback((next: AppBottomPanelDescriptor) => {
+    setPanel(next);
+    return () => setPanel((current) => current?.id === next.id ? null : current);
+  }, []);
+  return (
+    <AppShellProvider value={{
+      bottomPanel: panel,
+      registerBottomPanel,
+      setViewSidebarWidth: () => undefined,
+      viewSidebarWidth: 280,
+      active: true,
+    }}>
+      {children}
+      {panel?.open ? <aside className="app-bottom-panel"><div className="app-bottom-panel__content">{panel.content}</div></aside> : null}
+    </AppShellProvider>
+  );
+}
+
 describe('compact detail pane shell', () => {
   it('synchronously discards another conversation\'s preview and Preview tab', () => {
     const target = {
@@ -256,12 +276,80 @@ describe('compact detail pane shell', () => {
       'conversation-new',
       { conversationId: 'conversation-old', previewTarget: target, height: 480 },
       { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
+      'conversation-old',
     );
     expect(scoped).toEqual({
-      identityChanged: true,
       state: { conversationId: 'conversation-new', previewTarget: null, height: 340 },
       preference: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'overview' },
+      viewIdentityChanged: true,
+      preferenceIdentityChanged: true,
     });
+  });
+
+  it('rejects persisted Preview when hydration finishes after switching conversations', async () => {
+    const first = mockConversationDetail(defaultControl);
+    const second = {
+      ...first,
+      id: '01a01639-6146-77c1-8616-6878ae755368',
+      session_id: 'session-detail-shell-new',
+      title: 'New conversation',
+    };
+    const hydration = deferred<Awaited<ReturnType<typeof api.getUserChatBottomShelfSetting>>>();
+    vi.mocked(api.getUserChatBottomShelfSetting).mockReturnValue(hydration.promise);
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
+      const selected = id === second.id ? second : first;
+      const block = { ...transcriptBlock, id: `block-${id}`, conversation_id: id };
+      return positionPayload(selected, [block]);
+    });
+    vi.mocked(api.getConversationControl).mockImplementation(async (id) => ({
+      ...defaultControl,
+      conversation_id: id,
+      provider_session_id: id === second.id ? second.session_id : first.session_id,
+    }));
+    const resolveAgentSession = vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
+      provider: null,
+      provider_session_id: second.session_id,
+      truncated: false,
+      matches: [],
+    });
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+
+    const view = (initialConversationId: string) => (
+      <MountedBottomPanelShell>
+        <ConversationsView
+          conversations={[first, second]}
+          consoleSessions={[]}
+          initialConversationId={initialConversationId}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewSession={() => undefined}
+        />
+      </MountedBottomPanelShell>
+    );
+    const { rerender } = render(view(first.id));
+    await screen.findByText('Preserve the whole conversation export.');
+    rerender(view(second.id));
+    await waitFor(() => expect(vi.mocked(api.getConversationWindow)).toHaveBeenCalledWith(
+      second.id,
+      expect.anything(),
+    ));
+
+    hydration.resolve({
+      version: 1,
+      key: 'chat_bottom_shelf',
+      value: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
+      revision: 2,
+    });
+
+    expect((await screen.findByRole('tab', { name: 'Session Overview' })).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Preview' }).getAttribute('aria-selected')).toBe('false');
+    expect(screen.queryByText('Nothing selected for preview.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear preview' })).toBeNull();
+    await waitFor(() => expect(resolveAgentSession).toHaveBeenCalledWith(second.session_id));
+    expect(resolveAgentSession).not.toHaveBeenCalledWith(first.session_id);
+    await waitFor(() => expect(api.updateUserChatBottomShelfSetting).toHaveBeenCalledWith(
+      expect.objectContaining({ tab: 'overview' }),
+    ));
   });
 
   it('registers the Chat shelf in the shared main-column boundary without remounting transcript scroll', async () => {
@@ -322,28 +410,8 @@ describe('compact detail pane shell', () => {
     vi.spyOn(api, 'getSessions').mockResolvedValue([]);
     vi.spyOn(api, 'getLedgerIssueDetailByIssueId').mockImplementation(() => new Promise(() => undefined));
 
-    function MountedShell({ children }: { children: ComponentChildren }): JSX.Element {
-      const [panel, setPanel] = useState<AppBottomPanelDescriptor | null>(null);
-      const registerBottomPanel = useCallback((next: AppBottomPanelDescriptor) => {
-        setPanel(next);
-        return () => setPanel((current) => current?.id === next.id ? null : current);
-      }, []);
-      return (
-        <AppShellProvider value={{
-          bottomPanel: panel,
-          registerBottomPanel,
-          setViewSidebarWidth: () => undefined,
-          viewSidebarWidth: 280,
-          active: true,
-        }}>
-          {children}
-          {panel?.open ? <aside className="app-bottom-panel"><div className="app-bottom-panel__content">{panel.content}</div></aside> : null}
-        </AppShellProvider>
-      );
-    }
-
     const { container } = render(
-      <MountedShell>
+      <MountedBottomPanelShell>
         <ConversationsView
           conversations={[scopedConversation]}
           consoleSessions={[]}
@@ -352,7 +420,7 @@ describe('compact detail pane shell', () => {
           onSelectSession={() => undefined}
           onNewSession={() => undefined}
         />
-      </MountedShell>,
+      </MountedBottomPanelShell>,
     );
     await screen.findByRole('tab', { name: 'Session Overview' });
     const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;

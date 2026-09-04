@@ -3,6 +3,10 @@
   background: var(--surface-main);
 }
 
+.app-bottom-panel__content > .chat-entity-link-boundary {
+  height: 100%;
+}
+
 .chat-bottom-shelf .detail-pane-shell__header {
   height: auto;
   min-height: 42px;

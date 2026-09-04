@@ -120,14 +120,22 @@ export function scopeConversationBottomShelf(
   conversationId: string,
   state: ConversationBottomShelfViewState,
   preference: ChatBottomShelfPreference,
-): { state: ConversationBottomShelfViewState; preference: ChatBottomShelfPreference; identityChanged: boolean } {
-  if (state.conversationId === conversationId) {
-    return { state, preference, identityChanged: false };
-  }
+  preferenceConversationId: string,
+): {
+  state: ConversationBottomShelfViewState;
+  preference: ChatBottomShelfPreference;
+  viewIdentityChanged: boolean;
+  preferenceIdentityChanged: boolean;
+} {
+  const viewIdentityChanged = state.conversationId !== conversationId;
+  const preferenceIdentityChanged = preferenceConversationId !== conversationId;
   return {
-    state: { conversationId, previewTarget: null, height: 340 },
-    preference: preference.tab === 'preview' ? { ...preference, tab: 'overview' } : preference,
-    identityChanged: true,
+    state: viewIdentityChanged ? { conversationId, previewTarget: null, height: 340 } : state,
+    preference: (viewIdentityChanged || preferenceIdentityChanged) && preference.tab === 'preview'
+      ? { ...preference, tab: 'overview' }
+      : preference,
+    viewIdentityChanged,
+    preferenceIdentityChanged,
   };
 }
 
@@ -1083,6 +1091,7 @@ function ConversationDetail({
     previewTarget: null,
     height: 340,
   });
+  const [bottomShelfPreferenceConversationId, setBottomShelfPreferenceConversationId] = useState(conversationId);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1103,22 +1112,27 @@ function ConversationDetail({
     conversationId,
     bottomShelfViewState,
     bottomShelfPreference,
+    bottomShelfPreferenceConversationId,
   );
-  const bottomShelfIdentityChanged = scopedBottomShelf.identityChanged;
   const currentBottomShelfViewState = scopedBottomShelf.state;
   const currentBottomShelfPreference = scopedBottomShelf.preference;
 
   useEffect(() => {
-    if (!bottomShelfIdentityChanged) return;
-    setBottomShelfViewState({ conversationId, previewTarget: null, height: 340 });
-    if (bottomShelfPreferenceState.ready && bottomShelfPreference.tab === 'preview') {
-      setBottomShelfPreference((current) => ({ ...current, tab: 'overview' }));
+    if (scopedBottomShelf.viewIdentityChanged) {
+      setBottomShelfViewState({ conversationId, previewTarget: null, height: 340 });
+    }
+    if (scopedBottomShelf.preferenceIdentityChanged && bottomShelfPreferenceState.ready) {
+      setBottomShelfPreferenceConversationId(conversationId);
+      if (bottomShelfPreference.tab === 'preview') {
+        setBottomShelfPreference((current) => ({ ...current, tab: 'overview' }));
+      }
     }
   }, [
-    bottomShelfIdentityChanged,
     bottomShelfPreference.tab,
     bottomShelfPreferenceState.ready,
     conversationId,
+    scopedBottomShelf.preferenceIdentityChanged,
+    scopedBottomShelf.viewIdentityChanged,
     setBottomShelfPreference,
   ]);
 

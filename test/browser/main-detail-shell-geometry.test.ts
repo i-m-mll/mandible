@@ -24,7 +24,11 @@ type Geometry = {
   slots: Array<string | null>;
   productionClass: string | null;
   bottomPanel: Edges;
+  bottomBoundary: Edges | null;
   bottomShell: Edges;
+  bottomHeader: Edges | null;
+  bottomBody: Edges | null;
+  bottomFooter: Edges | null;
   transcript: Edges | null;
   composer: Edges | null;
   scrollTopBefore: number | null;
@@ -140,7 +144,11 @@ function renderGeometrySuite(): Geometry[] {
               ? shell.classList.contains('graph-detail-pane') ? 'graph-detail-pane' : null
               : shell.classList.contains('timeline-inspector') ? 'timeline-inspector' : null,
           bottomPanel: rect(root, '.app-bottom-panel'),
+          bottomBoundary: rect(root, '.app-bottom-panel__content > .chat-entity-link-boundary'),
           bottomShell: rect(root, '.app-bottom-panel .detail-pane-shell'),
+          bottomHeader: rect(root, '.app-bottom-panel .detail-pane-shell__header'),
+          bottomBody: rect(root, '.app-bottom-panel .detail-pane-shell__body'),
+          bottomFooter: rect(root, '.app-bottom-panel .detail-pane-shell__footer'),
           transcript: rect(root, '.conv-transcript'),
           composer: rect(root, '.conv-compose'),
           scrollTopBefore,
@@ -155,7 +163,7 @@ function renderGeometrySuite(): Geometry[] {
     };
     for (const width of widths) {
       const frame = document.createElement('iframe');
-      frame.style.cssText = 'display:block;border:0;width:' + width + 'px;height:1px';
+      frame.style.cssText = 'display:block;border:0;width:' + width + 'px;height:540px';
       frame.addEventListener('load', async () => {
         try {
           if (frame.contentDocument.title !== 'ready') throw new Error('fixture runtime did not reach ready');
@@ -227,6 +235,18 @@ describe('production main-detail shell geometry', () => {
           width: geometry.width - detailLeft,
         });
         expectSameHorizontalEdges(geometry.bottomShell, geometry.bottomPanel);
+        expect(geometry.bottomBoundary).not.toBeNull();
+        expect(geometry.bottomHeader).not.toBeNull();
+        expect(geometry.bottomBody).not.toBeNull();
+        expect(geometry.bottomFooter).not.toBeNull();
+        expect(Math.abs(geometry.bottomBoundary!.top - geometry.bottomPanel.top)).toBeLessThanOrEqual(1);
+        expect(geometry.bottomBoundary!.bottom).toBe(geometry.bottomPanel.bottom);
+        expect(geometry.bottomShell).toMatchObject(geometry.bottomBoundary!);
+        expect(geometry.bottomHeader!.top).toBe(geometry.bottomShell.top);
+        expect(geometry.bottomBody!.top).toBe(geometry.bottomHeader!.bottom);
+        expect(geometry.bottomBody!.bottom).toBe(geometry.bottomFooter!.top);
+        expect(geometry.bottomFooter!.bottom).toBe(geometry.bottomShell.bottom);
+        expect(geometry.bottomBody!.height).toBeGreaterThan(0);
       } else {
         expect(geometry.footer).toBeNull();
         expect(geometry.slots).toEqual(['header', 'body', 'overlay-host']);
