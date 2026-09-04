@@ -6,7 +6,10 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { USER_SETTING_EVENTS } from "../../src/contracts.js";
+import {
+  DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE,
+  USER_SETTING_EVENTS,
+} from "../../src/contracts.js";
 import { openDb, type Db } from "../../src/db.js";
 import { registerUserSettingsRoutes } from "../../src/routes/user-settings.js";
 import type {
@@ -167,14 +170,23 @@ describe("authenticated user settings routes", () => {
     const user = createUser(db, { slug: "restart-user", kind: "human", display_name: "Restart User" });
     let routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), "space-grotesk", "detail_font_face"));
+    const value = JSON.stringify({
+      ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE,
+      visible: false,
+      tab: "preview",
+      clickAction: "open",
+    });
+    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), value, "chat_bottom_shelf"));
     db.close();
 
     db = openDb(dbPath);
     routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "detail_font_face")))
-      .toMatchObject({ statusCode: 200, payload: { version: 1, value: "space-grotesk", revision: 1 } });
+    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "chat_bottom_shelf")))
+      .toMatchObject({
+        statusCode: 200,
+        payload: { version: 1, key: "chat_bottom_shelf", value, revision: 1 },
+      });
     db.close();
   });
 

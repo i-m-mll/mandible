@@ -3,17 +3,13 @@ import type {
   ConversationLifecycleEvent,
   ConversationOutboxItem,
   ConversationRuntimeOptions,
+  ProviderAdapterCapabilities,
+  ProviderAdapterEvent,
+  ProviderDeliveryReceipt,
   Result,
 } from "./types.js";
 
-export type ControllerAdapterCapabilities = {
-  resume_provider_session: boolean;
-  resume_message_anchor: boolean;
-  send: boolean;
-  steer: boolean;
-  queue: boolean;
-  stop: boolean;
-};
+export type ControllerAdapterCapabilities = ProviderAdapterCapabilities;
 
 export type ControllerLease = {
   controller_instance_id: string;
@@ -36,7 +32,7 @@ export interface ConversationControllerAdapter {
   readonly provider: string;
   readonly capabilities: ControllerAdapterCapabilities;
   acquire(input: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>>;
-  deliver(item: ConversationOutboxItem): Promise<Result<{ provider_receipt_id: string }, ConversationControlError>>;
+  deliver(item: ConversationOutboxItem): Promise<Result<ProviderDeliveryReceipt, ConversationControlError>>;
   probe(input: {
     conversation_id: string;
     provider_session_id: string;
@@ -51,6 +47,7 @@ export interface ConversationControllerAdapter {
     generation: number;
   }): Promise<Result<void, ConversationControlError>>;
   subscribe(listener: (event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>): () => void;
+  subscribeProviderEvents(listener: (event: ProviderAdapterEvent) => void): () => void;
   close(): Promise<void>;
 }
 

@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ComponentChildren } from 'preact';
+import { useCallback, useState } from 'preact/hooks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
+import { AppShellProvider, type AppBottomPanelDescriptor } from '../../ui/src/app-shell.js';
+import { DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE } from '../../src/contracts.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
@@ -13,17 +17,22 @@ import {
   conversationAnchorHref,
   conversationTurnSelectionHref,
   getConversationHeaderProviderLabel,
+  scopeConversationBottomShelf,
 } from '../../ui/src/views/conversations.js';
 
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
+    options = { theme: {} };
+    cols = 80;
+    rows = 24;
     loadAddon(): void {}
     open(): void {}
     write(): void {}
     writeln(): void {}
     clear(): void {}
     focus(): void {}
+    onData(): { dispose: () => void } { return { dispose: () => undefined }; }
     dispose(): void {}
   },
 }));
@@ -31,7 +40,28 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  });
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
+  vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ groups: [], limit: 50 });
+  vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
+    version: 1, key: 'chat_shown_projects', value: [], revision: 0,
+  });
+  vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
+  }));
+  vi.spyOn(api, 'getUserChatBottomShelfSetting').mockResolvedValue({
+    version: 1,
+    key: 'chat_bottom_shelf',
+    value: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE },
+    revision: 1,
+  });
+  vi.spyOn(api, 'updateUserChatBottomShelfSetting').mockImplementation(async (value) => ({
+    version: 1, key: 'chat_bottom_shelf', value, revision: 2,
+  }));
 });
 
 afterEach(() => {
@@ -70,6 +100,8 @@ const defaultControl: ConversationControlSnapshot = {
   conversation_id: conversation.id,
   provider: 'codex',
   provider_session_id: conversation.session_id,
+  provider_mode: null,
+  provider_capabilities: null,
   revision: 0,
   ownership: { kind: 'none', generation: 0 },
   controller: { kind: 'stopped', at: 1 },
@@ -212,7 +244,326 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function MountedBottomPanelShell({ children }: { children: ComponentChildren }): JSX.Element {
+  const [panel, setPanel] = useState<AppBottomPanelDescriptor | null>(null);
+  const registerBottomPanel = useCallback((next: AppBottomPanelDescriptor) => {
+    setPanel(next);
+    return () => setPanel((current) => current?.id === next.id ? null : current);
+  }, []);
+  return (
+    <AppShellProvider value={{
+      bottomPanel: panel,
+      registerBottomPanel,
+      setViewSidebarWidth: () => undefined,
+      viewSidebarWidth: 280,
+      active: true,
+    }}>
+      {children}
+      {panel?.open ? <aside className="app-bottom-panel"><div className="app-bottom-panel__content">{panel.content}</div></aside> : null}
+    </AppShellProvider>
+  );
+}
+
 describe('compact detail pane shell', () => {
+  it('synchronously discards another conversation\'s preview and Preview tab', () => {
+    const target = {
+      kind: 'issue' as const,
+      ref: 'old-issue',
+      href: '#/issues?issue=old-issue',
+      label: 'old-issue',
+    };
+    const scoped = scopeConversationBottomShelf(
+      'conversation-new',
+      { conversationId: 'conversation-old', previewTarget: target, height: 480 },
+      { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
+      'conversation-old',
+    );
+    expect(scoped).toEqual({
+      state: { conversationId: 'conversation-new', previewTarget: null, height: 340 },
+      preference: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'overview' },
+      viewIdentityChanged: true,
+      preferenceIdentityChanged: true,
+    });
+  });
+
+  it('rejects persisted Preview when hydration finishes after switching conversations', async () => {
+    const first = mockConversationDetail(defaultControl);
+    const second = {
+      ...first,
+      id: '01a01639-6146-77c1-8616-6878ae755368',
+      session_id: 'session-detail-shell-new',
+      title: 'New conversation',
+    };
+    const hydration = deferred<Awaited<ReturnType<typeof api.getUserChatBottomShelfSetting>>>();
+    vi.mocked(api.getUserChatBottomShelfSetting).mockReturnValue(hydration.promise);
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
+      const selected = id === second.id ? second : first;
+      const block = { ...transcriptBlock, id: `block-${id}`, conversation_id: id };
+      return positionPayload(selected, [block]);
+    });
+    vi.mocked(api.getConversationControl).mockImplementation(async (id) => ({
+      ...defaultControl,
+      conversation_id: id,
+      provider_session_id: id === second.id ? second.session_id : first.session_id,
+    }));
+    const resolveAgentSession = vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
+      provider: null,
+      provider_session_id: second.session_id,
+      truncated: false,
+      matches: [],
+    });
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+
+    const view = (initialConversationId: string) => (
+      <MountedBottomPanelShell>
+        <ConversationsView
+          conversations={[first, second]}
+          consoleSessions={[]}
+          initialConversationId={initialConversationId}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewSession={() => undefined}
+        />
+      </MountedBottomPanelShell>
+    );
+    const { rerender } = render(view(first.id));
+    await screen.findByText('Preserve the whole conversation export.');
+    rerender(view(second.id));
+    await waitFor(() => expect(vi.mocked(api.getConversationWindow)).toHaveBeenCalledWith(
+      second.id,
+      expect.anything(),
+    ));
+
+    hydration.resolve({
+      version: 1,
+      key: 'chat_bottom_shelf',
+      value: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
+      revision: 2,
+    });
+
+    expect((await screen.findByRole('tab', { name: 'Session Overview' })).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Preview' }).getAttribute('aria-selected')).toBe('false');
+    expect(screen.queryByText('Nothing selected for preview.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear preview' })).toBeNull();
+    await waitFor(() => expect(resolveAgentSession).toHaveBeenCalledWith(second.session_id));
+    expect(resolveAgentSession).not.toHaveBeenCalledWith(first.session_id);
+    await waitFor(() => expect(api.updateUserChatBottomShelfSetting).toHaveBeenCalledWith(
+      expect.objectContaining({ tab: 'overview' }),
+    ));
+  });
+
+  it('registers the Chat shelf in the shared main-column boundary without remounting transcript scroll', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl);
+    let descriptor: AppBottomPanelDescriptor | null = null;
+    const registerBottomPanel = (next: AppBottomPanelDescriptor) => {
+      descriptor = next;
+      return () => { if (descriptor?.id === next.id) descriptor = null; };
+    };
+    const { container } = render(
+      <AppShellProvider value={{
+        bottomPanel: null,
+        registerBottomPanel,
+        setViewSidebarWidth: () => undefined,
+        viewSidebarWidth: 280,
+        active: true,
+      }}>
+        <ConversationsView
+          conversations={[scopedConversation]}
+          consoleSessions={[]}
+          initialConversationId={scopedConversation.id}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewSession={() => undefined}
+        />
+      </AppShellProvider>,
+    );
+
+    await waitFor(() => expect(descriptor?.id).toBe('chat-bottom-shelf'));
+    expect(descriptor).toMatchObject({
+      title: 'Chat shelf',
+      ariaLabel: 'Chat bottom shelf',
+      open: true,
+    });
+    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 137;
+    fireEvent.scroll(scroll);
+    const sameScroll = scroll;
+    descriptor!.onOpenChange(false);
+    await waitFor(() => expect(api.updateUserChatBottomShelfSetting).toHaveBeenCalled());
+    expect(container.querySelector('.stream-renderer__scroll')).toBe(sameScroll);
+    expect(sameScroll.scrollTop).toBe(137);
+
+  });
+
+  it('preserves the mounted transcript while previewing and atomically persists clear-to-Overview', async () => {
+    const issueBlock = {
+      ...transcriptBlock,
+      content: 'Inspect [issue:5096e37] without leaving Chat.',
+    };
+    const scopedConversation = mockConversationDetail(defaultControl, [issueBlock]);
+    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
+      provider: null,
+      provider_session_id: scopedConversation.session_id,
+      truncated: false,
+      matches: [],
+    });
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+    vi.spyOn(api, 'getLedgerIssueDetailByIssueId').mockImplementation(() => new Promise(() => undefined));
+
+    const { container } = render(
+      <MountedBottomPanelShell>
+        <ConversationsView
+          conversations={[scopedConversation]}
+          consoleSessions={[]}
+          initialConversationId={scopedConversation.id}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewSession={() => undefined}
+        />
+      </MountedBottomPanelShell>,
+    );
+    await screen.findByRole('tab', { name: 'Session Overview' });
+    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 137;
+    fireEvent.scroll(scroll);
+
+    fireEvent.click(await screen.findByRole('link', { name: /5096e37/ }));
+    expect((await screen.findByRole('tab', { name: 'Preview' })).getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByLabelText('Loading issue detail')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear preview' }));
+
+    await waitFor(() => {
+      const calls = vi.mocked(api.updateUserChatBottomShelfSetting).mock.calls;
+      expect(calls.at(-1)?.[0]).toMatchObject({ tab: 'overview' });
+    });
+    expect(screen.getByRole('tab', { name: 'Session Overview' }).getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('.stream-renderer__scroll')).toBe(scroll);
+    expect(scroll.scrollTop).toBe(137);
+  });
+
+  it('routes every Chat detail state through one typed frame construction', () => {
+    const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
+    const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();
+    expect(states).toEqual(['conversation', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
+    expect(source).not.toContain('<div className="chat-live-detail">');
+    expect(source).not.toContain('return <LoadingSkeleton variant="detail"');
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
+    expect(css).not.toMatch(/\.chat-live-detail__(?:header|title|title-group|actions)\s*\{/);
+  });
+
+  it('renders the unselected Chat main area through the canonical compact shell', () => {
+    const { container } = render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const detail = container.querySelector('.chat-history-detail');
+    const shell = detail?.querySelector(':scope > .detail-pane-shell--compact');
+    const header = shell?.querySelector(':scope > .detail-pane-shell__header');
+    const body = shell?.querySelector(':scope > .detail-pane-shell__body');
+
+    expect(shell?.getAttribute('data-app-surface')).toBe('main');
+    expect(shell?.classList.contains('chat-detail-frame--no-selection')).toBe(true);
+    expect(header?.querySelector('[data-detail-pane-header-variant="compact"]')).toBeTruthy();
+    expect(header?.textContent).toBe('Chat');
+    expect(body?.textContent).toContain('Select a conversation to view it');
+    expect(detail?.querySelector(':scope > .chat-history-detail__empty')).toBeNull();
+  });
+
+  it('renders a live session through the same compact Chat detail frame', async () => {
+    const session: ConsoleSession = {
+      id: 'live-shell-session',
+      label: 'Live shell session',
+      agent_type: 'codex',
+      interaction_mode: 'direct',
+      pinned: false,
+      status: 'running',
+      is_operator: false,
+      provider_session_id: null,
+      unread_count: 0,
+      created_at: 1,
+      started_at: 1,
+      stopped_at: null,
+      backend_type: 'pty',
+      transport_lane: 'pty',
+    };
+    render(
+      <ConversationsView
+        consoleSessions={[session]}
+        initialConversationId={null}
+        initialSessionId={session.id}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const heading = await screen.findByRole('heading', { name: session.label });
+    const shell = heading.closest('.detail-pane-shell');
+    expect(shell?.classList.contains('chat-detail-frame--live-session')).toBe(true);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
+      .toBeTruthy();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__body.chat-live-detail__pane'))
+      .toBeTruthy();
+  });
+
+  it('keeps the loading state inside the same compact Chat detail frame', async () => {
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(() => new Promise(() => undefined));
+    vi.spyOn(api, 'getConversationControl').mockResolvedValue(defaultControl);
+    vi.spyOn(api, 'getConversationLiveProjection').mockResolvedValue({
+      conversation_id: conversation.id,
+      provider: 'codex',
+      provider_session_id: conversation.session_id,
+      revision: 0,
+      events: [],
+    });
+
+    render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={conversation.id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const loading = await screen.findByLabelText('Loading conversation');
+    const shell = loading.closest('.detail-pane-shell');
+    expect(shell?.classList.contains('chat-detail-frame--loading')).toBe(true);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
+      .toBeTruthy();
+  });
+
+  it('renders a missing conversation through the real not-found state', async () => {
+    vi.spyOn(api, 'getConversationWindow').mockRejectedValue(new api.ApiError('Conversation not found', 404));
+    vi.spyOn(api, 'getConversationControl').mockRejectedValue(new api.ApiError('Conversation not found', 404));
+    vi.spyOn(api, 'getConversationLiveProjection').mockRejectedValue(new api.ApiError('Conversation not found', 404));
+
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={conversation.id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const message = await screen.findByText('Conversation not found.');
+    const shell = message.closest('.detail-pane-shell');
+    expect(shell?.classList.contains('chat-detail-frame--not-found')).toBe(true);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
+      .toBeTruthy();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBeNull();
+  });
+
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&block=block-42')).toEqual({ block: 'block-42' });
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
@@ -279,6 +630,7 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body');
     const retryButton = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
     expect(alert.textContent).toContain(sourceUnavailable);
+    expect(shell?.classList.contains('chat-detail-frame--error')).toBe(true);
     expect(alert.classList.contains('detail-pane-notice--compact')).toBe(true);
     expect(boundary?.getAttribute('data-detail-pane-slot')).toBe('notice');
     expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBe(boundary);
@@ -328,8 +680,10 @@ describe('compact detail pane shell', () => {
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
     const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
     expect(getComputedStyle(shell!).overflow).toBe('clip');
+    expect(shell?.classList.contains('chat-detail-frame--conversation')).toBe(true);
     expect(getComputedStyle(body!).position).toBe('relative');
-    expect(conversationCss).toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-20px;/s);
+    expect(conversationCss).not.toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-/s);
+    expect(body?.nextElementSibling).toBe(footer);
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
     expect(canonicalHeader?.textContent).not.toContain('Conversation');
     expect(canonicalHeader?.textContent).not.toContain('01a01639');

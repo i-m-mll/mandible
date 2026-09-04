@@ -38,6 +38,13 @@ import {
   ensureExactConversationFresh,
 } from "../conversations/freshness.js";
 import type { ResponseLike } from "../server.js";
+import type { ConversationExternalNavigation } from "../contracts.js";
+import type { SessionRegistry } from "../registry.js";
+import {
+  executeConversationExternalNavigation,
+  projectConversationExternalNavigation,
+  type ExternalNavigationConversation,
+} from "../conversation-external-navigation.js";
 
 // --- Row mapping helpers ---
 
@@ -84,7 +91,7 @@ interface BlockRow {
   dag_parent_uuid: string | null;
 }
 
-function mapConversation(row: ConversationRow) {
+function mapConversation(row: ConversationRow, externalNavigation?: ConversationExternalNavigation) {
   let tags: string[] = [];
   try {
     const parsed: unknown = JSON.parse(row.tags);
@@ -118,6 +125,7 @@ function mapConversation(row: ConversationRow) {
     is_sidechain: row.is_sidechain === 1,
     agent_id: row.agent_id ?? null,
     children_count: row.children_count ?? 0,
+    ...(externalNavigation ? { external_navigation: externalNavigation } : {}),
   };
 }
 
@@ -447,7 +455,7 @@ function exportToJson(
 
 // --- Route registration ---
 
-export function registerConversationRoutes(server: RouteRegistrar): void {
+export function registerConversationRoutes(server: RouteRegistrar, sessionRegistry?: SessionRegistry): void {
   const db = getDb();
   const sourceReader = new ConversationSourceReader(db);
 
@@ -733,6 +741,7 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
         sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
         return;
       }
+      const externalNavigation = projectConversationExternalNavigation(db, rows);
       sendJson(res, 200, {
         groups: groups.map((group) => ({
           key: group.key,
@@ -741,10 +750,12 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
           ...(group.project_id ? { project_id: group.project_id } : {}),
           ...(group.project_key ? { project_key: group.project_key } : {}),
           total: group.total,
-          conversations: group.rows.map((row) => mapSidebarConversation(
-            row,
-            fullTextSearch,
-          )),
+          conversations: group.rows.map((row) => ({
+            ...mapSidebarConversation(row, fullTextSearch),
+            ...(externalNavigation.has(row.id)
+              ? { external_navigation: externalNavigation.get(row.id) }
+              : {}),
+          })),
           next_cursor: group.next_cursor,
         })),
         limit,
@@ -909,8 +920,9 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
       )
       .all(...params, limit, offset) as ConversationRow[];
 
+    const externalNavigation = projectConversationExternalNavigation(db, rows);
     sendJson(res, 200, {
-      conversations: rows.map((row) => mapConversation(row)),
+      conversations: rows.map((row) => mapConversation(row, externalNavigation.get(row.id))),
       total: countRow.total,
       page,
       limit,
@@ -1008,6 +1020,25 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
       search_metrics: searched.metrics,
     });
   }, { fileRpc: "allow" });
+
+  // Exact, server-projected external focus. The destination is re-derived at
+  // action time so stale UI capability bytes cannot redirect navigation.
+  server.post("/api/conversations/:id/open-external", (req, res) => {
+    if (!sessionRegistry) {
+      sendJson(res, 503, { error: "External navigation is unavailable" });
+      return;
+    }
+    const id = req.params.id;
+    const conversation = id
+      ? db.prepare("SELECT id, source, session_id FROM conversations WHERE id = ?").get(id) as ExternalNavigationConversation | undefined
+      : undefined;
+    if (!conversation) {
+      sendJson(res, 404, { error: "Conversation not found" });
+      return;
+    }
+    const result = executeConversationExternalNavigation(db, sessionRegistry, conversation);
+    sendJson(res, result.ok ? 200 : 409, result.ok ? result : { error: result.message });
+  }, { fileRpc: "deny" });
 
   // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
@@ -1247,9 +1278,10 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
 
     const startPosition = readableBlocks[0]?.position ?? null;
     const endPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
+    const externalNavigation = projectConversationExternalNavigation(db, [conv]).get(conv.id);
     const mapped = useSourceReader
-      ? mapConversation(maskSourceBackedConversationRow(conv))
-      : mapConversation(conv);
+      ? mapConversation(maskSourceBackedConversationRow(conv), externalNavigation)
+      : mapConversation(conv, externalNavigation);
     mapped.children_count = children.length;
     const hasBefore = startPosition !== null && (useSourceReader
       ? startPosition > 0

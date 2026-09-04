@@ -29,6 +29,10 @@ export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   // dashboards need it to exchange their one-time bootstrap proof before any
   // identity-scoped reads can succeed.
   "POST /api/client-auth/handshake",
+  // Chat project visibility is host/user view intent stored outside both the
+  // ledger and copied preview DB. Main and reject-mode previews deliberately
+  // share this one revisioned authority.
+  "PUT /api/host-preferences/chat-shown-projects",
   "POST /api/briefing-destination-routes/plan",
   "POST /api/timeline/project",
 ]);
@@ -47,6 +51,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/briefing-groups", category: "briefing" },
   { prefix: "/api/briefings", category: "briefing" },
   { prefix: "/api/console", category: "console" },
+  { prefix: "/api/conversation-spawns", category: "conversations" },
   { prefix: "/api/conversations", category: "conversations" },
   { prefix: "/api/conversation-custody", category: "conversations" },
   { prefix: "/api/inbox", category: "inbox" },

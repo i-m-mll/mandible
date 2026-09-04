@@ -52,7 +52,7 @@ type StoredDetail = {
   unknown_prior_owner?: "mandible" | "external" | "unknown";
 };
 
-type PreparedSubmission = AcceptedConversationSubmission & {
+type PreparedSubmission = Omit<AcceptedConversationSubmission, "provider_receipt"> & {
   acquisition_required: boolean;
   already_delivered: boolean;
   adapter_id: string;
@@ -592,6 +592,8 @@ export class ConversationControlStore {
       conversation_id: row.conversation_id,
       provider: row.provider,
       provider_session_id: row.provider_session_id,
+      provider_mode: capabilities?.mode ?? null,
+      provider_capabilities: capabilities,
       revision,
       ownership: owner,
       controller,

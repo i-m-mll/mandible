@@ -45,9 +45,11 @@ import { registerLedgerChangeRoutes } from "./routes/ledger-changes.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerUserSettingsRoutes } from "./routes/user-settings.js";
+import { registerHostUserPreferencesRoutes } from "./routes/host-user-preferences.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerConversationControlRoutes } from "./routes/conversation-control.js";
+import { registerConversationSpawnRoutes } from "./routes/conversation-spawn.js";
 import { ConversationControlService } from "./conversation-control/service.js";
 import { registerDefaultConversationControllers } from "./conversation-control/default-adapters.js";
 import { registerConversationCustodyRoutes } from "./routes/conversation-custody.js";
@@ -274,6 +276,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   registerUserSettingsRoutes(router, db);
+  registerHostUserPreferencesRoutes(router);
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
   registerBackupRoutes(router);
 
@@ -299,6 +302,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       event: "conversation:control-updated",
       data: snapshot,
     }),
+    onProviderEvent: (event) => broadcast({
+      type: "conversation:provider-event",
+      event: "conversation:provider-event",
+      data: event,
+    }),
   });
   registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
@@ -307,6 +315,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
+  registerConversationSpawnRoutes(router, db, sessionManager);
   registerHookRoutes(router);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
@@ -334,7 +343,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
-  registerConversationRoutes(router);
+  registerConversationRoutes(router, sessionRegistry);
   registerConversationControlRoutes(router, conversationControl);
   registerConversationCustodyRoutes(router, db);
 

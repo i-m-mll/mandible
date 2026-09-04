@@ -1,6 +1,11 @@
-import { BASELINE_SCHEMA_VERSION, createFreshSchemaBaseline } from "./db-baseline.js";
+import {
+  BASELINE_SCHEMA_VERSION,
+  createFreshSchemaBaseline,
+  USER_SETTINGS_SCHEMA_SQL,
+} from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
@@ -568,6 +573,22 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: [
       `ALTER TABLE conversation_control_outbox ADD COLUMN runtime_options_json TEXT NOT NULL DEFAULT '{}'
         CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object')`,
+    ],
+  },
+  {
+    version: 169,
+    name: "mandible_conversation_spawn_authority",
+    statements: [...CONVERSATION_SPAWN_SCHEMA_SQL],
+  },
+  {
+    version: 170,
+    name: "chat_bottom_shelf_user_setting",
+    statements: [
+      "ALTER TABLE user_settings RENAME TO user_settings_v169",
+      USER_SETTINGS_SCHEMA_SQL,
+      `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
+       SELECT user_id, key, value, revision, updated_at FROM user_settings_v169`,
+      "DROP TABLE user_settings_v169",
     ],
   },
 ];

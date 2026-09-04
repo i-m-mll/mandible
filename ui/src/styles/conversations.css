@@ -229,18 +229,9 @@
   overflow: hidden;
 }
 
-/* Let the transcript continue one text line behind the opaque composer rather
- * than stopping noticeably above it. The composer remains the interaction
- * owner and its shadow makes the overlap legible. */
 .conv-detail__footer {
   position: relative;
   z-index: 2;
-  margin-top: -20px;
-  pointer-events: none;
-}
-
-.conv-detail__footer > * {
-  pointer-events: auto;
 }
 
 .conv-detail__shell-header {
@@ -372,48 +363,6 @@
 
 .conv-actions__menu button:hover {
   background: var(--neutral-alpha-06);
-}
-
-.chat-live-detail {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  overflow: hidden;
-}
-
-.chat-live-detail__header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 48px;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.chat-live-detail__title-group {
-  min-width: 0;
-}
-
-.chat-live-detail__title {
-  margin: 0 0 3px;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-live-detail__actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .chat-live-detail__pane {
@@ -1164,23 +1113,6 @@
 /* ── Responsive: conversations ── */
 
 @media (max-width: 900px) {
-  .chat-history-view {
-    flex-direction: column;
-    height: auto;
-  }
-
-  .chat-history-sidebar {
-    width: 100%;
-    min-width: 0;
-    max-height: 40vh;
-    border-right: none;
-    border-bottom: 1px solid var(--neutral-alpha-06);
-  }
-
-  .chat-history-detail {
-    min-height: 50vh;
-  }
-
   .conv-grid {
     grid-template-columns: 1fr;
   }

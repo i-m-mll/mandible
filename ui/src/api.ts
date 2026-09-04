@@ -1,4 +1,4 @@
-import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
+import { LIST_ENVELOPE_KEYS, parseChatBottomShelfPreference } from '../../src/contracts';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
@@ -58,6 +58,8 @@ import type {
   ConversationControlOperation as ContractConversationControlOperation,
   ConversationRuntimeOptions as ContractConversationRuntimeOptions,
   ConversationControlSnapshot as ContractConversationControlSnapshot,
+  ProviderAdapterEvent as ContractProviderAdapterEvent,
+  ProviderLiveProjection as ContractProviderLiveProjection,
   OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
   OperationalIncidentAttention as ContractOperationalIncidentAttention,
   OperationalIncidentCondition as ContractOperationalIncidentCondition,
@@ -73,6 +75,7 @@ import type {
   SeedSpaceRequest,
   SeedSpaceResult,
   ResolverResult,
+  ChatBottomShelfPreference,
 } from '../../src/contracts';
 export type {
   Space,
@@ -806,6 +809,10 @@ export async function navigateSession(sessionId: string): Promise<void> {
     }
     throw new Error(message);
   }
+}
+
+export async function openConversationExternally(conversationId: string): Promise<void> {
+  await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/open-external`);
 }
 
 export async function killSession(sessionId: string): Promise<void> {
@@ -1793,6 +1800,105 @@ export async function updateUserTypographySetting(
   return parseUserTypographySetting(key, await parseMaybeJson(response));
 }
 
+export type {
+  ChatBottomShelfPreference,
+  ChatBottomShelfTab,
+  ChatEntityClickAction,
+} from '../../src/contracts';
+
+export type UserChatBottomShelfSetting = {
+  version: 1;
+  key: 'chat_bottom_shelf';
+  value: ChatBottomShelfPreference | null;
+  revision: number;
+};
+
+function parseUserChatBottomShelfSetting(payload: unknown): UserChatBottomShelfSetting {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  const parsedValue = typeof record?.value === 'string'
+    ? (() => {
+      try { return parseChatBottomShelfPreference(JSON.parse(record.value)); }
+      catch { return null; }
+    })()
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'chat_bottom_shelf'
+    || (record.value !== null && parsedValue === null)
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) throw new Error('Invalid authenticated Chat bottom shelf response');
+  return {
+    version: 1,
+    key: 'chat_bottom_shelf',
+    value: parsedValue,
+    revision: record.revision as number,
+  };
+}
+
+export async function getUserChatBottomShelfSetting(): Promise<UserChatBottomShelfSetting> {
+  const response = await apiGet('/api/user-settings/chat_bottom_shelf');
+  return parseUserChatBottomShelfSetting(await parseMaybeJson(response));
+}
+
+export async function updateUserChatBottomShelfSetting(
+  value: ChatBottomShelfPreference,
+): Promise<UserChatBottomShelfSetting> {
+  const response = await apiPut('/api/user-settings/chat_bottom_shelf', { value: JSON.stringify(value) });
+  return parseUserChatBottomShelfSetting(await parseMaybeJson(response));
+}
+
+export type ChatShownProjectPreferenceValue = {
+  projectId: string;
+  checkoutId: string;
+};
+
+export type ChatShownProjectsPreference = {
+  version: 1;
+  key: 'chat_shown_projects';
+  value: ChatShownProjectPreferenceValue[];
+  revision: number;
+};
+
+function parseChatShownProjectsPreference(payload: unknown): ChatShownProjectsPreference {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'chat_shown_projects'
+    || !Array.isArray(record.value)
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+    || record.value.some((candidate) => (
+      !candidate
+      || typeof candidate !== 'object'
+      || Array.isArray(candidate)
+      || typeof (candidate as Record<string, unknown>).projectId !== 'string'
+      || typeof (candidate as Record<string, unknown>).checkoutId !== 'string'
+    ))
+  ) throw new Error('Invalid Chat shown-project preference response');
+  return record as ChatShownProjectsPreference;
+}
+
+export async function getChatShownProjectsPreference(): Promise<ChatShownProjectsPreference> {
+  const response = await apiGet('/api/host-preferences/chat-shown-projects');
+  return parseChatShownProjectsPreference(await parseMaybeJson(response));
+}
+
+export async function updateChatShownProjectsPreference(
+  value: ChatShownProjectPreferenceValue[],
+  expectedRevision: number,
+): Promise<ChatShownProjectsPreference> {
+  const response = await apiPut('/api/host-preferences/chat-shown-projects', {
+    value,
+    expected_revision: expectedRevision,
+  });
+  return parseChatShownProjectsPreference(await parseMaybeJson(response));
+}
+
 /**
  * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
  * (terminal driving) is local-only and off by default, and the gate is
@@ -1934,7 +2040,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
+  options?: { idempotency_key?: string; initial_message?: string; channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -1982,6 +2088,12 @@ export async function createConsoleSession(
   if (options?.transport_lane) {
     body.transport_lane = options.transport_lane;
   }
+  if (!body.transport_lane) {
+    body.transport_lane = backendType === 'sdk' ? 'sdk'
+      : backendType === 'pty' ? 'pty'
+        : backendType === 'spawn' ? 'spawn'
+          : 'acp';
+  }
   if (options?.runOptions) body.runOptions = options.runOptions;
   // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
   // which gates tools through canUseTool and Mandible's permission cards.
@@ -2008,7 +2120,29 @@ export async function createConsoleSession(
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
-  const response = await apiPost('/api/console/sessions', body);
+  const projects = options?.cwd ? await listCanonicalProjects() : [];
+  const checkout = projects.flatMap((project) => project.checkouts.map((candidate) => ({ project, checkout: candidate })))
+    .find((candidate) => candidate.checkout.root === options?.cwd);
+  if (options?.cwd && !checkout) throw new Error('The selected checkout is not registered with Mandible.');
+  const provider = backend === 'claude' ? 'claude_code' : backend;
+  const response = await apiPost('/api/conversation-spawns', {
+    schema: 'mandible-conversation-spawn-request@1',
+    idempotency_key: options?.idempotency_key ?? crypto.randomUUID(),
+    provider,
+    label,
+    initial_message: options?.initial_message ?? label,
+    placement: checkout
+      ? { project_id: checkout.project.id, checkout_id: checkout.checkout.id }
+      : { project_id: null, checkout_id: null },
+    topology: { kind: 'top-level' },
+    command: {
+      name: body.command,
+      backend_type: body.backend_type,
+      transport_lane: body.transport_lane,
+      channel_enabled: body.channel_enabled === true,
+      run_options: body.runOptions ?? {},
+    },
+  });
   const json = await parseMaybeJson(response);
   return json as {
     session: {
@@ -2424,6 +2558,8 @@ export type ConversationControlOperation = ContractConversationControlOperation;
 export type ConversationRuntimeOptions = ContractConversationRuntimeOptions;
 export type ConversationControlError = ContractConversationControlError;
 export type AcceptedConversationSubmission = ContractAcceptedConversationSubmission;
+export type ProviderAdapterEvent = ContractProviderAdapterEvent;
+export type ProviderLiveProjection = ContractProviderLiveProjection;
 
 export type ConversationControlApiError = Error & {
   status: number;
@@ -2435,6 +2571,15 @@ export async function getConversationControl(conversationId: string): Promise<Co
   const response = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/control`);
   const result = await parseMaybeJson(response) as
     | { ok: true; value: ConversationControlSnapshot }
+    | { ok: false; error: ConversationControlError };
+  if (!result.ok) throw new Error(result.error.kind);
+  return result.value;
+}
+
+export async function getConversationLiveProjection(conversationId: string): Promise<ProviderLiveProjection> {
+  const response = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/control/live`);
+  const result = await parseMaybeJson(response) as
+    | { ok: true; value: ProviderLiveProjection }
     | { ok: false; error: ConversationControlError };
   if (!result.ok) throw new Error(result.error.kind);
   return result.value;

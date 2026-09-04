@@ -3,6 +3,10 @@ export type { ChatSurfaceProps } from './ChatSurface';
 export { Shelf } from './Shelf';
 export type { ShelfItem, ShelfItemStatus, ShelfProps } from './Shelf';
 export { ChatOverlay } from './ChatOverlay';
+export { ChatBottomShelf } from './ChatBottomShelf';
+export { ChatEntityLinkBoundary } from './ChatEntityLinkBoundary';
+export type { ChatPreviewTarget } from './ChatEntityLinkBoundary';
+export { useChatBottomShelfPreference } from './useChatBottomShelfPreference';
 export type { ChatOverlayProps } from './ChatOverlay';
 export { ContextUsageRing } from './ContextUsageRing';
 export { UsageModal } from './UsageModal';
@@ -38,4 +42,5 @@ export {
   conversationBlocksToStreamEvents,
   deriveStreamingState,
   flushPendingSSE,
+  reconcileProviderProjection,
 } from './conversationEvents';

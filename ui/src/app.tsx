@@ -1553,7 +1553,7 @@ function App(): JSX.Element {
     // (ready+warm, not rebuilding) before the stall is judged non-transient and
     // the "continue anyway" escape is surfaced.
     const STALL_ESCAPE_MS = 15_000;
-    let intervalId: ReturnType<typeof window.setInterval> | null = null;
+    let intervalId: number | null = null;
     // Give the daemon a moment to shut down before starting to poll
     const startTimer = window.setTimeout(() => {
       intervalId = window.setInterval(async () => {
@@ -1804,7 +1804,9 @@ function App(): JSX.Element {
   };
 
   const handleConsoleNewSession = async ({
+    idempotency_key,
     label,
+    initial_message,
     backend,
     kind,
     backend_type,
@@ -1813,7 +1815,9 @@ function App(): JSX.Element {
     runOptions,
     cwd,
   }: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
@@ -1824,6 +1828,8 @@ function App(): JSX.Element {
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type, {
+        idempotency_key,
+        initial_message,
         channel_enabled,
         transport_lane,
         runOptions,
@@ -2703,7 +2709,7 @@ function App(): JSX.Element {
         </main>
           {bottomPanelOpen && bottomPanel ? (
             <aside
-              className={`app-bottom-panel app-bottom-panel--${bottomPanel.layout}`}
+              className="app-bottom-panel"
               aria-label={bottomPanel.ariaLabel}
               style={{ height: `${bottomPanel.height}px` }}
             >

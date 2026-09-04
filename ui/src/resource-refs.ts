@@ -37,6 +37,14 @@ export interface ParsedResourceRef {
   display: string;
 }
 
+export type PreviewableResourceRef = {
+  kind: 'issue';
+  ref: string;
+  repoId?: string;
+  href: string;
+  label: string;
+};
+
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
 
 const LOGICAL_ARTIFACT_REF = /^artifact:(?!sha256:)([^\s]+)$/i;
@@ -228,6 +236,12 @@ export function displayResourceRef(ref: string): string {
 // --- nav hrefs ---------------------------------------------------------------
 
 export function resourceRefHref(ref: string): string {
+  const issue = issueAuthorityFromResourceRef(ref);
+  if (issue) {
+    const params = new URLSearchParams({ issue: issue.ref });
+    if (issue.repoId) params.set('repo', issue.repoId);
+    return `#/issues?${params.toString()}`;
+  }
   if (SUBMISSION_REF.test(ref.trim())) {
     return `/r/submission/${encodeURIComponent(ref.trim())}`;
   }
@@ -241,6 +255,86 @@ export function resourceRefHref(ref: string): string {
     return seriesDetailHref(selector === 'latest' ? `${seriesRef}@latest` : seriesRef);
   }
   return `#/artifacts?ref=${encodeURIComponent(ref)}`;
+}
+
+function issueParts(value: string): { ref: string; repoId?: string } | null {
+  const authority = value.trim().replace(/^issue:/i, '');
+  if (!authority) return null;
+  const slash = authority.indexOf('/');
+  return slash > 0 && slash < authority.length - 1
+    ? { repoId: authority.slice(0, slash), ref: authority.slice(slash + 1) }
+    : { ref: authority };
+}
+
+/** Resolve every canonical issue resource form through the shared grammar. */
+export function issueAuthorityFromResourceRef(value: string): { ref: string; repoId?: string } | null {
+  const parsed = parseResourceRef(value);
+  if (!parsed) return null;
+  if (parsed.kind === 'issue') return issueParts(parsed.canonical);
+  if (parsed.kind !== 'mandible') return null;
+  try {
+    const url = new URL(parsed.canonical);
+    const route = `${url.hostname}${url.pathname}`.replace(/^\/+/, '');
+    const entityMatch = route.match(/^([^/]+)\/issue\/([^/]+)$/);
+    if (entityMatch) {
+      return {
+        repoId: decodeURIComponent(entityMatch[1]),
+        ref: decodeURIComponent(entityMatch[2]),
+      };
+    }
+    if (route !== 'issues') return null;
+    const ref = url.searchParams.get('issue');
+    if (!ref) return null;
+    return { ref, repoId: url.searchParams.get('repo') ?? undefined };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a rendered anchor to a previewable resource without introducing a
+ * second link grammar. The resource wrapper is authoritative when present;
+ * ordinary issue-route anchors are admitted through the same issue authority.
+ */
+export function previewableResourceFromAnchor(anchor: HTMLAnchorElement): PreviewableResourceRef | null {
+  const wrapped = anchor.closest<HTMLElement>('[data-resource-ref]')?.dataset.resourceRef;
+  const wrappedIssue = wrapped ? issueAuthorityFromResourceRef(wrapped) : null;
+  if (wrappedIssue) {
+    return {
+      kind: 'issue',
+      ...wrappedIssue,
+      href: anchor.getAttribute('href') ?? anchor.href,
+      label: anchor.textContent?.trim() || wrappedIssue.ref,
+    };
+  }
+
+  const rawHref = anchor.getAttribute('href') ?? '';
+  const directIssue = issueAuthorityFromResourceRef(rawHref);
+  if (directIssue) {
+    return {
+      kind: 'issue',
+      ...directIssue,
+      href: rawHref,
+      label: anchor.textContent?.trim() || directIssue.ref,
+    };
+  }
+  try {
+    const url = new URL(rawHref, window.location.href);
+    const [path, query = ''] = url.hash.replace(/^#/, '').split('?');
+    if (path.replace(/^\//, '') !== 'issues') return null;
+    const params = new URLSearchParams(query);
+    const ref = params.get('issue');
+    if (!ref) return null;
+    return {
+      kind: 'issue',
+      ref,
+      repoId: params.get('repo') ?? undefined,
+      href: rawHref,
+      label: anchor.textContent?.trim() || ref,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function artifactDetailHref(id: string): string {

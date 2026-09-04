@@ -1,5 +1,5 @@
 import type { ConversationControllerAdapter } from "./adapter.js";
-import type { ConversationControlError, ConversationLifecycleEvent, Result } from "./types.js";
+import type { ConversationControlError, ConversationLifecycleEvent, ProviderAdapterEvent, Result } from "./types.js";
 
 export type AdapterLifecycleEvent = ConversationLifecycleEvent & { conversation_id: string; generation: number };
 
@@ -12,6 +12,19 @@ export class AdapterLifecycle {
   }
 
   emit(event: AdapterLifecycleEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
+
+export class AdapterProviderEvents {
+  private readonly listeners = new Set<(event: ProviderAdapterEvent) => void>();
+
+  subscribe(listener: (event: ProviderAdapterEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(event: ProviderAdapterEvent): void {
     for (const listener of this.listeners) listener(event);
   }
 }

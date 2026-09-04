@@ -348,7 +348,7 @@ function TimelineView({ active = true, ...props }: TimelineViewProps & { active?
       <RawTimelineView {...props} />
       {bottomPanel?.open && bottomPanel.content ? (
         <aside
-          className={`app-bottom-panel app-bottom-panel--${bottomPanel.layout}`}
+          className="app-bottom-panel"
           aria-label={bottomPanel.ariaLabel}
         >
           <div className="app-bottom-panel__content">
@@ -1093,7 +1093,11 @@ describe('TimelineView', () => {
     fireEvent.click(screen.getByLabelText('Zoom in'));
     expect(fetchMock.mock.calls.length).toBe(1);
 
-    expect(screen.getByLabelText('Timeline inspector').classList.contains('app-bottom-panel--anchored-detail')).toBe(true);
+    const inspector = screen.getByLabelText('Timeline inspector');
+    expect(inspector.className).toBe('app-bottom-panel');
+    expect(inspector.querySelector('.timeline-inspector.detail-pane-shell')).toBeTruthy();
+    expect(inspector.querySelector('[data-detail-pane-header-variant="compact"]')?.textContent)
+      .toContain('Timeline inspector');
     fireEvent.click(screen.getByLabelText('Collapse inspector'));
     expect(screen.getByLabelText('Show inspector')).toBeTruthy();
     await waitFor(() => {

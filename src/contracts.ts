@@ -110,8 +110,42 @@ export const USER_SETTING_KEYS = Object.freeze({
   uiFontSize: "ui_font_size",
   detailFontFace: "detail_font_face",
   detailFontSize: "detail_font_size",
+  chatBottomShelf: "chat_bottom_shelf",
 } as const);
 export type UserSettingKey = (typeof USER_SETTING_KEYS)[keyof typeof USER_SETTING_KEYS];
+
+export type ChatBottomShelfTab = "overview" | "preview";
+export type ChatEntityClickAction = "preview" | "open";
+export type ChatBottomShelfPreference = {
+  version: 1;
+  visible: boolean;
+  tab: ChatBottomShelfTab;
+  clickAction: ChatEntityClickAction;
+};
+
+export const DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE: Readonly<ChatBottomShelfPreference> = Object.freeze({
+  version: 1,
+  visible: true,
+  tab: "overview",
+  clickAction: "preview",
+});
+
+export function parseChatBottomShelfPreference(value: unknown): ChatBottomShelfPreference | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1
+    || typeof record.visible !== "boolean"
+    || (record.tab !== "overview" && record.tab !== "preview")
+    || (record.clickAction !== "preview" && record.clickAction !== "open")
+  ) return null;
+  return {
+    version: 1,
+    visible: record.visible,
+    tab: record.tab,
+    clickAction: record.clickAction,
+  };
+}
 
 export const USER_SETTING_EVENTS = Object.freeze({
   updated: "user-setting:updated",
@@ -364,8 +398,22 @@ export type {
   ConversationRuntimeOptions,
   ConversationControlSnapshot,
   ConversationSubmitRequest,
+  ProviderAdapterCapabilities,
+  ProviderAdapterEvent,
+  ProviderAdapterMode,
+  ProviderDeliveryReceipt,
+  ProviderLiveProjection,
   TurnState,
 } from "./conversation-control/types.js";
+
+export type {
+  ConversationSpawnError,
+  ConversationSpawnProvider,
+  ConversationSpawnReceipt,
+  ConversationSpawnRequest,
+  ConversationSpawnState,
+  ConversationSpawnTopology,
+} from "./conversation-spawn/types.js";
 
 
 export type StoredConversationBlock = {
@@ -381,6 +429,20 @@ export type StoredConversationBlock = {
   dag_uuid?: string | null;
   dag_parent_uuid?: string | null;
 };
+
+export type ConversationExternalNavigation =
+  | {
+      kind: "codex-desktop-task";
+      provider_session_id: string;
+      label: "Open in Codex";
+    }
+  | {
+      kind: "claude-native-background";
+      provider_session_id: string;
+      session_id: string;
+      terminal: "iterm";
+      label: "Go to terminal";
+    };
 
 export type Conversation = {
   id: string;
@@ -404,6 +466,11 @@ export type Conversation = {
   notes: string | null;
   parent_conversation_id: string | null;
   children_count: number;
+  /**
+   * Server-projected exact navigation. Absence means that no external action
+   * was proven for this conversation; clients must not infer one from source.
+   */
+  external_navigation?: ConversationExternalNavigation;
 };
 
 export type ConversationChild = {

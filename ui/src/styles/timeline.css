@@ -959,6 +959,10 @@
   padding: 14px;
 }
 
+.app-bottom-panel .timeline-inspector {
+  height: 100%;
+}
+
 .timeline-inspector__section {
   display: grid;
   gap: 12px;

@@ -7,9 +7,17 @@ import type {
 } from "./adapter.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import type { TurnStartParams, TurnSteerParams } from "./generated/codex-app-server/index.js";
-import { AdapterLifecycle, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
+import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
+import { CODEX_APP_SERVER_PROFILE } from "./provider-capabilities.js";
 import type { StructuredProcessExit, StructuredProcessSpawner } from "./structured-process.js";
-import type { ConversationControlError, ConversationLifecycleEvent, ConversationOutboxItem, Result } from "./types.js";
+import type {
+  ConversationControlError,
+  ConversationLifecycleEvent,
+  ConversationOutboxItem,
+  ProviderAdapterEvent,
+  ProviderDeliveryReceipt,
+  Result,
+} from "./types.js";
 
 type CodexController = {
   conversationId: string;
@@ -21,8 +29,10 @@ type CodexController = {
   activeNativeTurnId: string | null;
   activeControlTurnId: string | null;
   terminalNativeTurnIds: Set<string>;
-  delivered: Set<string>;
+  delivered: Map<string, ProviderDeliveryReceipt>;
   intentionalStop: boolean;
+  providerSequence: number;
+  liveMessages: Map<string, string>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -47,18 +57,12 @@ function responseTurn(value: unknown): Record<string, unknown> | null {
 }
 
 export class CodexAppServerControllerAdapter implements ConversationControllerAdapter {
-  readonly id = "codex-app-server-v2";
-  readonly provider = "codex";
-  readonly capabilities: ControllerAdapterCapabilities = {
-    resume_provider_session: true,
-    resume_message_anchor: false,
-    send: true,
-    steer: true,
-    queue: false,
-    stop: true,
-  };
+  readonly id = CODEX_APP_SERVER_PROFILE.adapter_id;
+  readonly provider = CODEX_APP_SERVER_PROFILE.provider;
+  readonly capabilities: ControllerAdapterCapabilities = CODEX_APP_SERVER_PROFILE.capabilities;
 
   private readonly lifecycle = new AdapterLifecycle();
+  private readonly providerEvents = new AdapterProviderEvents();
   private readonly controllers = new Map<string, CodexController>();
   private readonly spawnProcess: StructuredProcessSpawner | undefined;
 
@@ -97,8 +101,10 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         activeNativeTurnId: null,
         activeControlTurnId: null,
         terminalNativeTurnIds: new Set(),
-        delivered: new Set(),
+        delivered: new Map(),
         intentionalStop: false,
+        providerSequence: 0,
+        liveMessages: new Map(),
       };
       this.attach(controller);
       this.controllers.set(input.conversation_id, controller);
@@ -109,14 +115,14 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     }
   }
 
-  async deliver(item: ConversationOutboxItem): Promise<Result<{ provider_receipt_id: string }, ConversationControlError>> {
+  async deliver(item: ConversationOutboxItem): Promise<Result<ProviderDeliveryReceipt, ConversationControlError>> {
     const current = this.current(item);
     if (!current.ok) return current;
     const controller = current.value;
-    if (controller.delivered.has(item.id)) {
-      return { ok: true, value: { provider_receipt_id: `codex:user:${item.id}` } };
-    }
+    const priorReceipt = controller.delivered.get(item.id);
+    if (priorReceipt) return { ok: true, value: priorReceipt };
     try {
+      let providerTurnId: string;
       if (item.operation === "steer") {
         if (!controller.activeNativeTurnId || !controller.activeControlTurnId) {
           return { ok: false, error: adapterFailure(this.id, "no-active-turn", "Codex steering requires the exact active App Server turn") };
@@ -131,6 +137,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         const result = await controller.client.request("turn/steer", params);
         const turnId = stringField(result, "turnId");
         if (turnId !== expectedTurnId) throw new Error("Codex steering acknowledged a different active turn");
+        providerTurnId = turnId;
       } else {
         if (item.operation === "queue" || item.operation === "resume-message-anchor") {
           return { ok: false, error: adapterFailure(this.id, "unsupported-operation", item.operation) };
@@ -157,6 +164,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         const turn = responseTurn(result);
         const nativeTurnId = stringField(turn, "id");
         if (!nativeTurnId) throw new Error("Codex App Server returned no turn identity");
+        providerTurnId = nativeTurnId;
         controller.activeNativeTurnId = nativeTurnId;
         controller.activeControlTurnId = item.turn_id;
         controller.state = "running";
@@ -165,8 +173,16 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         const status = stringField(turn, "status");
         if (status && status !== "inProgress") this.finishTurn(controller, turn);
       }
-      controller.delivered.add(item.id);
-      return { ok: true, value: { provider_receipt_id: `codex:user:${item.id}` } };
+      const receipt: ProviderDeliveryReceipt = {
+        provider_receipt_id: `codex:turn:${providerTurnId}`,
+        acceptance: {
+          kind: "codex-turn-response",
+          provider_session_id: controller.providerSessionId,
+          provider_turn_id: providerTurnId,
+        },
+      };
+      controller.delivered.set(item.id, receipt);
+      return { ok: true, value: receipt };
     } catch (thrown) {
       return { ok: false, error: adapterFailure(this.id, "delivery-failed", thrown, { retryable: true }) };
     }
@@ -244,6 +260,10 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     return this.lifecycle.subscribe(listener);
   }
 
+  subscribeProviderEvents(listener: (event: ProviderAdapterEvent) => void): () => void {
+    return this.providerEvents.subscribe(listener);
+  }
+
   async close(): Promise<void> {
     const controllers = [...this.controllers.values()];
     this.controllers.clear();
@@ -287,7 +307,44 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       const params = object(record.params);
       const threadId = stringField(params, "threadId");
       const nativeTurnId = stringField(object(params?.turn), "id");
-      if (threadId !== controller.providerSessionId || !nativeTurnId) this.markAmbiguous(controller);
+      if (
+        threadId !== controller.providerSessionId
+        || !nativeTurnId
+        || (controller.activeNativeTurnId !== null && nativeTurnId !== controller.activeNativeTurnId)
+      ) this.markAmbiguous(controller);
+      return;
+    }
+    if (record.method === "item/agentMessage/delta") {
+      const params = object(record.params);
+      const threadId = stringField(params, "threadId");
+      const turnId = stringField(params, "turnId");
+      const itemId = stringField(params, "itemId");
+      const delta = stringField(params, "delta");
+      if (threadId !== controller.providerSessionId || !turnId || !itemId || delta === null) {
+        this.markAmbiguous(controller);
+        return;
+      }
+      if (controller.activeNativeTurnId && turnId !== controller.activeNativeTurnId) {
+        this.markAmbiguous(controller);
+        return;
+      }
+      const text = `${controller.liveMessages.get(itemId) ?? ""}${delta}`;
+      controller.liveMessages.set(itemId, text);
+      this.emitContent(controller, `message:${itemId}`, {
+        type: "assistant",
+        uuid: itemId,
+        session_id: controller.providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          id: itemId,
+          role: "assistant",
+          content: [{ type: "text", text }],
+        },
+      });
+      return;
+    }
+    if (record.method === "item/started" || record.method === "item/completed") {
+      this.acceptItem(controller, object(record.params));
       return;
     }
     if (record.method === "turn/completed") {
@@ -300,6 +357,61 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       return;
     }
     if (record.method === "error" && controller.activeControlTurnId) this.markAmbiguous(controller);
+  }
+
+  private acceptItem(controller: CodexController, params: Record<string, unknown> | null): void {
+    if (!params || stringField(params, "threadId") !== controller.providerSessionId) return;
+    const item = object(params.item);
+    const itemId = stringField(item, "id");
+    const itemType = stringField(item, "type");
+    if (!item || !itemId || !itemType) return;
+    if (itemType === "agentMessage") {
+      const text = stringField(item, "text");
+      if (text !== null) {
+        controller.liveMessages.set(itemId, text);
+        this.emitContent(controller, `message:${itemId}`, {
+          type: "assistant",
+          uuid: itemId,
+          session_id: controller.providerSessionId,
+          parent_tool_use_id: null,
+          message: { id: itemId, role: "assistant", content: [{ type: "text", text }] },
+        });
+      }
+      return;
+    }
+    if (itemType !== "collabAgentToolCall" || stringField(item, "tool") !== "spawnAgent") return;
+    const sender = stringField(item, "senderThreadId");
+    const receivers = Array.isArray(item.receiverThreadIds)
+      ? item.receiverThreadIds.filter((value): value is string => typeof value === "string" && Boolean(value))
+      : [];
+    if (sender !== controller.providerSessionId || receivers.length === 0) return;
+    for (const receiver of receivers) {
+      this.providerEvents.emit({
+        kind: "provider-lineage",
+        conversation_id: controller.conversationId,
+        provider_session_id: controller.providerSessionId,
+        generation: controller.generation,
+        sequence: ++controller.providerSequence,
+        observed_at: Date.now(),
+        provider_event_id: itemId,
+        relation: "spawned-child",
+        sender_provider_session_id: sender,
+        receiver_provider_session_id: receiver,
+      });
+    }
+  }
+
+  private emitContent(controller: CodexController, identity: string, event: { type: string; [key: string]: unknown }): void {
+    this.providerEvents.emit({
+      kind: "provisional-content",
+      conversation_id: controller.conversationId,
+      provider_session_id: controller.providerSessionId,
+      generation: controller.generation,
+      sequence: ++controller.providerSequence,
+      observed_at: Date.now(),
+      identity,
+      event,
+    });
   }
 
   private finishTurn(controller: CodexController, turn: Record<string, unknown> | null): void {

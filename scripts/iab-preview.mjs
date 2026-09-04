@@ -18,6 +18,8 @@ const DEFAULT_PORT_END = 19499;
 const DEFAULT_DB_PATH = liveDbPath();
 const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
+const APPLICATION_SHELL_MARKER_RE = /<script\b[^>]*\bid=["']mandible-bootstrap["'][^>]*>/i;
+const APPLICATION_SHELL_MAX_BYTES = 512 * 1024;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 // Labels a previous version of this launcher submitted to launchd. Previews are
 // plain child processes now; any surviving job under this namespace is a leak to
@@ -884,8 +886,9 @@ async function healthyExistingPreview(branch, expected = {}) {
   const metadata = JSON.parse(fs.readFileSync(preview.metadata, "utf8"));
   if (!metadata.port) return null;
 
-  const health = await readHealth(metadata.port);
-  if (!health) return null;
+  const readiness = await readPreviewReadiness(metadata.port);
+  if (!readiness.ok) return null;
+  const { health } = readiness;
   if (!hasExpectedPreviewPolicy(health)) return null;
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
   // An instance started before the current isolation contract is not reusable:
@@ -1147,6 +1150,8 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
     return pid !== null && isProcessAlive(pid);
   });
   const liveHealth = metadata?.port ? await readHealth(metadata.port) : null;
+  const shellReadiness = liveHealth ? await probeApplicationShell(metadata.port) : null;
+  const applicationReady = liveHealth && shellReadiness?.ok === true;
 
   if (!metadata) {
     return {
@@ -1160,7 +1165,7 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
     };
   }
 
-  if (livePid || liveHealth) {
+  if (livePid || applicationReady) {
     const openFileInspection = inspectOpenSnapshotArtifacts(dirPath);
     const snapshotCleanup = prunePreviewSnapshots(dirPath, {
       apply,
@@ -1174,8 +1179,8 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
       path: dirPath,
       kind: "preview-dir",
       action: "skip-active",
-      reason: liveHealth
-        ? `metadata port ${metadata.port} answered /api/health`
+      reason: applicationReady
+        ? `metadata port ${metadata.port} passed health and application shell readiness`
         : "metadata or directory pid file points to a live process",
       bytes: snapshotCleanup.reclaimableBytes,
       reclaimedBytes: snapshotCleanup.reclaimedBytes,
@@ -1187,6 +1192,21 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
       currentDb: currentTarget,
       openFileInspection,
       snapshotCleanup,
+    };
+  }
+
+  if (liveHealth) {
+    return {
+      path: dirPath,
+      kind: "preview-dir",
+      action: "skip",
+      reason: `metadata port ${metadata.port} answered /api/health but failed application shell readiness: ${shellReadiness?.reason ?? "unknown shell failure"}; manual inspection required`,
+      bytes: 0,
+      port: metadata.port,
+      pidFiles: pidCandidates,
+      metadataDb: metadata.db ?? null,
+      currentDb: currentTarget,
+      shellReadiness,
     };
   }
 
@@ -1630,6 +1650,7 @@ function sanitizedLauncherEnv() {
 
 async function waitForHealth(port, timeoutMs, stderrLog) {
   const start = Date.now();
+  let lastShellFailure = null;
   while (Date.now() - start < timeoutMs) {
     const health = await readHealth(port);
     if (health) {
@@ -1639,7 +1660,9 @@ async function waitForHealth(port, timeoutMs, stderrLog) {
           `${describePreviewPolicy(health)}`,
         );
       }
-      return health;
+      const shellReadiness = await probeApplicationShell(port);
+      if (shellReadiness.ok) return health;
+      lastShellFailure = shellReadiness.reason;
     }
     await delay(500);
   }
@@ -1647,12 +1670,17 @@ async function waitForHealth(port, timeoutMs, stderrLog) {
   const tail = fs.existsSync(stderrLog)
     ? fs.readFileSync(stderrLog, "utf8").split(/\r?\n/).slice(-80).join("\n")
     : "";
-  throw new Error(`Preview did not become healthy on port ${port}.${tail ? `\nRecent stderr:\n${tail}` : ""}`);
+  throw new Error(
+    `Preview did not become healthy with a loadable application shell on port ${port}.` +
+    `${lastShellFailure ? ` Last shell failure: ${lastShellFailure}.` : ""}` +
+    `${tail ? `\nRecent stderr:\n${tail}` : ""}`,
+  );
 }
 
 async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
   const start = Date.now();
   let lastHealth = null;
+  let lastShellFailure = null;
   while (Date.now() - start < timeoutMs) {
     const health = await readHealth(port);
     if (health) {
@@ -1666,7 +1694,9 @@ async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
       if (health.ready === true && health.warm === true &&
           health.startup_commit?.hash === expected.head &&
           hasExpectedRefreshHealth(health, expected)) {
-        return health;
+        const shellReadiness = await probeApplicationShell(port);
+        if (shellReadiness.ok) return health;
+        lastShellFailure = shellReadiness.reason;
       }
     }
     await delay(500);
@@ -1679,8 +1709,125 @@ async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
   throw new Error(
     `Preview on port ${port} did not become ready and warm at ${expected.head} with the persisted isolation contract; ` +
     `last startup commit was ${observed}.` +
+    `${lastShellFailure ? ` Last shell failure: ${lastShellFailure}.` : ""}` +
     `${tail ? `\nRecent stderr:\n${tail}` : ""}`,
   );
+}
+
+async function readPreviewReadiness(port) {
+  const health = await readHealth(port);
+  if (!health) return { ok: false, reason: "/api/health did not return valid JSON" };
+  const shell = await probeApplicationShell(port);
+  if (!shell.ok) return { ok: false, reason: shell.reason, health, shell };
+  return { ok: true, health, shell };
+}
+
+async function probeApplicationShell(port) {
+  const shell = await readHttpBody(port, "/", APPLICATION_SHELL_MAX_BYTES);
+  if (!shell) return { ok: false, reason: "application root did not respond" };
+  if (shell.status !== 200) return { ok: false, reason: `application root returned HTTP ${shell.status}` };
+  if (!/^text\/html(?:;|$)/i.test(shell.contentType)) {
+    return { ok: false, reason: `application root returned ${shell.contentType || "no content type"}, not HTML` };
+  }
+  if (!APPLICATION_SHELL_MARKER_RE.test(shell.body)) {
+    return { ok: false, reason: "application root is missing the mandible-bootstrap marker" };
+  }
+
+  const assets = referencedPrimaryAssets(shell.body, port);
+  if (!assets.some((asset) => asset.kind === "javascript")) {
+    return { ok: false, reason: "application shell references no primary JavaScript asset" };
+  }
+  if (!assets.some((asset) => asset.kind === "css")) {
+    return { ok: false, reason: "application shell references no primary CSS asset" };
+  }
+  for (const asset of assets) {
+    const result = await readHttpStatus(port, asset.path);
+    if (!result || result.status !== 200) {
+      return {
+        ok: false,
+        reason: `${asset.kind} asset ${asset.path} returned ${result ? `HTTP ${result.status}` : "no response"}`,
+      };
+    }
+    const expectedType = asset.kind === "javascript" ? /(?:javascript|ecmascript)/i : /^text\/css(?:;|$)/i;
+    if (!expectedType.test(result.contentType)) {
+      return {
+        ok: false,
+        reason: `${asset.kind} asset ${asset.path} returned ${result.contentType || "no content type"}`,
+      };
+    }
+  }
+  return { ok: true, marker: "mandible-bootstrap", assets };
+}
+
+function referencedPrimaryAssets(html, port) {
+  const origin = `http://127.0.0.1:${port}`;
+  const assets = [];
+  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+    const rel = htmlAttribute(match[0], "rel")?.toLowerCase().split(/\s+/) ?? [];
+    const href = htmlAttribute(match[0], "href");
+    if (href && rel.includes("stylesheet")) assets.push({ kind: "css", ref: href });
+  }
+  for (const match of html.matchAll(/<script\b[^>]*>/gi)) {
+    const src = htmlAttribute(match[0], "src");
+    if (src) assets.push({ kind: "javascript", ref: src });
+  }
+  return [...new Map(assets.map((asset) => {
+    let resolved;
+    try {
+      resolved = new URL(asset.ref, `${origin}/`);
+    } catch {
+      return [`invalid:${asset.kind}:${asset.ref}`, { ...asset, path: asset.ref }];
+    }
+    const sameOrigin = resolved.origin === origin;
+    const requestPath = sameOrigin ? `${resolved.pathname}${resolved.search}` : resolved.href;
+    return [`${asset.kind}:${requestPath}`, { ...asset, path: requestPath, sameOrigin }];
+  })).values()].filter((asset) => asset.sameOrigin !== false);
+}
+
+function htmlAttribute(tag, name) {
+  const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function readHttpBody(port, requestPath, maxBytes) {
+  return new Promise((resolve) => {
+    const req = http.get({ hostname: "127.0.0.1", port, path: requestPath, timeout: 1_000 }, (res) => {
+      let body = "";
+      let bytes = 0;
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > maxBytes) {
+          req.destroy();
+          resolve(null);
+          return;
+        }
+        body += chunk;
+      });
+      res.on("end", () => resolve({
+        status: res.statusCode ?? 0,
+        contentType: String(res.headers["content-type"] ?? ""),
+        body,
+      }));
+    });
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve(null));
+  });
+}
+
+function readHttpStatus(port, requestPath) {
+  return new Promise((resolve) => {
+    const req = http.get({ hostname: "127.0.0.1", port, path: requestPath, timeout: 1_000 }, (res) => {
+      const result = {
+        status: res.statusCode ?? 0,
+        contentType: String(res.headers["content-type"] ?? ""),
+      };
+      res.resume();
+      res.on("end", () => resolve(result));
+    });
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve(null));
+  });
 }
 
 function readHealth(port) {

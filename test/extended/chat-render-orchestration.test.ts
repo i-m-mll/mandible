@@ -5,6 +5,7 @@ import {
   conversationBlocksToStreamEvents,
   deriveStreamingState,
   flushPendingSSE,
+  reconcileProviderProjection,
 } from "../../ui/src/chat";
 import type { StreamEvent } from "../../ui/src/components/stream-renderer/types";
 
@@ -36,6 +37,44 @@ function normalize(events: StreamEvent[]): Array<Record<string, unknown>> {
 }
 
 describe("chat render orchestration", () => {
+  it("reconciles provisional provider deltas without duplicate or stale content", () => {
+    const history = [{
+      type: "assistant",
+      uuid: "durable-1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: { id: "durable-1", role: "assistant", content: [{ type: "text", text: "durable" }] },
+    }] as StreamEvent[];
+    const live = (sequence: number, identity: string, text: string) => ({
+      kind: "provisional-content" as const,
+      conversation_id: "conversation-1",
+      provider_session_id: "s1",
+      generation: 1,
+      sequence,
+      observed_at: sequence,
+      identity,
+      event: {
+        type: "assistant",
+        uuid: identity.slice("message:".length),
+        session_id: "s1",
+        message: { id: identity.slice("message:".length), role: "assistant", content: [{ type: "text", text }] },
+      },
+    });
+    const projection = {
+      conversation_id: "conversation-1",
+      revision: 4,
+      events: [
+        live(3, "message:live-1", "latest"),
+        live(1, "message:live-1", "stale"),
+        live(4, "message:durable-1", "must disappear"),
+      ],
+    };
+
+    const reconciled = reconcileProviderProjection(history, projection);
+    expect(reconciled).toHaveLength(2);
+    expect((reconciled[1] as { message: { content: Array<{ text: string }> } }).message.content[0].text).toBe("latest");
+  });
+
   it("builds the same render model for finished history and ended live events", () => {
     const historyEvents = conversationBlocksToStreamEvents("provider-1", [
       {

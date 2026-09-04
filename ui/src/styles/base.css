@@ -294,9 +294,9 @@ a {
   grid-template-rows: minmax(0, 1fr);
 }
 
-.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel--anchored-detail {
+.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel {
   position: absolute;
-  left: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
+  left: var(--app-view-sidebar-outer-width);
   right: 0;
   bottom: 0;
   height: var(--app-bottom-panel-active-height);
@@ -341,14 +341,6 @@ a {
 .app-bottom-panel__content {
   height: 100%;
   min-width: 0;
-  overflow: auto;
-}
-
-.app-layout--view-sidebar-open .app-bottom-panel--anchored-detail {
-  margin-left: var(--app-view-sidebar-outer-width);
-}
-
-.app-bottom-panel--anchored-detail .app-bottom-panel__content {
   overflow: hidden;
 }
 

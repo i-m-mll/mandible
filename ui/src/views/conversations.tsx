@@ -1,3 +1,4 @@
+import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
@@ -40,12 +41,14 @@ import {
   getConsoleRunOptions,
   getConversationWindow,
   getConversationControl,
+  getConversationLiveProjection,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
-  navigateSession,
+  isApiErrorStatus,
+  openConversationExternally,
   submitConversationControl,
   updateConsoleSession,
   updateConsoleSessionOptions,
@@ -54,26 +57,33 @@ import {
   type ConversationRuntimeOptions,
   type ConversationControlApiError,
   type ConversationControlSnapshot,
+  type ProviderAdapterEvent,
+  type ProviderLiveProjection,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
-import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { DetailPaneShell, type DetailPaneShellFooter } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
+  ChatBottomShelf,
+  ChatEntityLinkBoundary,
   ChatSurface,
   ContextUsageRing,
   Shelf,
   UsageModal,
   conversationBlocksToStreamEvents,
+  reconcileProviderProjection,
   buildStreamState,
   deriveChatUsageSummary,
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
+  useChatBottomShelfPreference,
+  type ChatPreviewTarget,
   type ShelfItem,
 } from '../chat';
 import {
@@ -85,15 +95,101 @@ import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import { reconcileShownProjects, useChatViewState } from './conversation-view-state';
+import { reconcileShownProjects, useChatProjectSelection, useChatViewState } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
+import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
+import { useRegisterAppBottomPanel } from '../app-shell';
+import type { ChatBottomShelfPreference } from '../../../src/contracts';
 
 // ── Toast notification ──
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
+
+type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'no-selection';
+
+export type ConversationBottomShelfViewState = {
+  conversationId: string;
+  previewTarget: ChatPreviewTarget | null;
+  height: number;
+};
+
+export function scopeConversationBottomShelf(
+  conversationId: string,
+  state: ConversationBottomShelfViewState,
+  preference: ChatBottomShelfPreference,
+  preferenceConversationId: string,
+): {
+  state: ConversationBottomShelfViewState;
+  preference: ChatBottomShelfPreference;
+  viewIdentityChanged: boolean;
+  preferenceIdentityChanged: boolean;
+} {
+  const viewIdentityChanged = state.conversationId !== conversationId;
+  const preferenceIdentityChanged = preferenceConversationId !== conversationId;
+  return {
+    state: viewIdentityChanged ? { conversationId, previewTarget: null, height: 340 } : state,
+    preference: (viewIdentityChanged || preferenceIdentityChanged) && preference.tab === 'preview'
+      ? { ...preference, tab: 'overview' }
+      : preference,
+    viewIdentityChanged,
+    preferenceIdentityChanged,
+  };
+}
+
+type ChatDetailFrameProps = {
+  state: ChatDetailState;
+  className?: string;
+  bodyClassName?: string;
+  header: ComponentChildren;
+  headerRef?: Ref<HTMLElement>;
+  subheader?: ComponentChildren;
+  notice?: ComponentChildren;
+  footer?: DetailPaneShellFooter | null;
+  overlays?: ComponentChildren;
+  ariaBusy?: boolean;
+  children: ComponentChildren;
+};
+
+export function ChatDetailFrame({
+  state,
+  className,
+  bodyClassName = 'conv-detail__body',
+  header,
+  headerRef,
+  subheader,
+  notice,
+  footer,
+  overlays,
+  ariaBusy,
+  children,
+}: ChatDetailFrameProps): JSX.Element {
+  return (
+    <DetailPaneShell
+      as="section"
+      variant="compact"
+      className={`conv-detail chat-detail-frame chat-detail-frame--${state}${className ? ` ${className}` : ''}`}
+      headerClassName="conv-detail__shell-header"
+      headerRef={headerRef}
+      subheaderClassName="conv-detail__parent"
+      bodyClassName={bodyClassName}
+      footerClassName="conv-detail__footer"
+      header={header}
+      subheader={subheader}
+      notice={notice}
+      footer={footer ? {
+        content: footer.content,
+        ariaLabel: footer.ariaLabel,
+      } : undefined}
+      overlays={overlays}
+      ariaBusy={ariaBusy}
+    >
+      {children}
+    </DetailPaneShell>
+  );
+}
 
 function formatControlApiError(err: unknown): { message: string; details: string | null; snapshot: ConversationControlSnapshot | null } {
   if (err instanceof Error) {
@@ -435,7 +531,9 @@ export type ConversationsViewProps = {
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
@@ -951,6 +1049,7 @@ function ConversationDetail({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
@@ -985,6 +1084,14 @@ function ConversationDetail({
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
+  const [liveProjection, setLiveProjection] = useState<ProviderLiveProjection | null>(null);
+  const [bottomShelfPreference, setBottomShelfPreference, bottomShelfPreferenceState] = useChatBottomShelfPreference();
+  const [bottomShelfViewState, setBottomShelfViewState] = useState<ConversationBottomShelfViewState>({
+    conversationId,
+    previewTarget: null,
+    height: 340,
+  });
+  const [bottomShelfPreferenceConversationId, setBottomShelfPreferenceConversationId] = useState(conversationId);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1000,6 +1107,119 @@ function ConversationDetail({
   const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
   const conversationRequestKey = detailRequestKey('conversation', { conversationId, anchor: anchorKey });
   const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
+
+  const scopedBottomShelf = scopeConversationBottomShelf(
+    conversationId,
+    bottomShelfViewState,
+    bottomShelfPreference,
+    bottomShelfPreferenceConversationId,
+  );
+  const currentBottomShelfViewState = scopedBottomShelf.state;
+  const currentBottomShelfPreference = scopedBottomShelf.preference;
+
+  useEffect(() => {
+    if (scopedBottomShelf.viewIdentityChanged) {
+      setBottomShelfViewState({ conversationId, previewTarget: null, height: 340 });
+    }
+    if (scopedBottomShelf.preferenceIdentityChanged && bottomShelfPreferenceState.ready) {
+      setBottomShelfPreferenceConversationId(conversationId);
+      if (bottomShelfPreference.tab === 'preview') {
+        setBottomShelfPreference((current) => ({ ...current, tab: 'overview' }));
+      }
+    }
+  }, [
+    bottomShelfPreference.tab,
+    bottomShelfPreferenceState.ready,
+    conversationId,
+    scopedBottomShelf.preferenceIdentityChanged,
+    scopedBottomShelf.viewIdentityChanged,
+    setBottomShelfPreference,
+  ]);
+
+  const previewInBottomShelf = useCallback((target: ChatPreviewTarget) => {
+    setBottomShelfViewState((current) => ({
+      conversationId,
+      previewTarget: target,
+      height: current.conversationId === conversationId ? current.height : 340,
+    }));
+    setBottomShelfPreference((current) => ({
+      ...current,
+      visible: true,
+      tab: 'preview',
+    }));
+  }, [conversationId, setBottomShelfPreference]);
+
+  const clearBottomShelfPreview = useCallback(() => {
+    setBottomShelfViewState((current) => ({
+      conversationId,
+      previewTarget: null,
+      height: current.conversationId === conversationId ? current.height : 340,
+    }));
+    setBottomShelfPreference((current) => ({ ...current, tab: 'overview' }));
+  }, [conversationId, setBottomShelfPreference]);
+
+  const bottomShelfContent = useMemo(() => (
+    <ChatEntityLinkBoundary
+      defaultAction={bottomShelfPreferenceState.ready ? bottomShelfPreference.clickAction : null}
+      onPreview={previewInBottomShelf}
+    >
+      <ChatBottomShelf
+        preference={currentBottomShelfPreference}
+        preferenceReady={bottomShelfPreferenceState.ready}
+        preferenceError={bottomShelfPreferenceState.error}
+        providerSessionId={conversation?.session_id ?? null}
+        conversationId={conversationId}
+        previewTarget={currentBottomShelfViewState.previewTarget}
+        onPreferenceChange={setBottomShelfPreference}
+        onClearPreview={clearBottomShelfPreview}
+      />
+    </ChatEntityLinkBoundary>
+  ), [
+    bottomShelfPreference.clickAction,
+    bottomShelfPreferenceState.error,
+    bottomShelfPreferenceState.ready,
+    clearBottomShelfPreview,
+    conversation?.session_id,
+    conversationId,
+    currentBottomShelfPreference,
+    currentBottomShelfViewState.previewTarget,
+    previewInBottomShelf,
+    setBottomShelfPreference,
+  ]);
+  const bottomShelfDescriptor = useMemo(() => (
+    conversation && (bottomShelfPreferenceState.ready || bottomShelfPreferenceState.error !== null)
+      ? {
+        id: 'chat-bottom-shelf',
+        title: 'Chat shelf',
+        ariaLabel: 'Chat bottom shelf',
+        open: bottomShelfPreference.visible,
+        height: currentBottomShelfViewState.height,
+        minHeight: 220,
+        maxHeight: 520,
+        onOpenChange: (visible: boolean) => {
+          setBottomShelfPreference((current) => ({ ...current, visible }));
+        },
+        onHeightChange: (height: number) => {
+          setBottomShelfViewState((current) => ({
+            conversationId,
+            previewTarget: current.conversationId === conversationId ? current.previewTarget : null,
+            height,
+          }));
+        },
+        content: bottomShelfContent,
+      }
+      : null
+  ), [
+    bottomShelfContent,
+    bottomShelfPreference.visible,
+    bottomShelfPreferenceState.error,
+    bottomShelfPreferenceState.ready,
+    conversation,
+    conversationId,
+    currentBottomShelfViewState.height,
+    setBottomShelfPreference,
+  ]);
+  useRegisterAppBottomPanel(bottomShelfDescriptor);
 
   useEffect(() => {
     setEffectiveAnchor(anchor);
@@ -1031,6 +1251,7 @@ function ConversationDetail({
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
     setLoading(true);
+    setNotFound(false);
     if (!preserveErrorWhileRetrying) setError(null);
     getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
       .then((payload) => {
@@ -1046,11 +1267,18 @@ function ConversationDetail({
           smooth: false,
         });
         setError(null);
+        setNotFound(false);
         setLoading(false);
       })
       .catch((err) => {
         if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : String(err));
+        if (isApiErrorStatus(err, 404)) {
+          setError(null);
+          setNotFound(true);
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+          setNotFound(false);
+        }
         setLoading(false);
       });
     return () => controller.abort();
@@ -1058,9 +1286,13 @@ function ConversationDetail({
 
   useEffect(() => {
     let active = true;
+    setLiveProjection(null);
     void getConversationControl(conversationId)
       .then((snapshot) => { if (active) setControl(snapshot); })
       .catch(() => { if (active) setControl(null); });
+    void getConversationLiveProjection(conversationId)
+      .then((projection) => { if (active) setLiveProjection(projection); })
+      .catch(() => { if (active) setLiveProjection(null); });
     return () => { active = false; };
   }, [conversationId]);
 
@@ -1094,10 +1326,19 @@ function ConversationDetail({
       if (snapshot.conversation_id !== conversationId) return;
       setControl(snapshot);
     });
+    const offProviderEvent = client.on('conversation:provider-event', (payload) => {
+      const providerEvent = payload as unknown as ProviderAdapterEvent;
+      if (providerEvent.conversation_id !== conversationId) return;
+      if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
+      setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
+    });
     // Reconnect resync: refetch the open conversation after a dropped stream so
     // any events missed during the gap are reconciled.
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) scheduleRefresh();
+      if (reconnected) {
+        scheduleRefresh();
+        void getConversationLiveProjection(conversationId).then(setLiveProjection).catch(() => {});
+      }
     });
     client.connect();
     return () => {
@@ -1106,6 +1347,7 @@ function ConversationDetail({
       }
       offWorkflowUpdated();
       offControlUpdated();
+      offProviderEvent();
       offState();
       client.close();
     };
@@ -1299,7 +1541,7 @@ function ConversationDetail({
     () => blocks.filter((b) => visibleTypes.has(b.type)),
     [blocks, visibleTypes],
   );
-  const chatEvents = useMemo(
+  const historyEvents = useMemo(
     () => {
       const targetTurnId = conversation?.position_window.target.turn_id ?? null;
       const leadingAssistantTurnId = targetTurnId
@@ -1316,6 +1558,14 @@ function ConversationDetail({
     },
     [conversation?.position_window.target.turn_id, conversation?.session_id, conversationId, visibleBlocks],
   );
+  const chatEvents = useMemo(
+    () => reconcileProviderProjection(historyEvents, liveProjection),
+    [historyEvents, liveProjection],
+  );
+  const providerStreaming = control?.turn.kind === 'queued'
+    || control?.turn.kind === 'running'
+    || control?.turn.kind === 'waiting-user'
+    || control?.turn.kind === 'waiting-permission';
   const shelfItems = useMemo(
     () => [
       ...buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
@@ -1637,24 +1887,17 @@ function ConversationDetail({
     }
   }, [canSaveComposerModel, linkedConsoleSession, permissionRunOption?.id, thinkingRunOption?.id]);
 
-  const externalNavigationSession = useMemo(() => {
-    const ownership = control?.ownership;
-    if (ownership?.kind !== 'external') return null;
-    return consoleSessions.find((session) => session.id === ownership.evidence.reference) ?? null;
-  }, [consoleSessions, control]);
-
-  const handleFocusExternalSession = useCallback(async () => {
-    const sessionId = externalNavigationSession?.id;
-    if (!sessionId) return;
+  const handleOpenExternally = useCallback(async () => {
+    if (!conversation?.external_navigation) return;
     setContinueError(null);
     setResumeErrorDetails(null);
     try {
-      await navigateSession(sessionId);
-      setToast({ message: 'Terminal focus requested.', type: 'info' });
+      await openConversationExternally(conversation.id);
+      setToast({ message: `${conversation.external_navigation.label} requested.`, type: 'info' });
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     }
-  }, [externalNavigationSession?.id]);
+  }, [conversation?.external_navigation, conversation?.id]);
 
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
@@ -1690,30 +1933,38 @@ function ConversationDetail({
   ) : undefined;
 
   if (loading && !conversation && !error) {
-    return <LoadingSkeleton variant="detail" label="Loading conversation" />;
+    return (
+      <ChatDetailFrame
+        state="loading"
+        header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
+        ariaBusy
+      >
+        <LoadingSkeleton variant="detail" label="Loading conversation" />
+      </ChatDetailFrame>
+    );
   }
 
   if (error && !conversation) {
     return (
-      <DetailPaneShell
-        as="div"
-        variant="compact"
-        className="conv-detail"
-        bodyClassName="conv-detail__body"
+      <ChatDetailFrame
+        state="error"
         header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
         notice={loadErrorNotice}
         ariaBusy={loading}
       >
         <div className="empty-state">Conversation content unavailable.</div>
-      </DetailPaneShell>
+      </ChatDetailFrame>
     );
   }
 
-  if (!conversation) {
+  if (notFound || !conversation) {
     return (
-      <div className="conv-detail">
+      <ChatDetailFrame
+        state="not-found"
+        header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
+      >
         <div className="empty-state">Conversation not found.</div>
-      </div>
+      </ChatDetailFrame>
     );
   }
 
@@ -1803,7 +2054,7 @@ function ConversationDetail({
                       setActionsOpen(false);
                     }}
                   >
-                    Resume in terminal
+                    Resume in Mandible
                   </button>
                 )}
                 <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
@@ -1863,13 +2114,13 @@ function ConversationDetail({
         {(control?.capability.kind === 'blocked-external'
           || control?.capability.kind === 'blocked-ownership-unknown') && (
           <div className="conv-compose__actions">
-            {externalNavigationSession && (
+            {conversation.external_navigation && (
               <button
                 type="button"
                 className="btn btn--ghost btn--sm"
-                onClick={() => { void handleFocusExternalSession(); }}
+                onClick={() => { void handleOpenExternally(); }}
               >
-                Go to terminal
+                {conversation.external_navigation.label}
               </button>
             )}
           </div>
@@ -2023,15 +2274,10 @@ function ConversationDetail({
   );
 
   return (
-    <DetailPaneShell
-      as="div"
-      variant="compact"
-      className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
-      headerClassName="conv-detail__shell-header"
+    <ChatDetailFrame
+      state="conversation"
+      className={sidebarCollapsed ? 'conv-detail--shelf-collapsed' : undefined}
       headerRef={headerRef}
-      subheaderClassName="conv-detail__parent"
-      bodyClassName="conv-detail__body"
-      footerClassName="conv-detail__footer"
       header={detailHeader}
       subheader={parentLink}
       footer={shouldRenderDetailFooter ? { content: detailFooter } : undefined}
@@ -2119,34 +2365,39 @@ function ConversationDetail({
       )}
 
       <div className="conv-transcript">
-        <ChatSurface
-          events={chatEvents}
-          streaming={false}
-          emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-          unmaterializedAfterCount={conversation.position_window.window.after_count}
-          onJumpToLatest={handleJumpToLatest}
-          jumpingToLatest={jumpingToLatest}
-          navigationTarget={navigationTarget}
-          selectedMessageId={conversation.position_window.target.turn_id}
-          selectedBlockIds={selected}
-          selectMode={selectMode}
-          onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
-          onFork={handleFork}
-          onSelectMessageInfo={(turnId) => {
-            window.location.hash = conversationTurnSelectionHref(
-              conversationId,
-              conversation.position_window.target.turn_id,
-              turnId,
-            );
-          }}
-          sessionInfo={{
-            sessionId: conversation.session_id,
-            backend: conversation.source,
-            model: conversation.model ?? undefined,
-          }}
-        />
+        <ChatEntityLinkBoundary
+          defaultAction={bottomShelfPreferenceState.ready ? bottomShelfPreference.clickAction : null}
+          onPreview={previewInBottomShelf}
+        >
+          <ChatSurface
+            events={chatEvents}
+            streaming={providerStreaming}
+            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            unmaterializedAfterCount={conversation.position_window.window.after_count}
+            onJumpToLatest={handleJumpToLatest}
+            jumpingToLatest={jumpingToLatest}
+            navigationTarget={navigationTarget}
+            selectedMessageId={conversation.position_window.target.turn_id}
+            selectedBlockIds={selected}
+            selectMode={selectMode}
+            onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
+            onFork={handleFork}
+            onSelectMessageInfo={(turnId) => {
+              window.location.hash = conversationTurnSelectionHref(
+                conversationId,
+                conversation.position_window.target.turn_id,
+                turnId,
+              );
+            }}
+            sessionInfo={{
+              sessionId: conversation.session_id,
+              backend: conversation.source,
+              model: conversation.model ?? undefined,
+            }}
+          />
+        </ChatEntityLinkBoundary>
       </div>
-    </DetailPaneShell>
+    </ChatDetailFrame>
   );
 }
 
@@ -2183,6 +2434,7 @@ function ChatEntryItem({
   pinActionRef,
   onEditTags,
   onRenameSession,
+  onOpenExternally,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2192,6 +2444,7 @@ function ChatEntryItem({
   pinActionRef?: (element: HTMLButtonElement | null) => void;
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
+  onOpenExternally?: () => void;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
@@ -2199,7 +2452,7 @@ function ChatEntryItem({
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
-  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession);
+  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
@@ -2223,6 +2476,9 @@ function ChatEntryItem({
   };
 
   const overflowActions: SidebarItemOverflowAction[] = [];
+  if (onOpenExternally) {
+    overflowActions.push({ id: 'open-externally', label: 'Open externally', onSelect: onOpenExternally });
+  }
   if (onEditTags) {
     overflowActions.push({ id: 'edit-tags', label: 'Edit tags', onSelect: handleEditTags });
   }
@@ -2339,61 +2595,66 @@ function LiveSessionDetail({
   }, [control?.conversation_id]);
 
   const controlPresentation = control ? conversationControlPresentation(control) : null;
+  const detailHeader = (
+    <DetailPaneHeader
+      variant="compact"
+      title={session.label || 'Untitled session'}
+      titleTooltip={session.label || 'Untitled session'}
+      metadata={(
+        <div className="chat-live-detail__meta">
+          <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
+          <span>{getAgentLabel(session.agent_type)}</span>
+          {session.owner && (
+            <span>{session.owner.display_name} · {session.owner.kind}</span>
+          )}
+          <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
+          <span title={session.transport_badge?.title}>
+            {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
+          </span>
+          {session.identity_mismatch && (
+            <span
+              className="chat-live-detail__identity-warning"
+              title={session.identity_mismatch.message}
+            >
+              ⚠ identity mismatch
+            </span>
+          )}
+        </div>
+      )}
+    />
+  );
 
   return (
-    <div className="chat-live-detail">
-      <div className="chat-live-detail__header">
-        <div className="chat-live-detail__title-group">
-          <h2 className="chat-live-detail__title">{session.label || 'Untitled session'}</h2>
-          <div className="chat-live-detail__meta">
-            <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
-            <span>{getAgentLabel(session.agent_type)}</span>
-            {session.owner && (
-              <span>{session.owner.display_name} · {session.owner.kind}</span>
-            )}
-            <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
-            <span title={session.transport_badge?.title}>
-              {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
-            </span>
-            {/* Issue 499c148 — the session's client token and its session
-                bindings resolve to different users. */}
-            {session.identity_mismatch && (
-              <span
-                className="chat-live-detail__identity-warning"
-                title={session.identity_mismatch.message}
-              >
-                ⚠ identity mismatch
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="chat-live-detail__pane">
-        <TerminalPane
-          sessionId={session.id}
-          agentType={session.agent_type}
-          backendType={session.backend_type}
-          allowedTools={session.allowed_tools}
-          command={session.command ?? session.agent_type}
-          sessionArgs={session.args ?? []}
-          isOperator={session.is_operator}
-          interactionMode={session.interaction_mode}
-          sessionStatus={session.status}
-          transportLane={session.transport_lane}
-          transportBadge={session.transport_badge}
-          attention={session.attention}
-          providerSessionId={session.provider_session_id}
-          conversationControl={control}
-          conversationMessageAnchor={messageAnchor}
-          onConversationControlChange={setControl}
-          isVisible
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-          channelEnabled={!!session.channel_enabled}
-          workspaceMode
-        />
-      </div>
-    </div>
+    <ChatDetailFrame
+      state="live-session"
+      className="chat-live-detail"
+      bodyClassName="chat-live-detail__pane"
+      header={detailHeader}
+    >
+      <TerminalPane
+        sessionId={session.id}
+        agentType={session.agent_type}
+        backendType={session.backend_type}
+        allowedTools={session.allowed_tools}
+        command={session.command ?? session.agent_type}
+        sessionArgs={session.args ?? []}
+        isOperator={session.is_operator}
+        interactionMode={session.interaction_mode}
+        sessionStatus={session.status}
+        transportLane={session.transport_lane}
+        transportBadge={session.transport_badge}
+        attention={session.attention}
+        providerSessionId={session.provider_session_id}
+        conversationControl={control}
+        conversationMessageAnchor={messageAnchor}
+        onConversationControlChange={setControl}
+        isVisible
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        channelEnabled={!!session.channel_enabled}
+        workspaceMode
+      />
+    </ChatDetailFrame>
   );
 }
 
@@ -2425,6 +2686,7 @@ export function ConversationsView({
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [chatViewState, setChatViewState] = useChatViewState();
+  const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
@@ -2433,6 +2695,7 @@ export function ConversationsView({
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2563,37 +2826,31 @@ export function ConversationsView({
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
   const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
-  const availableProjectCount = useMemo(
-    () => new Set(registeredProjects.map((project) => project.id)).size,
-    [registeredProjects],
-  );
 
   useEffect(() => {
-    if (!canonicalProjectsLoaded) return;
-    setChatViewState((current) => {
-      const shownProjects = reconcileShownProjects(current.shownProjects, canonicalProjects);
-      return shownProjects.length === current.shownProjects.length
-        && shownProjects.every((shown, index) => (
-          shown.projectId === current.shownProjects[index].projectId
-          && shown.checkoutId === current.shownProjects[index].checkoutId
-        ))
-        ? current
-        : { ...current, shownProjects };
-    });
-  }, [canonicalProjects, canonicalProjectsLoaded, setChatViewState]);
+    if (!canonicalProjectsLoaded || !shownProjectsState.ready) return;
+    const reconciled = reconcileShownProjects(shownProjects, canonicalProjects);
+    const unchanged = reconciled.length === shownProjects.length
+      && reconciled.every((shown, index) => (
+        shown.projectId === shownProjects[index].projectId
+        && shown.checkoutId === shownProjects[index].checkoutId
+      ));
+    if (unchanged) return;
+    setShownProjects(reconciled);
+  }, [canonicalProjects, canonicalProjectsLoaded, setShownProjects, shownProjects, shownProjectsState.ready]);
 
   const selectedProjectIds = useMemo(() => {
-    if (!canonicalProjectsReady) return [];
+    if (!canonicalProjectsReady || !shownProjectsState.ready) return [];
     if (!canonicalProjectsLoaded) {
-      return [...new Set(chatViewState.shownProjects.map((shown) => shown.projectId))];
+      return [...new Set(shownProjects.map((shown) => shown.projectId))];
     }
     const registeredSelections = new Set(registeredProjects.map((project) => (
       `${project.id}\0${project.checkoutId}`
     )));
-    return [...new Set(chatViewState.shownProjects
+    return [...new Set(shownProjects
       .filter((shown) => registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`))
       .map((shown) => shown.projectId))];
-  }, [canonicalProjectsLoaded, canonicalProjectsReady, chatViewState.shownProjects, registeredProjects]);
+  }, [canonicalProjectsLoaded, canonicalProjectsReady, registeredProjects, shownProjects, shownProjectsState.ready]);
 
   const sidebarRequestParams = useCallback((limit: number, projectIds = selectedProjectIds) => {
     const params: Parameters<typeof getConversationSidebar>[0] = {
@@ -2612,7 +2869,7 @@ export function ConversationsView({
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
   const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
-    if (!canonicalProjectsReady) return;
+    if (!canonicalProjectsReady || !shownProjectsState.ready) return;
     const generation = ++fetchGenerationRef.current;
     setLoading(true);
     try {
@@ -2650,7 +2907,7 @@ export function ConversationsView({
     } finally {
       if (generation === fetchGenerationRef.current) setLoading(false);
     }
-  }, [canonicalProjectsReady, selectedProjectIds, sidebarGroupLimit, sidebarRequestParams]);
+  }, [canonicalProjectsReady, selectedProjectIds, shownProjectsState.ready, sidebarGroupLimit, sidebarRequestParams]);
 
   // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
   // refetching whenever the parent's `initialConversations` prop changes.
@@ -2729,7 +2986,7 @@ export function ConversationsView({
 
   // Debounced fetch on filter changes
   useEffect(() => {
-    if (!canonicalProjectsReady) return undefined;
+    if (!canonicalProjectsReady || !shownProjectsState.ready) return undefined;
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
       fetchConversationGroups();
@@ -2737,7 +2994,7 @@ export function ConversationsView({
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [canonicalProjectsReady, fetchConversationGroups]);
+  }, [canonicalProjectsReady, fetchConversationGroups, shownProjectsState.ready]);
 
   const selectedConversationSummary = selection?.type === 'conversation'
     ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
@@ -2773,7 +3030,7 @@ export function ConversationsView({
 
   const chatSections = useMemo<ChatSidebarSections>(() => {
     type WorkingGroup = ChatProjectGroup & { kind: ConversationSidebarGroup['kind'] };
-    const selectedCheckoutByProject = new Map(chatViewState.shownProjects.flatMap((shown) => {
+    const selectedCheckoutByProject = new Map(shownProjects.flatMap((shown) => {
       const registered = registeredProjects.find((project) => (
         project.id === shown.projectId && project.checkoutId === shown.checkoutId
       ));
@@ -2894,7 +3151,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, chatViewState.shownProjects, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, sort]);
+  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3082,8 +3339,20 @@ export function ConversationsView({
     }
   };
 
+  const handleOpenExternally = async (entry: ChatEntry) => {
+    if (!entry.conversation?.external_navigation) return;
+    try {
+      await openConversationExternally(entry.conversation.id);
+      setSidebarToast({ message: `${entry.conversation.external_navigation.label} requested.`, type: 'info' });
+    } catch (error) {
+      setSidebarToast({ message: error instanceof Error ? error.message : String(error), type: 'error' });
+    }
+  };
+
   const handleNewSession = async (input: {
+    idempotency_key: string;
     label: string;
+    initial_message: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
@@ -3123,17 +3392,14 @@ export function ConversationsView({
     ));
     if (!project) return;
     const isNewProject = !selectedProjectIds.includes(project.id);
-    setChatViewState((current) => {
+    setShownProjects((current) => {
       const nextSelection = { projectId: project.id, checkoutId: project.checkoutId };
-      const existingIndex = current.shownProjects.findIndex((shown) => shown.projectId === project.id);
+      const existingIndex = current.findIndex((shown) => shown.projectId === project.id);
       if (existingIndex < 0) {
-        return { ...current, shownProjects: [...current.shownProjects, nextSelection] };
+        return [...current, nextSelection];
       }
-      if (current.shownProjects[existingIndex].checkoutId === project.checkoutId) return current;
-      return {
-        ...current,
-        shownProjects: current.shownProjects.map((shown, index) => index === existingIndex ? nextSelection : shown),
-      };
+      if (current[existingIndex].checkoutId === project.checkoutId) return current;
+      return current.map((shown, index) => index === existingIndex ? nextSelection : shown);
     });
     setProjectChooserOpen(false);
     if (isNewProject) {
@@ -3158,6 +3424,9 @@ export function ConversationsView({
       onRenameSession={!entry.conversation && entry.session
         ? (label) => { void handleRenameSession(entry, label); }
         : undefined}
+      onOpenExternally={entry.conversation?.external_navigation
+        ? () => { void handleOpenExternally(entry); }
+        : undefined}
       onClick={() => {
         if (entry.kind === 'conversation' && entry.conversation) {
           setSelection({ type: 'conversation', id: entry.conversation.id });
@@ -3177,6 +3446,7 @@ export function ConversationsView({
 
   return (
     <div className="chat-history-view">
+      <Toast toast={sidebarToast} onDismiss={() => setSidebarToast(null)} />
       <ViewSidebar
         {...VIEW_SIDEBAR_GEOMETRY.console}
         className="chat-history-sidebar"
@@ -3338,10 +3608,7 @@ export function ConversationsView({
                 </div>
               ) : null}
               {chatSections.projects.length === 0 && registeredProjects.length > 0 ? (
-                <div className="chat-projects-empty" role="status">
-                  <span>No projects shown · {availableProjectCount} available</span>
-                  <button type="button" onClick={openProjectChooser}>Add Project</button>
-                </div>
+                <div className="chat-projects-empty">No projects included</div>
               ) : null}
               {chatSections.projects.map((group, index) => {
                 const collapsed = collapsedProjects.has(group.key);
@@ -3420,9 +3687,14 @@ export function ConversationsView({
             session={selectedLiveSession}
           />
         ) : (
-          <div className="chat-history-detail__empty">
-            Select a conversation to view it
-          </div>
+          <ChatDetailFrame
+            state="no-selection"
+            header={<DetailPaneHeader variant="compact" title="Chat" />}
+          >
+            <div className="chat-history-detail__empty">
+              Select a conversation to view it
+            </div>
+          </ChatDetailFrame>
         )}
       </div>
       <NewSessionDialog

@@ -2,6 +2,7 @@ import type { Db } from "./db.js";
 import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 /**
@@ -14,7 +15,16 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 168;
+export const BASELINE_SCHEMA_VERSION = 170;
+
+export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'chat_bottom_shelf')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -202,6 +212,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE conversation_ingest_state (\n        file_path TEXT PRIMARY KEY,\n        byte_offset INTEGER NOT NULL DEFAULT 0,\n        line_count INTEGER NOT NULL DEFAULT 0,\n        tail_hash TEXT NOT NULL DEFAULT '',\n        partial_line TEXT NOT NULL DEFAULT '',\n        updated_at INTEGER NOT NULL\n      , empty_source_mtime REAL, empty_source_size INTEGER)",
   "CREATE TABLE conversations (\n        id TEXT PRIMARY KEY,\n        source TEXT NOT NULL CHECK(source IN ('claude_code', 'codex', 'gemini')),\n        source_path TEXT NOT NULL,\n        source_hash TEXT NOT NULL,\n        source_mtime INTEGER NOT NULL,\n        title TEXT NOT NULL DEFAULT '',\n        summary TEXT,\n        started_at TEXT NOT NULL,\n        ended_at TEXT,\n        block_count INTEGER NOT NULL DEFAULT 0,\n        session_id TEXT NOT NULL,\n        project_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        model TEXT,\n        cli_version TEXT,\n        starred INTEGER NOT NULL DEFAULT 0,\n        notes TEXT,\n        created_at TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n      , parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, is_sidechain INTEGER NOT NULL DEFAULT 0, agent_id TEXT, started_at_ms INTEGER, ended_at_ms INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER, tags TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags) AND json_type(tags) = 'array'))",
   ...CONVERSATION_CONTROL_SCHEMA_SQL,
+  ...CONVERSATION_SPAWN_SCHEMA_SQL,
   "CREATE TABLE daemon_log (\n        id              TEXT PRIMARY KEY,\n        ts              INTEGER NOT NULL,\n        level           TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),\n        event           TEXT NOT NULL,\n        subsystem       TEXT NOT NULL DEFAULT 'daemon',\n        fields_json     TEXT NOT NULL DEFAULT '{}',\n        issue_id        TEXT,\n        auth_request_id TEXT,\n        artifact_id     TEXT,\n        session_id      TEXT,\n        repo_id         TEXT\n      )",
   "CREATE TABLE delegated_signing_leases (\n        id            TEXT PRIMARY KEY,\n        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        minted_at     INTEGER NOT NULL,\n        expires_at    INTEGER NOT NULL,\n        mint_method   TEXT NOT NULL\n                        CHECK(mint_method IN ('fresh_presence','reused_lease'))\n      )",
   "CREATE TABLE graph_edges (\n        id            TEXT PRIMARY KEY,\n        source_id     TEXT NOT NULL,\n        target_id     TEXT NOT NULL,\n        edge_type     TEXT NOT NULL,\n        edge_class    TEXT NOT NULL DEFAULT 'provenance',\n        provenance    TEXT NOT NULL DEFAULT 'system',\n        confidence    TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER,\n        observed_at   INTEGER NOT NULL,\n        source        TEXT NOT NULL\n      )",
@@ -268,7 +279,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE user_credentials (\n        id              TEXT PRIMARY KEY,\n        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        type            TEXT NOT NULL,\n        fingerprint     TEXT NOT NULL,\n        public_material TEXT,\n        label           TEXT,\n        status          TEXT NOT NULL DEFAULT 'active'\n                          CHECK(status IN ('active','revoked')),\n        created_at      INTEGER NOT NULL,\n        revoked_at      INTEGER,\n        metadata_json   TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
   "CREATE TABLE user_group_members (\n        group_id  TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,\n        user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (group_id, user_id)\n      )",
   "CREATE TABLE user_groups (\n        id           TEXT PRIMARY KEY,\n        slug         TEXT NOT NULL UNIQUE,\n        display_name TEXT NOT NULL,\n        kind         TEXT NOT NULL DEFAULT 'custom'\n                       CHECK(kind IN ('system','custom')),\n        created_at   INTEGER NOT NULL,\n        updated_at   INTEGER NOT NULL\n      )",
-  "CREATE TABLE user_settings (\n        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size')),\n        value TEXT NOT NULL,\n        revision INTEGER NOT NULL CHECK(revision >= 1),\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY(user_id, key)\n      )",
+  USER_SETTINGS_SCHEMA_SQL,
   "CREATE TABLE users (\n        id            TEXT PRIMARY KEY,\n        slug          TEXT NOT NULL UNIQUE,\n        kind          TEXT NOT NULL\n                        CHECK(kind IN ('human','agent','system','external')),\n        display_name  TEXT NOT NULL,\n        email         TEXT,\n        status        TEXT NOT NULL DEFAULT 'active'\n                        CHECK(status IN ('active','retired')),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
   "CREATE TABLE webhook_events (\n        id             TEXT PRIMARY KEY,\n        source         TEXT NOT NULL,\n        event_type     TEXT NOT NULL,\n        title          TEXT,\n        data_json      TEXT NOT NULL,\n        target_session TEXT,\n        target_issue   TEXT,\n        target_branch  TEXT,\n        priority       TEXT NOT NULL DEFAULT 'normal',\n        status         TEXT NOT NULL DEFAULT 'pending',\n        created_at     INTEGER NOT NULL,\n        delivered_at   INTEGER,\n        delivered_to   TEXT\n      )",
   "CREATE TABLE work_repos (\n        id              TEXT NOT NULL,\n        root            TEXT NOT NULL,\n        name            TEXT NOT NULL,\n        default_branch  TEXT NOT NULL DEFAULT '',\n        dir_exists      INTEGER NOT NULL DEFAULT 1,\n        excluded        INTEGER NOT NULL DEFAULT 0,\n        user_modified   INTEGER NOT NULL DEFAULT 0,\n        last_scanned_at TEXT,\n        created_at      TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),\n        PRIMARY KEY (root)\n      )",

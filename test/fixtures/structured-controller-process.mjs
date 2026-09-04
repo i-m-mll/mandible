@@ -19,6 +19,17 @@ lines.on("line", (line) => {
   if (provider === "claude") {
     send({ ...request, session_id: claudeSessionId() });
     const text = request.message?.content?.[0]?.text;
+    if (text === "delta") {
+      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "message_start", message: { id: "claude-message-1" } } });
+      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", delta: { type: "text_delta", text: "hel" } } });
+      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } } });
+    }
+    if (text === "crash") {
+      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "message_start", message: { id: "claude-before-crash" } } });
+      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", delta: { type: "text_delta", text: "visible before crash" } } });
+      setTimeout(() => process.exit(2), 5);
+      return;
+    }
     if (text !== "hold") send({ type: "result", subtype: "success", is_error: false, session_id: claudeSessionId() });
     return;
   }
@@ -35,6 +46,15 @@ lines.on("line", (line) => {
     const turn = { id: activeTurnId, status: "inProgress" };
     respond({ turn });
     send({ method: "turn/started", params: { threadId: request.params.threadId, turn } });
+    if (request.params.input[0]?.text === "delta") {
+      send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "hel" } });
+      send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "lo" } });
+      send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { id: "codex-message-1", type: "agentMessage", text: "hello" } } });
+    }
+    if (request.params.input[0]?.text === "lineage") {
+      send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { id: "spawn-exact", type: "collabAgentToolCall", tool: "spawnAgent", senderThreadId: request.params.threadId, receiverThreadIds: ["child-thread"], agentsStates: {}, status: "completed" } } });
+      send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { id: "spawn-incomplete", type: "collabAgentToolCall", tool: "spawnAgent", senderThreadId: "", receiverThreadIds: ["unclassified-child"], agentsStates: {}, status: "completed" } } });
+    }
     if (request.params.input[0]?.text !== "hold") {
       send({ method: "turn/completed", params: { threadId: request.params.threadId, turn: { id: activeTurnId, status: "completed" } } });
       activeTurnId = null;

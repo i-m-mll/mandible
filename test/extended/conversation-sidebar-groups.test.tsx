@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +15,8 @@ import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import { compareConversationSidebarRows } from '../../src/conversations/sidebar-order.js';
 import { normalizeChatViewState, reconcileShownProjects } from '../../ui/src/views/conversation-view-state.js';
+
+const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -46,6 +49,12 @@ beforeEach(() => {
   } as Storage;
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
+  vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
+    version: 1, key: 'chat_shown_projects', value: [], revision: 0,
+  });
+  vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
+  }));
 });
 
 afterEach(() => {
@@ -123,17 +132,20 @@ describe('conversation sidebar groups', () => {
     expect(getConversationTitle(conversation('normal', 'Feedbax remediation'))).toBe('Feedbax remediation');
   });
 
-  it('preserves an explicitly empty shown-project selection and offers registered projects', async () => {
+  it('presents an unavailable project selection without mechanism details or duplicate actions', async () => {
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    vi.mocked(api.getChatShownProjectsPreference).mockRejectedValue(new Error('offline'));
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
-    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({ shownProjects: [] }));
 
     renderView();
 
-    expect(await screen.findByText(/No projects shown/)).toBeTruthy();
-    expect(screen.getByText(/available/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Add Project' })).toBeTruthy();
-    expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects).toEqual([]);
+    const emptyState = await screen.findByText('No projects included');
+    expect(emptyState.classList.contains('chat-projects-empty')).toBe(true);
+    expect(chatHistoryStylesheet).toMatch(/\.chat-projects-empty\s*\{[^}]*color:\s*var\(--text-disabled\)/s);
+    expect(screen.queryByText(/available/i)).toBeNull();
+    expect(screen.queryByText(/shared host preference/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add Project' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
   });
 
   it('sends bounded deduplicated full canonical project ids on the wire', async () => {
@@ -196,8 +208,7 @@ describe('conversation sidebar groups', () => {
     });
     renderView();
 
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
-      .toEqual([]));
+    await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith([], 1));
     await waitFor(() => expect(requests.length).toBeGreaterThan(0));
     expect(requests.every((request) => !request.project_ids?.includes('prj-removed'))).toBe(true);
     expect(screen.queryByRole('button', { name: /^Removed/ })).toBeNull();
@@ -320,8 +331,10 @@ describe('conversation sidebar groups', () => {
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
     expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible-alt' }));
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('mandible.chat.viewState:v1') ?? '{}').shownProjects)
-      .toEqual([{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' }]));
+    await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith(
+      [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' }],
+      expect.any(Number),
+    ));
   });
 
   it('cannot manufacture a project group from a legacy directory label or path', async () => {
