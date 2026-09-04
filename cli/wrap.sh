@@ -69,16 +69,9 @@ export MANDIBLE_SESSION_ID="$SESSION_ID"
 export AI_AGENT_SIGNING=1
 
 # ── Per-agent identity token injection ───────────────────────────
-# Give the launched agent its own verified Mandible identity by fetching
-# a per-agent api_token from the macOS keychain and exporting it into the
-# launched process's environment only (it is inherited by the exec'd
-# command below, never written back to the operator's shell).
-#
-# The keychain item is a generic password whose service name derives from
-# the app: `mandible-agent-<app>` (e.g. mandible-agent-claude,
-# mandible-agent-codex). This is the same mechanism for every app that has
-# such an item; apps without one simply get nothing. Absence is normal.
-# Provision one with `mandible user token mint <user> --store` (issue e2cb93f).
+# Resolve the launched agent's credential through cli/api.sh, the same policy
+# owner direct CLI calls use. That shared resolver verifies inherited tokens,
+# rejects provider ambiguity, and never falls through to operator credentials.
 #
 # The token value is never printed, logged, echoed, or written to disk; the
 # read goes through the secret seam in cli/api.sh, whose exit status and a
@@ -140,36 +133,30 @@ exchange_session_token() {
 }
 
 inject_agent_token() {
-  # Explicit opt-out.
-  [ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" = "1" ] && return 0
-  # Respect an already-provided token (e.g. injected by the launcher).
-  [ -n "${MANDIBLE_TOKEN:-}" ] && return 0
-  # Need a known app to derive the service name.
   [ -n "$APP" ] || return 0
 
-  local service token session_token traced=0
-  service="mandible-agent-$APP"
+  local token session_token traced=0
   # Suspend xtrace across the capture AND the export: under `bash -x` both the
   # assignment and the export line would echo the token (issue e2cb93f). The
   # previous setting is restored on every path below, so the state this function
   # leaves behind — and therefore what the exec'd command inherits — is exactly
   # what it found.
   case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
-  # An unavailable backend or an absent item is normal here: leave the token
-  # unset and let the session run with whatever identity it already has.
-  if ! token=$(secret_get "$service"); then
-    [ "$traced" -eq 0 ] || set -x
-    return 0
-  fi
+  api_resolve_client_credential "" "$APP"
+  token="$API_CLIENT_CREDENTIAL_TOKEN"
   if [ -n "$token" ]; then
-    # Fail open (mandatory): only a completed exchange replaces the PAT.
-    if [ "${MANDIBLE_NO_SESSION_TOKEN_EXCHANGE:-}" != "1" ] \
+    # Only a newly fetched Keychain PAT is eligible for exchange. A verified
+    # inherited token is preserved byte-for-byte.
+    if [ "$API_CLIENT_CREDENTIAL_SOURCE" = "keychain" ] \
+      && [ "${MANDIBLE_NO_SESSION_TOKEN_EXCHANGE:-}" != "1" ] \
       && session_token=$(exchange_session_token "$token") \
       && [ -n "$session_token" ]; then
       export MANDIBLE_TOKEN="$session_token"
     else
       export MANDIBLE_TOKEN="$token"
     fi
+  else
+    unset MANDIBLE_TOKEN
   fi
   [ "$traced" -eq 0 ] || set -x
 }
