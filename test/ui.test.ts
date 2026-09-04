@@ -731,9 +731,9 @@ describe('App routing', () => {
     )).toBe('#/spaces?sidebar=hidden&agent_session=01a02175&filter=open&project=rlrmp&space=7038d21f');
   });
 
-  it('generates a short canonical Briefing group route', () => {
-    expect(briefingGroupRoute(`briefing-group:${'c'.repeat(64)}`))
-      .toBe('/#/briefing?group=briefing-group%3Accccccc');
+  it('generates a canonical Briefing group route from its active key', () => {
+    expect(briefingGroupRoute('policy-health'))
+      .toBe('/#/briefing?group=policy-health');
   });
 
   it('navigates only for supported mandible deep links', () => {

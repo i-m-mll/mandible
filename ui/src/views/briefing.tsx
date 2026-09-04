@@ -144,7 +144,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
   const selectGroup = (group: BriefingGroup) => {
     setViewState((current) => ({ ...current, selectedGroupId: group.id, selectedCollectionId: null }));
-    window.history.replaceState(null, '', briefingGroupRoute(group.id));
+    window.history.replaceState(null, '', briefingGroupRoute(group.key));
   };
 
   const selectGroupUpdate = (ownerGroupId: string, updateId: string | null) => {

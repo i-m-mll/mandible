@@ -56,7 +56,7 @@ export function BriefingGroupDetail({
           variant="standard"
           identity={{
             entityLabel: 'Briefing group',
-            displayRef: shortIdentityRef(group.id),
+            displayRef: group.key,
             canonicalRef: group.id,
           }}
           title={group.name}
@@ -67,6 +67,9 @@ export function BriefingGroupDetail({
       <div className="briefing-group-detail__sections">
         {group.archivedAt != null ? (
           <p className="briefing-empty" role="status">Archived collection. Its bundles, Briefings, and review history remain intact.</p>
+        ) : null}
+        {group.destinations.length > 0 ? (
+          <p className="briefing-empty">Owns {group.destinations.length} recurring destination{group.destinations.length === 1 ? '' : 's'}.</p>
         ) : null}
         <section className="briefing-group-detail__current" aria-labelledby="briefing-group-current-title">
           <div className="briefing-group-detail__intro">
@@ -121,7 +124,9 @@ export function BriefingGroupDetail({
               {reviewCandidate?.ready ? (
                 <>
                   <p>
-                    Frozen review ready for {reviewCandidate.items.filter((item) => item.changed).length} changed document{reviewCandidate.items.filter((item) => item.changed).length === 1 ? '' : 's'}.
+                    Frozen review ready for {reviewCandidate.items.filter((item) => item.changed).length} changed document{reviewCandidate.items.filter((item) => item.changed).length === 1 ? '' : 's'}
+                    {reviewCandidate.layoutChanged ? ', a layout change' : ''}
+                    {reviewCandidate.destinationChanges.length > 0 ? `, and ${reviewCandidate.destinationChanges.length} destination move${reviewCandidate.destinationChanges.length === 1 ? '' : 's'}` : ''}.
                   </p>
                   <div className="briefing-group-detail__review-actions">
                     <button type="button" className="briefing-group-detail__accept" disabled={busy !== null}

@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 12,
+  "version": 13,
   "commands": [
     {
       "name": "mandible changes --project <ref> [--cursor <cursor>] [--limit <1-200>] [--schema mandible-ledger-change-feed@1] [--json]",
@@ -227,8 +227,8 @@
       "description": "Show one Briefing bundle and its manually ordered Briefing membership."
     },
     {
-      "name": "mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]",
-      "description": "Create a stable Briefing group with an optional explicit Base bundle and ordered active proposals. Omitting --current preserves proposal-only compatibility and does not infer a Base bundle."
+      "name": "mandible briefing group create --key <key> --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]",
+      "description": "Create a Briefing group with an immutable lower-kebab active key, optional explicit Base bundle, and ordered active proposals. Omitting --current does not infer a Base bundle."
     },
     {
       "name": "mandible briefing group add <group-ref> <bundle-ref> [--sharing-reason <text>] [--json]",
@@ -236,27 +236,35 @@
     },
     {
       "name": "mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]",
-      "description": "Atomically set a group's distinct Base bundle and complete ordered active-proposal list. Base cannot also be a proposal, duplicates are rejected, and a bundle cannot belong to another group in either role."
+      "description": "Configure initial Base state and the complete ordered active-proposal list. Once a Base exists, ordinary configuration cannot replace or clear it; use guarded promotion or disposition."
     },
     {
       "name": "mandible briefing group archive <group-ref> [--json]",
-      "description": "Archive one Briefing group without archiving its bundles or member Briefings and without losing review or custody history."
+      "description": "Archive one Briefing group without archiving its bundles or member Briefings. A group that owns a destination cannot be archived."
     },
     {
       "name": "mandible briefing group restore <group-ref> [--json]",
-      "description": "Atomically restore one archived Briefing group; active placement conflicts fail with candidates and leave it archived."
+      "description": "Atomically restore one archived Briefing group; active key and placement conflicts fail and leave it archived."
     },
     {
       "name": "mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]",
       "description": "Guardedly apply or replay one completed successful merge transition. The exact auth request, merge head, expected prior Base, group, and active proposal must match; convergence must have succeeded. Retries are no-ops and drift fails closed."
     },
     {
-      "name": "mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]",
-      "description": "Accept one exact recurring, Mandible-custodied proposal through the configured human operator. The digest binds the Base, proposal, composition receipt, frozen Artifact versions, and frozen review submissions; exact replay is a no-op and drift fails closed."
+      "name": "mandible briefing group review <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> [--destination-changes <json>] [--json]",
+      "description": "Preview the exact configured-human review candidate and binding digest, including full Base and proposal layouts plus compare-and-swap destination changes."
     },
     {
-      "name": "mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]",
+      "name": "mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]",
+      "description": "Accept one exact recurring, Mandible-custodied proposal through the configured human operator. The digest binds Base, full layouts, frozen bytes and reviews, and destination changes; exact replay is a no-op and drift fails closed."
+    },
+    {
+      "name": "mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]",
       "description": "Reject one exact recurring, Mandible-custodied proposal through the configured human operator while preserving Base, proposal custody, review submissions, and immutable disposition history."
+    },
+    {
+      "name": "mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]",
+      "description": "Bind one previously unowned logical Artifact destination to one active group whose Base contains it exactly once. Existing ownership can move only through an accepted guarded review."
     },
     {
       "name": "mandible briefing group rename <group-ref> --name <text> [--json]",
@@ -268,11 +276,11 @@
     },
     {
       "name": "mandible briefing route inspect [<route-key>] [--json]",
-      "description": "Inspect the code-owned Briefing destination-route registry in stable route-key order, including exact canonical group and logical Artifact identities plus every immutable template version. Requires the configured operator's durable API token."
+      "description": "Inspect code-owned Briefing routes in stable key order, including the destination owner's currently derived group and every immutable template version. Requires the configured operator's durable API token."
     },
     {
       "name": "mandible briefing route plan <manifest.json|-> [--json]",
-      "description": "Resolve and validate one mandible-briefing-destination-routes@1 manifest without mutation. Reports deterministic create, update, or unchanged actions; ownership, identity, downgrade, and immutable-template drift fail closed."
+      "description": "Resolve and validate one mandible-briefing-destination-routes@2 manifest without mutation. Group ownership is derived from the logical Artifact destination map; identity, downgrade, and immutable-template drift fail closed."
     },
     {
       "name": "mandible briefing route apply <manifest.json|-> [--json]",

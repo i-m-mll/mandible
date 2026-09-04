@@ -70,6 +70,7 @@ describe("briefing CLI", () => {
     expect(runOffline(["briefing", "bundle", "--help"]).stdout).toContain("mandible briefing bundle delete");
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group accept");
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group reject");
+    expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group destination bind");
     expect(runOffline(["briefing", "route", "--help"]).stdout).toContain("mandible briefing route plan");
     const logical = runOffline(["briefing", "create", "artifact:logical", "--title", "Review"]);
     expect(logical.status).toBe(2);
@@ -101,8 +102,8 @@ describe("briefing CLI", () => {
 
   it("plans, applies, and inspects an installed destination-route manifest through the supported API", async () => {
     const manifest = {
-      schema: "mandible-briefing-destination-routes@1",
-      routes: [{ route_key: "digest.since-last-review", group_ref: "briefing-group:group-12345678",
+      schema: "mandible-briefing-destination-routes@2",
+      routes: [{ route_key: "digest.since-last-review",
         logical_artifact_ref: "artifact:artifact-12345678", heading: "Since last review",
         composer_kind: "agentic", template: { version: 1, contribution_template: "", slots: {} },
         limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 } }],
@@ -333,12 +334,12 @@ describe("briefing CLI", () => {
   it("supports create, append, rename, and show for stable Briefing groups", async () => {
     const bundle = { id: "bundle-one", name: "Proposal one", created_at: 1, updated_at: 1,
       layout: [], members: [] };
-    const group = { id: "group-12345678", name: "Policy", created_at: 1, updated_at: 1, updates: [bundle] };
-    const created = await runRpc(["briefing", "group", "create", "--name", "Policy", "--current", "bundle-current",
+    const group = { id: "group-12345678", key: "policy", name: "Policy", created_at: 1, updated_at: 1, updates: [bundle] };
+    const created = await runRpc(["briefing", "group", "create", "--key", "policy", "--name", "Policy", "--current", "bundle-current",
       "bundle-one", "--json"],
       (request) => {
         expect(request).toMatchObject({ method: "POST", path: "/api/briefing-groups",
-          body: { name: "Policy", current_bundle_ref: "bundle-current", bundle_refs: ["bundle-one"] } });
+          body: { key: "policy", name: "Policy", current_bundle_ref: "bundle-current", bundle_refs: ["bundle-one"] } });
         return { status: 201, body: { group } };
       });
     expect(created.status).toBe(0);
