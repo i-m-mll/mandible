@@ -306,6 +306,7 @@ export interface AuthRequest {
   clearance_use_id?: string | null;
   supersedes_request_id?: string | null;
   superseded_by_request_id?: string | null;
+  custody_work_unit_id?: string | null;
 }
 
 export type AuthRequestLifecycleEventType =
@@ -318,6 +319,7 @@ export interface AuthLifecycleActor {
   evidence_id?: string | null;
   credential_id?: string | null;
   session_id?: string | null;
+  authority_path?: "custodian" | "operator_recovery" | "system" | "legacy";
 }
 
 export interface AuthRequestLifecycleEvent {
@@ -337,6 +339,9 @@ export interface AuthRequestLifecycleEvent {
   credential_id: string | null;
   reason: string | null;
   related_request_id: string | null;
+  custody_work_unit_id: string | null;
+  custody_generation: number | null;
+  authority_path: string | null;
   occurred_at: number;
 }
 
@@ -399,6 +404,10 @@ export interface AuthRequestInput {
   requester_credential_id?: string | null;
   supersedes_request_id?: string | null;
   superseded_action_dispositions?: Array<{ ordinal: number; reason: string }>;
+  expected_revision?: number;
+  expected_custody_generation?: number;
+  /** Public route boundary: require one exact delivery work unit. */
+  require_delivery_custody?: boolean;
 }
 
 // --- Issue tracking types ---

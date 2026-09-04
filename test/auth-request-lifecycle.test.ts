@@ -15,7 +15,7 @@ import { authSnapshotDigest } from "../src/auth-lifecycle.js";
 import { migrate } from "../src/db.js";
 import type { AuthLifecycleActor, AuthRequestInput } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
-import { createMigratedDb } from "./helpers/auth-queue-fixtures.js";
+import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
 
 function requesterFixture() {
   const db = createMigratedDb();
@@ -33,17 +33,31 @@ function requesterFixture() {
     evidence_method: "api_token",
     credential_id: credential.id,
   };
+  const project = createLedgerProject(db, process.cwd());
+  const issue = createLedgerIssue(db, project.project.id, "f15617a", "Auth lifecycle");
   const queue = new AuthQueue({ db });
-  const submit = (patch: Partial<AuthRequestInput> = {}) => queue.submit({
+  const submit = (patch: Partial<AuthRequestInput> = {}) => {
+    const head = patch.head_branch ?? "feature/original";
+    if (!patch.supersedes_request_id) {
+      db.prepare(`INSERT INTO work_units
+        (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
+         ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+        VALUES (?, 'f15617a', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
+        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, credential.id);
+    }
+    return queue.submit({
     command: "mandible auth merge feature/original --into main",
     title: "Original",
-    repo: "mandible",
+    repo: project.project.project_key,
     base_branch: "main",
     head_branch: "feature/original",
     requester_evidence_method: "api_token",
     requester_credential_id: credential.id,
+    require_delivery_custody: true,
+    issue_references: ["f15617a"],
     ...patch,
   }, operator.id);
+  };
   return { db, queue, operator, credential, otherCredential, actor, submit };
 }
 
@@ -80,7 +94,7 @@ describe("auth request immutable lifecycle", () => {
     expect(() => queue.withdraw(request.id, "wrong credential", {
       ...actor,
       credential_id: otherCredential.id,
-    })).toThrow(AuthQueueError);
+    }, 1, 1)).toThrow(AuthQueueError);
     const outsider = createUser(db, {
       slug: `outsider-${crypto.randomUUID()}`,
       kind: "agent",
@@ -89,10 +103,10 @@ describe("auth request immutable lifecycle", () => {
     expect(() => queue.withdraw(request.id, "wrong user", {
       ...actor,
       user_id: outsider.id,
-    })).toThrow(AuthQueueError);
+    }, 1, 1)).toThrow(AuthQueueError);
     expect(queue.getRequest(request.id)?.status).toBe("pending");
 
-    const withdrawn = queue.withdraw(request.id, "Branch abandoned", actor);
+    const withdrawn = queue.withdraw(request.id, "Branch abandoned", actor, 1, 1);
     expect(withdrawn.status).toBe("withdrawn");
     expect(withdrawn.error).toBe("Branch abandoned");
 
@@ -115,35 +129,81 @@ describe("auth request immutable lifecycle", () => {
     ).run(events[1]!.id)).toThrow();
   });
 
+  it("treats sessions as provenance only and permits a same-credential successor", () => {
+    const { queue, operator, credential, submit } = requesterFixture();
+    const request = submit({ session_id: "originating-session" });
+
+    expect(() => queue.withdraw(request.id, "session is not custody", {
+      user_id: operator.id,
+      evidence_method: "session_claim",
+      session_id: "originating-session",
+    }, 1, 1)).toThrow(AuthQueueError);
+
+    const successor = queue.withdraw(request.id, "successor completed the handoff", {
+      user_id: operator.id,
+      evidence_method: "api_token",
+      credential_id: credential.id,
+      session_id: "successor-session",
+      authority_path: "custodian",
+    }, 1, 1);
+    expect(successor.status).toBe("withdrawn");
+  });
+
+  it("records operator recovery as a distinct audited authority path", () => {
+    const { queue, operator, credential, submit } = requesterFixture();
+    const request = submit({ head_branch: "feature/operator-recovery" });
+    queue.withdraw(request.id, "Operator recovered an abandoned lane", {
+      user_id: operator.id,
+      evidence_method: "api_token",
+      credential_id: credential.id,
+      authority_path: "operator_recovery",
+    }, 1, 1);
+    expect(queue.listLifecycleEvents(request.id).at(-1)).toMatchObject({
+      event_type: "withdrawn",
+      authority_path: "operator_recovery",
+      custody_generation: 1,
+    });
+  });
+
+  it("lets the operator recover a legacy pending request without fabricating custody", () => {
+    const { queue, operator, credential } = requesterFixture();
+    const legacy = queue.submit({ command: "echo legacy", title: "Legacy", type: "commit" });
+    const recovered = queue.withdraw(legacy.id, "Operator retired an unowned legacy request", {
+      user_id: operator.id,
+      evidence_method: "api_token",
+      credential_id: credential.id,
+      authority_path: "operator_recovery",
+    }, 1, 0);
+    expect(recovered.status).toBe("withdrawn");
+    expect(queue.listLifecycleEvents(legacy.id).at(-1)).toMatchObject({
+      authority_path: "operator_recovery",
+      custody_work_unit_id: null,
+      custody_generation: null,
+    });
+  });
+
+  it("rejects stale lifecycle and custody preconditions", () => {
+    const { queue, actor, submit } = requesterFixture();
+    const request = submit({ head_branch: "feature/stale-cas" });
+    expect(() => queue.withdraw(request.id, "stale revision", actor, 0, 1)).toThrow(AuthQueueError);
+    expect(() => queue.withdraw(request.id, "stale custody", actor, 1, 0)).toThrow(AuthQueueError);
+    expect(queue.getRequest(request.id)?.status).toBe("pending");
+  });
+
   it("fails closed for legacy rows and terminal requests", () => {
     const { queue, operator, actor, submit } = requesterFixture();
-    const legacy = queue.submit({ command: "echo legacy", title: "Legacy" });
-    expect(() => queue.withdraw(legacy.id, "unknown requester", actor)).toThrow(AuthQueueError);
+    const legacy = queue.submit({ command: "echo legacy", title: "Legacy", type: "commit" });
+    expect(() => queue.withdraw(legacy.id, "unknown requester", actor, 1, 0)).toThrow(AuthQueueError);
 
     const withdrawn = submit({ head_branch: "feature/withdrawn" });
-    queue.withdraw(withdrawn.id, "done", actor);
-    expect(() => queue.withdraw(withdrawn.id, "again", actor)).toThrow(AuthQueueError);
+    queue.withdraw(withdrawn.id, "done", actor, 1, 1);
+    expect(() => queue.withdraw(withdrawn.id, "again", actor, 2, 1)).toThrow(AuthQueueError);
     expect(() => submit({
       head_branch: "feature/replacement",
       supersedes_request_id: withdrawn.id,
+      expected_revision: 2,
+      expected_custody_generation: 1,
     })).toThrow(AuthQueueError);
-
-    const sessionRequest = queue.submit({
-      command: "echo session",
-      title: "Session request",
-      requester_evidence_method: "session_claim",
-      session_id: "exact-session",
-    }, operator.id);
-    expect(() => queue.withdraw(sessionRequest.id, "wrong session", {
-      user_id: operator.id,
-      evidence_method: "session_claim",
-      session_id: "different-session",
-    })).toThrow(AuthQueueError);
-    expect(queue.withdraw(sessionRequest.id, "right session", {
-      user_id: operator.id,
-      evidence_method: "session_claim",
-      session_id: "exact-session",
-    }).status).toBe("withdrawn");
   });
 
   it("atomically supersedes a pending request and carries staged actions exactly", () => {
@@ -152,16 +212,18 @@ describe("auth request immutable lifecycle", () => {
     const original = submit({ actions: [carried] });
 
     expect(() => submit({
-      head_branch: "feature/incomplete-replacement",
       supersedes_request_id: original.id,
+      expected_revision: 1,
+      expected_custody_generation: 1,
     })).toThrow(AuthQueueError);
     expect(queue.getRequest(original.id)?.status).toBe("pending");
 
     const replacement = submit({
-      command: "mandible auth merge feature/replacement --into main",
+      command: "mandible auth merge feature/original --into main",
       title: "Replacement",
-      head_branch: "feature/replacement",
       supersedes_request_id: original.id,
+      expected_revision: 1,
+      expected_custody_generation: 1,
       actions: [carried],
     });
 
@@ -190,8 +252,10 @@ describe("auth request immutable lifecycle", () => {
       actions: [{ kind: "issue_close", target_issue_ref: "f15617a", payload: {} }],
     });
     const replacement = submit({
-      head_branch: "feature/drop-replacement",
+      head_branch: "feature/drop-original",
       supersedes_request_id: original.id,
+      expected_revision: 1,
+      expected_custody_generation: 1,
       superseded_action_dispositions: [{ ordinal: 1, reason: "Issue remains open for delivery" }],
     });
 
@@ -209,6 +273,8 @@ describe("auth request immutable lifecycle", () => {
       base_branch: "develop",
       head_branch: "feature/wrong-target",
       supersedes_request_id: original.id,
+      expected_revision: 1,
+      expected_custody_generation: 1,
     })).toThrow(AuthQueueError);
     expect(queue.getRequest(original.id)?.status).toBe("pending");
   });

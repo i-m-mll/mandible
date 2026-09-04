@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
 import { createMigratedDb, createQueue, git, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+import { addCredential, getOperator } from "../src/users/store.js";
 
 describe("auth queue", () => {
   it("submits request and returns pending status", () => {
@@ -490,7 +491,8 @@ describe("auth queue", () => {
   describe("outcome field in resolved payload", () => {
     it("resolvedPayload has outcome=succeeded when completed with exit_code=0", () => {
       const events: SseEvent[] = [];
-      const queue = createQueue({ broadcast: (e) => events.push(e) });
+      const db = createMigratedDb();
+      const queue = new AuthQueue({ db, broadcast: (e) => events.push(e) });
 
       const request = queue.submit({ command: "echo ok", title: "Success" });
       queue.setResult(request.id, 0, "ok");
@@ -532,21 +534,26 @@ describe("auth queue", () => {
 
     it("resolvedPayload has outcome=withdrawn when requester withdraws", () => {
       const events: SseEvent[] = [];
-      const queue = createQueue({ broadcast: (e) => events.push(e) });
+      const db = createMigratedDb();
+      const queue = new AuthQueue({ db, broadcast: (e) => events.push(e) });
+      const operator = getOperator(db)!;
+      const credential = addCredential(db, operator.id, {
+        type: "api_token",
+        fingerprint: `withdraw-${crypto.randomUUID()}`,
+      });
 
       const request = queue.submit({
         command: "echo withdraw",
         title: "Withdraw",
-        requester_evidence_method: "session_claim",
-        session_id: "requester-session",
+        type: "commit",
       });
       queue.withdraw(request.id, "No longer needed", {
-        user_id: request.requested_by_user_id!,
-        evidence_method: "session_claim",
+        user_id: operator.id,
+        evidence_method: "api_token",
         evidence_id: null,
-        credential_id: null,
-        session_id: "requester-session",
-      });
+        credential_id: credential.id,
+        authority_path: "operator_recovery",
+      }, 1, 0);
 
       const resolved = events.find((e) => e.event === "auth:resolved");
       expect(resolved).toBeTruthy();

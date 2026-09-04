@@ -29,6 +29,8 @@ import { migrate, setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { createLedgerIssue, createLedgerProject } from "./helpers/auth-queue-fixtures.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
@@ -283,10 +285,21 @@ describe("auth request review counts are correctable in place", () => {
     queueDb = new Database(":memory:");
     migrate(queueDb);
     setDb(queueDb);
-    setupOperator(queueDb, { slug: "review-counts", display_name: "Review Counts" });
-    const router = new Router();
+    const operator = setupOperator(queueDb, { slug: "review-counts", display_name: "Review Counts" });
+    const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-review-count-auth-"));
+    const authenticator = new ClientAuthenticator(queueDb, { secretsDir: authDir });
+    const { token, credential } = authenticator.mintApiToken(operator.id);
+    const router = new Router({ clientAuth: authenticator });
     const queue = new AuthQueue({ db: queueDb, broadcast: () => {} });
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db: queueDb }));
+
+    const project = createLedgerProject(queueDb, process.cwd());
+    const issue = createLedgerIssue(queueDb, project.project.id, "1512471", "Review counts");
+    queueDb.prepare(`INSERT INTO work_units
+      (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
+       ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+      VALUES (?, '1512471', ?, 'feature/stale-counts', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
+      .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
 
     // The numbers the filing request was actually born with, two-dot.
     const request = queue.submit({
@@ -295,13 +308,30 @@ describe("auth request review counts are correctable in place", () => {
       files_changed: 56,
       additions: 1069,
       deletions: 1730,
-    });
+      repo: project.project.project_key,
+      head_branch: "feature/stale-counts",
+      base_branch: "main",
+      issue_references: ["1512471"],
+      requester_evidence_method: "api_token",
+      requester_credential_id: credential.id,
+      require_delivery_custody: true,
+    }, operator.id);
 
     const response = await router.invoke({
       method: "PUT",
       url: `/api/auth/request/${request.id}`,
-      body: { files_changed: 17, additions: 729, deletions: 419 },
+      body: {
+        files_changed: 17,
+        additions: 729,
+        deletions: 419,
+        expected_revision: 1,
+        expected_custody_generation: 1,
+      },
+      credential: token,
+      transport: "http",
     });
+
+    fs.rmSync(authDir, { recursive: true, force: true });
 
     expect(response.status).toBe(200);
     expect(

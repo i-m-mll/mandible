@@ -280,6 +280,7 @@ describe("auth request staged close action sugar", () => {
       const result = await runAsync([
         "auth", "request", "feature/demo", "--title", "Replacement",
         "--issue", "f15617a", "--supersedes", "old-request",
+        "--expected-revision", "3", "--expected-custody-generation", "2",
         "--drop-superseded-action", "2:No longer closes the umbrella", "--no-watch",
       ], tempDir, {
         MANDIBLE_PORT: String(server.port),
@@ -288,6 +289,8 @@ describe("auth request staged close action sugar", () => {
       expect(result.status).toBe(0);
       expect(server.bodies[0]).toMatchObject({
         supersedes_request_id: "old-request",
+        expected_revision: 3,
+        expected_custody_generation: 2,
         superseded_action_dispositions: [
           { ordinal: 2, reason: "No longer closes the umbrella" },
         ],
@@ -412,11 +415,12 @@ describe("auth request staged close action sugar", () => {
 });
 
 describe("auth requester withdrawal CLI", () => {
-  it("posts the required reason and ambient requester session", async () => {
+  it("posts the required reason and concurrency guards without session authority", async () => {
     const server = await listenForWithdrawal();
     try {
       const result = await runAsync([
-        "auth", "withdraw", "abc/def", "--reason", "Branch was abandoned", "--json",
+        "auth", "withdraw", "abc/def", "--reason", "Branch was abandoned",
+        "--expected-revision", "4", "--expected-custody-generation", "2", "--json",
       ], tempDir, {
         MANDIBLE_PORT: String(server.port),
         MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
@@ -425,7 +429,7 @@ describe("auth requester withdrawal CLI", () => {
       expect(result.status).toBe(0);
       expect(server.requests).toEqual([{
         url: "/api/auth/request/abc%2Fdef/withdraw",
-        body: { reason: "Branch was abandoned", session_id: "requester-thread" },
+        body: { reason: "Branch was abandoned", expected_revision: 4, expected_custody_generation: 2 },
       }]);
     } finally {
       await server.close();

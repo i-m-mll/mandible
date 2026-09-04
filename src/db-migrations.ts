@@ -786,6 +786,10 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: [
       "ALTER TABLE auth_requests ADD COLUMN supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",
       "ALTER TABLE auth_requests ADD COLUMN superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",
+      "ALTER TABLE auth_requests ADD COLUMN custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT",
+      "ALTER TABLE work_units ADD COLUMN owner_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT",
+      "ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)",
+      "ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT",
       `CREATE TABLE auth_request_lifecycle_events (
         id TEXT PRIMARY KEY,
         auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE RESTRICT,
@@ -803,6 +807,9 @@ export const MIGRATIONS: readonly Migration[] = [
         credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
         reason TEXT,
         related_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+        custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT,
+        custody_generation INTEGER,
+        authority_path TEXT CHECK(authority_path IN ('custodian','operator_recovery','system','legacy')),
         occurred_at INTEGER NOT NULL,
         UNIQUE(auth_request_id, revision)
       )`,
@@ -813,6 +820,28 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE TRIGGER auth_request_lifecycle_events_immutable_delete
         BEFORE DELETE ON auth_request_lifecycle_events
         BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END`,
+      `CREATE TABLE work_unit_custody_events (
+        id TEXT PRIMARY KEY,
+        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE RESTRICT,
+        prior_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        prior_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        new_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        new_credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        prior_generation INTEGER NOT NULL,
+        new_generation INTEGER NOT NULL CHECK(new_generation = prior_generation + 1),
+        authority_path TEXT NOT NULL CHECK(authority_path IN ('initial_assignment','parent_role_handoff','operator_recovery')),
+        parent_role_checkpoint_id TEXT REFERENCES ledger_issue_checkpoints(id) ON DELETE RESTRICT,
+        operator_evidence_method TEXT,
+        reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+        occurred_at INTEGER NOT NULL,
+        UNIQUE(work_unit_id, new_generation)
+      )`,
+      `CREATE TRIGGER work_unit_custody_events_immutable_update
+        BEFORE UPDATE ON work_unit_custody_events
+        BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
+      `CREATE TRIGGER work_unit_custody_events_immutable_delete
+        BEFORE DELETE ON work_unit_custody_events
+        BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
       `WITH snapshots AS (
         SELECT ar.*,
           json_object(
@@ -847,14 +876,14 @@ export const MIGRATIONS: readonly Migration[] = [
       INSERT INTO auth_request_lifecycle_events (
         id, auth_request_id, revision, event_type, prior_status, next_status,
         snapshot_json, snapshot_sha256, actor_user_id, evidence_method,
-        credential_id, reason, occurred_at
+        credential_id, reason, custody_work_unit_id, custody_generation, authority_path, occurred_at
       )
       SELECT
         lower(hex(randomblob(16))), id, 1, 'legacy_snapshot', NULL, status,
         lifecycle_snapshot, mandible_sha256(lifecycle_snapshot),
         NULL, NULL, NULL,
         'Baseline captured during migration; earlier transition provenance is unknown.',
-        updated_at
+        NULL, NULL, 'legacy', updated_at
       FROM snapshots`,
     ],
   },

@@ -75,20 +75,30 @@ export function appendAuthLifecycleEvent(
     credential_id: input.actor?.credential_id ?? null,
     reason: input.reason?.trim() || null,
     related_request_id: input.relatedRequestId ?? null,
+    custody_work_unit_id: rowCustody(db, input.requestId)?.work_unit_id ?? null,
+    custody_generation: rowCustody(db, input.requestId)?.custody_generation ?? null,
+    authority_path: input.actor?.authority_path ?? (input.actor ? "custodian" : "system"),
     occurred_at: input.occurredAt,
   };
   db.prepare(`INSERT INTO auth_request_lifecycle_events (
     id, auth_request_id, revision, event_type, prior_status, next_status,
     snapshot_json, snapshot_sha256, prior_snapshot_json, prior_snapshot_sha256,
     actor_user_id, evidence_method, evidence_id, credential_id, reason,
-    related_request_id, occurred_at
+    related_request_id, custody_work_unit_id, custody_generation, authority_path, occurred_at
   ) VALUES (
     @id, @auth_request_id, @revision, @event_type, @prior_status, @next_status,
     @snapshot_json, @snapshot_sha256, @prior_snapshot_json, @prior_snapshot_sha256,
     @actor_user_id, @evidence_method, @evidence_id, @credential_id, @reason,
-    @related_request_id, @occurred_at
+    @related_request_id, @custody_work_unit_id, @custody_generation, @authority_path, @occurred_at
   )`).run(event);
   return event;
+}
+
+function rowCustody(db: Db, requestId: string): { work_unit_id: string; custody_generation: number } | null {
+  return (db.prepare(`SELECT ar.custody_work_unit_id AS work_unit_id, wu.custody_generation
+    FROM auth_requests ar LEFT JOIN work_units wu ON wu.id = ar.custody_work_unit_id
+    WHERE ar.id = ? AND ar.custody_work_unit_id IS NOT NULL`).get(requestId) as
+      { work_unit_id: string; custody_generation: number } | undefined) ?? null;
 }
 
 export function listAuthLifecycleEvents(db: Db, requestId: string): AuthRequestLifecycleEvent[] {

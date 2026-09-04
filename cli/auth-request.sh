@@ -58,6 +58,8 @@
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Auth request ID that must complete before this one runs
 #   --supersedes <id>       Atomically replace this exact pending request
+#   --expected-revision <n> Required with --supersedes
+#   --expected-custody-generation <n> Required with --supersedes
 #   --drop-superseded-action <ordinal>:<reason>
 #                           Explicitly dispose one staged predecessor action
 #   --issue <id>            Issue ID to reference for context (repeatable; does not close)
@@ -127,6 +129,8 @@ spec_file_set=0
 post_merge_handoff=""
 depends_on_id=""
 supersedes_request_id=""
+expected_revision=""
+expected_custody_generation=""
 SUPERSEDED_ACTION_DISPOSITIONS=()
 ISSUE_REFERENCES=()
 ISSUE_CLOSURES=()
@@ -158,6 +162,8 @@ while [[ $# -gt 0 ]]; do
     --dirty-branch-prefix) dirty_branch_prefix="$2"; shift 2 ;;
     --depends-on)     depends_on_id="$2"; shift 2 ;;
     --supersedes)     supersedes_request_id="$2"; shift 2 ;;
+    --expected-revision) expected_revision="$2"; shift 2 ;;
+    --expected-custody-generation) expected_custody_generation="$2"; shift 2 ;;
     --drop-superseded-action)
       SUPERSEDED_ACTION_DISPOSITIONS+=("$2"); shift 2 ;;
     --issue|--ref-issue|--references-issue) ISSUE_REFERENCES+=("$2"); shift 2 ;;
@@ -260,6 +266,10 @@ if [[ -n "$promote_briefing_group" && "$auth_type" != "merge" ]]; then
 fi
 if [[ ${#SUPERSEDED_ACTION_DISPOSITIONS[@]} -gt 0 && -z "$supersedes_request_id" ]]; then
   echo "Error: --drop-superseded-action requires --supersedes" >&2
+  exit 2
+fi
+if [[ -n "$supersedes_request_id" ]] && { [[ ! "$expected_revision" =~ ^[0-9]+$ ]] || [[ ! "$expected_custody_generation" =~ ^[0-9]+$ ]]; }; then
+  echo "Error: --supersedes requires --expected-revision and --expected-custody-generation" >&2
   exit 2
 fi
 superseded_action_dispositions_json='[]'
@@ -982,6 +992,8 @@ payload=$(jq -nc \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
   --arg supersedes_request_id "$supersedes_request_id" \
+  --arg expected_revision "$expected_revision" \
+  --arg expected_custody_generation "$expected_custody_generation" \
   --argjson superseded_action_dispositions "$superseded_action_dispositions_json" \
   --arg session_id "$requester_session_id" \
   --arg target_session_id "$target_session_id" \
@@ -1015,6 +1027,8 @@ payload=$(jq -nc \
     actions: $actions,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
     supersedes_request_id: (if $supersedes_request_id == "" then null else $supersedes_request_id end),
+    expected_revision: (if $expected_revision == "" then null else ($expected_revision | tonumber) end),
+    expected_custody_generation: (if $expected_custody_generation == "" then null else ($expected_custody_generation | tonumber) end),
     superseded_action_dispositions: $superseded_action_dispositions,
     session_id: (if $session_id == "" then null else $session_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),

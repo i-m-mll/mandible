@@ -69,6 +69,7 @@ import {
   syncAuthRequestLedgerLinks,
 } from "./ledger/operational-links.js";
 import { getLedgerIssueHead } from "./ledger/issue-heads.js";
+import { resolveProjectRef } from "./ledger/project-registry.js";
 import { LedgerStore } from "./ledger/store.js";
 import {
   assertEvidenceMethod,
@@ -97,6 +98,7 @@ import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import {
   appendAuthLifecycleEvent,
   authRequestSnapshot,
+  authSnapshotDigest,
   listAuthLifecycleEvents,
 } from "./auth-lifecycle.js";
 // Issue 1624ee9 — shared Mandible-Issue trailer parsing.
@@ -155,7 +157,21 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "requested_by_user_id", "requester_evidence_method", "requester_credential_id",
   "approved_by_user_id", "execution_evidence_id", "clearance_use_id",
   "supersedes_request_id", "superseded_by_request_id",
+  "custody_work_unit_id",
 ].join(", ");
+
+type WorkUnitCustody = {
+  id: string;
+  issue_id: string;
+  ledger_issue_id: string | null;
+  repo_id: string;
+  branch: string;
+  kind: "solo" | "partition" | "integration";
+  owner_user_id: string;
+  owner_credential_id: string;
+  custody_generation: number;
+  auth_request_id: string | null;
+};
 
 // Issue 75f52ac — off-loop git spawns for the background finalizer queue.
 const execFileAsync = promisify(execFile);
@@ -306,12 +322,12 @@ type StaleMergeRecovery =
   | { outcome: "failed"; detail: string };
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
   constructor(
-    code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch",
+    code: AuthQueueError["code"],
     message: string,
     status?: AuthRequestStatus,
     details?: unknown
@@ -1606,7 +1622,9 @@ export class AuthQueue {
     const predecessor = payload.supersedes_request_id
       ? this.requireRequest(payload.supersedes_request_id)
       : null;
-    if (predecessor) this.assertRequesterControl(predecessor, actor);
+    const custody = predecessor
+      ? this.requireRequestCustody(predecessor, actor, payload.expected_revision, payload.expected_custody_generation)
+      : this.resolveSubmissionCustody(payload, actor);
     const mergeCheck = this.checkMergeIndependence({
       ...payload,
       request_id: predecessor?.id ?? null,
@@ -1714,6 +1732,7 @@ export class AuthQueue {
       clearance_use_id: null,
       supersedes_request_id: predecessor?.id ?? null,
       superseded_by_request_id: null,
+      custody_work_unit_id: custody?.id ?? null,
     };
 
     const stmt = this.db.prepare(
@@ -1774,6 +1793,7 @@ export class AuthQueue {
         clearance_use_id,
         supersedes_request_id,
         superseded_by_request_id
+        ,custody_work_unit_id
       ) VALUES (
         @id,
         @session_id,
@@ -1831,6 +1851,7 @@ export class AuthQueue {
         @clearance_use_id,
         @supersedes_request_id,
         @superseded_by_request_id
+        ,@custody_work_unit_id
       )`
     );
 
@@ -1840,6 +1861,7 @@ export class AuthQueue {
       : new Map<number, string>();
     const insertRequest = this.db.transaction(() => {
       if (predecessor) {
+        this.assertLifecycleCas(predecessor, custody!, payload.expected_revision, payload.expected_custody_generation);
         const current = this.readRequestByExactId(predecessor.id);
         if (!current || current.status !== "pending") {
           throw new AuthQueueError(
@@ -1869,6 +1891,17 @@ export class AuthQueue {
         issues: request.issues ? JSON.stringify(request.issues) : null
       });
       insertAuthRequestActions(this.db, request, actions, now);
+      if (custody) {
+        const bound = this.db.prepare(
+          `UPDATE work_units SET auth_request_id = ?
+           WHERE id = ? AND state = 'committed' AND resolved_at IS NULL
+             AND owner_user_id = ? AND owner_credential_id = ? AND custody_generation = ?
+             AND (auth_request_id IS NULL OR auth_request_id = ?)`,
+        ).run(request.id, custody.id, actor.user_id, actor.credential_id, custody.custody_generation, predecessor?.id ?? null);
+        if (bound.changes !== 1) {
+          throw new AuthQueueError("custody_conflict", "Work-unit custody changed before submission completed.");
+        }
+      }
       appendAuthLifecycleEvent(this.db, {
         requestId: request.id,
         eventType: "submitted",
@@ -1879,12 +1912,21 @@ export class AuthQueue {
         occurredAt: now,
       });
       if (predecessor) {
-        for (const [ordinal, reason] of dispositions) {
+        const replacementActions = new Map(listAuthRequestActions(this.db, request.id).map((action) => [action.ordinal, action]));
+        for (const action of listAuthRequestActions(this.db, predecessor.id).filter((item) => item.state === "staged")) {
+          const reason = dispositions.get(action.ordinal);
+          const replacementAction = replacementActions.get(action.ordinal);
           this.db.prepare(
             `UPDATE auth_request_actions
-             SET state = 'vetoed', outcome_detail = ?, updated_at = ?
+             SET state = 'vetoed', outcome_detail = ?, replacement_action_id = ?, updated_at = ?
              WHERE auth_request_id = ? AND ordinal = ? AND state = 'staged'`,
-          ).run(`Disposed by replacement: ${reason}`, now, predecessor.id, ordinal);
+          ).run(
+            reason ? `Disposed by replacement: ${reason}` : `Carried to replacement ${request.id.slice(0, 8)} action ${replacementAction?.id.slice(0, 8)}.`,
+            replacementAction?.id ?? null,
+            now,
+            predecessor.id,
+            action.ordinal,
+          );
         }
         const changed = this.db.prepare(
           `UPDATE auth_requests
@@ -1938,27 +1980,113 @@ export class AuthQueue {
     return request;
   }
 
-  private assertRequesterControl(request: AuthRequest, actor: AuthLifecycleActor): void {
-    if (!request.requested_by_user_id || request.requested_by_user_id !== actor.user_id) {
-      throw new AuthQueueError("requester_control_required", "Only the recorded requester may change this request.");
+  private resolveSubmissionCustody(payload: AuthRequestInput, actor: AuthLifecycleActor): WorkUnitCustody | null {
+    if ((payload.type ?? "merge") !== "merge") return null;
+    if (payload.require_delivery_custody !== true) return null;
+    if (actor.evidence_method !== "api_token" || !actor.credential_id) {
+      throw new AuthQueueError("custody_required", "Merge submission requires an active durable client credential.");
     }
-    if (request.requester_evidence_method === "api_token") {
-      if (!request.requester_credential_id || actor.evidence_method !== "api_token" ||
-          actor.credential_id !== request.requester_credential_id) {
-        throw new AuthQueueError("requester_control_required", "The originating requester credential is required.");
+    this.assertActiveCredential(actor);
+    if (!payload.repo || !payload.head_branch) {
+      throw new AuthQueueError("custody_required", "Merge submission requires canonical project and head branch identity.");
+    }
+    const project = resolveProjectRef(this.db, payload.repo);
+    if (!project.ok || !project.project || project.ambiguous) {
+      throw new AuthQueueError("custody_required", "Merge project does not resolve uniquely in the project registry.");
+    }
+    const issueIds = new Set<string>();
+    for (const ref of payload.issue_references ?? []) {
+      const resolved = resolveOperationalIssueRef(this.db, ref, payload.repo);
+      if (resolved.ok) issueIds.add(resolved.issue_id);
+    }
+    const rows = this.db.prepare(
+      `SELECT * FROM work_units
+       WHERE state = 'committed' AND resolved_at IS NULL AND branch = ?
+         AND auth_request_id IS NULL AND owner_user_id = ? AND owner_credential_id = ?`,
+    ).all(payload.head_branch, actor.user_id, actor.credential_id) as WorkUnitCustody[];
+    const matches = rows.filter((row) => {
+      const wuProject = resolveProjectRef(this.db, row.repo_id);
+      if (!wuProject.ok || !wuProject.project || wuProject.ambiguous || wuProject.project.id !== project.project!.id) return false;
+      return Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id));
+    });
+    if (matches.length !== 1) {
+      throw new AuthQueueError(
+        "custody_required",
+        `Merge request needs exactly one committed issue-linked delivery work unit; found ${matches.length}.`,
+      );
+    }
+    return matches[0]!;
+  }
+
+  private requireRequestCustody(
+    request: AuthRequest,
+    actor: AuthLifecycleActor,
+    expectedRevision?: number,
+    expectedGeneration?: number,
+  ): WorkUnitCustody | null {
+    if (!request.custody_work_unit_id && actor.authority_path === "operator_recovery") {
+      const operator = getOperator(this.db);
+      if (!operator || actor.user_id !== operator.id) {
+        throw new AuthQueueError("operator_recovery_required", "Only the configured operator may use recovery authority.");
       }
-      return;
+      this.assertActiveCredential(actor);
+      this.assertLifecycleCas(request, null, expectedRevision, expectedGeneration);
+      return null;
     }
-    if (request.requester_evidence_method === "session_claim") {
-      if (!request.session_id || actor.evidence_method !== "session_claim" || actor.session_id !== request.session_id) {
-        throw new AuthQueueError("requester_control_required", "The originating requester session is required.");
+    if (!request.custody_work_unit_id) {
+      throw new AuthQueueError("operator_recovery_required", "This request has no provable delivery-work-unit custody.");
+    }
+    const custody = this.db.prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(request.custody_work_unit_id) as WorkUnitCustody | undefined;
+    if (!custody) throw new AuthQueueError("operator_recovery_required", "The bound delivery work unit is missing.");
+    if (actor.authority_path === "operator_recovery") {
+      const operator = getOperator(this.db);
+      if (!operator || actor.user_id !== operator.id) {
+        throw new AuthQueueError("operator_recovery_required", "Only the configured operator may use recovery authority.");
       }
-      return;
+      this.assertActiveCredential(actor);
+      this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+      return custody;
     }
-    throw new AuthQueueError(
-      "requester_control_required",
-      "This legacy request has no exact requester-control provenance and cannot be changed by a requester.",
-    );
+    this.assertActiveCredential(actor);
+    if (custody.owner_user_id !== actor.user_id || custody.owner_credential_id !== actor.credential_id) {
+      throw new AuthQueueError("custody_required", "The current delivery-work-unit credential is required.");
+    }
+    this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+    return custody;
+  }
+
+  private assertActiveCredential(actor: AuthLifecycleActor): void {
+    if (actor.evidence_method !== "api_token" || !actor.credential_id) {
+      throw new AuthQueueError("custody_required", "An active durable client credential is required.");
+    }
+    const row = this.db.prepare(
+      "SELECT user_id, status FROM user_credentials WHERE id = ?",
+    ).get(actor.credential_id) as { user_id: string; status: string } | undefined;
+    if (!row || row.status !== "active" || row.user_id !== actor.user_id) {
+      throw new AuthQueueError("custody_required", "The durable client credential is inactive or belongs to another user.");
+    }
+  }
+
+  private assertLifecycleCas(
+    request: AuthRequest,
+    custody: WorkUnitCustody | null,
+    expectedRevision?: number,
+    expectedGeneration?: number,
+  ): void {
+    if (!Number.isInteger(expectedRevision) || !Number.isInteger(expectedGeneration)) {
+      throw new AuthQueueError("lifecycle_precondition_required", "Expected lifecycle revision and custody generation are required.");
+    }
+    const latest = this.db.prepare(
+      `SELECT revision, snapshot_sha256 FROM auth_request_lifecycle_events
+       WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1`,
+    ).get(request.id) as { revision: number; snapshot_sha256: string } | undefined;
+    const currentDigest = authSnapshotDigest(authRequestSnapshot(this.db, request.id));
+    if (!latest || latest.revision !== expectedRevision || latest.snapshot_sha256 !== currentDigest ||
+        (custody?.custody_generation ?? 0) !== expectedGeneration ||
+        (custody !== null && custody.auth_request_id !== request.id)) {
+      throw new AuthQueueError("lifecycle_conflict", "Request lifecycle or work-unit custody changed; refresh and retry.");
+    }
   }
 
   private validateSupersession(
@@ -1971,10 +2099,12 @@ export class AuthQueue {
       throw new AuthQueueError("invalid_status", `Request is ${predecessor.status}, cannot supersede.`, predecessor.status);
     }
     if (predecessor.base_branch !== replacement.base_branch ||
+        predecessor.head_branch !== replacement.head_branch ||
+        predecessor.custody_work_unit_id !== replacement.custody_work_unit_id ||
         !this.dedupRepoMatches(replacement, predecessor)) {
       throw new AuthQueueError(
         "target_mismatch",
-        "A replacement must use the same canonical project and protected target as its predecessor.",
+        "A replacement must use the same delivery work unit, canonical project, head branch, and protected target as its predecessor.",
       );
     }
     const dispositions = new Map<number, string>();
@@ -2063,32 +2193,58 @@ export class AuthQueue {
     return countAuthRequestActions(this.db, request.id);
   }
 
-  addAction(requestId: string, input: unknown): AuthRequestAction {
+  addAction(requestId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
-    const action = addAuthRequestAction(this.db, request, input, this.now());
+    const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
+      () => addAuthRequestAction(this.db, request, input, this.now()));
     this.broadcast({ event: "auth:updated", data: { request, action } });
     return action;
   }
 
-  updateAction(requestId: string, actionId: string, input: unknown): AuthRequestAction {
+  updateAction(requestId: string, actionId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
-    const action = updateAuthRequestAction(this.db, request, actionId, input, this.now());
+    const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
+      () => updateAuthRequestAction(this.db, request, actionId, input, this.now()));
     this.broadcast({ event: "auth:updated", data: { request, action } });
     return action;
   }
 
-  deleteAction(requestId: string, actionId: string): AuthRequestAction {
+  deleteAction(requestId: string, actionId: string, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
-    const action = deleteAuthRequestAction(this.db, request.id, actionId);
+    const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
+      () => deleteAuthRequestAction(this.db, request.id, actionId));
     this.broadcast({ event: "auth:updated", data: { request, deleted_action_id: action.id } });
     return action;
   }
 
-  setActionVeto(requestId: string, actionId: string, vetoed: boolean): AuthRequestAction {
+  setActionVeto(requestId: string, actionId: string, vetoed: boolean, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionVetoableRequest(requestId);
-    const action = setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now());
+    const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
+      () => setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now()));
     this.broadcast({ event: "auth:updated", data: { request: this.requireRequest(request.id), action } });
     return action;
+  }
+
+  private withActionCustody<T>(
+    request: AuthRequest,
+    actor: AuthLifecycleActor | undefined,
+    expectedRevision: number | undefined,
+    expectedGeneration: number | undefined,
+    mutate: () => T,
+  ): T {
+    if (!actor) return mutate();
+    const custody = this.requireRequestCustody(request, actor, expectedRevision, expectedGeneration);
+    const priorSnapshot = authRequestSnapshot(this.db, request.id);
+    let result!: T;
+    this.db.transaction(() => {
+      this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+      result = mutate();
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "revised", priorStatus: request.status,
+        nextStatus: request.status, actor, priorSnapshot, occurredAt: this.now(),
+      });
+    })();
+    return result;
   }
 
   checkMergeIndependence(input: AuthMergeCheckInput): AuthMergeCheckReport {
@@ -2455,7 +2611,10 @@ export class AuthQueue {
 
   update(
     id: string,
-    fields: Partial<AuthRequestInput> & { status?: "pending" }
+    fields: Partial<AuthRequestInput> & { status?: "pending" },
+    actor?: AuthLifecycleActor,
+    expectedRevision?: number,
+    expectedGeneration?: number,
   ): AuthRequest {
     this.expireStale();
     const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
@@ -2481,6 +2640,9 @@ export class AuthQueue {
       };
     }
     const priorSnapshot = authRequestSnapshot(this.db, request.id);
+    const custody = actor
+      ? this.requireRequestCustody(request, actor, expectedRevision, expectedGeneration)
+      : null;
 
     // Issue 7d64d8f — `commit_message` is handled explicitly below because a
     // canonical change message must keep its digest in step with its bytes.
@@ -2623,6 +2785,7 @@ export class AuthQueue {
 
     let updated!: AuthRequest;
     this.db.transaction(() => {
+      if (actor && custody) this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
       const result = this.db
         .prepare(`UPDATE auth_requests SET ${updates.join(", ")} WHERE id = ? AND status = 'pending'`)
         .run(...values);
@@ -2638,11 +2801,9 @@ export class AuthQueue {
         eventType: "revised",
         priorStatus: "pending",
         nextStatus: "pending",
-        actor: {
-          user_id: request.requested_by_user_id!,
-          evidence_method: request.requester_evidence_method ?? "legacy",
-          credential_id: request.requester_credential_id ?? null,
-          session_id: request.session_id,
+        actor: actor ?? {
+          user_id: request.requested_by_user_id!, evidence_method: "legacy",
+          credential_id: null, session_id: request.session_id, authority_path: "legacy",
         },
         priorSnapshot,
         occurredAt: updated.updated_at,
@@ -2828,7 +2989,7 @@ export class AuthQueue {
     return requeued;
   }
 
-  withdraw(id: string, reason: string, actor: AuthLifecycleActor): AuthRequest {
+  withdraw(id: string, reason: string, actor: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequest {
     this.expireStale();
     const request = this.requireRequest(id);
     if (request.status !== "pending") {
@@ -2841,10 +3002,15 @@ export class AuthQueue {
     if (!reason.trim()) {
       throw new AuthQueueError("invalid_command", "Withdrawal reason is required.");
     }
-    this.assertRequesterControl(request, actor);
+    const custody = this.requireRequestCustody(request, actor, expectedRevision, expectedGeneration);
 
     const now = this.now();
     this.db.transaction(() => {
+      this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+      this.db.prepare(
+        `UPDATE auth_request_actions SET state = 'vetoed', outcome_detail = ?, updated_at = ?
+         WHERE auth_request_id = ? AND state = 'staged'`,
+      ).run(`Vetoed by withdrawal: ${reason.trim()}`, now, request.id);
       const result = this.db.prepare(
         `UPDATE auth_requests SET status = 'withdrawn', resolved_at = ?, updated_at = ?, error = ?
          WHERE id = ? AND status = 'pending'`,
@@ -7371,5 +7537,6 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     clearance_use_id: row.clearance_use_id == null ? null : String(row.clearance_use_id),
     supersedes_request_id: row.supersedes_request_id == null ? null : String(row.supersedes_request_id),
     superseded_by_request_id: row.superseded_by_request_id == null ? null : String(row.superseded_by_request_id),
+    custody_work_unit_id: row.custody_work_unit_id == null ? null : String(row.custody_work_unit_id),
   };
 }

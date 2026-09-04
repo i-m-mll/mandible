@@ -20,11 +20,14 @@ import { clearRepoIdentityCache } from "../src/repo-identity.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
+import { addCredential } from "../src/users/store.js";
+import { createLedgerIssue, createLedgerProject } from "./helpers/auth-queue-fixtures.js";
 
 const SHARED_BRANCH = "feature/5bd2a6d-tasks-program";
 
 let db: Db | null = null;
 let testRequesterUserId = "";
+let testRequesterCredentialId = "";
 const tempRoots: string[] = [];
 
 // Minimal registrar mirroring test/inbox-scoping.test.ts: injects an
@@ -74,7 +77,7 @@ class TestRouteRegistrar implements RouteRegistrar {
         user_id: testRequesterUserId,
         slug: "auth-dedup-test",
         method: "api_token",
-        credential_id: null,
+        credential_id: testRequesterCredentialId,
         source: "in_process",
       },
     } satisfies RequestLike, response);
@@ -111,6 +114,14 @@ function createRepo(label: string): string {
   git(root, ["commit", "-m", `${label}\n\nMandible-Issue: 608d1db`]);
   git(root, ["checkout", "main"]);
   registerWorkRepo(root);
+  const project = createLedgerProject(db!, root);
+  const issue = createLedgerIssue(db!, project.project.id, "608d1db", `Dedup ${label}`);
+  db!.prepare(`INSERT INTO work_units
+    (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
+     ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+    VALUES (?, '608d1db', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
+    .run(crypto.randomUUID(), project.project.project_key, SHARED_BRANCH, issue.id,
+      testRequesterUserId, testRequesterCredentialId);
   return root;
 }
 
@@ -132,6 +143,10 @@ function createQueue(): AuthQueue {
     slug: "auth-dedup-test",
     display_name: "Auth Dedup Test",
   }).id;
+  testRequesterCredentialId = addCredential(db, testRequesterUserId, {
+    type: "api_token",
+    fingerprint: `auth-dedup-${crypto.randomUUID()}`,
+  }).id;
   setDb(db);
   return new AuthQueue({ db });
 }
@@ -145,6 +160,7 @@ function submission(repoRoot: string, overrides: Record<string, unknown> = {}) {
     target_repo_root: repoRoot,
     head_branch: SHARED_BRANCH,
     base_branch: "main",
+    issue_references: ["608d1db"],
     ...overrides,
   };
 }
