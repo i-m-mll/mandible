@@ -110,8 +110,6 @@ describe('shared chrome icon cascade', () => {
         <button class="ledger-issue-actions-menu__trigger ledger-issue-actions-menu__trigger--active test-hover">L</button>
         <button class="tab-overflow__btn tab-overflow__btn--active test-focus-visible">O</button>
         <button class="daemon-toast__dismiss test-hover">D</button>
-        <button class="terminal-pane__sidebar-toggle test-hover">P</button>
-        <button class="terminal-pane__sidebar-close test-focus-visible">X</button>
         <button class="usage-modal__close test-hover">U</button>
         <button class="repo-card__gear repo-card__gear--active test-hover">G</button>
         <button class="work-settings-modal__close test-focus-visible">W</button>
@@ -129,8 +127,6 @@ describe('shared chrome icon cascade', () => {
       '.ledger-issue-actions-menu__trigger',
       '.tab-overflow__btn',
       '.daemon-toast__dismiss',
-      '.terminal-pane__sidebar-toggle',
-      '.terminal-pane__sidebar-close',
       '.usage-modal__close',
       '.repo-card__gear',
       '.work-settings-modal__close',

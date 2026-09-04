@@ -215,6 +215,15 @@
   text-align: left;
 }
 
+.sidebar-group-node__placeholder {
+  width: 100%;
+  padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px);
+  color: var(--text-disabled);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+}
+
 .sidebar-group-node--category > .sidebar-disclosure-region {
   --sidebar-title-column-inset: var(--sidebar-node-parent-inset);
 }

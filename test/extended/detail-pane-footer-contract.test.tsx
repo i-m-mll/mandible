@@ -56,7 +56,6 @@ describe('anchored detail pane footer contract', () => {
       .sort();
 
     expect(consumers).toEqual([
-      'ui/src/views/conversations.tsx',
       'ui/src/views/feedback/BriefingDocumentRenderer.tsx',
     ]);
     for (const path of consumers) {

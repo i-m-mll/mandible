@@ -81,6 +81,14 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`condition was not met within ${timeoutMs}ms`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("structured conversation controller adapters", () => {
   it("defaults Claude Chat to SDK-managed control and keeps native background capabilities honest", () => {
     expect(defaultProviderMode("claude_code")).toBe("sdk-managed");
@@ -205,7 +213,7 @@ describe("structured conversation controller adapters", () => {
     const events = providerEvents(codex);
     expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
     expect((await codex.deliver(delivery("resume-provider-session", "codex-turn", "lineage"))).ok).toBe(true);
-    await settle();
+    await waitUntil(() => events.some((event) => event.kind === "provider-lineage"));
 
     expect(events.filter((event) => event.kind === "provider-lineage")).toEqual([expect.objectContaining({
       provider_event_id: "spawn-exact",

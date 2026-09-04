@@ -64,19 +64,19 @@ import {
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
-import { DetailPaneShell, type DetailPaneShellFooter } from '../components/shared/DetailPaneShell';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
+  ChatActivity,
   ChatPreview,
   ChatSessionOverview,
   ChatEntityLinkBoundary,
   ChatSurface,
   ContextUsageRing,
-  Shelf,
   UsageModal,
   conversationBlocksToStreamEvents,
   reconcileProviderProjection,
@@ -85,7 +85,7 @@ import {
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
   type ChatPreviewTarget,
-  type ShelfItem,
+  type ChatActivityItem,
 } from '../chat';
 import {
   applyConversationAppendPayload,
@@ -102,7 +102,7 @@ import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
-import { useRegisterAppRightSidebar } from '../app-shell';
+import { AppRightSidebarToggleButton, useAppShell, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 
@@ -152,7 +152,7 @@ export function conversationLoadFailure(error: unknown, transcriptLoaded: boolea
 export type ConversationRightSidebarViewState = {
   conversationId: string;
   previewTarget: ChatPreviewTarget | null;
-  tab: 'overview' | 'preview';
+  tab: 'overview' | 'preview' | 'activity';
 };
 
 function OverviewTabIcon(): JSX.Element {
@@ -161,6 +161,10 @@ function OverviewTabIcon(): JSX.Element {
 
 function PreviewTabIcon(): JSX.Element {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>;
+}
+
+function ActivityTabIcon(): JSX.Element {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h3l2-5 4 10 2-5h5" /></svg>;
 }
 
 export function scopeConversationRightSidebar(
@@ -180,7 +184,7 @@ type ChatDetailFrameProps = {
   headerRef?: Ref<HTMLElement>;
   subheader?: ComponentChildren;
   notice?: ComponentChildren;
-  footer?: DetailPaneShellFooter | null;
+  overlayControl?: ComponentChildren;
   overlays?: ComponentChildren;
   ariaBusy?: boolean;
   children: ComponentChildren;
@@ -194,7 +198,7 @@ export function ChatDetailFrame({
   headerRef,
   subheader,
   notice,
-  footer,
+  overlayControl,
   overlays,
   ariaBusy,
   children,
@@ -208,14 +212,10 @@ export function ChatDetailFrame({
       headerRef={headerRef}
       subheaderClassName="conv-detail__parent"
       bodyClassName={bodyClassName}
-      footerClassName="conv-detail__footer"
       header={header}
       subheader={subheader}
       notice={notice}
-      footer={footer ? {
-        content: footer.content,
-        ariaLabel: footer.ariaLabel,
-      } : undefined}
+      overlayControl={overlayControl}
       overlays={overlays}
       ariaBusy={ariaBusy}
     >
@@ -713,7 +713,7 @@ function ExportPanel({
 
 // ── Detail View ──
 
-function formatShelfDuration(seconds: number | null): string | null {
+function formatActivityDuration(seconds: number | null): string | null {
   if (seconds == null) return null;
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -730,18 +730,18 @@ function taskLabelFromBlock(block: ConversationBlock): string | null {
   return description || subagentType || null;
 }
 
-function buildSubagentShelfItems(
+function buildSubagentActivityItems(
   children: ConversationChild[],
   parentBlocks: ConversationBlock[],
   onNavigate: (id: string) => void,
-): ShelfItem[] {
+): ChatActivityItem[] {
   const taskLabels = parentBlocks
     .filter((block) => block.type === 'tool_use')
     .map(taskLabelFromBlock)
     .filter((label): label is string => Boolean(label));
 
   return children.map((child, index) => {
-    const duration = formatShelfDuration(child.duration_seconds);
+    const duration = formatActivityDuration(child.duration_seconds);
     const meta = [
       `${child.block_count} blocks`,
       duration,
@@ -765,7 +765,7 @@ function formatCompactNumber(value: number | null | undefined): string | null {
   return String(value);
 }
 
-function workflowShelfStatus(workflow: WorkflowRun): ShelfItem['status'] {
+function workflowActivityStatus(workflow: WorkflowRun): ChatActivityItem['status'] {
   if (workflow.warnings.length > 0 || workflow.status === 'warning') return 'error';
   if (workflow.status === 'failed') return 'error';
   if (workflow.status === 'completed') return 'finished';
@@ -773,10 +773,10 @@ function workflowShelfStatus(workflow: WorkflowRun): ShelfItem['status'] {
   return 'waiting';
 }
 
-function buildWorkflowShelfItems(
+function buildWorkflowActivityItems(
   workflows: WorkflowRun[],
   onOpen: (id: string) => void,
-): ShelfItem[] {
+): ChatActivityItem[] {
   return workflows.map((workflow) => {
     const progress = `${workflow.completed_workers}/${workflow.total_workers}`;
     const tokens = formatCompactNumber(workflow.total_tokens);
@@ -784,7 +784,7 @@ function buildWorkflowShelfItems(
       id: workflow.id,
       icon: '◇',
       label: truncate(workflow.workflow_name || workflow.provider_run_id, 80),
-      status: workflowShelfStatus(workflow),
+      status: workflowActivityStatus(workflow),
       meta: [
         progress,
         tokens ? `${tokens} tok` : null,
@@ -958,7 +958,7 @@ function WorkflowRunDialog({
                 <span className="workflow-worker__meta">
                   {worker.model && <span>{worker.model}</span>}
                   {worker.tokens != null && <span>{worker.tokens.toLocaleString()} tokens</span>}
-                  {worker.duration_ms != null && <span>{formatShelfDuration(Math.round(worker.duration_ms / 1000))}</span>}
+                  {worker.duration_ms != null && <span>{formatActivityDuration(Math.round(worker.duration_ms / 1000))}</span>}
                 </span>
                 {(worker.last_tool_summary || worker.result_preview || worker.warnings[0]?.message) && (
                   <span className="workflow-worker__preview">
@@ -1077,6 +1077,7 @@ function ConversationDetail({
   sidebarCollapsed: boolean;
   chatEntityLinkAction: ChatEntityClickAction;
 }): JSX.Element {
+  const { setRightSidebarOpen } = useAppShell();
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
     initialConversation ? conversationShell(initialConversation) : null,
   );
@@ -1126,18 +1127,7 @@ function ConversationDetail({
     previewTarget: null,
     tab: 'overview',
   });
-  const [rightSidebarState, updateRightSidebarState] = useAppRightSidebarState('chat', { open: true, width: 420 }, {
-    removeKeys: ['chat_bottom_shelf', 'mandible_chat_bottom_shelf:v1'],
-    migrate: () => {
-      const raw = window.localStorage.getItem('mandible_chat_bottom_shelf:v1');
-      if (!raw) return null;
-      const previous = JSON.parse(raw) as { visible?: unknown; height?: unknown };
-      return {
-        open: typeof previous.visible === 'boolean' ? previous.visible : true,
-        width: 420,
-      };
-    },
-  });
+  const [rightSidebarState, updateRightSidebarState] = useAppRightSidebarState('chat', { open: true, width: 420 });
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1170,48 +1160,6 @@ function ConversationDetail({
     }));
     updateRightSidebarState({ open: true });
   }, [conversationId, updateRightSidebarState]);
-
-  const clearRightSidebarPreview = useCallback(() => {
-    setRightSidebarViewState(() => ({
-      conversationId,
-      previewTarget: null,
-      tab: 'overview',
-    }));
-  }, [conversationId]);
-
-  const rightSidebarDescriptor = useMemo(() => conversation ? ({
-    id: 'chat-right-sidebar',
-    kind: 'tabs' as const,
-    ariaLabel: 'Chat sidebar',
-    open: rightSidebarState.open,
-    width: rightSidebarState.width,
-    minWidth: 300,
-    maxWidth: 720,
-    onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
-    onWidthChange: (width: number) => updateRightSidebarState({ width }),
-    activeTab: currentRightSidebarViewState.tab,
-    onActiveTabChange: (tab: string) => setRightSidebarViewState((current) => ({
-      ...(current.conversationId === conversationId ? current : { conversationId, previewTarget: null, tab: 'overview' as const }),
-      tab: tab === 'preview' ? 'preview' : 'overview',
-    })),
-    tabs: [
-      {
-        id: 'overview',
-        label: 'Session Overview',
-        tooltip: 'Session Overview',
-        icon: <OverviewTabIcon />,
-        content: <ChatSessionOverview providerSessionId={conversation.session_id ?? null} conversationId={conversationId} />,
-      },
-      {
-        id: 'preview',
-        label: 'Preview',
-        tooltip: 'Preview',
-        icon: <PreviewTabIcon />,
-        content: <ChatPreview target={currentRightSidebarViewState.previewTarget} onClear={clearRightSidebarPreview} />,
-      },
-    ],
-  }) : null, [conversation, conversationId, currentRightSidebarViewState, clearRightSidebarPreview, rightSidebarState, updateRightSidebarState]);
-  useRegisterAppRightSidebar(rightSidebarDescriptor);
 
   useEffect(() => {
     setEffectiveAnchor(anchor);
@@ -1568,13 +1516,54 @@ function ConversationDetail({
     || control?.turn.kind === 'running'
     || control?.turn.kind === 'waiting-user'
     || control?.turn.kind === 'waiting-permission';
-  const shelfItems = useMemo(
+  const activityItems = useMemo(
     () => [
-      ...buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
-      ...buildWorkflowShelfItems(workflows, setActiveWorkflowId),
+      ...buildSubagentActivityItems(conversation?.children ?? [], blocks, onNavigate),
+      ...buildWorkflowActivityItems(workflows, setActiveWorkflowId),
     ],
     [blocks, conversation?.children, onNavigate, workflows],
   );
+  const rightSidebarDescriptor = useMemo(() => conversation ? ({
+    id: 'chat-right-sidebar',
+    kind: 'tabs' as const,
+    ariaLabel: 'Chat sidebar',
+    open: rightSidebarState.open,
+    width: rightSidebarState.width,
+    minWidth: 300,
+    maxWidth: 720,
+    togglePlacement: 'detail-header' as const,
+    onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
+    onWidthChange: (width: number) => updateRightSidebarState({ width }),
+    activeTab: currentRightSidebarViewState.tab,
+    onActiveTabChange: (tab: string) => setRightSidebarViewState((current) => ({
+      ...(current.conversationId === conversationId ? current : { conversationId, previewTarget: null, tab: 'overview' as const }),
+      tab: tab === 'preview' ? 'preview' : tab === 'activity' ? 'activity' : 'overview',
+    })),
+    tabs: [
+      {
+        id: 'overview',
+        label: 'Session Overview',
+        tooltip: 'Session Overview',
+        icon: <OverviewTabIcon />,
+        content: <ChatSessionOverview providerSessionId={conversation.session_id ?? null} conversationId={conversationId} />,
+      },
+      {
+        id: 'preview',
+        label: 'Preview',
+        tooltip: 'Preview',
+        icon: <PreviewTabIcon />,
+        content: <ChatPreview target={currentRightSidebarViewState.previewTarget} />,
+      },
+      {
+        id: 'activity',
+        label: 'Activity',
+        tooltip: 'Subagents and workflow runs',
+        icon: <ActivityTabIcon />,
+        content: <ChatActivity items={activityItems} />,
+      },
+    ],
+  }) : null, [activityItems, conversation, conversationId, currentRightSidebarViewState, rightSidebarState, updateRightSidebarState]);
+  useRegisterAppRightSidebar(rightSidebarDescriptor);
   const isReadOnlyChild = Boolean(conversation?.is_sidechain || conversation?.parent_conversation_id);
   const activeWorkflow = useMemo(
     () => workflows.find((workflow) => workflow.id === activeWorkflowId) ?? null,
@@ -1851,19 +1840,11 @@ function ConversationDetail({
   }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control, latestDagUuid]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'ArrowUp' && shelfItems.length > 0 && event.currentTarget.selectionStart === 0) {
-      const firstRow = document.querySelector<HTMLButtonElement>('.chat-shelf-row');
-      if (firstRow) {
-        event.preventDefault();
-        firstRow.focus();
-        return;
-      }
-    }
     if (event.key !== 'Enter') return;
     if (event.shiftKey && !event.metaKey && !event.ctrlKey) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
-  }, [shelfItems.length]);
+  }, []);
 
   const handleComposerModelChange = useCallback(async (value: string) => {
     setComposerModel(value);
@@ -2093,19 +2074,58 @@ function ConversationDetail({
           )}
         </span>
       )}
+      actions={!rightSidebarState.open && rightSidebarDescriptor ? (
+        <AppRightSidebarToggleButton
+          descriptor={rightSidebarDescriptor}
+          open={false}
+          onOpenChange={setRightSidebarOpen ?? rightSidebarDescriptor.onOpenChange}
+        />
+      ) : undefined}
+      actionsLabel="Chat sidebar"
     />
   );
 
-  const detailFooter = (
+  const renderRunOptionFields = () => (
     <>
-      <Shelf
-        conversationId={conversation.id}
-        title="Activity"
-        items={shelfItems}
-        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
-      />
+      {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
+        <label className="session-controls__field">
+          <span className="session-controls__label">{permissionRunOption.label}</span>
+          <select className="session-controls__select" value={composerPermission} disabled={continueBusy || permissionRunOption.availability !== 'available'} aria-label={permissionRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}>
+            {permissionRunOption.nullable && <option value="">Use app default</option>}
+            {(permissionRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {currentModel ? (
+        <label className="session-controls__field">
+          <span className="session-controls__label">{modelRunOption?.label ?? 'Model'}</span>
+          <select className="session-controls__select" value={composerModel} disabled={continueBusy || (modelRunOption !== undefined && modelOptions.length === 0)} aria-label={modelRunOption?.label ?? 'Model'} title={modelRunOption?.label ?? 'Model'} onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}>
+            <option value={currentModel === 'default' ? '' : currentModel}>{currentModel === 'default' ? 'Use app default' : currentModel}</option>
+            {modelOptions.filter((model) => model !== currentModel).map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
+        <label className="session-controls__field">
+          <span className="session-controls__label">{thinkingRunOption.label}</span>
+          <select className="session-controls__select" value={composerEffort} disabled={continueBusy || thinkingRunOption.availability !== 'available'} aria-label={thinkingRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}>
+            {thinkingRunOption.nullable && <option value="">Use app default</option>}
+            {(thinkingRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {canShowSessionControls && linkedConsoleSession ? (
+        <SessionControls
+          sessionId={linkedConsoleSession.id}
+          runOptions={sessionRunOptions}
+          allowedTools={linkedConsoleSession.allowed_tools}
+          hiddenOptionIds={[modelRunOption?.id, thinkingRunOption?.id, permissionRunOption?.id].filter((id): id is string => Boolean(id))}
+        />
+      ) : null}
+    </>
+  );
 
-      {isReadOnlyChild ? (
+  const composerOverlay = isReadOnlyChild ? (
         <div className="conv-compose conv-compose--readonly">
           <span>Read-only subagent transcript</span>
         </div>
@@ -2136,8 +2156,13 @@ function ConversationDetail({
             )}
           </div>
         )}
-        <div className="conv-compose__footer">
+        <div className="conv-compose__controls">
           <div className="conv-compose__runtime">
+            {hasRunOptions ? (
+              <div className="conv-compose__run-options-inline" aria-label="Run options">
+                {renderRunOptionFields()}
+              </div>
+            ) : null}
             <span className="conv-compose__runtime-actions">
               {hasRunOptions ? (
                 <button
@@ -2146,9 +2171,11 @@ function ConversationDetail({
                   className="btn btn--ghost btn--sm conv-compose__run-options-trigger"
                   aria-haspopup="dialog"
                   aria-expanded={composerControlsOpen}
+                  aria-label="Run options"
+                  title="Run options"
                   onClick={() => setComposerControlsOpen((prev) => !prev)}
                 >
-                  Run options
+                  <HorizontalDotsIcon />
                 </button>
               ) : null}
               <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
@@ -2179,41 +2206,7 @@ function ConversationDetail({
             popover="manual"
             style={runOptionsMenuStyle}
           >
-            {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
-              <label className="session-controls__field">
-                <span className="session-controls__label">{permissionRunOption.label}</span>
-                <select className="session-controls__select" value={composerPermission} disabled={continueBusy || permissionRunOption.availability !== 'available'} aria-label={permissionRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}>
-                  {permissionRunOption.nullable && <option value="">Use app default</option>}
-                  {(permissionRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
-                </select>
-              </label>
-            ) : null}
-            {currentModel ? (
-              <label className="session-controls__field">
-                <span className="session-controls__label">{modelRunOption?.label ?? 'Model'}</span>
-                <select className="session-controls__select" value={composerModel} disabled={continueBusy || (modelRunOption !== undefined && modelOptions.length === 0)} aria-label={modelRunOption?.label ?? 'Model'} title={modelRunOption?.label ?? 'Model'} onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}>
-                  <option value={currentModel === 'default' ? '' : currentModel}>{currentModel === 'default' ? 'Use app default' : currentModel}</option>
-                  {modelOptions.filter((model) => model !== currentModel).map((model) => <option key={model} value={model}>{model}</option>)}
-                </select>
-              </label>
-            ) : null}
-            {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
-              <label className="session-controls__field">
-                <span className="session-controls__label">{thinkingRunOption.label}</span>
-                <select className="session-controls__select" value={composerEffort} disabled={continueBusy || thinkingRunOption.availability !== 'available'} aria-label={thinkingRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}>
-                  {thinkingRunOption.nullable && <option value="">Use app default</option>}
-                  {(thinkingRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
-                </select>
-              </label>
-            ) : null}
-            {canShowSessionControls && linkedConsoleSession ? (
-              <SessionControls
-                sessionId={linkedConsoleSession.id}
-                runOptions={sessionRunOptions}
-                allowedTools={linkedConsoleSession.allowed_tools}
-                hiddenOptionIds={[modelRunOption?.id, thinkingRunOption?.id, permissionRunOption?.id].filter((id): id is string => Boolean(id))}
-              />
-            ) : null}
+            {renderRunOptionFields()}
           </div>
         )}
         {(continueError || continueDisabledReason) && (
@@ -2228,12 +2221,7 @@ function ConversationDetail({
           </details>
         )}
       </div>
-      ) : null}
-    </>
-  );
-  const shouldRenderDetailFooter = shelfItems.length > 0
-    || isReadOnlyChild
-    || Boolean(controlPresentation && controlPresentation.composer !== 'hidden');
+      ) : null;
 
   const detailOverlays = (
     <>
@@ -2273,11 +2261,11 @@ function ConversationDetail({
   return (
     <ChatDetailFrame
       state="conversation"
-      className={sidebarCollapsed ? 'conv-detail--shelf-collapsed' : undefined}
+      className={sidebarCollapsed ? 'conv-detail--sidebar-collapsed' : undefined}
       headerRef={headerRef}
       header={detailHeader}
       subheader={parentLink}
-      footer={shouldRenderDetailFooter ? { content: detailFooter } : undefined}
+      overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
       notice={loadErrorNotice}
@@ -2694,6 +2682,7 @@ export function ConversationsView({
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
+  const [conversationGroupsReady, setConversationGroupsReady] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2893,6 +2882,7 @@ export function ConversationsView({
       }));
       if (generation !== fetchGenerationRef.current) return;
       setServerGroups(reconciled);
+      setConversationGroupsReady(true);
       setVisibleTargets((current) => {
         const next = new Map(current);
         for (const group of reconciled) {
@@ -2901,7 +2891,9 @@ export function ConversationsView({
         return next;
       });
     } catch {
-      // ignore fetch errors
+      if (generation === fetchGenerationRef.current) {
+        setSidebarToast({ message: 'Chats could not be refreshed.', type: 'error' });
+      }
     } finally {
       if (generation === fetchGenerationRef.current) setLoading(false);
     }
@@ -3585,7 +3577,12 @@ export function ConversationsView({
                 label="Projects"
                 expanded={!collapsedSections.has('projects')}
                 onToggle={() => toggleSection('projects')}
-                action={{ label: 'Add project', icon: <SidebarAddProjectIcon />, onPress: openProjectChooser }}
+                action={{
+                  label: 'Add project',
+                  icon: <SidebarAddProjectIcon />,
+                  onPress: openProjectChooser,
+                  persistentWhenExpanded: chatSections.projects.length === 0,
+                }}
               >
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
@@ -3606,7 +3603,7 @@ export function ConversationsView({
                 </div>
               ) : null}
               {chatSections.projects.length === 0 && registeredProjects.length > 0 ? (
-                <div className="chat-projects-empty">No projects included</div>
+                <div className="sidebar-group-node__placeholder">No projects included</div>
               ) : null}
               {chatSections.projects.map((group, index) => {
                 const collapsed = collapsedProjects.has(group.key);
@@ -3656,13 +3653,12 @@ export function ConversationsView({
                   onShowMore={() => { void showMore(group); }}
                 >
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                  {conversationGroupsReady && totalVisibleEntries === 0 && !loading ? (
+                    <div className="sidebar-group-node__placeholder">No chats</div>
+                  ) : null}
                 </SidebarGroupNode>
               );
             })() : null}
-
-            {totalVisibleEntries === 0 && !loading && (
-              <div className="chat-history-empty">No conversations found.</div>
-            )}
             {loading && (
               <div className="chat-history-empty">Loading…</div>
             )}

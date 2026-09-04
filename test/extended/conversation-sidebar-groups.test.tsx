@@ -16,7 +16,10 @@ import type { ConsoleSession } from '../../ui/src/state.js';
 import { compareConversationSidebarRows } from '../../src/conversations/sidebar-order.js';
 import { normalizeChatViewState, reconcileShownProjects } from '../../ui/src/views/conversation-view-state.js';
 
-const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
+const chatHistoryStylesheet = [
+  'ui/src/styles/chat-history.css',
+  'ui/src/styles/sidebar-group-node.css',
+].map((path) => readFileSync(path, 'utf8')).join('\n');
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -140,15 +143,17 @@ describe('conversation sidebar groups', () => {
     renderView();
 
     const emptyState = await screen.findByText('No projects included');
-    expect(emptyState.classList.contains('chat-projects-empty')).toBe(true);
+    expect(emptyState.classList.contains('sidebar-group-node__placeholder')).toBe(true);
     expect(emptyState.textContent).toBe('No projects included');
     expect(emptyState.getAttribute('role')).toBeNull();
-    expect(chatHistoryStylesheet).toMatch(/\.chat-projects-empty\s*\{[^}]*color:\s*var\(--text-disabled\)/s);
+    expect(chatHistoryStylesheet).toMatch(/\.sidebar-group-node__placeholder\s*\{[^}]*color:\s*var\(--text-disabled\)/s);
     expect(screen.queryByText(/available/i)).toBeNull();
     expect(screen.queryByText(/\d+ available/i)).toBeNull();
     expect(screen.queryByText(/shared host preference/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add Project' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
+    expect(document.querySelector('#chat-projects-body')?.contains(emptyState)).toBe(true);
+    expect(screen.queryByText('No chats')).toBeNull();
   });
 
   it('sends bounded deduplicated full canonical project ids on the wire', async () => {

@@ -83,6 +83,12 @@ import {
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from './app-shell';
+import {
+  AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING,
+  AUTH_AUTO_SHOW_CONSOLE_SETTING,
+  AUTH_RETAIN_FINALIZED_SELECTION_SETTING,
+  enabledSetting,
+} from './auth-preferences';
 import type { AuthRequest } from './views/auth';
 import type { IssueRepoSummary } from './views/issues';
 import type { WorkBranch, WorkRepo } from './views/work';
@@ -664,6 +670,11 @@ function App(): JSX.Element {
     if (rightSidebarOwnerRef.current !== ownerId) return;
     setRightSidebar((current) => current === descriptor ? current : descriptor);
   }, []);
+  const setRightSidebarOpen = useCallback((open: boolean) => {
+    if (!rightSidebar || rightSidebar.open === open) return;
+    rightSidebarFocusTransferRef.current = true;
+    rightSidebar.onOpenChange(open);
+  }, [rightSidebar]);
 
   const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
   const viewSidebarWidth = viewSidebarGeometry
@@ -684,10 +695,11 @@ function App(): JSX.Element {
     rightSidebar,
     registerRightSidebar,
     updateRightSidebar,
+    setRightSidebarOpen,
     setViewSidebarWidth,
     viewSidebarWidth,
     active: true,
-  }), [rightSidebar, registerRightSidebar, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+  }), [rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   useEffect(() => {
     const query = window.matchMedia('(max-width: 760px)');
@@ -2324,15 +2336,18 @@ function App(): JSX.Element {
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
-  const setRightSidebarOpen = useCallback((open: boolean) => {
-    if (!rightSidebar || rightSidebar.open === open) return;
-    rightSidebarFocusTransferRef.current = true;
-    rightSidebar.onOpenChange(open);
-  }, [rightSidebar]);
   useLayoutEffect(() => {
     if (!rightSidebarFocusTransferRef.current) return;
     rightSidebarFocusTransferRef.current = false;
-    rightSidebarToggleRef.current?.focus({ preventScroll: true });
+    // The open and closed controls trade the same ref in one commit. Focus on
+    // the next task after Preact has finished both ref detach and attach work.
+    const timer = window.setTimeout(() => {
+      const toggle = document.querySelector<HTMLButtonElement>(
+        '.app-right-sidebar-toggle[aria-controls="app-right-sidebar"]',
+      );
+      toggle?.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [rightSidebarOpen]);
   const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
     if (!visitedTabs.has(tab)) return null;
@@ -2412,7 +2427,7 @@ function App(): JSX.Element {
         className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
         data-app-surface="chrome"
         data-tauri-drag-region
-        inert={narrowRightSidebar && rightSidebarOpen ? true : undefined}
+        inert={narrowRightSidebar && rightSidebarOpen}
       >
         <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
           <span className="app-header__mark" aria-hidden="true">
@@ -2435,7 +2450,7 @@ function App(): JSX.Element {
             '--app-right-sidebar-width': `${rightSidebar.width}px`,
           } as JSX.CSSProperties : undefined}
         >
-          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region inert={narrowRightSidebar && rightSidebarOpen ? true : undefined}>
+          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region inert={narrowRightSidebar && rightSidebarOpen}>
               <nav
                 ref={railNavRef}
                 className="app-rail__nav"
@@ -2506,9 +2521,9 @@ function App(): JSX.Element {
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
-          inert={narrowRightSidebar && rightSidebarOpen ? true : undefined}
+          inert={narrowRightSidebar && rightSidebarOpen}
         >
-        {rightSidebarAvailable && !rightSidebarOpen ? (
+        {rightSidebarAvailable && !rightSidebarOpen && rightSidebar?.togglePlacement !== 'detail-header' ? (
           <AppRightSidebarToggleButton
             descriptor={rightSidebar!}
             buttonRef={rightSidebarToggleRef}
@@ -2535,6 +2550,9 @@ function App(): JSX.Element {
               onReject={handleReject}
               onRetry={handleRetry}
               onUpdateField={handleUpdateAuthField}
+              autoShowConsoleOnApproval={enabledSetting(state.settings, AUTH_AUTO_SHOW_CONSOLE_SETTING)}
+              autoReturnToAbstractOnSuccess={enabledSetting(state.settings, AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING)}
+              retainFinalizedSelection={enabledSetting(state.settings, AUTH_RETAIN_FINALIZED_SELECTION_SETTING)}
             />
           );
         })())}

@@ -180,6 +180,8 @@ describe('canonical detail pane header', () => {
         menuLabel="Conversation detail actions"
         menu={<button type="button" aria-label="Conversation actions">...</button>}
         metadata={<span data-testid="compact-metadata">Codex · Resumable</span>}
+        actions={<button type="button" aria-label="Toggle detail sidebar">Sidebar</button>}
+        actionsLabel="Detail sidebar"
       />,
     );
 
@@ -189,10 +191,13 @@ describe('canonical detail pane header', () => {
     const title = within(header).getByRole('heading', { name: longTitle });
     const menu = within(header).getByRole('group', { name: 'Conversation detail actions' });
     const metadata = within(header).getByTestId('compact-metadata');
+    const actions = within(header).getByRole('group', { name: 'Detail sidebar' });
     expect(titleRow.classList.contains('detail-pane-header__title-row')).toBe(true);
     expect(title.nextElementSibling).toBe(menu);
     expect(titleRow.nextElementSibling?.classList.contains('detail-pane-header__compact-metadata')).toBe(true);
     expect(titleRow.nextElementSibling?.contains(metadata)).toBe(true);
+    expect(titleRow.nextElementSibling?.nextElementSibling).toBe(actions);
+    expect(main.lastElementChild).toBe(actions);
 
     const headerStyle = getComputedStyle(header);
     const mainStyle = getComputedStyle(main);
@@ -206,8 +211,9 @@ describe('canonical detail pane header', () => {
 
     const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
     expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__main\s*\{[^}]*display:\s*flex;/s);
-    expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__title-row\s*\{[^}]*flex:\s*0 1 auto;[^}]*min-width:\s*0;/s);
+    expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__title-row\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__compact-metadata\s*\{[^}]*flex:\s*none;[^}]*margin-left:\s*auto;/s);
+    expect(css).toMatch(/\.detail-pane-header--compact \.detail-pane-header__actions\s*\{[^}]*flex:\s*none;/s);
   });
 
   it('renders exact two-row versioned geometry with optional entity label and typed copy authority', async () => {

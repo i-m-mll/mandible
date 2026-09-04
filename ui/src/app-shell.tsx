@@ -1,5 +1,6 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
 import { useCallback, useContext, useLayoutEffect, useRef } from 'preact/hooks';
+import { IconTabList } from './components/shared/IconTabList';
 
 type AppRightSidebarCommon = {
   id: string;
@@ -8,6 +9,8 @@ type AppRightSidebarCommon = {
   width: number;
   minWidth?: number;
   maxWidth?: number;
+  /** The owning view renders the closed-state toggle in its canonical header. */
+  togglePlacement?: 'app-overlay' | 'detail-header';
   onOpenChange(open: boolean): void;
   onWidthChange(width: number): void;
 };
@@ -26,6 +29,7 @@ export type AppShellContextValue = {
   rightSidebar: AppRightSidebarDescriptor | null;
   registerRightSidebar(ownerId: string): () => void;
   updateRightSidebar(ownerId: string, descriptor: AppRightSidebarDescriptor): void;
+  setRightSidebarOpen?(open: boolean): void;
   setViewSidebarWidth(width: number | null): void;
   viewSidebarWidth?: number | null;
   active: boolean;
@@ -35,6 +39,7 @@ const noopContext: AppShellContextValue = {
   rightSidebar: null,
   registerRightSidebar: () => () => undefined,
   updateRightSidebar: () => undefined,
+  setRightSidebarOpen: () => undefined,
   setViewSidebarWidth: () => undefined,
   active: true,
 };
@@ -184,32 +189,14 @@ export function AppRightSidebarSurface({
       />
       <header className="app-right-sidebar__header">
         {descriptor.kind === 'panel' ? <h2>{descriptor.title}</h2> : (
-          <div className="app-right-sidebar__tabs" role="tablist" aria-label={descriptor.ariaLabel}>
-            {descriptor.tabs.map((tab, index) => (
-              <button
-                type="button"
-                role="tab"
-                id={`app-right-sidebar-tab-${tab.id}`}
-                aria-controls={`app-right-sidebar-panel-${tab.id}`}
-                aria-selected={descriptor.activeTab === tab.id}
-                aria-label={tab.label}
-                title={tab.tooltip}
-                tabIndex={descriptor.activeTab === tab.id ? 0 : -1}
-                onClick={() => descriptor.onActiveTabChange(tab.id)}
-                onKeyDown={(event) => {
-                  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-                  event.preventDefault();
-                  const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? descriptor.tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + descriptor.tabs.length) % descriptor.tabs.length;
-                  const next = descriptor.tabs[nextIndex];
-                  if (!next) return;
-                  descriptor.onActiveTabChange(next.id);
-                  queueMicrotask(() => document.getElementById(`app-right-sidebar-tab-${next.id}`)?.focus());
-                }}
-              >
-                <span aria-hidden="true">{tab.icon}</span>
-              </button>
-            ))}
-          </div>
+          <IconTabList
+            ariaLabel={descriptor.ariaLabel}
+            tabs={descriptor.tabs}
+            activeTab={descriptor.activeTab}
+            onActiveTabChange={descriptor.onActiveTabChange}
+            idPrefix="app-right-sidebar"
+            className="app-right-sidebar__tabs"
+          />
         )}
         <AppRightSidebarToggleButton
           descriptor={descriptor}

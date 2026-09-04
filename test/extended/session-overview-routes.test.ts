@@ -365,6 +365,32 @@ describe("GET /api/sessions/resolve with short prefixes", () => {
     expect(refs).toEqual([CODEX_UUID, other].sort());
   });
 
+  it("keeps registry-only prefix collisions visible beside a provider identity", async () => {
+    const staleRegistryId = `${SHORT}-6345-7e53-b784-b5d125520`;
+    registry.registerSession({ id: CODEX_UUID, app: "codex" });
+    registry.registerSession({ id: staleRegistryId, app: "codex" });
+    insertConversation({ id: "conv-current", session_id: CODEX_UUID, source: "codex" });
+
+    const { body } = await getResolve(`?provider_session_id=${SHORT}`);
+
+    expect(body.truncated).toBe(false);
+    expect(body.matches).toHaveLength(2);
+    expect(body.matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        matched_ref: CODEX_UUID,
+        provider: "codex",
+        mandible_session_id: CODEX_UUID,
+        conversation_id: "conv-current",
+      }),
+      expect.objectContaining({
+        matched_ref: staleRegistryId,
+        provider: null,
+        mandible_session_id: staleRegistryId,
+        conversation_id: null,
+      }),
+    ]));
+  });
+
   it("returns zero matches for a prefix that matches nothing", async () => {
     insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
 

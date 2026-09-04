@@ -52,6 +52,11 @@ import {
   normalizeSidebarGroupLimit,
 } from '../components/shared/sidebar-group-settings';
 import { BRIEFING_KEEP_SUBMITTED_ANNOTATIONS_SETTING } from './feedback/briefing-preferences';
+import {
+  AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING,
+  AUTH_AUTO_SHOW_CONSOLE_SETTING,
+  AUTH_RETAIN_FINALIZED_SELECTION_SETTING,
+} from '../auth-preferences';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -2217,9 +2222,33 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
-          description="Hardware-backed delegated signing for scoped protected-merge clearances."
+          description="Approval display, queue retention, and hardware-backed delegated signing."
         />
         <div className="settings-view__section-body">
+          <ToggleRow
+            title="Show approval console automatically"
+            desc="Switch to Console when approval execution starts."
+            settingKey={AUTH_AUTO_SHOW_CONSOLE_SETTING}
+            settings={settings}
+            onSave={onSave}
+            defaultEnabled
+          />
+          <ToggleRow
+            title="Return to overview after approval"
+            desc="Switch back to the request overview after approval finishes successfully."
+            settingKey={AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING}
+            settings={settings}
+            onSave={onSave}
+            defaultEnabled
+          />
+          <ToggleRow
+            title="Keep the finalized request selected"
+            desc="When Active requests are shown, keep a just-finalized request visible until another request is selected."
+            settingKey={AUTH_RETAIN_FINALIZED_SELECTION_SETTING}
+            settings={settings}
+            onSave={onSave}
+            defaultEnabled
+          />
           <DelegatedSigningSection />
         </div>
       </SettingsSectionShell>

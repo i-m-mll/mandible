@@ -1,0 +1,36 @@
+.icon-tab-list {
+  align-self: stretch;
+  display: flex;
+  min-width: 0;
+}
+
+.icon-tab-list > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: var(--app-header-height);
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.icon-tab-list > button:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.icon-tab-list > button[aria-selected='true'] {
+  border-bottom-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
+.icon-tab-list svg {
+  width: 18px;
+  height: 18px;
+}

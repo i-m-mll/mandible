@@ -17,6 +17,7 @@
 .detail-pane-shell__notice,
 .detail-pane-shell__body,
 .detail-pane-shell__footer,
+.detail-pane-shell__overlay-control,
 .detail-pane-header {
   background: inherit;
   box-shadow: none;
@@ -83,6 +84,37 @@
   flex: none;
   width: 100%;
   min-width: 0;
+}
+
+.detail-pane-shell--overlay-footer .detail-pane-shell__body::after {
+  content: '';
+  display: block;
+  flex: 0 0 var(--detail-pane-overlay-footer-height, 0px);
+  width: 100%;
+}
+
+.detail-pane-shell--overlay-footer .detail-pane-shell__footer {
+  position: absolute;
+  z-index: 2;
+  inset: auto var(--detail-pane-scrollbar-width, 0px) 0 0;
+  width: auto;
+  background: inherit;
+}
+
+.detail-pane-shell--overlay-control .detail-pane-shell__body::after {
+  content: '';
+  display: block;
+  height: var(--detail-pane-overlay-control-height, 0px);
+  width: 100%;
+}
+
+.detail-pane-shell__overlay-control {
+  position: absolute;
+  z-index: 2;
+  inset: auto var(--detail-pane-scrollbar-width, 0px) 0 0;
+  width: auto;
+  min-width: 0;
+  background: inherit;
 }
 
 .detail-pane-header {
@@ -251,9 +283,10 @@
 
 .detail-pane-header--compact .detail-pane-header__title-row {
   align-items: center;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .detail-pane-header--compact .detail-pane-header__title {
@@ -276,6 +309,11 @@
   gap: 8px;
   justify-content: flex-end;
   margin-left: auto;
+}
+
+.detail-pane-header--compact .detail-pane-header__actions {
+  flex: none;
+  margin-left: 0;
 }
 
 .detail-pane-header--versioned .detail-pane-header__main {

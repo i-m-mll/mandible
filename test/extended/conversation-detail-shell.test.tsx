@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useRef, useState } from 'preact/hooks';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
@@ -264,6 +264,61 @@ function MountedRightSidebarShell({ children }: { children: ComponentChildren })
 }
 
 describe('compact detail pane shell', () => {
+  it('shows the chat placeholder after a successful empty sidebar response', async () => {
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText('No chats')).toBeTruthy();
+  });
+
+  it('renders populated unscoped sidebar results instead of an empty-state placeholder', async () => {
+    const sidebarConversation = { ...conversation, id: 'sidebar-chat', block_count: 3, title: 'Visible unscoped chat' };
+    vi.mocked(api.getConversationSidebar).mockResolvedValue({
+      groups: [{ key: 'chats', kind: 'chats', label: 'Chats', total: 1, conversations: [sidebarConversation], next_cursor: null }],
+      limit: 50,
+    });
+
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText('Visible unscoped chat')).toBeTruthy();
+    expect(screen.queryByText('No chats')).toBeNull();
+  });
+
+  it('does not report an empty chat list before the first sidebar request succeeds', async () => {
+    vi.mocked(api.getConversationSidebar).mockRejectedValue(new Error('temporary failure'));
+
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText('Chats could not be refreshed.')).toBeTruthy();
+    expect(screen.queryByText('No chats')).toBeNull();
+  });
+
   it('separates deterministic title-authority gaps from transient failures', () => {
     const missing = conversationLoadFailure(new api.ApiError('raw code', 409, 'provider_metadata_missing'), true);
     expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false, titleAuthorityDegraded: true });
@@ -309,6 +364,9 @@ describe('compact detail pane shell', () => {
     );
     const overview = await screen.findByRole('tab', { name: 'Session Overview' });
     expect(overview.getAttribute('aria-selected')).toBe('true');
+    const activity = screen.getByRole('tab', { name: 'Activity' });
+    fireEvent.click(activity);
+    expect(await screen.findByText('No subagents or workflow runs.')).toBeTruthy();
     const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
     fireEvent.click(await screen.findByRole('link', { name: /5096e37/ }));
     expect((await screen.findByRole('tab', { name: 'Preview' })).getAttribute('aria-selected')).toBe('true');
@@ -520,7 +578,7 @@ describe('compact detail pane shell', () => {
     expect(api.getConversationWindow).toHaveBeenCalledTimes(2);
   });
 
-  it('composes Chat detail through the compact shell with stable header actions and footer', async () => {
+  it('composes Chat detail through the compact shell with a floating composer and no footer', async () => {
     const style = document.createElement('style');
     style.dataset.testCompactHeaderStyles = '';
     style.textContent = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8')
@@ -550,14 +608,14 @@ describe('compact detail pane shell', () => {
     const shell = document.querySelector('.conv-detail.detail-pane-shell--compact');
     const header = shell?.querySelector(':scope > .detail-pane-shell__header');
     const body = shell?.querySelector(':scope > .detail-pane-shell__body.conv-detail__body');
-    const footer = shell?.querySelector(':scope > .detail-pane-shell__footer.conv-detail__footer');
+    const overlayControl = shell?.querySelector(':scope > .detail-pane-shell__overlay-control');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
     const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
     expect(getComputedStyle(shell!).overflow).toBe('clip');
     expect(shell?.classList.contains('chat-detail-frame--conversation')).toBe(true);
     expect(getComputedStyle(body!).position).toBe('relative');
-    expect(conversationCss).not.toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-/s);
-    expect(body?.nextElementSibling).toBe(footer);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__footer')).toBeNull();
+    expect(overlayControl).toBeTruthy();
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
     expect(canonicalHeader?.textContent).not.toContain('Conversation');
     expect(canonicalHeader?.textContent).not.toContain('01a01639');
@@ -585,16 +643,18 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeNull();
     expect(body?.querySelector('.context-usage')).toBeNull();
     expect(shell?.querySelectorAll('.context-usage')).toHaveLength(1);
-    const runtime = footer?.querySelector('.conv-compose__runtime');
-    const runtimeActions = runtime?.firstElementChild;
+    const runtime = overlayControl?.querySelector('.conv-compose__runtime');
+    const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
+    const runtimeActions = runtime?.querySelector('.conv-compose__runtime-actions');
+    expect(inlineRunOptions).toBeTruthy();
     expect(runtimeActions?.classList.contains('conv-compose__runtime-actions')).toBe(true);
     const runOptions = await screen.findByRole('button', { name: 'Run options' });
     expect(runtimeActions?.firstElementChild).toBe(runOptions);
     expect(runtimeActions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(runtimeActions?.lastElementChild?.classList.contains('conv-compose__send')).toBe(true);
-    expect(footer?.querySelector('.conv-compose__hint')).toBeNull();
+    expect(overlayControl?.querySelector('.conv-compose__hint')).toBeNull();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
-    expect(footer?.textContent).not.toContain('Sending will resume this session.');
+    expect(overlayControl?.textContent).not.toContain('Sending will resume this session.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     const menu = screen.getByRole('menu');
@@ -609,17 +669,22 @@ describe('compact detail pane shell', () => {
     expect(projectLabel.parentElement?.textContent).toBe('ProjectUnscoped');
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation metadata' }));
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
-    const composer = footer?.querySelector('.conv-compose');
+    const composer = overlayControl?.querySelector('.conv-compose');
     expect(composer).toBeTruthy();
     const tokensCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/tokens.css'), 'utf8');
     const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
     expect(tokensCss).toContain('--radius-chat-surface: 18px;');
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.conv-compose::before\s*\{[^}]*z-index:\s*-1;[^}]*top:\s*50%;[^}]*right:\s*0;[^}]*bottom:\s*-16px;[^}]*left:\s*-18px;[^}]*background:\s*var\(--surface-app\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;[^}]*max-width:\s*180px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
+    expect(conversationCss).toMatch(/@container \(max-width:\s*700px\)\s*\{[^}]*\.conv-compose__run-options-inline\s*\{[^}]*display:\s*none;/s);
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
+    expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
-    expect(screen.getByRole('dialog', { name: 'Run options' })).toBeTruthy();
-    const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
+    const runOptionsDialog = screen.getByRole('dialog', { name: 'Run options' });
+    const modelSelect = within(runOptionsDialog).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
     expect(modelSelect.title).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
@@ -689,13 +754,15 @@ describe('compact detail pane shell', () => {
 
     const trigger = await screen.findByRole('button', { name: 'Run options' });
     const runtime = document.querySelector('.conv-compose__runtime');
+    const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
+    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
     expect(actions?.children[0]).toBe(trigger);
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
     expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
     fireEvent.click(trigger);
-    await screen.findByRole('combobox', { name: 'Mode' });
+    await screen.findByRole('dialog', { name: 'Run options' });
     await waitFor(() => expect(Array.from(
       screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('select'),
       (select) => select.getAttribute('aria-label'),
@@ -788,7 +855,7 @@ describe('compact detail pane shell', () => {
       badge: 'Unavailable',
       hasComposer: false,
     },
-  ])('keeps the simplified header and footer contract in $label state', async ({ control, badge, hasComposer }) => {
+  ])('keeps the simplified header and composer contract in $label state', async ({ control, badge, hasComposer }) => {
     const scopedConversation = mockConversationDetail(control);
     renderConversationDetail(scopedConversation);
 

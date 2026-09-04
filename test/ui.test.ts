@@ -185,6 +185,7 @@ afterEach(() => {
   cleanup();
   __resetSharedSseForTests();
   window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');
+  window.sessionStorage?.clear?.();
   restoreTestLocalStorage?.();
   restoreTestLocalStorage = null;
   window.history.replaceState(null, '', '/');
@@ -2084,7 +2085,7 @@ describe('app shell', () => {
     const showToggle = screen.getByLabelText('Show Graph detail');
     expect(showToggle.closest('main')).toBeTruthy();
     expect(showToggle.getAttribute('aria-pressed')).toBe('false');
-    expect(document.activeElement).toBe(showToggle);
+    await waitFor(() => expect(document.activeElement).toBe(showToggle));
   });
 
   // Issue 80ced49 regression guard. GraphView used to build its pending-payload
@@ -2404,6 +2405,19 @@ describe('SettingsView', () => {
     expect(screen.queryByText('Codex idle threshold')).toBeNull();
   });
 
+  it('offers independent approval-view and finalized-selection preferences', async () => {
+    const onSave = vi.fn(async () => undefined);
+    render(h(SettingsView, { settings: {}, onSave }));
+
+    const consoleToggle = screen.getByRole('switch', { name: 'Toggle Show approval console automatically' });
+    const overviewToggle = screen.getByRole('switch', { name: 'Toggle Return to overview after approval' });
+    const retainToggle = screen.getByRole('switch', { name: 'Toggle Keep the finalized request selected' });
+    expect([consoleToggle, overviewToggle, retainToggle].map((toggle) => toggle.getAttribute('aria-checked'))).toEqual(['true', 'true', 'true']);
+
+    fireEvent.click(retainToggle);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('auth.retain_finalized_selection', 'false'));
+  });
+
   it('saves instruction delivery targets and post-export hook settings', async () => {
     const onSave = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2587,10 +2601,209 @@ describe('AuthQueueView', () => {
     );
 
     expect(screen.queryByLabelText('Auth request changes')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Show changes diff' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
     expect(screen.getByLabelText('Auth request changes')).toBeTruthy();
     expect(screen.getByText('No diff available for this request.')).toBeTruthy();
     expect(document.querySelector('.auth-detail__panels')).toBeNull();
+  });
+
+  it('moves between overview and console with the approval lifecycle', async () => {
+    const request = {
+      id: 'req-console-lifecycle',
+      title: 'Approval lifecycle',
+      type: 'merge',
+      repo: 'mandible',
+      base_branch: 'main',
+      head_branch: 'feature/lifecycle',
+      status: 'pending',
+      diff_summary: '',
+      spec_content: '',
+      output: '',
+    };
+    const view = render(h(AuthQueueView, {
+      queue: [request], outputs: {}, selectedAuthId: request.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+
+    expect(screen.getByRole('tab', { name: 'Info' }).getAttribute('aria-selected')).toBe('true');
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...request, status: 'approved' }], outputs: {}, selectedAuthId: request.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Console' }).getAttribute('aria-selected')).toBe('true'));
+
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...request, status: 'completed' }], outputs: {}, selectedAuthId: request.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Info' }).getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it.each(['approved', 'executing'])('opens Console when selecting an already-%s request', async (status) => {
+    render(h(AuthQueueView, {
+      queue: [{
+        id: `req-already-${status}`,
+        title: `Already ${status}`,
+        type: 'merge',
+        repo: 'mandible',
+        base_branch: 'main',
+        head_branch: `feature/${status}`,
+        status,
+      }],
+      outputs: {},
+      selectedAuthId: `req-already-${status}`,
+      onApprove: () => undefined,
+      onReject: () => undefined,
+      autoShowConsoleOnApproval: true,
+    }));
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Console' }).getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('keeps Info as the default tab when automatic Console display is disabled', () => {
+    render(h(AuthQueueView, {
+      queue: [{
+        id: 'req-approved-info',
+        title: 'Approved info request',
+        type: 'merge',
+        repo: 'mandible',
+        base_branch: 'main',
+        head_branch: 'feature/approved-info',
+        status: 'approved',
+      }],
+      outputs: {},
+      selectedAuthId: 'req-approved-info',
+      onApprove: () => undefined,
+      onReject: () => undefined,
+      autoShowConsoleOnApproval: false,
+    }));
+
+    expect(screen.getByRole('tab', { name: 'Info' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('names the icon-only tabs Info, Console, and Diff and defaults pending requests to Info', () => {
+    render(h(AuthQueueView, {
+      queue: [{ id: 'req-tab-labels', title: 'Tab labels', repo: 'mandible', status: 'pending' }],
+      outputs: {},
+      selectedAuthId: 'req-tab-labels',
+      onApprove: () => undefined,
+      onReject: () => undefined,
+    }));
+
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual(['Info', 'Console', 'Diff']);
+    expect(tabs.map((tab) => tab.getAttribute('title'))).toEqual(['Info', 'Console', 'Diff']);
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('retains a finalized active-filter selection until another request is selected', async () => {
+    const completed = {
+      id: 'req-retained-final', title: 'Retained final request', type: 'merge', repo: 'mandible',
+      base_branch: 'main', head_branch: 'feature/retained', status: 'pending',
+      diff_summary: '', spec_content: '', output: '',
+    };
+    const pending = {
+      id: 'req-next', title: 'Next request', type: 'merge', repo: 'mandible',
+      base_branch: 'main', head_branch: 'feature/next', status: 'pending',
+      diff_summary: '', spec_content: '', output: '',
+    };
+    const view = render(h(AuthQueueView, {
+      queue: [completed, pending], outputs: {}, initialRequestId: completed.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    await waitFor(() => expect(document.querySelector('[data-request-id="req-retained-final"]')?.classList.contains('auth-sidebar-item--selected')).toBe(true));
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...completed, status: 'completed' }, pending], outputs: {}, initialRequestId: completed.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+
+    await waitFor(() => expect(document.querySelector('[data-request-id="req-retained-final"]')).toBeTruthy());
+    expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(completed.id);
+    fireEvent.click(document.querySelector('[data-request-id="req-next"]') as Element);
+    await waitFor(() => expect(document.querySelector('[data-request-id="req-retained-final"]')).toBeNull());
+    expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBeNull();
+  });
+
+  it('clears finalized retention when controlled route selection moves to another request', async () => {
+    const finalized = { id: 'req-route-final', title: 'Route final', repo: 'mandible', status: 'pending' };
+    const next = { id: 'req-route-next', title: 'Route next', repo: 'mandible', status: 'pending' };
+    const view = render(h(AuthQueueView, {
+      queue: [finalized, next], outputs: {}, selectedAuthId: finalized.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, selectedAuthId: finalized.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));
+
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, selectedAuthId: next.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+
+    await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBeNull());
+  });
+
+  it('clears finalized retention when a new deep link selects another request', async () => {
+    const finalized = { id: 'req-deep-final', title: 'Deep final', repo: 'mandible', status: 'pending' };
+    const next = { id: 'req-deep-next', title: 'Deep next', repo: 'mandible', status: 'pending' };
+    const view = render(h(AuthQueueView, {
+      queue: [finalized, next], outputs: {}, initialRequestId: finalized.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, initialRequestId: finalized.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));
+
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, initialRequestId: next.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+
+    await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBeNull());
+    expect(document.querySelector('[data-request-id="req-deep-next"]')?.classList.contains('auth-sidebar-item--selected')).toBe(true);
+  });
+
+  it('clears finalized retention on filter-driven selection without losing All-filter history', async () => {
+    const finalized = { id: 'req-filter-final', title: 'Filter final', repo: 'mandible', status: 'pending' };
+    const next = { id: 'req-filter-next', title: 'Filter next', repo: 'mandible', status: 'pending' };
+    const view = render(h(AuthQueueView, {
+      queue: [finalized, next], historyQueue: [], outputs: {}, initialRequestId: finalized.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    view.rerender(h(AuthQueueView, {
+      queue: [{ ...finalized, status: 'completed' }, next],
+      historyQueue: [{ ...finalized, status: 'completed' }],
+      outputs: {}, initialRequestId: finalized.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));
+
+    fireEvent.input(screen.getByLabelText('Search auth requests'), {
+      target: { value: 'Filter next' },
+    });
+    await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-next"]')?.classList.contains('auth-sidebar-item--selected')).toBe(true));
+    expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBeNull();
+
+    fireEvent.input(screen.getByLabelText('Search auth requests'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced auth filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'all' }));
+    await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-final"]')).toBeTruthy());
+  });
+
+  it('defines IconTabList appearance once and removes the retired auth console toggle', () => {
+    const resolvedCss = readResolvedStylesheet();
+    const baseCss = readFileSync('ui/src/styles/base.css', 'utf8');
+    const authCss = readFileSync('ui/src/styles/auth.css', 'utf8');
+
+    expect(ruleBody(resolvedCss, '.icon-tab-list > button')).toContain('min-height: var(--app-header-height)');
+    expect(ruleBody(resolvedCss, ".icon-tab-list > button[aria-selected='true']")).toContain('border-bottom-color: var(--accent-blue)');
+    expect(baseCss).not.toContain('.app-right-sidebar__tabs button');
+    expect(authCss).not.toContain('.auth-detail__mode-tabs button');
+    expect(authCss).not.toContain('.console-output__toggle');
   });
 
   it('renders deferred action badges and bundle details', async () => {
@@ -6023,7 +6236,10 @@ describe('ArtifactsView', () => {
     expect(css).not.toMatch(/\.auth-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
     expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*20px 24px 24px;/s);
     expect(css).not.toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*padding:\s*20px 24px;/s);
-    expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
+    expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*min-height:\s*var\(--app-header-height\);[^}]*padding:\s*0 24px;[^}]*border-bottom:\s*1px solid var\(--neutral-alpha-06\);/s);
+    expect(css).toMatch(/\.auth-detail__header-primary \.detail-pane-header\s*\{[^}]*border-bottom:\s*0;/s);
+    expect(css).toMatch(/\.icon-tab-list > button\s*\{[^}]*border-bottom:\s*2px solid transparent;/s);
+    expect(css).toMatch(/\.icon-tab-list > button\[aria-selected='true'\]\s*\{[^}]*border-bottom-color:\s*var\(--accent-blue\);/s);
     expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*container:\s*auth-detail \/ inline-size;/s);
     expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
     expect(css).toMatch(/@container auth-detail \(min-width:\s*1120px\)\s*\{\s*\.auth-detail__panels--with-actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
@@ -6039,8 +6255,9 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-ctn\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 auto;[^}]*overflow-wrap:\s*normal;[^}]*white-space:\s*pre;[^}]*word-break:\s*normal;/s);
     expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-prefix\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 12px;[^}]*line-height:\s*18px;/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.collapsible-panel\s*\{[^}]*background:\s*#ffffff;[^}]*border-color:\s*var\(--neutral-alpha-08\);/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
+    expect(css).toMatch(/\.auth-action-row\s*\{[^}]*padding:\s*12px 0;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);[^}]*background:\s*transparent;/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{\s*background:\s*transparent;\s*\}/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*var\(--neutral-alpha-06\);[^}]*background:\s*transparent;/s);
   });
 
   it('keeps artifact facet options available after selecting a facet value', async () => {
