@@ -21,6 +21,7 @@
 @import "./styles/settings.css";
 @import "./styles/chat-history.css";
 @import "./styles/conversations.css";
+@import "./styles/chat-bottom-shelf.css";
 @import "./styles/message-blocks.css";
 @import "./styles/console.css";
 @import "./styles/logs.css";
