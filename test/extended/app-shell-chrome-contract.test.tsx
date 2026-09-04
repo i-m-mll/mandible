@@ -121,7 +121,9 @@ describe('shared app-shell chrome contract', () => {
     expect(base).toMatch(/\.app-right-sidebar__body\s*\{[^}]*overflow:\s*auto/s);
     expect(base).not.toContain('.app-right-sidebar--anchored-detail');
     expect(timelineSource).toContain('className="timeline-inspector"');
-    expect(timelineSource).toContain('header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}');
+    expect(timelineSource).not.toContain('header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}');
+    expect(timelineSource).toContain("icon: <PreviewIcon size={18} />");
+    expect(graphSource).toContain("icon: <PreviewIcon size={18} />");
   });
 
   it('leaves lazy view loading unowned by the shell', () => {

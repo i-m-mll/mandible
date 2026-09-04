@@ -1100,11 +1100,11 @@ describe('TimelineView', () => {
 
     const inspector = screen.getByLabelText('Timeline inspector');
     expect(inspector.className).toBe('app-right-sidebar');
-    expect(inspector.querySelector('.timeline-inspector.detail-pane-shell')).toBeTruthy();
-    expect(inspector.querySelector('[data-detail-pane-header-variant="compact"]')?.textContent)
-      .toContain('Timeline inspector');
-    fireEvent.click(screen.getByLabelText('Collapse inspector'));
-    expect(screen.getByLabelText('Show inspector')).toBeTruthy();
+    expect(inspector.querySelector('.timeline-inspector')).toBeTruthy();
+    expect(inspector.querySelector('.timeline-inspector.detail-pane-shell')).toBeNull();
+    expect(inspector.querySelector('[data-detail-pane-header-variant="compact"]')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Collapse Timeline inspector'));
+    expect(screen.getByLabelText('Show Timeline inspector')).toBeTruthy();
     await waitFor(() => {
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
       expect(stored).toBeTruthy();

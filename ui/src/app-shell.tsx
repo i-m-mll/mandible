@@ -16,7 +16,7 @@ type AppRightSidebarCommon = {
 };
 
 export type AppRightSidebarDescriptor = AppRightSidebarCommon & (
-  | { kind: 'panel'; title: string; content: ComponentChildren }
+  | { kind: 'panel'; title: string; icon?: ComponentChildren; content: ComponentChildren }
   | {
       kind: 'tabs';
       tabs: readonly { id: string; label: string; tooltip: string; icon: ComponentChildren; content: ComponentChildren }[];
@@ -188,7 +188,13 @@ export function AppRightSidebarSurface({
         onKeyDown={resizeByKeyboard}
       />
       <header className="app-right-sidebar__header">
-        {descriptor.kind === 'panel' ? <h2>{descriptor.title}</h2> : (
+        {descriptor.kind === 'panel' ? (
+          descriptor.icon ? (
+            <span className="app-right-sidebar__panel-icon" aria-hidden="true" title={descriptor.title}>
+              {descriptor.icon}
+            </span>
+          ) : <h2>{descriptor.title}</h2>
+        ) : (
           <IconTabList
             ariaLabel={descriptor.ariaLabel}
             tabs={descriptor.tabs}

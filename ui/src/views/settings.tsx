@@ -44,7 +44,13 @@ import {
   type TypographySettings,
 } from '../typography-settings';
 import { AuthHooksPanel } from './auth';
-import { APP_THEME_MODES, normalizeAppThemeMode } from '../theme';
+import {
+  APP_THEME_MODES,
+  TERMINAL_THEME_IDS,
+  TERMINAL_THEME_LABELS,
+  normalizeAppThemeMode,
+  normalizeTerminalThemeId,
+} from '../theme';
 import {
   SIDEBAR_GROUP_LIMIT_DEFAULT,
   SIDEBAR_GROUP_LIMIT_MAX,
@@ -2161,6 +2167,38 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               ))}
             </select>
           </div>
+          {([
+            ['light', 'Light-mode terminal', 'Terminal palette used while Mandible is light'],
+            ['dark', 'Dark-mode terminal', 'Terminal palette used while Mandible is dark'],
+          ] as const).map(([mode, label, description]) => {
+            const key = `terminal_theme_${mode}`;
+            const descriptionId = `settings-${key}-description`;
+            return (
+              <div className="settings-view__select-row" key={key}>
+                <div className="settings-view__select-info">
+                  <label className="settings-view__select-label" htmlFor={`settings-${key}`}>{label}</label>
+                  <span id={descriptionId} className="settings-view__select-desc">{description}</span>
+                </div>
+                <select
+                  id={`settings-${key}`}
+                  className="settings-view__select"
+                  aria-describedby={descriptionId}
+                  value={normalizeTerminalThemeId(settings[key])}
+                  disabled={!operationalMutationsAllowed}
+                  onChange={async (event) => {
+                    if (!operationalMutationsAllowed) return;
+                    try {
+                      await onSave(key, normalizeTerminalThemeId((event.target as HTMLSelectElement).value));
+                    } catch { /* ignore */ }
+                  }}
+                >
+                  {TERMINAL_THEME_IDS.map((theme) => (
+                    <option key={theme} value={theme}>{TERMINAL_THEME_LABELS[theme]}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          })}
           <ToggleRow
             title="Experimental features"
             desc="Show Timeline, Graph, and Workspaces in the experimental navigation group."

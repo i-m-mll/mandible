@@ -96,13 +96,19 @@ import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import { reconcileShownProjects, useChatProjectSelection, useChatViewState } from './conversation-view-state';
+import { PreviewIcon } from '../components/icons/TabIcons';
+import {
+  preferredProjectCheckout,
+  reconcileShownProjects,
+  useChatProjectSelection,
+  useChatViewState,
+} from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
-import { AppRightSidebarToggleButton, useAppShell, useRegisterAppRightSidebar } from '../app-shell';
+import { useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 
@@ -160,7 +166,7 @@ function OverviewTabIcon(): JSX.Element {
 }
 
 function PreviewTabIcon(): JSX.Element {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>;
+  return <PreviewIcon size={18} />;
 }
 
 function ActivityTabIcon(): JSX.Element {
@@ -390,14 +396,17 @@ type RegisteredChatProject = {
 };
 
 function registeredChatProjects(projects: CanonicalProject[]): RegisteredChatProject[] {
-  return projects.flatMap((project) => project.checkouts.map((checkout) => ({
-    id: project.id,
-    key: project.project_key,
-    label: project.display_name?.trim() || project.project_key,
-    checkoutId: checkout.id,
-    checkoutLabel: checkout.name?.trim() || checkout.work_repo_id?.trim() || checkout.root.trim(),
-    root: checkout.root.trim(),
-  })))
+  return projects.flatMap((project) => {
+    const checkout = preferredProjectCheckout(project);
+    return checkout ? [{
+      id: project.id,
+      key: project.project_key,
+      label: project.display_name?.trim() || project.project_key,
+      checkoutId: checkout.id,
+      checkoutLabel: checkout.name?.trim() || checkout.work_repo_id?.trim() || checkout.root.trim(),
+      root: checkout.root.trim(),
+    }] : [];
+  })
     .filter((project) => Boolean(project.id && project.key && project.checkoutId && project.root))
     .sort((left, right) => left.label.localeCompare(right.label)
       || left.id.localeCompare(right.id)
@@ -1077,7 +1086,6 @@ function ConversationDetail({
   sidebarCollapsed: boolean;
   chatEntityLinkAction: ChatEntityClickAction;
 }): JSX.Element {
-  const { setRightSidebarOpen } = useAppShell();
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
     initialConversation ? conversationShell(initialConversation) : null,
   );
@@ -2074,13 +2082,6 @@ function ConversationDetail({
           )}
         </span>
       )}
-      actions={!rightSidebarState.open && rightSidebarDescriptor ? (
-        <AppRightSidebarToggleButton
-          descriptor={rightSidebarDescriptor}
-          open={false}
-          onOpenChange={setRightSidebarOpen ?? rightSidebarDescriptor.onOpenChange}
-        />
-      ) : undefined}
       actionsLabel="Chat sidebar"
     />
   );
@@ -2682,7 +2683,6 @@ export function ConversationsView({
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
-  const [conversationGroupsReady, setConversationGroupsReady] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2882,7 +2882,6 @@ export function ConversationsView({
       }));
       if (generation !== fetchGenerationRef.current) return;
       setServerGroups(reconciled);
-      setConversationGroupsReady(true);
       setVisibleTargets((current) => {
         const next = new Map(current);
         for (const group of reconciled) {
@@ -3587,16 +3586,11 @@ export function ConversationsView({
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
                   <select aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
-                    {registeredProjects.map((project) => {
-                      const hasMultipleCheckouts = registeredProjects.some((candidate) => (
-                        candidate.id === project.id && candidate.checkoutId !== project.checkoutId
-                      ));
-                      return (
-                        <option key={`${project.id}:${project.checkoutId}`} value={registeredProjectSelectionValue(project)}>
-                          {hasMultipleCheckouts ? `${project.label} — ${project.checkoutLabel} (${project.root})` : project.label}
-                        </option>
-                      );
-                    })}
+                    {registeredProjects.map((project) => (
+                      <option key={project.id} value={registeredProjectSelectionValue(project)}>
+                        {project.label}
+                      </option>
+                    ))}
                   </select>
                   <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
@@ -3653,7 +3647,7 @@ export function ConversationsView({
                   onShowMore={() => { void showMore(group); }}
                 >
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
-                  {conversationGroupsReady && totalVisibleEntries === 0 && !loading ? (
+                  {totalVisibleEntries === 0 && !loading ? (
                     <div className="sidebar-group-node__placeholder">No chats</div>
                   ) : null}
                 </SidebarGroupNode>

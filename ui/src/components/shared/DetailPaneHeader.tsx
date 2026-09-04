@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { shortIdentityRef } from '../../identity-refs';
 import { CopyRefButton, DetailHeaderIdentity } from './DetailHeaderIdentity';
+import { AppRightSidebarToggleButton, useAppShell } from '../../app-shell';
 
 export type DetailPaneHeaderVariant = 'standard' | 'compact' | 'versioned';
 
@@ -133,6 +134,19 @@ export function DetailPaneHeader({
   secondaryMetadata,
   className,
 }: DetailPaneHeaderProps): JSX.Element {
+  const { active, rightSidebar, setRightSidebarOpen } = useAppShell();
+  const automaticRightSidebarAction = active
+    && rightSidebar
+    && !rightSidebar.open
+    && rightSidebar.togglePlacement === 'detail-header'
+    ? (
+        <AppRightSidebarToggleButton
+          descriptor={rightSidebar}
+          open={false}
+          onOpenChange={setRightSidebarOpen ?? rightSidebar.onOpenChange}
+        />
+      )
+    : null;
   if (variant === 'compact') {
     return (
       <div
@@ -174,15 +188,16 @@ export function DetailPaneHeader({
               )}
             </div>
           )}
-          {actions !== undefined && actions !== null && (
+          {(actions !== undefined && actions !== null) || automaticRightSidebarAction ? (
             <div
               className="detail-pane-header__actions"
               role="group"
               aria-label={actionsLabel}
             >
               {actions}
+              {automaticRightSidebarAction}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     );
@@ -248,15 +263,16 @@ export function DetailPaneHeader({
               {title}
             </h2>
           )}
-          {actions !== undefined && actions !== null && (
+          {(actions !== undefined && actions !== null) || automaticRightSidebarAction ? (
             <div
               className="detail-pane-header__actions"
               role="group"
               aria-label={actionsLabel}
             >
               {actions}
+              {automaticRightSidebarAction}
             </div>
-          )}
+          ) : null}
         </div>
         {secondaryMetadata !== undefined && secondaryMetadata !== null && (
           <div className="detail-pane-header__metadata">{secondaryMetadata}</div>

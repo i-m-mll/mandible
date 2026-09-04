@@ -103,7 +103,7 @@ export function useTerminalView({
     const observer = new MutationObserver(applyTheme);
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ['data-theme', 'data-terminal-theme'],
     });
     return () => observer.disconnect();
   }, [showDebugTerminal]);
