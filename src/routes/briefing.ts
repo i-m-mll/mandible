@@ -31,15 +31,18 @@ import {
 } from "../feedback/briefing-bundles.js";
 import {
   addBriefingGroupUpdate,
+  bindBriefingDestinationOwner,
   configureBriefingGroup,
   createBriefingGroup,
   dispositionBriefingGroupProposalByHumanReview,
   listBriefingGroups,
+  previewBriefingGroupReviewCandidate,
   readBriefingGroup,
   promoteBriefingGroupProposal,
   setBriefingGroupArchived,
   updateBriefingGroupName,
 } from "../feedback/briefing-groups.js";
+import type { BriefingGroupDestinationChangeInput } from "../feedback/briefing-groups.js";
 import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 import {
@@ -177,6 +180,30 @@ function humanReviewOperator(db: Db, req: RequestLike) {
     actor: { userId: caller.id, evidenceMethod: "api_token" as const, credentialId: identity.credential_id },
     viewer: { userId: caller.id, operator: true as const, humanReviewOperator: true as const },
   };
+}
+
+function destinationChanges(value: unknown): BriefingGroupDestinationChangeInput[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new BriefingStoreError("destination_changes must be an array");
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new BriefingStoreError(`destination_changes[${index}] must be an object`);
+    }
+    const item = entry as Record<string, unknown>;
+    const unexpected = Object.keys(item).filter((key) => key !== "logical_artifact_ref" && key !== "expected_group_ref");
+    if (unexpected.length) throw new BriefingStoreError(
+      `destination_changes[${index}] contains unsupported field '${unexpected[0]}'`,
+    );
+    if (typeof item.logical_artifact_ref !== "string" || !item.logical_artifact_ref.trim()) {
+      throw new BriefingStoreError(`destination_changes[${index}].logical_artifact_ref must be nonblank`);
+    }
+    if (item.expected_group_ref !== null
+        && (typeof item.expected_group_ref !== "string" || !item.expected_group_ref.trim())) {
+      throw new BriefingStoreError(`destination_changes[${index}].expected_group_ref must be nonblank or null`);
+    }
+    return { logicalArtifactRef: item.logical_artifact_ref,
+      expectedGroupRef: item.expected_group_ref as string | null };
+  });
 }
 
 function briefingOrganizationViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
@@ -365,13 +392,15 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           "Briefing group publication by an agent requires a configured active human operator.").id, operator: true };
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "name" && key !== "current_bundle_ref" && key !== "bundle_refs" && key !== "sharing_reason");
+        .filter((key) => key !== "key" && key !== "name" && key !== "current_bundle_ref"
+          && key !== "bundle_refs" && key !== "sharing_reason");
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       if (requestBody.current_bundle_ref !== undefined && requestBody.current_bundle_ref !== null
           && (typeof requestBody.current_bundle_ref !== "string" || !requestBody.current_bundle_ref.trim())) {
         throw new BriefingStoreError("current_bundle_ref must be a nonblank Briefing bundle ref or null");
       }
-      const group = createBriefingGroup(db, { name: typeof requestBody.name === "string" ? requestBody.name : "",
+      const group = createBriefingGroup(db, { key: typeof requestBody.key === "string" ? requestBody.key : "",
+        name: typeof requestBody.name === "string" ? requestBody.name : "",
         currentBundleRef: requestBody.current_bundle_ref as string | null | undefined,
         bundleRefs: requestBody.bundle_refs as string[], viewer,
         placementOverride: placementOverride(req, requestBody, publisher.publisherUserId) });
@@ -453,7 +482,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     try {
       const principal = humanReviewOperator(db, req);
       const requestBody = body(req);
-      const allowed = ["decision", "expected_base_bundle_ref", "proposal_bundle_ref", "binding_digest"];
+      const allowed = ["decision", "expected_base_bundle_ref", "proposal_bundle_ref", "binding_digest",
+        "destination_changes"];
       const unexpected = Object.keys(requestBody).filter((key) => !allowed.includes(key));
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       if (requestBody.decision !== "accepted" && requestBody.decision !== "rejected") {
@@ -467,6 +497,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           ? requestBody.proposal_bundle_ref : "",
         decision: requestBody.decision,
         bindingDigest: typeof requestBody.binding_digest === "string" ? requestBody.binding_digest : "",
+        destinationChanges: destinationChanges(requestBody.destination_changes),
       }, principal.actor, principal.viewer);
       if (result.changed) broadcast(result.disposition.kind === "accepted"
         ? BRIEFING_EVENTS.groupProposalAccepted : BRIEFING_EVENTS.groupProposalRejected, {
@@ -476,6 +507,40 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         review_binding_digest: result.disposition.review_binding_digest,
       });
       sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-groups/:groupId/review-candidates", (req, res) => {
+    try {
+      const principal = humanReviewOperator(db, req);
+      const requestBody = body(req);
+      const allowed = ["expected_base_bundle_ref", "proposal_bundle_ref", "destination_changes"];
+      const unexpected = Object.keys(requestBody).filter((key) => !allowed.includes(key));
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const candidate = previewBriefingGroupReviewCandidate(db, {
+        groupRef: req.params.groupId,
+        expectedBaseBundleRef: typeof requestBody.expected_base_bundle_ref === "string"
+          ? requestBody.expected_base_bundle_ref : "",
+        proposalBundleRef: typeof requestBody.proposal_bundle_ref === "string"
+          ? requestBody.proposal_bundle_ref : "",
+        destinationChanges: destinationChanges(requestBody.destination_changes),
+      }, principal.actor.userId);
+      sendJson(res, 200, { candidate });
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/briefing-groups/:groupId/destinations", (req, res) => {
+    try {
+      const principal = humanReviewOperator(db, req);
+      const requestBody = body(req);
+      const unexpected = Object.keys(requestBody).filter((key) => key !== "logical_artifact_ref");
+      if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
+      const result = bindBriefingDestinationOwner(db, {
+        groupRef: req.params.groupId,
+        logicalArtifactRef: typeof requestBody.logical_artifact_ref === "string"
+          ? requestBody.logical_artifact_ref : "",
+      }, principal.actor, principal.viewer);
+      sendJson(res, result.changed ? 201 : 200, result);
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 

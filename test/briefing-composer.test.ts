@@ -18,7 +18,7 @@ import {
   registerBriefingDestinationRoute,
 } from "../src/feedback/briefing-composer.js";
 import { createBriefingBundle } from "../src/feedback/briefing-bundles.js";
-import { createBriefingGroup } from "../src/feedback/briefing-groups.js";
+import { bindBriefingDestinationOwner, createBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 import { createUser } from "../src/users/store.js";
@@ -98,14 +98,15 @@ describe("Base-relative Briefing destination composer", () => {
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, { name: "Managed Base",
       briefingRefs: [destination.published.briefing_id], viewer }, 100);
-    const group = createBriefingGroup(db, { name: "Managed", currentBundleRef: bundle.id,
+    const group = createBriefingGroup(db, { key: "managed", name: "Managed", currentBundleRef: bundle.id,
       bundleRefs: [], viewer }, 110);
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: destination.logicalArtifactId, groupRef: group.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 115);
     const manifest = (version: number, contributionTemplate = "- {{summary}} ({{evidence_ref}})") =>
       parseBriefingDestinationRouteManifest({
-        schema: "mandible-briefing-destination-routes@1",
+        schema: "mandible-briefing-destination-routes@2",
         routes: [{
           route_key: "managed.changes",
-          group_ref: `briefing-group:${group.id}`,
           logical_artifact_ref: destination.logicalArtifactId,
           heading: "Changes",
           composer_kind: "deterministic",
@@ -114,6 +115,10 @@ describe("Base-relative Briefing destination composer", () => {
           limits: { max_contributions: 10, max_document_bytes: 10_000, max_directives: 0 },
         }],
       });
+
+    expect(() => parseBriefingDestinationRouteManifest({
+      ...manifest(1), routes: [{ ...manifest(1).routes[0], group_ref: group.id }],
+    })).toThrowError(/unsupported field 'group_ref'/);
 
     expect(planBriefingDestinationRoutes(db, manifest(1))).toMatchObject({ changed: true, routes: [{
       route_key: "managed.changes", action: "create", group_id: group.id,
@@ -146,11 +151,12 @@ describe("Base-relative Briefing destination composer", () => {
       name: "Project Base", briefingRefs: [readme.published.briefing_id, destination.published.briefing_id], viewer,
     }, 100);
     const group = createBriefingGroup(db, {
-      name: "Project", currentBundleRef: base.id, bundleRefs: [], viewer,
+      key: "project", name: "Project", currentBundleRef: base.id, bundleRefs: [], viewer,
     }, 110);
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: destination.logicalArtifactId, groupRef: group.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 115);
     registerBriefingDestinationRoute(db, {
       route_key: "projects.example.maintenance",
-      group_ref: group.id,
       logical_artifact_id: destination.logicalArtifactId,
       heading: "Maintenance",
       composer_kind: "deterministic",
@@ -205,11 +211,12 @@ describe("Base-relative Briefing destination composer", () => {
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, { name: "Digest Base",
       briefingRefs: [destination.published.briefing_id], viewer }, 100);
-    const group = createBriefingGroup(db, { name: "Digest", currentBundleRef: bundle.id,
+    const group = createBriefingGroup(db, { key: "digest", name: "Digest", currentBundleRef: bundle.id,
       bundleRefs: [], viewer }, 110);
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: destination.logicalArtifactId, groupRef: group.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 115);
     registerBriefingDestinationRoute(db, {
       route_key: "digest.since-last-review",
-      group_ref: group.id,
       logical_artifact_id: destination.logicalArtifactId,
       heading: "Since last review",
       composer_kind: "agentic",

@@ -7,17 +7,15 @@ import { recordArtifactVersion, resolveArtifactRefReadonlyFull } from "../provid
 import { enforceActivePlacement } from "./briefing-placement.js";
 import { parseBriefingDirectives } from "./briefing-directives.js";
 import { BriefingStoreError, publishBriefingFromArtifactVersion } from "./briefings.js";
-import { resolveGroupId } from "./briefing-groups.js";
 
 export const BRIEFING_COMPOSITION_SCHEMA = "mandible-briefing-composition@1" as const;
-export const BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA = "mandible-briefing-destination-routes@1" as const;
+export const BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA = "mandible-briefing-destination-routes@2" as const;
 
 type SlotType = "string" | "string_array" | "number" | "boolean";
 export type DestinationSlot = { type: SlotType; required?: boolean; max_length?: number; max_items?: number };
 
 export type BriefingDestinationRouteInput = {
   route_key: string;
-  group_ref: string;
   logical_artifact_id: string;
   heading: string;
   composer_kind: "deterministic" | "agentic";
@@ -265,7 +263,7 @@ export function parseBriefingDestinationRouteManifest(value: unknown): BriefingD
   }
   const routes = manifest.routes.map((raw, index) => {
     const route = object(raw, `routes[${index}]`);
-    only(route, ["route_key", "group_ref", "logical_artifact_ref", "heading", "composer_kind", "template", "limits"],
+    only(route, ["route_key", "logical_artifact_ref", "heading", "composer_kind", "template", "limits"],
       `routes[${index}]`);
     if (route.composer_kind !== "deterministic" && route.composer_kind !== "agentic") {
       throw new BriefingStoreError(`routes[${index}].composer_kind must be deterministic or agentic`);
@@ -279,7 +277,6 @@ export function parseBriefingDestinationRouteManifest(value: unknown): BriefingD
     only(limits, ["max_contributions", "max_document_bytes", "max_directives"], `routes[${index}].limits`);
     return {
       route_key: nonblank(route.route_key, `routes[${index}].route_key`),
-      group_ref: nonblank(route.group_ref, `routes[${index}].group_ref`),
       logical_artifact_ref: nonblank(route.logical_artifact_ref, `routes[${index}].logical_artifact_ref`),
       heading: nonblank(route.heading, `routes[${index}].heading`),
       composer_kind: route.composer_kind,
@@ -333,9 +330,10 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
 }
 
 function routeRow(db: Db, routeKey: string): RouteRow {
-  const row = db.prepare(`SELECT r.*, t.contribution_template, t.slots_json
+  const row = db.prepare(`SELECT r.*, owner.group_id, t.contribution_template, t.slots_json
     FROM briefing_destination_routes r JOIN briefing_destination_templates t
       ON t.route_key = r.route_key AND t.version = r.active_template_version
+    JOIN briefing_destination_owners owner ON owner.logical_artifact_id = r.logical_artifact_id
     WHERE r.route_key = ?`).get(routeKey) as RouteRow | undefined;
   if (!row) throw new BriefingStoreError(`unknown destination route '${routeKey}'`, 409, "briefing_destination_unknown");
   return row;
@@ -354,11 +352,19 @@ type ResolvedRouteDeclaration = {
 };
 
 function resolveRouteDeclaration(db: Db, input: BriefingDestinationRouteDeclaration): ResolvedRouteDeclaration {
-  const groupId = resolveGroupId(db, input.group_ref);
   const logical = resolveArtifactRefReadonlyFull(db, input.logical_artifact_ref);
   if (logical.status !== "resolved" || logical.target_type !== "artifact" || !logical.target_id) {
     throw new BriefingStoreError("logical_artifact_ref must resolve to one logical Artifact", 404,
       "artifact_not_found");
+  }
+  const owner = db.prepare(`SELECT owner.group_id
+    FROM briefing_destination_owners owner
+    JOIN briefing_groups g ON g.id = owner.group_id
+    WHERE owner.logical_artifact_id = ? AND g.archived_at IS NULL`).get(logical.target_id) as
+    { group_id: string } | undefined;
+  if (!owner) {
+    throw new BriefingStoreError("logical Artifact has no active destination owner", 409,
+      "briefing_destination_owner_unavailable");
   }
   if (input.composer_kind === "deterministic" && !input.template.contribution_template.includes("{{evidence_ref}}")) {
     throw new BriefingStoreError("deterministic contribution templates must render {{evidence_ref}}");
@@ -371,7 +377,7 @@ function resolveRouteDeclaration(db: Db, input: BriefingDestinationRouteDeclarat
   if (unknown) throw new BriefingStoreError(`contribution template references unknown slot '${unknown}'`);
   return {
     route_key: input.route_key,
-    group_id: groupId,
+    group_id: owner.group_id,
     logical_artifact_id: logical.target_id,
     heading: input.heading,
     composer_kind: input.composer_kind,
@@ -386,27 +392,27 @@ function planResolvedRoute(
   db: Db,
   route: ResolvedRouteDeclaration,
 ): BriefingDestinationRoutePlan["routes"][number] {
-  const existing = db.prepare(`SELECT group_id, logical_artifact_id, heading, composer_kind,
+  const existing = db.prepare(`SELECT logical_artifact_id, heading, composer_kind,
       active_template_version, max_contributions, max_document_bytes, max_directives
     FROM briefing_destination_routes WHERE route_key = ?`).get(route.route_key) as {
-      group_id: string; logical_artifact_id: string; heading: string; composer_kind: string;
+      logical_artifact_id: string; heading: string; composer_kind: string;
       active_template_version: number; max_contributions: number; max_document_bytes: number; max_directives: number;
     } | undefined;
-  if (existing && (existing.group_id !== route.group_id || existing.logical_artifact_id !== route.logical_artifact_id
+  if (existing && (existing.logical_artifact_id !== route.logical_artifact_id
       || existing.heading !== route.heading || existing.composer_kind !== route.composer_kind)) {
     throw new BriefingStoreError("stable destination route ownership cannot be reassigned", 409,
       "briefing_destination_route_conflict");
   }
   const tupleOwner = db.prepare(`SELECT route_key, composer_kind FROM briefing_destination_routes
-    WHERE group_id = ? AND logical_artifact_id = ? AND heading = ? LIMIT 1`)
-    .get(route.group_id, route.logical_artifact_id, route.heading) as
+    WHERE logical_artifact_id = ? AND heading = ? LIMIT 1`)
+    .get(route.logical_artifact_id, route.heading) as
     { route_key: string; composer_kind: string } | undefined;
   if (tupleOwner && tupleOwner.route_key !== route.route_key) {
     throw new BriefingStoreError("destination document heading is already owned by another stable route", 409,
       "briefing_destination_route_conflict");
   }
   const existingKind = db.prepare(`SELECT composer_kind FROM briefing_destination_routes
-    WHERE group_id = ? AND logical_artifact_id = ? LIMIT 1`).get(route.group_id, route.logical_artifact_id) as
+    WHERE logical_artifact_id = ? LIMIT 1`).get(route.logical_artifact_id) as
     { composer_kind: string } | undefined;
   if (existingKind && existingKind.composer_kind !== route.composer_kind) {
     throw new BriefingStoreError("all routes for one destination document must use one composer kind", 409,
@@ -488,13 +494,13 @@ export function reconcileBriefingDestinationRoutes(
       if (planned.action === "unchanged") continue;
       const route = byKey.get(planned.route_key)!;
       db.prepare(`INSERT INTO briefing_destination_routes
-        (route_key, group_id, logical_artifact_id, heading, composer_kind, active_template_version,
+        (route_key, logical_artifact_id, heading, composer_kind, active_template_version,
          max_contributions, max_document_bytes, max_directives, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(route_key) DO UPDATE SET active_template_version = excluded.active_template_version,
           max_contributions = excluded.max_contributions, max_document_bytes = excluded.max_document_bytes,
           max_directives = excluded.max_directives, updated_at = excluded.updated_at`)
-        .run(route.route_key, route.group_id, route.logical_artifact_id, route.heading, route.composer_kind,
+        .run(route.route_key, route.logical_artifact_id, route.heading, route.composer_kind,
           route.template_version, route.limits.max_contributions, route.limits.max_document_bytes,
           route.limits.max_directives, now, now);
       db.prepare(`INSERT OR IGNORE INTO briefing_destination_templates
@@ -507,10 +513,12 @@ export function reconcileBriefingDestinationRoutes(
 
 export function inspectBriefingDestinationRoutes(db: Db, routeKey?: string): BriefingDestinationRouteInspection {
   return db.transaction(() => {
-    const rows = db.prepare(`SELECT route_key, group_id, logical_artifact_id, heading, composer_kind,
+    const rows = db.prepare(`SELECT r.route_key, owner.group_id, r.logical_artifact_id, r.heading, r.composer_kind,
         active_template_version, max_contributions, max_document_bytes, max_directives
-      FROM briefing_destination_routes ${routeKey === undefined ? "" : "WHERE route_key = ?"}
-      ORDER BY route_key`).all(...(routeKey === undefined ? [] : [nonblank(routeKey, "route_key")])) as Array<{
+      FROM briefing_destination_routes r
+      JOIN briefing_destination_owners owner ON owner.logical_artifact_id = r.logical_artifact_id
+      ${routeKey === undefined ? "" : "WHERE r.route_key = ?"}
+      ORDER BY r.route_key`).all(...(routeKey === undefined ? [] : [nonblank(routeKey, "route_key")])) as Array<{
         route_key: string; group_id: string; logical_artifact_id: string; heading: string;
         composer_kind: "deterministic" | "agentic"; active_template_version: number;
         max_contributions: number; max_document_bytes: number; max_directives: number;
@@ -542,7 +550,6 @@ export function registerBriefingDestinationRoute(db: Db, input: BriefingDestinat
     schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA,
     routes: [{
       route_key: input.route_key,
-      group_ref: input.group_ref,
       logical_artifact_ref: input.logical_artifact_id,
       heading: input.heading,
       composer_kind: input.composer_kind,
@@ -770,7 +777,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
       }
       const pending = db.prepare(`SELECT c.* FROM briefing_composition_contributions c
         JOIN briefing_destination_routes r ON r.route_key = c.route_key
-        WHERE r.group_id = ? AND c.state = 'pending' ORDER BY c.created_at, c.id`).all(groupId) as Array<Record<string, unknown>>;
+        JOIN briefing_destination_owners owner ON owner.logical_artifact_id = r.logical_artifact_id
+        WHERE owner.group_id = ? AND c.state = 'pending' ORDER BY c.created_at, c.id`).all(groupId) as Array<Record<string, unknown>>;
       if (pending.length === 0) {
         db.prepare(`INSERT INTO briefing_composition_targets
           (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)

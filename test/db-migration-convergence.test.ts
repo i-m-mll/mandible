@@ -90,6 +90,45 @@ function seedBriefingLineage(db: Database.Database, mixed: boolean): { rounds: u
 }
 
 describe.sequential("schema convergence", () => {
+  it("rolls v171 back completely when destination ownership is ambiguous", () => {
+    const dbPath = path.join(tempDir, "ambiguous-destination.db");
+    createFloorDatabase(dbPath);
+    const db = new Database(dbPath);
+    try {
+      migrateFixtureThrough(db, 170);
+      db.prepare(`INSERT INTO artifact (
+        id, identity_key, source_kind, logical_name, latest_version_id, version_count,
+        metadata_json, created_at, updated_at
+      ) VALUES ('artifact:destination', 'destination', 'managed', 'Destination.md', NULL, 0, '{}', 1, 1)`).run();
+      db.prepare(`INSERT INTO briefing_groups
+        (id, name, current_bundle_id, created_at, updated_at, archived_at)
+        VALUES (?, ?, NULL, 1, 1, NULL)`).run("group-one", "One");
+      db.prepare(`INSERT INTO briefing_groups
+        (id, name, current_bundle_id, created_at, updated_at, archived_at)
+        VALUES (?, ?, NULL, 1, 1, NULL)`).run("group-two", "Two");
+      const insertRoute = db.prepare(`INSERT INTO briefing_destination_routes (
+        route_key, group_id, logical_artifact_id, heading, composer_kind, active_template_version,
+        max_contributions, max_document_bytes, max_directives, created_at, updated_at
+      ) VALUES (?, ?, 'artifact:destination', ?, 'deterministic', 1, 1, 1000, 0, 1, 1)`);
+      insertRoute.run("destination.one", "group-one", "One");
+      insertRoute.run("destination.two", "group-two", "Two");
+      const migration = MIGRATIONS.find((candidate) => candidate.version === 171)!;
+      expect(() => db.transaction(() => {
+        for (const statement of migration.statements) db.exec(statement);
+        db.prepare("UPDATE meta SET value = '171' WHERE key = 'schema_version'").run();
+      }).immediate()).toThrow(/group_count/);
+      expect(schemaVersion(db)).toBe("170");
+      expect(db.prepare("SELECT COUNT(*) AS count FROM briefing_destination_routes").get()).toEqual({ count: 2 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM pragma_table_info('briefing_groups') WHERE name = 'key'").get())
+        .toEqual({ count: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'briefing_destination_owners'").get())
+        .toEqual({ count: 0 });
+      expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("migrates the frozen floor fixture to the same schema a fresh database gets", () => {
     const freshPath = path.join(tempDir, "fresh.db");
     const migratedPath = path.join(tempDir, "migrated.db");

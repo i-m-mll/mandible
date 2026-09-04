@@ -480,7 +480,8 @@ describe("auth request action routes", () => {
     insertBundle.run(otherBaseId, "Other base");
     insertBundle.run(proposalId, "Proposal");
     db.prepare(`INSERT INTO briefing_groups
-      (id, name, current_bundle_id, created_at, updated_at) VALUES (?, 'Policy', ?, 1, 1)`)
+      (id, key, name, current_bundle_id, created_at, updated_at)
+      VALUES (?, 'policy', 'Policy', ?, 1, 1)`)
       .run(groupId, baseId);
     db.prepare(`INSERT INTO briefing_group_updates
       (group_id, bundle_id, position, created_at) VALUES (?, ?, 0, 1)`)
