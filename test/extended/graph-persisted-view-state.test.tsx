@@ -46,15 +46,21 @@ function graphResponse(): Response {
 
 function renderGraph(refreshToken = 0) {
   let descriptor: AppRightSidebarDescriptor | null = null;
-  const registerRightSidebar: AppShellContextValue['registerRightSidebar'] = (next) => {
-    descriptor = next;
+  let owner: string | null = null;
+  const registerRightSidebar: AppShellContextValue['registerRightSidebar'] = (ownerId) => {
+    owner = ownerId;
     return () => {
-      if (descriptor === next) descriptor = null;
+      if (owner === ownerId) owner = null;
+      if (descriptor?.id === ownerId) descriptor = null;
     };
+  };
+  const updateRightSidebar: AppShellContextValue['updateRightSidebar'] = (ownerId, next) => {
+    if (owner === ownerId) descriptor = next;
   };
   const value: AppShellContextValue = {
     rightSidebar: null,
     registerRightSidebar,
+    updateRightSidebar,
     setViewSidebarWidth: () => undefined,
     active: true,
   };
@@ -96,7 +102,7 @@ describe('GraphView persisted detail panel state', () => {
     const view = renderGraph();
 
     await waitFor(() => expect(view.getDescriptor()).not.toBeNull());
-    expect(view.getDescriptor()).toMatchObject({ open: false, width: 720 });
+    expect(view.getDescriptor()).toMatchObject({ open: false, width: 380 });
     expect(values.has(openKey)).toBe(false);
     expect(values.has(heightKey)).toBe(false);
 

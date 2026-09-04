@@ -739,7 +739,7 @@ select.new-session-dialog__input {
   color: #72d08f;
 }
 
-/* Bug: 6634023 — Rich view horizontal wrapper: main content + optional sidebar */
+/* Rich view content is the main pane; app-shell detail uses the shared sidebar. */
 .terminal-pane__rich-wrapper {
   flex: 1;
   display: flex;
@@ -756,32 +756,12 @@ select.new-session-dialog__input {
   min-height: 0;
 }
 
-.terminal-pane__sidebar-toggle {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-
-.terminal-pane__sidebar-toggle:is(:hover, :focus-visible) {
-  background: var(--neutral-alpha-06);
-  color: var(--chrome-icon-hover-direct);
-}
-
 /* Bug: 60b1fd7 — MessageInfoPanel styles */
 .message-info-panel {
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow-y: auto;
   flex: 1;
 }
 

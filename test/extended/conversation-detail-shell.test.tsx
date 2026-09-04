@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
-import { useCallback, useState } from 'preact/hooks';
+import { useCallback, useRef, useState } from 'preact/hooks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +14,7 @@ import {
   ConversationsView,
   conversationAnchorFromHash,
   conversationAnchorHref,
+  conversationLoadFailure,
   conversationTurnSelectionHref,
   getConversationHeaderProviderLabel,
   scopeConversationRightSidebar,
@@ -236,17 +237,24 @@ function deferred<T>() {
 
 function MountedRightSidebarShell({ children }: { children: ComponentChildren }): JSX.Element {
   const [sidebar, setSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-  const registerRightSidebar = useCallback((next: AppRightSidebarDescriptor) => {
-    setSidebar(next);
-    return () => setSidebar((current) => current?.id === next.id ? null : current);
+  const ownerRef = useRef<string | null>(null);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    ownerRef.current = ownerId;
+    return () => {
+      if (ownerRef.current === ownerId) ownerRef.current = null;
+      setSidebar((current) => current?.id === ownerId ? null : current);
+    };
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, next: AppRightSidebarDescriptor) => {
+    if (ownerRef.current === ownerId) setSidebar(next);
   }, []);
   return (
-    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
+    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
       {children}
       {sidebar?.open && sidebar.kind === 'tabs' ? (
         <aside aria-label={sidebar.ariaLabel}>
           {sidebar.tabs.map((tab) => (
-            <button key={tab.id} type="button" role="tab" aria-selected={sidebar.activeTab === tab.id} onClick={() => sidebar.onActiveTabChange(tab.id)}>{tab.label}</button>
+            <button key={tab.id} type="button" role="tab" aria-label={tab.label} title={tab.tooltip} aria-selected={sidebar.activeTab === tab.id} onClick={() => sidebar.onActiveTabChange(tab.id)}>{tab.icon}</button>
           ))}
           {sidebar.tabs.find((tab) => tab.id === sidebar.activeTab)?.content}
         </aside>
@@ -256,6 +264,18 @@ function MountedRightSidebarShell({ children }: { children: ComponentChildren })
 }
 
 describe('compact detail pane shell', () => {
+  it('separates deterministic title-authority gaps from transient failures', () => {
+    const missing = conversationLoadFailure(new api.ApiError('raw code', 409, 'provider_metadata_missing'), true);
+    expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false, titleAuthorityDegraded: true });
+    expect(missing.message).toContain('Transcript loaded');
+    expect(missing.message).toContain('Retrying will not recreate');
+    expect(missing.message).not.toContain('raw code');
+
+    const unavailable = conversationLoadFailure(new api.ApiError('temporary', 503, 'provider_metadata_unavailable'), true);
+    expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true, titleAuthorityDegraded: true });
+    expect(unavailable.message).toContain('transcript is unchanged');
+  });
+
   it('synchronously discards another conversation\'s preview and Preview tab', () => {
     const target = {
       kind: 'issue' as const,
@@ -566,12 +586,11 @@ describe('compact detail pane shell', () => {
     expect(body?.querySelector('.context-usage')).toBeNull();
     expect(shell?.querySelectorAll('.context-usage')).toHaveLength(1);
     const runtime = footer?.querySelector('.conv-compose__runtime');
-    const runtimeLeading = runtime?.firstElementChild;
-    const runtimeActions = runtime?.lastElementChild;
-    expect(runtimeLeading?.classList.contains('conv-compose__runtime-leading')).toBe(true);
+    const runtimeActions = runtime?.firstElementChild;
     expect(runtimeActions?.classList.contains('conv-compose__runtime-actions')).toBe(true);
-    expect(runtimeActions?.firstElementChild?.classList.contains('context-usage')).toBe(true);
-    expect(runtimeActions?.querySelector('.conv-compose__model')).toBe(screen.getByRole('combobox', { name: 'Model' }));
+    const runOptions = await screen.findByRole('button', { name: 'Run options' });
+    expect(runtimeActions?.firstElementChild).toBe(runOptions);
+    expect(runtimeActions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(runtimeActions?.lastElementChild?.classList.contains('conv-compose__send')).toBe(true);
     expect(footer?.querySelector('.conv-compose__hint')).toBeNull();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
@@ -598,6 +617,8 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
+    fireEvent.click(runOptions);
+    expect(screen.getByRole('dialog', { name: 'Run options' })).toBeTruthy();
     const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
     expect(modelSelect.title).toBe('Model');
@@ -613,7 +634,7 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
-  it('places provider-neutral permission and effort controls around the composer runtime actions', async () => {
+  it('puts every provider-neutral run option in the canonical composer popover', async () => {
     const linkedSession: ConsoleSession = {
       id: 'console-codex-1',
       label: 'Codex session',
@@ -666,17 +687,22 @@ describe('compact detail pane shell', () => {
     const scopedConversation = mockConversationDetail(ownedControl);
     renderConversationDetail(scopedConversation, [linkedSession]);
 
-    const permission = await screen.findByRole('combobox', { name: 'Permission mode' });
-    const effort = screen.getByRole('combobox', { name: 'Reasoning effort' });
-    const model = screen.getByRole('combobox', { name: 'Model' });
+    const trigger = await screen.findByRole('button', { name: 'Run options' });
     const runtime = document.querySelector('.conv-compose__runtime');
-    const leading = runtime?.querySelector('.conv-compose__runtime-leading');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
-    expect(leading?.contains(permission)).toBe(true);
-    expect(actions?.children[0]?.classList.contains('context-usage')).toBe(true);
-    expect(actions?.children[1]).toBe(model);
-    expect(actions?.children[2]).toBe(effort);
-    expect(actions?.children[3]?.classList.contains('conv-compose__send')).toBe(true);
+    expect(actions?.children[0]).toBe(trigger);
+    expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
+    expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
+    expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
+    fireEvent.click(trigger);
+    await screen.findByRole('combobox', { name: 'Mode' });
+    await waitFor(() => expect(Array.from(
+      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('select'),
+      (select) => select.getAttribute('aria-label'),
+    )).toEqual(expect.arrayContaining(['Mode', 'Model', 'Reasoning effort'])));
+    const popover = screen.getByRole('dialog', { name: 'Run options' });
+    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Mode"]')!;
+    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort"]')!;
 
     expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['read-only', 'agent']);
     expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['medium', 'high']);
@@ -706,15 +732,15 @@ describe('compact detail pane shell', () => {
     expect(menu.classList.contains('app-anchored-menu')).toBe(true);
     expect(menu.getAttribute('popover')).toBe('manual');
 
-    const model = screen.getByRole('combobox', { name: 'Model' });
-    model.focus();
+    const composer = screen.getByPlaceholderText('Message...');
+    composer.focus();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
 
     fireEvent.click(trigger);
     expect(await screen.findByRole('menu')).toBeTruthy();
-    model.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    composer.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 

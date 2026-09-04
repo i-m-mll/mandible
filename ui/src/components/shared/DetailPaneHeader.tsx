@@ -36,8 +36,6 @@ type DetailPaneHeaderBaseProps = {
   supportingMetadata?: ComponentChildren;
   selector?: DetailPaneHeaderSelector;
   className?: string;
-  /** Final edge control, after every title, menu, and metadata region. */
-  finalActions?: ComponentChildren;
 };
 
 type DetailPaneHeaderActionFields = {
@@ -133,7 +131,6 @@ export function DetailPaneHeader({
   selector,
   secondaryMetadata,
   className,
-  finalActions,
 }: DetailPaneHeaderProps): JSX.Element {
   if (variant === 'compact') {
     return (
@@ -177,9 +174,6 @@ export function DetailPaneHeader({
             </div>
           )}
         </div>
-        {finalActions !== undefined && finalActions !== null && (
-          <div className="detail-pane-header__final-actions">{finalActions}</div>
-        )}
       </div>
     );
   }
@@ -258,9 +252,6 @@ export function DetailPaneHeader({
           <div className="detail-pane-header__metadata">{secondaryMetadata}</div>
         )}
       </div>
-      {finalActions !== undefined && finalActions !== null && (
-        <div className="detail-pane-header__final-actions">{finalActions}</div>
-      )}
     </div>
   );
 }

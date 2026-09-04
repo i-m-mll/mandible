@@ -11,6 +11,18 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
+// Historical migration 170 admitted one user-scoped Chat view preference. Keep
+// its exact intermediate schema here: migrations are a byte-for-byte history,
+// while USER_SETTINGS_SCHEMA_SQL is the current baseline used by migration 171.
+const USER_SETTINGS_V170_SCHEMA_SQL = `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'chat_bottom_shelf')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -585,7 +597,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "chat_bottom_shelf_user_setting",
     statements: [
       "ALTER TABLE user_settings RENAME TO user_settings_v169",
-      USER_SETTINGS_SCHEMA_SQL,
+      USER_SETTINGS_V170_SCHEMA_SQL,
       `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
        SELECT user_id, key, value, revision, updated_at FROM user_settings_v169`,
       "DROP TABLE user_settings_v169",
@@ -597,6 +609,14 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: [
       "ALTER TABLE user_settings RENAME TO user_settings_v170",
       USER_SETTINGS_SCHEMA_SQL,
+      `INSERT INTO settings (key, value, updated_at)
+       SELECT 'chat_entity_link_action', json_extract(legacy.value, '$.clickAction'), legacy.updated_at
+         FROM user_settings_v170 legacy
+        WHERE legacy.key = 'chat_bottom_shelf'
+          AND legacy.user_id = (SELECT value FROM settings WHERE key = 'user.operator_id')
+          AND json_valid(legacy.value)
+          AND json_extract(legacy.value, '$.clickAction') IN ('preview', 'open')
+       ON CONFLICT(key) DO NOTHING`,
       `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
        SELECT user_id, key, value, revision, updated_at FROM user_settings_v170
        WHERE key <> 'chat_bottom_shelf'`,

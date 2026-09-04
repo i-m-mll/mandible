@@ -112,7 +112,8 @@ describe('shared app-shell chrome contract', () => {
     expect(appShellSource).not.toMatch(/\blayout:\s*'full-content'\s*\|\s*'anchored-detail'/);
     expect(graphSource).not.toMatch(/\blayout:\s*['"](?:full-content|anchored-detail)['"]/);
     expect(timelineSource).not.toMatch(/\blayout:\s*['"](?:full-content|anchored-detail)['"]/);
-    expect(appSource).toContain('className="app-right-sidebar"');
+    expect(appShellSource).toContain('className="app-right-sidebar"');
+    expect(appSource).toContain('<AppRightSidebarSurface');
     expect(appSource).not.toContain('rightSidebar.layout');
 
     expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-column: 3');

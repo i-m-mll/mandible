@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
   appReducer,
@@ -872,16 +872,21 @@ describe('app shell', () => {
 
   function ShellProbe(): JSX.Element {
     const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-    const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-      setRightSidebar(descriptor);
-      return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+    const ownerRef = useRef<string | null>(null);
+    const registerRightSidebar = useCallback((ownerId: string) => {
+      ownerRef.current = ownerId;
+      return () => setRightSidebar((current) => (current?.id === ownerId ? null : current));
+    }, []);
+    const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+      if (ownerRef.current === ownerId) setRightSidebar(descriptor);
     }, []);
     const shell = useMemo<AppShellContextValue>(() => ({
       rightSidebar,
       registerRightSidebar,
+      updateRightSidebar,
       setViewSidebarWidth: () => undefined,
       active: true,
-    }), [rightSidebar, registerRightSidebar]);
+    }), [rightSidebar, registerRightSidebar, updateRightSidebar]);
 
     return h(AppShellProvider, { value: shell }, [
       h('header', { className: 'app-header' }, [
@@ -895,7 +900,7 @@ describe('app shell', () => {
               ...rightSidebar,
               open: !rightSidebar.open,
             }),
-          }, h(RightSidebarIcon, { open: rightSidebar.open }))
+          }, h(RightSidebarIcon, {}))
           : null,
       ]),
       h(RegisteredSidebar, {}),
@@ -2065,13 +2070,21 @@ describe('app shell', () => {
     render(h(App, {}));
 
     await waitFor(() => expect(screen.getByLabelText('Hide Graph detail')).toBeTruthy());
-    expect(screen.getByLabelText('Hide Graph detail').closest('.app-header')).toBeTruthy();
+    const hideToggle = screen.getByLabelText('Hide Graph detail');
+    expect(hideToggle.closest('.app-right-sidebar__header')).toBeTruthy();
+    expect(hideToggle.getAttribute('aria-pressed')).toBe('true');
     const graphDetail = screen.getByLabelText('Graph detail');
     expect(graphDetail.className).toBe('app-right-sidebar');
-    expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy();
+    await waitFor(() => expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy());
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
       .toBeLessThan(5);
+    fireEvent.click(hideToggle);
+    await waitFor(() => expect(screen.getByLabelText('Show Graph detail')).toBeTruthy());
+    const showToggle = screen.getByLabelText('Show Graph detail');
+    expect(showToggle.closest('main')).toBeTruthy();
+    expect(showToggle.getAttribute('aria-pressed')).toBe('false');
+    expect(document.activeElement).toBe(showToggle);
   });
 
   // Issue 80ced49 regression guard. GraphView used to build its pending-payload
@@ -2098,23 +2111,28 @@ describe('app shell', () => {
       }));
     }));
 
-    const registrations: AppRightSidebarDescriptor[] = [];
+    const registrations: string[] = [];
+    const updates: AppRightSidebarDescriptor[] = [];
     const navigate = (): void => undefined;
     let rerenderProbe: (() => void) | null = null;
 
     function PendingGraphProbe(): JSX.Element {
       const [, setTick] = useState(0);
       rerenderProbe = () => setTick((value) => value + 1);
-      const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-        registrations.push(descriptor);
+      const registerRightSidebar = useCallback((ownerId: string) => {
+        registrations.push(ownerId);
         return () => undefined;
+      }, []);
+      const updateRightSidebar = useCallback((_ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+        updates.push(descriptor);
       }, []);
       const shell = useMemo<AppShellContextValue>(() => ({
         rightSidebar: null,
         registerRightSidebar,
+        updateRightSidebar,
         setViewSidebarWidth: () => undefined,
         active: true,
-      }), [registerRightSidebar]);
+      }), [registerRightSidebar, updateRightSidebar]);
 
       return h(AppShellProvider, { value: shell }, h(GraphView, {
         onNavigate: navigate,
@@ -2125,8 +2143,8 @@ describe('app shell', () => {
     render(h(PendingGraphProbe, {}));
 
     await waitFor(() => expect(registrations.length).toBeGreaterThan(0));
-    expect(registrations[0]).not.toHaveProperty('layout');
-    expect(registrations[0]?.content).toBeNull();
+    expect(updates[0]).not.toHaveProperty('layout');
+    expect(updates[0]?.content).toBeNull();
 
     for (let pass = 0; pass < 5; pass += 1) {
       // eslint-disable-next-line no-await-in-loop

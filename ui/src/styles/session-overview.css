@@ -8,6 +8,11 @@
   overflow-y: auto;
 }
 
+.session-overview--embedded {
+  height: auto;
+  overflow: visible;
+}
+
 .session-overview__header {
   gap: 16px;
   align-items: flex-start;

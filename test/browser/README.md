@@ -24,6 +24,7 @@ Provisioning: a Chromium at one of the absolute paths each file probes, or
 
 | File | Covers | Extra binary |
 | --- | --- | --- |
+| `app-right-sidebar-geometry.test.ts` | Production app right sidebar with Chat, Graph, Timeline, and Console content at wide/narrow widths and in both themes: toggle/focus lifecycle, tabs, scroll ownership, pointer/keyboard resize, persistence, inertness, composer geometry, stream stability, and title-error presentation | — |
 | `app-shadow-gutter-geometry.test.ts` | App chrome boundary shadow/gutter geometry, divider hit zones, real pointer-driven sidebar resize over CDP, and the painted shadow falloff sampled per pixel | `magick` |
 | `app-header-geometry.test.ts` | Shared `AppHeader` rendered geometry, route-name truncation, and high-DPI translation past the optional left boundary | — |
 | `auth-detail-responsive.test.ts` | Auth action panels stack by detail-pane width, split at the container threshold, and never reserve a single-layout right column | — |

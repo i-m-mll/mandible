@@ -1,7 +1,6 @@
 import type { JSX } from 'preact/jsx-runtime';
 import type { ViewMode } from './TerminalPane';
 import { ViewToggle } from './ViewToggle';
-import { AppRightSidebarToggle } from '../../app-shell';
 
 export function TerminalPaneHeader({
   viewMode,
@@ -47,7 +46,6 @@ export function TerminalPaneHeader({
           )}
         </div>
       )}
-      <AppRightSidebarToggle className="terminal-pane__sidebar-toggle" />
     </div>
   );
 }
