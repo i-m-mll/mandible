@@ -3,7 +3,7 @@ import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { MonitorIcon } from '../components/icons/TabIcons';
 import { SessionOverviewView } from '../views/session-overview';
 import { IssueReferenceDetail } from '../views/spaces/SpaceReferenceDetailPanel';
-import type { ChatPreviewTarget } from './chatEntityLinks';
+import type { ChatPreviewTarget } from './ChatEntityLinkBoundary';
 
 function SearchIcon(): JSX.Element {
   return (
@@ -19,6 +19,7 @@ export function ChatBottomShelf({
   preferenceReady,
   preferenceError,
   providerSessionId,
+  conversationId,
   previewTarget,
   onPreferenceChange,
   onClearPreview,
@@ -27,6 +28,7 @@ export function ChatBottomShelf({
   preferenceReady: boolean;
   preferenceError: string | null;
   providerSessionId: string | null;
+  conversationId: string;
   previewTarget: ChatPreviewTarget | null;
   onPreferenceChange: (next: ChatBottomShelfPreference) => void;
   onClearPreview: () => void;
@@ -97,10 +99,7 @@ export function ChatBottomShelf({
               <button
                 type="button"
                 className="btn btn--ghost btn--sm"
-                onClick={() => {
-                  onClearPreview();
-                  selectTab('overview');
-                }}
+                onClick={onClearPreview}
               >
                 Clear preview
               </button>
@@ -119,7 +118,12 @@ export function ChatBottomShelf({
       >
         {preference.tab === 'overview' ? (
           providerSessionId ? (
-            <SessionOverviewView initialSessionId={null} agentBinding={providerSessionId} embedded />
+            <SessionOverviewView
+              key={conversationId}
+              initialSessionId={null}
+              agentBinding={providerSessionId}
+              embedded
+            />
           ) : (
             <div className="chat-bottom-shelf__empty">No Session Overview is available for this conversation.</div>
           )

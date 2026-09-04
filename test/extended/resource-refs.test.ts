@@ -9,6 +9,7 @@ import {
   isResourceRef,
   linkifyResourceRefs,
   parseResourceRef,
+  previewableResourceFromAnchor,
   registerResourceRefRecognizer,
   resolveResourceRef,
   resourceRefHref,
@@ -179,6 +180,20 @@ describe('display helpers', () => {
   });
 });
 
+describe('issue navigation and preview authority', () => {
+  it('routes scoped issue refs normally and derives preview targets from the same grammar', () => {
+    const href = resourceRefHref('issue:mandible/5096e37');
+    expect(href).toBe('#/issues?issue=5096e37&repo=mandible');
+    const host = document.createElement('div');
+    host.innerHTML = linkifyResourceRefs('<p>[issue:mandible/5096e37]</p>');
+    const anchor = host.querySelector('a')!;
+    expect(anchor.getAttribute('href')).toBe(href);
+    expect(previewableResourceFromAnchor(anchor)).toMatchObject({
+      kind: 'issue', ref: '5096e37', repoId: 'mandible', href,
+    });
+  });
+});
+
 describe('artifact nav hrefs', () => {
   it('builds shareable logical and pinned-version artifact routes', () => {
     expect(seriesDetailHref('artifact:demo')).toBe('#/artifacts?series=artifact%3Ademo');
@@ -268,7 +283,7 @@ describe('unresolved-reference UI + C2 resolver', () => {
 
     expect(issueLink?.textContent).toBe('issue:ceb5963');
     expect(commentLink?.textContent).toBe('comment:ceb5963#c8819b4');
-    expect(issueLink?.getAttribute('href')).toContain(encodeURIComponent(issueRef));
+    expect(issueLink?.getAttribute('href')).toBe(`#/issues?issue=${ISSUE_ID64}`);
     expect(commentLink?.getAttribute('href')).toContain(encodeURIComponent(commentRef));
   });
 });

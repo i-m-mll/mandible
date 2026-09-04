@@ -229,18 +229,9 @@
   overflow: hidden;
 }
 
-/* Let the transcript continue one text line behind the opaque composer rather
- * than stopping noticeably above it. The composer remains the interaction
- * owner and its shadow makes the overlap legible. */
 .conv-detail__footer {
   position: relative;
   z-index: 2;
-  margin-top: -20px;
-  pointer-events: none;
-}
-
-.conv-detail__footer > * {
-  pointer-events: auto;
 }
 
 .conv-detail__shell-header {

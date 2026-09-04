@@ -1,5 +1,10 @@
 import { render } from 'preact';
+import { useState } from 'preact/hooks';
 
+import { DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE } from '../../../src/contracts';
+import { ChatBottomShelf } from '../../../ui/src/chat/ChatBottomShelf';
+import { ChatEntityLinkBoundary } from '../../../ui/src/chat/ChatEntityLinkBoundary';
+import { ChatSurface } from '../../../ui/src/chat/ChatSurface';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { ChatDetailFrame } from '../../../ui/src/views/conversations';
 import { GraphDetailPane } from '../../../ui/src/views/graph';
@@ -12,6 +17,16 @@ type Surface = 'chat' | 'graph' | 'timeline';
 const railModes: RailMode[] = ['expanded', 'icons'];
 const sidebarModes: SidebarMode[] = ['shown', 'hidden'];
 const surfaces: Surface[] = ['chat', 'graph', 'timeline'];
+const chatEvents = Array.from({ length: 30 }, (_, index) => ({
+  type: 'user',
+  uuid: `user-${index}`,
+  session_id: 'geometry-session',
+  parent_tool_use_id: null,
+  message: {
+    role: 'user' as const,
+    content: [{ type: 'text' as const, text: `Rendered transcript row ${index}` }],
+  },
+}));
 
 function ProductionSurface({ surface }: { surface: Surface }): JSX.Element {
   if (surface === 'chat') {
@@ -19,8 +34,17 @@ function ProductionSurface({ surface }: { surface: Surface }): JSX.Element {
       <ChatDetailFrame
         state="no-selection"
         header={<DetailPaneHeader variant="compact" title="Chat" />}
+        footer={{ content: <div className="conv-compose">Composer</div> }}
       >
-        <div className="chat-history-detail__empty">Select a conversation to view it</div>
+        <div className="conv-transcript">
+          <ChatEntityLinkBoundary defaultAction="preview" onPreview={() => undefined}>
+            <ChatSurface
+              events={chatEvents}
+              streaming={false}
+              sessionInfo={{ sessionId: 'geometry-session', backend: 'codex' }}
+            />
+          </ChatEntityLinkBoundary>
+        </div>
       </ChatDetailFrame>
     );
   }
@@ -34,20 +58,38 @@ function ProductionSurface({ surface }: { surface: Surface }): JSX.Element {
   );
 }
 
+function ProductionChatBottomShelf(): JSX.Element {
+  const [preference, setPreference] = useState({ ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE });
+  return (
+    <ChatEntityLinkBoundary defaultAction="preview" onPreview={() => undefined}>
+      <ChatBottomShelf
+        preference={preference}
+        preferenceReady
+        preferenceError={null}
+        providerSessionId={null}
+        conversationId="geometry-conversation"
+        previewTarget={null}
+        onPreferenceChange={setPreference}
+        onClearPreview={() => undefined}
+      />
+    </ChatEntityLinkBoundary>
+  );
+}
+
 function FixtureCase({ rail, sidebar, surface }: {
   rail: RailMode;
   sidebar: SidebarMode;
   surface: Surface;
 }): JSX.Element {
   const sidebarShown = sidebar === 'shown';
-  const panelSurface = surface !== 'chat';
+  const panelSurface = true;
   return (
     <div className="fixture-case" data-rail={rail} data-sidebar={sidebar} data-surface={surface}>
       <div className={`app-shell${sidebarShown ? ' app-shell--view-sidebar-open' : ''}${rail === 'icons' ? ' app-shell--rail-icons' : ''}`}>
         <header className={`app-header${sidebarShown ? '' : ' app-header--sidebar-hidden'}`}>
           <div className="app-header__identity" />
         </header>
-        <div className={`app-layout${sidebarShown ? ' app-layout--view-sidebar-open' : ''}${rail === 'icons' ? ' app-layout--rail-icons' : ''}${panelSurface ? ' app-layout--bottom-panel-open' : ''}`}>
+        <div className={`app-layout app-layout--route-console${sidebarShown ? ' app-layout--view-sidebar-open' : ''}${rail === 'icons' ? ' app-layout--rail-icons' : ''}${panelSurface ? ' app-layout--bottom-panel-open' : ''}`}>
           <aside className="app-rail" />
           <main className="app-content app-content--console app-content--view-sidebar">
             <div className="app-tab-panel">
@@ -64,7 +106,7 @@ function FixtureCase({ rail, sidebar, surface }: {
           {panelSurface ? (
             <aside className="app-bottom-panel">
               <div className="app-bottom-panel__content">
-                <ProductionSurface surface={surface} />
+                {surface === 'chat' ? <ProductionChatBottomShelf /> : <ProductionSurface surface={surface} />}
               </div>
             </aside>
           ) : null}

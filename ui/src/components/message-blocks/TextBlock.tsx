@@ -6,7 +6,7 @@
 
 import { useMemo } from 'preact/hooks';
 import { renderMarkdown } from '../../lib/markdown';
-import { linkifyChatIssueRefs } from '../../chat/chatEntityLinks';
+import { linkifyResourceRefs } from '../../resource-refs';
 import { ProviderDirectiveBlock, splitProviderDirectives } from './ProviderDirectiveBlock';
 
 export type TextBlockProps = {
@@ -25,7 +25,7 @@ export function TextBlock({ content }: TextBlockProps): JSX.Element {
           key={`text-${index}`}
           className="provider-directive__prose"
           // eslint-disable-next-line react/no-danger
-          dangerouslySetInnerHTML={{ __html: linkifyChatIssueRefs(renderMarkdown(segment.content)) }}
+          dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(segment.content)) }}
         />
       ))}
     </div>

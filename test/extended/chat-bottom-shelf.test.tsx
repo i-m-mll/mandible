@@ -10,18 +10,28 @@ import {
 import { normalizeUserSettingValue } from '../../src/user-settings';
 import * as api from '../../ui/src/api';
 import { ChatBottomShelf } from '../../ui/src/chat/ChatBottomShelf';
-import { ChatEntityLinkBoundary } from '../../ui/src/chat/ChatEntityLinkBoundary';
 import {
   chatEntityLinkAction,
-  issuePreviewTargetFromAnchor,
-  linkifyChatIssueRefs,
+  ChatEntityLinkBoundary,
   type ChatPreviewTarget,
-} from '../../ui/src/chat/chatEntityLinks';
+} from '../../ui/src/chat/ChatEntityLinkBoundary';
+import {
+  linkifyResourceRefs,
+  previewableResourceFromAnchor,
+} from '../../ui/src/resource-refs';
 import { useChatBottomShelfPreference } from '../../ui/src/chat/useChatBottomShelfPreference';
+
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left, y: top, left, top, right: left + width, bottom: top + height, width, height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   window.history.replaceState(null, '', '#/');
 });
 
@@ -89,15 +99,22 @@ describe('Chat entity-link actions', () => {
 
   it('routes issue refs through a typed target and makes authored refs actionable', () => {
     const host = document.createElement('div');
-    host.innerHTML = linkifyChatIssueRefs('<p>See [issue:mandible/5096e37].</p>');
+    host.innerHTML = linkifyResourceRefs('<p>See [issue:mandible/5096e37].</p>');
     const anchor = host.querySelector('a')!;
-    expect(anchor.textContent).toBe('mandible/5096e37');
-    expect(issuePreviewTargetFromAnchor(anchor)).toMatchObject({
-      kind: 'issue', ref: '5096e37', repoId: 'mandible', label: 'mandible/5096e37',
+    expect(anchor.textContent).toBe('issue:mandible/5096e37');
+    expect(previewableResourceFromAnchor(anchor)).toMatchObject({
+      kind: 'issue', ref: '5096e37', repoId: 'mandible', label: 'issue:mandible/5096e37',
     });
   });
 
-  it('previews on plain click and exposes both explicit actions by mouse and keyboard', () => {
+  it('previews on plain click and exposes clamped explicit actions with Escape focus restoration', async () => {
+    vi.stubGlobal('innerWidth', 320);
+    vi.stubGlobal('innerHeight', 240);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
+      if (this.getAttribute('role') === 'menu') return domRect(0, 0, 180, 120);
+      if (this.tagName === 'A') return domRect(286, 206, 26, 26);
+      return domRect(0, 0, 0, 0);
+    });
     const preview = vi.fn();
     const open = vi.fn();
     render(
@@ -110,12 +127,47 @@ describe('Chat entity-link actions', () => {
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({ kind: 'issue', ref: '5096e37' }));
 
     fireEvent.contextMenu(link, { clientX: 12, clientY: 18 });
+    const menu = screen.getByRole('menu');
+    await waitFor(() => expect(menu.style.visibility).toBe('visible'));
+    expect(menu.classList.contains('app-anchored-menu')).toBe(true);
+    expect(Number.parseFloat(menu.style.left) + 180).toBeLessThanOrEqual(312);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open normally' }));
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ ref: '5096e37' }));
 
     fireEvent.keyDown(link, { key: 'F10', shiftKey: true });
     expect(screen.getByRole('menuitem', { name: 'Preview in footer' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Open normally' })).toBeTruthy();
+    screen.getByRole('menuitem', { name: 'Preview in footer' }).focus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(link);
+  });
+
+  it('preserves native issue navigation until authenticated preference hydration succeeds', () => {
+    const preview = vi.fn();
+    const open = vi.fn();
+    const { rerender } = render(
+      <ChatEntityLinkBoundary defaultAction={null} onPreview={preview} onOpenNormally={open}>
+        <a href="#/issues?repo=mandible&issue=5096e37">5096e37</a>
+      </ChatEntityLinkBoundary>,
+    );
+    const link = screen.getByRole('link');
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
+    const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    link.dispatchEvent(menu);
+    expect(menu.defaultPrevented).toBe(false);
+    expect(preview).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+
+    rerender(
+      <ChatEntityLinkBoundary defaultAction="preview" onPreview={preview} onOpenNormally={open}>
+        <a href="#/issues?repo=mandible&issue=5096e37">5096e37</a>
+      </ChatEntityLinkBoundary>,
+    );
+    fireEvent.click(screen.getByRole('link'));
+    expect(preview).toHaveBeenCalledOnce();
   });
 });
 
@@ -135,9 +187,13 @@ describe('Chat shelf tabs', () => {
         preferenceReady
         preferenceError={null}
         providerSessionId={null}
+        conversationId="conversation-1"
         previewTarget={target}
         onPreferenceChange={setPreference}
-        onClearPreview={() => setTarget(null)}
+        onClearPreview={() => {
+          setTarget(null);
+          setPreference((current) => ({ ...current, tab: 'overview' }));
+        }}
       />
     );
   }
@@ -163,5 +219,100 @@ describe('Chat shelf tabs', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear preview' }));
     expect(screen.getByRole('tab', { name: 'Session Overview' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.queryByText('Nothing selected for preview.')).toBeNull();
+  });
+
+  it('applies the same two-action boundary to issue links inside embedded Session Overview', async () => {
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
+      provider: null,
+      provider_session_id: 'provider-session-1',
+      truncated: false,
+      matches: [{
+        matched_ref: 'provider-session-1',
+        provider: 'codex',
+        mandible_session_id: null,
+        console_session_id: null,
+        conversation_id: 'conversation-1',
+        sources: ['conversations'],
+      }],
+    });
+    vi.spyOn(api, 'getProviderScopedOverview').mockResolvedValue({
+      as_of: 1,
+      binding: { kind: 'provider-scoped', provider: 'codex', provider_session_id: 'provider-session-1' },
+      session: { available: false, reason: 'not registered' },
+      children: { available: false, reason: 'not registered', items: [], truncated: false, depth_limit: 5, count_limit: 200 },
+      linked_issues: {
+        available: true,
+        source: 'work_units',
+        note: 'derived',
+        items: [{
+          issue_id: '5096e37', short_id: '5096e37', title: 'Chat bottom shelf', status: 'open',
+          worker_status: 'in_progress', kind: 'feature', work_unit_ids: ['work-1'],
+        }],
+      },
+      work_units: { available: true, includes_descendants: false, matched_provider_aliases: [], items: [] },
+      conversations: { available: true, limit: 20, items: [] },
+    });
+    const preview = vi.fn();
+    render(
+      <ChatEntityLinkBoundary defaultAction="preview" onPreview={preview}>
+        <ChatBottomShelf
+          preference={{ ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE }}
+          preferenceReady
+          preferenceError={null}
+          providerSessionId="provider-session-1"
+          conversationId="conversation-1"
+          previewTarget={null}
+          onPreferenceChange={() => undefined}
+          onClearPreview={() => undefined}
+        />
+      </ChatEntityLinkBoundary>,
+    );
+    const issueLink = await screen.findByRole('link', { name: '5096e37' });
+    fireEvent.click(issueLink);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ kind: 'issue', ref: '5096e37' }));
+  });
+
+  it('remounts embedded Session Overview when conversation identity changes', async () => {
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+    vi.spyOn(api, 'resolveAgentSession').mockImplementation(async (providerSessionId) => ({
+      provider: null,
+      provider_session_id: providerSessionId,
+      truncated: false,
+      matches: providerSessionId === 'provider-old' ? [{
+        matched_ref: providerSessionId,
+        provider: 'codex',
+        mandible_session_id: 'mandible-old',
+        console_session_id: null,
+        conversation_id: 'conversation-old',
+        sources: ['sessions', 'conversations'],
+      }] : [],
+    }));
+    vi.spyOn(api, 'getSessionOverview').mockResolvedValue({
+      as_of: 1,
+      session: { id: 'mandible-old', status: 'active', app: 'codex', created_at: 1 },
+      children: { available: true, items: [], truncated: false, depth_limit: 5, count_limit: 200 },
+      linked_issues: { available: true, source: 'ledger_session_issue_links', items: [] },
+      work_units: { available: true, includes_descendants: true, matched_provider_aliases: [], items: [] },
+      conversations: { available: true, limit: 20, items: [] },
+    });
+    const shelf = (conversationId: string, providerSessionId: string) => (
+      <ChatBottomShelf
+        preference={{ ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE }}
+        preferenceReady
+        preferenceError={null}
+        providerSessionId={providerSessionId}
+        conversationId={conversationId}
+        previewTarget={null}
+        onPreferenceChange={() => undefined}
+        onClearPreview={() => undefined}
+      />
+    );
+    const { rerender } = render(shelf('conversation-old', 'provider-old'));
+    expect(await screen.findByText(/Bound to agent session/)).toBeTruthy();
+
+    rerender(shelf('conversation-new', 'provider-new'));
+    expect(screen.queryByText(/Bound to agent session/)).toBeNull();
+    expect(await screen.findByText(/No Mandible session matches agent session/)).toBeTruthy();
   });
 });

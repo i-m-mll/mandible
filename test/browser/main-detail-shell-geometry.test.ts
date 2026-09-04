@@ -9,7 +9,7 @@ type RailMode = 'expanded' | 'icons';
 type SidebarMode = 'shown' | 'hidden';
 type Surface = 'chat' | 'graph' | 'timeline';
 type Geometry = {
-  width: 1280 | 835;
+  width: 1280 | 760;
   rail: RailMode;
   sidebar: SidebarMode;
   surface: Surface;
@@ -23,6 +23,14 @@ type Geometry = {
   footer: Edges | null;
   slots: Array<string | null>;
   productionClass: string | null;
+  bottomPanel: Edges;
+  bottomShell: Edges;
+  transcript: Edges | null;
+  composer: Edges | null;
+  scrollTopBefore: number | null;
+  scrollPreserved: boolean | null;
+  scrollNodeStable: boolean | null;
+  previewSelected: boolean | null;
 };
 
 const chrome = [
@@ -38,6 +46,8 @@ const styles = [
   'ui/src/styles/base.css',
   'ui/src/styles/chat-history.css',
   'ui/src/styles/conversations.css',
+  'ui/src/styles/chat-bottom-shelf.css',
+  'ui/src/styles/console.css',
   'ui/src/styles/detail-pane-shell.css',
   'ui/src/styles/graph.css',
   'ui/src/styles/timeline.css',
@@ -85,7 +95,7 @@ function renderGeometrySuite(): Geometry[] {
     const framePayload = JSON.stringify(frameHtml).replaceAll('<', '\\u003c');
   const html = `<!doctype html><html><body><script>
     const frameHtml = ${framePayload};
-    const widths = [1280, 835];
+    const widths = [1280, 760];
     const results = [];
     const rect = (root, selector) => {
       const node = root.querySelector(selector);
@@ -93,12 +103,23 @@ function renderGeometrySuite(): Geometry[] {
       const bounds = node.getBoundingClientRect();
       return Object.fromEntries(['left','right','top','bottom','width','height'].map((key) => [key, bounds[key]]));
     };
-    const measure = (width, frame) => {
+    const measure = async (width, frame) => {
       const doc = frame.contentDocument;
       for (const root of doc.querySelectorAll('.fixture-case')) {
         const surface = root.dataset.surface;
         const shellRoot = surface === 'chat' ? root.querySelector('.chat-history-detail') : root.querySelector('.app-bottom-panel');
         const shell = shellRoot.querySelector('.detail-pane-shell');
+        const scrollNode = surface === 'chat' ? root.querySelector('.stream-renderer__scroll') : null;
+        if (scrollNode) {
+          scrollNode.scrollTop = Math.min(120, Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight));
+          scrollNode.dispatchEvent(new Event('scroll', { bubbles: true }));
+        }
+        const scrollTopBefore = scrollNode ? scrollNode.scrollTop : null;
+        if (surface === 'chat') {
+          root.querySelector('.app-bottom-panel [role="tab"][aria-controls="chat-shelf-panel-preview"]').click();
+          await Promise.resolve();
+        }
+        const currentScrollNode = surface === 'chat' ? root.querySelector('.stream-renderer__scroll') : null;
         results.push({
           width,
           rail: root.dataset.rail,
@@ -118,6 +139,16 @@ function renderGeometrySuite(): Geometry[] {
             : surface === 'graph'
               ? shell.classList.contains('graph-detail-pane') ? 'graph-detail-pane' : null
               : shell.classList.contains('timeline-inspector') ? 'timeline-inspector' : null,
+          bottomPanel: rect(root, '.app-bottom-panel'),
+          bottomShell: rect(root, '.app-bottom-panel .detail-pane-shell'),
+          transcript: rect(root, '.conv-transcript'),
+          composer: rect(root, '.conv-compose'),
+          scrollTopBefore,
+          scrollPreserved: scrollNode ? currentScrollNode.scrollTop === scrollTopBefore : null,
+          scrollNodeStable: scrollNode ? currentScrollNode === scrollNode : null,
+          previewSelected: surface === 'chat'
+            ? root.querySelector('.app-bottom-panel [role="tab"][aria-controls="chat-shelf-panel-preview"]').getAttribute('aria-selected') === 'true'
+            : null,
         });
       }
       if (results.length === widths.length * 12) document.title = btoa(JSON.stringify(results));
@@ -125,10 +156,10 @@ function renderGeometrySuite(): Geometry[] {
     for (const width of widths) {
       const frame = document.createElement('iframe');
       frame.style.cssText = 'display:block;border:0;width:' + width + 'px;height:1px';
-      frame.addEventListener('load', () => {
+      frame.addEventListener('load', async () => {
         try {
           if (frame.contentDocument.title !== 'ready') throw new Error('fixture runtime did not reach ready');
-          measure(width, frame);
+          await measure(width, frame);
         } catch (error) {
           document.title = 'fixture-error:' + btoa(String(error && error.stack || error));
         }
@@ -180,8 +211,26 @@ describe('production main-detail shell geometry', () => {
       expectSameHorizontalEdges(geometry.body, geometry.main);
       expect(geometry.header?.top).toBe(geometry.shell?.top);
       expect(geometry.body?.top).toBe(geometry.header?.bottom);
-      expect(geometry.footer).toBeNull();
-      expect(geometry.slots).toEqual(['header', 'body', 'overlay-host']);
+      if (geometry.surface === 'chat') {
+        expect(geometry.footer).not.toBeNull();
+        expect(geometry.slots).toEqual(['header', 'body', 'footer', 'overlay-host']);
+        expect(geometry.body?.bottom).toBe(geometry.footer?.top);
+        expect(geometry.transcript?.bottom).toBeLessThanOrEqual(geometry.composer!.top);
+        expect(geometry.scrollTopBefore).toBeGreaterThan(0);
+        expect(geometry.scrollPreserved).toBe(true);
+        expect(geometry.scrollNodeStable).toBe(true);
+        expect(geometry.previewSelected).toBe(true);
+        expect(Math.abs(geometry.main.bottom - geometry.bottomPanel.top)).toBeLessThanOrEqual(1);
+        expect(geometry.bottomPanel).toMatchObject({
+          left: detailLeft,
+          right: geometry.width,
+          width: geometry.width - detailLeft,
+        });
+        expectSameHorizontalEdges(geometry.bottomShell, geometry.bottomPanel);
+      } else {
+        expect(geometry.footer).toBeNull();
+        expect(geometry.slots).toEqual(['header', 'body', 'overlay-host']);
+      }
       const expectedClass = geometry.surface === 'chat'
         ? 'chat-detail-frame'
         : geometry.surface === 'graph' ? 'graph-detail-pane' : 'timeline-inspector';

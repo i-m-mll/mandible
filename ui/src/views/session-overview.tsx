@@ -25,6 +25,7 @@ import {
   type SessionResolveMatch,
 } from '../api';
 import { shortRouteId } from '../routing';
+import { resourceRefHref } from '../resource-refs';
 import type { SessionRecord } from '../types/session';
 
 type BindingState =
@@ -95,10 +96,11 @@ function writeSessionParamToHash(sessionId: string | null): void {
 
 function IssueRow({ issue }: { issue: SessionOverviewLinkedIssue }): JSX.Element {
   const shortId = issue.short_id || issue.issue_id.slice(0, 7);
+  const resourceRef = `issue:${shortId}`;
   return (
     <tr>
       <td>
-        <a href={`#/issues?issue=${encodeURIComponent(shortId)}`}>{shortId}</a>
+        <a data-resource-ref={resourceRef} href={resourceRefHref(resourceRef)}>{shortId}</a>
       </td>
       <td className="session-overview__cell-grow">{issue.title}</td>
       <td>
@@ -207,10 +209,11 @@ function SectionTable({
 
 function ProviderIssueRow({ issue }: { issue: ProviderScopedLinkedIssue }): JSX.Element {
   const shortId = issue.short_id || issue.issue_id.slice(0, 7);
+  const resourceRef = `issue:${shortId}`;
   return (
     <tr>
       <td>
-        <a href={`#/issues?issue=${encodeURIComponent(shortId)}`}>{shortId}</a>
+        <a data-resource-ref={resourceRef} href={resourceRefHref(resourceRef)}>{shortId}</a>
       </td>
       <td className="session-overview__cell-grow">{issue.title}</td>
       <td>

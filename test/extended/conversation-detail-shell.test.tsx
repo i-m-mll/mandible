@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ComponentChildren } from 'preact';
+import { useCallback, useState } from 'preact/hooks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +17,7 @@ import {
   conversationAnchorHref,
   conversationTurnSelectionHref,
   getConversationHeaderProviderLabel,
+  scopeConversationBottomShelf,
 } from '../../ui/src/views/conversations.js';
 
 
@@ -242,6 +245,25 @@ function deferred<T>() {
 }
 
 describe('compact detail pane shell', () => {
+  it('synchronously discards another conversation\'s preview and Preview tab', () => {
+    const target = {
+      kind: 'issue' as const,
+      ref: 'old-issue',
+      href: '#/issues?issue=old-issue',
+      label: 'old-issue',
+    };
+    const scoped = scopeConversationBottomShelf(
+      'conversation-new',
+      { conversationId: 'conversation-old', previewTarget: target, height: 480 },
+      { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
+    );
+    expect(scoped).toEqual({
+      identityChanged: true,
+      state: { conversationId: 'conversation-new', previewTarget: null, height: 340 },
+      preference: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'overview' },
+    });
+  });
+
   it('registers the Chat shelf in the shared main-column boundary without remounting transcript scroll', async () => {
     const scopedConversation = mockConversationDetail(defaultControl);
     let descriptor: AppBottomPanelDescriptor | null = null;
@@ -283,8 +305,72 @@ describe('compact detail pane shell', () => {
     expect(container.querySelector('.stream-renderer__scroll')).toBe(sameScroll);
     expect(sameScroll.scrollTop).toBe(137);
 
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/chat-bottom-shelf.css'), 'utf8');
-    expect(css).toMatch(/\.app-layout--route-console\.app-layout--view-sidebar-open\.app-layout--bottom-panel-open \.chat-history-detail\s*\{[^}]*height:\s*calc\(100% - var\(--app-bottom-panel-active-height\)\);/s);
+  });
+
+  it('preserves the mounted transcript while previewing and atomically persists clear-to-Overview', async () => {
+    const issueBlock = {
+      ...transcriptBlock,
+      content: 'Inspect [issue:5096e37] without leaving Chat.',
+    };
+    const scopedConversation = mockConversationDetail(defaultControl, [issueBlock]);
+    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
+      provider: null,
+      provider_session_id: scopedConversation.session_id,
+      truncated: false,
+      matches: [],
+    });
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+    vi.spyOn(api, 'getLedgerIssueDetailByIssueId').mockImplementation(() => new Promise(() => undefined));
+
+    function MountedShell({ children }: { children: ComponentChildren }): JSX.Element {
+      const [panel, setPanel] = useState<AppBottomPanelDescriptor | null>(null);
+      const registerBottomPanel = useCallback((next: AppBottomPanelDescriptor) => {
+        setPanel(next);
+        return () => setPanel((current) => current?.id === next.id ? null : current);
+      }, []);
+      return (
+        <AppShellProvider value={{
+          bottomPanel: panel,
+          registerBottomPanel,
+          setViewSidebarWidth: () => undefined,
+          viewSidebarWidth: 280,
+          active: true,
+        }}>
+          {children}
+          {panel?.open ? <aside className="app-bottom-panel"><div className="app-bottom-panel__content">{panel.content}</div></aside> : null}
+        </AppShellProvider>
+      );
+    }
+
+    const { container } = render(
+      <MountedShell>
+        <ConversationsView
+          conversations={[scopedConversation]}
+          consoleSessions={[]}
+          initialConversationId={scopedConversation.id}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewSession={() => undefined}
+        />
+      </MountedShell>,
+    );
+    await screen.findByRole('tab', { name: 'Session Overview' });
+    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 137;
+    fireEvent.scroll(scroll);
+
+    fireEvent.click(await screen.findByRole('link', { name: /5096e37/ }));
+    expect((await screen.findByRole('tab', { name: 'Preview' })).getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByLabelText('Loading issue detail')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear preview' }));
+
+    await waitFor(() => {
+      const calls = vi.mocked(api.updateUserChatBottomShelfSetting).mock.calls;
+      expect(calls.at(-1)?.[0]).toMatchObject({ tab: 'overview' });
+    });
+    expect(screen.getByRole('tab', { name: 'Session Overview' }).getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('.stream-renderer__scroll')).toBe(scroll);
+    expect(scroll.scrollTop).toBe(137);
   });
 
   it('routes every Chat detail state through one typed frame construction', () => {
@@ -528,7 +614,8 @@ describe('compact detail pane shell', () => {
     expect(getComputedStyle(shell!).overflow).toBe('clip');
     expect(shell?.classList.contains('chat-detail-frame--conversation')).toBe(true);
     expect(getComputedStyle(body!).position).toBe('relative');
-    expect(conversationCss).toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-20px;/s);
+    expect(conversationCss).not.toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-/s);
+    expect(body?.nextElementSibling).toBe(footer);
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');
     expect(canonicalHeader?.textContent).not.toContain('Conversation');
     expect(canonicalHeader?.textContent).not.toContain('01a01639');
