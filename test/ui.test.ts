@@ -913,35 +913,27 @@ describe('app shell', () => {
     ]);
   }
 
-  it('shows page-local optional left shadow control only for agent_session routes', async () => {
+  it('keeps the page-local left shadow control present but fully inert and hidden', async () => {
     stubAppShellFetch();
     stubEventSource();
     __resetAgentPageBindingForTests();
     window.history.replaceState(null, '', '#/spaces');
 
     const absent = render(h(App, {}));
-    expect(screen.queryByRole('button', { name: 'Toggle optional left shadow' })).toBeNull();
+    expect(absent.container.querySelector('.app-rail__left-shadow-toggle')).toBeNull();
     absent.unmount();
 
     window.history.replaceState(null, '', '#/spaces?agent_session=toggle-session');
     adoptAgentSessionFragment();
     const present = render(h(App, {}));
-    const toggle = screen.getByRole('button', { name: 'Toggle optional left shadow' });
+    const toggle = present.container.querySelector<HTMLButtonElement>('.app-rail__left-shadow-toggle');
     const shell = present.container.querySelector('.app-shell');
-    const shellInlineGeometry = shell?.getAttribute('style');
 
-    expect(toggle.tagName).toBe('BUTTON');
-    expect(toggle.getAttribute('type')).toBe('button');
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(false);
-
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(shell?.classList.contains('app-shell--left-shadow')).toBe(true);
-    expect(shell?.getAttribute('style')).toBe(shellInlineGeometry);
-
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle?.tagName).toBe('BUTTON');
+    expect(toggle?.getAttribute('type')).toBe('button');
+    expect(toggle?.getAttribute('aria-hidden')).toBe('true');
+    expect(toggle?.tabIndex).toBe(-1);
+    expect(toggle?.disabled).toBe(true);
     expect(shell?.classList.contains('app-shell--left-shadow')).toBe(false);
 
     fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
@@ -952,8 +944,8 @@ describe('app shell', () => {
 
     present.unmount();
     const remounted = render(h(App, {}));
-    expect(screen.getByRole('button', { name: 'Toggle optional left shadow' })
-      .getAttribute('aria-pressed')).toBe('false');
+    expect(remounted.container.querySelector<HTMLButtonElement>('.app-rail__left-shadow-toggle')
+      ?.disabled).toBe(true);
     remounted.unmount();
     __resetAgentPageBindingForTests();
   });
@@ -1850,8 +1842,8 @@ describe('app shell', () => {
     expect(header?.querySelector('.app-header__route')).toBeNull();
     expect(sidebarControls?.parentElement).toBe(footer);
     expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
-    expect(screen.queryByLabelText(/^App theme:/)).toBeNull();
-    expect(container.querySelector('.app-rail__theme-toggle')).toBeNull();
+    expect(screen.getByLabelText(/^App theme:/)).toBeTruthy();
+    expect(container.querySelector('.app-rail__theme-toggle')).toBeTruthy();
 
     fireEvent.click(reveal);
 
@@ -2338,6 +2330,19 @@ describe('SettingsView', () => {
       changeSelect(themeSelect, mode);
       await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('app_theme', mode));
     }
+
+    const lightTerminal = screen.getByRole('combobox', { name: 'Light-mode terminal' });
+    const darkTerminal = screen.getByRole('combobox', { name: 'Dark-mode terminal' });
+    expect(within(lightTerminal).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Mandible', 'GitHub', 'Solarized', 'One', 'High contrast',
+    ]);
+    expect(within(darkTerminal).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Mandible', 'GitHub', 'Solarized', 'One', 'High contrast',
+    ]);
+    changeSelect(lightTerminal, 'solarized');
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('terminal_theme_light', 'solarized'));
+    changeSelect(darkTerminal, 'one');
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('terminal_theme_dark', 'one'));
   });
 
   it('disables App theme without saving when operational mutations are rejected', () => {
@@ -2351,6 +2356,10 @@ describe('SettingsView', () => {
 
     const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
     expect((themeSelect as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole('combobox', { name: 'Light-mode terminal' }) as HTMLSelectElement).disabled)
+      .toBe(true);
+    expect((screen.getByRole('combobox', { name: 'Dark-mode terminal' }) as HTMLSelectElement).disabled)
+      .toBe(true);
     changeSelect(themeSelect, 'dark');
     expect(onSave).not.toHaveBeenCalled();
   });

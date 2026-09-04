@@ -153,7 +153,7 @@ describe('conversation sidebar groups', () => {
     expect(screen.queryByRole('button', { name: 'Add Project' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
     expect(document.querySelector('#chat-projects-body')?.contains(emptyState)).toBe(true);
-    expect(screen.queryByText('No chats')).toBeNull();
+    expect(screen.getByText('No chats')).toBeTruthy();
   });
 
   it('sends bounded deduplicated full canonical project ids on the wire', async () => {
@@ -321,6 +321,9 @@ describe('conversation sidebar groups', () => {
 
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
     fireEvent.click(await screen.findByRole('button', { name: 'Add project' }));
+    expect(within(screen.getByRole('combobox', { name: 'Registered project' })).getAllByRole('option'))
+      .toHaveLength(canonicalProjects.length);
+    expect(screen.queryByText(/mandible-alt|worktrees|\/repos\//i)).toBeNull();
     fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
@@ -332,15 +335,12 @@ describe('conversation sidebar groups', () => {
     expect(requests).toContainEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
     expect(onNewSession).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
-    fireEvent.input(screen.getByRole('combobox', { name: 'Registered project' }), { target: { value: 'prj-mandible:checkout-mandible-alt' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
     fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible-alt' }));
+    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible' }));
     await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith(
-      [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible-alt' }],
+      [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
       expect.any(Number),
     ));
   });

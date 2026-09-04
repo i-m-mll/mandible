@@ -61,6 +61,9 @@ export type ViewSidebarProps = {
   /** Optional class added to the shared scroll-owner body wrapper. */
   bodyClassName?: string;
 
+  /** Shared content treatment for form/control sidebars with an even inset. */
+  contentLayout?: 'inset-controls';
+
   /**
    * Wrap headerless content in the shared scroll-owner body. Use this when the
    * resize rail must remain outside the vertical scroll container but the view
@@ -105,7 +108,11 @@ export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
 
   const Frame = props.as ?? 'aside';
   const cls = props.className ? `view-sidebar ${props.className}` : 'view-sidebar';
-  const bodyCls = props.bodyClassName ? `view-sidebar__body ${props.bodyClassName}` : 'view-sidebar__body';
+  const bodyCls = [
+    'view-sidebar__body',
+    props.contentLayout ? `view-sidebar__body--${props.contentLayout}` : '',
+    props.bodyClassName ?? '',
+  ].filter(Boolean).join(' ');
   const footerCls = props.footerClassName ? `view-sidebar__footer ${props.footerClassName}` : 'view-sidebar__footer';
   const style = shellControlled
     ? { width: 'var(--app-view-sidebar-width)', flexShrink: 0 }
@@ -131,7 +138,7 @@ export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
         onMouseDown={handleMouseDown}
         onKeyDown={handleKeyDown}
       />
-      {props.header !== undefined || props.scrollBody ? (
+      {props.header !== undefined || props.scrollBody || props.contentLayout ? (
         <>
           {props.header !== undefined ? (
             <div className="view-sidebar__header">{props.header}</div>

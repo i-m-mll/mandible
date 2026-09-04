@@ -385,6 +385,15 @@ a {
   white-space: nowrap;
 }
 
+.app-right-sidebar__panel-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--text-primary);
+}
+
 .app-right-sidebar__tabs {
   overflow-x: auto;
 }
@@ -494,7 +503,8 @@ a {
   border-radius: 50%;
   background: transparent;
   transform: translateX(-50%);
-  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .app-rail__left-shadow-toggle[aria-pressed='true'] {
@@ -1099,6 +1109,15 @@ a {
   min-height: 0;
   overflow-y: auto;
   background: inherit;
+}
+
+.view-sidebar__body--inset-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 14px;
+  box-sizing: border-box;
 }
 
 .view-sidebar__footer {

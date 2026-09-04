@@ -420,6 +420,16 @@
   padding: 20px 24px 24px;
 }
 
+.auth-detail__body--console {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.auth-detail__body--console > :is(.auth-failure, .auth-yubikey-warning) {
+  margin: 14px 20px 0;
+}
+
 .auth-detail__body .auth-failure,
 .auth-detail__body .auth-yubikey-warning {
   margin: 0;
@@ -1590,16 +1600,17 @@
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
-  color: #d4d4d4;
+  color: var(--terminal-fg);
+  background: var(--terminal-bg);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .auth-detail__console-view {
+  flex: 1;
   min-height: 100%;
-  border-radius: 8px;
   overflow: auto;
-  background: #1a1a2e;
+  background: var(--terminal-bg);
 }
 
 .auth-detail__console-empty {

@@ -5,9 +5,8 @@ import { getProjectTimeline } from '../api';
 import { useAppShell, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { ViewSidebar } from '../components/ViewSidebar';
-import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { PreviewIcon } from '../components/icons/TabIcons';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -104,15 +103,9 @@ export type TimelineViewProps = {
 
 export function TimelineInspectorFrame({ children }: { children: ComponentChildren }): JSX.Element {
   return (
-    <DetailPaneShell
-      as="section"
-      variant="compact"
-      className="timeline-inspector"
-      bodyClassName="timeline-inspector__body"
-      header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}
-    >
+    <section className="timeline-inspector">
       {children}
-    </DetailPaneShell>
+    </section>
   );
 }
 
@@ -1773,7 +1766,8 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const inspectorDescriptor = useMemo(() => ({
     id: 'timeline-inspector',
     kind: 'panel' as const,
-    title: 'inspector',
+    title: 'Timeline inspector',
+    icon: <PreviewIcon size={18} />,
     ariaLabel: 'Timeline inspector',
     open: inspectorSidebar.open,
     width: inspectorSidebar.width,

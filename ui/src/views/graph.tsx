@@ -36,6 +36,7 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { shortRouteId } from '../routing';
+import { PreviewIcon } from '../components/icons/TabIcons';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -1115,6 +1116,7 @@ export function GraphView({
     id: 'graph-detail',
     kind: 'panel' as const,
     title: 'Graph detail',
+    icon: <PreviewIcon size={18} />,
     ariaLabel: 'Graph detail',
     open: detailPanelOpen,
     width: detailPanelState.width,
@@ -1170,6 +1172,7 @@ export function GraphView({
         {...VIEW_SIDEBAR_GEOMETRY.graph}
         ariaLabel="Graph controls"
         className="graph-sidebar"
+        contentLayout="inset-controls"
       >
             <div className="graph-spec-row graph-spec-row--scope">
               <span className="graph-spec-row__label">Scope</span>

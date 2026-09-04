@@ -106,7 +106,12 @@ import {
 } from './state';
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
 import type { BugRef, ConsoleSession, ConsoleSessionPayload } from './state';
-import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
+import {
+  normalizeAppThemeMode,
+  normalizeTerminalThemeId,
+  resolveAppThemeMode,
+  resolveTerminalTheme,
+} from './theme';
 import {
   readInitialViewSidebarWidths,
   viewSidebarGeometryForRoute,
@@ -124,6 +129,9 @@ import {
   LogsIcon,
   ProjectsIcon,
   SessionOverviewIcon,
+  DarkThemeIcon,
+  LightThemeIcon,
+  SystemThemeIcon,
 } from './components/icons/TabIcons';
 import {
   adoptAgentSessionFragment,
@@ -363,17 +371,26 @@ function writeSpacesLastView(view: SpacesLastView): void {
   }
 }
 
-function updateRootAppTheme(modeValue: string | undefined): () => void {
+function updateRootAppTheme(settings: Record<string, string>): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return () => undefined;
   }
-  const mode = normalizeAppThemeMode(modeValue);
+  const mode = normalizeAppThemeMode(settings.app_theme);
   const query = window.matchMedia('(prefers-color-scheme: dark)');
   const metaThemeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   const apply = () => {
     const resolvedTheme = resolveAppThemeMode(mode, query.matches);
+    const terminalThemeId = normalizeTerminalThemeId(
+      settings[resolvedTheme === 'dark' ? 'terminal_theme_dark' : 'terminal_theme_light'],
+    );
+    const terminalTheme = resolveTerminalTheme(resolvedTheme, terminalThemeId);
     document.documentElement.dataset.themeMode = mode;
     document.documentElement.dataset.theme = resolvedTheme;
+    document.documentElement.dataset.terminalTheme = terminalThemeId;
+    document.documentElement.style.setProperty('--terminal-bg', terminalTheme.background);
+    document.documentElement.style.setProperty('--terminal-fg', terminalTheme.foreground);
+    document.documentElement.style.setProperty('--terminal-cursor', terminalTheme.cursor);
+    document.documentElement.style.setProperty('--terminal-selection-bg', terminalTheme.selectionBackground);
     if (metaThemeColor) {
       metaThemeColor.content = THEME_COLOR_BY_RESOLVED_THEME[resolvedTheme];
     }
@@ -637,7 +654,7 @@ function App(): JSX.Element {
   // this page lifetime (never localStorage), so concurrent tabs cannot share
   // either identity or optional chrome state.
   const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
-  const [leftShadowEnabled, setLeftShadowEnabled] = useState(false);
+  const leftShadowEnabled = false;
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
@@ -710,7 +727,7 @@ function App(): JSX.Element {
     return () => query.removeEventListener('change', update);
   }, []);
 
-  useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
+  useEffect(() => updateRootAppTheme(state.settings), [state.settings]);
 
   useEffect(() => {
     const tab = route.tab;
@@ -2347,6 +2364,15 @@ function App(): JSX.Element {
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
+  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
+  const nextAppThemeMode = appThemeMode === 'system' ? 'light' : appThemeMode === 'light' ? 'dark' : 'system';
+  const appThemeLabel = appThemeMode === 'system' ? 'System' : appThemeMode === 'light' ? 'Light' : 'Dark';
+  const nextAppThemeLabel = nextAppThemeMode === 'system' ? 'System' : nextAppThemeMode === 'light' ? 'Light' : 'Dark';
+  const appThemeIcon = appThemeMode === 'system'
+    ? <SystemThemeIcon size={18} />
+    : appThemeMode === 'light'
+      ? <LightThemeIcon size={18} />
+      : <DarkThemeIcon size={18} />;
   useLayoutEffect(() => {
     if (!rightSidebarFocusTransferRef.current) return;
     rightSidebarFocusTransferRef.current = false;
@@ -2490,9 +2516,9 @@ function App(): JSX.Element {
                   <button
                     type="button"
                     className="app-rail__left-shadow-toggle"
-                    aria-label="Toggle optional left shadow"
-                    aria-pressed={leftShadowEnabled}
-                    onClick={() => setLeftShadowEnabled((enabled) => !enabled)}
+                    aria-hidden="true"
+                    tabIndex={-1}
+                    disabled
                   />
                 ) : null}
               </nav>
@@ -2515,6 +2541,21 @@ function App(): JSX.Element {
                     </button>
                   </div>
                 ) : null}
+                <button
+                  type="button"
+                  className="app-rail__item app-rail__theme-toggle"
+                  aria-label={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
+                  title={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
+                  disabled={previewMutationsRejected}
+                  onClick={() => {
+                    if (previewMutationsRejected) return;
+                    void handleSettingsSave('app_theme', nextAppThemeMode);
+                  }}
+                >
+                  <span className="app-rail__icon">{appThemeIcon}</span>
+                  {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeLabel}</span>}
+                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">App theme: {appThemeLabel}</span>}
+                </button>
                 <DesktopLoginStatus
                   placement="rail"
                   showRailLabel={railDisplayMode === 'both'}

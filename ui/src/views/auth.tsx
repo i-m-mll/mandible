@@ -998,7 +998,7 @@ function AuthRequestDetail({
       headerClassName="auth-detail__header"
       headerPrimaryClassName="auth-detail__header-primary"
       subheaderClassName="auth-detail__aux-header"
-      bodyClassName="auth-detail__body"
+      bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
       headerRef={headerRef}
       subheader={subheader}
       overlays={overlays}

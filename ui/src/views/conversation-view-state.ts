@@ -65,6 +65,21 @@ function checkoutPreference(project: CanonicalProject, checkout: CanonicalProjec
   return score;
 }
 
+/**
+ * A canonical project is one sidebar choice. Its checkout is launch context,
+ * not project identity, so choose one stable checkout without exposing every
+ * worktree as a separate project option.
+ */
+export function preferredProjectCheckout(
+  project: CanonicalProject,
+): CanonicalProjectCheckout | null {
+  return [...project.checkouts].sort((left, right) => (
+    checkoutPreference(project, right) - checkoutPreference(project, left)
+    || left.root.localeCompare(right.root)
+    || left.id.localeCompare(right.id)
+  ))[0] ?? null;
+}
+
 /** Preserve project visibility when only the selected checkout has churned. */
 export function reconcileShownProjects(
   shownProjects: readonly ShownChatProject[],
@@ -76,11 +91,7 @@ export function reconcileShownProjects(
     if (!project || project.checkouts.length === 0) return [];
     const exact = project.checkouts.find((checkout) => checkout.id === shown.checkoutId);
     if (exact) return [shown];
-    const fallback = [...project.checkouts].sort((left, right) => (
-      checkoutPreference(project, right) - checkoutPreference(project, left)
-      || left.root.localeCompare(right.root)
-      || left.id.localeCompare(right.id)
-    ))[0];
+    const fallback = preferredProjectCheckout(project);
     return fallback ? [{ projectId: project.id, checkoutId: fallback.id }] : [];
   });
 }
