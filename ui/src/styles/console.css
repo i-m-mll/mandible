@@ -739,7 +739,7 @@ select.new-session-dialog__input {
   color: #72d08f;
 }
 
-/* Bug: 6634023 — Rich view horizontal wrapper: main content + optional sidebar */
+/* Rich view content is the main pane; app-shell detail uses the shared sidebar. */
 .terminal-pane__rich-wrapper {
   flex: 1;
   display: flex;
@@ -756,107 +756,12 @@ select.new-session-dialog__input {
   min-height: 0;
 }
 
-/* Collapsed sidebar toggle button */
-.terminal-pane__sidebar-toggle {
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  z-index: 2;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-
-.terminal-pane__sidebar-toggle:is(:hover, :focus-visible) {
-  background: var(--neutral-alpha-06);
-  color: var(--chrome-icon-hover-direct);
-}
-
-/* Expanded sidebar panel */
-.terminal-pane__sidebar {
-  width: 280px;
-  flex-shrink: 0;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.terminal-pane__sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-}
-
-/* Bug: 60b1fd7 — Sidebar tab bar */
-.terminal-pane__sidebar-tabs {
-  display: flex;
-  gap: 2px;
-}
-
-.terminal-pane__sidebar-tab {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.terminal-pane__sidebar-tab:hover {
-  color: var(--fg-default);
-  background: var(--neutral-alpha-04);
-}
-
-.terminal-pane__sidebar-tab--active {
-  color: var(--fg-default);
-  font-weight: 600;
-  background: var(--neutral-alpha-06);
-}
-
-.terminal-pane__sidebar-close {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-
-.terminal-pane__sidebar-close:is(:hover, :focus-visible) {
-  background: var(--neutral-alpha-06);
-  color: var(--chrome-icon-hover-direct);
-}
-
 /* Bug: 60b1fd7 — MessageInfoPanel styles */
 .message-info-panel {
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow-y: auto;
   flex: 1;
 }
 

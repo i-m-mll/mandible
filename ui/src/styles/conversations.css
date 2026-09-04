@@ -379,6 +379,7 @@
 }
 
 .conv-compose {
+  container-type: inline-size;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -510,39 +511,40 @@
 }
 
 .conv-compose__runtime {
-  justify-content: space-between;
+  justify-content: flex-end;
   width: 100%;
 }
 
 .conv-compose__runtime-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  width: 100%;
 }
 
-.conv-compose__runtime-leading {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+.conv-compose__runtime-actions > * {
+  flex: 0 0 auto;
 }
 
-.conv-compose__model,
-.conv-compose__effort,
-.conv-compose__permission {
-  min-width: 120px;
-  max-width: 220px;
-  min-height: 30px;
+.conv-compose__run-options {
+  width: min(360px, calc(100vw - 16px));
+  padding: 14px;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-soft);
 }
 
-.conv-compose__effort,
-.conv-compose__permission {
-  min-width: 108px;
+.conv-compose__run-options > .session-controls__field + .session-controls__field,
+.conv-compose__run-options > .session-controls {
+  margin-top: 12px;
 }
 
-.conv-compose__controls {
-  border-top: 1px solid var(--neutral-alpha-06);
-  padding-top: 8px;
+@container (max-width: 260px) {
+  .conv-compose__run-options-trigger {
+    padding-inline: 7px;
+  }
 }
 
 /* Filter bar in detail view */
@@ -1312,4 +1314,22 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
+}
+.chat-right-sidebar__content {
+  --chat-content-inline-inset: 18px;
+  min-height: 100%;
+  padding: 16px var(--chat-content-inline-inset);
+}
+
+.chat-right-sidebar__empty {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.chat-right-sidebar__preview {
+  min-height: 100%;
 }

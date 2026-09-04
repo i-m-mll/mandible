@@ -1,6 +1,6 @@
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 
 import {
   acknowledgeInboxItem,
@@ -78,9 +78,10 @@ import {
 } from './routing';
 import {
   AppShellProvider,
-  BottomPanelIcon,
+  AppRightSidebarSurface,
+  AppRightSidebarToggleButton,
   ViewSidebarIcon,
-  type AppBottomPanelDescriptor,
+  type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from './app-shell';
 import type { AuthRequest } from './views/auth';
@@ -246,8 +247,9 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
 };
 
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
-  bottomPanel: null,
-  registerBottomPanel: () => () => undefined,
+  rightSidebar: null,
+  registerRightSidebar: () => () => undefined,
+  updateRightSidebar: () => undefined,
   setViewSidebarWidth: () => undefined,
   // Keep keep-alive route sidebars in controlled mode while hidden so they
   // cannot republish a stale local hook value over the active route's storage.
@@ -284,10 +286,6 @@ function readBootInstanceInfo(): InstanceInfo | null {
   } catch {
     return null;
   }
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }
 
 function getRepoId(repo: WorkRepo): string {
@@ -636,7 +634,11 @@ function App(): JSX.Element {
   const [leftShadowEnabled, setLeftShadowEnabled] = useState(false);
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
-  const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
+  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const rightSidebarOwnerRef = useRef<string | null>(null);
+  const [narrowRightSidebar, setNarrowRightSidebar] = useState(false);
+  const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
+  const rightSidebarFocusTransferRef = useRef(false);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
   const lastDashboardSseAtRef = useRef(0);
   // Current shared-SSE connection state, updated from onState, so the fallback
@@ -651,11 +653,17 @@ function App(): JSX.Element {
   routeTabRef.current = route.tab;
   const loadVisibleRouteDataRef = useRef<(tab: Route['tab']) => void>(() => undefined);
 
-  const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
-    setBottomPanel(descriptor);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    rightSidebarOwnerRef.current = ownerId;
     return () => {
-      setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
+      if (rightSidebarOwnerRef.current !== ownerId) return;
+      rightSidebarOwnerRef.current = null;
+      setRightSidebar((current) => (current?.id === ownerId ? null : current));
     };
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+    if (rightSidebarOwnerRef.current !== ownerId) return;
+    setRightSidebar((current) => current === descriptor ? current : descriptor);
   }, []);
 
   const viewSidebarGeometry = viewSidebarGeometryForRoute(route.tab);
@@ -674,12 +682,21 @@ function App(): JSX.Element {
   }, [route.tab, viewSidebarGeometry]);
 
   const appShellContext = useMemo<AppShellContextValue>(() => ({
-    bottomPanel,
-    registerBottomPanel,
+    rightSidebar,
+    registerRightSidebar,
+    updateRightSidebar,
     setViewSidebarWidth,
     viewSidebarWidth,
     active: true,
-  }), [bottomPanel, registerBottomPanel, setViewSidebarWidth, viewSidebarWidth]);
+  }), [rightSidebar, registerRightSidebar, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 760px)');
+    const update = () => setNarrowRightSidebar(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
@@ -2312,39 +2329,22 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const bottomPanelAvailable = Boolean(bottomPanel?.content);
-  const bottomPanelOpen = Boolean(bottomPanelAvailable && bottomPanel?.open);
+  const rightSidebarAvailable = rightSidebar !== null;
+  const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
-  const bottomPanelToggleLabel = bottomPanel
-    ? bottomPanel.open
-      ? `Collapse ${bottomPanel.title}`
-      : `Show ${bottomPanel.title}`
-    : 'Show detail panel';
-  const startBottomPanelResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
-    if (!bottomPanel) {
-      return;
-    }
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = bottomPanel.height;
-    const minHeight = bottomPanel.minHeight ?? 220;
-    const maxHeight = bottomPanel.maxHeight ?? 520;
-    const handleMove = (moveEvent: MouseEvent) => {
-      const viewportMax = Math.floor(window.innerHeight * 0.55);
-      const nextHeight = clamp(startHeight + startY - moveEvent.clientY, minHeight, Math.min(maxHeight, viewportMax));
-      bottomPanel.onHeightChange(nextHeight);
-    };
-    const handleUp = () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
-  }, [bottomPanel]);
-
+  const setRightSidebarOpen = useCallback((open: boolean) => {
+    if (!rightSidebar || rightSidebar.open === open) return;
+    rightSidebarFocusTransferRef.current = true;
+    rightSidebar.onOpenChange(open);
+  }, [rightSidebar]);
+  useLayoutEffect(() => {
+    if (!rightSidebarFocusTransferRef.current) return;
+    rightSidebarFocusTransferRef.current = false;
+    rightSidebarToggleRef.current?.focus({ preventScroll: true });
+  }, [rightSidebarOpen]);
   const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
     if (!visitedTabs.has(tab)) return null;
     const active = route.tab === tab;
@@ -2423,6 +2423,7 @@ function App(): JSX.Element {
         className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
         data-app-surface="chrome"
         data-tauri-drag-region
+        inert={narrowRightSidebar && rightSidebarOpen ? true : undefined}
       >
         <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
           <span className="app-header__mark" aria-hidden="true">
@@ -2440,12 +2441,12 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
-          style={bottomPanelOpen && bottomPanel ? {
-            '--app-bottom-panel-height': `${bottomPanel.height}px`,
+          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          style={rightSidebarOpen && rightSidebar ? {
+            '--app-right-sidebar-width': `${rightSidebar.width}px`,
           } as JSX.CSSProperties : undefined}
         >
-          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region>
+          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region inert={narrowRightSidebar && rightSidebarOpen ? true : undefined}>
               <nav
                 ref={railNavRef}
                 className="app-rail__nav"
@@ -2481,22 +2482,6 @@ function App(): JSX.Element {
                 ) : null}
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
-                {bottomPanelAvailable ? (
-                  <button
-                    type="button"
-                    className={`app-rail__item app-rail__bottom-panel-toggle${bottomPanelOpen ? ' app-rail__item--active' : ''}`}
-                    onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
-                    aria-label={bottomPanelToggleLabel}
-                    aria-pressed={bottomPanelOpen}
-                    title={bottomPanelToggleLabel}
-                  >
-                    <span className="app-rail__icon">
-                      <BottomPanelIcon open={bottomPanelOpen} />
-                    </span>
-                    {railDisplayMode === 'both' && <span className="app-rail__label">{bottomPanel?.title}</span>}
-                    {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{bottomPanelToggleLabel}</span>}
-                  </button>
-                ) : null}
                 {viewSidebarAvailable ? (
                   <div className="app-rail__sidebar-controls">
                     <button
@@ -2532,7 +2517,17 @@ function App(): JSX.Element {
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
+          inert={narrowRightSidebar && rightSidebarOpen ? true : undefined}
         >
+        {rightSidebarAvailable && !rightSidebarOpen ? (
+          <AppRightSidebarToggleButton
+            descriptor={rightSidebar!}
+            buttonRef={rightSidebarToggleRef}
+            open={false}
+            onOpenChange={setRightSidebarOpen}
+            className="app-content__right-sidebar-toggle"
+          />
+        ) : null}
         {renderTabPanel('auth', (() => {
           const tabRoute = routeForTab('auth', route, tabRouteSnapshots);
           return (
@@ -2623,6 +2618,7 @@ function App(): JSX.Element {
               initialSessionId={tabRoute.params.session ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               sidebarGroupLimit={normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit'])}
+              chatEntityLinkAction={state.settings.chat_entity_link_action === 'open' ? 'open' : 'preview'}
               instance={instanceInfo}
               onSelectSession={handleConsoleSelectSession}
               onNewSession={handleConsoleNewSession}
@@ -2707,23 +2703,12 @@ function App(): JSX.Element {
           );
         })())}
         </main>
-          {bottomPanelOpen && bottomPanel ? (
-            <aside
-              className="app-bottom-panel"
-              aria-label={bottomPanel.ariaLabel}
-              style={{ height: `${bottomPanel.height}px` }}
-            >
-              <div
-                className="app-bottom-panel__resize"
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label={`Resize ${bottomPanel.title}`}
-                onMouseDown={startBottomPanelResize}
-              />
-              <div className="app-bottom-panel__content">
-                {bottomPanel.content}
-              </div>
-            </aside>
+          {rightSidebarOpen && rightSidebar ? (
+            <AppRightSidebarSurface
+              descriptor={rightSidebar}
+              toggleRef={rightSidebarToggleRef}
+              onOpenChange={setRightSidebarOpen}
+            />
           ) : null}
         </div>
       </AppShellProvider>

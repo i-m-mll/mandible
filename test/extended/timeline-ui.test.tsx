@@ -1,13 +1,13 @@
 import { render, screen, waitFor, cleanup, fireEvent, within, act } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import { readFileSync } from 'node:fs';
 
 import { parseRouteFromHash } from '../../ui/src/routing';
 import {
   AppShellProvider,
-  type AppBottomPanelDescriptor,
+  type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from '../../ui/src/app-shell';
 import { TimelineView as RawTimelineView, type TimelineViewProps } from '../../ui/src/views/timeline';
@@ -321,38 +321,43 @@ function stubTimelineFetchResolver(
 }
 
 function TimelineView({ active = true, ...props }: TimelineViewProps & { active?: boolean }): JSX.Element {
-  const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
-  const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
-    setBottomPanel(descriptor);
-    return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
+  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const ownerRef = useRef<string | null>(null);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    ownerRef.current = ownerId;
+    return () => setRightSidebar((current) => (current?.id === ownerId ? null : current));
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+    if (ownerRef.current === ownerId) setRightSidebar(descriptor);
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
     active,
-    bottomPanel,
-    registerBottomPanel,
+    rightSidebar,
+    registerRightSidebar,
+    updateRightSidebar,
     setViewSidebarWidth: () => undefined,
-  }), [active, bottomPanel, registerBottomPanel]);
-  const toggleLabel = bottomPanel?.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel?.title ?? 'inspector'}`;
+  }), [active, rightSidebar, registerRightSidebar, updateRightSidebar]);
+  const toggleLabel = rightSidebar?.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar?.title ?? 'inspector'}`;
 
   return (
     <AppShellProvider value={shell}>
       <div className="app-header">
-        {bottomPanel?.content ? (
+        {rightSidebar?.content ? (
           <button
             type="button"
             aria-label={toggleLabel}
-            onClick={() => bottomPanel.onOpenChange(!bottomPanel.open)}
+            onClick={() => rightSidebar.onOpenChange(!rightSidebar.open)}
           />
         ) : null}
       </div>
       <RawTimelineView {...props} />
-      {bottomPanel?.open && bottomPanel.content ? (
+      {rightSidebar?.open && rightSidebar.content ? (
         <aside
-          className="app-bottom-panel"
-          aria-label={bottomPanel.ariaLabel}
+          className="app-right-sidebar"
+          aria-label={rightSidebar.ariaLabel}
         >
-          <div className="app-bottom-panel__content">
-            {bottomPanel.content}
+          <div className="app-right-sidebar__content">
+            {rightSidebar.content}
           </div>
         </aside>
       ) : null}
@@ -1094,7 +1099,7 @@ describe('TimelineView', () => {
     expect(fetchMock.mock.calls.length).toBe(1);
 
     const inspector = screen.getByLabelText('Timeline inspector');
-    expect(inspector.className).toBe('app-bottom-panel');
+    expect(inspector.className).toBe('app-right-sidebar');
     expect(inspector.querySelector('.timeline-inspector.detail-pane-shell')).toBeTruthy();
     expect(inspector.querySelector('[data-detail-pane-header-variant="compact"]')?.textContent)
       .toContain('Timeline inspector');
@@ -1106,7 +1111,8 @@ describe('TimelineView', () => {
       const state = JSON.parse(String(stored));
       expect(state.timeWindow.from).toBeGreaterThan(Date.UTC(2026, 0, 1) - 12 * 60 * 60 * 1000);
       expect(state.timeWindow.to).toBeLessThan(Date.UTC(2026, 0, 2));
-      expect(state.panes.inspector).toBe(false);
+      expect(window.localStorage.getItem('mandible_app_right_sidebar:timeline:mandible:v1'))
+        .toBe(JSON.stringify({ open: false, width: 350 }));
     });
   });
 

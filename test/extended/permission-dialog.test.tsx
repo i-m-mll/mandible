@@ -17,8 +17,8 @@ const request: ConsolePermissionRequest = {
 function shell(active: boolean): AppShellContextValue {
   return {
     active,
-    bottomPanel: null,
-    registerBottomPanel: () => () => undefined,
+    rightSidebar: null,
+    registerRightSidebar: () => () => undefined,
     setViewSidebarWidth: () => undefined,
   };
 }

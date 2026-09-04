@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
   appReducer,
@@ -49,9 +49,9 @@ import {
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import {
   AppShellProvider,
-  BottomPanelIcon,
-  useRegisterAppBottomPanel,
-  type AppBottomPanelDescriptor,
+  RightSidebarIcon,
+  useRegisterAppRightSidebar,
+  type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
@@ -854,53 +854,59 @@ describe('App routing', () => {
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {
-    const descriptor = useMemo<AppBottomPanelDescriptor>(() => ({
+    const descriptor = useMemo<AppRightSidebarDescriptor>(() => ({
       id: 'test-panel',
+      kind: 'panel',
       title: 'inspector',
       ariaLabel: 'Test inspector',
       open: true,
-      height: 360,
+      width: 360,
       onOpenChange: () => undefined,
-      onHeightChange: () => undefined,
+      onWidthChange: () => undefined,
       content: h('div', {}, 'Inspector content'),
     }), []);
 
-    useRegisterAppBottomPanel(descriptor);
+    useRegisterAppRightSidebar(descriptor);
     return h('main', {}, 'Workspace');
   }
 
   function ShellProbe(): JSX.Element {
-    const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
-    const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
-      setBottomPanel(descriptor);
-      return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
+    const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+    const ownerRef = useRef<string | null>(null);
+    const registerRightSidebar = useCallback((ownerId: string) => {
+      ownerRef.current = ownerId;
+      return () => setRightSidebar((current) => (current?.id === ownerId ? null : current));
+    }, []);
+    const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+      if (ownerRef.current === ownerId) setRightSidebar(descriptor);
     }, []);
     const shell = useMemo<AppShellContextValue>(() => ({
-      bottomPanel,
-      registerBottomPanel,
+      rightSidebar,
+      registerRightSidebar,
+      updateRightSidebar,
       setViewSidebarWidth: () => undefined,
       active: true,
-    }), [bottomPanel, registerBottomPanel]);
+    }), [rightSidebar, registerRightSidebar, updateRightSidebar]);
 
     return h(AppShellProvider, { value: shell }, [
       h('header', { className: 'app-header' }, [
         h('span', { className: 'app-header__brand-text' }, 'Mandible'),
         h('span', { className: 'app-header__route' }, 'Timeline'),
-        bottomPanel?.content
+        rightSidebar?.content
           ? h('button', {
             type: 'button',
-            'aria-label': bottomPanel.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel.title}`,
-            onClick: () => setBottomPanel({
-              ...bottomPanel,
-              open: !bottomPanel.open,
+            'aria-label': rightSidebar.open ? `Hide ${rightSidebar.ariaLabel}` : `Show ${rightSidebar.ariaLabel}`,
+            onClick: () => setRightSidebar({
+              ...rightSidebar,
+              open: !rightSidebar.open,
             }),
-          }, h(BottomPanelIcon, { open: bottomPanel.open }))
+          }, h(RightSidebarIcon, {}))
           : null,
       ]),
       h(RegisteredSidebar, {}),
-      bottomPanel?.open && bottomPanel.content
-        ? h('aside', { className: 'app-bottom-panel', 'aria-label': bottomPanel.ariaLabel }, [
-          h('div', { className: 'app-bottom-panel__content' }, bottomPanel.content),
+      rightSidebar?.open && rightSidebar.content
+        ? h('aside', { className: 'app-right-sidebar', 'aria-label': rightSidebar.ariaLabel }, [
+          h('div', { className: 'app-right-sidebar__content' }, rightSidebar.content),
         ])
         : null,
     ]);
@@ -951,17 +957,17 @@ describe('app shell', () => {
     __resetAgentPageBindingForTests();
   });
 
-  it('renders shared header identity, route title, and registered bottom panel toggle', async () => {
+  it('renders shared header identity, route title, and registered right sidebar toggle', async () => {
     render(h(ShellProbe, {}));
 
     expect(screen.getByText('Mandible')).toBeTruthy();
     expect(screen.getByText('Timeline')).toBeTruthy();
-    await waitFor(() => expect(screen.getByLabelText('Collapse inspector')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Hide Test inspector')).toBeTruthy());
     expect(screen.getByLabelText('Test inspector')).toBeTruthy();
     expect(screen.getByText('Inspector content')).toBeTruthy();
 
-    fireEvent.click(screen.getByLabelText('Collapse inspector'));
-    expect(screen.getByLabelText('Show inspector')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Hide Test inspector'));
+    expect(screen.getByLabelText('Show Test inspector')).toBeTruthy();
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
@@ -2031,7 +2037,7 @@ describe('app shell', () => {
     expect(window.location.hash).toBe('#/inbox');
   });
 
-  it('renders Graph bottom detail without a registration loop', async () => {
+  it('renders Graph detail in the shared right sidebar without a registration loop', async () => {
     stubEventSource();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
@@ -2063,26 +2069,34 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
-    expect(screen.getByLabelText('Collapse Graph detail').closest('.app-rail__footer')).toBeTruthy();
+    await waitFor(() => expect(screen.getByLabelText('Hide Graph detail')).toBeTruthy());
+    const hideToggle = screen.getByLabelText('Hide Graph detail');
+    expect(hideToggle.closest('.app-right-sidebar__header')).toBeTruthy();
+    expect(hideToggle.getAttribute('aria-pressed')).toBe('true');
     const graphDetail = screen.getByLabelText('Graph detail');
-    expect(graphDetail.className).toBe('app-bottom-panel');
-    expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy();
+    expect(graphDetail.className).toBe('app-right-sidebar');
+    await waitFor(() => expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy());
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
       .toBeLessThan(5);
+    fireEvent.click(hideToggle);
+    await waitFor(() => expect(screen.getByLabelText('Show Graph detail')).toBeTruthy());
+    const showToggle = screen.getByLabelText('Show Graph detail');
+    expect(showToggle.closest('main')).toBeTruthy();
+    expect(showToggle.getAttribute('aria-pressed')).toBe('false');
+    expect(document.activeElement).toBe(showToggle);
   });
 
   // Issue 80ced49 regression guard. GraphView used to build its pending-payload
   // placeholder as a fresh object literal on every render, so `payload.nodes` and
   // `payload.edges` changed identity each pass. That invalidated the memoized
-  // bottom-panel descriptor, re-ran the registration effect, wrote app shell
+  // right-sidebar descriptor, re-ran the registration effect, wrote app shell
   // state, and re-rendered the view — an unbounded synchronous render loop that
   // hung the whole test file. This probe re-renders GraphView while the graph
   // request is still pending and records every registration, so a regression
   // fails on the count instead of spinning forever (the shell probe deliberately
   // holds no state, so the loop cannot self-sustain here).
-  it('registers one stable Graph bottom panel descriptor while the payload is pending', async () => {
+  it('registers one stable Graph right sidebar descriptor while the payload is pending', async () => {
     stubEventSource();
     // The pending-payload path is only exercised when no cached graph detail is
     // available, so drop anything an earlier test persisted.
@@ -2097,23 +2111,28 @@ describe('app shell', () => {
       }));
     }));
 
-    const registrations: AppBottomPanelDescriptor[] = [];
+    const registrations: string[] = [];
+    const updates: AppRightSidebarDescriptor[] = [];
     const navigate = (): void => undefined;
     let rerenderProbe: (() => void) | null = null;
 
     function PendingGraphProbe(): JSX.Element {
       const [, setTick] = useState(0);
       rerenderProbe = () => setTick((value) => value + 1);
-      const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
-        registrations.push(descriptor);
+      const registerRightSidebar = useCallback((ownerId: string) => {
+        registrations.push(ownerId);
         return () => undefined;
       }, []);
+      const updateRightSidebar = useCallback((_ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+        updates.push(descriptor);
+      }, []);
       const shell = useMemo<AppShellContextValue>(() => ({
-        bottomPanel: null,
-        registerBottomPanel,
+        rightSidebar: null,
+        registerRightSidebar,
+        updateRightSidebar,
         setViewSidebarWidth: () => undefined,
         active: true,
-      }), [registerBottomPanel]);
+      }), [registerRightSidebar, updateRightSidebar]);
 
       return h(AppShellProvider, { value: shell }, h(GraphView, {
         onNavigate: navigate,
@@ -2124,8 +2143,8 @@ describe('app shell', () => {
     render(h(PendingGraphProbe, {}));
 
     await waitFor(() => expect(registrations.length).toBeGreaterThan(0));
-    expect(registrations[0]).not.toHaveProperty('layout');
-    expect(registrations[0]?.content).toBeNull();
+    expect(updates[0]).not.toHaveProperty('layout');
+    expect(updates[0]?.content).toBeNull();
 
     for (let pass = 0; pass < 5; pass += 1) {
       // eslint-disable-next-line no-await-in-loop
@@ -2182,10 +2201,10 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
+    await waitFor(() => expect(
+      within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'alpha' }),
+    ).toBeTruthy());
     const graphPanel = screen.getByLabelText('Graph detail');
-    expect(within(graphPanel).getByRole('heading', { name: 'alpha' }))
-      .toBeTruthy();
     const detailShell = graphPanel.querySelector('.detail-pane-shell');
     expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
       .toEqual(['header', 'body', 'overlay-host']);
@@ -4793,7 +4812,7 @@ describe('LedgerIssueDetail', () => {
     expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*--detail-content-inline-inset:\s*24px;/s);
     expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--detail-content-inline-inset\);/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail > \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
-    expect(css).toMatch(/\.app-bottom-panel \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
+    expect(css).toMatch(/\.app-right-sidebar \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
     expect(css).toMatch(/\.graph-detail-pane--ledger \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
   });
 

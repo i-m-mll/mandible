@@ -141,8 +141,11 @@ describe('conversation sidebar groups', () => {
 
     const emptyState = await screen.findByText('No projects included');
     expect(emptyState.classList.contains('chat-projects-empty')).toBe(true);
+    expect(emptyState.textContent).toBe('No projects included');
+    expect(emptyState.getAttribute('role')).toBeNull();
     expect(chatHistoryStylesheet).toMatch(/\.chat-projects-empty\s*\{[^}]*color:\s*var\(--text-disabled\)/s);
     expect(screen.queryByText(/available/i)).toBeNull();
+    expect(screen.queryByText(/\d+ available/i)).toBeNull();
     expect(screen.queryByText(/shared host preference/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add Project' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();

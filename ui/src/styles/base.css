@@ -100,12 +100,46 @@ a {
   z-index: 60;
 }
 
+.app-right-sidebar-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.app-right-sidebar-toggle:is(:hover, :focus-visible),
+.app-right-sidebar-toggle[aria-pressed='true'] {
+  background: var(--neutral-alpha-06);
+  color: var(--text-primary);
+}
+
+.app-right-sidebar-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.app-content__right-sidebar-toggle {
+  position: absolute;
+  z-index: 8;
+  top: 7px;
+  right: 8px;
+}
+
 .app-shell--view-sidebar-open .app-header {
   width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }
 
+
 /* One app-shell boundary owns the complete chrome/main edge. It is independent
- * of header, ViewSidebar, detail, and bottom-panel heights, so its divider and
+ * of header, ViewSidebar, detail, and right-sidebar dimensions, so its divider and
  * falloff remain continuous for the entire viewport. Its transparent paint
  * modulates the chrome and its semantic hairlines without affecting layout. */
 .app-shell::after {
@@ -283,27 +317,6 @@ a {
   overflow: visible;
 }
 
-.app-layout--bottom-panel-open {
-  --app-bottom-panel-active-height: var(--app-bottom-panel-height, 340px);
-  grid-template-rows: minmax(0, 1fr) var(--app-bottom-panel-height, 340px);
-}
-
-/* In split views the bottom detail belongs only to the main pane. Overlay it
- * there so its height never shortens the independent left ViewSidebar. */
-.app-layout--view-sidebar-open.app-layout--bottom-panel-open {
-  grid-template-rows: minmax(0, 1fr);
-}
-
-.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel {
-  position: absolute;
-  left: var(--app-view-sidebar-outer-width);
-  right: 0;
-  bottom: 0;
-  height: var(--app-bottom-panel-active-height);
-  margin-left: 0;
-  z-index: 3;
-}
-
 .app-layout--view-sidebar-open .app-rail {
   box-shadow: none;
 }
@@ -312,36 +325,108 @@ a {
   box-shadow: none;
 }
 
-.app-layout--bottom-panel-open .app-rail {
-  box-shadow: none;
+.app-layout--right-sidebar-open {
+  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width)) minmax(0, 1fr) var(--app-right-sidebar-width, 360px);
 }
 
-.app-bottom-panel {
-  grid-column: 2;
-  grid-row: 2;
+.app-layout--view-sidebar-open.app-layout--right-sidebar-open {
+  grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-width)) minmax(0, 1fr) var(--app-right-sidebar-width, 360px);
+}
+
+.app-right-sidebar {
+  grid-column: 3;
+  grid-row: 1;
   position: relative;
   min-width: 0;
   min-height: 0;
+  display: grid;
+  grid-template-rows: var(--app-header-height) minmax(0, 1fr);
   overflow: hidden;
-  border-top: 1px solid var(--border-muted);
+  border-left: 1px solid var(--border-muted);
   background: var(--surface-main);
   box-shadow: none;
+  z-index: 61;
 }
 
-.app-bottom-panel__resize {
+.app-right-sidebar__resize {
   position: absolute;
-  top: -5px;
-  left: 0;
-  right: 0;
-  z-index: 2;
-  height: 10px;
-  cursor: row-resize;
+  inset: 0 auto 0 -5px;
+  z-index: 3;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
 }
 
-.app-bottom-panel__content {
-  height: 100%;
+.app-right-sidebar__resize:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.app-right-sidebar__header {
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--neutral-alpha-06);
+  background: var(--surface-header);
+}
+
+.app-right-sidebar__toggle {
+  margin-left: auto;
+}
+
+.app-right-sidebar__header h2 {
+  min-width: 0;
+  margin: 0;
   overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-right-sidebar__tabs {
+  align-self: stretch;
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.app-right-sidebar__tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: var(--app-header-height);
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.app-right-sidebar__tabs button[aria-selected='true'] {
+  border-bottom-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
+.app-right-sidebar__body,
+.app-right-sidebar__body > [role='tabpanel'] {
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-right-sidebar__body {
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.app-right-sidebar__body > [role='tabpanel'] {
+  min-height: 100%;
 }
 
 @media (max-width: 800px) {
@@ -361,14 +446,27 @@ a {
     margin-left: 0;
   }
 
-  .app-layout--bottom-panel-open {
-    --app-bottom-panel-active-height: min(var(--app-bottom-panel-height, 340px), 42vh);
-    grid-template-rows: minmax(0, 1fr) min(var(--app-bottom-panel-height, 340px), 42vh);
+}
+
+@media (max-width: 760px) {
+  .app-layout--right-sidebar-open,
+  .app-layout--view-sidebar-open.app-layout--right-sidebar-open {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .app-bottom-panel__resize {
-    top: 0;
-    height: 8px;
+  .app-layout--right-sidebar-open > :is(.app-rail, .app-content) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .app-right-sidebar {
+    grid-column: 1;
+    width: 100%;
+    border-left: 0;
+  }
+
+  .app-right-sidebar__resize {
+    display: none;
   }
 }
 

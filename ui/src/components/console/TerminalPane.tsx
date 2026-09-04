@@ -1,7 +1,7 @@
 // Bug: b949700 — Console tab: xterm.js terminal pane with WebSocket PTY and SSE stream events
 // Bug: 1d286c1 — console tab overhaul: reconnect, overlay, SSE events, xterm rendering
 import type { JSX } from 'preact/jsx-runtime';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleSession } from '../../state';
 import type { StreamEvent } from '../stream-renderer/types';
 import { ChannelEventsPane } from './ChannelEventsPane';
@@ -17,7 +17,18 @@ import { submitConversationControl } from '../../api';
 import type { ConsolePermissionDecision, ConversationControlApiError, ConversationControlSnapshot } from '../../api';
 import type { ComposerUsage } from './Composer';
 import { conversationControlPresentation } from '../../chat/conversationControl';
+import { useRegisterAppRightSidebar } from '../../app-shell';
+import { useAppRightSidebarState } from '../../right-sidebar-state';
+import { SessionControls } from './SessionControls';
+import { MessageInfoPanel } from './MessageInfoPanel';
 
+function SettingsTabIcon(): JSX.Element {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg>;
+}
+
+function InfoTabIcon(): JSX.Element {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg>;
+}
 export type ViewMode = 'terminal' | 'rich' | 'events';
 type ActiveSubagent = {
   agent_id: string;
@@ -250,9 +261,7 @@ export function TerminalPane({
     handlePermissionResponse,
   } = usePermissionQueue({ backendType, sessionId });
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
-  // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  // Bug: 60b1fd7 — Sidebar tab state: settings vs info panel
+  const [sidebarState, updateSidebarState] = useAppRightSidebarState(`console:${sessionId}`, { open: false, width: 360 });
   const [sidebarTab, setSidebarTab] = useState<'settings' | 'info'>('settings');
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   // Bug: b5e1c51 — Unseen channel event badge tracking
@@ -271,7 +280,7 @@ export function TerminalPane({
   }, [viewMode, channelEventCount]);
 
   const providerFamily = isOperator ? 'claude' : command;
-  const availableTools = collectAvailableTools(streamEvents);
+  const availableTools = useMemo(() => collectAvailableTools(streamEvents), [streamEvents]);
   const composerUsage = collectComposerUsage(streamEvents);
   const transportLabel = transportBadge?.label ?? transportLane ?? backendType;
   const transportTitle = transportBadge?.title;
@@ -316,9 +325,40 @@ export function TerminalPane({
       return;
     }
     setSelectedMessageId(turnId);
-    setSidebarOpen(true);
+    updateSidebarState({ open: true });
     setSidebarTab('info');
   };
+
+  const sidebarDescriptor = useMemo(() => isVisible && viewMode === 'rich' ? ({
+    id: `console-session-${sessionId}`,
+    kind: 'tabs' as const,
+    ariaLabel: 'Console session sidebar',
+    open: sidebarState.open,
+    width: sidebarState.width,
+    minWidth: 300,
+    maxWidth: 680,
+    onOpenChange: (open: boolean) => updateSidebarState({ open }),
+    onWidthChange: (width: number) => updateSidebarState({ width }),
+    activeTab: sidebarTab,
+    onActiveTabChange: (tab: string) => setSidebarTab(tab === 'info' ? 'info' : 'settings'),
+    tabs: [
+      {
+        id: 'settings',
+        label: 'Session Settings',
+        tooltip: 'Session Settings',
+        icon: <SettingsTabIcon />,
+        content: <SessionControls sessionId={sessionId} allowedTools={optimisticAllowedTools} availableTools={availableTools} onModelSaved={setModel} hideModel={backendType === 'sdk'} />,
+      },
+      {
+        id: 'info',
+        label: 'Message Info',
+        tooltip: 'Message Info',
+        icon: <InfoTabIcon />,
+        content: <MessageInfoPanel selectedMessageId={selectedMessageId} streamEvents={streamEvents} />,
+      },
+    ],
+  }) : null, [availableTools, backendType, isVisible, optimisticAllowedTools, selectedMessageId, sessionId, sidebarState, sidebarTab, streamEvents, updateSidebarState, viewMode]);
+  useRegisterAppRightSidebar(sidebarDescriptor);
 
   const controlPresentation = conversationControl
     ? conversationControlPresentation(conversationControl)
@@ -400,7 +440,6 @@ export function TerminalPane({
         unseenEventCount={unseenEventCount}
         workspaceMode={workspaceMode}
         providerSessionId={providerSessionId}
-        onSidebarToggle={() => setSidebarOpen((prev) => !prev)}
       />
 
       {interactionMode === 'inbox_only' && (
@@ -464,7 +503,6 @@ export function TerminalPane({
             providerFamily={providerFamily}
             model={model}
             allowedTools={optimisticAllowedTools}
-            availableTools={availableTools}
             permissionRequest={permissionRequest}
             onPermissionRespond={handleRichPermissionResponse}
             selectedMessageId={selectedMessageId}
@@ -483,11 +521,7 @@ export function TerminalPane({
             onPromptSubmit={handlePromptSubmit}
             onQueuedPromptRemove={() => {}}
             onStop={() => {}}
-            sidebarOpen={sidebarOpen}
-            workspaceMode={workspaceMode}
-            sidebarTab={sidebarTab}
-            onSidebarTabChange={setSidebarTab}
-            onSidebarOpenChange={setSidebarOpen}
+            onOpenSettings={() => { setSidebarTab('settings'); updateSidebarState({ open: true }); }}
           />
         )}
       </div>

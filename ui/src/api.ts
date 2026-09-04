@@ -1,4 +1,4 @@
-import { LIST_ENVELOPE_KEYS, parseChatBottomShelfPreference } from '../../src/contracts';
+import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
@@ -75,7 +75,6 @@ import type {
   SeedSpaceRequest,
   SeedSpaceResult,
   ResolverResult,
-  ChatBottomShelfPreference,
 } from '../../src/contracts';
 export type {
   Space,
@@ -286,11 +285,13 @@ const DEFAULT_HEADERS = {
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -312,14 +313,16 @@ async function apiGet(path: string, init: RequestInit = {}): Promise<Response> {
 
 async function throwOnError(response: Response, method: string, path: string): Promise<never> {
   let message = `${method} ${path} failed: ${response.status}`;
+  let code: string | null = null;
   try {
-    const body = await response.json() as { error?: string; message?: string };
-    if (body.error) message = body.error;
-    else if (body.message) message = body.message;
+    const body = await response.json() as { code?: string; error?: string; message?: string };
+    code = body.code ?? body.error ?? null;
+    if (body.message) message = body.message;
+    else if (body.error) message = body.error;
   } catch {
     // keep the generic message when the server did not return JSON
   }
-  throw new ApiError(message, response.status);
+  throw new ApiError(message, response.status, code);
 }
 
 
@@ -1801,54 +1804,8 @@ export async function updateUserTypographySetting(
 }
 
 export type {
-  ChatBottomShelfPreference,
-  ChatBottomShelfTab,
   ChatEntityClickAction,
 } from '../../src/contracts';
-
-export type UserChatBottomShelfSetting = {
-  version: 1;
-  key: 'chat_bottom_shelf';
-  value: ChatBottomShelfPreference | null;
-  revision: number;
-};
-
-function parseUserChatBottomShelfSetting(payload: unknown): UserChatBottomShelfSetting {
-  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? payload as Record<string, unknown>
-    : null;
-  const parsedValue = typeof record?.value === 'string'
-    ? (() => {
-      try { return parseChatBottomShelfPreference(JSON.parse(record.value)); }
-      catch { return null; }
-    })()
-    : null;
-  if (
-    record?.version !== 1
-    || record.key !== 'chat_bottom_shelf'
-    || (record.value !== null && parsedValue === null)
-    || !Number.isSafeInteger(record.revision)
-    || (record.revision as number) < 0
-  ) throw new Error('Invalid authenticated Chat bottom shelf response');
-  return {
-    version: 1,
-    key: 'chat_bottom_shelf',
-    value: parsedValue,
-    revision: record.revision as number,
-  };
-}
-
-export async function getUserChatBottomShelfSetting(): Promise<UserChatBottomShelfSetting> {
-  const response = await apiGet('/api/user-settings/chat_bottom_shelf');
-  return parseUserChatBottomShelfSetting(await parseMaybeJson(response));
-}
-
-export async function updateUserChatBottomShelfSetting(
-  value: ChatBottomShelfPreference,
-): Promise<UserChatBottomShelfSetting> {
-  const response = await apiPut('/api/user-settings/chat_bottom_shelf', { value: JSON.stringify(value) });
-  return parseUserChatBottomShelfSetting(await parseMaybeJson(response));
-}
 
 export type ChatShownProjectPreferenceValue = {
   projectId: string;

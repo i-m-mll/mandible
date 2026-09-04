@@ -1,23 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
-import { useCallback, useState } from 'preact/hooks';
+import { useCallback, useRef, useState } from 'preact/hooks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
-import { AppShellProvider, type AppBottomPanelDescriptor } from '../../ui/src/app-shell.js';
-import { DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE } from '../../src/contracts.js';
+import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
   conversationAnchorFromHash,
   conversationAnchorHref,
+  conversationLoadFailure,
   conversationTurnSelectionHref,
   getConversationHeaderProviderLabel,
-  scopeConversationBottomShelf,
+  scopeConversationRightSidebar,
 } from '../../ui/src/views/conversations.js';
 
 
@@ -52,15 +52,6 @@ beforeEach(() => {
   });
   vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
     version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
-  }));
-  vi.spyOn(api, 'getUserChatBottomShelfSetting').mockResolvedValue({
-    version: 1,
-    key: 'chat_bottom_shelf',
-    value: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE },
-    revision: 1,
-  });
-  vi.spyOn(api, 'updateUserChatBottomShelfSetting').mockImplementation(async (value) => ({
-    version: 1, key: 'chat_bottom_shelf', value, revision: 2,
   }));
 });
 
@@ -244,27 +235,47 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function MountedBottomPanelShell({ children }: { children: ComponentChildren }): JSX.Element {
-  const [panel, setPanel] = useState<AppBottomPanelDescriptor | null>(null);
-  const registerBottomPanel = useCallback((next: AppBottomPanelDescriptor) => {
-    setPanel(next);
-    return () => setPanel((current) => current?.id === next.id ? null : current);
+function MountedRightSidebarShell({ children }: { children: ComponentChildren }): JSX.Element {
+  const [sidebar, setSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const ownerRef = useRef<string | null>(null);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    ownerRef.current = ownerId;
+    return () => {
+      if (ownerRef.current === ownerId) ownerRef.current = null;
+      setSidebar((current) => current?.id === ownerId ? null : current);
+    };
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, next: AppRightSidebarDescriptor) => {
+    if (ownerRef.current === ownerId) setSidebar(next);
   }, []);
   return (
-    <AppShellProvider value={{
-      bottomPanel: panel,
-      registerBottomPanel,
-      setViewSidebarWidth: () => undefined,
-      viewSidebarWidth: 280,
-      active: true,
-    }}>
+    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
       {children}
-      {panel?.open ? <aside className="app-bottom-panel"><div className="app-bottom-panel__content">{panel.content}</div></aside> : null}
+      {sidebar?.open && sidebar.kind === 'tabs' ? (
+        <aside aria-label={sidebar.ariaLabel}>
+          {sidebar.tabs.map((tab) => (
+            <button key={tab.id} type="button" role="tab" aria-label={tab.label} title={tab.tooltip} aria-selected={sidebar.activeTab === tab.id} onClick={() => sidebar.onActiveTabChange(tab.id)}>{tab.icon}</button>
+          ))}
+          {sidebar.tabs.find((tab) => tab.id === sidebar.activeTab)?.content}
+        </aside>
+      ) : null}
     </AppShellProvider>
   );
 }
 
 describe('compact detail pane shell', () => {
+  it('separates deterministic title-authority gaps from transient failures', () => {
+    const missing = conversationLoadFailure(new api.ApiError('raw code', 409, 'provider_metadata_missing'), true);
+    expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false, titleAuthorityDegraded: true });
+    expect(missing.message).toContain('Transcript loaded');
+    expect(missing.message).toContain('Retrying will not recreate');
+    expect(missing.message).not.toContain('raw code');
+
+    const unavailable = conversationLoadFailure(new api.ApiError('temporary', 503, 'provider_metadata_unavailable'), true);
+    expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true, titleAuthorityDegraded: true });
+    expect(unavailable.message).toContain('transcript is unchanged');
+  });
+
   it('synchronously discards another conversation\'s preview and Preview tab', () => {
     const target = {
       kind: 'issue' as const,
@@ -272,173 +283,36 @@ describe('compact detail pane shell', () => {
       href: '#/issues?issue=old-issue',
       label: 'old-issue',
     };
-    const scoped = scopeConversationBottomShelf(
+    const scoped = scopeConversationRightSidebar(
       'conversation-new',
-      { conversationId: 'conversation-old', previewTarget: target, height: 480 },
-      { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
-      'conversation-old',
+      { conversationId: 'conversation-old', previewTarget: target, tab: 'preview' },
     );
-    expect(scoped).toEqual({
-      state: { conversationId: 'conversation-new', previewTarget: null, height: 340 },
-      preference: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'overview' },
-      viewIdentityChanged: true,
-      preferenceIdentityChanged: true,
-    });
+    expect(scoped).toEqual({ conversationId: 'conversation-new', previewTarget: null, tab: 'overview' });
   });
 
-  it('rejects persisted Preview when hydration finishes after switching conversations', async () => {
-    const first = mockConversationDetail(defaultControl);
-    const second = {
-      ...first,
-      id: '01a01639-6146-77c1-8616-6878ae755368',
-      session_id: 'session-detail-shell-new',
-      title: 'New conversation',
-    };
-    const hydration = deferred<Awaited<ReturnType<typeof api.getUserChatBottomShelfSetting>>>();
-    vi.mocked(api.getUserChatBottomShelfSetting).mockReturnValue(hydration.promise);
-    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
-      const selected = id === second.id ? second : first;
-      const block = { ...transcriptBlock, id: `block-${id}`, conversation_id: id };
-      return positionPayload(selected, [block]);
-    });
-    vi.mocked(api.getConversationControl).mockImplementation(async (id) => ({
-      ...defaultControl,
-      conversation_id: id,
-      provider_session_id: id === second.id ? second.session_id : first.session_id,
-    }));
-    const resolveAgentSession = vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
-      provider: null,
-      provider_session_id: second.session_id,
-      truncated: false,
-      matches: [],
-    });
-    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
-
-    const view = (initialConversationId: string) => (
-      <MountedBottomPanelShell>
-        <ConversationsView
-          conversations={[first, second]}
-          consoleSessions={[]}
-          initialConversationId={initialConversationId}
-          initialSessionId={null}
-          onSelectSession={() => undefined}
-          onNewSession={() => undefined}
-        />
-      </MountedBottomPanelShell>
-    );
-    const { rerender } = render(view(first.id));
-    await screen.findByText('Preserve the whole conversation export.');
-    rerender(view(second.id));
-    await waitFor(() => expect(vi.mocked(api.getConversationWindow)).toHaveBeenCalledWith(
-      second.id,
-      expect.anything(),
-    ));
-
-    hydration.resolve({
-      version: 1,
-      key: 'chat_bottom_shelf',
-      value: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE, tab: 'preview' },
-      revision: 2,
-    });
-
-    expect((await screen.findByRole('tab', { name: 'Session Overview' })).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByRole('tab', { name: 'Preview' }).getAttribute('aria-selected')).toBe('false');
-    expect(screen.queryByText('Nothing selected for preview.')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Clear preview' })).toBeNull();
-    await waitFor(() => expect(resolveAgentSession).toHaveBeenCalledWith(second.session_id));
-    expect(resolveAgentSession).not.toHaveBeenCalledWith(first.session_id);
-    await waitFor(() => expect(api.updateUserChatBottomShelfSetting).toHaveBeenCalledWith(
-      expect.objectContaining({ tab: 'overview' }),
-    ));
-  });
-
-  it('registers the Chat shelf in the shared main-column boundary without remounting transcript scroll', async () => {
-    const scopedConversation = mockConversationDetail(defaultControl);
-    let descriptor: AppBottomPanelDescriptor | null = null;
-    const registerBottomPanel = (next: AppBottomPanelDescriptor) => {
-      descriptor = next;
-      return () => { if (descriptor?.id === next.id) descriptor = null; };
-    };
-    const { container } = render(
-      <AppShellProvider value={{
-        bottomPanel: null,
-        registerBottomPanel,
-        setViewSidebarWidth: () => undefined,
-        viewSidebarWidth: 280,
-        active: true,
-      }}>
-        <ConversationsView
-          conversations={[scopedConversation]}
-          consoleSessions={[]}
-          initialConversationId={scopedConversation.id}
-          initialSessionId={null}
-          onSelectSession={() => undefined}
-          onNewSession={() => undefined}
-        />
-      </AppShellProvider>,
-    );
-
-    await waitFor(() => expect(descriptor?.id).toBe('chat-bottom-shelf'));
-    expect(descriptor).toMatchObject({
-      title: 'Chat shelf',
-      ariaLabel: 'Chat bottom shelf',
-      open: true,
-    });
-    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    scroll.scrollTop = 137;
-    fireEvent.scroll(scroll);
-    const sameScroll = scroll;
-    descriptor!.onOpenChange(false);
-    await waitFor(() => expect(api.updateUserChatBottomShelfSetting).toHaveBeenCalled());
-    expect(container.querySelector('.stream-renderer__scroll')).toBe(sameScroll);
-    expect(sameScroll.scrollTop).toBe(137);
-
-  });
-
-  it('preserves the mounted transcript while previewing and atomically persists clear-to-Overview', async () => {
-    const issueBlock = {
-      ...transcriptBlock,
-      content: 'Inspect [issue:5096e37] without leaving Chat.',
-    };
+  it('registers Chat tabs and previews issue links without remounting the transcript', async () => {
+    const issueBlock = { ...transcriptBlock, content: 'Inspect [issue:5096e37] here.' };
     const scopedConversation = mockConversationDetail(defaultControl, [issueBlock]);
-    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({
-      provider: null,
-      provider_session_id: scopedConversation.session_id,
-      truncated: false,
-      matches: [],
-    });
+    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
     vi.spyOn(api, 'getSessions').mockResolvedValue([]);
     vi.spyOn(api, 'getLedgerIssueDetailByIssueId').mockImplementation(() => new Promise(() => undefined));
-
     const { container } = render(
-      <MountedBottomPanelShell>
+      <MountedRightSidebarShell>
         <ConversationsView
-          conversations={[scopedConversation]}
           consoleSessions={[]}
           initialConversationId={scopedConversation.id}
           initialSessionId={null}
           onSelectSession={() => undefined}
           onNewSession={() => undefined}
         />
-      </MountedBottomPanelShell>,
+      </MountedRightSidebarShell>,
     );
-    await screen.findByRole('tab', { name: 'Session Overview' });
+    const overview = await screen.findByRole('tab', { name: 'Session Overview' });
+    expect(overview.getAttribute('aria-selected')).toBe('true');
     const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    scroll.scrollTop = 137;
-    fireEvent.scroll(scroll);
-
     fireEvent.click(await screen.findByRole('link', { name: /5096e37/ }));
     expect((await screen.findByRole('tab', { name: 'Preview' })).getAttribute('aria-selected')).toBe('true');
-    expect(await screen.findByLabelText('Loading issue detail')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Clear preview' }));
-
-    await waitFor(() => {
-      const calls = vi.mocked(api.updateUserChatBottomShelfSetting).mock.calls;
-      expect(calls.at(-1)?.[0]).toMatchObject({ tab: 'overview' });
-    });
-    expect(screen.getByRole('tab', { name: 'Session Overview' }).getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.stream-renderer__scroll')).toBe(scroll);
-    expect(scroll.scrollTop).toBe(137);
   });
 
   it('routes every Chat detail state through one typed frame construction', () => {
@@ -712,12 +586,11 @@ describe('compact detail pane shell', () => {
     expect(body?.querySelector('.context-usage')).toBeNull();
     expect(shell?.querySelectorAll('.context-usage')).toHaveLength(1);
     const runtime = footer?.querySelector('.conv-compose__runtime');
-    const runtimeLeading = runtime?.firstElementChild;
-    const runtimeActions = runtime?.lastElementChild;
-    expect(runtimeLeading?.classList.contains('conv-compose__runtime-leading')).toBe(true);
+    const runtimeActions = runtime?.firstElementChild;
     expect(runtimeActions?.classList.contains('conv-compose__runtime-actions')).toBe(true);
-    expect(runtimeActions?.firstElementChild?.classList.contains('context-usage')).toBe(true);
-    expect(runtimeActions?.querySelector('.conv-compose__model')).toBe(screen.getByRole('combobox', { name: 'Model' }));
+    const runOptions = await screen.findByRole('button', { name: 'Run options' });
+    expect(runtimeActions?.firstElementChild).toBe(runOptions);
+    expect(runtimeActions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(runtimeActions?.lastElementChild?.classList.contains('conv-compose__send')).toBe(true);
     expect(footer?.querySelector('.conv-compose__hint')).toBeNull();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
@@ -744,6 +617,8 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(footer?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
+    fireEvent.click(runOptions);
+    expect(screen.getByRole('dialog', { name: 'Run options' })).toBeTruthy();
     const modelSelect = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
     expect(modelSelect.title).toBe('Model');
@@ -759,7 +634,7 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
-  it('places provider-neutral permission and effort controls around the composer runtime actions', async () => {
+  it('puts every provider-neutral run option in the canonical composer popover', async () => {
     const linkedSession: ConsoleSession = {
       id: 'console-codex-1',
       label: 'Codex session',
@@ -812,17 +687,22 @@ describe('compact detail pane shell', () => {
     const scopedConversation = mockConversationDetail(ownedControl);
     renderConversationDetail(scopedConversation, [linkedSession]);
 
-    const permission = await screen.findByRole('combobox', { name: 'Permission mode' });
-    const effort = screen.getByRole('combobox', { name: 'Reasoning effort' });
-    const model = screen.getByRole('combobox', { name: 'Model' });
+    const trigger = await screen.findByRole('button', { name: 'Run options' });
     const runtime = document.querySelector('.conv-compose__runtime');
-    const leading = runtime?.querySelector('.conv-compose__runtime-leading');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
-    expect(leading?.contains(permission)).toBe(true);
-    expect(actions?.children[0]?.classList.contains('context-usage')).toBe(true);
-    expect(actions?.children[1]).toBe(model);
-    expect(actions?.children[2]).toBe(effort);
-    expect(actions?.children[3]?.classList.contains('conv-compose__send')).toBe(true);
+    expect(actions?.children[0]).toBe(trigger);
+    expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
+    expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
+    expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
+    fireEvent.click(trigger);
+    await screen.findByRole('combobox', { name: 'Mode' });
+    await waitFor(() => expect(Array.from(
+      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('select'),
+      (select) => select.getAttribute('aria-label'),
+    )).toEqual(expect.arrayContaining(['Mode', 'Model', 'Reasoning effort'])));
+    const popover = screen.getByRole('dialog', { name: 'Run options' });
+    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Mode"]')!;
+    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort"]')!;
 
     expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['read-only', 'agent']);
     expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['medium', 'high']);
@@ -852,15 +732,15 @@ describe('compact detail pane shell', () => {
     expect(menu.classList.contains('app-anchored-menu')).toBe(true);
     expect(menu.getAttribute('popover')).toBe('manual');
 
-    const model = screen.getByRole('combobox', { name: 'Model' });
-    model.focus();
+    const composer = screen.getByPlaceholderText('Message...');
+    composer.focus();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
 
     fireEvent.click(trigger);
     expect(await screen.findByRole('menu')).toBeTruthy();
-    model.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    composer.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 

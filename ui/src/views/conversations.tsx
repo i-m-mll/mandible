@@ -47,6 +47,7 @@ import {
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
+  ApiError,
   isApiErrorStatus,
   openConversationExternally,
   submitConversationControl,
@@ -70,7 +71,8 @@ import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
-  ChatBottomShelf,
+  ChatPreview,
+  ChatSessionOverview,
   ChatEntityLinkBoundary,
   ChatSurface,
   ContextUsageRing,
@@ -82,7 +84,6 @@ import {
   deriveChatUsageSummary,
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
-  useChatBottomShelfPreference,
   type ChatPreviewTarget,
   type ShelfItem,
 } from '../chat';
@@ -101,8 +102,9 @@ import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
-import { useRegisterAppBottomPanel } from '../app-shell';
-import type { ChatBottomShelfPreference } from '../../../src/contracts';
+import { useRegisterAppRightSidebar } from '../app-shell';
+import { useAppRightSidebarState } from '../right-sidebar-state';
+import type { ChatEntityClickAction } from '../../../src/contracts';
 
 // ── Toast notification ──
 
@@ -110,33 +112,64 @@ type ToastState = { message: string; type: 'info' | 'error' } | null;
 
 type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'no-selection';
 
-export type ConversationBottomShelfViewState = {
-  conversationId: string;
-  previewTarget: ChatPreviewTarget | null;
-  height: number;
+export type ConversationLoadFailure = {
+  code: string | null;
+  message: string;
+  retryable: boolean;
+  titleAuthorityDegraded: boolean;
 };
 
-export function scopeConversationBottomShelf(
-  conversationId: string,
-  state: ConversationBottomShelfViewState,
-  preference: ChatBottomShelfPreference,
-  preferenceConversationId: string,
-): {
-  state: ConversationBottomShelfViewState;
-  preference: ChatBottomShelfPreference;
-  viewIdentityChanged: boolean;
-  preferenceIdentityChanged: boolean;
-} {
-  const viewIdentityChanged = state.conversationId !== conversationId;
-  const preferenceIdentityChanged = preferenceConversationId !== conversationId;
+const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error']);
+const DEGRADED_TITLE_CODES = new Set(['provider_metadata_missing', 'provider_metadata_mismatched', 'provider_metadata_stale']);
+
+export function conversationLoadFailure(error: unknown, transcriptLoaded: boolean): ConversationLoadFailure {
+  const apiError = error instanceof ApiError ? error : null;
+  const code = apiError?.code ?? null;
+  if (code === 'provider_metadata_missing') {
+    return {
+      code,
+      message: `${transcriptLoaded ? 'Transcript loaded, but ' : ''}Mandible cannot verify its current Codex title because the matching Codex task metadata is missing. Retrying will not recreate that metadata.`,
+      retryable: false,
+      titleAuthorityDegraded: true,
+    };
+  }
+  if (code === 'provider_metadata_unavailable') {
+    return {
+      code,
+      message: `Codex title metadata is temporarily unavailable.${transcriptLoaded ? ' The transcript is unchanged;' : ''} try again.`,
+      retryable: true,
+      titleAuthorityDegraded: true,
+    };
+  }
   return {
-    state: viewIdentityChanged ? { conversationId, previewTarget: null, height: 340 } : state,
-    preference: (viewIdentityChanged || preferenceIdentityChanged) && preference.tab === 'preview'
-      ? { ...preference, tab: 'overview' }
-      : preference,
-    viewIdentityChanged,
-    preferenceIdentityChanged,
+    code,
+    message: error instanceof Error ? error.message : String(error),
+    retryable: code ? TRANSIENT_CONVERSATION_CODES.has(code) : apiError ? apiError.status >= 500 : true,
+    titleAuthorityDegraded: Boolean(code && DEGRADED_TITLE_CODES.has(code)),
   };
+}
+
+export type ConversationRightSidebarViewState = {
+  conversationId: string;
+  previewTarget: ChatPreviewTarget | null;
+  tab: 'overview' | 'preview';
+};
+
+function OverviewTabIcon(): JSX.Element {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16v14H4z" /><path d="M8 9h8M8 13h5" /></svg>;
+}
+
+function PreviewTabIcon(): JSX.Element {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>;
+}
+
+export function scopeConversationRightSidebar(
+  conversationId: string,
+  state: ConversationRightSidebarViewState,
+): ConversationRightSidebarViewState {
+  return state.conversationId === conversationId
+    ? state
+    : { conversationId, previewTarget: null, tab: 'overview' };
 }
 
 type ChatDetailFrameProps = {
@@ -528,6 +561,7 @@ export type ConversationsViewProps = {
   initialSessionId: string | null;
   sidebarHidden?: boolean;
   sidebarGroupLimit?: number;
+  chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
@@ -1033,6 +1067,7 @@ function ConversationDetail({
   onNavigate,
   consoleSessions,
   sidebarCollapsed,
+  chatEntityLinkAction,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
@@ -1040,6 +1075,7 @@ function ConversationDetail({
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
+  chatEntityLinkAction: ChatEntityClickAction;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
     initialConversation ? conversationShell(initialConversation) : null,
@@ -1048,7 +1084,7 @@ function ConversationDetail({
     () => detailRequestKey('conversation', { conversationId, leaf: null }),
   );
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ConversationLoadFailure | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
@@ -1085,13 +1121,23 @@ function ConversationDetail({
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
   const [liveProjection, setLiveProjection] = useState<ProviderLiveProjection | null>(null);
-  const [bottomShelfPreference, setBottomShelfPreference, bottomShelfPreferenceState] = useChatBottomShelfPreference();
-  const [bottomShelfViewState, setBottomShelfViewState] = useState<ConversationBottomShelfViewState>({
+  const [rightSidebarViewState, setRightSidebarViewState] = useState<ConversationRightSidebarViewState>({
     conversationId,
     previewTarget: null,
-    height: 340,
+    tab: 'overview',
   });
-  const [bottomShelfPreferenceConversationId, setBottomShelfPreferenceConversationId] = useState(conversationId);
+  const [rightSidebarState, updateRightSidebarState] = useAppRightSidebarState('chat', { open: true, width: 420 }, {
+    removeKeys: ['chat_bottom_shelf', 'mandible_chat_bottom_shelf:v1'],
+    migrate: () => {
+      const raw = window.localStorage.getItem('mandible_chat_bottom_shelf:v1');
+      if (!raw) return null;
+      const previous = JSON.parse(raw) as { visible?: unknown; height?: unknown };
+      return {
+        open: typeof previous.visible === 'boolean' ? previous.visible : true,
+        width: 420,
+      };
+    },
+  });
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1108,118 +1154,64 @@ function ConversationDetail({
   const conversationRequestKey = detailRequestKey('conversation', { conversationId, anchor: anchorKey });
   const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
 
-  const scopedBottomShelf = scopeConversationBottomShelf(
-    conversationId,
-    bottomShelfViewState,
-    bottomShelfPreference,
-    bottomShelfPreferenceConversationId,
-  );
-  const currentBottomShelfViewState = scopedBottomShelf.state;
-  const currentBottomShelfPreference = scopedBottomShelf.preference;
+  const currentRightSidebarViewState = scopeConversationRightSidebar(conversationId, rightSidebarViewState);
 
   useEffect(() => {
-    if (scopedBottomShelf.viewIdentityChanged) {
-      setBottomShelfViewState({ conversationId, previewTarget: null, height: 340 });
+    if (rightSidebarViewState.conversationId !== conversationId) {
+      setRightSidebarViewState({ conversationId, previewTarget: null, tab: 'overview' });
     }
-    if (scopedBottomShelf.preferenceIdentityChanged && bottomShelfPreferenceState.ready) {
-      setBottomShelfPreferenceConversationId(conversationId);
-      if (bottomShelfPreference.tab === 'preview') {
-        setBottomShelfPreference((current) => ({ ...current, tab: 'overview' }));
-      }
-    }
-  }, [
-    bottomShelfPreference.tab,
-    bottomShelfPreferenceState.ready,
-    conversationId,
-    scopedBottomShelf.preferenceIdentityChanged,
-    scopedBottomShelf.viewIdentityChanged,
-    setBottomShelfPreference,
-  ]);
+  }, [conversationId, rightSidebarViewState.conversationId]);
 
-  const previewInBottomShelf = useCallback((target: ChatPreviewTarget) => {
-    setBottomShelfViewState((current) => ({
+  const previewInRightSidebar = useCallback((target: ChatPreviewTarget) => {
+    setRightSidebarViewState(() => ({
       conversationId,
       previewTarget: target,
-      height: current.conversationId === conversationId ? current.height : 340,
-    }));
-    setBottomShelfPreference((current) => ({
-      ...current,
-      visible: true,
       tab: 'preview',
     }));
-  }, [conversationId, setBottomShelfPreference]);
+    updateRightSidebarState({ open: true });
+  }, [conversationId, updateRightSidebarState]);
 
-  const clearBottomShelfPreview = useCallback(() => {
-    setBottomShelfViewState((current) => ({
+  const clearRightSidebarPreview = useCallback(() => {
+    setRightSidebarViewState(() => ({
       conversationId,
       previewTarget: null,
-      height: current.conversationId === conversationId ? current.height : 340,
+      tab: 'overview',
     }));
-    setBottomShelfPreference((current) => ({ ...current, tab: 'overview' }));
-  }, [conversationId, setBottomShelfPreference]);
+  }, [conversationId]);
 
-  const bottomShelfContent = useMemo(() => (
-    <ChatEntityLinkBoundary
-      defaultAction={bottomShelfPreferenceState.ready ? bottomShelfPreference.clickAction : null}
-      onPreview={previewInBottomShelf}
-    >
-      <ChatBottomShelf
-        preference={currentBottomShelfPreference}
-        preferenceReady={bottomShelfPreferenceState.ready}
-        preferenceError={bottomShelfPreferenceState.error}
-        providerSessionId={conversation?.session_id ?? null}
-        conversationId={conversationId}
-        previewTarget={currentBottomShelfViewState.previewTarget}
-        onPreferenceChange={setBottomShelfPreference}
-        onClearPreview={clearBottomShelfPreview}
-      />
-    </ChatEntityLinkBoundary>
-  ), [
-    bottomShelfPreference.clickAction,
-    bottomShelfPreferenceState.error,
-    bottomShelfPreferenceState.ready,
-    clearBottomShelfPreview,
-    conversation?.session_id,
-    conversationId,
-    currentBottomShelfPreference,
-    currentBottomShelfViewState.previewTarget,
-    previewInBottomShelf,
-    setBottomShelfPreference,
-  ]);
-  const bottomShelfDescriptor = useMemo(() => (
-    conversation && (bottomShelfPreferenceState.ready || bottomShelfPreferenceState.error !== null)
-      ? {
-        id: 'chat-bottom-shelf',
-        title: 'Chat shelf',
-        ariaLabel: 'Chat bottom shelf',
-        open: bottomShelfPreference.visible,
-        height: currentBottomShelfViewState.height,
-        minHeight: 220,
-        maxHeight: 520,
-        onOpenChange: (visible: boolean) => {
-          setBottomShelfPreference((current) => ({ ...current, visible }));
-        },
-        onHeightChange: (height: number) => {
-          setBottomShelfViewState((current) => ({
-            conversationId,
-            previewTarget: current.conversationId === conversationId ? current.previewTarget : null,
-            height,
-          }));
-        },
-        content: bottomShelfContent,
-      }
-      : null
-  ), [
-    bottomShelfContent,
-    bottomShelfPreference.visible,
-    bottomShelfPreferenceState.error,
-    bottomShelfPreferenceState.ready,
-    conversation,
-    conversationId,
-    currentBottomShelfViewState.height,
-    setBottomShelfPreference,
-  ]);
-  useRegisterAppBottomPanel(bottomShelfDescriptor);
+  const rightSidebarDescriptor = useMemo(() => conversation ? ({
+    id: 'chat-right-sidebar',
+    kind: 'tabs' as const,
+    ariaLabel: 'Chat sidebar',
+    open: rightSidebarState.open,
+    width: rightSidebarState.width,
+    minWidth: 300,
+    maxWidth: 720,
+    onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
+    onWidthChange: (width: number) => updateRightSidebarState({ width }),
+    activeTab: currentRightSidebarViewState.tab,
+    onActiveTabChange: (tab: string) => setRightSidebarViewState((current) => ({
+      ...(current.conversationId === conversationId ? current : { conversationId, previewTarget: null, tab: 'overview' as const }),
+      tab: tab === 'preview' ? 'preview' : 'overview',
+    })),
+    tabs: [
+      {
+        id: 'overview',
+        label: 'Session Overview',
+        tooltip: 'Session Overview',
+        icon: <OverviewTabIcon />,
+        content: <ChatSessionOverview providerSessionId={conversation.session_id ?? null} conversationId={conversationId} />,
+      },
+      {
+        id: 'preview',
+        label: 'Preview',
+        tooltip: 'Preview',
+        icon: <PreviewTabIcon />,
+        content: <ChatPreview target={currentRightSidebarViewState.previewTarget} onClear={clearRightSidebarPreview} />,
+      },
+    ],
+  }) : null, [conversation, conversationId, currentRightSidebarViewState, clearRightSidebarPreview, rightSidebarState, updateRightSidebarState]);
+  useRegisterAppRightSidebar(rightSidebarDescriptor);
 
   useEffect(() => {
     setEffectiveAnchor(anchor);
@@ -1233,6 +1225,16 @@ function ConversationDetail({
     anchorRef: actionsTriggerRef,
     menuRef: actionsMenuRef,
     onDismiss: () => setActionsOpen(false),
+  });
+  const runOptionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const runOptionsMenuRef = useRef<HTMLDivElement>(null);
+  const runOptionsMenuStyle = useAnchoredMenu({
+    open: composerControlsOpen,
+    anchorRef: runOptionsTriggerRef,
+    menuRef: runOptionsMenuRef,
+    focusRef: runOptionsTriggerRef,
+    onDismiss: () => setComposerControlsOpen(false),
+    placement: 'top-end',
   });
 
   useLayoutEffect(() => {
@@ -1276,7 +1278,7 @@ function ConversationDetail({
           setError(null);
           setNotFound(true);
         } else {
-          setError(err instanceof Error ? err.message : String(err));
+          setError(conversationLoadFailure(err, Boolean(cached)));
           setNotFound(false);
         }
         setLoading(false);
@@ -1508,7 +1510,7 @@ function ConversationDetail({
       });
     } catch (err) {
       if (generation === requestGenerationRef.current && !controller.signal.aborted) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(conversationLoadFailure(err, true));
       }
     } finally {
       if (generation === requestGenerationRef.current) setJumpingToLatest(false);
@@ -1792,6 +1794,12 @@ function ConversationDetail({
       || linkedConsoleSession?.backend_type === 'pty'
       || linkedConsoleSession?.backend_type === 'spawn'
       || linkedConsoleSession?.backend_type === 'acp');
+  const hasRunOptions = Boolean(
+    currentModel
+    || (thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported')
+    || (permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported')
+    || canShowSessionControls,
+  );
 
   useEffect(() => {
     setComposerModel(currentModel === 'default' ? '' : currentModel);
@@ -1917,18 +1925,20 @@ function ConversationDetail({
     <DetailPaneNotice
       severity="error"
       density="compact"
-      actions={(
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          disabled={loading}
-          onClick={retryLoad}
-        >
-          Retry
-        </button>
-      )}
+      actions={(error.retryable || (error.titleAuthorityDegraded && conversation?.external_navigation)) ? (
+        <>
+          {error.retryable ? (
+            <button type="button" className="btn btn--ghost btn--sm" disabled={loading} onClick={retryLoad}>Retry</button>
+          ) : null}
+          {error.titleAuthorityDegraded && conversation?.external_navigation ? (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void handleOpenExternally(); }}>
+              {conversation.external_navigation.label}
+            </button>
+          ) : null}
+        </>
+      ) : undefined}
     >
-      {error}
+      {error.message}
     </DetailPaneNotice>
   ) : undefined;
 
@@ -1992,6 +2002,7 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
+      supportingMetadata={error?.titleAuthorityDegraded ? 'Historical title — provider verification unavailable' : undefined}
       menuLabel="Conversation detail actions"
       menu={(
         <div className="conv-actions">
@@ -2127,66 +2138,20 @@ function ConversationDetail({
         )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
-            <span className="conv-compose__runtime-leading">
-              {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
-                <select
-                  className="conv-compose__permission"
-                  value={composerPermission}
-                  disabled={continueBusy || permissionRunOption.availability !== 'available'}
-                  title="Permission mode"
-                  aria-label="Permission mode"
-                  onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}
-                >
-                  {permissionRunOption.nullable && <option value="">Use app default</option>}
-                  {(permissionRunOption.allowedValues ?? []).map((choice) => (
-                    <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
-                  ))}
-                </select>
-              ) : null}
-              {canShowSessionControls && (
+            <span className="conv-compose__runtime-actions">
+              {hasRunOptions ? (
                 <button
+                  ref={runOptionsTriggerRef}
                   type="button"
-                  className="btn btn--ghost btn--sm"
+                  className="btn btn--ghost btn--sm conv-compose__run-options-trigger"
+                  aria-haspopup="dialog"
+                  aria-expanded={composerControlsOpen}
                   onClick={() => setComposerControlsOpen((prev) => !prev)}
                 >
-                  More
+                  Run options
                 </button>
-              )}
-            </span>
-            <span className="conv-compose__runtime-actions">
-              <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
-              <select
-                className="conv-compose__model"
-                value={composerModel}
-                disabled={continueBusy || modelOptions.length === 0}
-                title="Model"
-                aria-label="Model"
-                onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}
-              >
-                <option value={currentModel === 'default' ? '' : currentModel}>
-                  {currentModel === 'default' ? 'Use app default' : currentModel}
-                </option>
-                {modelOptions
-                  .filter((model) => model !== currentModel)
-                  .map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-              </select>
-              {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
-                <select
-                  className="conv-compose__effort"
-                  value={composerEffort}
-                  disabled={continueBusy || thinkingRunOption.availability !== 'available'}
-                  title={thinkingRunOption.label}
-                  aria-label={thinkingRunOption.label}
-                  onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}
-                >
-                  {thinkingRunOption.nullable && <option value="">Use app default</option>}
-                  {(thinkingRunOption.allowedValues ?? []).map((choice) => (
-                    <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
-                  ))}
-                </select>
               ) : null}
+              <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
               <button
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
@@ -2205,18 +2170,50 @@ function ConversationDetail({
             </span>
           </div>
         </div>
-        {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
-          <div className="conv-compose__controls">
-            <SessionControls
-              sessionId={linkedConsoleSession.id}
-              runOptions={sessionRunOptions}
-              allowedTools={linkedConsoleSession.allowed_tools}
-              hiddenOptionIds={[
-                modelRunOption?.id,
-                thinkingRunOption?.id,
-                permissionRunOption?.id,
-              ].filter((id): id is string => Boolean(id))}
-            />
+        {composerControlsOpen && hasRunOptions && (
+          <div
+            ref={runOptionsMenuRef}
+            className="conv-compose__run-options app-anchored-menu"
+            role="dialog"
+            aria-label="Run options"
+            popover="manual"
+            style={runOptionsMenuStyle}
+          >
+            {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
+              <label className="session-controls__field">
+                <span className="session-controls__label">{permissionRunOption.label}</span>
+                <select className="session-controls__select" value={composerPermission} disabled={continueBusy || permissionRunOption.availability !== 'available'} aria-label={permissionRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}>
+                  {permissionRunOption.nullable && <option value="">Use app default</option>}
+                  {(permissionRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {currentModel ? (
+              <label className="session-controls__field">
+                <span className="session-controls__label">{modelRunOption?.label ?? 'Model'}</span>
+                <select className="session-controls__select" value={composerModel} disabled={continueBusy || (modelRunOption !== undefined && modelOptions.length === 0)} aria-label={modelRunOption?.label ?? 'Model'} title={modelRunOption?.label ?? 'Model'} onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}>
+                  <option value={currentModel === 'default' ? '' : currentModel}>{currentModel === 'default' ? 'Use app default' : currentModel}</option>
+                  {modelOptions.filter((model) => model !== currentModel).map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
+              <label className="session-controls__field">
+                <span className="session-controls__label">{thinkingRunOption.label}</span>
+                <select className="session-controls__select" value={composerEffort} disabled={continueBusy || thinkingRunOption.availability !== 'available'} aria-label={thinkingRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}>
+                  {thinkingRunOption.nullable && <option value="">Use app default</option>}
+                  {(thinkingRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {canShowSessionControls && linkedConsoleSession ? (
+              <SessionControls
+                sessionId={linkedConsoleSession.id}
+                runOptions={sessionRunOptions}
+                allowedTools={linkedConsoleSession.allowed_tools}
+                hiddenOptionIds={[modelRunOption?.id, thinkingRunOption?.id, permissionRunOption?.id].filter((id): id is string => Boolean(id))}
+              />
+            ) : null}
           </div>
         )}
         {(continueError || continueDisabledReason) && (
@@ -2366,8 +2363,8 @@ function ConversationDetail({
 
       <div className="conv-transcript">
         <ChatEntityLinkBoundary
-          defaultAction={bottomShelfPreferenceState.ready ? bottomShelfPreference.clickAction : null}
-          onPreview={previewInBottomShelf}
+          defaultAction={chatEntityLinkAction}
+          onPreview={previewInRightSidebar}
         >
           <ChatSurface
             events={chatEvents}
@@ -2666,6 +2663,7 @@ export function ConversationsView({
   initialSessionId,
   sidebarHidden = false,
   sidebarGroupLimit: rawSidebarGroupLimit,
+  chatEntityLinkAction = 'preview',
   instance = null,
   onSelectSession,
   onNewSession,
@@ -3680,6 +3678,7 @@ export function ConversationsView({
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
+            chatEntityLinkAction={chatEntityLinkAction}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail
