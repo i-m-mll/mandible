@@ -65,8 +65,9 @@ type CompactDetailPaneHeaderProps = DetailPaneHeaderBaseProps & {
   menuLabel?: string;
   /** Fixed right-aligned provider, status, pill, or supporting control region. */
   metadata?: ComponentChildren;
-  actions?: never;
-  actionsLabel?: never;
+  /** Fixed trailing actions. The shared row always places these after metadata. */
+  actions?: ComponentChildren;
+  actionsLabel?: string;
   status?: never;
   state?: never;
   secondaryMetadata?: never;
@@ -171,6 +172,15 @@ export function DetailPaneHeader({
                   />
                 </div>
               )}
+            </div>
+          )}
+          {actions !== undefined && actions !== null && (
+            <div
+              className="detail-pane-header__actions"
+              role="group"
+              aria-label={actionsLabel}
+            >
+              {actions}
             </div>
           )}
         </div>

@@ -16,6 +16,8 @@ import { EntityTimestamps } from '../components/shared/EntityTimestamps';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { IconTabList, type IconTab } from '../components/shared/IconTabList';
+import { DiffIcon, InfoIcon, TerminalIcon } from '../components/icons/TabIcons';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -40,6 +42,8 @@ import {
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
 import { isAuthDependencyReady, type AuthDependencyProjection } from '../../../src/contracts';
+
+const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
 
 export type AuthRequestType =
   | 'merge'
@@ -133,6 +137,9 @@ export type AuthQueueViewProps = {
   onRetry: (requestId: string) => void | Promise<void>;
   onDismiss: (requestId: string) => void | Promise<void>;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
+  autoShowConsoleOnApproval?: boolean;
+  autoReturnToAbstractOnSuccess?: boolean;
+  retainFinalizedSelection?: boolean;
 };
 
 function getAuthId(request: AuthRequest): string {
@@ -268,13 +275,17 @@ function isHistoryStatus(status: string, exitCode?: number | null): boolean {
   return exitCode == null || exitCode === 0;
 }
 
+function isAuthExecutingStatus(status: string): boolean {
+  return status === 'approved' || status === 'executing';
+}
+
 type AuthExecutionCallout = {
   text: string;
   spinner: boolean;
 };
 
 function getAuthExecutionCallout(status: string, consoleText: string): AuthExecutionCallout | null {
-  if (status !== 'approved' && status !== 'executing') return null;
+  if (!isAuthExecutingStatus(status)) return null;
   const text = consoleText.toLowerCase();
   if (text.includes('merge conflict') || text.includes('conflicts remain') || text.includes('manual resolution')) {
     return { text: 'Merge needs attention in the terminal', spinner: false };
@@ -308,7 +319,7 @@ function getAuthExecutionCallout(status: string, consoleText: string): AuthExecu
 
 function getStatusLabel(request: AuthRequest): string {
   const status = getAuthStatus(request);
-  if (status === 'approved' || status === 'executing') return 'Executing';
+  if (isAuthExecutingStatus(status)) return 'Executing';
   if (status === 'needs_rebase') return 'Needs rebase';
   if (status === 'completed') {
     if (request.exit_code != null && request.exit_code !== 0) return 'Failed';
@@ -731,6 +742,8 @@ function AuthRequestDetail({
   executionOutput,
   onUpdateField,
   mutationsAllowed = true,
+  autoShowConsoleOnApproval = true,
+  autoReturnToAbstractOnSuccess = true,
 }: {
   request: AuthRequest;
   history?: boolean;
@@ -742,12 +755,13 @@ function AuthRequestDetail({
   executionOutput?: string;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
   mutationsAllowed?: boolean;
+  autoShowConsoleOnApproval?: boolean;
+  autoReturnToAbstractOnSuccess?: boolean;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(false);
-  const [diffViewActive, setDiffViewActive] = useState(false);
+  const [viewMode, setViewMode] = useState<'abstract' | 'console' | 'diff'>('abstract');
   const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
-  const [showConsole, setShowConsole] = useState(false);
   const [editingCommitMsg, setEditingCommitMsg] = useState(false);
   const [editCommitValue, setEditCommitValue] = useState('');
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -801,9 +815,7 @@ function AuthRequestDetail({
   const statusLabel = getStatusLabel(request);
   const statusClass = getStatusClass(request);
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
-  const isApproved = status === 'approved' || status === 'executing';
   const executionCallout = getAuthExecutionCallout(status, consoleText);
-  const showConsoleToggle = isApproved || (hasConsoleOutput && (status === 'completed' || failedLike));
   const showFailure = failedLike;
   const attemptLabel = attemptCount && attemptCount > 1 ? `Attempt ${attemptCount}` : null;
   const requestHash = getRequestHash(request);
@@ -836,23 +848,38 @@ function AuthRequestDetail({
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
   const hasLinks = (referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink;
 
+  const previousRequestIdRef = useRef<string | null>(null);
+  const previousStatusRef = useRef<string | null>(null);
   useEffect(() => {
-    if (isApproved) {
-      setShowConsole(true);
+    const selectionChanged = previousRequestIdRef.current !== fullId;
+    const previous = previousStatusRef.current;
+
+    if (selectionChanged) {
+      setViewMode(autoShowConsoleOnApproval && isAuthExecutingStatus(status) ? 'console' : 'abstract');
+    } else if (autoShowConsoleOnApproval && isAuthExecutingStatus(status)
+      && (previous === null || !isAuthExecutingStatus(previous))) {
+      setViewMode('console');
     }
-  }, [isApproved]);
+    if (autoReturnToAbstractOnSuccess && status === 'completed'
+      && (request.exit_code == null || request.exit_code === 0)
+      && previous !== null && isAuthExecutingStatus(previous)) {
+      setViewMode('abstract');
+    }
+
+    previousRequestIdRef.current = fullId;
+    previousStatusRef.current = status;
+  }, [autoReturnToAbstractOnSuccess, autoShowConsoleOnApproval, fullId, request.exit_code, status]);
 
   useEffect(() => {
-    if (showConsole && consoleEndRef.current) {
+    if (viewMode === 'console' && consoleEndRef.current) {
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [showConsole, consoleText]);
+  }, [viewMode, consoleText]);
 
   const authType = getAuthType(request);
   const typeMeta = AUTH_TYPE_META[authType];
   const showDiffStats = typeHasDiffStats(authType);
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
-  const hasMeaningfulDiffToggle = showDiffStats && (hasStats || diffRaw.trim().length > 0);
   const statsSummary = showDiffStats && hasStats
     ? `${formatNumber(stats.files ?? 0)} files · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
     : null;
@@ -885,27 +912,28 @@ function AuthRequestDetail({
     setActionsOpen(false);
   };
 
-  const subheader = (hasMeaningfulDiffToggle || actions) ? (
+  const modeTabs: readonly IconTab[] = [
+    { id: 'abstract', label: 'Info', tooltip: 'Info', icon: <InfoIcon size={18} /> },
+    { id: 'console', label: 'Console', tooltip: 'Console', icon: <TerminalIcon size={18} /> },
+    { id: 'diff', label: 'Diff', tooltip: 'Diff', icon: <DiffIcon size={18} /> },
+  ];
+  const subheader = (
     <>
       <div className="auth-detail__aux-left">
-        {hasMeaningfulDiffToggle && (
-          <button
-            type="button"
-            className={`auth-detail__diff-toggle${diffViewActive ? ' auth-detail__diff-toggle--active' : ''}`}
-            aria-label={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
-            aria-pressed={diffViewActive}
-            title={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
-            onClick={() => setDiffViewActive((active) => !active)}
-          >
-            <DiffIcon />
-          </button>
-        )}
+        <IconTabList
+          ariaLabel="Auth request view"
+          tabs={modeTabs}
+          activeTab={viewMode}
+          onActiveTabChange={(tab) => setViewMode(tab as typeof viewMode)}
+          idPrefix="auth-detail"
+          className="auth-detail__mode-tabs"
+        />
       </div>
       <div className="auth-detail__action-strip">
         {actions}
       </div>
     </>
-  ) : undefined;
+  );
 
   const overlays = (
     <DetailPaneModal
@@ -963,10 +991,6 @@ function AuthRequestDetail({
       </dl>
     </DetailPaneModal>
   );
-
-  useEffect(() => {
-    setDiffViewActive(false);
-  }, [fullId]);
 
   return (
     <DetailPaneShell
@@ -1142,7 +1166,8 @@ function AuthRequestDetail({
           </div>
         )}
 
-        {diffViewActive ? (
+        {viewMode === 'diff' ? (
+          <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff">
           <DiffView
             diffText={diffRaw}
             mode={diffMode}
@@ -1152,7 +1177,17 @@ function AuthRequestDetail({
             className="auth-detail__diff-view"
             classNames={AUTH_DIFF_VIEW_CLASS_NAMES}
           />
+          </div>
+        ) : viewMode === 'console' ? (
+          <div id="auth-detail-panel-console" role="tabpanel" aria-labelledby="auth-detail-tab-console" className="auth-detail__console-view">
+            {hasConsoleOutput ? (
+              <pre className="console-output__pre">{consoleText}<div ref={consoleEndRef} /></pre>
+            ) : (
+              <div className="auth-detail__console-empty">No console output.</div>
+            )}
+          </div>
         ) : (
+          <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
           <div className={panelsClass}>
             <div className="auth-detail__left-col">
               <CollapsiblePanel
@@ -1243,32 +1278,6 @@ function AuthRequestDetail({
               </div>
             )}
           </div>
-        )}
-
-        {showConsoleToggle && (
-          <div className="console-output">
-            <button
-              type="button"
-              className="console-output__toggle"
-              onClick={() => setShowConsole((prev) => !prev)}
-            >
-              <DisclosureChevronIcon expanded={showConsole} size={13} />
-              {showConsole ? 'Hide output' : 'Show output'}
-              {isApproved && (
-                <span className="console-output__live-dot" />
-              )}
-            </button>
-            {showConsole && (
-              <div className="console-output__panel">
-                {hasConsoleOutput ? (
-                  <pre className="console-output__pre">{consoleText}<div ref={consoleEndRef} /></pre>
-                ) : (
-                  <div className="console-output__waiting">
-                    Waiting for output…
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
     </DetailPaneShell>
@@ -1284,16 +1293,6 @@ function HorizontalDotsIcon(): JSX.Element {
     </svg>
   );
 }
-
-function DiffIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="5" y="5" width="14" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M9 10h5M11.5 7.5v5M10 16h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 
 /** Compact sidebar list item for the auth queue sidebar layout. */
 function AuthSidebarItem({
@@ -1316,7 +1315,7 @@ function AuthSidebarItem({
     dotStatus = 'failed';
   } else if (status === 'completed') {
     dotStatus = 'completed';
-  } else if (status === 'approved' || status === 'executing') {
+  } else if (isAuthExecutingStatus(status)) {
     dotStatus = 'approved';  // Keep CSS class as 'approved' for now
   } else if (status === 'rejected' || status === 'dismissed') {
     dotStatus = 'dismissed';
@@ -1673,6 +1672,9 @@ export function AuthQueueView({
   sidebarHidden = false,
   daemonReady = true,
   instance = null,
+  autoShowConsoleOnApproval = true,
+  autoReturnToAbstractOnSuccess = true,
+  retainFinalizedSelection = true,
 }: AuthQueueViewProps): JSX.Element {
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
@@ -1707,6 +1709,48 @@ export function AuthQueueView({
   // the loaded lists. While set, sidebar reconciliation holds that selection;
   // cleared when the user picks another row.
   const pendingDeepLinkRef = useRef<string | null>(null);
+  const previousSelectionFiltersRef = useRef({ filterMode, typeFilter, repoFilter, branchFilter, authSearch });
+  useEffect(() => {
+    const previous = previousSelectionFiltersRef.current;
+    const changed = previous.filterMode !== filterMode
+      || previous.typeFilter !== typeFilter
+      || previous.repoFilter !== repoFilter
+      || previous.branchFilter !== branchFilter
+      || previous.authSearch !== authSearch;
+    previousSelectionFiltersRef.current = { filterMode, typeFilter, repoFilter, branchFilter, authSearch };
+    if (!changed) return;
+    pendingDeepLinkRef.current = null;
+  }, [authSearch, branchFilter, filterMode, repoFilter, typeFilter]);
+
+  // Track newly finalized requests so the active queue can retain the selected
+  // row until the user deliberately moves elsewhere.
+  const [recentlyResolved, setRecentlyResolved] = useState<
+    Map<string, { status: string; resolvedAt: number }>
+  >(() => new Map());
+
+  const [retainedFinalizedId, setRetainedFinalizedId] = useState<string | null>(() => (
+    typeof sessionStorage === 'undefined' ? null : sessionStorage.getItem(RETAINED_FINALIZED_AUTH_KEY)
+  ));
+
+  const clearRetainedFinalized = useCallback(() => {
+    if (retainedFinalizedId) {
+      setRecentlyResolved((previous) => {
+        if (!previous.has(retainedFinalizedId)) return previous;
+        const next = new Map(previous);
+        next.delete(retainedFinalizedId);
+        return next;
+      });
+    }
+    setRetainedFinalizedId(null);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(RETAINED_FINALIZED_AUTH_KEY);
+  }, [retainedFinalizedId]);
+
+  useEffect(() => {
+    if (!selectedId || !retainedFinalizedId) return;
+    const sameRequest = selectedId === retainedFinalizedId
+      || retainedFinalizedId.startsWith(selectedId);
+    if (!sameRequest) clearRetainedFinalized();
+  }, [clearRetainedFinalized, retainedFinalizedId, selectedId]);
 
   const handleSelect = useCallback((id: string) => {
     pendingDeepLinkRef.current = null;
@@ -1739,11 +1783,6 @@ export function AuthQueueView({
     }, 200);
     return () => clearTimeout(timer);
   }, [selectedId]);
-
-  // Track recently resolved requests: Map<requestId, {status, resolvedAt}>
-  const [recentlyResolved, setRecentlyResolved] = useState<
-    Map<string, { status: string; resolvedAt: number }>
-  >(() => new Map());
 
   // Use a ref for timeout tracking so we can clean up
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -1784,6 +1823,12 @@ export function AuthQueueView({
           return next;
         });
 
+        if (retainFinalizedSelection && selectedId === id) {
+          setRetainedFinalizedId(id);
+          if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(RETAINED_FINALIZED_AUTH_KEY, id);
+          continue;
+        }
+
         const existingTimer = timersRef.current.get(id);
         if (existingTimer) {
           clearTimeout(existingTimer);
@@ -1814,25 +1859,34 @@ export function AuthQueueView({
     }
 
     prevQueueRef.current = nextStatuses;
-  }, [queue]);
+  }, [queue, retainFinalizedSelection, selectedId]);
+
+  useEffect(() => {
+    if (!retainFinalizedSelection && retainedFinalizedId) clearRetainedFinalized();
+  }, [clearRetainedFinalized, retainFinalizedSelection, retainedFinalizedId]);
 
   const activeQueue = useMemo(
     () =>
       queue.filter((r) => {
         const status = getAuthStatus(r);
-        return status === 'pending' || status === 'approved' || status === 'executing' ||
+        return status === 'pending' || isAuthExecutingStatus(status) ||
           isFailedLikeStatus(status, r.exit_code ?? null);
       }),
     [queue],
   );
 
   const lingeringQueue = useMemo(
-    () =>
-      queue.filter((r) => {
+    () => {
+      const candidates = [...queue, ...(historyQueue ?? [])];
+      const seen = new Set<string>();
+      return candidates.filter((r) => {
         const id = getAuthId(r);
-        return recentlyResolved.has(id);
-      }),
-    [queue, recentlyResolved],
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return recentlyResolved.has(id) || retainedFinalizedId === id;
+      });
+    },
+    [historyQueue, queue, recentlyResolved, retainedFinalizedId],
   );
 
   // Bug: 72384c5 — deduplicate history: exclude IDs already shown in the active queue
@@ -2554,7 +2608,7 @@ export function AuthQueueView({
     // the inFlight window before the API returns (where status is still 'pending'
     // but a click is in progress). Both cases should hide Approve/Reject and show
     // an in-progress label.
-    const isExecuting = status === 'approved' || status === 'executing';
+    const isExecuting = isAuthExecutingStatus(status);
     const isSubmitting = actionDisabled && !isExecuting && !isFailed;
     const showForceDismiss = !isHistory && !isFailed && !isExecuting && !isSubmitting;
 
@@ -2908,6 +2962,8 @@ export function AuthQueueView({
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
               mutationsAllowed={operationalMutationsAllowed}
+              autoShowConsoleOnApproval={autoShowConsoleOnApproval}
+              autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />
           );
         })()}

@@ -64,12 +64,6 @@
   font-size: var(--text-sm);
 }
 
-.chat-projects-empty {
-  padding: 7px 8px 9px 24px;
-  color: var(--text-disabled);
-  font-size: var(--text-xs);
-}
-
 .chat-filter-popover__select span {
   color: var(--text-muted);
   font-size: 11px;

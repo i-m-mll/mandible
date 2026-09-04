@@ -115,6 +115,24 @@ describe('shared sidebar group presentation', () => {
     expect(action.parentElement?.parentElement?.classList.contains('contextual-action-owner')).toBe(true);
   });
 
+  it('can keep an empty expanded group action visible without exposing it while folded', () => {
+    const action = { label: 'Add project', icon: <span>+</span>, onPress: () => undefined, persistentWhenExpanded: true };
+    const { rerender } = render(
+      <SidebarGroupNode presentation="category" id="projects" label="Projects" expanded onToggle={() => undefined} action={action}>
+        <span>No projects included</span>
+      </SidebarGroupNode>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Add project' }).parentElement?.classList.contains('contextual-action-group--persistent')).toBe(true);
+
+    rerender(
+      <SidebarGroupNode presentation="category" id="projects" label="Projects" expanded={false} onToggle={() => undefined} action={action}>
+        <span>No projects included</span>
+      </SidebarGroupNode>,
+    );
+    expect(screen.getByRole('button', { name: 'Add project' }).parentElement?.classList.contains('contextual-action-group--persistent')).toBe(false);
+  });
+
   it('keeps a selectable group disclosure immediately after its heading content', () => {
     const onSelect = vi.fn();
     const onToggle = vi.fn();

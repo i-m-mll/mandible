@@ -194,5 +194,45 @@ describe('SessionOverviewView truncated resolution (review C4)', () => {
       await screen.findByText(/matches too many identities to resolve uniquely/),
     ).toBeTruthy();
     expect(screen.queryByText(/Bound to agent session/)).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Session picker' })).toBeNull();
+  });
+
+  it('shows only distinguishable competing matches, never the global session registry', async () => {
+    const first = {
+      ...boundMatch,
+      mandible_session_id: FULL_ID,
+    };
+    const competing = {
+      ...boundMatch,
+      matched_ref: 'aaaabbbb-1111-2222-3333-999955556666',
+      mandible_session_id: 'aaaabbbb-1111-2222-3333-999955556666',
+      conversation_id: 'conv-2',
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/sessions/resolve')) {
+        return Promise.resolve(jsonResponse({
+          provider: null,
+          provider_session_id: PAGE_BINDING,
+          truncated: false,
+          matches: [first, competing],
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(
+      <SessionOverviewView
+        initialSessionId={null}
+        agentBinding={PAGE_BINDING}
+      />,
+    );
+
+    expect(await screen.findByText(/matches multiple Mandible sessions/)).toBeTruthy();
+    const matchList = screen.getByRole('list', { name: 'Agent session matches' });
+    expect(matchList.querySelectorAll('li')).toHaveLength(2);
+    expect(screen.queryByRole('list', { name: 'Session picker' })).toBeNull();
+    expect(screen.getByText('aaaabbbb-1111-2222-3333-4…')).toBeTruthy();
+    expect(screen.getByText('aaaabbbb-1111-2222-3333-9…')).toBeTruthy();
   });
 });

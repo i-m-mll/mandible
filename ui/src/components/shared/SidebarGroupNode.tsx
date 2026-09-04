@@ -32,6 +32,8 @@ type SidebarGroupNodeCommonProps = {
     label: string;
     icon: ComponentChildren;
     onPress(): void;
+    /** Keep the action visible while this group is expanded. */
+    persistentWhenExpanded?: boolean;
   };
   drag?: {
     active: boolean;
@@ -171,7 +173,7 @@ export function SidebarGroupNode({
           </button>
         ) : null}
         {action ? (
-          <span className="sidebar-group-node__action-slot contextual-action-group">
+          <span className={`sidebar-group-node__action-slot contextual-action-group${action.persistentWhenExpanded && expanded ? ' contextual-action-group--persistent' : ''}`}>
             <ContextualAction
               className="sidebar-group-node__action"
               aria-label={action.label}

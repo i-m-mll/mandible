@@ -1,9 +1,8 @@
 export { ChatSurface } from './ChatSurface';
 export type { ChatSurfaceProps } from './ChatSurface';
-export { Shelf } from './Shelf';
-export type { ShelfItem, ShelfItemStatus, ShelfProps } from './Shelf';
 export { ChatOverlay } from './ChatOverlay';
-export { ChatSessionOverview, ChatPreview } from './ChatRightSidebar';
+export { ChatActivity, ChatSessionOverview, ChatPreview } from './ChatRightSidebar';
+export type { ChatActivityItem, ChatActivityItemStatus } from './ChatRightSidebar';
 export { ChatEntityLinkBoundary } from './ChatEntityLinkBoundary';
 export type { ChatPreviewTarget } from './ChatEntityLinkBoundary';
 export type { ChatOverlayProps } from './ChatOverlay';

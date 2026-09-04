@@ -126,7 +126,7 @@ a {
   outline-offset: -2px;
 }
 
-.app-content__right-sidebar-toggle {
+.app-content > .app-content__right-sidebar-toggle {
   position: absolute;
   z-index: 8;
   top: 7px;
@@ -386,31 +386,7 @@ a {
 }
 
 .app-right-sidebar__tabs {
-  align-self: stretch;
-  display: flex;
-  min-width: 0;
   overflow-x: auto;
-}
-
-.app-right-sidebar__tabs button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  min-height: var(--app-header-height);
-  padding: 0;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.app-right-sidebar__tabs button[aria-selected='true'] {
-  border-bottom-color: var(--accent-blue);
-  color: var(--text-primary);
 }
 
 .app-right-sidebar__body,

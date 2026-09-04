@@ -64,6 +64,18 @@ function shortUuid(value: string): string {
   return value.length > 13 ? `${value.slice(0, 13)}…` : value;
 }
 
+function distinctSessionRef(value: string, peers: string[]): string {
+  if (value.length <= 13) return value;
+  let length = 8;
+  while (
+    length < value.length
+    && peers.some((peer) => peer !== value && peer.startsWith(value.slice(0, length)))
+  ) {
+    length += 1;
+  }
+  return length < value.length ? `${value.slice(0, length)}…` : value;
+}
+
 function sessionText(session: Record<string, unknown>, key: string): string | null {
   const value = session[key];
   return typeof value === 'string' && value ? value : null;
@@ -550,7 +562,12 @@ export function SessionOverviewView({
 
       {binding.kind === 'many' && !selectedSessionId ? (
         <ul className="session-overview__picker" aria-label="Agent session matches">
-          {binding.matches.map((match, index) => (
+          {binding.matches.map((match, index) => {
+            const matchId = match.mandible_session_id ?? match.matched_ref;
+            const peerIds = binding.matches.map((candidate) => (
+              candidate.mandible_session_id ?? candidate.matched_ref
+            ));
+            return (
             <li key={`${match.mandible_session_id ?? match.console_session_id ?? index}`}>
               <button
                 type="button"
@@ -561,7 +578,7 @@ export function SessionOverviewView({
               >
                 <span className="session-overview__picker-id">
                   {match.mandible_session_id
-                    ? shortUuid(match.mandible_session_id)
+                    ? distinctSessionRef(matchId, peerIds)
                     : 'no registry session'}
                 </span>
                 <span className="session-overview__picker-task">
@@ -570,7 +587,8 @@ export function SessionOverviewView({
                 </span>
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       ) : null}
 
@@ -643,7 +661,8 @@ export function SessionOverviewView({
             </>
           ) : null}
         </div>
-      ) : !selectedSessionId ? (
+      ) : !selectedSessionId && (binding.kind === 'many' || binding.kind === 'resolving') ? null
+      : !selectedSessionId ? (
         <SessionPicker onSelect={handleSelect} />
       ) : (
         <div className="session-overview__body">
