@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
+import { AppShellProvider, type AppBottomPanelDescriptor } from '../../ui/src/app-shell.js';
+import { DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE } from '../../src/contracts.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
@@ -47,6 +49,15 @@ beforeEach(() => {
   });
   vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
     version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
+  }));
+  vi.spyOn(api, 'getUserChatBottomShelfSetting').mockResolvedValue({
+    version: 1,
+    key: 'chat_bottom_shelf',
+    value: { ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE },
+    revision: 1,
+  });
+  vi.spyOn(api, 'updateUserChatBottomShelfSetting').mockImplementation(async (value) => ({
+    version: 1, key: 'chat_bottom_shelf', value, revision: 2,
   }));
 });
 
@@ -231,6 +242,51 @@ function deferred<T>() {
 }
 
 describe('compact detail pane shell', () => {
+  it('registers the Chat shelf in the shared main-column boundary without remounting transcript scroll', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl);
+    let descriptor: AppBottomPanelDescriptor | null = null;
+    const registerBottomPanel = (next: AppBottomPanelDescriptor) => {
+      descriptor = next;
+      return () => { if (descriptor?.id === next.id) descriptor = null; };
+    };
+    const { container } = render(
+      <AppShellProvider value={{
+        bottomPanel: null,
+        registerBottomPanel,
+        setViewSidebarWidth: () => undefined,
+        viewSidebarWidth: 280,
+        active: true,
+      }}>
+        <ConversationsView
+          conversations={[scopedConversation]}
+          consoleSessions={[]}
+          initialConversationId={scopedConversation.id}
+          initialSessionId={null}
+          onSelectSession={() => undefined}
+          onNewSession={() => undefined}
+        />
+      </AppShellProvider>,
+    );
+
+    await waitFor(() => expect(descriptor?.id).toBe('chat-bottom-shelf'));
+    expect(descriptor).toMatchObject({
+      title: 'Chat shelf',
+      ariaLabel: 'Chat bottom shelf',
+      open: true,
+    });
+    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 137;
+    fireEvent.scroll(scroll);
+    const sameScroll = scroll;
+    descriptor!.onOpenChange(false);
+    await waitFor(() => expect(api.updateUserChatBottomShelfSetting).toHaveBeenCalled());
+    expect(container.querySelector('.stream-renderer__scroll')).toBe(sameScroll);
+    expect(sameScroll.scrollTop).toBe(137);
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/chat-bottom-shelf.css'), 'utf8');
+    expect(css).toMatch(/\.app-layout--route-console\.app-layout--view-sidebar-open\.app-layout--bottom-panel-open \.chat-history-detail\s*\{[^}]*height:\s*calc\(100% - var\(--app-bottom-panel-active-height\)\);/s);
+  });
+
   it('routes every Chat detail state through one typed frame construction', () => {
     const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
     const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();

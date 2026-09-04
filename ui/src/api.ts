@@ -1,4 +1,4 @@
-import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
+import { LIST_ENVELOPE_KEYS, parseChatBottomShelfPreference } from '../../src/contracts';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
@@ -75,6 +75,7 @@ import type {
   SeedSpaceRequest,
   SeedSpaceResult,
   ResolverResult,
+  ChatBottomShelfPreference,
 } from '../../src/contracts';
 export type {
   Space,
@@ -1797,6 +1798,56 @@ export async function updateUserTypographySetting(
 ): Promise<UserTypographySetting> {
   const response = await apiPut(`/api/user-settings/${key}`, { value });
   return parseUserTypographySetting(key, await parseMaybeJson(response));
+}
+
+export type {
+  ChatBottomShelfPreference,
+  ChatBottomShelfTab,
+  ChatEntityClickAction,
+} from '../../src/contracts';
+
+export type UserChatBottomShelfSetting = {
+  version: 1;
+  key: 'chat_bottom_shelf';
+  value: ChatBottomShelfPreference | null;
+  revision: number;
+};
+
+function parseUserChatBottomShelfSetting(payload: unknown): UserChatBottomShelfSetting {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  const parsedValue = typeof record?.value === 'string'
+    ? (() => {
+      try { return parseChatBottomShelfPreference(JSON.parse(record.value)); }
+      catch { return null; }
+    })()
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'chat_bottom_shelf'
+    || (record.value !== null && parsedValue === null)
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) throw new Error('Invalid authenticated Chat bottom shelf response');
+  return {
+    version: 1,
+    key: 'chat_bottom_shelf',
+    value: parsedValue,
+    revision: record.revision as number,
+  };
+}
+
+export async function getUserChatBottomShelfSetting(): Promise<UserChatBottomShelfSetting> {
+  const response = await apiGet('/api/user-settings/chat_bottom_shelf');
+  return parseUserChatBottomShelfSetting(await parseMaybeJson(response));
+}
+
+export async function updateUserChatBottomShelfSetting(
+  value: ChatBottomShelfPreference,
+): Promise<UserChatBottomShelfSetting> {
+  const response = await apiPut('/api/user-settings/chat_bottom_shelf', { value: JSON.stringify(value) });
+  return parseUserChatBottomShelfSetting(await parseMaybeJson(response));
 }
 
 export type ChatShownProjectPreferenceValue = {

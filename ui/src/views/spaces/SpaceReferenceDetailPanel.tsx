@@ -6,6 +6,7 @@ import {
   getArtifactKnowledgeBackrefs,
   getArtifactVersions,
   getLedgerIssueDetailByIssueId,
+  getLedgerIssueDetailByRef,
   resolveArtifact,
   type ArtifactContentResult,
   type ArtifactRecord,
@@ -58,13 +59,15 @@ export function SpaceReferenceDetailContent({
   );
 }
 
-export function IssueReferenceDetail({ issueRef }: { issueRef: string }): JSX.Element {
+export function IssueReferenceDetail({ issueRef, repoId }: { issueRef: string; repoId?: string }): JSX.Element {
   const loadDetail = useCallback(
-    (_signal: AbortSignal) => getLedgerIssueDetailByIssueId(issueRef),
-    [issueRef],
+    (_signal: AbortSignal) => repoId
+      ? getLedgerIssueDetailByRef(repoId, issueRef)
+      : getLedgerIssueDetailByIssueId(issueRef),
+    [issueRef, repoId],
   );
   const { data: detail, loading, error } = useKeyedAsyncDetail<LedgerIssueDetailProjection>({
-    requestKey: detailRequestKey('issue', { issueId: issueRef }),
+    requestKey: detailRequestKey('issue', { issueId: issueRef, repoId: repoId ?? null }),
     namespace: 'issue-detail',
     load: loadDetail,
   });

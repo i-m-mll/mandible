@@ -15,7 +15,16 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 169;
+export const BASELINE_SCHEMA_VERSION = 170;
+
+export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'chat_bottom_shelf')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`;
 
 const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE conversation_sources (
@@ -270,7 +279,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE user_credentials (\n        id              TEXT PRIMARY KEY,\n        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        type            TEXT NOT NULL,\n        fingerprint     TEXT NOT NULL,\n        public_material TEXT,\n        label           TEXT,\n        status          TEXT NOT NULL DEFAULT 'active'\n                          CHECK(status IN ('active','revoked')),\n        created_at      INTEGER NOT NULL,\n        revoked_at      INTEGER,\n        metadata_json   TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
   "CREATE TABLE user_group_members (\n        group_id  TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,\n        user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (group_id, user_id)\n      )",
   "CREATE TABLE user_groups (\n        id           TEXT PRIMARY KEY,\n        slug         TEXT NOT NULL UNIQUE,\n        display_name TEXT NOT NULL,\n        kind         TEXT NOT NULL DEFAULT 'custom'\n                       CHECK(kind IN ('system','custom')),\n        created_at   INTEGER NOT NULL,\n        updated_at   INTEGER NOT NULL\n      )",
-  "CREATE TABLE user_settings (\n        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size')),\n        value TEXT NOT NULL,\n        revision INTEGER NOT NULL CHECK(revision >= 1),\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY(user_id, key)\n      )",
+  USER_SETTINGS_SCHEMA_SQL,
   "CREATE TABLE users (\n        id            TEXT PRIMARY KEY,\n        slug          TEXT NOT NULL UNIQUE,\n        kind          TEXT NOT NULL\n                        CHECK(kind IN ('human','agent','system','external')),\n        display_name  TEXT NOT NULL,\n        email         TEXT,\n        status        TEXT NOT NULL DEFAULT 'active'\n                        CHECK(status IN ('active','retired')),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
   "CREATE TABLE webhook_events (\n        id             TEXT PRIMARY KEY,\n        source         TEXT NOT NULL,\n        event_type     TEXT NOT NULL,\n        title          TEXT,\n        data_json      TEXT NOT NULL,\n        target_session TEXT,\n        target_issue   TEXT,\n        target_branch  TEXT,\n        priority       TEXT NOT NULL DEFAULT 'normal',\n        status         TEXT NOT NULL DEFAULT 'pending',\n        created_at     INTEGER NOT NULL,\n        delivered_at   INTEGER,\n        delivered_to   TEXT\n      )",
   "CREATE TABLE work_repos (\n        id              TEXT NOT NULL,\n        root            TEXT NOT NULL,\n        name            TEXT NOT NULL,\n        default_branch  TEXT NOT NULL DEFAULT '',\n        dir_exists      INTEGER NOT NULL DEFAULT 1,\n        excluded        INTEGER NOT NULL DEFAULT 0,\n        user_modified   INTEGER NOT NULL DEFAULT 0,\n        last_scanned_at TEXT,\n        created_at      TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),\n        PRIMARY KEY (root)\n      )",

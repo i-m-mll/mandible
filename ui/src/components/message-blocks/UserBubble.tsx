@@ -6,6 +6,7 @@
 
 import { useMemo } from 'preact/hooks';
 import { renderMarkdown } from '../../lib/markdown';
+import { linkifyChatIssueRefs } from '../../chat/chatEntityLinks';
 
 export type UserBubbleProps = {
   text: string;
@@ -30,7 +31,7 @@ export function getInstructionMessageMeta(content: string): InstructionMessageMe
 export function UserBubble({ text }: UserBubbleProps): JSX.Element {
   const instruction = getInstructionMessageMeta(text);
   const html = useMemo(() => {
-    return renderMarkdown(text);
+    return linkifyChatIssueRefs(renderMarkdown(text));
   }, [text]);
 
   if (instruction) {

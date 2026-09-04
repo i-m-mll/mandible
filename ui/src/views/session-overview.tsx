@@ -43,6 +43,7 @@ type BindingState =
 export type SessionOverviewViewProps = {
   initialSessionId: string | null;
   agentBinding: string | null;
+  embedded?: boolean;
 };
 
 function formatTimestamp(value: unknown): string {
@@ -275,6 +276,7 @@ function SessionPicker({
 export function SessionOverviewView({
   initialSessionId,
   agentBinding,
+  embedded = false,
 }: SessionOverviewViewProps): JSX.Element {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
   const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
@@ -459,8 +461,8 @@ export function SessionOverviewView({
   const session = overview?.session ?? null;
 
   return (
-    <div className="view session-overview">
-      <div className="view-header session-overview__header">
+    <div className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
+      {!embedded ? <div className="view-header session-overview__header">
         <div>
           <h2>Session Overview</h2>
           <p className="text-muted">
@@ -484,7 +486,7 @@ export function SessionOverviewView({
             </>
           ) : null}
         </div>
-      </div>
+      </div> : null}
 
       {agentBinding ? (
         <div className="session-overview__binding" role="status">

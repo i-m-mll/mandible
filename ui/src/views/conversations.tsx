@@ -70,6 +70,8 @@ import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
+  ChatBottomShelf,
+  ChatEntityLinkBoundary,
   ChatSurface,
   ContextUsageRing,
   Shelf,
@@ -80,6 +82,8 @@ import {
   deriveChatUsageSummary,
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
+  useChatBottomShelfPreference,
+  type ChatPreviewTarget,
   type ShelfItem,
 } from '../chat';
 import {
@@ -97,6 +101,7 @@ import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
+import { useRegisterAppBottomPanel } from '../app-shell';
 
 // ── Toast notification ──
 
@@ -1050,6 +1055,9 @@ function ConversationDetail({
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
   const [liveProjection, setLiveProjection] = useState<ProviderLiveProjection | null>(null);
+  const [bottomShelfPreference, setBottomShelfPreference, bottomShelfPreferenceState] = useChatBottomShelfPreference();
+  const [previewTarget, setPreviewTarget] = useState<ChatPreviewTarget | null>(null);
+  const [bottomShelfHeight, setBottomShelfHeight] = useState(340);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1065,6 +1073,70 @@ function ConversationDetail({
   const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
   const conversationRequestKey = detailRequestKey('conversation', { conversationId, anchor: anchorKey });
   const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
+
+  useEffect(() => {
+    setPreviewTarget(null);
+  }, [conversationId]);
+
+  const previewInBottomShelf = useCallback((target: ChatPreviewTarget) => {
+    setPreviewTarget(target);
+    setBottomShelfPreference((current) => ({
+      ...current,
+      visible: true,
+      tab: 'preview',
+    }));
+  }, [setBottomShelfPreference]);
+
+  const clearBottomShelfPreview = useCallback(() => {
+    setPreviewTarget(null);
+  }, []);
+
+  const bottomShelfContent = useMemo(() => (
+    <ChatBottomShelf
+      preference={bottomShelfPreference}
+      preferenceReady={bottomShelfPreferenceState.ready}
+      preferenceError={bottomShelfPreferenceState.error}
+      providerSessionId={conversation?.session_id ?? null}
+      previewTarget={previewTarget}
+      onPreferenceChange={setBottomShelfPreference}
+      onClearPreview={clearBottomShelfPreview}
+    />
+  ), [
+    bottomShelfPreference,
+    bottomShelfPreferenceState.error,
+    bottomShelfPreferenceState.ready,
+    clearBottomShelfPreview,
+    conversation?.session_id,
+    previewTarget,
+    setBottomShelfPreference,
+  ]);
+  const bottomShelfDescriptor = useMemo(() => (
+    conversation && (bottomShelfPreferenceState.ready || bottomShelfPreferenceState.error !== null)
+      ? {
+        id: 'chat-bottom-shelf',
+        title: 'Chat shelf',
+        ariaLabel: 'Chat bottom shelf',
+        open: bottomShelfPreference.visible,
+        height: bottomShelfHeight,
+        minHeight: 220,
+        maxHeight: 520,
+        onOpenChange: (visible: boolean) => {
+          setBottomShelfPreference((current) => ({ ...current, visible }));
+        },
+        onHeightChange: setBottomShelfHeight,
+        content: bottomShelfContent,
+      }
+      : null
+  ), [
+    bottomShelfContent,
+    bottomShelfHeight,
+    bottomShelfPreference.visible,
+    bottomShelfPreferenceState.error,
+    bottomShelfPreferenceState.ready,
+    conversation,
+    setBottomShelfPreference,
+  ]);
+  useRegisterAppBottomPanel(bottomShelfDescriptor);
 
   useEffect(() => {
     setEffectiveAnchor(anchor);
@@ -2210,32 +2282,37 @@ function ConversationDetail({
       )}
 
       <div className="conv-transcript">
-        <ChatSurface
-          events={chatEvents}
-          streaming={providerStreaming}
-          emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-          unmaterializedAfterCount={conversation.position_window.window.after_count}
-          onJumpToLatest={handleJumpToLatest}
-          jumpingToLatest={jumpingToLatest}
-          navigationTarget={navigationTarget}
-          selectedMessageId={conversation.position_window.target.turn_id}
-          selectedBlockIds={selected}
-          selectMode={selectMode}
-          onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
-          onFork={handleFork}
-          onSelectMessageInfo={(turnId) => {
-            window.location.hash = conversationTurnSelectionHref(
-              conversationId,
-              conversation.position_window.target.turn_id,
-              turnId,
-            );
-          }}
-          sessionInfo={{
-            sessionId: conversation.session_id,
-            backend: conversation.source,
-            model: conversation.model ?? undefined,
-          }}
-        />
+        <ChatEntityLinkBoundary
+          defaultAction={bottomShelfPreference.clickAction}
+          onPreview={previewInBottomShelf}
+        >
+          <ChatSurface
+            events={chatEvents}
+            streaming={providerStreaming}
+            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            unmaterializedAfterCount={conversation.position_window.window.after_count}
+            onJumpToLatest={handleJumpToLatest}
+            jumpingToLatest={jumpingToLatest}
+            navigationTarget={navigationTarget}
+            selectedMessageId={conversation.position_window.target.turn_id}
+            selectedBlockIds={selected}
+            selectMode={selectMode}
+            onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
+            onFork={handleFork}
+            onSelectMessageInfo={(turnId) => {
+              window.location.hash = conversationTurnSelectionHref(
+                conversationId,
+                conversation.position_window.target.turn_id,
+                turnId,
+              );
+            }}
+            sessionInfo={{
+              sessionId: conversation.session_id,
+              backend: conversation.source,
+              model: conversation.model ?? undefined,
+            }}
+          />
+        </ChatEntityLinkBoundary>
       </div>
     </ChatDetailFrame>
   );
