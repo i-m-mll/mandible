@@ -870,7 +870,7 @@ describe("auth queue canonical message storage", () => {
     }
   });
 
-  it("still allows editing undigested review text on an approved request", () => {
+  it("refuses editing undigested review text after approval", () => {
     const { db, queue } = newQueue();
     try {
       const request = queue.submit({
@@ -879,9 +879,8 @@ describe("auth queue canonical message storage", () => {
         commit_message: "- one",
       });
       db.prepare("UPDATE auth_requests SET status = 'approved' WHERE id = ?").run(request.id);
-      const updated = queue.update(request.id, { commit_message: "- two" });
-      expect(updated.commit_message).toBe("- two");
-      expect(updated.commit_message_digest).toBeNull();
+      expect(() => queue.update(request.id, { commit_message: "- two" }))
+        .toThrow(/Only pending requests can be revised/);
     } finally {
       db.close();
     }

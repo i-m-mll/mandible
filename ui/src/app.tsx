@@ -7,7 +7,6 @@ import {
   ackAllInbox,
   approveAuthRequest,
   createConsoleSession,
-  dismissAuthRequest,
   getAuthHistory,
   getAuthQueue,
   getConsoleSessions,
@@ -1338,7 +1337,7 @@ function App(): JSX.Element {
       client.on('auth:merged', authResolvedHandler),
       client.on('auth:resolved', authResolvedHandler),
       client.on('auth:finalized', handler),
-      client.on('auth:deleted', handler),
+      client.on('auth:lifecycle', handler),
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
@@ -1387,7 +1386,7 @@ function App(): JSX.Element {
       client.on('auth:merged', graphRefreshHandler),
       client.on('auth:resolved', graphRefreshHandler),
       client.on('auth:finalized', graphRefreshHandler),
-      client.on('auth:deleted', graphRefreshHandler),
+      client.on('auth:lifecycle', graphRefreshHandler),
       client.on('ledger:issue:created', graphRefreshHandler),
       client.on('ledger:issue:updated', graphRefreshHandler),
       client.on('ledger:issue:closed', graphRefreshHandler),
@@ -1715,16 +1714,6 @@ function App(): JSX.Element {
     try {
       await retryAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'pending' });
-      void loadDashboardBadges();
-    } catch {
-      return;
-    }
-  };
-
-  const handleDismiss = async (requestId: string) => {
-    try {
-      await dismissAuthRequest(requestId);
-      dispatch({ type: 'authResolved', requestId, status: 'dismissed' });
       void loadDashboardBadges();
     } catch {
       return;
@@ -2545,7 +2534,6 @@ function App(): JSX.Element {
               onApprove={handleApprove}
               onReject={handleReject}
               onRetry={handleRetry}
-              onDismiss={handleDismiss}
               onUpdateField={handleUpdateAuthField}
             />
           );

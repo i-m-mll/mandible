@@ -17,11 +17,8 @@ import { getDaemonLogger } from "../daemon-log.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
-import type { AuthRequestInput, AuthRequestType } from "../types.js";
-import {
-  resolveProviderSessionAttributionResult,
-  resolveSessionIdAttributionResult,
-} from "../identity/resolver.js";
+import type { AuthLifecycleActor, AuthRequest, AuthRequestInput, AuthRequestType } from "../types.js";
+import { resolveProviderSessionAttributionResult, resolveSessionIdAttributionResult } from "../identity/resolver.js";
 import {
   AttributionReadResolver,
   authAttributionReadFields,
@@ -32,6 +29,8 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { readBody } from "./http.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
+import { resolveProjectRef } from "../ledger/project-registry.js";
+import { PermissionError, requireProjectAccess } from "../permissions/store.js";
 
 const authRouteLog = getDaemonLogger();
 
@@ -68,13 +67,13 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "Invalid auth request payload." });
       return;
     }
-    const requester = resolveAuthRequester(req, payload);
+    const isAuthMerge = isAuthMergeCommand(payload);
+    const requester = resolveAuthRequester(req, payload, isAuthMerge);
     if (!requester.ok) {
       res.status(requester.status).json({ error: requester.error, code: requester.code });
       return;
     }
 
-    const isAuthMerge = isAuthMergeCommand(payload);
     if (isAuthMerge) {
       try {
         // Issue 08a5f04 — legacy submitters (MCP channel server, raw API
@@ -173,6 +172,7 @@ export function registerAuthRoutes(
           ? path.basename(payload.cwd)
           : payload.repo;
     }
+    if (isAuthMerge && !enforceAuthProjectWrite(req, res, payload.repo)) return;
 
     // Auth merge gate: verify Mandible issue references in non-merge commits.
     if (isAuthMerge) {
@@ -192,7 +192,7 @@ export function registerAuthRoutes(
     // its own title beside a foreign request's id and read the refusal as a
     // success. Reporting the stored title/repo/branches makes the mismatch that
     // caused the refusal visible at the point of refusal.
-    const duplicate = authQueue.findDuplicate(payload);
+    const duplicate = payload.supersedes_request_id ? null : authQueue.findDuplicate(payload);
     if (duplicate) {
       res.status(409).json({
         error:
@@ -216,6 +216,7 @@ export function registerAuthRoutes(
     try {
       payload.requester_evidence_method = requester.evidenceMethod;
       payload.requester_credential_id = requester.credentialId;
+      payload.require_delivery_custody = isAuthMerge;
       const request = authQueue.submit(payload, requester.userId);
       res.status(201).json({ request_id: request.id });
     } catch (error) {
@@ -262,7 +263,8 @@ export function registerAuthRoutes(
       convergence: authQueue.convergenceForRequest(request.id),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
-      actions: authQueue.listActions(request.id)
+      actions: authQueue.listActions(request.id),
+      lifecycle_events: authQueue.listLifecycleEvents(request.id),
     });
   }, { fileRpc: "allow" });
 
@@ -275,8 +277,14 @@ export function registerAuthRoutes(
   }, { fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/actions", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
     try {
-      const action = authQueue.addAction(req.params.id, readBody<Record<string, unknown>>(req));
+      const current = authQueue.getRequest(req.params.id);
+      if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const control = authMutationControl(req, res, current, body);
+      if (!control) return;
+      const action = authQueue.addAction(req.params.id, authActionPayload(body), control.actor,
+        numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(201).json({ action });
     } catch (error) {
       handleQueueError(error, res);
@@ -284,11 +292,19 @@ export function registerAuthRoutes(
   }, { fileRpc: "allow" });
 
   app.put("/api/auth/request/:id/actions/:actionId", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
     try {
+      const current = authQueue.getRequest(req.params.id);
+      if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const control = authMutationControl(req, res, current, body);
+      if (!control) return;
       const action = authQueue.updateAction(
         req.params.id,
         req.params.actionId,
-        readBody<Record<string, unknown>>(req),
+        authActionPayload(body),
+        control.actor,
+        numberField(body.expected_revision),
+        numberField(body.expected_custody_generation),
       );
       res.status(200).json({ action });
     } catch (error) {
@@ -297,8 +313,14 @@ export function registerAuthRoutes(
   }, { fileRpc: "allow" });
 
   app.delete("/api/auth/request/:id/actions/:actionId", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
     try {
-      const action = authQueue.deleteAction(req.params.id, req.params.actionId);
+      const current = authQueue.getRequest(req.params.id);
+      if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const control = authMutationControl(req, res, current, body);
+      if (!control) return;
+      const action = authQueue.deleteAction(req.params.id, req.params.actionId, control.actor,
+        numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(200).json({ action_id: action.id, deleted: true });
     } catch (error) {
       handleQueueError(error, res);
@@ -312,22 +334,32 @@ export function registerAuthRoutes(
       return;
     }
     try {
-      const action = authQueue.setActionVeto(req.params.id, req.params.actionId, body.vetoed);
+      const current = authQueue.getRequest(req.params.id);
+      if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const control = authMutationControl(req, res, current, body);
+      if (!control) return;
+      const action = authQueue.setActionVeto(req.params.id, req.params.actionId, body.vetoed,
+        control.actor, numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(200).json({ action });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
   app.put("/api/auth/request/:id", (req, res) => {
-    const result = parseAuthRequestUpdatePayload(readBody<Record<string, unknown>>(req));
+    const body = readBody<Record<string, unknown>>(req);
+    const result = parseAuthRequestUpdatePayload(body);
     if (!result.ok) {
       res.status(400).json({ error: result.error });
       return;
     }
-
     try {
-      const updated = authQueue.update(req.params.id, result.payload);
+      const current = authQueue.getRequest(req.params.id);
+      if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const control = authMutationControl(req, res, current, body, true);
+      if (!control) return;
+      const updated = authQueue.update(req.params.id, result.payload, control.actor,
+        numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(200).json({ request_id: updated.id, ...updated });
     } catch (error) {
       if (isHttpError(error)) {
@@ -336,23 +368,46 @@ export function registerAuthRoutes(
       }
       handleQueueError(error, res);
     }
+  }, { fileRpc: "allow" });
+
+  app.delete("/api/auth/request/:id", (_req, res) => {
+    res.status(410).json({
+      code: "auth_request_delete_removed",
+      error: "Auth requests are immutable records. Pending requesters must use withdrawal.",
+    });
   }, { fileRpc: "deny" });
 
-  app.delete("/api/auth/request/:id", (req, res) => {
+  app.post("/api/auth/request/:id/withdraw", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.reason !== "string" || !body.reason.trim()) {
       res.status(400).json({ error: "reason is required" });
       return;
     }
+    const requester = resolveAuthRequester(req, { command: "withdraw", title: "withdraw" }, true);
+    if (!requester.ok) {
+      res.status(requester.status).json({ error: requester.error, code: requester.code });
+      return;
+    }
     try {
-      // Issue 22ace1c — report the canonical id the queue actually deleted,
-      // not the prefix the caller happened to send.
-      const deleted = authQueue.delete(req.params.id, body.reason);
-      res.status(200).json({ request_id: deleted.id, deleted: true });
+      const recovery = body.operator_recovery === true;
+      if (recovery) requireOperator(getDb(), req);
+      const current = authQueue.getRequest(req.params.id);
+      if (!current) {
+        res.status(404).json({ error: "Auth request not found." });
+        return;
+      }
+      if (!enforceAuthProjectWrite(req, res, current.repo)) return;
+      const request = authQueue.withdraw(req.params.id, body.reason, {
+        user_id: requester.userId,
+        evidence_method: requester.evidenceMethod,
+        credential_id: requester.credentialId,
+        authority_path: recovery ? "operator_recovery" : "custodian",
+      }, numberField(body.expected_revision), numberField(body.expected_custody_generation));
+      res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
   // Issue 27241e6 — convergence retry. This reruns the snapshotted hook
   // command for a merged request; it never reruns the merge, which is why it
@@ -447,19 +502,24 @@ export function registerAuthRoutes(
     }
   }, { authenticated: true }), { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/reject", (req, res) => {
+  app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", (req, res) => {
     try {
       const body = readBody<Record<string, unknown>>(req);
       const reason =
         typeof body.reason === "string" && body.reason.trim().length > 0
           ? body.reason
           : undefined;
-      const request = authQueue.reject(req.params.id, reason);
+      const identity = req.client_identity!;
+      const request = authQueue.reject(req.params.id, reason, {
+        user_id: identity.user_id,
+        evidence_method: identity.method,
+        credential_id: identity.credential_id,
+      });
       res.json({ request_id: request.id, status: request.status, error: request.error });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { authenticated: true }), { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/skip", (req, res) => {
     try {
@@ -488,13 +548,11 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/dismiss", (req, res) => {
-    try {
-      const request = authQueue.dismiss(req.params.id);
-      res.status(200).json({ request_id: request.id, status: request.status });
-    } catch (error) {
-      handleQueueError(error, res);
-    }
+  app.post("/api/auth/request/:id/dismiss", (_req, res) => {
+    res.status(410).json({
+      code: "auth_request_dismiss_removed",
+      error: "Dismiss is not an auth lifecycle outcome. Pending requesters may withdraw; operators may reject.",
+    });
   }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/output", (req, res) => {
@@ -601,10 +659,23 @@ export function registerAuthRoutes(
     try {
       const identity = req.client_identity;
       const request = authQueue.getRequest(req.params.id);
+      const custody = request?.custody_work_unit_id
+        ? getDb().prepare(`
+            SELECT wu.owner_user_id, wu.owner_credential_id, uc.status AS credential_status
+            FROM work_units wu
+            LEFT JOIN user_credentials uc ON uc.id = wu.owner_credential_id
+            WHERE wu.id = ? AND wu.auth_request_id = ?
+          `).get(request.custody_work_unit_id, request.id) as {
+            owner_user_id: string | null;
+            owner_credential_id: string | null;
+            credential_status: string | null;
+          } | undefined
+        : undefined;
       if (!identity || identity.method !== "api_token" || !identity.credential_id || !request
-          || request.requested_by_user_id !== identity.user_id
-          || request.requester_credential_id !== identity.credential_id) {
-        res.status(403).json({ error: "Verified requester provenance does not match this auth request." });
+          || custody?.owner_user_id !== identity.user_id
+          || custody.owner_credential_id !== identity.credential_id
+          || custody.credential_status !== "active") {
+        res.status(403).json({ error: "Verified delivery-work-unit custodian does not match this auth request." });
         return;
       }
       const executing = authQueue.approveWithClearance(request.id);
@@ -646,9 +717,21 @@ export function registerAuthRoutes(
 function resolveAuthRequester(
   req: RequestLike,
   payload: AuthRequestInput,
+  requireDurable = false,
 ): { ok: true; userId: string; evidenceMethod: string; credentialId: string | null }
   | { ok: false; status: number; code: string; error: string } {
-  const authenticatedUserId = req.client_identity?.user_id ?? null;
+  const identity = req.client_identity;
+  if (identity?.method === "api_token" && identity.credential_id) {
+    return { ok: true, userId: identity.user_id, evidenceMethod: "api_token", credentialId: identity.credential_id };
+  }
+  if (requireDurable) {
+    return {
+      ok: false,
+      status: 401,
+      code: "durable_credential_required",
+      error: "Auth request lifecycle mutations require an authenticated durable client credential.",
+    };
+  }
   const ambientIdentity = req.ambient_identity ?? null;
   const sessionResolution = payload.session_id
     ? ambientIdentity
@@ -658,44 +741,17 @@ function resolveAuthRequester(
       : resolveSessionIdAttributionResult(getDb(), payload.session_id)
     : { status: "no_match" as const };
   if (sessionResolution.status === "conflict") {
-    return {
-      ok: false,
-      status: 403,
-      code: "requester_session_conflict",
-      error: "Auth request session claims resolve to conflicting users.",
-    };
+    return { ok: false, status: 403, code: "requester_session_conflict", error: "Auth request session claims resolve to conflicting users." };
   }
-  const sessionAttribution = sessionResolution.status === "resolved"
-    ? sessionResolution.attribution
-    : null;
-  if (
-    authenticatedUserId &&
-    sessionAttribution &&
-    authenticatedUserId !== sessionAttribution.user_id
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      code: "requester_identity_mismatch",
-      error: "Authenticated client and session binding resolve to different users.",
-    };
-  }
-  const userId = authenticatedUserId ?? sessionAttribution?.user_id ?? null;
-  if (!userId) {
-    return {
-      ok: false,
-      status: 401,
-      code: "requester_identity_required",
-      error: "Auth request submission requires an authenticated client or an unambiguous session binding.",
-    };
+  const attribution = sessionResolution.status === "resolved" ? sessionResolution.attribution : null;
+  if (!attribution) {
+    return { ok: false, status: 401, code: "requester_identity_required", error: "Auth request submission requires an authenticated client or an unambiguous session binding." };
   }
   return {
     ok: true,
-    userId,
-    evidenceMethod: req.client_identity?.method === "api_token" ? "api_token" : "session_claim",
-    credentialId: req.client_identity?.method === "api_token"
-      ? req.client_identity.credential_id
-      : null,
+    userId: attribution.user_id,
+    evidenceMethod: "session_claim",
+    credentialId: null,
   };
 }
 
@@ -767,9 +823,84 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
     // Bug: 6d7411b — conversation_id for cross-resume matching
     conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,
-    actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"]
+    actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"],
+    supersedes_request_id: typeof body.supersedes_request_id === "string" ? body.supersedes_request_id : null,
+    superseded_action_dispositions: Array.isArray(body.superseded_action_dispositions)
+      ? body.superseded_action_dispositions as AuthRequestInput["superseded_action_dispositions"]
+      : undefined,
+    expected_revision: numberField(body.expected_revision),
+    expected_custody_generation: numberField(body.expected_custody_generation),
   };
 }
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function enforceAuthProjectWrite(req: RequestLike, res: ResponseLike, repo: string | undefined): boolean {
+  const resolved = repo ? resolveProjectRef(getDb(), repo) : { ok: false as const };
+  if (!resolved.ok || !resolved.project || resolved.ambiguous) {
+    res.status(409).json({ error: "Auth request project identity is missing or ambiguous." });
+    return false;
+  }
+  try {
+    requireProjectAccess(getDb(), req, resolved.project.id, "write");
+    return true;
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      res.status(error.status).json({ error: error.message, code: error.code });
+      return false;
+    }
+    throw error;
+  }
+}
+
+function authMutationControl(
+  req: RequestLike,
+  res: ResponseLike,
+  request: AuthRequest,
+  body: Record<string, unknown>,
+  requireGoverned = false,
+): { actor: AuthLifecycleActor | undefined } | null {
+  const governed = requireGoverned || Boolean(request.custody_work_unit_id) || isAuthMergeCommand(request);
+  if (!governed) return { actor: undefined };
+  const requester = resolveAuthRequester(req, { command: "mutate", title: "mutate" }, true);
+  if (!requester.ok) {
+    res.status(requester.status).json({ error: requester.error, code: requester.code });
+    return null;
+  }
+  const recovery = body.operator_recovery === true;
+  if (recovery) {
+    try {
+      requireOperator(getDb(), req);
+    } catch (error) {
+      if (error instanceof ClientAuthzError) {
+        res.status(error.status).json({ error: error.message, code: error.code });
+        return null;
+      }
+      throw error;
+    }
+  }
+  if (request.repo) {
+    if (!enforceAuthProjectWrite(req, res, request.repo)) return null;
+  } else if (!recovery) {
+    res.status(409).json({ error: "Unbound legacy auth requests require operator recovery." });
+    return null;
+  }
+  return { actor: {
+    user_id: requester.userId,
+    evidence_method: requester.evidenceMethod,
+    credential_id: requester.credentialId,
+    authority_path: recovery ? "operator_recovery" : "custodian",
+  } };
+}
+
+function authActionPayload(body: Record<string, unknown>): Record<string, unknown> {
+  const { expected_revision: _revision, expected_custody_generation: _generation,
+    operator_recovery: _recovery, ...payload } = body;
+  return payload;
+}
+
 
 function parseAuthCheckPayload(body: Record<string, unknown>): AuthMergeCheckInput | null {
   return {
@@ -1079,6 +1210,20 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
     }
     if (error.code === "merge_check_failed") {
       res.status(422).json({ error: error.message, check: error.details });
+      return;
+    }
+    if (error.code === "requester_control_required" || error.code === "custody_required" ||
+        error.code === "operator_recovery_required") {
+      res.status(403).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error.code === "custody_conflict" || error.code === "lifecycle_conflict" ||
+        error.code === "lifecycle_precondition_required") {
+      res.status(409).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error.code === "action_disposition_required" || error.code === "target_mismatch") {
+      res.status(422).json({ error: error.message, code: error.code });
       return;
     }
   }

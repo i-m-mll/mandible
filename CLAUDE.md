@@ -214,8 +214,9 @@ Base URL: `http://localhost:19420`
 GET  /api/auth/queue            → list active auth queue
 GET  /api/auth/request/<id>     → request details
 POST /api/auth/request          → submit new request (use CLI instead)
-PUT  /api/auth/request/<id>     → update existing request (pending/failed only)
-DELETE /api/auth/request/<id>   → delete request (body: {"reason":"..."})
+PUT  /api/auth/request/<id>     → revise existing request (pending only)
+POST /api/auth/request/<id>/withdraw → exact requester withdraws pending request with a reason
+DELETE /api/auth/request/<id>   → retired; returns 410 without deleting history
 GET  /api/events?topic=auth:    → SSE stream for auth resolution
 GET  /api/inbox?branch=<b>      → session inbox (continuations, auth results)
 PATCH /api/sessions/<id>        → update session (continuation_acked, etc.)
@@ -224,7 +225,7 @@ PATCH /api/sessions/<id>        → update session (continuation_acked, etc.)
 Use `mandible auth list` to inspect the active queue when an auth request ID is
 unknown; use `GET /api/auth/queue` as the raw API fallback.
 
-Note: DELETE body parsing requires "DELETE" in the method allowlist in `server.ts` (see issue 511ebaa).
+Auth requests and their hashed lifecycle revisions are durable records. Operator rejection and exact-requester withdrawal are distinct transitions; changed reviewed bytes require explicit supersession.
 
 ## Issue tracking
 

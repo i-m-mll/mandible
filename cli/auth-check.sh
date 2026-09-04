@@ -141,7 +141,7 @@ case "$status" in
       .check.stale_requests[]?
       | "- " + .message
     ' >&2
-    printf 'Remediation: reconcile the auth queue (already-merged requests self-resolve at daemon startup and periodically) or dismiss the stale request(s) listed above, then recheck.\n' >&2
+    printf 'Remediation: reconcile the auth queue (already-merged requests self-resolve at daemon startup and periodically), or have the exact requester withdraw or replace the stale pending request, then recheck.\n' >&2
     exit 1
     ;;
   error)

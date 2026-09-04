@@ -210,6 +210,28 @@ mandible_work_unit_release() {
   mandible_ledger_request POST "/api/work-units/release" "$payload" "$graceful"
 }
 
+mandible_work_unit_custody_assume() {
+  local id="" expected_generation="" reason="" checkpoint="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  while (( $# > 0 )); do
+    case "$1" in
+      --id) id="${2:-}"; shift 2 ;;
+      --expected-generation) expected_generation="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --parent-role-checkpoint) checkpoint="${2:-}"; shift 2 ;;
+      --graceful) graceful=1; shift ;;
+      *) mandible_ledger_die "Unknown work-unit custody-assume option: $1" 2; return $? ;;
+    esac
+  done
+  [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
+  [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
+  [[ -n "$reason" ]] || mandible_ledger_die "Missing --reason" 2 || return $?
+  mandible_ledger_require_tools || return $?
+  local payload
+  payload=$(jq -n --argjson expected_generation "$expected_generation" --arg reason "$reason" --arg checkpoint "$checkpoint" \
+    '{expected_generation:$expected_generation,reason:$reason} + (if $checkpoint != "" then {parent_role_checkpoint_id:$checkpoint} else {} end)')
+  mandible_ledger_request POST "/api/work-units/$(mandible_ledger_urlencode "$id")/custody/assume" "$payload" "$graceful"
+}
+
 mandible_trash_list() {
   local project="" state=""
   while (( $# > 0 )); do

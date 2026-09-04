@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
 import { createMigratedDb, createQueue, git, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+import { addCredential, getOperator } from "../src/users/store.js";
 
 describe("auth queue", () => {
   it("submits request and returns pending status", () => {
@@ -231,7 +232,7 @@ describe("auth queue", () => {
     expect(fetched?.status).toBe("expired");
   });
 
-  it("allows updating fields on a failed (non-zero exit) request", () => {
+  it("refuses to revise a failed terminal request", () => {
     const queue = createQueue();
 
     const request = queue.submit({
@@ -246,10 +247,8 @@ describe("auth queue", () => {
     expect(failed?.status).toBe("completed");
     expect(failed?.exit_code).toBe(1);
 
-    // Should be able to update fields on a failed request
-    const updated = queue.update(request.id, { cwd: "/correct/path" });
-    expect(updated.cwd).toBe("/correct/path");
-    expect(updated.status).toBe("completed"); // Status unchanged
+    expect(() => queue.update(request.id, { cwd: "/correct/path" })).toThrow("Only pending requests");
+    expect(queue.getRequest(request.id)?.cwd).toBe("/wrong/path");
   });
 
   it("allows updating merge head sha on a pending request", () => {
@@ -271,7 +270,7 @@ describe("auth queue", () => {
     );
   });
 
-  it("allows updating fields and resetting failed request to pending", () => {
+  it("requires retry before revising a failed request", () => {
     const events: SseEvent[] = [];
     const queue = createQueue({
       broadcast: (event) => {
@@ -291,11 +290,13 @@ describe("auth queue", () => {
     queue.approve(request.id);
     queue.setResult(request.id, 1, "Not a git repository", "cwd was wrong");
 
-    // Update cwd and reset to pending in a single PUT
-    const updated = queue.update(request.id, {
+    expect(() => queue.update(request.id, {
       cwd: "/correct/repo",
       status: "pending"
-    });
+    })).toThrow("Only pending requests");
+
+    const retried = queue.retry(request.id);
+    const updated = queue.update(retried.id, { cwd: "/correct/repo" });
 
     expect(updated.status).toBe("pending");
     expect(updated.cwd).toBe("/correct/repo");
@@ -308,13 +309,14 @@ describe("auth queue", () => {
     expect(events.some((e) => e.event === "auth:new" && (e.data as { request: { id: string } }).request.id === updated.id)).toBe(true);
   });
 
-  it("allows resetting failed request to pending with status only (no other fields)", () => {
+  it("retries a failed request through the explicit retry operation", () => {
     const queue = createQueue();
 
     const request = queue.submit({ command: "echo retry", title: "Retry" });
     queue.setResult(request.id, 1, "failed", "oops");
 
-    const updated = queue.update(request.id, { status: "pending" });
+    expect(() => queue.update(request.id, { status: "pending" })).toThrow("Only pending requests");
+    const updated = queue.retry(request.id);
     expect(updated.status).toBe("pending");
     expect(updated.exit_code).toBeNull();
   });
@@ -328,7 +330,7 @@ describe("auth queue", () => {
     expect(() => queue.update(request.id, { title: "New title" })).toThrow();
   });
 
-  it("allows updating fields on an expired request", () => {
+  it("refuses to revise an expired terminal request", () => {
     let now = 0;
     const queue = createQueue({ ttlMs: 10, now: () => now });
 
@@ -340,16 +342,14 @@ describe("auth queue", () => {
 
     now = 20; // Trigger expiry
 
-    const updated = queue.update(request.id, {
+    expect(() => queue.update(request.id, {
       cwd: "/new/path",
       status: "pending"
-    });
-
-    expect(updated.status).toBe("pending");
-    expect(updated.cwd).toBe("/new/path");
+    })).toThrow("Only pending requests");
+    expect(queue.getRequest(request.id)?.cwd).toBe("/old/path");
   });
 
-  it("allows updating an approved request (Bug: 68aa754 — stuck execution recovery)", () => {
+  it("refuses to revise an approved request", () => {
     const queue = createQueue();
 
     const request = queue.submit({
@@ -359,11 +359,8 @@ describe("auth queue", () => {
     });
     queue.approve(request.id);
 
-    // Approved requests can be modified for recovery scenarios (force-dismiss,
-    // reset to pending after interrupted execution, etc.)
-    const updated = queue.update(request.id, { title: "Changed" });
-    expect(updated.title).toBe("Changed");
-    expect(updated.status).toBe("executing");
+    expect(() => queue.update(request.id, { title: "Changed" })).toThrow("Only pending requests");
+    expect(queue.getRequest(request.id)?.title).toBe("Approved");
   });
 
   it("fires SSE events for new, output, resolved", async () => {
@@ -474,7 +471,7 @@ describe("auth queue", () => {
     expect(updated.issues).toBeNull();
   });
 
-  it("preserves issues through retry-via-update", () => {
+  it("preserves issues through explicit retry", () => {
     const queue = createQueue();
 
     const request = queue.submit({
@@ -486,8 +483,7 @@ describe("auth queue", () => {
     // Simulate failed execution
     queue.setResult(request.id, 1, "error", "failed");
 
-    // Reset to pending — issues should survive
-    const updated = queue.update(request.id, { status: "pending" });
+    const updated = queue.retry(request.id);
     expect(updated.status).toBe("pending");
     expect(updated.issues).toEqual(["umbrella789"]);
   });
@@ -495,7 +491,8 @@ describe("auth queue", () => {
   describe("outcome field in resolved payload", () => {
     it("resolvedPayload has outcome=succeeded when completed with exit_code=0", () => {
       const events: SseEvent[] = [];
-      const queue = createQueue({ broadcast: (e) => events.push(e) });
+      const db = createMigratedDb();
+      const queue = new AuthQueue({ db, broadcast: (e) => events.push(e) });
 
       const request = queue.submit({ command: "echo ok", title: "Success" });
       queue.setResult(request.id, 0, "ok");
@@ -535,18 +532,34 @@ describe("auth queue", () => {
       expect(data.status).toBe("rejected");
     });
 
-    it("resolvedPayload has outcome=dismissed when request is dismissed", () => {
+    it("resolvedPayload has outcome=withdrawn when requester withdraws", () => {
       const events: SseEvent[] = [];
-      const queue = createQueue({ broadcast: (e) => events.push(e) });
+      const db = createMigratedDb();
+      const queue = new AuthQueue({ db, broadcast: (e) => events.push(e) });
+      const operator = getOperator(db)!;
+      const credential = addCredential(db, operator.id, {
+        type: "api_token",
+        fingerprint: `withdraw-${crypto.randomUUID()}`,
+      });
 
-      const request = queue.submit({ command: "echo dismiss", title: "Dismiss" });
-      queue.dismiss(request.id);
+      const request = queue.submit({
+        command: "echo withdraw",
+        title: "Withdraw",
+        type: "commit",
+      });
+      queue.withdraw(request.id, "No longer needed", {
+        user_id: operator.id,
+        evidence_method: "api_token",
+        evidence_id: null,
+        credential_id: credential.id,
+        authority_path: "operator_recovery",
+      }, 1, 0);
 
       const resolved = events.find((e) => e.event === "auth:resolved");
       expect(resolved).toBeTruthy();
       const data = resolved!.data as Record<string, unknown>;
-      expect(data.outcome).toBe("dismissed");
-      expect(data.status).toBe("dismissed");
+      expect(data.outcome).toBe("withdrawn");
+      expect(data.status).toBe("withdrawn");
     });
 
     it("resolvedPayload has outcome=null when request is still pending (non-terminal state)", () => {

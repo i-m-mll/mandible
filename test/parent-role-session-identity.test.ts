@@ -215,13 +215,15 @@ describe("parent-role holder identity is the agent, not the spelling of its id",
     const conflict = await assume("sess-other");
     expect(conflict.status).toBe(409);
     const body = conflict.body as { error: string; live_holder: Record<string, unknown> };
-    expect(body.error).toContain("pass override to retake");
+    expect(body.error).toContain("only the operator may displace it");
     // The conflict names the holder, so a coordinator can decide rather than
     // guess (issue 7a97e2c's `- (-)` was unactionable).
     expect(body.live_holder.session_id).toBe(PROVIDER_THREAD);
     expect(body.live_holder.mechanism).toBe("codex");
 
-    expect((await assume("sess-other", true)).status).toBe(200);
+    const deniedOverride = await assume("sess-other", true);
+    expect(deniedOverride.status).toBe(409);
+    expect((deniedOverride.body as { error: string }).error).toContain("only the operator");
   });
 
   it("does not block on a stale holder", async () => {

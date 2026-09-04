@@ -43,6 +43,9 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     last_commit_at: typeof row.last_commit_at === "number" ? row.last_commit_at : null,
     resolved_at: typeof row.resolved_at === "number" ? row.resolved_at : null,
     auth_request_id: typeof row.auth_request_id === "string" ? row.auth_request_id : null,
+    owner_user_id: typeof row.owner_user_id === "string" ? row.owner_user_id : null,
+    owner_credential_id: typeof row.owner_credential_id === "string" ? row.owner_credential_id : null,
+    custody_generation: Number(row.custody_generation ?? 0),
   };
 }
 
