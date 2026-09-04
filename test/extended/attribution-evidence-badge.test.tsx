@@ -77,4 +77,16 @@ describe('AttributionIdentity evidence badge rendering', () => {
     expect(screen.queryByText('verified')).toBeNull();
     expect(screen.queryByText('claimed')).toBeNull();
   });
+
+  it('labels known agents but never speculates that an operator is human', () => {
+    const verified = attribution('api_token');
+    render(<AttributionIdentity display="Operator" attribution={verified} />);
+    expect(screen.queryByText('human')).toBeNull();
+    cleanup();
+    render(<AttributionIdentity
+      display="Worker"
+      attribution={{ ...verified, user: { ...verified.user!, kind: 'agent' } }}
+    />);
+    expect(screen.getByText('agent')).toBeTruthy();
+  });
 });

@@ -332,7 +332,20 @@ function getStatusLabel(request: AuthRequest): string {
   if (status === 'needs_rebase') return 'Needs rebase';
   if (status === 'completed') {
     if (request.exit_code != null && request.exit_code !== 0) return 'Failed';
-    return 'Completed';
+    const type = getAuthType(request);
+    if (type === 'merge') {
+      const convergence = getConvergence(request);
+      if (convergence?.state === 'pending') return 'Converging';
+      if (convergence?.state === 'failed') return 'Merged, not live';
+      return 'Merged';
+    }
+    return {
+      commit: 'Committed',
+      'force-push': 'Force-pushed',
+      'branch-delete': 'Deleted',
+      'config-change': 'Updated',
+      'data-delete': 'Deleted',
+    }[type];
   }
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
@@ -366,12 +379,6 @@ function getConvergence(request: AuthRequest): ConvergenceSummary | null {
   return { state, hooks: Array.isArray(hooks) ? (hooks as ConvergenceHookSummary[]) : [] };
 }
 
-const CONVERGENCE_LABELS: Record<ConvergenceSummary['state'], string> = {
-  complete: 'live',
-  pending: 'converging',
-  failed: 'merged, not live',
-};
-
 function convergenceTitle(convergence: ConvergenceSummary): string {
   const hooks = convergence.hooks
     .map((hook) => {
@@ -388,21 +395,6 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
       ? 'Merged. A registered post-merge hook has not finished yet, so this machine is not live.'
       : 'Merged. A required post-merge hook failed, so this machine is not live. Issue closures are withheld.';
   return hooks ? `${heading}\n\n${hooks}` : heading;
-}
-
-function ConvergencePill({ request }: { request: AuthRequest }) {
-  const status = getAuthStatus(request);
-  if (status !== 'completed' || (request.exit_code ?? 0) !== 0) return null;
-  const convergence = getConvergence(request);
-  if (!convergence) return null;
-  return (
-    <span
-      className={`convergence-pill convergence-pill--${convergence.state}`}
-      title={convergenceTitle(convergence)}
-    >
-      {CONVERGENCE_LABELS[convergence.state]}
-    </span>
-  );
 }
 
 function getStatusClass(request: AuthRequest): string {
@@ -745,7 +737,6 @@ function AuthRequestDetail({
   history,
   failureSummary,
   attemptCount,
-  branchMerged,
   actionBundle,
   actions,
   executionOutput,
@@ -822,6 +813,9 @@ function AuthRequestDetail({
   const stats = getStats(request);
   const status = getAuthStatus(request);
   const statusLabel = getStatusLabel(request);
+  const completedConvergence = status === 'completed' && (request.exit_code ?? 0) === 0
+    ? getConvergence(request)
+    : null;
   const statusClass = getStatusClass(request);
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
@@ -1033,10 +1027,13 @@ function AuthRequestDetail({
           }} />}
           status={(
             <>
-              <span className={statusClass}>{statusLabel}</span>
-              <ConvergencePill request={request} />
+              <span
+                className={statusClass}
+                title={completedConvergence ? convergenceTitle(completedConvergence) : undefined}
+              >
+                {statusLabel}
+              </span>
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
-              {branchMerged && <span className="branch-merged-tag">branch merged</span>}
             </>
           )}
           actions={(
@@ -1108,9 +1105,6 @@ function AuthRequestDetail({
                         source="auth_queue"
                       />
                     </div>
-                  )}
-                  {signatureClaim.state === 'verified' && (
-                    <span className="auth-detail__verified-signature">Verified signature</span>
                   )}
                   {signatureClaim.state === 'unverified' && (
                     <span className="auth-detail__unverified-signature">

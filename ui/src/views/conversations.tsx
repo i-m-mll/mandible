@@ -111,6 +111,7 @@ import { mergeProviderLiveProjection } from '../../../src/conversation-control/p
 import { useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
+import { subscribeClientAuthSessionState } from '../client-auth-token';
 
 // ── Toast notification ──
 
@@ -2695,19 +2696,40 @@ export function ConversationsView({
 
   useEffect(() => {
     let active = true;
-    void listCanonicalProjects().then((projects) => {
-      if (active) {
+    let loadingProjects = false;
+    const loadProjects = async () => {
+      if (loadingProjects) return;
+      loadingProjects = true;
+      try {
+        const projects = await listCanonicalProjects();
+        if (!active) return;
         setCanonicalProjects(projects);
         setCanonicalProjectsLoaded(true);
         setCanonicalProjectsReady(true);
-      }
-    }).catch(() => {
-      if (active) {
-        setCanonicalProjects([]);
+      } catch {
+        if (!active) return;
+        // Keep the last good registry snapshot visible while authentication or
+        // the daemon reconnects; an empty response is not authoritative here.
         setCanonicalProjectsReady(true);
+      } finally {
+        loadingProjects = false;
       }
+    };
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') void loadProjects();
+    };
+    const unsubscribeAuth = subscribeClientAuthSessionState((state) => {
+      if (state === 'enrolled') void loadProjects();
     });
-    return () => { active = false; };
+    window.addEventListener('focus', reloadWhenVisible);
+    document.addEventListener('visibilitychange', reloadWhenVisible);
+    void loadProjects();
+    return () => {
+      active = false;
+      unsubscribeAuth();
+      window.removeEventListener('focus', reloadWhenVisible);
+      document.removeEventListener('visibilitychange', reloadWhenVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -3376,6 +3398,13 @@ export function ConversationsView({
   };
 
   const addShownProject = () => {
+    if (!shownProjectsState.ready) {
+      setSidebarToast({
+        message: shownProjectsState.notice ?? 'Project selection is still reconnecting.',
+        type: 'error',
+      });
+      return;
+    }
     const project = registeredProjects.find((candidate) => (
       registeredProjectSelectionValue(candidate) === projectChooserSelection
     ));
@@ -3549,6 +3578,12 @@ export function ConversationsView({
               />
             </div>
 
+            {shownProjectsState.notice ? (
+              <p className="chat-project-selection-notice" role="status">
+                {shownProjectsState.notice}
+              </p>
+            ) : null}
+
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;
               const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;
@@ -3592,7 +3627,13 @@ export function ConversationsView({
                       </option>
                     ))}
                   </select>
-                  <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
+                  <button
+                    type="button"
+                    onClick={addShownProject}
+                    disabled={!projectChooserSelection || !shownProjectsState.ready}
+                  >
+                    {shownProjectsState.ready ? 'Add' : 'Connecting…'}
+                  </button>
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
                 </div>
               ) : null}

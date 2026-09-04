@@ -83,6 +83,8 @@ import {
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from './app-shell';
+import { useAppRightSidebarState } from './right-sidebar-state';
+import { PreviewIcon } from './components/icons/TabIcons';
 import {
   AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING,
   AUTH_AUTO_SHOW_CONSOLE_SETTING,
@@ -656,7 +658,11 @@ function App(): JSX.Element {
   const leftShadowEnabled = false;
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
-  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [registeredRightSidebar, setRegisteredRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [fallbackRightSidebarState, updateFallbackRightSidebarState] = useAppRightSidebarState(
+    'app',
+    { open: false, width: 360 },
+  );
   const rightSidebarOwnerRef = useRef<string | null>(null);
   const [narrowRightSidebar, setNarrowRightSidebar] = useState(false);
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
@@ -680,13 +686,26 @@ function App(): JSX.Element {
     return () => {
       if (rightSidebarOwnerRef.current !== ownerId) return;
       rightSidebarOwnerRef.current = null;
-      setRightSidebar((current) => (current?.id === ownerId ? null : current));
+      setRegisteredRightSidebar((current) => (current?.id === ownerId ? null : current));
     };
   }, []);
   const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
     if (rightSidebarOwnerRef.current !== ownerId) return;
-    setRightSidebar((current) => current === descriptor ? current : descriptor);
+    setRegisteredRightSidebar((current) => current === descriptor ? current : descriptor);
   }, []);
+  const fallbackRightSidebar = useMemo<AppRightSidebarDescriptor>(() => ({
+    id: 'app-preview',
+    kind: 'panel',
+    title: 'Preview',
+    ariaLabel: 'Preview',
+    icon: <PreviewIcon size={18} />,
+    content: <p className="app-right-sidebar__empty">Select an item to preview it.</p>,
+    open: fallbackRightSidebarState.open,
+    width: fallbackRightSidebarState.width,
+    onOpenChange: (open) => updateFallbackRightSidebarState({ open }),
+    onWidthChange: (width) => updateFallbackRightSidebarState({ width }),
+  }), [fallbackRightSidebarState, updateFallbackRightSidebarState]);
+  const rightSidebar = registeredRightSidebar ?? fallbackRightSidebar;
   const setRightSidebarOpen = useCallback((open: boolean) => {
     if (!rightSidebar || rightSidebar.open === open) return;
     rightSidebarFocusTransferRef.current = true;
@@ -2347,7 +2366,7 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const rightSidebarAvailable = rightSidebar !== null;
+  const rightSidebarAvailable = true;
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
@@ -2471,7 +2490,7 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab} app-layout--right-sidebar-available${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
           style={rightSidebarOpen && rightSidebar ? {
             '--app-right-sidebar-width': `${rightSidebar.width}px`,
           } as JSX.CSSProperties : undefined}
@@ -2564,7 +2583,7 @@ function App(): JSX.Element {
           data-app-surface="main"
           inert={narrowRightSidebar && rightSidebarOpen}
         >
-        {rightSidebarAvailable && !rightSidebarOpen && rightSidebar?.togglePlacement !== 'detail-header' ? (
+        {rightSidebarAvailable && !rightSidebarOpen ? (
           <AppRightSidebarToggleButton
             descriptor={rightSidebar!}
             buttonRef={rightSidebarToggleRef}

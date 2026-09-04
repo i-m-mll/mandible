@@ -161,9 +161,11 @@ describe('SessionOverviewView register action (review S1)', () => {
       expect(values).not.toContain(PAGE_BINDING);
     }
 
-    // The view upgrades in place to the bound state after registration.
+    // The view upgrades in place to the selected session without restoring the
+    // retired page-binding callout.
     await waitFor(() => {
-      expect(screen.getByText(/Bound to agent session/)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Copy session id' })).toBeTruthy();
+      expect(screen.queryByText(/Bound to agent session/)).toBeNull();
     });
   });
 });

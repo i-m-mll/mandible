@@ -205,6 +205,10 @@ if [[ -z "$branch" ]]; then
   echo "Usage: mandible auth request <branch> --title <text> [options]" >&2
   exit 2
 fi
+if [[ "$branch" == integration/mandible-iab-preview-* ]]; then
+  echo "Error: persistent IAB preview branches cannot be submitted for protected merge; create a disposable delivery branch at the exact reviewed preview HEAD." >&2
+  exit 2
+fi
 if [[ -z "$title" ]]; then
   echo "Error: --title is required" >&2
   exit 2

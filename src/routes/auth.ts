@@ -31,6 +31,10 @@ import { readBody } from "./http.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { PermissionError, requireProjectAccess } from "../permissions/store.js";
+import {
+  isPersistentIabPreviewBranch,
+  PERSISTENT_IAB_PREVIEW_DELIVERY_ERROR,
+} from "../auth-preview-policy.js";
 
 const authRouteLog = getDaemonLogger();
 
@@ -91,6 +95,13 @@ export function registerAuthRoutes(
         payload.repo = payload.repo ?? resolved.repoName ?? path.basename(resolved.targetRepoRoot);
         payload.base_branch = resolved.baseBranch;
         payload.head_branch = resolved.headBranch;
+        if (isPersistentIabPreviewBranch(resolved.headBranch)) {
+          res.status(400).json({
+            error: PERSISTENT_IAB_PREVIEW_DELIVERY_ERROR,
+            code: "persistent_iab_preview_delivery_forbidden",
+          });
+          return;
+        }
         payload.merge_head_sha = payload.merge_head_sha ?? resolved.headSha;
         // Issue 08a5f04 — submission-time (never approval-time) normalization
         // of the legacy single-source command shape: the reviewed row must
