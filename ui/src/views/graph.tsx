@@ -709,7 +709,7 @@ function LegendButton({
   );
 }
 
-function DetailPane({
+export function GraphDetailPane({
   node,
   edges,
   onNavigate,
@@ -1113,7 +1113,7 @@ export function GraphView({
   );
 
   const detailPanelContent = useMemo(() => (
-    <DetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
+    <GraphDetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
   ), [onNavigate, selectedNode, visibleEdges]);
 
   const detailPanelDescriptor = useMemo(() => ({

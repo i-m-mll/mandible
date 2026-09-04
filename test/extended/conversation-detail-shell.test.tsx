@@ -330,6 +330,30 @@ describe('compact detail pane shell', () => {
       .toBeTruthy();
   });
 
+  it('renders a missing conversation through the real not-found state', async () => {
+    vi.spyOn(api, 'getConversationWindow').mockRejectedValue(new api.ApiError('Conversation not found', 404));
+    vi.spyOn(api, 'getConversationControl').mockRejectedValue(new api.ApiError('Conversation not found', 404));
+    vi.spyOn(api, 'getConversationLiveProjection').mockRejectedValue(new api.ApiError('Conversation not found', 404));
+
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={conversation.id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const message = await screen.findByText('Conversation not found.');
+    const shell = message.closest('.detail-pane-shell');
+    expect(shell?.classList.contains('chat-detail-frame--not-found')).toBe(true);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
+      .toBeTruthy();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBeNull();
+  });
+
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&block=block-42')).toEqual({ block: 'block-42' });
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });

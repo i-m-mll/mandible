@@ -1,4 +1,4 @@
-import { Fragment } from 'preact';
+import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
@@ -100,6 +100,20 @@ export type TimelineViewProps = {
   params?: Record<string, string | undefined>;
   sidebarHidden?: boolean;
 };
+
+export function TimelineInspectorFrame({ children }: { children: ComponentChildren }): JSX.Element {
+  return (
+    <DetailPaneShell
+      as="section"
+      variant="compact"
+      className="timeline-inspector"
+      bodyClassName="timeline-inspector__body"
+      header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}
+    >
+      {children}
+    </DetailPaneShell>
+  );
+}
 
 type ProjectionStatus = 'loading' | 'syncing' | 'ready' | 'error';
 type TimelineSelectionStatus = 'empty' | 'present' | 'stale';
@@ -1698,13 +1712,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     ? `Loading ${projectRef} timeline...`
     : 'No timeline rows match the current controls.';
   const inspectorContent = useMemo(() => (
-    <DetailPaneShell
-      as="section"
-      variant="compact"
-      className="timeline-inspector"
-      bodyClassName="timeline-inspector__body"
-      header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}
-    >
+    <TimelineInspectorFrame>
       <TimelineInspector
         project={projection?.project ?? null}
         selectedEvent={selectedEvent}
@@ -1727,7 +1735,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         onRemoveTransientRow={removeTransientRow}
         onZoomToCluster={zoomToCluster}
       />
-    </DetailPaneShell>
+    </TimelineInspectorFrame>
   ), [
     collapseEvent,
     expandEvent,

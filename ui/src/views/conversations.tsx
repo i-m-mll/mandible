@@ -47,6 +47,7 @@ import {
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
+  isApiErrorStatus,
   openConversationExternally,
   submitConversationControl,
   updateConsoleSession,
@@ -117,7 +118,7 @@ type ChatDetailFrameProps = {
   children: ComponentChildren;
 };
 
-function ChatDetailFrame({
+export function ChatDetailFrame({
   state,
   className,
   bodyClassName = 'conv-detail__body',
@@ -1013,6 +1014,7 @@ function ConversationDetail({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
@@ -1094,6 +1096,7 @@ function ConversationDetail({
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
     setLoading(true);
+    setNotFound(false);
     if (!preserveErrorWhileRetrying) setError(null);
     getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
       .then((payload) => {
@@ -1109,11 +1112,18 @@ function ConversationDetail({
           smooth: false,
         });
         setError(null);
+        setNotFound(false);
         setLoading(false);
       })
       .catch((err) => {
         if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : String(err));
+        if (isApiErrorStatus(err, 404)) {
+          setError(null);
+          setNotFound(true);
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+          setNotFound(false);
+        }
         setLoading(false);
       });
     return () => controller.abort();
@@ -1792,7 +1802,7 @@ function ConversationDetail({
     );
   }
 
-  if (!conversation) {
+  if (notFound || !conversation) {
     return (
       <ChatDetailFrame
         state="not-found"
