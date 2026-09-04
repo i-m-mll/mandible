@@ -25,13 +25,23 @@ export const BRIEFING_BUNDLE_SCHEMA_SQL: readonly string[] = [
 export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefing_groups (
     id TEXT PRIMARY KEY,
+    key TEXT NOT NULL CHECK(length(key) BETWEEN 1 AND 80
+      AND key = lower(key) AND key NOT GLOB '*[^a-z0-9-]*'
+      AND substr(key, 1, 1) GLOB '[a-z0-9]' AND substr(key, -1, 1) GLOB '[a-z0-9]'
+      AND instr(key, '--') = 0),
     name TEXT NOT NULL CHECK(trim(name) != ''),
     current_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
     , archived_at INTEGER)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_briefing_groups_active_key
+    ON briefing_groups(key) WHERE archived_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_groups_current_bundle
     ON briefing_groups(current_bundle_id) WHERE current_bundle_id IS NOT NULL`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_groups_key_immutable
+    BEFORE UPDATE OF key ON briefing_groups WHEN NEW.key IS NOT OLD.key BEGIN
+      SELECT RAISE(ABORT, 'Briefing group keys are immutable');
+    END`,
   `CREATE TABLE IF NOT EXISTS briefing_group_updates (
     group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
     bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
@@ -40,6 +50,20 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     PRIMARY KEY(group_id, bundle_id),
     UNIQUE(group_id, position)
   )`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_updates_exclude_base_insert
+    BEFORE INSERT ON briefing_group_updates WHEN NEW.bundle_id = (
+      SELECT current_bundle_id FROM briefing_groups WHERE id = NEW.group_id
+    ) BEGIN
+      SELECT RAISE(ABORT, 'Briefing group Base cannot also be an active proposal');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_groups_exclude_proposal_base_update
+    BEFORE UPDATE OF current_bundle_id ON briefing_groups
+    WHEN NEW.current_bundle_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM briefing_group_updates
+       WHERE group_id = NEW.id AND bundle_id = NEW.current_bundle_id
+    ) BEGIN
+      SELECT RAISE(ABORT, 'Briefing group Base cannot also be an active proposal');
+    END`,
   `CREATE TABLE IF NOT EXISTS briefing_group_dispositions (
     id TEXT PRIMARY KEY,
     group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
@@ -57,6 +81,268 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_group_dispositions_group
     ON briefing_group_dispositions(group_id, created_at DESC, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_review_dispositions (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    decision TEXT NOT NULL CHECK(decision IN ('accepted','rejected')),
+    expected_base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    proposal_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    composition_run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    resulting_base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    base_layout_digest TEXT CHECK(base_layout_digest IS NULL OR (length(base_layout_digest) = 64
+      AND base_layout_digest NOT GLOB '*[^0-9a-f]*')),
+    proposal_layout_digest TEXT CHECK(proposal_layout_digest IS NULL OR (length(proposal_layout_digest) = 64
+      AND proposal_layout_digest NOT GLOB '*[^0-9a-f]*')),
+    binding_digest TEXT NOT NULL CHECK(length(binding_digest) = 64
+      AND binding_digest NOT GLOB '*[^0-9a-f]*'),
+    manifest_json TEXT NOT NULL CHECK(json_valid(manifest_json) AND json_type(manifest_json) = 'object'),
+    item_count INTEGER NOT NULL CHECK(item_count > 0),
+    destination_change_count INTEGER NOT NULL DEFAULT 0 CHECK(destination_change_count >= 0),
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(group_id, proposal_bundle_id),
+    CHECK((decision = 'accepted' AND resulting_base_bundle_id = proposal_bundle_id)
+      OR (decision = 'rejected' AND resulting_base_bundle_id = expected_base_bundle_id))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_group_review_dispositions_group
+    ON briefing_group_review_dispositions(group_id, created_at DESC, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_review_disposition_items (
+    disposition_id TEXT NOT NULL REFERENCES briefing_group_review_dispositions(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    proposal_briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
+    proposal_round_id TEXT NOT NULL REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    proposal_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    base_briefing_id TEXT REFERENCES briefings(id) ON DELETE RESTRICT,
+    base_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    base_artifact_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
+    PRIMARY KEY(disposition_id, position),
+    CHECK((base_briefing_id IS NULL AND base_round_id IS NULL AND base_artifact_version_id IS NULL)
+      OR (base_briefing_id IS NOT NULL AND base_round_id IS NOT NULL AND base_artifact_version_id IS NOT NULL))
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_group_review_destination_items (
+    disposition_id TEXT NOT NULL REFERENCES briefing_group_review_dispositions(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    expected_group_id TEXT REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    resulting_group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    PRIMARY KEY(disposition_id, position),
+    UNIQUE(disposition_id, logical_artifact_id)
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_disposition_items_bounded_insert
+    BEFORE INSERT ON briefing_group_review_disposition_items BEGIN
+      SELECT CASE WHEN NEW.position >= (
+        SELECT item_count FROM briefing_group_review_dispositions WHERE id = NEW.disposition_id
+      ) OR (
+        SELECT COUNT(*) FROM briefing_group_review_disposition_items WHERE disposition_id = NEW.disposition_id
+      ) >= (
+        SELECT item_count FROM briefing_group_review_dispositions WHERE id = NEW.disposition_id
+      ) THEN RAISE(ABORT, 'Briefing group review disposition item manifest is complete') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_dispositions_immutable_update
+    BEFORE UPDATE ON briefing_group_review_dispositions BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_dispositions_immutable_delete
+    BEFORE DELETE ON briefing_group_review_dispositions BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_disposition_items_immutable_update
+    BEFORE UPDATE ON briefing_group_review_disposition_items BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition items are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_disposition_items_immutable_delete
+    BEFORE DELETE ON briefing_group_review_disposition_items BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review disposition items are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_destination_items_immutable_update
+    BEFORE UPDATE ON briefing_group_review_destination_items BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review destination anchors are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_group_review_destination_items_immutable_delete
+    BEFORE DELETE ON briefing_group_review_destination_items BEGIN
+      SELECT RAISE(ABORT, 'Briefing group review destination anchors are immutable');
+    END`,
+  `CREATE TABLE IF NOT EXISTS briefing_destination_owners (
+    logical_artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE RESTRICT,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    bound_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','migration')),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK((evidence_method = 'migration' AND bound_by_user_id IS NULL AND credential_id IS NULL)
+      OR (evidence_method = 'api_token' AND bound_by_user_id IS NOT NULL))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_destination_owners_group
+    ON briefing_destination_owners(group_id, logical_artifact_id)`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_destination_owners_active_insert
+    BEFORE INSERT ON briefing_destination_owners BEGIN
+      SELECT CASE WHEN 1 != (
+        SELECT COUNT(*) FROM briefing_groups g
+        JOIN briefing_bundle_members bm ON bm.bundle_id = g.current_bundle_id
+        JOIN briefings b ON b.id = bm.briefing_id
+        WHERE g.id = NEW.group_id AND g.archived_at IS NULL
+          AND b.archived_at IS NULL AND b.logical_artifact_id = NEW.logical_artifact_id
+      ) THEN RAISE(ABORT, 'Briefing destination owner requires one active Base document') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_destination_owners_active_update
+    BEFORE UPDATE OF group_id ON briefing_destination_owners BEGIN
+      SELECT CASE WHEN 1 != (
+        SELECT COUNT(*) FROM briefing_groups g
+        JOIN briefing_bundle_members bm ON bm.bundle_id = g.current_bundle_id
+        JOIN briefings b ON b.id = bm.briefing_id
+        WHERE g.id = NEW.group_id AND g.archived_at IS NULL
+          AND b.archived_at IS NULL AND b.logical_artifact_id = NEW.logical_artifact_id
+      ) THEN RAISE(ABORT, 'Briefing destination owner requires one active Base document') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_destination_owner_group_archive_guard
+    BEFORE UPDATE OF archived_at ON briefing_groups
+    WHEN NEW.archived_at IS NOT NULL AND EXISTS (
+      SELECT 1 FROM briefing_destination_owners WHERE group_id = NEW.id
+    ) BEGIN
+      SELECT RAISE(ABORT, 'A Briefing destination owner group cannot be archived');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_destination_owner_base_guard
+    BEFORE UPDATE OF current_bundle_id ON briefing_groups
+    WHEN EXISTS (
+      SELECT 1 FROM briefing_destination_owners owner
+      WHERE owner.group_id = NEW.id AND 1 != (
+        SELECT COUNT(*) FROM briefing_bundle_members bm
+        JOIN briefings b ON b.id = bm.briefing_id
+        WHERE bm.bundle_id = NEW.current_bundle_id AND b.archived_at IS NULL
+          AND b.logical_artifact_id = owner.logical_artifact_id
+      )
+    ) BEGIN
+      SELECT RAISE(ABORT, 'Briefing group Base must preserve every owned destination document');
+    END`,
+  `CREATE TABLE IF NOT EXISTS briefing_collection_sharing_receipts (
+    id TEXT PRIMARY KEY,
+    operation TEXT NOT NULL CHECK(trim(operation) != ''),
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('group','bundle')),
+    target_id TEXT NOT NULL CHECK(trim(target_id) != ''),
+    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('bundle','briefing')),
+    subject_id TEXT NOT NULL CHECK(trim(subject_id) != ''),
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('group','bundle')),
+    owner_id TEXT NOT NULL CHECK(trim(owner_id) != ''),
+    reason TEXT NOT NULL CHECK(trim(reason) != ''),
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_collection_sharing_target
+    ON briefing_collection_sharing_receipts(target_kind, target_id, created_at)`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_collection_sharing_receipts_immutable_update
+    BEFORE UPDATE ON briefing_collection_sharing_receipts BEGIN
+      SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS briefing_collection_sharing_receipts_immutable_delete
+    BEFORE DELETE ON briefing_collection_sharing_receipts BEGIN
+      SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
+    END`,
+];
+
+/** Canonical storage for stable destination routes and idempotent composition receipts. */
+export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS briefing_destination_routes (
+    route_key TEXT PRIMARY KEY CHECK(trim(route_key) != ''),
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    heading TEXT NOT NULL CHECK(trim(heading) != ''),
+    composer_kind TEXT NOT NULL CHECK(composer_kind IN ('deterministic','agentic')),
+    active_template_version INTEGER NOT NULL CHECK(active_template_version > 0),
+    max_contributions INTEGER NOT NULL CHECK(max_contributions > 0),
+    max_document_bytes INTEGER NOT NULL CHECK(max_document_bytes > 0),
+    max_directives INTEGER NOT NULL CHECK(max_directives >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(logical_artifact_id, heading)
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_destination_templates (
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    version INTEGER NOT NULL CHECK(version > 0),
+    contribution_template TEXT NOT NULL,
+    slots_json TEXT NOT NULL CHECK(json_valid(slots_json) AND json_type(slots_json) = 'object'),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(route_key, version)
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_runs (
+    id TEXT PRIMARY KEY,
+    publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    task_identity TEXT NOT NULL CHECK(trim(task_identity) != ''),
+    run_id TEXT NOT NULL CHECK(trim(run_id) != ''),
+    run_key TEXT NOT NULL CHECK(trim(run_key) != ''),
+    request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),
+    source_key TEXT NOT NULL CHECK(trim(source_key) != ''),
+    source_cursor TEXT NOT NULL CHECK(trim(source_cursor) != ''),
+    source_health_json TEXT NOT NULL CHECK(json_valid(source_health_json) AND json_type(source_health_json) = 'object'),
+    quiet INTEGER NOT NULL CHECK(quiet IN (0,1)),
+    quiet_reason TEXT,
+    received_at INTEGER NOT NULL,
+    UNIQUE(publisher_user_id, task_identity, run_key),
+    CHECK((quiet = 1 AND quiet_reason IS NOT NULL) OR (quiet = 0 AND quiet_reason IS NULL))
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_inputs (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    agentic_markdown TEXT,
+    PRIMARY KEY(run_id, route_key)
+  )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_contributions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    source_key TEXT NOT NULL CHECK(trim(source_key) != ''),
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    change_id TEXT NOT NULL CHECK(trim(change_id) != ''),
+    evidence_ref TEXT NOT NULL CHECK(trim(evidence_ref) != ''),
+    evidence_digest TEXT NOT NULL CHECK(length(evidence_digest) = 64),
+    occurred_at INTEGER NOT NULL,
+    slots_json TEXT NOT NULL CHECK(json_valid(slots_json) AND json_type(slots_json) = 'object'),
+    observed_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK(state IN ('pending','composed')),
+    proposal_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(publisher_user_id, source_key, route_key, change_id, evidence_digest)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_composition_contributions_pending
+    ON briefing_composition_contributions(route_key, state, created_at, id)`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_targets (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    outcome TEXT NOT NULL CHECK(outcome IN ('queued','unchanged','proposed')),
+    base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    proposal_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+    PRIMARY KEY(run_id, group_id),
+    CHECK((outcome = 'proposed' AND proposal_bundle_id IS NOT NULL)
+      OR (outcome != 'proposed' AND proposal_bundle_id IS NULL))
+  )`,
+];
+
+/** Frozen v165 migration grammar. Historical migrations must not inherit head-schema edits. */
+export const BRIEFING_COMPOSER_SCHEMA_V165_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS briefing_destination_routes (
+    route_key TEXT PRIMARY KEY CHECK(trim(route_key) != ''),
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    heading TEXT NOT NULL CHECK(trim(heading) != ''),
+    composer_kind TEXT NOT NULL CHECK(composer_kind IN ('deterministic','agentic')),
+    active_template_version INTEGER NOT NULL CHECK(active_template_version > 0),
+    max_contributions INTEGER NOT NULL CHECK(max_contributions > 0),
+    max_document_bytes INTEGER NOT NULL CHECK(max_document_bytes > 0),
+    max_directives INTEGER NOT NULL CHECK(max_directives >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(group_id, logical_artifact_id, heading)
+  )`,
+  ...BRIEFING_COMPOSER_SCHEMA_SQL.slice(1),
+];
+
+/** Frozen v167 migration grammar. Historical migrations must not inherit head-schema edits. */
+export const BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefing_group_review_dispositions (
     id TEXT PRIMARY KEY,
     group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
@@ -119,109 +405,6 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     BEFORE DELETE ON briefing_group_review_disposition_items BEGIN
       SELECT RAISE(ABORT, 'Briefing group review disposition items are immutable');
     END`,
-  `CREATE TABLE IF NOT EXISTS briefing_collection_sharing_receipts (
-    id TEXT PRIMARY KEY,
-    operation TEXT NOT NULL CHECK(trim(operation) != ''),
-    target_kind TEXT NOT NULL CHECK(target_kind IN ('group','bundle')),
-    target_id TEXT NOT NULL CHECK(trim(target_id) != ''),
-    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('bundle','briefing')),
-    subject_id TEXT NOT NULL CHECK(trim(subject_id) != ''),
-    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('group','bundle')),
-    owner_id TEXT NOT NULL CHECK(trim(owner_id) != ''),
-    reason TEXT NOT NULL CHECK(trim(reason) != ''),
-    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
-    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
-    created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_briefing_collection_sharing_target
-    ON briefing_collection_sharing_receipts(target_kind, target_id, created_at)`,
-  `CREATE TRIGGER IF NOT EXISTS briefing_collection_sharing_receipts_immutable_update
-    BEFORE UPDATE ON briefing_collection_sharing_receipts BEGIN
-      SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
-    END`,
-  `CREATE TRIGGER IF NOT EXISTS briefing_collection_sharing_receipts_immutable_delete
-    BEFORE DELETE ON briefing_collection_sharing_receipts BEGIN
-      SELECT RAISE(ABORT, 'Briefing collection sharing receipts are immutable');
-    END`,
-];
-
-/** Canonical storage for stable destination routes and idempotent composition receipts. */
-export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
-  `CREATE TABLE IF NOT EXISTS briefing_destination_routes (
-    route_key TEXT PRIMARY KEY CHECK(trim(route_key) != ''),
-    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
-    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
-    heading TEXT NOT NULL CHECK(trim(heading) != ''),
-    composer_kind TEXT NOT NULL CHECK(composer_kind IN ('deterministic','agentic')),
-    active_template_version INTEGER NOT NULL CHECK(active_template_version > 0),
-    max_contributions INTEGER NOT NULL CHECK(max_contributions > 0),
-    max_document_bytes INTEGER NOT NULL CHECK(max_document_bytes > 0),
-    max_directives INTEGER NOT NULL CHECK(max_directives >= 0),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(group_id, logical_artifact_id, heading)
-  )`,
-  `CREATE TABLE IF NOT EXISTS briefing_destination_templates (
-    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
-    version INTEGER NOT NULL CHECK(version > 0),
-    contribution_template TEXT NOT NULL,
-    slots_json TEXT NOT NULL CHECK(json_valid(slots_json) AND json_type(slots_json) = 'object'),
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(route_key, version)
-  )`,
-  `CREATE TABLE IF NOT EXISTS briefing_composition_runs (
-    id TEXT PRIMARY KEY,
-    publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    task_identity TEXT NOT NULL CHECK(trim(task_identity) != ''),
-    run_id TEXT NOT NULL CHECK(trim(run_id) != ''),
-    run_key TEXT NOT NULL CHECK(trim(run_key) != ''),
-    request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),
-    source_key TEXT NOT NULL CHECK(trim(source_key) != ''),
-    source_cursor TEXT NOT NULL CHECK(trim(source_cursor) != ''),
-    source_health_json TEXT NOT NULL CHECK(json_valid(source_health_json) AND json_type(source_health_json) = 'object'),
-    quiet INTEGER NOT NULL CHECK(quiet IN (0,1)),
-    quiet_reason TEXT,
-    received_at INTEGER NOT NULL,
-    UNIQUE(publisher_user_id, task_identity, run_key),
-    CHECK((quiet = 1 AND quiet_reason IS NOT NULL) OR (quiet = 0 AND quiet_reason IS NULL))
-  )`,
-  `CREATE TABLE IF NOT EXISTS briefing_composition_inputs (
-    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
-    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
-    expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
-    agentic_markdown TEXT,
-    PRIMARY KEY(run_id, route_key)
-  )`,
-  `CREATE TABLE IF NOT EXISTS briefing_composition_contributions (
-    id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
-    publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    source_key TEXT NOT NULL CHECK(trim(source_key) != ''),
-    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
-    change_id TEXT NOT NULL CHECK(trim(change_id) != ''),
-    evidence_ref TEXT NOT NULL CHECK(trim(evidence_ref) != ''),
-    evidence_digest TEXT NOT NULL CHECK(length(evidence_digest) = 64),
-    occurred_at INTEGER NOT NULL,
-    slots_json TEXT NOT NULL CHECK(json_valid(slots_json) AND json_type(slots_json) = 'object'),
-    observed_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
-    state TEXT NOT NULL CHECK(state IN ('pending','composed')),
-    proposal_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
-    created_at INTEGER NOT NULL,
-    UNIQUE(publisher_user_id, source_key, route_key, change_id, evidence_digest)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_briefing_composition_contributions_pending
-    ON briefing_composition_contributions(route_key, state, created_at, id)`,
-  `CREATE TABLE IF NOT EXISTS briefing_composition_targets (
-    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
-    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
-    outcome TEXT NOT NULL CHECK(outcome IN ('queued','unchanged','proposed')),
-    base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
-    proposal_bundle_id TEXT REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
-    PRIMARY KEY(run_id, group_id),
-    CHECK((outcome = 'proposed' AND proposal_bundle_id IS NOT NULL)
-      OR (outcome != 'proposed' AND proposal_bundle_id IS NULL))
-  )`,
 ];
 
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */
@@ -570,6 +753,7 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_legacy_custody", "briefing_bundles", "briefing_bundle_members",
   "briefing_groups", "briefing_group_updates", "briefing_group_dispositions",
   "briefing_group_review_dispositions", "briefing_group_review_disposition_items",
+  "briefing_group_review_destination_items", "briefing_destination_owners",
   "briefing_collection_sharing_receipts",
   "briefing_destination_routes", "briefing_destination_templates", "briefing_composition_runs",
   "briefing_composition_inputs", "briefing_composition_contributions", "briefing_composition_targets",

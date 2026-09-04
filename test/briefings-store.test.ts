@@ -30,16 +30,23 @@ import {
 } from "../src/feedback/briefing-bundles.js";
 import {
   addBriefingGroupUpdate,
+  bindBriefingDestinationOwner,
   configureBriefingGroup,
   createBriefingGroup,
   dispositionBriefingGroupProposalByHumanReview,
+  previewBriefingGroupReviewCandidate,
   promoteBriefingGroupProposal,
   readBriefingGroup,
+  resolveGroupId,
   setBriefingGroupArchived,
 } from "../src/feedback/briefing-groups.js";
 import { METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import {
+  inspectBriefingDestinationRoutes,
+  registerBriefingDestinationRoute,
+} from "../src/feedback/briefing-composer.js";
 
 let db: Db;
 let root: string;
@@ -75,7 +82,7 @@ function seedPromotionFixture() {
   const base = createBriefingBundle(db, { name: "Original", briefingRefs: [first.briefing_id], viewer }, 1_100);
   const proposal = createBriefingBundle(db, { name: "Proposed", briefingRefs: [second.briefing_id], viewer }, 1_110);
   const group = createBriefingGroup(db, {
-    name: "Policy", currentBundleRef: base.id, bundleRefs: [proposal.id], viewer,
+    key: "policy", name: "Policy", currentBundleRef: base.id, bundleRefs: [proposal.id], viewer,
   }, 1_200);
   return { base, proposal, group, viewer };
 }
@@ -150,6 +157,24 @@ afterEach(() => {
 });
 
 describe("artifact-backed Briefing rounds", () => {
+  it("resolves active immutable keys without falling back to archived key owners", () => {
+    const viewer = { userId: humanId, operator: true };
+    const first = createBriefingGroup(db, { key: "policy-health", name: "Policy health",
+      bundleRefs: [], viewer }, 100);
+    expect(resolveGroupId(db, "policy-health")).toBe(first.id);
+    expect(resolveGroupId(db, first.id.slice(0, 8))).toBe(first.id);
+    expect(() => db.prepare("UPDATE briefing_groups SET key = 'changed' WHERE id = ?").run(first.id))
+      .toThrow(/immutable/);
+    setBriefingGroupArchived(db, first.id, true, viewer, 110);
+    expect(() => resolveGroupId(db, "policy-health")).toThrowError(expect.objectContaining({ code: "not_found" }));
+    expect(resolveGroupId(db, first.id)).toBe(first.id);
+    const replacement = createBriefingGroup(db, { key: "policy-health", name: "Policy health replacement",
+      bundleRefs: [], viewer }, 120);
+    expect(resolveGroupId(db, "policy-health")).toBe(replacement.id);
+    expect(() => setBriefingGroupArchived(db, first.id, false, viewer, 130))
+      .toThrowError(expect.objectContaining({ code: "briefing_group_key_conflict" }));
+  });
+
   it("keeps group current separate from proposals and archives Briefings without deleting review state", () => {
     const first = publishBriefingRun(db, request(), publisherId, 1_000);
     const second = publishBriefingRun(db, request(request().document!.markdown, {
@@ -162,7 +187,7 @@ describe("artifact-backed Briefing rounds", () => {
           evidenceMethod: "api_token", credentialId: null } : undefined,
       }, 1_100 + index));
     const group = createBriefingGroup(db, {
-      name: "Policy", bundleRefs: [bundles[1].id], viewer,
+      key: "policy", name: "Policy", bundleRefs: [bundles[1].id], viewer,
     }, 1_200);
     expect(group).toMatchObject({ current: null, updates: [{ id: bundles[1].id }] });
     expect(() => configureBriefingGroup(db, group.id, {
@@ -186,9 +211,9 @@ describe("artifact-backed Briefing rounds", () => {
       auth_request_id: null,
       merge_head_sha: null,
     }] } });
-    expect(createBriefingGroup(db, { name: "Empty", bundleRefs: [], viewer }, 1_350).current).toBeNull();
+    expect(createBriefingGroup(db, { key: "empty", name: "Empty", bundleRefs: [], viewer }, 1_350).current).toBeNull();
     expect(() => createBriefingGroup(db, {
-      name: "Conflict", currentBundleRef: bundles[1].id, bundleRefs: [], viewer,
+      key: "conflict", name: "Conflict", currentBundleRef: bundles[1].id, bundleRefs: [], viewer,
     }, 1_400)).toThrowError(/placement conflicts/);
 
     const preserved = {
@@ -231,7 +256,7 @@ describe("artifact-backed Briefing rounds", () => {
       placementOverride: { reason: "Retain an alternate proposal", actorUserId: publisherId,
         evidenceMethod: "api_token", credentialId: null } }, 1_120);
     const group = createBriefingGroup(db, {
-      name: "Policy", currentBundleRef: base.id, bundleRefs: [promoted.id, survivor.id], viewer,
+      key: "policy", name: "Policy", currentBundleRef: base.id, bundleRefs: [promoted.id, survivor.id], viewer,
     }, 1_200);
     const authId = "auth-request-000000000000000000000000";
     const mergeHead = "a".repeat(40);
@@ -367,6 +392,11 @@ describe("artifact-backed Briefing rounds", () => {
 
   it("accepts one exact Mandible-custodied recurring proposal and makes exact replay a no-op", () => {
     const { base, proposal, group, viewer } = seedPromotionFixture();
+    expect(() => configureBriefingGroup(db, group.id, {
+      currentBundleRef: proposal.id, bundleRefs: [],
+    }, viewer, 1_205)).toThrowError(expect.objectContaining({
+      code: "briefing_group_base_transition_requires_promotion",
+    }));
     const compositionRunId = insertCompositionProvenance(group.id, base.id, proposal.id);
     const submissionId = insertOperatorSubmission(proposal.id);
     const candidate = readBriefingGroup(db, group.id, viewer).review_candidates[0];
@@ -412,6 +442,54 @@ describe("artifact-backed Briefing rounds", () => {
       .run(receipt.id)).toThrow(/immutable/);
     expect(() => db.prepare("DELETE FROM briefing_group_review_disposition_items WHERE disposition_id = ?")
       .run(receipt.id)).toThrow(/immutable/);
+  });
+
+  it("binds destination moves to the same structural review digest and applies them only on accept", () => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    insertCompositionProvenance(group.id, base.id, proposal.id);
+    insertOperatorSubmission(proposal.id, "destination");
+    const artifact = db.prepare(`SELECT b.logical_artifact_id
+      FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
+      WHERE bm.bundle_id = ?`).get(proposal.id) as { logical_artifact_id: string };
+    const source = createBriefingGroup(db, {
+      key: "source-owner", name: "Source owner", currentBundleRef: proposal.id, bundleRefs: [], viewer,
+      placementOverride: { reason: "Exercise guarded destination reassignment", actorUserId: humanId,
+        evidenceMethod: "api_token", credentialId: null },
+    }, 1_220);
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: artifact.logical_artifact_id, groupRef: source.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 1_230);
+    registerBriefingDestinationRoute(db, {
+      route_key: "policy.destination", logical_artifact_id: artifact.logical_artifact_id,
+      heading: "Policy", composer_kind: "deterministic", template_version: 1,
+      contribution_template: "- {{evidence_ref}}", slots: {},
+      limits: { max_contributions: 5, max_document_bytes: 10_000, max_directives: 10 },
+    }, 1_232);
+    expect(inspectBriefingDestinationRoutes(db, "policy.destination").routes[0].group_id).toBe(source.id);
+    expect(() => setBriefingGroupArchived(db, source.id, true, viewer, 1_235))
+      .toThrowError(expect.objectContaining({ code: "briefing_destination_group_owned" }));
+    const destinationChanges = [{ logicalArtifactRef: artifact.logical_artifact_id, expectedGroupRef: source.id }];
+    const candidate = previewBriefingGroupReviewCandidate(db, {
+      groupRef: group.id, expectedBaseBundleRef: base.id, proposalBundleRef: proposal.id, destinationChanges,
+    }, humanId);
+    expect(candidate).toMatchObject({ ready: true, destination_changes: [{
+      logical_artifact_id: artifact.logical_artifact_id,
+      expected_group_id: source.id,
+      resulting_group_id: group.id,
+    }] });
+    const accepted = dispositionBriefingGroupProposalByHumanReview(db, {
+      groupRef: group.id, expectedBaseBundleRef: base.id, proposalBundleRef: proposal.id,
+      decision: "accepted", bindingDigest: candidate.binding_digest!, destinationChanges,
+    }, { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 1_300);
+    expect(accepted.disposition).toMatchObject({
+      base_layout_digest: candidate.base_layout_digest,
+      proposal_layout_digest: candidate.proposal_layout_digest,
+      destination_changes: candidate.destination_changes,
+    });
+    expect(db.prepare("SELECT group_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
+      .get(artifact.logical_artifact_id)).toEqual({ group_id: group.id });
+    expect(inspectBriefingDestinationRoutes(db, "policy.destination").routes[0].group_id).toBe(group.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM briefing_group_review_destination_items").get())
+      .toEqual({ count: 1 });
   });
 
   it("rejects without changing Base and fails closed on review, custody, and Base drift", () => {
@@ -470,6 +548,10 @@ describe("artifact-backed Briefing rounds", () => {
       "briefing_group_dispositions",
       "briefing_group_review_dispositions",
       "briefing_group_review_disposition_items",
+      "briefing_group_review_destination_items",
+      "briefing_destination_owners",
+      "briefing_destination_routes",
+      "briefing_composition_runs",
     ]));
   });
 
@@ -504,7 +586,7 @@ describe("artifact-backed Briefing rounds", () => {
 
     const lifecycleBundle = createBriefingBundle(db, { name: "Lifecycle", briefingRefs: [second.briefing_id], viewer }, 1_130);
     const original = createBriefingGroup(db, {
-      name: "Original collection", currentBundleRef: lifecycleBundle.id, bundleRefs: [], viewer,
+      key: "original-collection", name: "Original collection", currentBundleRef: lifecycleBundle.id, bundleRefs: [], viewer,
     }, 1_140);
     const preserved = {
       bundle: db.prepare("SELECT * FROM briefing_bundles WHERE id = ?").get(lifecycleBundle.id),
@@ -523,7 +605,7 @@ describe("artifact-backed Briefing rounds", () => {
     expect(db.prepare("SELECT * FROM briefing_rounds WHERE briefing_id = ?").all(second.briefing_id)).toEqual(preserved.rounds);
 
     const replacement = createBriefingGroup(db, {
-      name: "Replacement collection", currentBundleRef: lifecycleBundle.id, bundleRefs: [], viewer,
+      key: "replacement-collection", name: "Replacement collection", currentBundleRef: lifecycleBundle.id, bundleRefs: [], viewer,
     }, 1_210);
     expect(() => setBriefingGroupArchived(db, original.id, false, viewer, 1_220))
       .toThrowError(expect.objectContaining({ code: "briefing_collection_placement_conflict",
@@ -750,7 +832,7 @@ describe("artifact-backed Briefing rounds", () => {
       name: "Next proposal", briefingRefs: [survivorBriefing.briefing_id], viewer,
     });
     const group = createBriefingGroup(db, {
-      name: "Policy", currentBundleRef: baseBundle.id, bundleRefs: [survivorBundle.id], viewer,
+      key: "policy", name: "Policy", currentBundleRef: baseBundle.id, bundleRefs: [survivorBundle.id], viewer,
     });
 
     expect(readBriefing(db, baseBriefing.briefing_id, {

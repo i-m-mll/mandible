@@ -70,11 +70,13 @@ function bundle(id: string, name: string, layoutName: string, briefings: Feedbac
 
 const group: BriefingGroup = {
   id: GROUP_ID,
+  key: 'saras-skill-breakdown',
   name: "Sara's skill, breakdown",
   createdAt: 1,
   updatedAt: 2,
   current: bundle('bundle-base', 'Base', 'Review', owned),
   updates: [],
+  destinations: [],
 };
 
 const ungrouped: BriefingBundle = {

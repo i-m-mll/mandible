@@ -1197,14 +1197,37 @@ export type BriefingBundle = {
 };
 export type BriefingGroup = {
   id: string;
+  key: string;
   name: string;
   created_at: number;
   updated_at: number;
   archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  destinations: BriefingGroupDestination[];
   review_candidates: BriefingGroupReviewCandidate[];
   history: BriefingGroupDisposition[];
+};
+export type BriefingGroupDestination = {
+  logical_artifact_id: string;
+  group_id: string;
+  created_at: number;
+  updated_at: number;
+};
+export type BriefingGroupReviewLayoutEntry = {
+  position: number;
+  entry_kind: "briefing" | "subgroup";
+  subgroup_name: string | null;
+  subgroup_position: number;
+  briefing_id: string;
+  logical_artifact_id: string;
+  artifact_version_id: string;
+};
+export type BriefingGroupDestinationChange = {
+  position: number;
+  logical_artifact_id: string;
+  expected_group_id: string | null;
+  resulting_group_id: string;
 };
 export type BriefingGroupReviewItem = {
   position: number;
@@ -1229,6 +1252,12 @@ export type BriefingGroupReviewCandidate = {
   ready: boolean;
   blocker_code: string | null;
   blocker_message: string | null;
+  base_layout_digest: string | null;
+  proposal_layout_digest: string | null;
+  layout_changed: boolean;
+  base_layout: BriefingGroupReviewLayoutEntry[];
+  proposal_layout: BriefingGroupReviewLayoutEntry[];
+  destination_changes: BriefingGroupDestinationChange[];
   items: BriefingGroupReviewItem[];
 };
 export type BriefingGroupDisposition = {
@@ -1242,6 +1271,11 @@ export type BriefingGroupDisposition = {
   review_binding_digest: string | null;
   composition_run_id: string | null;
   review_items: BriefingGroupReviewItem[];
+  base_layout_digest: string | null;
+  proposal_layout_digest: string | null;
+  base_layout: BriefingGroupReviewLayoutEntry[];
+  proposal_layout: BriefingGroupReviewLayoutEntry[];
+  destination_changes: BriefingGroupDestinationChange[];
   actor_user_id: string | null;
   evidence_method: string | null;
   credential_id: string | null;

@@ -25,14 +25,16 @@ Usage:
   mandible briefing bundle rename <bundle-ref> --name <text> [--json]
   mandible briefing bundle delete <bundle-ref> [--json]
   mandible briefing bundle show <bundle-ref> [--json]
-  mandible briefing group create --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]
+  mandible briefing group create --key <key> --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]
   mandible briefing group add <group-ref> <bundle-ref> [--sharing-reason <text>] [--json]
   mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]
   mandible briefing group archive <group-ref> [--json]
   mandible briefing group restore <group-ref> [--json]
   mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]
-  mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]
-  mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]
+  mandible briefing group review <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> [--destination-changes <json>] [--json]
+  mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]
+  mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]
+  mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]
   mandible briefing group rename <group-ref> --name <text> [--json]
   mandible briefing group show <group-ref> [--json]
   mandible briefing route inspect [<route-key>] [--json]
@@ -49,8 +51,8 @@ never resolves a logical artifact or series to latest.
 A Briefing bundle is only a named, manually ordered association. Creating or
 adding to one does not change member Briefings, rounds, artifacts, or review data.
 
-A destination-route manifest uses schema mandible-briefing-destination-routes@1.
-Plan resolves every Briefing group and logical Artifact ref without writing.
+A destination-route manifest uses schema mandible-briefing-destination-routes@2.
+Plan resolves each logical Artifact through its active destination owner without writing.
 Apply atomically creates or upgrades the declared routes. Exact replay is
 unchanged; ownership, identity, template downgrade, and same-version template
 drift fail closed.
@@ -282,17 +284,18 @@ emit_group() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '.group | "briefing-group:\(.id | mandible_short_id)  \(.name)\n  Base: \(
+      '.group | "briefing-group:\(.id | mandible_short_id)  key=\(.key)  \(.name)\n  Base: \(
         if .current == null then "none" else "\(.current.id | mandible_short_id)  \(if .current.name == \"Original\" then \"Base\" else .current.name end)" end
       )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))\n  history: \((.history // []) | length)"'
   fi
 }
 
 cmd_group_create() {
-  local name="" current_bundle_ref="" sharing_reason="" json=0 response payload
+  local key="" name="" current_bundle_ref="" sharing_reason="" json=0 response payload
   local -a bundle_refs=()
   while (( $# > 0 )); do
     case "$1" in
+      --key) [[ $# -ge 2 ]] || die "--key requires a value" 2; key="$2"; shift 2 ;;
       --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
       --current) [[ $# -ge 2 ]] || die "--current requires a value" 2; current_bundle_ref="$2"; shift 2 ;;
       --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
@@ -301,10 +304,10 @@ cmd_group_create() {
       *) bundle_refs+=("$1"); shift ;;
     esac
   done
-  [[ -n "${name//[[:space:]]/}" ]] || die "group create requires --name <name>" 2
+  [[ -n "$key" && -n "${name//[[:space:]]/}" ]] || die "group create requires --key <key> --name <name>" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
-  payload="$(jq -n --arg name "$name" --arg current "$current_bundle_ref" --arg reason "$sharing_reason" --args \
-    '{name:$name,bundle_refs:$ARGS.positional}
+  payload="$(jq -n --arg key "$key" --arg name "$name" --arg current "$current_bundle_ref" --arg reason "$sharing_reason" --args \
+    '{key:$key,name:$name,bundle_refs:$ARGS.positional}
      + (if $current == "" then {} else {current_bundle_ref:$current} end)
      + (if $reason == "" then {} else {sharing_reason:$reason} end)' \
     -- "${bundle_refs[@]}")"
@@ -408,13 +411,15 @@ cmd_group_promote() {
 }
 
 cmd_group_review_disposition() {
-  local action="$1" group_ref="" expected_base="" proposal="" binding_digest="" json=0 response payload decision
+  local action="$1" group_ref="" expected_base="" proposal="" binding_digest="" destination_changes='[]' json=0 response payload decision
   shift
   while (( $# > 0 )); do
     case "$1" in
       --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
       --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
       --binding-digest) [[ $# -ge 2 ]] || die "--binding-digest requires a value" 2; binding_digest="$2"; shift 2 ;;
+      --destination-changes) [[ $# -ge 2 ]] || die "--destination-changes requires JSON" 2
+        destination_changes="$2"; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
@@ -426,9 +431,12 @@ cmd_group_review_disposition() {
     || die "--binding-digest requires one exact SHA-256 digest" 2
   decision="$([[ "$action" == "accept" ]] && printf accepted || printf rejected)"
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  printf '%s' "$destination_changes" | jq -e 'type == "array"' >/dev/null \
+    || die "--destination-changes must be a JSON array" 2
   payload="$(jq -n --arg decision "$decision" --arg expected "$expected_base" --arg proposal "$proposal" \
-    --arg binding "$binding_digest" \
-    '{decision:$decision,expected_base_bundle_ref:$expected,proposal_bundle_ref:$proposal,binding_digest:$binding}')"
+    --arg binding "$binding_digest" --argjson changes "$destination_changes" \
+    '{decision:$decision,expected_base_bundle_ref:$expected,proposal_bundle_ref:$proposal,binding_digest:$binding,
+      destination_changes:$changes}')"
   response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/review-dispositions" "$payload")" \
     || die "Failed to $action recurring Briefing proposal." 1
   if (( json )); then
@@ -437,6 +445,54 @@ cmd_group_review_disposition() {
     printf '%s\n' "$response" | api_jq_human \
       '"briefing-group:\(.group.id | mandible_short_id)  \(if .changed then .disposition.kind else "already \(.disposition.kind)" end)  proposal=\(.disposition.proposal.id | mandible_short_id)"'
   fi
+}
+
+cmd_group_review() {
+  local group_ref="" expected_base="" proposal="" destination_changes='[]' json=0 response payload
+  while (( $# > 0 )); do
+    case "$1" in
+      --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
+      --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
+      --destination-changes) [[ $# -ge 2 ]] || die "--destination-changes requires JSON" 2
+        destination_changes="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" ]] \
+    || die "Usage: mandible briefing group review <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> [--destination-changes <json>] [--json]" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  printf '%s' "$destination_changes" | jq -e 'type == "array"' >/dev/null \
+    || die "--destination-changes must be a JSON array" 2
+  payload="$(jq -n --arg expected "$expected_base" --arg proposal "$proposal" --argjson changes "$destination_changes" \
+    '{expected_base_bundle_ref:$expected,proposal_bundle_ref:$proposal,destination_changes:$changes}')"
+  response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/review-candidates" "$payload")" \
+    || die "Failed to preview guarded Briefing group review." 1
+  if (( json )); then printf '%s\n' "$response" | jq .; else
+    printf '%s\n' "$response" | api_jq_human \
+      '.candidate | "ready=\(.ready)  binding=\(.binding_digest // \"none\")  layout_changed=\(.layout_changed)  destination_changes=\(.destination_changes | length)"'
+  fi
+}
+
+cmd_group_destination() {
+  local action="${1:-}" group_ref="" artifact_ref="" json=0 response payload
+  shift || true
+  [[ "$action" == "bind" ]] || die "Usage: mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]" 2
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; elif [[ -z "$artifact_ref" ]]; then artifact_ref="$1";
+         else die "Unexpected argument: $1" 2; fi; shift ;;
+    esac
+  done
+  [[ -n "$group_ref" && -n "$artifact_ref" ]] \
+    || die "Usage: mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]" 2
+  payload="$(jq -n --arg artifact "$artifact_ref" '{logical_artifact_ref:$artifact}')"
+  response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/destinations" "$payload")" \
+    || die "Failed to bind Briefing destination owner." 1
+  emit_group "$response" "$json"
 }
 
 cmd_group_show() {
@@ -482,7 +538,9 @@ cmd_group() {
     create) cmd_group_create "$@" ;; add) cmd_group_add "$@" ;; configure) cmd_group_configure "$@" ;;
     archive|restore) cmd_group_archive_state "$subcommand" "$@" ;;
     promote) cmd_group_promote "$@" ;;
+    review) cmd_group_review "$@" ;;
     accept|reject) cmd_group_review_disposition "$subcommand" "$@" ;;
+    destination) cmd_group_destination "$@" ;;
     rename) cmd_group_rename "$@" ;;
     show) cmd_group_show "$@" ;; *) die "Unknown briefing group subcommand: $subcommand" 2 ;;
   esac

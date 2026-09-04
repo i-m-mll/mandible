@@ -6,7 +6,12 @@ import {
 import type { Db } from "./db.js";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
-import { BRIEFING_COMPOSER_SCHEMA_SQL, BRIEFING_GROUP_SCHEMA_SQL } from "./feedback/schema.js";
+import {
+  BRIEFING_COMPOSER_SCHEMA_SQL,
+  BRIEFING_COMPOSER_SCHEMA_V165_SQL,
+  BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL,
+  BRIEFING_GROUP_SCHEMA_SQL,
+} from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -566,7 +571,7 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     version: 165,
     name: "base_relative_briefing_composer",
-    statements: [...BRIEFING_COMPOSER_SCHEMA_SQL],
+    statements: [...BRIEFING_COMPOSER_SCHEMA_V165_SQL],
   },
   {
     version: 166,
@@ -576,8 +581,7 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     version: 167,
     name: "human_reviewed_briefing_group_disposition",
-    statements: BRIEFING_GROUP_SCHEMA_SQL.filter((statement) =>
-      statement.includes("briefing_group_review_disposition")),
+    statements: [...BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL],
   },
   {
     version: 168,
@@ -605,22 +609,174 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 171,
+    name: "briefing_group_keys_and_destination_ownership",
+    statements: [
+      `CREATE TEMP TABLE briefing_destination_owner_guard (
+        logical_artifact_id TEXT PRIMARY KEY,
+        group_count INTEGER NOT NULL CHECK(group_count = 1),
+        heading_count INTEGER NOT NULL CHECK(heading_count = 1),
+        active_group_count INTEGER NOT NULL CHECK(active_group_count = 1),
+        base_document_count INTEGER NOT NULL CHECK(base_document_count = 1)
+      )`,
+      `INSERT INTO briefing_destination_owner_guard (
+         logical_artifact_id, group_count, heading_count, active_group_count, base_document_count)
+       SELECT logical_artifact_id, COUNT(DISTINCT group_id),
+         MAX((SELECT COUNT(*) FROM briefing_destination_routes sibling
+           WHERE sibling.logical_artifact_id = route.logical_artifact_id
+             AND sibling.heading = route.heading)),
+         COUNT(DISTINCT CASE WHEN owner.archived_at IS NULL AND owner.current_bundle_id IS NOT NULL
+           THEN owner.id END),
+         MAX((SELECT COUNT(*)
+           FROM briefing_bundle_members member
+           JOIN briefings briefing ON briefing.id = member.briefing_id
+           WHERE member.bundle_id = owner.current_bundle_id
+             AND briefing.logical_artifact_id = route.logical_artifact_id
+             AND briefing.archived_at IS NULL))
+       FROM briefing_destination_routes route
+       JOIN briefing_groups owner ON owner.id = route.group_id
+       GROUP BY logical_artifact_id`,
+      "DROP INDEX idx_briefing_groups_current_bundle",
+      "DROP INDEX idx_briefing_group_dispositions_group",
+      "DROP INDEX idx_briefing_group_review_dispositions_group",
+      "DROP INDEX idx_briefing_composition_contributions_pending",
+      "DROP TRIGGER briefing_group_review_disposition_items_bounded_insert",
+      "DROP TRIGGER briefing_group_review_dispositions_immutable_update",
+      "DROP TRIGGER briefing_group_review_dispositions_immutable_delete",
+      "DROP TRIGGER briefing_group_review_disposition_items_immutable_update",
+      "DROP TRIGGER briefing_group_review_disposition_items_immutable_delete",
+      "ALTER TABLE briefing_group_review_disposition_items RENAME TO briefing_group_review_disposition_items_v170",
+      "ALTER TABLE briefing_group_review_dispositions RENAME TO briefing_group_review_dispositions_v170",
+      "ALTER TABLE briefing_group_dispositions RENAME TO briefing_group_dispositions_v170",
+      "ALTER TABLE briefing_group_updates RENAME TO briefing_group_updates_v170",
+      "ALTER TABLE briefing_destination_templates RENAME TO briefing_destination_templates_v170",
+      "ALTER TABLE briefing_composition_inputs RENAME TO briefing_composition_inputs_v170",
+      "ALTER TABLE briefing_composition_contributions RENAME TO briefing_composition_contributions_v170",
+      "ALTER TABLE briefing_composition_targets RENAME TO briefing_composition_targets_v170",
+      "ALTER TABLE briefing_destination_routes RENAME TO briefing_destination_routes_v170",
+      "ALTER TABLE briefing_groups RENAME TO briefing_groups_v170",
+      ...BRIEFING_GROUP_SCHEMA_SQL,
+      ...BRIEFING_COMPOSER_SCHEMA_SQL,
+      `WITH RECURSIVE normalized (
+          id, name, current_bundle_id, created_at, updated_at, archived_at, position, candidate
+        ) AS (
+          SELECT id, name, current_bundle_id, created_at, updated_at, archived_at, 1, ''
+          FROM briefing_groups_v170
+          UNION ALL
+          SELECT id, name, current_bundle_id, created_at, updated_at, archived_at, position + 1,
+            CASE
+              WHEN length(substr(name, position, 1)) = 1
+                AND lower(substr(name, position, 1)) GLOB '[a-z0-9]'
+                THEN candidate || lower(substr(name, position, 1))
+              WHEN substr(name, position, 1) IN ('''', '’') THEN candidate
+              WHEN candidate = '' OR substr(candidate, -1, 1) = '-' THEN candidate
+              ELSE candidate || '-'
+            END
+          FROM normalized WHERE position <= length(name)
+        ), slugs AS (
+          SELECT id, name, current_bundle_id, created_at, updated_at, archived_at,
+            CASE WHEN rtrim(candidate, '-') = '' THEN 'group-' || substr(replace(id, '-', ''), 1, 12)
+              ELSE substr(rtrim(candidate, '-'), 1, 80) END AS candidate
+          FROM normalized WHERE position = length(name) + 1
+        ), ranked AS (
+          SELECT *, CASE WHEN archived_at IS NULL THEN
+            row_number() OVER (PARTITION BY candidate, archived_at IS NULL ORDER BY created_at, id)
+            ELSE 1 END AS active_rank
+          FROM slugs
+        )
+        INSERT INTO briefing_groups (id, key, name, current_bundle_id, created_at, updated_at, archived_at)
+        SELECT id,
+          CASE WHEN archived_at IS NULL AND active_rank > 1
+            THEN substr(candidate, 1, 40) || '-' || substr(replace(id, '-', ''), 1, 32)
+            ELSE candidate END,
+          name, current_bundle_id, created_at, updated_at, archived_at
+        FROM ranked ORDER BY created_at, id`,
+      `INSERT INTO briefing_group_updates (group_id, bundle_id, position, created_at)
+       SELECT group_id, bundle_id, position, created_at FROM briefing_group_updates_v170`,
+      `INSERT INTO briefing_group_dispositions (
+         id, group_id, kind, prior_base_bundle_id, proposal_bundle_id, resulting_base_bundle_id,
+         auth_request_id, merge_head_sha, created_at)
+       SELECT id, group_id, kind, prior_base_bundle_id, proposal_bundle_id, resulting_base_bundle_id,
+         auth_request_id, merge_head_sha, created_at FROM briefing_group_dispositions_v170`,
+      `INSERT INTO briefing_group_review_dispositions (
+         id, group_id, decision, expected_base_bundle_id, proposal_bundle_id, composition_run_id,
+         resulting_base_bundle_id, base_layout_digest, proposal_layout_digest, binding_digest,
+         manifest_json, item_count, destination_change_count, actor_user_id, evidence_method,
+         credential_id, created_at)
+       SELECT id, group_id, decision, expected_base_bundle_id, proposal_bundle_id, composition_run_id,
+         resulting_base_bundle_id, NULL, NULL, binding_digest, manifest_json, item_count, 0,
+         actor_user_id, evidence_method, credential_id, created_at
+       FROM briefing_group_review_dispositions_v170`,
+      `INSERT INTO briefing_group_review_disposition_items (
+         disposition_id, position, proposal_briefing_id, proposal_round_id,
+         proposal_artifact_version_id, base_briefing_id, base_round_id,
+         base_artifact_version_id, submission_id)
+       SELECT disposition_id, position, proposal_briefing_id, proposal_round_id,
+         proposal_artifact_version_id, base_briefing_id, base_round_id,
+         base_artifact_version_id, submission_id
+       FROM briefing_group_review_disposition_items_v170`,
+      `INSERT INTO briefing_destination_owners (
+         logical_artifact_id, group_id, bound_by_user_id, evidence_method, credential_id,
+         created_at, updated_at)
+       SELECT logical_artifact_id, MIN(group_id), NULL, 'migration', NULL,
+         MIN(created_at), MAX(updated_at)
+       FROM briefing_destination_routes_v170 GROUP BY logical_artifact_id`,
+      `INSERT INTO briefing_destination_routes (
+         route_key, logical_artifact_id, heading, composer_kind, active_template_version,
+         max_contributions, max_document_bytes, max_directives, created_at, updated_at)
+       SELECT route_key, logical_artifact_id, heading, composer_kind, active_template_version,
+         max_contributions, max_document_bytes, max_directives, created_at, updated_at
+       FROM briefing_destination_routes_v170`,
+      `INSERT INTO briefing_destination_templates (
+         route_key, version, contribution_template, slots_json, created_at)
+       SELECT route_key, version, contribution_template, slots_json, created_at
+       FROM briefing_destination_templates_v170`,
+      `INSERT INTO briefing_composition_inputs (
+         run_id, route_key, expected_base_artifact_version_id, agentic_markdown)
+       SELECT run_id, route_key, expected_base_artifact_version_id, agentic_markdown
+       FROM briefing_composition_inputs_v170`,
+      `INSERT INTO briefing_composition_contributions (
+         id, run_id, publisher_user_id, source_key, route_key, change_id, evidence_ref,
+         evidence_digest, occurred_at, slots_json, observed_base_artifact_version_id,
+         state, proposal_bundle_id, created_at)
+       SELECT id, run_id, publisher_user_id, source_key, route_key, change_id, evidence_ref,
+         evidence_digest, occurred_at, slots_json, observed_base_artifact_version_id,
+         state, proposal_bundle_id, created_at
+       FROM briefing_composition_contributions_v170`,
+      `INSERT INTO briefing_composition_targets (
+         run_id, group_id, outcome, base_bundle_id, proposal_bundle_id)
+       SELECT run_id, group_id, outcome, base_bundle_id, proposal_bundle_id
+       FROM briefing_composition_targets_v170`,
+      "DROP TABLE briefing_group_review_disposition_items_v170",
+      "DROP TABLE briefing_group_review_dispositions_v170",
+      "DROP TABLE briefing_group_dispositions_v170",
+      "DROP TABLE briefing_group_updates_v170",
+      "DROP TABLE briefing_destination_templates_v170",
+      "DROP TABLE briefing_composition_inputs_v170",
+      "DROP TABLE briefing_composition_contributions_v170",
+      "DROP TABLE briefing_composition_targets_v170",
+      "DROP TABLE briefing_destination_routes_v170",
+      "DROP TABLE briefing_groups_v170",
+      "DROP TABLE briefing_destination_owner_guard",
+    ],
+  },
+  {
+    version: 172,
     name: "remove_chat_bottom_shelf_user_setting",
     statements: [
-      "ALTER TABLE user_settings RENAME TO user_settings_v170",
+      "ALTER TABLE user_settings RENAME TO user_settings_v171",
       USER_SETTINGS_SCHEMA_SQL,
       `INSERT INTO settings (key, value, updated_at)
        SELECT 'chat_entity_link_action', json_extract(legacy.value, '$.clickAction'), legacy.updated_at
-         FROM user_settings_v170 legacy
+         FROM user_settings_v171 legacy
         WHERE legacy.key = 'chat_bottom_shelf'
           AND legacy.user_id = (SELECT value FROM settings WHERE key = 'user.operator_id')
           AND json_valid(legacy.value)
           AND json_extract(legacy.value, '$.clickAction') IN ('preview', 'open')
        ON CONFLICT(key) DO NOTHING`,
       `INSERT INTO user_settings (user_id, key, value, revision, updated_at)
-       SELECT user_id, key, value, revision, updated_at FROM user_settings_v170
+       SELECT user_id, key, value, revision, updated_at FROM user_settings_v171
        WHERE key <> 'chat_bottom_shelf'`,
-      "DROP TABLE user_settings_v170",
+      "DROP TABLE user_settings_v171",
     ],
   },
 ];

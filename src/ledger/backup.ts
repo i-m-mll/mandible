@@ -166,8 +166,19 @@ export const METADATA_BACKUP_TABLES = [
   "briefing_groups",
   "briefing_group_updates",
   "briefing_group_dispositions",
+  // Destination ownership is a ledger fact; route declarations remain
+  // code-owned but are retained with their immutable templates and run
+  // provenance so review receipts restore with every referenced parent.
+  "briefing_destination_owners",
+  "briefing_destination_routes",
+  "briefing_destination_templates",
+  "briefing_composition_runs",
+  "briefing_composition_inputs",
+  "briefing_composition_contributions",
+  "briefing_composition_targets",
   "briefing_group_review_dispositions",
   "briefing_group_review_disposition_items",
+  "briefing_group_review_destination_items",
   "briefing_collection_sharing_receipts",
   // Human-triggered issue/incident dispatch audit.
   "agent_dispatch_events",
