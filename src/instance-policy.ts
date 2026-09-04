@@ -51,6 +51,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/briefing-groups", category: "briefing" },
   { prefix: "/api/briefings", category: "briefing" },
   { prefix: "/api/console", category: "console" },
+  { prefix: "/api/conversation-spawns", category: "conversations" },
   { prefix: "/api/conversations", category: "conversations" },
   { prefix: "/api/conversation-custody", category: "conversations" },
   { prefix: "/api/inbox", category: "inbox" },

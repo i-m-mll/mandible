@@ -14,6 +14,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { associateProjectArtifact, ingestArtifact, recordArtifactVersion } from "../src/provider-artifacts.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
+import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerWorkRoutes } from "../src/routes/work.js";
@@ -104,13 +105,14 @@ describe("restricted project route enforcement", () => {
     expect(response.status).toBe(200);
   });
 
-  it("denies agent console spawn until spawn_console is granted", async () => {
+  it("denies agent conversation spawn until spawn_console is granted", async () => {
     const agent = createUser(db, { slug: "console-agent", kind: "agent", display_name: "Console Agent" });
     const { token } = authenticator.mintApiToken(agent.id);
     const manager = {
       create: vi.fn(() => ({ id: "console-1" })),
       start: vi.fn(),
       get: vi.fn(() => ({ meta: { id: "console-1" } })),
+      sendPrompt: vi.fn(),
       waitForInitialRunOptions: vi.fn(async () => ({
         backendType: "spawn",
         command: "bash",
@@ -119,11 +121,26 @@ describe("restricted project route enforcement", () => {
         options: [],
       })),
     };
-    registerConsoleRoutes(router, manager as never);
+    registerConversationSpawnRoutes(router, db, manager as never);
     const input = {
       method: "POST",
-      url: "/api/console/sessions",
-      body: { label: "Agent", command: "bash" },
+      url: "/api/conversation-spawns",
+      body: {
+        schema: "mandible-conversation-spawn-request@1",
+        idempotency_key: "permission-route-spawn",
+        provider: "codex",
+        label: "Agent",
+        initial_message: "Perform the bounded task.",
+        placement: { project_id: null, checkout_id: null },
+        topology: { kind: "top-level" },
+        command: {
+          name: "codex",
+          backend_type: "acp",
+          transport_lane: "acp",
+          channel_enabled: false,
+          run_options: {},
+        },
+      },
       credential: token,
       transport: "http" as const,
     };
@@ -138,6 +155,7 @@ describe("restricted project route enforcement", () => {
     expect((await router.invoke(input)).status).toBe(201);
     expect(manager.create).toHaveBeenCalledOnce();
     expect(manager.waitForInitialRunOptions).toHaveBeenCalledWith("console-1");
+    expect(manager.sendPrompt).toHaveBeenCalledWith("console-1", "Perform the bounded task.");
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

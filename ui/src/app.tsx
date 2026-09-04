@@ -1553,7 +1553,7 @@ function App(): JSX.Element {
     // (ready+warm, not rebuilding) before the stall is judged non-transient and
     // the "continue anyway" escape is surfaced.
     const STALL_ESCAPE_MS = 15_000;
-    let intervalId: ReturnType<typeof window.setInterval> | null = null;
+    let intervalId: number | null = null;
     // Give the daemon a moment to shut down before starting to poll
     const startTimer = window.setTimeout(() => {
       intervalId = window.setInterval(async () => {

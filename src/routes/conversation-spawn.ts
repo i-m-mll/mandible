@@ -85,5 +85,5 @@ export function registerConversationSpawnRoutes(server: RouteRegistrar, db: Db, 
       sendJson(res, 502, failed.ok ? { ok: false, error: failed.value.error, spawn: failed.value,
         session: nativeSessionId ? manager.get(nativeSessionId)?.meta ?? null : null } : failed);
     }
-  }, { authenticated: true }), { fileRpc: "deny" });
+  }, { authenticated: true }), { fileRpc: "allow" });
 }
