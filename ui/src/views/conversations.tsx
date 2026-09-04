@@ -2454,7 +2454,6 @@ export function ConversationsView({
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [chatViewState, setChatViewState] = useChatViewState();
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
-  const [shownProjectsReconcileNotice, setShownProjectsReconcileNotice] = useState<string | null>(null);
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
@@ -2594,10 +2593,6 @@ export function ConversationsView({
   }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
   const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
-  const availableProjectCount = useMemo(
-    () => new Set(registeredProjects.map((project) => project.id)).size,
-    [registeredProjects],
-  );
 
   useEffect(() => {
     if (!canonicalProjectsLoaded || !shownProjectsState.ready) return;
@@ -2608,9 +2603,6 @@ export function ConversationsView({
         && shown.checkoutId === shownProjects[index].checkoutId
       ));
     if (unchanged) return;
-    setShownProjectsReconcileNotice(
-      'Saved project selection referenced a changed or removed checkout. The shared preference was updated.',
-    );
     setShownProjects(reconciled);
   }, [canonicalProjects, canonicalProjectsLoaded, setShownProjects, shownProjects, shownProjectsState.ready]);
 
@@ -3382,16 +3374,8 @@ export function ConversationsView({
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
                 </div>
               ) : null}
-              {shownProjectsState.notice || shownProjectsReconcileNotice ? (
-                <div className="chat-projects-empty" role="status">
-                  {shownProjectsState.notice ?? shownProjectsReconcileNotice}
-                </div>
-              ) : null}
               {chatSections.projects.length === 0 && registeredProjects.length > 0 ? (
-                <div className="chat-projects-empty" role="status">
-                  <span>No projects shown · {availableProjectCount} available</span>
-                  <button type="button" onClick={openProjectChooser}>Add Project</button>
-                </div>
+                <div className="chat-projects-empty">No projects included</div>
               ) : null}
               {chatSections.projects.map((group, index) => {
                 const collapsed = collapsedProjects.has(group.key);
