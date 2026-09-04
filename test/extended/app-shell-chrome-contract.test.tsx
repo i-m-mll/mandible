@@ -108,18 +108,17 @@ describe('shared app-shell chrome contract', () => {
     expect(ruleBody(detailPaneShell, '.detail-pane-header--versioned')).not.toContain('height: var(--app-header-height)');
   });
 
-  it('confines Graph and Timeline bottom panels to the shared detail boundary', () => {
+  it('confines Graph and Timeline to the canonical full-height right sidebar', () => {
     expect(appShellSource).not.toMatch(/\blayout:\s*'full-content'\s*\|\s*'anchored-detail'/);
     expect(graphSource).not.toMatch(/\blayout:\s*['"](?:full-content|anchored-detail)['"]/);
     expect(timelineSource).not.toMatch(/\blayout:\s*['"](?:full-content|anchored-detail)['"]/);
-    expect(appSource).toContain('className="app-bottom-panel"');
-    expect(appSource).not.toContain('bottomPanel.layout');
+    expect(appSource).toContain('className="app-right-sidebar"');
+    expect(appSource).not.toContain('rightSidebar.layout');
 
-    expect(ruleBody(base, '.app-bottom-panel')).toContain('grid-column: 2');
-    expect(ruleBody(base, '.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel'))
-      .toContain('left: var(--app-view-sidebar-outer-width)');
-    expect(ruleBody(base, '.app-bottom-panel__content')).toContain('overflow: hidden');
-    expect(base).not.toContain('.app-bottom-panel--anchored-detail');
+    expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-column: 3');
+    expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-template-rows: var(--app-header-height)');
+    expect(base).toMatch(/\.app-right-sidebar__body\s*\{[^}]*overflow:\s*auto/s);
+    expect(base).not.toContain('.app-right-sidebar--anchored-detail');
     expect(timelineSource).toContain('className="timeline-inspector"');
     expect(timelineSource).toContain('header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}');
   });

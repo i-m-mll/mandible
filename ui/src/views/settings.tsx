@@ -1918,6 +1918,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             defaultValue={SIDEBAR_GROUP_LIMIT_DEFAULT}
             normalize={normalizeSidebarGroupLimit}
           />
+          <SelectInput
+            label="Chat entity links"
+            desc="Choose what an ordinary click does. The context menu and keyboard menu always offer both actions."
+            settingKey="chat_entity_link_action"
+            settings={settings}
+            onSave={onSave}
+            options={['preview', 'open']}
+          />
           {([
             ['claude', 'Claude default model'],
             ['codex', 'Codex default model'],

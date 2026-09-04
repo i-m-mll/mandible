@@ -1,6 +1,7 @@
 import type { JSX } from 'preact/jsx-runtime';
 import type { ViewMode } from './TerminalPane';
 import { ViewToggle } from './ViewToggle';
+import { AppRightSidebarToggle } from '../../app-shell';
 
 export function TerminalPaneHeader({
   viewMode,
@@ -10,7 +11,6 @@ export function TerminalPaneHeader({
   unseenEventCount,
   workspaceMode,
   providerSessionId,
-  onSidebarToggle,
 }: {
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
@@ -19,7 +19,6 @@ export function TerminalPaneHeader({
   unseenEventCount: number;
   workspaceMode: boolean;
   providerSessionId: string | null;
-  onSidebarToggle: () => void;
 }): JSX.Element {
   return (
     <div className="terminal-pane__header">
@@ -46,16 +45,9 @@ export function TerminalPaneHeader({
               View history
             </button>
           )}
-          <button
-            type="button"
-            className="terminal-pane__link-btn"
-            onClick={onSidebarToggle}
-            title="Session settings"
-          >
-            ⋮
-          </button>
         </div>
       )}
+      <AppRightSidebarToggle className="terminal-pane__sidebar-toggle" />
     </div>
   );
 }

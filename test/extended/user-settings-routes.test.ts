@@ -6,10 +6,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE,
-  USER_SETTING_EVENTS,
-} from "../../src/contracts.js";
+import { USER_SETTING_EVENTS } from "../../src/contracts.js";
 import { openDb, type Db } from "../../src/db.js";
 import { registerUserSettingsRoutes } from "../../src/routes/user-settings.js";
 import type {
@@ -170,22 +167,17 @@ describe("authenticated user settings routes", () => {
     const user = createUser(db, { slug: "restart-user", kind: "human", display_name: "Restart User" });
     let routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    const value = JSON.stringify({
-      ...DEFAULT_CHAT_BOTTOM_SHELF_PREFERENCE,
-      visible: false,
-      tab: "preview",
-      clickAction: "open",
-    });
-    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), value, "chat_bottom_shelf"));
+    const value = "16";
+    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), value, "ui_font_size"));
     db.close();
 
     db = openDb(dbPath);
     routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "chat_bottom_shelf")))
+    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "ui_font_size")))
       .toMatchObject({
         statusCode: 200,
-        payload: { version: 1, key: "chat_bottom_shelf", value, revision: 1 },
+        payload: { version: 1, key: "ui_font_size", value, revision: 1 },
       });
     db.close();
   });

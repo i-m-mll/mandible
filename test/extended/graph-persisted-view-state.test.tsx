@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AppShellProvider,
-  type AppBottomPanelDescriptor,
+  type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from '../../ui/src/app-shell';
 import { GraphView } from '../../ui/src/views/graph';
@@ -45,16 +45,16 @@ function graphResponse(): Response {
 }
 
 function renderGraph(refreshToken = 0) {
-  let descriptor: AppBottomPanelDescriptor | null = null;
-  const registerBottomPanel: AppShellContextValue['registerBottomPanel'] = (next) => {
+  let descriptor: AppRightSidebarDescriptor | null = null;
+  const registerRightSidebar: AppShellContextValue['registerRightSidebar'] = (next) => {
     descriptor = next;
     return () => {
       if (descriptor === next) descriptor = null;
     };
   };
   const value: AppShellContextValue = {
-    bottomPanel: null,
-    registerBottomPanel,
+    rightSidebar: null,
+    registerRightSidebar,
     setViewSidebarWidth: () => undefined,
     active: true,
   };
@@ -96,17 +96,16 @@ describe('GraphView persisted detail panel state', () => {
     const view = renderGraph();
 
     await waitFor(() => expect(view.getDescriptor()).not.toBeNull());
-    expect(view.getDescriptor()).toMatchObject({ open: false, height: 520 });
-    expect(values.get(openKey)).toBe('false');
-    expect(values.get(heightKey)).toBe('999');
+    expect(view.getDescriptor()).toMatchObject({ open: false, width: 720 });
+    expect(values.has(openKey)).toBe(false);
+    expect(values.has(heightKey)).toBe(false);
 
     act(() => {
       view.getDescriptor()!.onOpenChange(true);
-      view.getDescriptor()!.onHeightChange(400);
+      view.getDescriptor()!.onWidthChange(400);
     });
     await waitFor(() => {
-      expect(values.get(openKey)).toBe('true');
-      expect(values.get(heightKey)).toBe('400');
+      expect(values.get('mandible_app_right_sidebar:graph:v1')).toBe(JSON.stringify({ open: true, width: 400 }));
     });
 
     const fetchCountBeforeRefetch = vi.mocked(fetch).mock.calls.length;
@@ -114,7 +113,7 @@ describe('GraphView persisted detail panel state', () => {
     await waitFor(() => expect(
       vi.mocked(fetch).mock.calls.length,
     ).toBeGreaterThan(fetchCountBeforeRefetch));
-    expect(view.getDescriptor()).toMatchObject({ open: true, height: 400 });
+    expect(view.getDescriptor()).toMatchObject({ open: true, width: 400 });
   });
 
   it('uses current defaults for malformed panel state without rewriting on mount', async () => {
@@ -127,9 +126,10 @@ describe('GraphView persisted detail panel state', () => {
     const view = renderGraph();
 
     await waitFor(() => expect(view.getDescriptor()).not.toBeNull());
-    expect(view.getDescriptor()).toMatchObject({ open: true, height: 340 });
-    expect(values.get(openKey)).toBe('{malformed');
-    expect(values.get(heightKey)).toBe('"not-a-number"');
+    expect(view.getDescriptor()).toMatchObject({ open: true, width: 380 });
+    expect(values.has(openKey)).toBe(false);
+    expect(values.has(heightKey)).toBe(false);
+    expect(values.get('mandible_app_right_sidebar:graph:v1')).toBe(JSON.stringify({ open: true, width: 380 }));
     expect(vi.mocked(storage.setItem).mock.calls).not.toContainEqual([openKey, expect.any(String)]);
     expect(vi.mocked(storage.setItem).mock.calls).not.toContainEqual([heightKey, expect.any(String)]);
   });

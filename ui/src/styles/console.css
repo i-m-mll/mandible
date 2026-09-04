@@ -756,12 +756,7 @@ select.new-session-dialog__input {
   min-height: 0;
 }
 
-/* Collapsed sidebar toggle button */
 .terminal-pane__sidebar-toggle {
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  z-index: 2;
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -776,76 +771,6 @@ select.new-session-dialog__input {
 }
 
 .terminal-pane__sidebar-toggle:is(:hover, :focus-visible) {
-  background: var(--neutral-alpha-06);
-  color: var(--chrome-icon-hover-direct);
-}
-
-/* Expanded sidebar panel */
-.terminal-pane__sidebar {
-  width: 280px;
-  flex-shrink: 0;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.terminal-pane__sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-}
-
-/* Bug: 60b1fd7 — Sidebar tab bar */
-.terminal-pane__sidebar-tabs {
-  display: flex;
-  gap: 2px;
-}
-
-.terminal-pane__sidebar-tab {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.terminal-pane__sidebar-tab:hover {
-  color: var(--fg-default);
-  background: var(--neutral-alpha-04);
-}
-
-.terminal-pane__sidebar-tab--active {
-  color: var(--fg-default);
-  font-weight: 600;
-  background: var(--neutral-alpha-06);
-}
-
-.terminal-pane__sidebar-close {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-
-.terminal-pane__sidebar-close:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-06);
   color: var(--chrome-icon-hover-direct);
 }

@@ -12,8 +12,7 @@ import {
   useStatuslineTelemetry,
 } from '../../chat';
 import { PtyBanner } from './PtyBanner';
-import { SessionControls, SessionModelControl } from './SessionControls';
-import { MessageInfoPanel } from './MessageInfoPanel';
+import { SessionModelControl } from './SessionControls';
 import { Composer, type ComposerUsage, type QueuedPrompt } from './Composer';
 import { PermissionApprovalCard } from './PermissionApprovalCard';
 import { PermissionPolicyStrip } from './PermissionPolicyStrip';
@@ -36,7 +35,6 @@ export function RichChatPane({
   providerFamily,
   model,
   allowedTools,
-  availableTools,
   permissionRequest,
   onPermissionRespond,
   selectedMessageId,
@@ -56,11 +54,7 @@ export function RichChatPane({
   onPromptSubmit,
   onQueuedPromptRemove,
   onStop,
-  sidebarOpen,
-  workspaceMode,
-  sidebarTab,
-  onSidebarTabChange,
-  onSidebarOpenChange,
+  onOpenSettings,
 }: {
   backendType: ConsoleSession['backend_type'];
   activeSubagents: ActiveSubagent[];
@@ -72,7 +66,6 @@ export function RichChatPane({
   providerFamily: string;
   model?: string;
   allowedTools?: string[] | null;
-  availableTools: string[];
   permissionRequest: ConsolePermissionRequest | null;
   onPermissionRespond: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
   selectedMessageId: string | null;
@@ -92,11 +85,7 @@ export function RichChatPane({
   onPromptSubmit: (event: JSX.TargetedEvent<HTMLFormElement, Event>) => void;
   onQueuedPromptRemove: (id: string) => void;
   onStop: () => void;
-  sidebarOpen: boolean;
-  workspaceMode: boolean;
-  sidebarTab: 'settings' | 'info';
-  onSidebarTabChange: (tab: 'settings' | 'info') => void;
-  onSidebarOpenChange: (open: boolean) => void;
+  onOpenSettings: () => void;
 }): JSX.Element {
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
@@ -132,10 +121,7 @@ export function RichChatPane({
             <div className="terminal-pane__policy-row">
               <PermissionPolicyStrip
                 allowedTools={allowedTools}
-                onOpenSettings={() => {
-                  onSidebarOpenChange(true);
-                  onSidebarTabChange('settings');
-                }}
+                onOpenSettings={onOpenSettings}
               />
             </div>
           )}
@@ -220,54 +206,6 @@ export function RichChatPane({
           </div>
         )}
       </div>
-
-      {sidebarOpen && !workspaceMode && (
-        <div className="terminal-pane__sidebar">
-          <div className="terminal-pane__sidebar-header">
-            <div className="terminal-pane__sidebar-tabs">
-              <button
-                type="button"
-                className={`terminal-pane__sidebar-tab${sidebarTab === 'settings' ? ' terminal-pane__sidebar-tab--active' : ''}`}
-                onClick={() => onSidebarTabChange('settings')}
-              >
-                Settings
-              </button>
-              <button
-                type="button"
-                className={`terminal-pane__sidebar-tab${sidebarTab === 'info' ? ' terminal-pane__sidebar-tab--active' : ''}`}
-                onClick={() => onSidebarTabChange('info')}
-              >
-                Info
-              </button>
-            </div>
-            <button
-              type="button"
-              className="terminal-pane__sidebar-close"
-              onClick={() => onSidebarOpenChange(false)}
-              title="Close sidebar"
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </button>
-          </div>
-          {sidebarTab === 'settings' && (
-            <SessionControls
-              sessionId={sessionId}
-              allowedTools={allowedTools}
-              availableTools={availableTools}
-              onModelSaved={onModelSaved}
-              hideModel={backendType === 'sdk'}
-            />
-          )}
-          {sidebarTab === 'info' && (
-            <MessageInfoPanel
-              selectedMessageId={selectedMessageId}
-              streamEvents={streamEvents}
-            />
-          )}
-        </div>
-      )}
     </div>
   );
 }

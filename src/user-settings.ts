@@ -1,6 +1,5 @@
 import type { Db } from "./db.js";
 import {
-  parseChatBottomShelfPreference,
   USER_SETTING_KEYS,
   type UserSettingKey,
 } from "./contracts.js";
@@ -20,14 +19,6 @@ export function parseUserSettingKey(value: string): UserSettingKey | null {
 
 export function normalizeUserSettingValue(key: UserSettingKey, value: string): string | null {
   if (key === USER_SETTING_KEYS.appRailOrder) return value;
-  if (key === USER_SETTING_KEYS.chatBottomShelf) {
-    try {
-      const parsed = parseChatBottomShelfPreference(JSON.parse(value));
-      return parsed ? JSON.stringify(parsed) : null;
-    } catch {
-      return null;
-    }
-  }
   if (key === USER_SETTING_KEYS.uiFontFace || key === USER_SETTING_KEYS.detailFontFace) {
     return value === "system-ui" || value === "space-grotesk" ? value : null;
   }

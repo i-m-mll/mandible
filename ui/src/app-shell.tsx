@@ -1,123 +1,88 @@
 import { createContext, type ComponentChildren } from 'preact';
 import { useContext, useEffect } from 'preact/hooks';
 
-export type AppBottomPanelDescriptor = {
+type AppRightSidebarCommon = {
   id: string;
-  title: string;
   ariaLabel: string;
   open: boolean;
-  height: number;
-  minHeight?: number;
-  maxHeight?: number;
+  width: number;
+  minWidth?: number;
+  maxWidth?: number;
   onOpenChange(open: boolean): void;
-  onHeightChange(height: number): void;
-  content: JSX.Element | null;
+  onWidthChange(width: number): void;
 };
 
+export type AppRightSidebarDescriptor = AppRightSidebarCommon & (
+  | { kind: 'panel'; title: string; content: ComponentChildren }
+  | {
+      kind: 'tabs';
+      tabs: readonly { id: string; label: string; icon?: ComponentChildren; content: ComponentChildren }[];
+      activeTab: string;
+      onActiveTabChange(tab: string): void;
+    }
+);
+
 export type AppShellContextValue = {
-  bottomPanel: AppBottomPanelDescriptor | null;
-  registerBottomPanel(descriptor: AppBottomPanelDescriptor): () => void;
-  /** Update the shell-owned width for the active route. */
+  rightSidebar: AppRightSidebarDescriptor | null;
+  registerRightSidebar(descriptor: AppRightSidebarDescriptor): () => void;
   setViewSidebarWidth(width: number | null): void;
-  /**
-   * The active route's shell-owned persisted width. When defined, ViewSidebar
-   * is controlled by the shared physical boundary token instead of publishing
-   * a second copy of its own width after render.
-   */
   viewSidebarWidth?: number | null;
-  /**
-   * Whether the subtree under this provider is the CURRENTLY VISIBLE route.
-   *
-   * Route panels are keep-alive: a view stays mounted (and keeps running its
-   * effects) after the user navigates away, only hidden. Views that poll, hold
-   * a live subscription, or claim keyboard focus must gate that work on this
-   * flag so a hidden instance does not keep fetching or capture key events.
-   *
-   * Outside any provider (standalone render, tests) this is `true`: no shell
-   * means the component is the whole page.
-   */
   active: boolean;
 };
 
 const noopContext: AppShellContextValue = {
-  bottomPanel: null,
-  registerBottomPanel: () => () => undefined,
+  rightSidebar: null,
+  registerRightSidebar: () => () => undefined,
   setViewSidebarWidth: () => undefined,
   active: true,
 };
 
 const AppShellContext = createContext<AppShellContextValue>(noopContext);
 
-export function AppShellProvider({
-  value,
-  children,
-}: {
-  value: AppShellContextValue;
-  children: ComponentChildren;
-}): JSX.Element {
-  return (
-    <AppShellContext.Provider value={value}>
-      {children}
-    </AppShellContext.Provider>
-  );
+export function AppShellProvider({ value, children }: { value: AppShellContextValue; children: ComponentChildren }): JSX.Element {
+  return <AppShellContext.Provider value={value}>{children}</AppShellContext.Provider>;
 }
 
 export function useAppShell(): AppShellContextValue {
   return useContext(AppShellContext);
 }
 
-export function useRegisterAppBottomPanel(
-  descriptor: AppBottomPanelDescriptor | null,
-): void {
-  const { registerBottomPanel } = useAppShell();
-
+export function useRegisterAppRightSidebar(descriptor: AppRightSidebarDescriptor | null): void {
+  const { active, registerRightSidebar } = useAppShell();
   useEffect(() => {
-    if (!descriptor) {
-      return undefined;
-    }
-    return registerBottomPanel(descriptor);
-  }, [descriptor, registerBottomPanel]);
+    if (!active || !descriptor) return undefined;
+    return registerRightSidebar(descriptor);
+  }, [active, descriptor, registerRightSidebar]);
 }
 
-export function BottomPanelIcon({ open, size = 18 }: { open: boolean; size?: number }): JSX.Element {
+export function RightSidebarIcon({ open, size = 18 }: { open: boolean; size?: number }): JSX.Element {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M3 15h18" />
-      {open ? <path d="M8.5 17.5h7M10.5 12h3" /> : null}
+      <path d="M15 4v16" />
+      {open ? <path d="M17.5 8.5h1.5M17.5 12h1.5M17.5 15.5h1.5" /> : null}
     </svg>
   );
 }
 
 export function ViewSidebarIcon({ open, size = 18 }: { open: boolean; size?: number }): JSX.Element {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <rect x="3" y="4" width="18" height="16" rx="2" />
       {open ? <path d="M9 4v16" /> : null}
       <path d={open ? 'M12 12h5' : 'M8 12h8'} />
       <path d={open ? 'm14.5 9.5 2.5 2.5-2.5 2.5' : 'm10.5 9.5-2.5 2.5 2.5 2.5'} />
     </svg>
+  );
+}
+
+export function AppRightSidebarToggle({ className = '' }: { className?: string }): JSX.Element | null {
+  const { rightSidebar } = useAppShell();
+  if (!rightSidebar) return null;
+  const label = rightSidebar.open ? `Hide ${rightSidebar.ariaLabel}` : `Show ${rightSidebar.ariaLabel}`;
+  return (
+    <button type="button" className={className} aria-label={label} aria-controls="app-right-sidebar" aria-expanded={rightSidebar.open} title={label} onClick={() => rightSidebar.onOpenChange(!rightSidebar.open)}>
+      <RightSidebarIcon open={rightSidebar.open} />
+    </button>
   );
 }

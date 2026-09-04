@@ -109,8 +109,8 @@ describe('ViewSidebar', () => {
     const setViewSidebarWidth = vi.fn();
     const shell: AppShellContextValue = {
       active: true,
-      bottomPanel: null,
-      registerBottomPanel: () => () => undefined,
+      rightSidebar: null,
+      registerRightSidebar: () => () => undefined,
       setViewSidebarWidth,
       viewSidebarWidth: 420,
     };

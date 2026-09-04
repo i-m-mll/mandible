@@ -1313,3 +1313,29 @@
   gap: 8px;
   margin-top: 8px;
 }
+.chat-right-sidebar__empty {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.chat-right-sidebar__preview {
+  min-height: 100%;
+  padding: 12px;
+}
+
+.detail-pane-header__sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}

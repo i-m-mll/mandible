@@ -115,7 +115,7 @@ describe('artifact-backed Briefing rounds', () => {
       });
     }));
 
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
 
     const prompt = await screen.findByText('Select a Briefing.');
     expect(prompt.classList.contains('briefing-empty--selection')).toBe(true);
@@ -157,7 +157,7 @@ describe('artifact-backed Briefing rounds', () => {
       selectedCollectionId: 'briefing:briefing-1',
     }));
 
-    render(<AppShellProvider value={{ active: true, bottomPanel: null, registerBottomPanel: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
