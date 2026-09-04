@@ -94,6 +94,11 @@ import type {
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
+import {
+  appendAuthLifecycleEvent,
+  authRequestSnapshot,
+  listAuthLifecycleEvents,
+} from "./auth-lifecycle.js";
 // Issue 1624ee9 — shared Mandible-Issue trailer parsing.
 import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
@@ -102,7 +107,9 @@ import type {
   AuthHookRun,
   AuthOutputChunk,
   AuthRequest,
+  AuthLifecycleActor,
   AuthRequestAction,
+  AuthRequestActionInput,
   AuthRequestInput,
   AuthRequestOutcome,
   AuthRequestStatus,
@@ -147,6 +154,7 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // small scalar id columns, so projecting them costs nothing.
   "requested_by_user_id", "requester_evidence_method", "requester_credential_id",
   "approved_by_user_id", "execution_evidence_id", "clearance_use_id",
+  "supersedes_request_id", "superseded_by_request_id",
 ].join(", ");
 
 // Issue 75f52ac — off-loop git spawns for the background finalizer queue.
@@ -298,12 +306,12 @@ type StaleMergeRecovery =
   | { outcome: "failed"; detail: string };
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
   constructor(
-    code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed",
+    code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch",
     message: string,
     status?: AuthRequestStatus,
     details?: unknown
@@ -810,6 +818,15 @@ export class AuthQueue {
       if (updated.changes !== 1) {
         continue;
       }
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id,
+        eventType: "completed",
+        priorStatus: request.status,
+        nextStatus: "completed",
+        actor: systemAction(),
+        reason: "Reconciled from Git proof that the reviewed merge already landed.",
+        occurredAt: now,
+      });
       const recovered = this.getRequest(request.id);
       if (recovered) {
         this.finalizeReconciledMerge(recovered);
@@ -1147,8 +1164,8 @@ export class AuthQueue {
     this.executionEnvs.delete(request.id);
     const now = this.now();
     try {
-      this.db
-        .prepare(
+      this.db.transaction(() => {
+        const changed = this.db.prepare(
           // Issue fbf2a58 round 2 — drop the just-issued approval FULLY, matching
           // the recoverStaleExecutions requeue path: clearing status/timestamps
           // but leaving approved_by_user_id (or execution_evidence_id) set would
@@ -1161,8 +1178,15 @@ export class AuthQueue {
            approval_source = 'manual', approval_lease_id = NULL,
            approved_by_user_id = NULL, execution_evidence_id = NULL
            WHERE id = ? AND status = 'executing' AND exit_code IS NULL`
-        )
-        .run(now + this.ttlMs, now, request.id);
+        ).run(now + this.ttlMs, now, request.id);
+        if (changed.changes === 1) {
+          appendAuthLifecycleEvent(this.db, {
+            requestId: request.id, eventType: "revised", priorStatus: "executing",
+            nextStatus: "pending", actor: systemAction(),
+            reason: "Execution parked for daemon restart.", occurredAt: now,
+          });
+        }
+      })();
     } catch (error) {
       authLog("warn", "auth_execution_park_failed", {
         subsystem: "auth",
@@ -1206,6 +1230,25 @@ export class AuthQueue {
        approval_source = 'manual', approval_lease_id = NULL,
        approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`
     );
+    const completeRecovered = (request: AuthRequest, exitCode: number, error: string | null) => {
+      this.db.transaction(() => {
+        complete.run(exitCode, now, now, error, request.id);
+        appendAuthLifecycleEvent(this.db, {
+          requestId: request.id, eventType: "completed", priorStatus: request.status,
+          nextStatus: "completed", actor: systemAction(), reason: error, occurredAt: now,
+        });
+      })();
+    };
+    const requeueRecovered = (request: AuthRequest) => {
+      this.db.transaction(() => {
+        requeue.run(now + this.ttlMs, now, request.id);
+        appendAuthLifecycleEvent(this.db, {
+          requestId: request.id, eventType: "revised", priorStatus: request.status,
+          nextStatus: "pending", actor: systemAction(),
+          reason: `Recovered interrupted execution (${context}).`, occurredAt: now,
+        });
+      })();
+    };
 
     for (const row of rows) {
       const request = mapRow(row);
@@ -1219,7 +1262,7 @@ export class AuthQueue {
         }
         const recovery = this.inspectStaleMerge(request);
         if (recovery.outcome === "completed") {
-          complete.run(0, now, now, null, request.id);
+          completeRecovered(request, 0, null);
           recoveredSuccessIds.push(request.id);
         } else if (recovery.outcome === "atomic_applied") {
           this.scheduleAtomicRecovery(request);
@@ -1228,16 +1271,16 @@ export class AuthQueue {
             .run(`Atomic merge applied and needs recovery: ${recovery.detail}`, now, request.id);
         } else if (recovery.outcome === "requeued") {
           this.dropMergeCandidate(request);
-          requeue.run(now + this.ttlMs, now, request.id);
+          requeueRecovered(request);
           requeuedIds.push(request.id);
         } else {
-          complete.run(1, now, now, `Interrupted auth merge (${context}): ${recovery.detail}`, request.id);
+          completeRecovered(request, 1, `Interrupted auth merge (${context}): ${recovery.detail}`);
           recoveredFailureIds.push(request.id);
         }
         continue;
       }
 
-      complete.run(1, now, now, `Execution interrupted (${context}); repository recovery is unavailable for this request type.`, request.id);
+      completeRecovered(request, 1, `Execution interrupted (${context}); repository recovery is unavailable for this request type.`);
       recoveredFailureIds.push(request.id);
     }
 
@@ -1553,7 +1596,21 @@ export class AuthQueue {
   }
 
   submit(payload: AuthRequestInput, requestedByUserId?: string): AuthRequest {
-    const mergeCheck = this.checkMergeIndependence(payload);
+    const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
+    const actor: AuthLifecycleActor = {
+      user_id: requesterUserId,
+      evidence_method: payload.requester_evidence_method ?? "session_claim",
+      credential_id: payload.requester_credential_id ?? null,
+      session_id: payload.session_id ?? null,
+    };
+    const predecessor = payload.supersedes_request_id
+      ? this.requireRequest(payload.supersedes_request_id)
+      : null;
+    if (predecessor) this.assertRequesterControl(predecessor, actor);
+    const mergeCheck = this.checkMergeIndependence({
+      ...payload,
+      request_id: predecessor?.id ?? null,
+    });
     if (mergeCheck.status === "conflict") {
       const firstConflict = mergeCheck.conflicts[0];
       const files = firstConflict?.files.length ? ` (${firstConflict.files.join(", ")})` : "";
@@ -1583,7 +1640,6 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
     // Issue 7d64d8f — a submitter that declares `canonical_message` hands over
     // an agent-authored merge commit message. The daemon is the single
     // authority for the canonical bytes and their digest: it canonicalizes
@@ -1656,6 +1712,8 @@ export class AuthQueue {
       approval_source: "manual",
       approval_lease_id: null,
       clearance_use_id: null,
+      supersedes_request_id: predecessor?.id ?? null,
+      superseded_by_request_id: null,
     };
 
     const stmt = this.db.prepare(
@@ -1713,7 +1771,9 @@ export class AuthQueue {
         conversation_id,
         approval_source,
         approval_lease_id,
-        clearance_use_id
+        clearance_use_id,
+        supersedes_request_id,
+        superseded_by_request_id
       ) VALUES (
         @id,
         @session_id,
@@ -1768,12 +1828,27 @@ export class AuthQueue {
         @conversation_id,
         @approval_source,
         @approval_lease_id,
-        @clearance_use_id
+        @clearance_use_id,
+        @supersedes_request_id,
+        @superseded_by_request_id
       )`
     );
 
     const actions = normalizeAuthActionInputs(payload.actions);
+    const dispositions = predecessor
+      ? this.validateSupersession(predecessor, request, actions, payload.superseded_action_dispositions ?? [])
+      : new Map<number, string>();
     const insertRequest = this.db.transaction(() => {
+      if (predecessor) {
+        const current = this.readRequestByExactId(predecessor.id);
+        if (!current || current.status !== "pending") {
+          throw new AuthQueueError(
+            "invalid_status",
+            `Request is ${current?.status ?? "missing"}, cannot supersede.`,
+            current?.status,
+          );
+        }
+      }
       stmt.run({
         ...request,
         commit_message_digest: request.commit_message_digest ?? null,
@@ -1794,6 +1869,45 @@ export class AuthQueue {
         issues: request.issues ? JSON.stringify(request.issues) : null
       });
       insertAuthRequestActions(this.db, request, actions, now);
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id,
+        eventType: "submitted",
+        priorStatus: null,
+        nextStatus: "pending",
+        actor,
+        relatedRequestId: predecessor?.id ?? null,
+        occurredAt: now,
+      });
+      if (predecessor) {
+        for (const [ordinal, reason] of dispositions) {
+          this.db.prepare(
+            `UPDATE auth_request_actions
+             SET state = 'vetoed', outcome_detail = ?, updated_at = ?
+             WHERE auth_request_id = ? AND ordinal = ? AND state = 'staged'`,
+          ).run(`Disposed by replacement: ${reason}`, now, predecessor.id, ordinal);
+        }
+        const changed = this.db.prepare(
+          `UPDATE auth_requests
+           SET status = 'superseded', superseded_by_request_id = ?, resolved_at = ?, updated_at = ?,
+               error = ?
+           WHERE id = ? AND status = 'pending'`,
+        ).run(request.id, now, now, `Superseded by ${request.id.slice(0, 8)}.`, predecessor.id);
+        if (changed.changes !== 1) {
+          throw new AuthQueueError("invalid_status", "Predecessor changed before supersession completed.");
+        }
+        appendAuthLifecycleEvent(this.db, {
+          requestId: predecessor.id,
+          eventType: "superseded",
+          priorStatus: "pending",
+          nextStatus: "superseded",
+          actor,
+          relatedRequestId: request.id,
+          reason: dispositions.size > 0
+            ? JSON.stringify(Object.fromEntries(dispositions))
+            : "All staged actions carried with identical semantics.",
+          occurredAt: now,
+        });
+      }
     });
 
     request.merge_candidate_pin_sha = this.cacheMergeCandidate(request);
@@ -1810,8 +1924,88 @@ export class AuthQueue {
       event: "auth:new",
       data: { request }
     });
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: request.id, lifecycle: "submitted", related_request_id: predecessor?.id ?? null,
+    } });
+    if (predecessor) {
+      const superseded = this.requireRequest(predecessor.id);
+      this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(superseded) });
+      this.broadcast({ event: "auth:lifecycle", data: {
+        request_id: predecessor.id, lifecycle: "superseded", related_request_id: request.id,
+      } });
+    }
 
     return request;
+  }
+
+  private assertRequesterControl(request: AuthRequest, actor: AuthLifecycleActor): void {
+    if (!request.requested_by_user_id || request.requested_by_user_id !== actor.user_id) {
+      throw new AuthQueueError("requester_control_required", "Only the recorded requester may change this request.");
+    }
+    if (request.requester_evidence_method === "api_token") {
+      if (!request.requester_credential_id || actor.evidence_method !== "api_token" ||
+          actor.credential_id !== request.requester_credential_id) {
+        throw new AuthQueueError("requester_control_required", "The originating requester credential is required.");
+      }
+      return;
+    }
+    if (request.requester_evidence_method === "session_claim") {
+      if (!request.session_id || actor.evidence_method !== "session_claim" || actor.session_id !== request.session_id) {
+        throw new AuthQueueError("requester_control_required", "The originating requester session is required.");
+      }
+      return;
+    }
+    throw new AuthQueueError(
+      "requester_control_required",
+      "This legacy request has no exact requester-control provenance and cannot be changed by a requester.",
+    );
+  }
+
+  private validateSupersession(
+    predecessor: AuthRequest,
+    replacement: AuthRequest,
+    replacementActions: readonly AuthRequestActionInput[],
+    rawDispositions: readonly { ordinal: number; reason: string }[],
+  ): Map<number, string> {
+    if (predecessor.status !== "pending") {
+      throw new AuthQueueError("invalid_status", `Request is ${predecessor.status}, cannot supersede.`, predecessor.status);
+    }
+    if (predecessor.base_branch !== replacement.base_branch ||
+        !this.dedupRepoMatches(replacement, predecessor)) {
+      throw new AuthQueueError(
+        "target_mismatch",
+        "A replacement must use the same canonical project and protected target as its predecessor.",
+      );
+    }
+    const dispositions = new Map<number, string>();
+    for (const item of rawDispositions) {
+      if (!Number.isInteger(item.ordinal) || item.ordinal < 1 || !item.reason?.trim() || dispositions.has(item.ordinal)) {
+        throw new AuthQueueError("action_disposition_required", "Each dropped action needs one unique ordinal and non-empty reason.");
+      }
+      dispositions.set(item.ordinal, item.reason.trim());
+    }
+    const staged = listAuthRequestActions(this.db, predecessor.id).filter((action) => action.state === "staged");
+    const replacementKeys = new Set((replacementActions ?? []).map((action) =>
+      JSON.stringify([action.kind, action.target_issue_ref, action.payload])));
+    for (const action of staged) {
+      const key = JSON.stringify([action.kind, action.target_issue_ref, action.payload]);
+      if (!replacementKeys.has(key) && !dispositions.has(action.ordinal)) {
+        throw new AuthQueueError(
+          "action_disposition_required",
+          `Staged predecessor action ${action.ordinal} must be carried identically or explicitly disposed with a reason.`,
+        );
+      }
+      if (replacementKeys.has(key) && dispositions.has(action.ordinal)) {
+        throw new AuthQueueError("action_disposition_required", `Action ${action.ordinal} cannot be both carried and disposed.`);
+      }
+    }
+    const stagedOrdinals = new Set(staged.map((action) => action.ordinal));
+    for (const ordinal of dispositions.keys()) {
+      if (!stagedOrdinals.has(ordinal)) {
+        throw new AuthQueueError("action_disposition_required", `Action ${ordinal} is not a staged predecessor action.`);
+      }
+    }
+    return dispositions;
   }
 
   private resolveRequesterUserId(
@@ -2261,7 +2455,7 @@ export class AuthQueue {
 
   update(
     id: string,
-    fields: Partial<AuthRequestInput> & { status?: "pending" | "dismissed" }
+    fields: Partial<AuthRequestInput> & { status?: "pending" }
   ): AuthRequest {
     this.expireStale();
     const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
@@ -2280,18 +2474,13 @@ export class AuthQueue {
     }
     const requestId = request.id;
 
-    const isFailed = this.isFailedLike(request);
-    // Bug: 68aa754 — also allow modifications from "approved"/"executing" status
-    // (stuck execution recovery: approved/executing -> pending or -> dismissed)
-    const isApproved = request.status === "approved" || request.status === "executing";
-    if (request.status !== "pending" && !isFailed && !isApproved) {
+    if (request.status !== "pending") {
       throw {
         status: 409,
-        message: "Can only modify pending, failed, or approved requests"
+        message: "Only pending requests can be revised; submit an explicit replacement for new reviewed bytes."
       };
     }
-
-    const resetToPending = (isFailed || isApproved) && fields.status === "pending";
+    const priorSnapshot = authRequestSnapshot(this.db, request.id);
 
     // Issue 7d64d8f — `commit_message` is handled explicitly below because a
     // canonical change message must keep its digest in step with its bytes.
@@ -2424,32 +2613,6 @@ export class AuthQueue {
       values.push(ci && Array.isArray(ci) ? JSON.stringify(ci) : null);
     }
 
-    // For a retry-via-update (failed/approved -> pending), reset execution state
-    if (resetToPending) {
-      const now = this.now();
-      updates.push("status = 'pending'");
-      updates.push("resolved_at = NULL");
-      updates.push("approved_at = NULL");
-      updates.push("approved_by_user_id = NULL");
-      updates.push("execution_evidence_id = NULL");
-      updates.push("approval_source = 'manual'");
-      updates.push("approval_lease_id = NULL");
-      updates.push("exit_code = NULL");
-      updates.push("error = NULL");
-      updates.push("output = ''");
-      updates.push("expires_at = ?");
-      values.push(now + this.ttlMs);
-    }
-
-    // Bug: 68aa754 — allow dismissing approved requests via update
-    const dismissFromApproved = isApproved && fields.status === "dismissed";
-    if (dismissFromApproved) {
-      const now = this.now();
-      updates.push("status = 'dismissed'");
-      updates.push("resolved_at = ?");
-      values.push(now);
-    }
-
     if (updates.length === 0) {
       throw { status: 400, message: "No fields to update" };
     }
@@ -2458,30 +2621,42 @@ export class AuthQueue {
     values.push(this.now());
     values.push(requestId);
 
-    const result = this.db
-      .prepare(`UPDATE auth_requests SET ${updates.join(", ")} WHERE id = ?`)
-      .run(...values);
-    if (result.changes !== 1) {
-      throw {
-        status: 409,
-        message: "Auth request changed before the update could be applied; retry.",
-      };
-    }
-    if (invalidatesMergeCandidate || dismissFromApproved) {
+    let updated!: AuthRequest;
+    this.db.transaction(() => {
+      const result = this.db
+        .prepare(`UPDATE auth_requests SET ${updates.join(", ")} WHERE id = ? AND status = 'pending'`)
+        .run(...values);
+      if (result.changes !== 1) {
+        throw {
+          status: 409,
+          message: "Auth request changed before the update could be applied; retry.",
+        };
+      }
+      updated = this.readRequestByExactId(requestId)!;
+      appendAuthLifecycleEvent(this.db, {
+        requestId,
+        eventType: "revised",
+        priorStatus: "pending",
+        nextStatus: "pending",
+        actor: {
+          user_id: request.requested_by_user_id!,
+          evidence_method: request.requester_evidence_method ?? "legacy",
+          credential_id: request.requester_credential_id ?? null,
+          session_id: request.session_id,
+        },
+        priorSnapshot,
+        occurredAt: updated.updated_at,
+      });
+    })();
+    if (invalidatesMergeCandidate) {
       this.dropMergeCandidate(request);
     }
-
-    const updated = this.readRequestByExactId(requestId)!;
     this.syncLedgerLinksForRequest(updated, false);
-    const eventType = resetToPending ? "auth:new"
-      : dismissFromApproved ? "auth:resolved"
-      : "auth:updated";
     this.broadcast({
-      event: eventType,
-      data: dismissFromApproved
-        ? this.buildResolvedPayload(updated)
-        : { request: updated }
+      event: "auth:updated",
+      data: { request: updated }
     });
+    this.broadcast({ event: "auth:lifecycle", data: { request_id: requestId, lifecycle: "revised" } });
     return updated;
   }
 
@@ -2505,18 +2680,18 @@ export class AuthQueue {
         "SELECT * FROM auth_requests WHERE " +
           "status IN ('pending', 'approved', 'executing', 'expired', 'needs_rebase') " +
           "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0) " +
-          "OR (status IN ('completed', 'rejected', 'dismissed') AND resolved_at >= ?) " +
+          "OR (status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') AND resolved_at >= ?) " +
           "ORDER BY created_at ASC"
       )
       .all(cutoff) as Record<string, unknown>[];
     return rows.map((row) => mapRow(row));
   }
 
-  /** Return resolved items (completed/rejected/dismissed) ordered by most recent first. */
+  /** Return terminal items ordered by most recent first. */
   listHistory(limit = 50): AuthRequest[] {
     const rows = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE status IN ('completed', 'rejected', 'dismissed') " +
+        "SELECT * FROM auth_requests WHERE status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
           "ORDER BY resolved_at DESC LIMIT ?"
       )
       .all(limit) as Record<string, unknown>[];
@@ -2533,7 +2708,7 @@ export class AuthQueue {
     const rows = this.db
       .prepare(
         `SELECT ${AUTH_HISTORY_SUMMARY_COLUMNS} FROM auth_requests ` +
-          "WHERE status IN ('completed', 'rejected', 'dismissed') " +
+          "WHERE status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
           "ORDER BY resolved_at DESC LIMIT ?"
       )
       .all(limit) as Record<string, unknown>[];
@@ -2584,21 +2759,30 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.writeResolvedRequest(
-      request,
-      "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-        "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
-        "approval_source = 'manual', approval_lease_id = NULL, " +
-        "exit_code = NULL, error = NULL, output = '', " +
-        "updated_at = ?, expires_at = ? WHERE id = ?",
-      [now, now + this.ttlMs]
-    );
+    this.db.transaction(() => {
+      this.writeResolvedRequest(
+        request,
+        "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
+          "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
+          "approval_source = 'manual', approval_lease_id = NULL, " +
+          "exit_code = NULL, error = NULL, output = '', " +
+          "updated_at = ?, expires_at = ? WHERE id = ?",
+        [now, now + this.ttlMs]
+      );
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "revised", priorStatus: request.status,
+        nextStatus: "pending", actor: systemAction(), reason: "Explicit retry.", occurredAt: now,
+      });
+    })();
 
     const retried = this.requireRequest(request.id);
     this.broadcast({
       event: "auth:new",
       data: { request: retried }
     });
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: retried.id, lifecycle: "revised", reason: "Explicit retry.",
+    } });
 
     return retried;
   }
@@ -2615,15 +2799,21 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.writeResolvedRequest(
-      request,
-      "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-        "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
-        "approval_source = 'manual', approval_lease_id = NULL, " +
-        "exit_code = NULL, error = NULL, output = '', " +
-        "updated_at = ?, expires_at = ? WHERE id = ?",
-      [now, now + this.ttlMs]
-    );
+    this.db.transaction(() => {
+      this.writeResolvedRequest(
+        request,
+        "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
+          "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
+          "approval_source = 'manual', approval_lease_id = NULL, " +
+          "exit_code = NULL, error = NULL, output = '', " +
+          "updated_at = ?, expires_at = ? WHERE id = ?",
+        [now, now + this.ttlMs]
+      );
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "revised", priorStatus: request.status,
+        nextStatus: "pending", actor: systemAction(), reason: "Explicit requeue.", occurredAt: now,
+      });
+    })();
     this.dropMergeCandidate(request);
 
     const requeued = this.requireRequest(request.id);
@@ -2631,38 +2821,64 @@ export class AuthQueue {
       event: "auth:new",
       data: { request: requeued }
     });
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: requeued.id, lifecycle: "revised", reason: "Explicit requeue.",
+    } });
 
     return requeued;
   }
 
-  dismiss(id: string): AuthRequest {
+  withdraw(id: string, reason: string, actor: AuthLifecycleActor): AuthRequest {
     this.expireStale();
     const request = this.requireRequest(id);
-    // Bug: 68aa754 — allow dismissing approved requests (stuck execution recovery)
-    // Also allow dismissing pending requests (force-dismiss from the UI).
-    if (!this.isFailedLike(request) && request.status !== "approved" && request.status !== "executing" && request.status !== "pending") {
+    if (request.status !== "pending") {
       throw new AuthQueueError(
         "invalid_status",
-        `Request is ${request.status}, cannot dismiss.`,
+        `Request is ${request.status}, cannot withdraw.`,
         request.status
       );
     }
+    if (!reason.trim()) {
+      throw new AuthQueueError("invalid_command", "Withdrawal reason is required.");
+    }
+    this.assertRequesterControl(request, actor);
 
     const now = this.now();
-    this.writeResolvedRequest(
-      request,
-      "UPDATE auth_requests SET status = 'dismissed', resolved_at = ?, updated_at = ? WHERE id = ?",
-      [now, now]
-    );
+    this.db.transaction(() => {
+      const result = this.db.prepare(
+        `UPDATE auth_requests SET status = 'withdrawn', resolved_at = ?, updated_at = ?, error = ?
+         WHERE id = ? AND status = 'pending'`,
+      ).run(now, now, reason.trim(), request.id);
+      if (result.changes !== 1) {
+        throw new AuthQueueError("invalid_status", "Request changed before withdrawal completed.");
+      }
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id,
+        eventType: "withdrawn",
+        priorStatus: "pending",
+        nextStatus: "withdrawn",
+        actor,
+        reason,
+        occurredAt: now,
+      });
+    })();
     this.dropMergeCandidate(request);
 
-    const dismissed = this.requireRequest(request.id);
+    const withdrawn = this.requireRequest(request.id);
     this.broadcast({
       event: "auth:resolved",
-      data: this.buildResolvedPayload(dismissed)
+      data: this.buildResolvedPayload(withdrawn)
     });
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: withdrawn.id, lifecycle: "withdrawn", reason: reason.trim(),
+    } });
 
-    return dismissed;
+    return withdrawn;
+  }
+
+  listLifecycleEvents(id: string) {
+    const request = this.requireRequest(id);
+    return listAuthLifecycleEvents(this.db, request.id);
   }
 
   /**
@@ -2694,37 +2910,6 @@ export class AuthQueue {
       return exists != null;
     }
     return true;
-  }
-
-  /**
-   * Issue 22ace1c — delete the resolved row, and say so only if a row went away.
-   *
-   * `requireRequest` resolves a short prefix to the canonical row, but every
-   * write, log, and event below used to re-use the caller's raw `id`. A short
-   * id therefore matched no row, deleted nothing, and still reported success.
-   * The resolved `request.id` is now the only identifier that reaches the
-   * database, the audit log, the SSE payload, or the caller, and a zero-row
-   * delete is a not-found rather than a false claim.
-   */
-  delete(id: string, reason: string): AuthRequest {
-    const request = this.requireRequest(id);
-    const result = this.db
-      .prepare("DELETE FROM auth_requests WHERE id = ?")
-      .run(request.id);
-    if (result.changes !== 1) {
-      throw new AuthQueueError("not_found", "Request not found.");
-    }
-    this.dropMergeCandidate(request);
-    authLog("info", "auth_request_deleted", {
-      subsystem: "auth",
-      auth_request_id: request.id,
-      reason
-    });
-    this.broadcast({
-      event: "auth:deleted",
-      data: { request_id: request.id }
-    });
-    return request;
   }
 
   approve(id: string, approval?: AuthApprovalContext, approvedByUserId?: string): AuthRequest {
@@ -2832,20 +3017,41 @@ export class AuthQueue {
       !this.hasNativeMergeHooks(request.cwd) &&
       signerLines.length > 0
     );
-    this.writeResolvedRequest(
-      request,
-      "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
-      [
-        now,
-        now,
-        effectiveApproval?.source ?? "manual",
-        effectiveApproval?.leaseId ?? null,
-        approverUserId,
-        atomicEnabled ? 1 : 0,
-      ]
-    );
+    this.db.transaction(() => {
+      this.writeResolvedRequest(
+        request,
+        "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
+        [
+          now,
+          now,
+          effectiveApproval?.source ?? "manual",
+          effectiveApproval?.leaseId ?? null,
+          approverUserId,
+          atomicEnabled ? 1 : 0,
+        ]
+      );
+      const approvalActor: AuthLifecycleActor = {
+        user_id: approverUserId,
+        evidence_method: effectiveApproval ? "delegated_credential" : "hardware_presence",
+        credential_id: exactCredentialId,
+      };
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "approved", priorStatus: "pending",
+        nextStatus: "approved", actor: approvalActor, occurredAt: now,
+      });
+      this.db.prepare(
+        "UPDATE auth_requests SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'",
+      ).run(now, request.id);
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "executing", priorStatus: "approved",
+        nextStatus: "executing", actor: approvalActor, occurredAt: now,
+      });
+    })();
 
     const executing = this.requireRequest(request.id);
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: executing.id, lifecycle: "executing", approved_by_user_id: approverUserId,
+    } });
     const executionEnv = {
       ...(effectiveApproval?.env ?? {}),
       ...this.approveTimePreflightEnv(executing),
@@ -2929,7 +3135,7 @@ export class AuthQueue {
           !this.hasNativeMergeHooks(request.cwd) && signerLines.length > 0
         );
         const update = this.db.prepare(
-          `UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?,
+          `UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?,
            approval_source = 'clearance', approval_lease_id = ?, approved_by_user_id = ?,
            execution_evidence_id = ?, clearance_use_id = ?, merge_atomic_enabled = ?
            WHERE id = ? AND status = 'pending' AND clearance_use_id IS NULL`,
@@ -2940,6 +3146,23 @@ export class AuthQueue {
         if (update.changes !== 1) {
           throw new AuthQueueError("invalid_status", "Auth request changed before clearance execution began.");
         }
+        const clearanceActor: AuthLifecycleActor = {
+          user_id: authorization.clearance.issuer_user_id,
+          evidence_method: "clearance",
+          evidence_id: authorization.use.evidence_id,
+          credential_id: lease.credential_id,
+        };
+        appendAuthLifecycleEvent(this.db, {
+          requestId, eventType: "approved", priorStatus: "pending", nextStatus: "approved",
+          actor: clearanceActor, occurredAt: now,
+        });
+        this.db.prepare(
+          "UPDATE auth_requests SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'",
+        ).run(now, requestId);
+        appendAuthLifecycleEvent(this.db, {
+          requestId, eventType: "executing", priorStatus: "approved", nextStatus: "executing",
+          actor: clearanceActor, occurredAt: now,
+        });
         const executing = this.requireRequest(requestId);
         const identity = this.gitCommitIdentity(executing.cwd);
         this.executionEnvs.set(requestId, {
@@ -2964,6 +3187,9 @@ export class AuthQueue {
     }
     const executing = this.requireRequest(requestId);
     this.broadcast({ event: "auth:updated", data: { request: executing, clearance_use_id: consumed.use.id } });
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
+    } });
     this.executeInBackground(executing, consumed.settle);
     return executing;
   }
@@ -3992,7 +4218,7 @@ export class AuthQueue {
       Boolean(this.autoApprover?.presenceChallenge);
   }
 
-  reject(id: string, reason = "Rejected by user."): AuthRequest {
+  reject(id: string, reason = "Rejected by operator.", actor?: AuthLifecycleActor): AuthRequest {
     this.expireStale();
     const request = this.requireRequest(id);
     if (request.status !== "pending") {
@@ -4004,11 +4230,26 @@ export class AuthQueue {
     }
 
     const now = this.now();
-    this.writeResolvedRequest(
-      request,
-      "UPDATE auth_requests SET status = 'rejected', resolved_at = ?, updated_at = ?, error = ? WHERE id = ?",
-      [now, now, reason]
-    );
+    const rejectionActor = actor ?? {
+      user_id: this.resolveApproverUserId(),
+      evidence_method: "hardware_presence",
+    };
+    this.db.transaction(() => {
+      this.writeResolvedRequest(
+        request,
+        "UPDATE auth_requests SET status = 'rejected', resolved_at = ?, updated_at = ?, error = ? WHERE id = ?",
+        [now, now, reason]
+      );
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id,
+        eventType: "rejected",
+        priorStatus: "pending",
+        nextStatus: "rejected",
+        actor: rejectionActor,
+        reason,
+        occurredAt: now,
+      });
+    })();
     this.dropMergeCandidate(request);
 
     const rejected = this.requireRequest(request.id);
@@ -4016,6 +4257,9 @@ export class AuthQueue {
       event: "auth:resolved",
       data: this.buildResolvedPayload(rejected)
     });
+    this.broadcast({ event: "auth:lifecycle", data: {
+      request_id: rejected.id, lifecycle: "rejected", reason,
+    } });
 
     return rejected;
   }
@@ -4106,7 +4350,19 @@ export class AuthQueue {
         [now, now, exitCode, output, error ?? null]
       );
       const stored = this.requireRequest(request.id);
-      return exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+      const evidenced = exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id,
+        eventType: "completed",
+        priorStatus: request.status,
+        nextStatus: "completed",
+        actor: evidenced.execution_evidence_id
+          ? { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id }
+          : systemAction(),
+        reason: error ?? null,
+        occurredAt: now,
+      });
+      return evidenced;
     })();
     if (exitCode === 0) {
       this.finalizeSuccessfulMerge(completed);
@@ -4141,6 +4397,11 @@ export class AuthQueue {
     const tx = this.db.transaction((expiredRows: Record<string, unknown>[]) => {
       for (const row of expiredRows) {
         update.run(now, "Expired.", row.id);
+        appendAuthLifecycleEvent(this.db, {
+          requestId: String(row.id), eventType: "expired", priorStatus: "pending",
+          nextStatus: "expired", actor: systemAction(), reason: "Expired.",
+          occurredAt: Number(row.expires_at),
+        });
       }
     });
 
@@ -4159,6 +4420,9 @@ export class AuthQueue {
         event: "auth:resolved",
         data: this.buildResolvedPayload(expired)
       });
+      this.broadcast({ event: "auth:lifecycle", data: {
+        request_id: expired.id, lifecycle: "expired",
+      } });
     }
 
     // Bug: 831cb3e — periodic stuck-approved recovery (same logic as
@@ -4362,12 +4626,19 @@ export class AuthQueue {
       if (inspection.outcome === "requeued") {
         this.dropMergeCandidate(refreshed);
         const now = this.now();
-        this.db.prepare(
-          `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
-            exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-            approval_source = 'manual', approval_lease_id = NULL,
-            approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`,
-        ).run(now + this.ttlMs, now, request.id);
+        this.db.transaction(() => {
+          this.db.prepare(
+            `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
+              exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
+              approval_source = 'manual', approval_lease_id = NULL,
+              approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`,
+          ).run(now + this.ttlMs, now, request.id);
+          appendAuthLifecycleEvent(this.db, {
+            requestId: request.id, eventType: "revised", priorStatus: refreshed.status,
+            nextStatus: "pending", actor: systemAction(),
+            reason: `Atomic recovery requeued request: ${inspection.detail}`, occurredAt: now,
+          });
+        })();
         const requeued = this.requireRequest(request.id);
         this.broadcast({ event: "auth:updated", data: { request: requeued } });
         return;
@@ -4803,6 +5074,7 @@ export class AuthQueue {
     // treated by isFailedLike as "no exit code yet" which makes completed+null
     // look like a successful completion, hiding the failure from the user.
     const exitCode = result != null ? (result.exit_code ?? 1) : 1;
+    const prior = this.requireRequest(id);
 
     // Bug: 929c6d0 — when the executor ran but exited non-zero, populate the
     // error column with the tail of the captured output so the agent receiving
@@ -4815,7 +5087,7 @@ export class AuthQueue {
     // Record the completion atomically with execution-signature evidence
     // (main: evidence must be durable with the completed row, before any
     // broadcast). The staged lifecycle then owns merged → resolved → finalized;
-    // duplicate auto-dismiss (0c44fec) now runs in Stage 3 (autoDismissDuplicates).
+    // proven duplicate supersession (0c44fec) now runs in Stage 3.
     const completed = this.db.transaction(() => {
       this.db
         .prepare(
@@ -4823,7 +5095,19 @@ export class AuthQueue {
         )
         .run(now, now, exitCode, errorText, id);
       const stored = this.requireRequest(id);
-      return exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+      const evidenced = exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+      appendAuthLifecycleEvent(this.db, {
+        requestId: id,
+        eventType: "completed",
+        priorStatus: prior.status,
+        nextStatus: "completed",
+        actor: evidenced.execution_evidence_id
+          ? { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id }
+          : systemAction(),
+        reason: errorText,
+        occurredAt: now,
+      });
+      return evidenced;
     })();
     if (exitCode === 0) {
       // Issue 75f52ac — staged lifecycle: merged → Stage 2 → resolved → Stage 3.
@@ -4848,7 +5132,7 @@ export class AuthQueue {
    *     deferred ledger completion (incl. issue closes), and direct work-unit
    *     resolution. auth:resolved keeps its exact prior shape/semantics.
    *   Stage 3 (async queue, then auth:finalized): the heavy git/codex spawns —
-   *     pending-request revalidation, duplicate auto-dismiss, ancestry work-unit
+   *     pending-request revalidation, proven duplicate supersession, ancestry work-unit
    *     resolution + retention sweep, and worker-thread archiving.
    *
    * Failures (exit_code != 0), rejections, and expiries never reach here; they
@@ -4966,7 +5250,7 @@ export class AuthQueue {
       {
         name: "auto_dismiss_duplicates",
         run: async () => {
-          await this.autoDismissDuplicates(finalized);
+          await this.autoSupersedeDuplicates(finalized);
         },
       },
       {
@@ -5444,7 +5728,16 @@ export class AuthQueue {
         const reason =
           `Needs rebase: ${current.head_branch ?? current.id.slice(0, 8)} conflicts after ` +
           `${completed.head_branch ?? completed.id.slice(0, 8)} merged.${files}`;
-        const result = markNeedsRebase.run(now, now, reason, current.id);
+        const result = this.db.transaction(() => {
+          const changed = markNeedsRebase.run(now, now, reason, current.id);
+          if (changed.changes === 1) {
+            appendAuthLifecycleEvent(this.db, {
+              requestId: current.id, eventType: "needs_rebase", priorStatus: "pending",
+              nextStatus: "needs_rebase", actor: systemAction(), reason, occurredAt: now,
+            });
+          }
+          return changed;
+        })();
         if (result.changes === 0) {
           continue;
         }
@@ -5896,7 +6189,7 @@ export class AuthQueue {
 
   // Issue 75f52ac — Stage 3 finalizer step; isMergedIntoBase now spawns git via
   // async execFile, so this and shouldAutoDismissDuplicate are async.
-  private async autoDismissDuplicates(completed: AuthRequest): Promise<void> {
+  private async autoSupersedeDuplicates(completed: AuthRequest): Promise<void> {
     if (!completed.base_branch || !completed.head_branch) {
       return;
     }
@@ -5932,25 +6225,40 @@ export class AuthQueue {
       return;
     }
 
-    const dismissStmt = this.db.prepare(
-      "UPDATE auth_requests SET status = 'dismissed', resolved_at = ?, updated_at = ?, " +
+    const supersedeStmt = this.db.prepare(
+      "UPDATE auth_requests SET status = 'superseded', superseded_by_request_id = ?, resolved_at = ?, updated_at = ?, " +
         "error = ? WHERE id = ?"
     );
-    const reason = `Auto-dismissed: ${completed.head_branch} → ${completed.base_branch} was successfully merged by request ${completed.id.slice(0, 8)}`;
+    const reason = `System supersession: ${completed.head_branch} → ${completed.base_branch} was successfully merged by request ${completed.id.slice(0, 8)}`;
 
     for (const row of siblings) {
       const sibling = mapRow(row);
       if (!(await this.shouldAutoDismissDuplicate(completed, sibling))) {
         continue;
       }
-      dismissStmt.run(now, now, reason, sibling.id);
-      const dismissed = this.getRequest(sibling.id);
-      if (dismissed) {
+      this.db.transaction(() => {
+        supersedeStmt.run(completed.id, now, now, reason, sibling.id);
+        appendAuthLifecycleEvent(this.db, {
+          requestId: sibling.id,
+          eventType: "superseded",
+          priorStatus: sibling.status,
+          nextStatus: "superseded",
+          actor: systemAction(),
+          relatedRequestId: completed.id,
+          reason,
+          occurredAt: now,
+        });
+      })();
+      const superseded = this.getRequest(sibling.id);
+      if (superseded) {
         this.broadcast({
           event: "auth:resolved",
-          data: this.buildResolvedPayload(dismissed)
+          data: this.buildResolvedPayload(superseded)
         });
-        authLog("info", "auth_duplicate_auto_dismissed", {
+        this.broadcast({ event: "auth:lifecycle", data: {
+          request_id: sibling.id, lifecycle: "superseded", related_request_id: completed.id,
+        } });
+        authLog("info", "auth_duplicate_superseded", {
           subsystem: "auth",
           auth_request_id: row.id,
           completed_request_id: completed.id,
@@ -5974,7 +6282,7 @@ export class AuthQueue {
     return completed.resolved_at != null && sibling.created_at <= completed.resolved_at;
   }
 
-  // Issue 75f52ac — async execFile so the Stage 3 auto-dismiss step runs off the
+  // Issue 75f52ac — async execFile so Stage 3 duplicate supersession runs off the
   // event loop.
   private async isMergedIntoBase(completed: AuthRequest, sha: string): Promise<boolean> {
     if (!completed.base_branch) {
@@ -7061,5 +7369,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     approval_source: row.approval_source == null ? "manual" : String(row.approval_source),
     approval_lease_id: row.approval_lease_id == null ? null : String(row.approval_lease_id),
     clearance_use_id: row.clearance_use_id == null ? null : String(row.clearance_use_id),
+    supersedes_request_id: row.supersedes_request_id == null ? null : String(row.supersedes_request_id),
+    superseded_by_request_id: row.superseded_by_request_id == null ? null : String(row.superseded_by_request_id),
   };
 }

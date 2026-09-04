@@ -271,7 +271,8 @@ describe("scoped protected-merge clearance", () => {
       });
       expect(f.db.prepare("SELECT credential_id FROM attribution_evidence WHERE id = ?").get(consumed.use.evidence_id))
         .not.toEqual({ credential_id: f.agentCredential.id });
-      f.db.prepare("DELETE FROM auth_requests WHERE id = ?").run(request.id);
+      expect(() => f.db.prepare("DELETE FROM auth_requests WHERE id = ?").run(request.id))
+        .toThrow(/FOREIGN KEY constraint failed/);
       expect(f.manager.uses(clearance.id)).toEqual([
         expect.objectContaining({ auth_request_id: request.id, request_snapshot_digest: consumed.use.request_snapshot_digest }),
       ]);

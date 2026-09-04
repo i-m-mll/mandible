@@ -948,10 +948,6 @@ export async function retryAuthRequest(requestId: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/retry`);
 }
 
-export async function dismissAuthRequest(requestId: string): Promise<void> {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
-}
-
 export type DelegatedSigningStatus = {
   provider: string;
   configured: boolean;

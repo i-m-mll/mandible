@@ -58,7 +58,7 @@ export interface InboxContinuation {
 export interface InboxAuthResult {
   id: string;
   title: string;
-  status: 'completed' | 'rejected' | 'expired' | 'dismissed' | 'needs_rebase';
+  status: 'completed' | 'rejected' | 'withdrawn' | 'superseded' | 'expired' | 'dismissed' | 'needs_rebase';
   exit_code: number | null;
   error: string | null;
   head_branch: string | null;
@@ -174,7 +174,7 @@ function itemBorderColor(item: UnifiedItem): string {
   const ar = item.raw as InboxAuthResult;
   if (ar.status === 'completed') return INBOX_TONES.authCompleted.fg;
   if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return INBOX_TONES.authProblem.fg;
-  if (ar.status === 'dismissed') return INBOX_TONES.authNeutral.fg;
+  if (ar.status === 'dismissed' || ar.status === 'withdrawn' || ar.status === 'superseded') return INBOX_TONES.authNeutral.fg;
   return INBOX_TONES.authNeutral.fg;
 }
 

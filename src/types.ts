@@ -304,6 +304,40 @@ export interface AuthRequest {
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
   clearance_use_id?: string | null;
+  supersedes_request_id?: string | null;
+  superseded_by_request_id?: string | null;
+}
+
+export type AuthRequestLifecycleEventType =
+  | "legacy_snapshot" | "submitted" | "revised" | "approved" | "executing"
+  | "rejected" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed";
+
+export interface AuthLifecycleActor {
+  user_id: string;
+  evidence_method: string;
+  evidence_id?: string | null;
+  credential_id?: string | null;
+  session_id?: string | null;
+}
+
+export interface AuthRequestLifecycleEvent {
+  id: string;
+  auth_request_id: string;
+  revision: number;
+  event_type: AuthRequestLifecycleEventType;
+  prior_status: AuthRequestStatus | null;
+  next_status: AuthRequestStatus;
+  snapshot_json: string;
+  snapshot_sha256: string;
+  prior_snapshot_json: string | null;
+  prior_snapshot_sha256: string | null;
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
+  credential_id: string | null;
+  reason: string | null;
+  related_request_id: string | null;
+  occurred_at: number;
 }
 
 /**
@@ -363,6 +397,8 @@ export interface AuthRequestInput {
   /** Verified request-boundary provenance; route-owned, never caller-authored. */
   requester_evidence_method?: string | null;
   requester_credential_id?: string | null;
+  supersedes_request_id?: string | null;
+  superseded_action_dispositions?: Array<{ ordinal: number; reason: string }>;
 }
 
 // --- Issue tracking types ---

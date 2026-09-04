@@ -100,6 +100,16 @@ export type AuthRequest = {
   approved_by_user_id?: string | null;
   execution_evidence_id?: string | null;
   clearance_use_id?: string | null;
+  supersedes_request_id?: string | null;
+  superseded_by_request_id?: string | null;
+  lifecycle_events?: Array<{
+    revision: number;
+    event_type: string;
+    snapshot_sha256: string;
+    actor_user_id: string | null;
+    reason: string | null;
+    related_request_id: string | null;
+  }>;
   requester?: ReadUserIdentity | null;
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
@@ -122,7 +132,7 @@ export type AuthQueueViewProps = {
   /**
    * Bug: 645f8a8 — daemon readiness gate. When false (daemon is rebuilding /
    * starting / not yet ready for normal mutations), the mutating action buttons
-   * (Approve/Reject/Retry/Dismiss) are disabled and their handlers are blocked
+   * (Approve/Reject/Retry) are disabled and their handlers are blocked
    * so no mutation POST fires into a half-initialized daemon. Defaults to true.
    */
   daemonReady?: boolean;
@@ -131,7 +141,6 @@ export type AuthQueueViewProps = {
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
-  onDismiss: (requestId: string) => void | Promise<void>;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
 };
 
@@ -261,7 +270,7 @@ function isFailedLikeStatus(status: string, exitCode?: number | null): boolean {
 }
 
 function isHistoryStatus(status: string, exitCode?: number | null): boolean {
-  if (status === 'rejected' || status === 'dismissed' || status === 'error') {
+  if (status === 'rejected' || status === 'withdrawn' || status === 'superseded' || status === 'dismissed' || status === 'error') {
     return true;
   }
   if (status !== 'completed') return false;
@@ -864,6 +873,7 @@ function AuthRequestDetail({
       : requester.display_name
     : null;
   const approver = request.approver ?? null;
+  const latestLifecycle = request.lifecycle_events?.at(-1) ?? null;
   // A daemon that predates `merge_signature` sends nothing; absent evidence is
   // "none", never "verified".
   const signatureClaim: MergeSignatureClaim = request.merge_signature ?? { state: 'none' };
@@ -950,6 +960,12 @@ function AuthRequestDetail({
         <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />
         <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
         <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
+        <MetadataRow label="Lifecycle revision" value={latestLifecycle ? String(latestLifecycle.revision) : null} />
+        <MetadataRow label="Revision digest" value={latestLifecycle?.snapshot_sha256 ?? null} />
+        <MetadataRow label="Lifecycle actor" value={latestLifecycle?.actor_user_id ?? null} />
+        <MetadataRow label="Lifecycle reason" value={latestLifecycle?.reason ?? null} />
+        <MetadataRow label="Supersedes request" value={request.supersedes_request_id ?? null} />
+        <MetadataRow label="Superseded by request" value={request.superseded_by_request_id ?? null} />
         <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
         <MetadataRow label="Dependency readiness" value={request.dependency?.state ?? null} />
         <MetadataRow label="Dependency status" value={request.dependency?.status ?? null} />
@@ -1318,7 +1334,7 @@ function AuthSidebarItem({
     dotStatus = 'completed';
   } else if (status === 'approved' || status === 'executing') {
     dotStatus = 'approved';  // Keep CSS class as 'approved' for now
-  } else if (status === 'rejected' || status === 'dismissed') {
+  } else if (status === 'rejected' || status === 'withdrawn' || status === 'superseded' || status === 'dismissed') {
     dotStatus = 'dismissed';
   } else {
     dotStatus = status;
@@ -1668,7 +1684,6 @@ export function AuthQueueView({
   onApprove,
   onReject,
   onRetry,
-  onDismiss,
   onUpdateField,
   sidebarHidden = false,
   daemonReady = true,
@@ -2041,9 +2056,7 @@ export function AuthQueueView({
     [runAction, onReject],
   );
 
-  // Bug: ad43d86 — track retry-specific in-flight state so the Retry button
-  // label ("Retrying...") only fires when a retry is in flight, not when a
-  // dismiss action is in flight for the same item.
+  // Track retry-specific in-flight state so the button label stays exact.
   const [retryingIds, setRetryingIds] = useState<Set<string>>(() => new Set());
   const retryingIdsRef = useRef<Set<string>>(new Set());
   const setRetryingIdsState = useCallback(
@@ -2091,11 +2104,6 @@ export function AuthQueueView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inFlight]);
 
-  const handleDismiss = useCallback(
-    (id: string) => runAction(id, onDismiss, () => showToast('Dismiss failed. Try again.')),
-    [runAction, onDismiss, showToast],
-  );
-
   const handleToggleActionVeto = useCallback(
     (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
       if (!operationalMutationsAllowed) {
@@ -2122,40 +2130,6 @@ export function AuthQueueView({
         });
     },
     [operationalMutationsAllowed, showToast, updateActionForRequest],
-  );
-
-  const [dismissConfirmId, setDismissConfirmId] = useState<string | null>(null);
-  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (dismissTimerRef.current) {
-        clearTimeout(dismissTimerRef.current);
-      }
-    };
-  }, []);
-
-  const toggleDismissConfirm = useCallback(
-    (id: string) => {
-      if (dismissConfirmId === id) {
-        setDismissConfirmId(null);
-        if (dismissTimerRef.current) {
-          clearTimeout(dismissTimerRef.current);
-          dismissTimerRef.current = null;
-        }
-        handleDismiss(id);
-        return;
-      }
-      setDismissConfirmId(id);
-      if (dismissTimerRef.current) {
-        clearTimeout(dismissTimerRef.current);
-      }
-      dismissTimerRef.current = setTimeout(() => {
-        setDismissConfirmId(null);
-        dismissTimerRef.current = null;
-      }, 3000);
-    },
-    [dismissConfirmId, handleDismiss],
   );
 
   const [rejectConfirmId, setRejectConfirmId] = useState<string | null>(null);
@@ -2542,7 +2516,7 @@ export function AuthQueueView({
     const isFailed = isFailedLikeStatus(status, exitCode);
     const isHistory = isHistoryStatus(status, exitCode);
     if (isHistory && !isFailed) {
-      // Completed/rejected/dismissed — no actions
+      // Completed and terminal dispositions have no actions.
       return null;
     }
     // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
@@ -2556,12 +2530,8 @@ export function AuthQueueView({
     // an in-progress label.
     const isExecuting = status === 'approved' || status === 'executing';
     const isSubmitting = actionDisabled && !isExecuting && !isFailed;
-    const showForceDismiss = !isHistory && !isFailed && !isExecuting && !isSubmitting;
 
     if (isFailed) {
-      // Bug: ad43d86 — only show "Retrying..." when a retry is specifically in
-      // flight. If a dismiss is in flight, the Retry button stays labeled "Retry"
-      // (just disabled) so the user sees what action is actually happening.
       const isRetrying = retryingIds.has(id);
       return (
         <div className="auth-actions">
@@ -2572,14 +2542,6 @@ export function AuthQueueView({
             disabled={actionDisabled || mutationsBlocked}
           >
             {isRetrying ? 'Retrying...' : 'Retry'}
-          </button>
-          <button
-            type="button"
-            className={`btn btn--danger${dismissConfirmId === id ? ' btn--confirm' : ''}`}
-            onClick={() => toggleDismissConfirm(id)}
-            disabled={actionDisabled || mutationsBlocked}
-          >
-            {actionDisabled && !isRetrying ? 'Dismissing...' : dismissConfirmId === id ? 'Confirm dismiss?' : 'Dismiss'}
           </button>
         </div>
       );
@@ -2644,16 +2606,6 @@ export function AuthQueueView({
         >
           {rejectConfirmId === id ? 'Confirm reject?' : 'Reject'}
         </button>
-        {showForceDismiss && (
-          <button
-            type="button"
-            className="btn btn--danger"
-            onClick={() => handleDismiss(id)}
-            disabled={actionDisabled || mutationsBlocked}
-          >
-            Force Dismiss
-          </button>
-        )}
       </div>
     );
   };

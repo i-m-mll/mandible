@@ -158,6 +158,38 @@ function listenForAuthRequest(
   });
 }
 
+function listenForWithdrawal(): Promise<{
+  port: number;
+  close: () => Promise<void>;
+  requests: Array<{ url: string; body: Record<string, unknown> }>;
+}> {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/api/instance") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+      return;
+    }
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { raw += chunk; });
+    req.on("end", () => {
+      requests.push({ url: req.url ?? "", body: JSON.parse(raw) });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ request_id: "abcdefgh-full", status: "withdrawn" }));
+    });
+  });
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    resolve({
+      port: address.port,
+      requests,
+      close: () => new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done())),
+    });
+  }));
+}
+
 function git(args: string[], cwd = tempDir): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
@@ -242,6 +274,29 @@ describe("auth request repo context validation", () => {
 });
 
 describe("auth request staged close action sugar", () => {
+  it("sends explicit predecessor and action dispositions", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync([
+        "auth", "request", "feature/demo", "--title", "Replacement",
+        "--issue", "f15617a", "--supersedes", "old-request",
+        "--drop-superseded-action", "2:No longer closes the umbrella", "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+      expect(result.status).toBe(0);
+      expect(server.bodies[0]).toMatchObject({
+        supersedes_request_id: "old-request",
+        superseded_action_dispositions: [
+          { ordinal: 2, reason: "No longer closes the umbrella" },
+        ],
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("sends issue_close actions while preserving legacy issue_closures", async () => {
     const server = await listenForAuthRequest();
     try {
@@ -350,6 +405,28 @@ describe("auth request staged close action sugar", () => {
         session_id: "codex-requester-session",
         target_session_id: "mandible-notification-session",
       });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("auth requester withdrawal CLI", () => {
+  it("posts the required reason and ambient requester session", async () => {
+    const server = await listenForWithdrawal();
+    try {
+      const result = await runAsync([
+        "auth", "withdraw", "abc/def", "--reason", "Branch was abandoned", "--json",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+        CODEX_THREAD_ID: "requester-thread",
+      });
+      expect(result.status).toBe(0);
+      expect(server.requests).toEqual([{
+        url: "/api/auth/request/abc%2Fdef/withdraw",
+        body: { reason: "Branch was abandoned", session_id: "requester-thread" },
+      }]);
     } finally {
       await server.close();
     }

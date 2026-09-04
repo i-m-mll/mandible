@@ -192,7 +192,7 @@ export function registerAuthRoutes(
     // its own title beside a foreign request's id and read the refusal as a
     // success. Reporting the stored title/repo/branches makes the mismatch that
     // caused the refusal visible at the point of refusal.
-    const duplicate = authQueue.findDuplicate(payload);
+    const duplicate = payload.supersedes_request_id ? null : authQueue.findDuplicate(payload);
     if (duplicate) {
       res.status(409).json({
         error:
@@ -262,7 +262,8 @@ export function registerAuthRoutes(
       convergence: authQueue.convergenceForRequest(request.id),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
-      actions: authQueue.listActions(request.id)
+      actions: authQueue.listActions(request.id),
+      lifecycle_events: authQueue.listLifecycleEvents(request.id),
     });
   }, { fileRpc: "allow" });
 
@@ -338,21 +339,37 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.delete("/api/auth/request/:id", (req, res) => {
+  app.delete("/api/auth/request/:id", (_req, res) => {
+    res.status(410).json({
+      code: "auth_request_delete_removed",
+      error: "Auth requests are immutable records. Pending requesters must use withdrawal.",
+    });
+  }, { fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/withdraw", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.reason !== "string" || !body.reason.trim()) {
       res.status(400).json({ error: "reason is required" });
       return;
     }
+    const sessionId = typeof body.session_id === "string" ? body.session_id : null;
+    const requester = resolveAuthRequester(req, { command: "withdraw", title: "withdraw", session_id: sessionId });
+    if (!requester.ok) {
+      res.status(requester.status).json({ error: requester.error, code: requester.code });
+      return;
+    }
     try {
-      // Issue 22ace1c — report the canonical id the queue actually deleted,
-      // not the prefix the caller happened to send.
-      const deleted = authQueue.delete(req.params.id, body.reason);
-      res.status(200).json({ request_id: deleted.id, deleted: true });
+      const request = authQueue.withdraw(req.params.id, body.reason, {
+        user_id: requester.userId,
+        evidence_method: requester.evidenceMethod,
+        credential_id: requester.credentialId,
+        session_id: sessionId,
+      });
+      res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { fileRpc: "allow" });
 
   // Issue 27241e6 — convergence retry. This reruns the snapshotted hook
   // command for a merged request; it never reruns the merge, which is why it
@@ -447,19 +464,24 @@ export function registerAuthRoutes(
     }
   }, { authenticated: true }), { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/reject", (req, res) => {
+  app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", (req, res) => {
     try {
       const body = readBody<Record<string, unknown>>(req);
       const reason =
         typeof body.reason === "string" && body.reason.trim().length > 0
           ? body.reason
           : undefined;
-      const request = authQueue.reject(req.params.id, reason);
+      const identity = req.client_identity!;
+      const request = authQueue.reject(req.params.id, reason, {
+        user_id: identity.user_id,
+        evidence_method: identity.method,
+        credential_id: identity.credential_id,
+      });
       res.json({ request_id: request.id, status: request.status, error: request.error });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { authenticated: true }), { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/skip", (req, res) => {
     try {
@@ -488,13 +510,11 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/dismiss", (req, res) => {
-    try {
-      const request = authQueue.dismiss(req.params.id);
-      res.status(200).json({ request_id: request.id, status: request.status });
-    } catch (error) {
-      handleQueueError(error, res);
-    }
+  app.post("/api/auth/request/:id/dismiss", (_req, res) => {
+    res.status(410).json({
+      code: "auth_request_dismiss_removed",
+      error: "Dismiss is not an auth lifecycle outcome. Pending requesters may withdraw; operators may reject.",
+    });
   }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/output", (req, res) => {
@@ -767,7 +787,11 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
     // Bug: 6d7411b — conversation_id for cross-resume matching
     conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,
-    actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"]
+    actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"],
+    supersedes_request_id: typeof body.supersedes_request_id === "string" ? body.supersedes_request_id : null,
+    superseded_action_dispositions: Array.isArray(body.superseded_action_dispositions)
+      ? body.superseded_action_dispositions as AuthRequestInput["superseded_action_dispositions"]
+      : undefined,
   };
 }
 
@@ -1079,6 +1103,14 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
     }
     if (error.code === "merge_check_failed") {
       res.status(422).json({ error: error.message, check: error.details });
+      return;
+    }
+    if (error.code === "requester_control_required") {
+      res.status(403).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error.code === "action_disposition_required" || error.code === "target_mismatch") {
+      res.status(422).json({ error: error.message, code: error.code });
       return;
     }
   }

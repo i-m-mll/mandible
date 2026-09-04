@@ -153,7 +153,7 @@ const COLUMNS_AUTH_RESULT =
   "id, title, status, exit_code, error, head_branch, resolved_at, repo, base_branch, " +
   "post_merge_handoff, issue_references, issue_closures, issue_ids, target_session_id, target_repo_root, delivered_at";
 
-const RESOLVED_STATUSES = "('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase')";
+const RESOLVED_STATUSES = "('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')";
 
 interface TierRow {
   row: AuthResultRow;
@@ -732,7 +732,7 @@ export function registerInboxRoutes(
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
-           AND status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase')
+           AND status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')
          ORDER BY resolved_at ASC`;
       params = [targetSessionId, conversationId];
     } else {
@@ -743,7 +743,7 @@ export function registerInboxRoutes(
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
-           AND status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase')
+           AND status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase')
          ORDER BY resolved_at ASC`;
       params = [targetSessionId];
     }
@@ -821,7 +821,7 @@ export function registerInboxRoutes(
       "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
     ).run(ack.value);
     db.prepare(
-      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
+      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
     ).run(ack.value);
     db.prepare(
       `UPDATE managed_task_occurrences
