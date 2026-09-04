@@ -4,7 +4,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { getProjectTimeline } from '../api';
 import { useAppShell, useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -1696,28 +1698,36 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     ? `Loading ${projectRef} timeline...`
     : 'No timeline rows match the current controls.';
   const inspectorContent = useMemo(() => (
-    <TimelineInspector
-      project={projection?.project ?? null}
-      selectedEvent={selectedEvent}
-      selectedCluster={selectedCluster}
-      selectedClusterEvents={selectedClusterEvents}
-      selectedRow={selectedRow}
-      missingEventId={selectionStatus === 'stale' ? missingEventId : null}
-      missingClusterId={selectionStatus === 'stale' ? missingClusterId : null}
-      missingRowId={selectionStatus === 'stale' ? missingRowId : null}
-      selectionStatus={selectionStatus}
-      rowEvents={visibleSelectedRowEvents}
-      links={links}
-      linkById={linkById}
-      expandedEventIds={viewState.expandedEventIds}
-      onExpandEvent={expandEvent}
-      onCollapseEvent={collapseEvent}
-      onSelectEvent={selectEvent}
-      onPromoteRow={promoteRow}
-      onRemovePromotedRow={removePromotedRow}
-      onRemoveTransientRow={removeTransientRow}
-      onZoomToCluster={zoomToCluster}
-    />
+    <DetailPaneShell
+      as="section"
+      variant="compact"
+      className="timeline-inspector"
+      bodyClassName="timeline-inspector__body"
+      header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}
+    >
+      <TimelineInspector
+        project={projection?.project ?? null}
+        selectedEvent={selectedEvent}
+        selectedCluster={selectedCluster}
+        selectedClusterEvents={selectedClusterEvents}
+        selectedRow={selectedRow}
+        missingEventId={selectionStatus === 'stale' ? missingEventId : null}
+        missingClusterId={selectionStatus === 'stale' ? missingClusterId : null}
+        missingRowId={selectionStatus === 'stale' ? missingRowId : null}
+        selectionStatus={selectionStatus}
+        rowEvents={visibleSelectedRowEvents}
+        links={links}
+        linkById={linkById}
+        expandedEventIds={viewState.expandedEventIds}
+        onExpandEvent={expandEvent}
+        onCollapseEvent={collapseEvent}
+        onSelectEvent={selectEvent}
+        onPromoteRow={promoteRow}
+        onRemovePromotedRow={removePromotedRow}
+        onRemoveTransientRow={removeTransientRow}
+        onZoomToCluster={zoomToCluster}
+      />
+    </DetailPaneShell>
   ), [
     collapseEvent,
     expandEvent,
@@ -1759,7 +1769,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         },
       });
     },
-    layout: 'anchored-detail' as const,
     content: inspectorContent,
   }), [inspectorContent, updateState, viewState.panes]);
 

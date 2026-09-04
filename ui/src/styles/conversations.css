@@ -374,48 +374,6 @@
   background: var(--neutral-alpha-06);
 }
 
-.chat-live-detail {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  overflow: hidden;
-}
-
-.chat-live-detail__header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 48px;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.chat-live-detail__title-group {
-  min-width: 0;
-}
-
-.chat-live-detail__title {
-  margin: 0 0 3px;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-live-detail__actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .chat-live-detail__pane {
   flex: 1;
   min-height: 0;

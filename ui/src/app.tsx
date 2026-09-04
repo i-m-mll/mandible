@@ -2709,7 +2709,7 @@ function App(): JSX.Element {
         </main>
           {bottomPanelOpen && bottomPanel ? (
             <aside
-              className={`app-bottom-panel app-bottom-panel--${bottomPanel.layout}`}
+              className="app-bottom-panel"
               aria-label={bottomPanel.ariaLabel}
               style={{ height: `${bottomPanel.height}px` }}
             >

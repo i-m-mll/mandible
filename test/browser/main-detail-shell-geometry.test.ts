@@ -4,155 +4,210 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 type Edges = { left: number; right: number; top: number; bottom: number; width: number; height: number };
-
-type MainDetailGeometry = {
-  width: number;
-  rail: Edges;
-  sidebar: Edges;
-  detail: Edges;
-  shell: Edges;
-  header: Edges;
-  body: Edges;
-  footer: Edges;
-  bottomPanel: Edges;
-  bottomHeader: Edges;
-  bottomBody: Edges;
-  bottomFooter: Edges;
-  slots: Array<string | null>;
-  bottomSlots: Array<string | null>;
+type RailMode = 'expanded' | 'icons';
+type SidebarMode = 'shown' | 'hidden';
+type ChatState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'no-selection';
+type Surface = `chat-${ChatState}` | 'graph' | 'timeline';
+type Fixture = { width: 1280 | 835; rail: RailMode; sidebar: SidebarMode; surface: Surface };
+type Geometry = Fixture & {
+  appHeader: Edges;
+  railRect: Edges;
+  sidebarRect: Edges | null;
+  main: Edges;
+  mainShell: Edges | null;
+  mainHeader: Edges | null;
+  mainBody: Edges | null;
+  mainFooter: Edges | null;
+  panel: Edges | null;
+  panelShell: Edges | null;
+  panelHeader: Edges | null;
+  panelBody: Edges | null;
+  mainSlots: Array<string | null>;
+  panelSlots: Array<string | null>;
 };
 
-const CHROME_CANDIDATES = [
+const chrome = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',
-].filter((candidate): candidate is string => Boolean(candidate));
+].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
 
-function renderGeometry(width: number): MainDetailGeometry {
-  const chrome = CHROME_CANDIDATES.find(existsSync);
-  if (!chrome) throw new Error('A Chromium browser is required for the main-detail shell geometry regression.');
+const styles = [
+  'ui/src/styles/tokens.css',
+  'ui/src/styles/base.css',
+  'ui/src/styles/chat-history.css',
+  'ui/src/styles/conversations.css',
+  'ui/src/styles/detail-pane-shell.css',
+  'ui/src/styles/graph.css',
+  'ui/src/styles/timeline.css',
+].map((path) => readFileSync(resolve(path), 'utf8')).join('\n');
 
-  const css = [
-    'ui/src/styles/base.css',
-    'ui/src/styles/chat-history.css',
-    'ui/src/styles/conversations.css',
-    'ui/src/styles/detail-pane-shell.css',
-  ].map((path) => readFileSync(resolve(path), 'utf8')).join('\n');
-  const html = `<!doctype html>
-    <style>${css}</style>
-    <style>
-      * { box-sizing: border-box; }
-      html, body { width: ${width}px; height: 720px; margin: 0; overflow: clip; }
-      .app-shell {
-        --app-left-boundary-width: 0px;
-        --app-rail-width: 208px;
-        --app-rail-outer-width: 208px;
-        --app-shadow-gutter-width: 0px;
-        --app-view-sidebar-width: 320px;
-        --app-view-sidebar-outer-width: 320px;
-        --app-bottom-panel-height: 180px;
-      }
-      .fixture-slot { min-height: 0; }
-    </style>
-    <div class="app-shell app-shell--view-sidebar-open">
-      <div class="app-layout app-layout--view-sidebar-open app-layout--bottom-panel-open">
-        <aside class="app-rail"></aside>
-        <main class="app-content app-content--console app-content--view-sidebar">
-          <div class="app-tab-panel">
-            <div class="chat-history-view">
-              <aside class="view-sidebar chat-history-sidebar" style="width:var(--app-view-sidebar-width);flex-shrink:0"></aside>
-              <div class="chat-history-detail">
-                <section class="detail-pane-shell detail-pane-shell--compact">
-                  <header class="detail-pane-shell__header" data-detail-pane-slot="header"><div class="detail-pane-header detail-pane-header--compact">Chat</div></header>
-                  <div class="detail-pane-shell__body fixture-slot" data-detail-pane-slot="body">Main body</div>
-                  <footer class="detail-pane-shell__footer fixture-slot" data-detail-pane-slot="footer">Main footer</footer>
-                  <div class="detail-pane-shell__overlay-host" data-detail-pane-slot="overlay-host"></div>
-                </section>
-              </div>
-            </div>
-          </div>
-        </main>
-        <aside class="app-bottom-panel app-bottom-panel--anchored-detail">
-          <div class="app-bottom-panel__content">
-            <section class="detail-pane-shell">
-              <header class="detail-pane-shell__header fixture-slot" data-detail-pane-slot="header">Bottom header</header>
-              <div class="detail-pane-shell__body fixture-slot" data-detail-pane-slot="body">Bottom body</div>
-              <footer class="detail-pane-shell__footer fixture-slot" data-detail-pane-slot="footer">Bottom footer</footer>
-              <div class="detail-pane-shell__overlay-host" data-detail-pane-slot="overlay-host"></div>
-            </section>
-          </div>
-        </aside>
-      </div>
+const chatStates: ChatState[] = ['loading', 'error', 'not-found', 'conversation', 'live-session', 'no-selection'];
+const fixtures: Fixture[] = ([1280, 835] as const).flatMap((width) =>
+  (['expanded', 'icons'] as const).flatMap((rail) =>
+    (['shown', 'hidden'] as const).flatMap((sidebar) => [
+      ...chatStates.map((state): Fixture => ({ width, rail, sidebar, surface: `chat-${state}` })),
+      { width, rail, sidebar, surface: 'graph' },
+      { width, rail, sidebar, surface: 'timeline' },
+    ]),
+  ),
+);
+
+function shellMarkup(className: string, footer: boolean): string {
+  return `<section class="detail-pane-shell detail-pane-shell--compact ${className}">
+    <header class="detail-pane-shell__header" data-detail-pane-slot="header"><div class="detail-pane-header detail-pane-header--compact">Header</div></header>
+    <div class="detail-pane-shell__body" data-detail-pane-slot="body">Body</div>
+    ${footer ? '<footer class="detail-pane-shell__footer" data-detail-pane-slot="footer">Footer</footer>' : ''}
+    <div class="detail-pane-shell__overlay-host" data-detail-pane-slot="overlay-host"></div>
+  </section>`;
+}
+
+function fixtureMarkup(fixture: Fixture): string {
+  const sidebarShown = fixture.sidebar === 'shown';
+  const panelSurface = fixture.surface === 'graph' || fixture.surface === 'timeline';
+  const shellClass = fixture.surface.startsWith('chat-')
+    ? `chat-detail-frame chat-detail-frame--${fixture.surface.slice(5)}`
+    : 'fixture-main-shell';
+  const mainShell = shellMarkup(shellClass, fixture.surface === 'chat-conversation');
+  const panelShell = fixture.surface === 'graph'
+    ? shellMarkup('graph-detail-pane', false)
+    : fixture.surface === 'timeline'
+      ? shellMarkup('timeline-inspector', false)
+      : '';
+  return `<div class="app-shell${sidebarShown ? ' app-shell--view-sidebar-open' : ''}${fixture.rail === 'icons' ? ' app-shell--rail-icons' : ''}">
+    <header class="app-header${sidebarShown ? '' : ' app-header--sidebar-hidden'}"><div class="app-header__identity"></div></header>
+    <div class="app-layout${sidebarShown ? ' app-layout--view-sidebar-open' : ''}${fixture.rail === 'icons' ? ' app-layout--rail-icons' : ''}${panelSurface ? ' app-layout--bottom-panel-open' : ''}">
+      <aside class="app-rail"></aside>
+      <main class="app-content app-content--console app-content--view-sidebar">
+        <div class="app-tab-panel"><div class="chat-history-view">
+          ${sidebarShown ? '<aside class="view-sidebar chat-history-sidebar" style="width:var(--app-view-sidebar-width);flex-shrink:0"></aside>' : ''}
+          <div class="chat-history-detail">${mainShell}</div>
+        </div></div>
+      </main>
+      ${panelSurface ? `<aside class="app-bottom-panel"><div class="app-bottom-panel__content">${panelShell}</div></aside>` : ''}
     </div>
-    <script>
-      const edges = (selector) => {
-        const bounds = document.querySelector(selector).getBoundingClientRect();
-        return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height };
-      };
-      const shell = document.querySelector('.chat-history-detail > .detail-pane-shell');
-      const bottomShell = document.querySelector('.app-bottom-panel .detail-pane-shell');
-      document.title = btoa(JSON.stringify({
-        width: ${width},
-        rail: edges('.app-rail'),
-        sidebar: edges('.chat-history-sidebar'),
-        detail: edges('.chat-history-detail'),
-        shell: edges('.chat-history-detail > .detail-pane-shell'),
-        header: edges('.chat-history-detail > .detail-pane-shell > .detail-pane-shell__header'),
-        body: edges('.chat-history-detail > .detail-pane-shell > .detail-pane-shell__body'),
-        footer: edges('.chat-history-detail > .detail-pane-shell > .detail-pane-shell__footer'),
-        bottomPanel: edges('.app-bottom-panel--anchored-detail'),
-        bottomHeader: edges('.app-bottom-panel .detail-pane-shell__header'),
-        bottomBody: edges('.app-bottom-panel .detail-pane-shell__body'),
-        bottomFooter: edges('.app-bottom-panel .detail-pane-shell__footer'),
-        slots: Array.from(shell.children, (child) => child.getAttribute('data-detail-pane-slot')),
-        bottomSlots: Array.from(bottomShell.children, (child) => child.getAttribute('data-detail-pane-slot')),
-      }));
-    </script>`;
+  </div>`;
+}
 
+let geometryCache: Geometry[] | null = null;
+
+function renderGeometrySuite(): Geometry[] {
+  if (geometryCache) return geometryCache;
+  if (!chrome) throw new Error('A Chromium browser is required for the main-detail shell geometry regression.');
+  const groups = ([1280, 835] as const).flatMap((width) =>
+    (['expanded', 'icons'] as const).flatMap((rail) =>
+      (['shown', 'hidden'] as const).map((sidebar) => ({
+        width,
+        rail,
+        sidebar,
+        cases: fixtures
+          .filter((fixture) => fixture.width === width && fixture.rail === rail && fixture.sidebar === sidebar)
+          .map((fixture) => ({ ...fixture, markup: fixtureMarkup(fixture) })),
+      })),
+    ),
+  );
+  const payload = JSON.stringify({ groups, styles }).replaceAll('<', '\\u003c');
+  const html = `<!doctype html><html><body><script>
+    const { groups, styles } = ${payload};
+    const results = [];
+    const rect = (root, selector) => {
+      const node = root.querySelector(selector);
+      if (!node) return null;
+      const bounds = node.getBoundingClientRect();
+      return Object.fromEntries(['left', 'right', 'top', 'bottom', 'width', 'height'].map((key) => [key, bounds[key]]));
+    };
+    const slots = (root, selector) => {
+      const node = root.querySelector(selector);
+      return node ? Array.from(node.children, (child) => child.getAttribute('data-detail-pane-slot')) : [];
+    };
+    const measure = (group, frame) => {
+      const doc = frame.contentDocument;
+      for (const entry of group.cases) {
+        const root = doc.querySelector('[data-surface="' + entry.surface + '"]');
+        results.push({
+          width: entry.width, rail: entry.rail, sidebar: entry.sidebar, surface: entry.surface,
+          appHeader: rect(root, '.app-header'), railRect: rect(root, '.app-rail'), sidebarRect: rect(root, '.view-sidebar'),
+          main: rect(root, '.chat-history-detail'), mainShell: rect(root, '.chat-history-detail > .detail-pane-shell'),
+          mainHeader: rect(root, '.chat-history-detail > .detail-pane-shell > .detail-pane-shell__header'),
+          mainBody: rect(root, '.chat-history-detail > .detail-pane-shell > .detail-pane-shell__body'),
+          mainFooter: rect(root, '.chat-history-detail > .detail-pane-shell > .detail-pane-shell__footer'),
+          panel: rect(root, '.app-bottom-panel'), panelShell: rect(root, '.app-bottom-panel .detail-pane-shell'),
+          panelHeader: rect(root, '.app-bottom-panel .detail-pane-shell__header'),
+          panelBody: rect(root, '.app-bottom-panel .detail-pane-shell__body'),
+          mainSlots: slots(root, '.chat-history-detail > .detail-pane-shell'),
+          panelSlots: slots(root, '.app-bottom-panel .detail-pane-shell'),
+        });
+      }
+      if (results.length === ${fixtures.length}) document.title = btoa(JSON.stringify(results));
+    };
+    for (const group of groups) {
+      const frame = document.createElement('iframe');
+      frame.style.cssText = 'display:block;border:0;width:' + group.width + 'px;height:1px';
+      frame.addEventListener('load', () => measure(group, frame), { once: true });
+      const markup = group.cases.map((entry) => '<div class="case" data-surface="' + entry.surface + '">' + entry.markup + '</div>').join('');
+      frame.srcdoc = '<!doctype html><html><head><style>' + styles + '</style><style>*{box-sizing:border-box}html,body{margin:0;overflow:clip}.case{height:540px}.app-shell{--app-view-sidebar-persisted-width:320px;--app-view-sidebar-width:320px;--app-bottom-panel-height:180px}.app-shell,.app-layout{height:100%}</style></head><body>' + markup + '</body></html>';
+      document.body.append(frame);
+    }
+  </script></body></html>`;
   const rendered = spawnSync(chrome, [
-    '--headless=new',
-    '--disable-gpu',
-    '--no-sandbox',
-    '--dump-dom',
-    `--window-size=${width},720`,
+    '--headless=new', '--disable-gpu', '--no-sandbox', '--dump-dom', '--window-size=1400,900',
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-  ], { encoding: 'utf8', maxBuffer: 10_000_000 });
+  ], { encoding: 'utf8', maxBuffer: 20_000_000, timeout: 20_000 });
   if (rendered.status !== 0) throw new Error(`Chromium geometry fixture failed: ${rendered.stderr}`);
   const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
   if (!encoded) throw new Error('Chromium did not emit main-detail shell geometry.');
-  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as MainDetailGeometry;
+  geometryCache = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Geometry[];
+  return geometryCache;
 }
 
-function expectSameHorizontalEdges(actual: Edges, expected: Edges): void {
-  expect(actual.left).toBe(expected.left);
-  expect(actual.right).toBe(expected.right);
-  expect(actual.width).toBe(expected.width);
+function expectSameHorizontalEdges(actual: Edges | null, expected: Edges): void {
+  expect(actual).not.toBeNull();
+  expect(actual).toMatchObject({ left: expected.left, right: expected.right, width: expected.width });
 }
 
-describe.each([1280, 835])('main-detail shell geometry at %ipx', (width) => {
-  it('keeps every main slot and anchored footer past the rail and ViewSidebar', () => {
-    const geometry = renderGeometry(width);
-    const detailLeft = geometry.rail.right + geometry.sidebar.width;
+describe('main-detail shell geometry', () => {
+  it('keeps every admitted state and registered panel inside the main column', { timeout: 25_000 }, () => {
+    const geometries = renderGeometrySuite();
+    expect(geometries).toHaveLength(fixtures.length);
 
-    expect(geometry.rail).toMatchObject({ left: 0, right: 208, width: 208 });
-    expect(geometry.sidebar).toMatchObject({ left: 208, right: detailLeft, width: 320 });
-    expect(geometry.detail).toMatchObject({ left: detailLeft, right: width, width: width - detailLeft });
-    expectSameHorizontalEdges(geometry.shell, geometry.detail);
-    expectSameHorizontalEdges(geometry.header, geometry.detail);
-    expectSameHorizontalEdges(geometry.body, geometry.detail);
-    expectSameHorizontalEdges(geometry.footer, geometry.detail);
-    expect(geometry.header.top).toBe(geometry.shell.top);
-    expect(geometry.body.top).toBe(geometry.header.bottom);
-    expect(geometry.footer.top).toBe(geometry.body.bottom);
-    expect(geometry.footer.bottom).toBe(geometry.shell.bottom);
-    expect(geometry.slots).toEqual(['header', 'body', 'footer', 'overlay-host']);
+    for (const geometry of geometries) {
+      const railWidth = geometry.rail === 'icons' ? 56 : 208;
+      const detailLeft = railWidth + (geometry.sidebar === 'shown' ? 320 : 0);
+      expect(geometry.railRect).toMatchObject({ left: 0, right: railWidth, width: railWidth });
+      expect(geometry.appHeader.right).toBe(detailLeft);
+      if (geometry.sidebar === 'shown') {
+        expect(geometry.sidebarRect).toMatchObject({ left: railWidth, right: detailLeft, width: 320 });
+      } else {
+        expect(geometry.sidebarRect).toBeNull();
+      }
+      expect(geometry.main).toMatchObject({ left: detailLeft, right: geometry.width, width: geometry.width - detailLeft });
+      expectSameHorizontalEdges(geometry.mainShell, geometry.main);
+      expectSameHorizontalEdges(geometry.mainHeader, geometry.main);
+      expectSameHorizontalEdges(geometry.mainBody, geometry.main);
+      expect(geometry.mainHeader?.top).toBe(geometry.mainShell?.top);
+      expect(geometry.mainBody?.top).toBe(geometry.mainHeader?.bottom);
 
-    expectSameHorizontalEdges(geometry.bottomPanel, geometry.detail);
-    expectSameHorizontalEdges(geometry.bottomHeader, geometry.detail);
-    expectSameHorizontalEdges(geometry.bottomBody, geometry.detail);
-    expectSameHorizontalEdges(geometry.bottomFooter, geometry.detail);
-    expect(geometry.bottomSlots).toEqual(['header', 'body', 'footer', 'overlay-host']);
+      if (geometry.surface === 'chat-conversation') {
+        expectSameHorizontalEdges(geometry.mainFooter, geometry.main);
+        expect(geometry.mainFooter?.bottom).toBe(geometry.mainShell?.bottom);
+        expect(geometry.mainSlots).toEqual(['header', 'body', 'footer', 'overlay-host']);
+      } else {
+        expect(geometry.mainFooter).toBeNull();
+        expect(geometry.mainSlots).toEqual(['header', 'body', 'overlay-host']);
+      }
+
+      if (geometry.surface === 'graph' || geometry.surface === 'timeline') {
+        expectSameHorizontalEdges(geometry.panel, geometry.main);
+        expectSameHorizontalEdges(geometry.panelShell, geometry.main);
+        expectSameHorizontalEdges(geometry.panelHeader, geometry.main);
+        expectSameHorizontalEdges(geometry.panelBody, geometry.main);
+        expect(geometry.panelSlots).toEqual(['header', 'body', 'overlay-host']);
+      } else {
+        expect(geometry.panel).toBeNull();
+        expect(geometry.panelShell).toBeNull();
+      }
+    }
   });
 });

@@ -18,12 +18,16 @@ import {
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
+    options = { theme: {} };
+    cols = 80;
+    rows = 24;
     loadAddon(): void {}
     open(): void {}
     write(): void {}
     writeln(): void {}
     clear(): void {}
     focus(): void {}
+    onData(): { dispose: () => void } { return { dispose: () => undefined }; }
     dispose(): void {}
   },
 }));
@@ -31,6 +35,11 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  });
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
   vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ groups: [], limit: 50 });
   vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
@@ -222,6 +231,17 @@ function deferred<T>() {
 }
 
 describe('compact detail pane shell', () => {
+  it('routes every Chat detail state through one typed frame construction', () => {
+    const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
+    const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();
+    expect(states).toEqual(['conversation', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
+    expect(source).not.toContain('<div className="chat-live-detail">');
+    expect(source).not.toContain('return <LoadingSkeleton variant="detail"');
+
+    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
+    expect(css).not.toMatch(/\.chat-live-detail__(?:header|title|title-group|actions)\s*\{/);
+  });
+
   it('renders the unselected Chat main area through the canonical compact shell', () => {
     const { container } = render(
       <ConversationsView
@@ -239,10 +259,75 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body');
 
     expect(shell?.getAttribute('data-app-surface')).toBe('main');
+    expect(shell?.classList.contains('chat-detail-frame--no-selection')).toBe(true);
     expect(header?.querySelector('[data-detail-pane-header-variant="compact"]')).toBeTruthy();
     expect(header?.textContent).toBe('Chat');
     expect(body?.textContent).toContain('Select a conversation to view it');
     expect(detail?.querySelector(':scope > .chat-history-detail__empty')).toBeNull();
+  });
+
+  it('renders a live session through the same compact Chat detail frame', async () => {
+    const session: ConsoleSession = {
+      id: 'live-shell-session',
+      label: 'Live shell session',
+      agent_type: 'codex',
+      interaction_mode: 'direct',
+      pinned: false,
+      status: 'running',
+      is_operator: false,
+      provider_session_id: null,
+      unread_count: 0,
+      created_at: 1,
+      started_at: 1,
+      stopped_at: null,
+      backend_type: 'pty',
+      transport_lane: 'pty',
+    };
+    render(
+      <ConversationsView
+        consoleSessions={[session]}
+        initialConversationId={null}
+        initialSessionId={session.id}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const heading = await screen.findByRole('heading', { name: session.label });
+    const shell = heading.closest('.detail-pane-shell');
+    expect(shell?.classList.contains('chat-detail-frame--live-session')).toBe(true);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
+      .toBeTruthy();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__body.chat-live-detail__pane'))
+      .toBeTruthy();
+  });
+
+  it('keeps the loading state inside the same compact Chat detail frame', async () => {
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(() => new Promise(() => undefined));
+    vi.spyOn(api, 'getConversationControl').mockResolvedValue(defaultControl);
+    vi.spyOn(api, 'getConversationLiveProjection').mockResolvedValue({
+      conversation_id: conversation.id,
+      provider: 'codex',
+      provider_session_id: conversation.session_id,
+      revision: 0,
+      events: [],
+    });
+
+    render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={conversation.id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const loading = await screen.findByLabelText('Loading conversation');
+    const shell = loading.closest('.detail-pane-shell');
+    expect(shell?.classList.contains('chat-detail-frame--loading')).toBe(true);
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
+      .toBeTruthy();
   });
 
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
@@ -311,6 +396,7 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body');
     const retryButton = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
     expect(alert.textContent).toContain(sourceUnavailable);
+    expect(shell?.classList.contains('chat-detail-frame--error')).toBe(true);
     expect(alert.classList.contains('detail-pane-notice--compact')).toBe(true);
     expect(boundary?.getAttribute('data-detail-pane-slot')).toBe('notice');
     expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBe(boundary);
@@ -360,6 +446,7 @@ describe('compact detail pane shell', () => {
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
     const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
     expect(getComputedStyle(shell!).overflow).toBe('clip');
+    expect(shell?.classList.contains('chat-detail-frame--conversation')).toBe(true);
     expect(getComputedStyle(body!).position).toBe('relative');
     expect(conversationCss).toMatch(/\.conv-detail__footer\s*\{[^}]*margin-top:\s*-20px;/s);
     expect(canonicalHeader?.getAttribute('data-detail-pane-header-variant')).toBe('compact');

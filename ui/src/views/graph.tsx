@@ -1126,7 +1126,6 @@ export function GraphView({
     maxHeight: MAX_GRAPH_DETAIL_PANEL_HEIGHT,
     onOpenChange: setDetailPanelOpen,
     onHeightChange: setDetailPanelHeight,
-    layout: 'anchored-detail' as const,
     content: selectedNode ? detailPanelContent : null,
   }), [detailPanelContent, detailPanelHeight, detailPanelOpen, selectedNode]);
 
