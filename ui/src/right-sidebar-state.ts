@@ -22,15 +22,31 @@ export function useAppRightSidebarState(
   const maxWidth = options.maxWidth ?? 720;
   const fallbackOpen = fallback.open;
   const fallbackWidth = fallback.width;
-  const inputsRef = useRef({ fallback, migrate: options.migrate });
-  inputsRef.current = { fallback, migrate: options.migrate };
+  const inputsRef = useRef({ fallback, migrate: options.migrate, removeKeys: options.removeKeys });
+  inputsRef.current = { fallback, migrate: options.migrate, removeKeys: options.removeKeys };
+  const migratedScopesRef = useRef(new Set<string>());
   const read = useCallback((): AppRightSidebarState => {
     const current = inputsRef.current;
     if (typeof window === 'undefined' || typeof window.localStorage?.getItem !== 'function') return current.fallback;
     try {
       const stored = window.localStorage.getItem(storageKey(scope));
-      if (stored !== null) return normalize(JSON.parse(stored), current.fallback, minWidth, maxWidth);
-      return normalize(current.migrate?.(), current.fallback, minWidth, maxWidth);
+      let candidate: unknown = null;
+      if (stored !== null) {
+        try { candidate = JSON.parse(stored); } catch { candidate = null; }
+      } else {
+        try { candidate = current.migrate?.(); } catch { candidate = null; }
+      }
+      const value = normalize(candidate, current.fallback, minWidth, maxWidth);
+      if (!migratedScopesRef.current.has(scope)) {
+        try {
+          window.localStorage.setItem(storageKey(scope), JSON.stringify(value));
+          current.removeKeys?.forEach((key) => window.localStorage.removeItem(key));
+          migratedScopesRef.current.add(scope);
+        } catch {
+          // Storage failure must not reset the in-memory state or discard migration keys.
+        }
+      }
+      return value;
     } catch {
       return current.fallback;
     }
@@ -43,11 +59,12 @@ export function useAppRightSidebarState(
   useEffect(() => {
     if (stored.scope !== scope) return;
     if (typeof window === 'undefined' || typeof window.localStorage?.setItem !== 'function') return;
-    window.localStorage.setItem(storageKey(scope), JSON.stringify(state));
-    if (typeof window.localStorage.removeItem === 'function') {
-      options.removeKeys?.forEach((key) => window.localStorage.removeItem(key));
+    try {
+      window.localStorage.setItem(storageKey(scope), JSON.stringify(state));
+    } catch {
+      // Browser-local persistence can be unavailable while in-memory intent remains valid.
     }
-  }, [options.removeKeys, scope, state, stored.scope]);
+  }, [scope, state, stored.scope]);
   const update = useCallback((patch: Partial<AppRightSidebarState>) => {
     setStored((current) => {
       const value = current.scope === scope ? current.value : read();

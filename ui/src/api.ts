@@ -285,11 +285,13 @@ const DEFAULT_HEADERS = {
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -311,14 +313,16 @@ async function apiGet(path: string, init: RequestInit = {}): Promise<Response> {
 
 async function throwOnError(response: Response, method: string, path: string): Promise<never> {
   let message = `${method} ${path} failed: ${response.status}`;
+  let code: string | null = null;
   try {
-    const body = await response.json() as { error?: string; message?: string };
-    if (body.error) message = body.error;
-    else if (body.message) message = body.message;
+    const body = await response.json() as { code?: string; error?: string; message?: string };
+    code = body.code ?? body.error ?? null;
+    if (body.message) message = body.message;
+    else if (body.error) message = body.error;
   } catch {
     // keep the generic message when the server did not return JSON
   }
-  throw new ApiError(message, response.status);
+  throw new ApiError(message, response.status, code);
 }
 
 

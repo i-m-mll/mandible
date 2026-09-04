@@ -100,16 +100,7 @@ a {
   z-index: 60;
 }
 
-.app-header--right-sidebar-available {
-  width: 100%;
-}
-
-.app-header--right-sidebar-available .app-header__identity {
-  width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
-}
-
-.app-header__right-sidebar-toggle,
-.app-right-sidebar__close {
+.app-right-sidebar-toggle {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -124,27 +115,28 @@ a {
   cursor: pointer;
 }
 
-.app-header__right-sidebar-toggle {
-  margin-right: 8px;
-}
-
-.app-header__right-sidebar-toggle:is(:hover, :focus-visible),
-.app-right-sidebar__close:is(:hover, :focus-visible) {
+.app-right-sidebar-toggle:is(:hover, :focus-visible),
+.app-right-sidebar-toggle[aria-pressed='true'] {
   background: var(--neutral-alpha-06);
   color: var(--text-primary);
+}
+
+.app-right-sidebar-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.app-content__right-sidebar-toggle {
+  position: absolute;
+  z-index: 8;
+  top: 7px;
+  right: 8px;
 }
 
 .app-shell--view-sidebar-open .app-header {
   width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }
 
-.app-shell--view-sidebar-open .app-header--right-sidebar-available {
-  width: 100%;
-}
-
-.app-shell--view-sidebar-open .app-header--right-sidebar-available .app-header__identity {
-  width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
-}
 
 /* One app-shell boundary owns the complete chrome/main edge. It is independent
  * of header, ViewSidebar, detail, and right-sidebar dimensions, so its divider and
@@ -362,6 +354,12 @@ a {
   z-index: 3;
   width: 10px;
   cursor: col-resize;
+  touch-action: none;
+}
+
+.app-right-sidebar__resize:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .app-right-sidebar__header {
@@ -372,6 +370,10 @@ a {
   padding: 0 8px 0 14px;
   border-bottom: 1px solid var(--neutral-alpha-06);
   background: var(--surface-header);
+}
+
+.app-right-sidebar__toggle {
+  margin-left: auto;
 }
 
 .app-right-sidebar__header h2 {
@@ -393,9 +395,10 @@ a {
 .app-right-sidebar__tabs button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  width: 40px;
   min-height: var(--app-header-height);
-  padding: 0 10px;
+  padding: 0;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
@@ -414,11 +417,16 @@ a {
 .app-right-sidebar__body > [role='tabpanel'] {
   min-width: 0;
   min-height: 0;
-  height: 100%;
 }
 
 .app-right-sidebar__body {
+  height: 100%;
   overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.app-right-sidebar__body > [role='tabpanel'] {
+  min-height: 100%;
 }
 
 @media (max-width: 800px) {

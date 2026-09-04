@@ -1,7 +1,7 @@
 import { render, screen, waitFor, cleanup, fireEvent, within, act } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import { readFileSync } from 'node:fs';
 
 import { parseRouteFromHash } from '../../ui/src/routing';
@@ -322,16 +322,21 @@ function stubTimelineFetchResolver(
 
 function TimelineView({ active = true, ...props }: TimelineViewProps & { active?: boolean }): JSX.Element {
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-    setRightSidebar(descriptor);
-    return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+  const ownerRef = useRef<string | null>(null);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    ownerRef.current = ownerId;
+    return () => setRightSidebar((current) => (current?.id === ownerId ? null : current));
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
+    if (ownerRef.current === ownerId) setRightSidebar(descriptor);
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
     active,
     rightSidebar,
     registerRightSidebar,
+    updateRightSidebar,
     setViewSidebarWidth: () => undefined,
-  }), [active, rightSidebar, registerRightSidebar]);
+  }), [active, rightSidebar, registerRightSidebar, updateRightSidebar]);
   const toggleLabel = rightSidebar?.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar?.title ?? 'inspector'}`;
 
   return (

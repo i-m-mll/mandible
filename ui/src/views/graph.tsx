@@ -956,10 +956,9 @@ export function GraphView({
     removeKeys: [GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY],
     migrate: () => {
       const open = window.localStorage.getItem(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY);
-      const width = window.localStorage.getItem(GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY);
       return {
         open: open === null ? true : JSON.parse(open) === true,
-        width: width === null ? DEFAULT_GRAPH_DETAIL_PANEL_WIDTH : Number(JSON.parse(width)),
+        width: DEFAULT_GRAPH_DETAIL_PANEL_WIDTH,
       };
     },
   });

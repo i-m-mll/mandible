@@ -90,6 +90,33 @@ function seedBriefingLineage(db: Database.Database, mixed: boolean): { rounds: u
 }
 
 describe.sequential("schema convergence", () => {
+  it("moves the schema-170 operator click preference into the canonical app setting", () => {
+    const dbPath = path.join(tempDir, "chat-click-preference.db");
+    createFloorDatabase(dbPath);
+    const db = new Database(dbPath);
+    try {
+      migrateFixtureThrough(db, 170);
+      const operator = db.prepare("SELECT id FROM users ORDER BY created_at LIMIT 1").get() as { id: string };
+      db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('user.operator_id', ?, 1)").run(operator.id);
+      db.prepare(`INSERT INTO user_settings (user_id, key, value, revision, updated_at)
+        VALUES (?, 'chat_bottom_shelf', ?, 1, 9)`).run(operator.id, JSON.stringify({
+        version: 1, visible: true, tab: "overview", clickAction: "open",
+      }));
+
+      const migration = MIGRATIONS.find((candidate) => candidate.version === 171)!;
+      db.transaction(() => {
+        for (const statement of migration.statements) db.exec(statement);
+        db.prepare("UPDATE meta SET value = '171' WHERE key = 'schema_version'").run();
+      }).immediate();
+
+      expect(db.prepare("SELECT value FROM settings WHERE key = 'chat_entity_link_action'").get())
+        .toEqual({ value: "open" });
+      expect(db.prepare("SELECT 1 FROM user_settings WHERE key = 'chat_bottom_shelf'").get()).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
   it("migrates the frozen floor fixture to the same schema a fresh database gets", () => {
     const freshPath = path.join(tempDir, "fresh.db");
     const migratedPath = path.join(tempDir, "migrated.db");
