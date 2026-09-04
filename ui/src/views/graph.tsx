@@ -709,7 +709,7 @@ function LegendButton({
   );
 }
 
-function DetailPane({
+export function GraphDetailPane({
   node,
   edges,
   onNavigate,
@@ -1113,7 +1113,7 @@ export function GraphView({
   );
 
   const detailPanelContent = useMemo(() => (
-    <DetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
+    <GraphDetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
   ), [onNavigate, selectedNode, visibleEdges]);
 
   const detailPanelDescriptor = useMemo(() => ({
@@ -1126,7 +1126,6 @@ export function GraphView({
     maxHeight: MAX_GRAPH_DETAIL_PANEL_HEIGHT,
     onOpenChange: setDetailPanelOpen,
     onHeightChange: setDetailPanelHeight,
-    layout: 'anchored-detail' as const,
     content: selectedNode ? detailPanelContent : null,
   }), [detailPanelContent, detailPanelHeight, detailPanelOpen, selectedNode]);
 

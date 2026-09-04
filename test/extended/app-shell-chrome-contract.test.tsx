@@ -109,18 +109,19 @@ describe('shared app-shell chrome contract', () => {
   });
 
   it('confines Graph and Timeline bottom panels to the shared detail boundary', () => {
-    expect(appShellSource).toContain("layout: 'full-content' | 'anchored-detail'");
-    expect(graphSource).toContain("layout: 'anchored-detail'");
-    expect(timelineSource).toContain("layout: 'anchored-detail'");
-    expect(timelineSource).not.toContain("layout: 'full-content'");
-    expect(appSource).toContain('app-bottom-panel--${bottomPanel.layout}');
+    expect(appShellSource).not.toMatch(/\blayout:\s*'full-content'\s*\|\s*'anchored-detail'/);
+    expect(graphSource).not.toMatch(/\blayout:\s*['"](?:full-content|anchored-detail)['"]/);
+    expect(timelineSource).not.toMatch(/\blayout:\s*['"](?:full-content|anchored-detail)['"]/);
+    expect(appSource).toContain('className="app-bottom-panel"');
+    expect(appSource).not.toContain('bottomPanel.layout');
 
     expect(ruleBody(base, '.app-bottom-panel')).toContain('grid-column: 2');
-    expect(ruleBody(base, '.app-layout--view-sidebar-open .app-bottom-panel--anchored-detail'))
-      .toContain('margin-left: var(--app-view-sidebar-outer-width)');
-    expect(ruleBody(base, '.app-bottom-panel--anchored-detail .app-bottom-panel__content'))
-      .toContain('overflow: hidden');
-    expect(ruleBody(base, '.app-bottom-panel__content')).toContain('overflow: auto');
+    expect(ruleBody(base, '.app-layout--view-sidebar-open.app-layout--bottom-panel-open .app-bottom-panel'))
+      .toContain('left: var(--app-view-sidebar-outer-width)');
+    expect(ruleBody(base, '.app-bottom-panel__content')).toContain('overflow: hidden');
+    expect(base).not.toContain('.app-bottom-panel--anchored-detail');
+    expect(timelineSource).toContain('className="timeline-inspector"');
+    expect(timelineSource).toContain('header={<DetailPaneHeader variant="compact" title="Timeline inspector" />}');
   });
 
   it('leaves lazy view loading unowned by the shell', () => {

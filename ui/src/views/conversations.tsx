@@ -1,3 +1,4 @@
+import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
@@ -46,6 +47,7 @@ import {
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
+  isApiErrorStatus,
   openConversationExternally,
   submitConversationControl,
   updateConsoleSession,
@@ -61,7 +63,7 @@ import {
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
-import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { DetailPaneShell, type DetailPaneShellFooter } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
@@ -99,6 +101,60 @@ import { mergeProviderLiveProjection } from '../../../src/conversation-control/p
 // ── Toast notification ──
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
+
+type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'no-selection';
+
+type ChatDetailFrameProps = {
+  state: ChatDetailState;
+  className?: string;
+  bodyClassName?: string;
+  header: ComponentChildren;
+  headerRef?: Ref<HTMLElement>;
+  subheader?: ComponentChildren;
+  notice?: ComponentChildren;
+  footer?: DetailPaneShellFooter | null;
+  overlays?: ComponentChildren;
+  ariaBusy?: boolean;
+  children: ComponentChildren;
+};
+
+export function ChatDetailFrame({
+  state,
+  className,
+  bodyClassName = 'conv-detail__body',
+  header,
+  headerRef,
+  subheader,
+  notice,
+  footer,
+  overlays,
+  ariaBusy,
+  children,
+}: ChatDetailFrameProps): JSX.Element {
+  return (
+    <DetailPaneShell
+      as="section"
+      variant="compact"
+      className={`conv-detail chat-detail-frame chat-detail-frame--${state}${className ? ` ${className}` : ''}`}
+      headerClassName="conv-detail__shell-header"
+      headerRef={headerRef}
+      subheaderClassName="conv-detail__parent"
+      bodyClassName={bodyClassName}
+      footerClassName="conv-detail__footer"
+      header={header}
+      subheader={subheader}
+      notice={notice}
+      footer={footer ? {
+        content: footer.content,
+        ariaLabel: footer.ariaLabel,
+      } : undefined}
+      overlays={overlays}
+      ariaBusy={ariaBusy}
+    >
+      {children}
+    </DetailPaneShell>
+  );
+}
 
 function formatControlApiError(err: unknown): { message: string; details: string | null; snapshot: ConversationControlSnapshot | null } {
   if (err instanceof Error) {
@@ -958,6 +1014,7 @@ function ConversationDetail({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
@@ -1039,6 +1096,7 @@ function ConversationDetail({
     setLoadedConversationKey(requestKey);
     setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
     setLoading(true);
+    setNotFound(false);
     if (!preserveErrorWhileRetrying) setError(null);
     getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
       .then((payload) => {
@@ -1054,11 +1112,18 @@ function ConversationDetail({
           smooth: false,
         });
         setError(null);
+        setNotFound(false);
         setLoading(false);
       })
       .catch((err) => {
         if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : String(err));
+        if (isApiErrorStatus(err, 404)) {
+          setError(null);
+          setNotFound(true);
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+          setNotFound(false);
+        }
         setLoading(false);
       });
     return () => controller.abort();
@@ -1713,30 +1778,38 @@ function ConversationDetail({
   ) : undefined;
 
   if (loading && !conversation && !error) {
-    return <LoadingSkeleton variant="detail" label="Loading conversation" />;
+    return (
+      <ChatDetailFrame
+        state="loading"
+        header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
+        ariaBusy
+      >
+        <LoadingSkeleton variant="detail" label="Loading conversation" />
+      </ChatDetailFrame>
+    );
   }
 
   if (error && !conversation) {
     return (
-      <DetailPaneShell
-        as="div"
-        variant="compact"
-        className="conv-detail"
-        bodyClassName="conv-detail__body"
+      <ChatDetailFrame
+        state="error"
         header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
         notice={loadErrorNotice}
         ariaBusy={loading}
       >
         <div className="empty-state">Conversation content unavailable.</div>
-      </DetailPaneShell>
+      </ChatDetailFrame>
     );
   }
 
-  if (!conversation) {
+  if (notFound || !conversation) {
     return (
-      <div className="conv-detail">
+      <ChatDetailFrame
+        state="not-found"
+        header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
+      >
         <div className="empty-state">Conversation not found.</div>
-      </div>
+      </ChatDetailFrame>
     );
   }
 
@@ -2046,15 +2119,10 @@ function ConversationDetail({
   );
 
   return (
-    <DetailPaneShell
-      as="div"
-      variant="compact"
-      className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}
-      headerClassName="conv-detail__shell-header"
+    <ChatDetailFrame
+      state="conversation"
+      className={sidebarCollapsed ? 'conv-detail--shelf-collapsed' : undefined}
       headerRef={headerRef}
-      subheaderClassName="conv-detail__parent"
-      bodyClassName="conv-detail__body"
-      footerClassName="conv-detail__footer"
       header={detailHeader}
       subheader={parentLink}
       footer={shouldRenderDetailFooter ? { content: detailFooter } : undefined}
@@ -2169,7 +2237,7 @@ function ConversationDetail({
           }}
         />
       </div>
-    </DetailPaneShell>
+    </ChatDetailFrame>
   );
 }
 
@@ -2367,61 +2435,66 @@ function LiveSessionDetail({
   }, [control?.conversation_id]);
 
   const controlPresentation = control ? conversationControlPresentation(control) : null;
+  const detailHeader = (
+    <DetailPaneHeader
+      variant="compact"
+      title={session.label || 'Untitled session'}
+      titleTooltip={session.label || 'Untitled session'}
+      metadata={(
+        <div className="chat-live-detail__meta">
+          <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
+          <span>{getAgentLabel(session.agent_type)}</span>
+          {session.owner && (
+            <span>{session.owner.display_name} · {session.owner.kind}</span>
+          )}
+          <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
+          <span title={session.transport_badge?.title}>
+            {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
+          </span>
+          {session.identity_mismatch && (
+            <span
+              className="chat-live-detail__identity-warning"
+              title={session.identity_mismatch.message}
+            >
+              ⚠ identity mismatch
+            </span>
+          )}
+        </div>
+      )}
+    />
+  );
 
   return (
-    <div className="chat-live-detail">
-      <div className="chat-live-detail__header">
-        <div className="chat-live-detail__title-group">
-          <h2 className="chat-live-detail__title">{session.label || 'Untitled session'}</h2>
-          <div className="chat-live-detail__meta">
-            <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
-            <span>{getAgentLabel(session.agent_type)}</span>
-            {session.owner && (
-              <span>{session.owner.display_name} · {session.owner.kind}</span>
-            )}
-            <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
-            <span title={session.transport_badge?.title}>
-              {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
-            </span>
-            {/* Issue 499c148 — the session's client token and its session
-                bindings resolve to different users. */}
-            {session.identity_mismatch && (
-              <span
-                className="chat-live-detail__identity-warning"
-                title={session.identity_mismatch.message}
-              >
-                ⚠ identity mismatch
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="chat-live-detail__pane">
-        <TerminalPane
-          sessionId={session.id}
-          agentType={session.agent_type}
-          backendType={session.backend_type}
-          allowedTools={session.allowed_tools}
-          command={session.command ?? session.agent_type}
-          sessionArgs={session.args ?? []}
-          isOperator={session.is_operator}
-          interactionMode={session.interaction_mode}
-          sessionStatus={session.status}
-          transportLane={session.transport_lane}
-          transportBadge={session.transport_badge}
-          attention={session.attention}
-          providerSessionId={session.provider_session_id}
-          conversationControl={control}
-          conversationMessageAnchor={messageAnchor}
-          onConversationControlChange={setControl}
-          isVisible
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-          channelEnabled={!!session.channel_enabled}
-          workspaceMode
-        />
-      </div>
-    </div>
+    <ChatDetailFrame
+      state="live-session"
+      className="chat-live-detail"
+      bodyClassName="chat-live-detail__pane"
+      header={detailHeader}
+    >
+      <TerminalPane
+        sessionId={session.id}
+        agentType={session.agent_type}
+        backendType={session.backend_type}
+        allowedTools={session.allowed_tools}
+        command={session.command ?? session.agent_type}
+        sessionArgs={session.args ?? []}
+        isOperator={session.is_operator}
+        interactionMode={session.interaction_mode}
+        sessionStatus={session.status}
+        transportLane={session.transport_lane}
+        transportBadge={session.transport_badge}
+        attention={session.attention}
+        providerSessionId={session.provider_session_id}
+        conversationControl={control}
+        conversationMessageAnchor={messageAnchor}
+        onConversationControlChange={setControl}
+        isVisible
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        channelEnabled={!!session.channel_enabled}
+        workspaceMode
+      />
+    </ChatDetailFrame>
   );
 }
 
@@ -3454,9 +3527,14 @@ export function ConversationsView({
             session={selectedLiveSession}
           />
         ) : (
-          <div className="chat-history-detail__empty">
-            Select a conversation to view it
-          </div>
+          <ChatDetailFrame
+            state="no-selection"
+            header={<DetailPaneHeader variant="compact" title="Chat" />}
+          >
+            <div className="chat-history-detail__empty">
+              Select a conversation to view it
+            </div>
+          </ChatDetailFrame>
         )}
       </div>
       <NewSessionDialog
