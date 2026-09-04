@@ -229,7 +229,18 @@ async function createOrReusePreview(options) {
     stderrLog,
   });
 
-  const health = await waitForHealth(port, HEALTH_TIMEOUT_MS, stderrLog);
+  const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+  const health = await waitForPreviewReadiness(
+    port,
+    {
+      head: currentHead,
+      dbCopy,
+      sourceDb,
+      previewRoot: preview.root,
+    },
+    HEALTH_TIMEOUT_MS,
+    stderrLog,
+  );
   const metadata = {
     ok: true,
     status: "started",
@@ -941,7 +952,7 @@ async function refreshExistingPreview(existing, details) {
     stderrLog: validated.stderrLog,
   });
 
-  const health = await waitForPreviewRevision(
+  const health = await waitForPreviewReadiness(
     validated.port,
     {
       head: details.currentHead,
@@ -1648,36 +1659,7 @@ function sanitizedLauncherEnv() {
   );
 }
 
-async function waitForHealth(port, timeoutMs, stderrLog) {
-  const start = Date.now();
-  let lastShellFailure = null;
-  while (Date.now() - start < timeoutMs) {
-    const health = await readHealth(port);
-    if (health) {
-      if (!hasExpectedPreviewPolicy(health)) {
-        throw new Error(
-          `Preview on port ${port} became healthy without preview/reject instance policy: ` +
-          `${describePreviewPolicy(health)}`,
-        );
-      }
-      const shellReadiness = await probeApplicationShell(port);
-      if (shellReadiness.ok) return health;
-      lastShellFailure = shellReadiness.reason;
-    }
-    await delay(500);
-  }
-
-  const tail = fs.existsSync(stderrLog)
-    ? fs.readFileSync(stderrLog, "utf8").split(/\r?\n/).slice(-80).join("\n")
-    : "";
-  throw new Error(
-    `Preview did not become healthy with a loadable application shell on port ${port}.` +
-    `${lastShellFailure ? ` Last shell failure: ${lastShellFailure}.` : ""}` +
-    `${tail ? `\nRecent stderr:\n${tail}` : ""}`,
-  );
-}
-
-async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
+export async function waitForPreviewReadiness(port, expected, timeoutMs, stderrLog) {
   const start = Date.now();
   let lastHealth = null;
   let lastShellFailure = null;
@@ -1691,9 +1673,7 @@ async function waitForPreviewRevision(port, expected, timeoutMs, stderrLog) {
           `${describePreviewPolicy(health)}`,
         );
       }
-      if (health.ready === true && health.warm === true &&
-          health.startup_commit?.hash === expected.head &&
-          hasExpectedRefreshHealth(health, expected)) {
+      if (hasExpectedPreviewReadiness(health, expected)) {
         const shellReadiness = await probeApplicationShell(port);
         if (shellReadiness.ok) return health;
         lastShellFailure = shellReadiness.reason;
@@ -1879,8 +1859,12 @@ function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {
   return candidates.length > 0 && candidates.every((candidate) => candidate === expected);
 }
 
-function hasExpectedRefreshHealth(health, expected) {
-  return canonicalPath(health?.instance?.db_path ?? "") === canonicalPath(expected.dbCopy) &&
+function hasExpectedPreviewReadiness(health, expected) {
+  return health?.ready === true &&
+    health?.warm === true &&
+    health?.startup_commit?.hash === expected.head &&
+    hasExpectedPreviewPolicy(health) &&
+    canonicalPath(health?.instance?.db_path ?? "") === canonicalPath(expected.dbCopy) &&
     health?.instance?.db_path_source === "iab-preview-copy" &&
     canonicalPath(health?.instance?.source_db_path ?? "") === canonicalPath(expected.sourceDb) &&
     canonicalPath(health?.file_rpc_dir ?? "") === canonicalPath(path.join(expected.previewRoot, "agent-rpc"));

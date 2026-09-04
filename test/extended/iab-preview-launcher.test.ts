@@ -1486,6 +1486,51 @@ describe("iab-preview launcher", () => {
     expect(entry.reason).not.toContain("passed health and application shell readiness");
   });
 
+  it("keeps fresh-start readiness pending until the exact isolated preview is warm", async () => {
+    const previewRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-start-readiness-"));
+    tempRoots.push(previewRoot);
+    const db = path.join(previewRoot, "current.db");
+    const sourceDb = path.join(previewRoot, "source.db");
+    const head = "b".repeat(40);
+    const health = {
+      ready: true,
+      warm: false,
+      startup_commit: { hash: head, summary: "current", date: "" },
+      instance: {
+        role: "preview",
+        operational_mutations: "reject",
+        preview_browser_enrollment: "allow",
+        db_path: db,
+        db_path_source: "iab-preview-copy",
+        source_db_path: sourceDb,
+      },
+      file_rpc_dir: path.join(previewRoot, "agent-rpc"),
+    };
+    const port = await listenForHealth(health);
+    const source = `
+      const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
+      const health = await launcher.waitForPreviewReadiness(
+        ${port},
+        ${JSON.stringify({ head, dbCopy: db, sourceDb, previewRoot })},
+        5_000,
+        ${JSON.stringify(path.join(previewRoot, "stderr.log"))},
+      );
+      process.stdout.write(JSON.stringify(health));
+    `;
+    const readiness = execFileAsync(process.execPath, ["--input-type=module", "--eval", source], {
+      cwd: process.cwd(), encoding: "utf8",
+    });
+
+    let settled = false;
+    void readiness.then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(settled).toBe(false);
+    health.warm = true;
+
+    const result = await readiness;
+    expect(JSON.parse(result.stdout)).toMatchObject({ ready: true, warm: true });
+  });
+
   it("exchanges the process proof and returns only a verified dashboard session fragment", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
