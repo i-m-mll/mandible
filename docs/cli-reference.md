@@ -45,7 +45,9 @@ mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue 
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
   [--commit-message T] [--diff-summary T] [--spec T | --spec-file F] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
+  [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...
   [--timeout N] [--no-watch] [--force|-f]
+mandible auth withdraw <request-id> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]
 mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon
 
 ## LEDGER MECHANISM CLIENT

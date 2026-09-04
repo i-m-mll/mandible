@@ -55,7 +55,7 @@ curl -N "http://localhost:19420/api/events?topic=auth:&topic=session:"
 curl -N "http://localhost:19420/api/events?topic=auth:,session:"
 ```
 
-Topic matching is prefix-based: `topic=auth:` matches `auth:new`, `auth:resolved`, `auth:deleted`, `auth:output`, and any other event whose type starts with `auth:`.
+Topic matching is prefix-based: `topic=auth:` matches `auth:new`, `auth:resolved`, `auth:lifecycle`, `auth:output`, and any other event whose type starts with `auth:`.
 
 Without a topic parameter, the client receives all events.
 
@@ -88,8 +88,8 @@ curl -N -X POST http://localhost:19420/api/events/subscribe \
 | Event | Description | Data |
 |---|---|---|
 | `auth:new` | New auth request submitted | Auth request object |
-| `auth:resolved` | Request completed, rejected, expired, or dismissed | Auth request object |
-| `auth:deleted` | Request deleted from the queue | `{ id, reason }` |
+| `auth:resolved` | Request completed, rejected, expired, withdrawn, or was superseded | Auth request object |
+| `auth:lifecycle` | Immutable lifecycle revision appended | Request ID, transition, reason, and related request when applicable |
 | `auth:output` | Execution output chunk (stdout/stderr during merge) | `{ request_id, stream, text }` |
 
 ### `console:` --- Console sessions

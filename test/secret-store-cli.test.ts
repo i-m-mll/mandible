@@ -23,6 +23,7 @@ let argvLog = "";
 let securityStub = "";
 let server: http.Server | null = null;
 let authHeaders: string[] = [];
+let requestAuth: Array<{ method: string; url: string; auth: string }> = [];
 
 /**
  * A fake keychain tool with the fidelity these tests need. Items are stored one
@@ -254,6 +255,7 @@ beforeEach(() => {
   argvLog = path.join(stubDir, "argv.log");
   fs.writeFileSync(argvLog, "");
   authHeaders = [];
+  requestAuth = [];
   writeSecurityStub();
   writeUnameStub("Darwin");
 });
@@ -649,6 +651,7 @@ interface FakeUser {
   slug: string;
   kind: string;
   appNames?: string[];
+  whoamiAuthenticated?: boolean;
 }
 
 const MINTED_TOKEN = "mandible_pat_test-token-value";
@@ -657,6 +660,20 @@ async function startUserServer(user: FakeUser, requests: string[]): Promise<numb
   server = http.createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
     if (req.headers.authorization) authHeaders.push(req.headers.authorization);
+    requestAuth.push({
+      method: req.method ?? "",
+      url: req.url ?? "",
+      auth: req.headers.authorization ?? "",
+    });
+    if (req.method === "GET" && req.url === "/api/client-auth/whoami") {
+      const authenticated = user.whoamiAuthenticated !== false && Boolean(req.headers.authorization);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        authenticated,
+        user: authenticated ? { id: `user-${user.slug}`, slug: user.slug, kind: user.kind } : null,
+      }));
+      return;
+    }
     if (req.method === "GET" && req.url?.startsWith("/api/users") && !req.url.startsWith("/api/users/")) {
       // The list route, used by the reader-path trace test.
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -718,9 +735,10 @@ function cliEnv(port: number): NodeJS.ProcessEnv {
 function runCli(
   args: string[],
   port: number,
+  env: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(CLI, args, { cwd: process.cwd(), env: cliEnv(port) });
+    const child = spawn(CLI, args, { cwd: process.cwd(), env: { ...cliEnv(port), ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -734,6 +752,162 @@ function runCli(
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
 }
+
+describe("direct CLI agent credential resolution", () => {
+  function userListRequest() {
+    return requestAuth.find((request) => request.method === "GET" && request.url === "/api/users");
+  }
+
+  it("loads the Codex Keychain credential for a direct CODEX_SESSION_ID invocation", async () => {
+    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    const port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
+
+    const result = await runCli(["user", "list", "--json"], port, {
+      CODEX_SESSION_ID: "codex-session",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(userListRequest()?.auth).toBe("Bearer codex-keychain-token");
+    expect(fs.readFileSync(argvLog, "utf8")).not.toContain("codex-keychain-token");
+  });
+
+  it("uses CODEX_SESSION_ID for the shared ambient provider and session identity", () => {
+    const resolved = runSeam(
+      "bash",
+      'printf "%s|%s" "$(api_ambient_provider)" "$(api_ambient_session_id)"',
+      { CODEX_SESSION_ID: "codex-session" },
+    );
+    expect(resolved.status, resolved.stderr).toBe(0);
+    expect(resolved.stdout).toBe("codex|codex-session");
+  });
+
+  it("accepts duplicate markers for one provider and rejects cross-provider ambiguity", async () => {
+    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    seedItem("mandible-operator", "mll", "operator-token");
+    let port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
+
+    let result = await runCli(["user", "list", "--json"], port, {
+      CODEX_THREAD_ID: "thread-id",
+      CODEX_SESSION_ID: "session-id",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(userListRequest()?.auth).toBe("Bearer codex-keychain-token");
+
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+    requestAuth = [];
+    port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
+    result = await runCli(["user", "list", "--json"], port, {
+      CODEX_THREAD_ID: "thread-id",
+      CLAUDE_SESSION_ID: "claude-id",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(userListRequest()?.auth).toBe("");
+  });
+
+  it("preserves a verified inherited agent token without reading the Keychain secret", async () => {
+    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    const port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
+
+    const result = await runCli(["user", "list", "--json"], port, {
+      CODEX_THREAD_ID: "thread-id",
+      MANDIBLE_TOKEN: "inherited-agent-token",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(requestAuth.find((request) => request.url === "/api/client-auth/whoami")?.auth)
+      .toBe("Bearer inherited-agent-token");
+    expect(userListRequest()?.auth).toBe("Bearer inherited-agent-token");
+    expect(fs.readFileSync(argvLog, "utf8")).not.toContain(" -w");
+  });
+
+  it.each([
+    ["human", { slug: "mll", kind: "human" }],
+    ["mismatched", { slug: "other-agent", kind: "agent" }],
+    ["invalid", { slug: "codex-agent", kind: "agent", whoamiAuthenticated: false }],
+  ] as const)("rejects inherited %s identity without Keychain or operator fallback", async (_case, user) => {
+    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    seedItem("mandible-operator", "mll", "operator-token");
+    const port = await startUserServer(user, []);
+
+    const result = await runCli(["user", "list", "--json"], port, {
+      CODEX_THREAD_ID: "thread-id",
+      MANDIBLE_TOKEN: "rejected-inherited-token",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(userListRequest()?.auth).toBe("");
+    expect(result.stderr).toContain("ignoring inherited MANDIBLE_TOKEN");
+    expect(result.stderr).not.toContain("rejected-inherited-token");
+    expect(result.stderr).not.toContain("codex-keychain-token");
+    expect(result.stderr).not.toContain("operator-token");
+  });
+
+  it("rejects an inherited token when identity verification is unavailable", () => {
+    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    const result = runSeam("bash", "api_client_token GET", {
+      CODEX_SESSION_ID: "codex-session",
+      MANDIBLE_TOKEN: "unavailable-inherited-token",
+      MANDIBLE_BASE: "http://127.0.0.1:1",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("ignoring inherited MANDIBLE_TOKEN");
+    expect(result.stderr).not.toContain("unavailable-inherited-token");
+    expect(result.stderr).not.toContain("codex-keychain-token");
+  });
+
+  it.each(["missing", "locked"])("does not use operator credentials when the agent Keychain item is %s", async (state) => {
+    seedItem("mandible-operator", "mll", "operator-token");
+    const port = await startUserServer({ slug: "codex-agent", kind: "agent" }, []);
+
+    const result = await runCli(["user", "list", "--json"], port, {
+      CODEX_SESSION_ID: "codex-session",
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+      MANDIBLE_TEST_SECURITY_FAIL: state === "locked" ? "attributes" : "",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(userListRequest()?.auth).toBe("");
+  });
+
+  it("preserves operator Keychain behavior in an unmarked human shell", async () => {
+    seedItem("mandible-operator", "mll", "operator-token");
+    const port = await startUserServer({ slug: "mll", kind: "human" }, []);
+
+    const result = await runCli(["user", "list", "--json"], port, {
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(userListRequest()?.auth).toBe("Bearer operator-token");
+  });
+
+  it.each(["", "inherited-agent-token"])("does not project %s agent credentials into file transport", (inherited) => {
+    seedItem("mandible-agent-codex", "codex-agent", "codex-keychain-token");
+    const result = runSeam(
+      "bash",
+      'api_client_token POST; printf "|source=%s" "$API_CLIENT_CREDENTIAL_SOURCE"',
+      {
+        CODEX_SESSION_ID: "codex-session",
+        MANDIBLE_BASE: `file://${path.join(homeDir, "spool")}`,
+        MANDIBLE_TOKEN: inherited,
+        MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("|source=");
+    if (inherited) expect(result.stderr).not.toContain(inherited);
+  });
+});
 
 /**
  * Run the CLI with a controlling terminal. `security` collects a missing

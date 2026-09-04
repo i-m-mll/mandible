@@ -200,19 +200,48 @@ api_client_auth_config_dir() {
 # credential (which would silently collapse agent attribution into the human
 # operator). Returns success (0) when a marker is present.
 #
-# This is the same family of markers that fences agents off the bootstrap file
-# below, plus CLAUDE_CODE_SESSION_ID: a durable operator credential is far more
-# sensitive than the one-shot enrollment proof, so it is also withheld from
-# native Claude Code sessions. The bootstrap-file guard is deliberately left as
-# a9ede3c defined it (without CLAUDE_CODE_SESSION_ID) to avoid regressing the
-# operator enrollment flow (e.g. `mandible dashboard-link`).
+# This marker family is intentionally broader than the provider resolver below:
+# generic managed/session markers still fence off operator credentials even
+# when they do not identify a provider-specific agent account.
 api_managed_client_markers_present() {
-  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+}
+
+# Resolve one provider from ambient provider markers plus an optional explicit
+# provider hint (used by wrap.sh). Duplicate markers for one provider are fine;
+# markers naming different providers are ambiguous and deliberately resolve to
+# nothing. The hint participates in the same ambiguity check.
+api_agent_provider() {
+  local hint="${1:-}" provider="" count=0
+  local has_codex=0 has_claude=0 has_gemini=0
+  [[ -z "$hint" ]] || secret_material_valid "$hint" || return 1
+
+  [[ -z "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}" ]] || has_codex=1
+  [[ -z "${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}" ]] || has_claude=1
+  [[ -z "${GEMINI_SESSION_ID:-}" ]] || has_gemini=1
+
+  if [[ -n "$hint" ]]; then
+    case "$hint" in
+      codex) has_codex=1 ;;
+      claude) has_claude=1 ;;
+      gemini) has_gemini=1 ;;
+      *) provider="$hint" ;;
+    esac
+  fi
+
+  (( has_codex == 0 )) || { provider="codex"; count=$(( count + 1 )); }
+  (( has_claude == 0 )) || { provider="claude"; count=$(( count + 1 )); }
+  (( has_gemini == 0 )) || { provider="gemini"; count=$(( count + 1 )); }
+  if [[ -n "$hint" && "$hint" != "codex" && "$hint" != "claude" && "$hint" != "gemini" ]]; then
+    count=$(( count + 1 ))
+  fi
+  (( count == 1 )) || return 1
+  printf '%s' "$provider"
 }
 
 # ── Secret backend seam (issue e2cb93f) ──────────────────────────────────────
 # One place that knows how OS secret storage is reached, so readers (this file's
-# operator token, cli/wrap.sh's per-agent token) and the writer
+# operator and per-agent token resolver) and the writer
 # (`mandible user token mint --store`) share a single dispatch point instead of
 # each open-coding `security`. It lives in api.sh because api.sh is the helper
 # every CLI entry point already sources; it is otherwise independent of HTTP.
@@ -232,10 +261,10 @@ api_managed_client_markers_present() {
 #
 # Keying contract. An item is identified by (service, account):
 #   - secret_set always writes both, and verifies by reading back both.
-#   - secret_get takes the account as an optional second argument. The ambient
-#     readers (api_keychain_operator_token, cli/wrap.sh's inject_agent_token)
-#     deliberately query service-only, because they have no user slug in hand
-#     and must keep working with the items the operator created by hand.
+#   - secret_get takes the account as an optional second argument. The operator
+#     reader queries service-only for compatibility with hand-created items;
+#     the agent resolver first reads the service's account and then uses that
+#     exact account for both identity verification and the secret read.
 #   - A service-only lookup resolves to whichever item macOS returns first, so
 #     two items sharing a service but differing in account are ambiguous for
 #     those readers. secret_account_for_service exposes the account a
@@ -515,77 +544,135 @@ api_keychain_operator_token_impl() {
   printf '%s' "$token"
 }
 
-# Resolve the client-auth bearer/capability token, in priority order:
-#   1. MANDIBLE_TOKEN (explicit; honored on every method, including GET).
-#   2. The durable `mandible-operator` keychain credential (git-credential-helper
-#      pattern), for unmarked operator terminals only.
-#   3. The same-user operator bootstrap-token file (filesystem trust, like
-#      file-RPC), an enrollment proof used pre-keychain.
-#
-# Optional $1 is the request method. The two ambient fallbacks are gated
-# differently on reads:
-#   - The keychain token is a durable operator credential and behaves exactly
-#     like an explicit MANDIBLE_TOKEN: it attaches on ALL methods, GET included.
-#     A durable token on reads is fine and matches explicit-token behavior.
-#   - The bootstrap token is a one-shot enrollment proof, not a read credential,
-#     so it must NOT attach on GET (issue a9ede3c defect 2): an unmarked
-#     background poller (observed: a ~10-30s GET /api/settings loop) would
-#     otherwise consume the one-shot key on sight and block enrollment. Callers
-#     that need the bootstrap directly for enrollment (e.g. dashboard-link) pass
-#     no method and keep the fallback.
-#
-# Keychain is tried before bootstrap: a durable credential beats a one-shot
-# enrollment proof, so once the operator is enrolled the bootstrap fallback only
-# ever fires pre-enrollment. Both ambient fallbacks are fenced off managed
-# agents by api_managed_client_markers_present.
-api_client_token() {
+# Verify one inherited agent token without entering the normal API helper path.
+# This must stay low-level: api_http_exchange calls api_client_token, so using it
+# (or api_capture/api_request) here would recurse. The bearer is staged only in
+# the existing 0600 temporary-file seam and the probe is a single bounded curl.
+api_inherited_agent_token_matches() {
+  local token="$1" account="$2" cfg="" out="" http_status="" curl_rc=0 matches_rc=1
+  api_is_file_rpc && return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  cfg="$(api_temp_file)" || return 1
+  out="$(api_temp_file)" || { rm -f "$cfg"; return 1; }
+  printf 'header = "Authorization: Bearer %s"\n' "$token" > "$cfg"
+  http_status=$(curl -s --max-time 2 \
+    --config "$cfg" -o "$out" -w '%{http_code}' \
+    "$(api_base)/api/client-auth/whoami" 2>/dev/null) || curl_rc=$?
+  if [[ "$curl_rc" -eq 0 && "$http_status" =~ ^2 ]] \
+      && jq -e --arg account "$account" \
+        '.authenticated == true and .user.kind == "agent" and .user.slug == $account' \
+        "$out" >/dev/null 2>&1; then
+    matches_rc=0
+  fi
+  rm -f "$cfg" "$out"
+  return "$matches_rc"
+}
+
+api_warn_rejected_inherited_agent_token() {
+  printf 'mandible: ignoring inherited MANDIBLE_TOKEN for %s agent context because its identity could not be verified against the matching Keychain account; no fallback credential was attached.\n' \
+    "$1" >&2
+}
+
+# Resolve the client-auth bearer/capability token and record its source in the
+# two globals below. Agent contexts use one fail-closed policy for direct CLI
+# and wrap.sh calls. Human shells retain the existing priority order.
+API_CLIENT_CREDENTIAL_TOKEN=""
+API_CLIENT_CREDENTIAL_SOURCE=""
+
+api_resolve_client_credential() {
   local traced=0 rc=0
   case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
-  api_client_token_impl "$@"
+  api_resolve_client_credential_impl "$@"
   rc=$?
   (( traced == 0 )) || set -x
   return "$rc"
 }
 
-# Suspension covers the whole body, not just the keychain capture: every branch
-# here either echoes a token or captures one, and the bootstrap-file read is as
-# sensitive as the keychain read.
-api_client_token_impl() {
-  local method="${1:-}"
-  if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
-    printf '%s' "$MANDIBLE_TOKEN"
-    return
-  fi
-  # Durable operator keychain credential: like an explicit token, it applies to
-  # every method (including GET), unlike the enrollment-only bootstrap below.
-  if ! api_managed_client_markers_present; then
-    local keychain_token
-    keychain_token="$(api_keychain_operator_token)"
-    if [[ -n "$keychain_token" ]]; then
-      printf '%s' "$keychain_token"
-      return
+api_resolve_client_credential_impl() {
+  local method="${1:-}" provider_hint="${2:-}" provider="" service="" account="" token=""
+  API_CLIENT_CREDENTIAL_TOKEN=""
+  API_CLIENT_CREDENTIAL_SOURCE=""
+
+  if provider="$(api_agent_provider "$provider_hint")"; then
+    # File transport deliberately receives no automatically projected agent
+    # bearer: unlike HTTP, the token would become durable spool-file content.
+    if api_is_file_rpc; then
+      [[ -z "${MANDIBLE_TOKEN:-}" ]] || api_warn_rejected_inherited_agent_token "$provider"
+      return 0
     fi
+    service="mandible-agent-$provider"
+    account="$(secret_account_for_service "$service")" || {
+      [[ -z "${MANDIBLE_TOKEN:-}" ]] || api_warn_rejected_inherited_agent_token "$provider"
+      return 0
+    }
+    secret_material_valid "$account" || {
+      [[ -z "${MANDIBLE_TOKEN:-}" ]] || api_warn_rejected_inherited_agent_token "$provider"
+      return 0
+    }
+    if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
+      if api_inherited_agent_token_matches "$MANDIBLE_TOKEN" "$account"; then
+        API_CLIENT_CREDENTIAL_TOKEN="$MANDIBLE_TOKEN"
+        API_CLIENT_CREDENTIAL_SOURCE="inherited"
+      else
+        api_warn_rejected_inherited_agent_token "$provider"
+      fi
+      return 0
+    fi
+    [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]] && return 0
+    token="$(secret_get "$service" "$account")" || return 0
+    [[ -n "$token" ]] || return 0
+    API_CLIENT_CREDENTIAL_TOKEN="$token"
+    API_CLIENT_CREDENTIAL_SOURCE="keychain"
+    return 0
   fi
-  # Do not attach the enrollment bootstrap proof to read-only requests: an
-  # unmarked background poller (observed: a ~10-30s GET /api/settings loop)
-  # would otherwise consume the one-shot key on sight and block enrollment.
-  if [[ "$method" == "GET" ]]; then
-    return
+
+  # An explicit provider hint or any managed-client marker with no unique
+  # provider is an agent context whose credential identity is ambiguous.
+  if [[ -n "$provider_hint" ]] || api_managed_client_markers_present; then
+    [[ -z "${MANDIBLE_TOKEN:-}" ]] || api_warn_rejected_inherited_agent_token "ambiguous"
+    return 0
   fi
-  # Managed agents must receive their own explicit token from the spawner.
-  # Falling back to the operator bootstrap credential would silently collapse
-  # agent attribution into the human operator. This guard is intentionally the
-  # a9ede3c bootstrap marker set (no CLAUDE_CODE_SESSION_ID); do not swap it for
-  # api_managed_client_markers_present, which fences the keychain more strictly.
-  if [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]; then
-    return
+
+  if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
+    API_CLIENT_CREDENTIAL_TOKEN="$MANDIBLE_TOKEN"
+    API_CLIENT_CREDENTIAL_SOURCE="inherited"
+    return 0
   fi
+  token="$(api_keychain_operator_token)"
+  if [[ -n "$token" ]]; then
+    API_CLIENT_CREDENTIAL_TOKEN="$token"
+    API_CLIENT_CREDENTIAL_SOURCE="keychain"
+    return 0
+  fi
+  [[ "$method" == "GET" ]] && return 0
   local token_file line
   token_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
   if [[ -r "$token_file" ]]; then
     IFS= read -r line < "$token_file" || true
-    printf '%s' "$line"
+    API_CLIENT_CREDENTIAL_TOKEN="$line"
+    [[ -z "$line" ]] || API_CLIENT_CREDENTIAL_SOURCE="bootstrap"
   fi
+}
+
+# Resolve the client-auth bearer/capability token, in priority order:
+#   1. In agent contexts, a verified inherited token or that provider's
+#      Keychain token, with no operator/bootstrap fallback.
+#   2. In human shells, MANDIBLE_TOKEN, the durable operator Keychain token,
+#      then the same-user operator bootstrap enrollment proof.
+#
+# Optional $1 is the request method. In an unmarked human shell the bootstrap
+# proof stays off GET requests so background reads cannot consume one-shot
+# enrollment. Agent contexts never receive operator or bootstrap credentials.
+api_client_token() {
+  local traced=0 rc=0
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  api_resolve_client_credential "$@"
+  rc=$?
+  [[ -z "$API_CLIENT_CREDENTIAL_TOKEN" ]] || printf '%s' "$API_CLIENT_CREDENTIAL_TOKEN"
+  (( traced == 0 )) || set -x
+  return "$rc"
 }
 
 api_file_rpc_dir() {
@@ -782,25 +869,17 @@ api_http_exchange() {
 }
 
 api_ambient_provider() {
-  if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
-    printf 'codex'
-  elif [[ -n "${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}" ]]; then
-    printf 'claude'
-  elif [[ -n "${GEMINI_SESSION_ID:-}" ]]; then
-    printf 'gemini'
-  fi
+  api_agent_provider
 }
 
 api_ambient_session_id() {
-  if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
-    printf '%s' "$CODEX_THREAD_ID"
-  elif [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
-    printf '%s' "$CLAUDE_CODE_SESSION_ID"
-  elif [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
-    printf '%s' "$CLAUDE_SESSION_ID"
-  elif [[ -n "${GEMINI_SESSION_ID:-}" ]]; then
-    printf '%s' "$GEMINI_SESSION_ID"
-  fi
+  local provider
+  provider="$(api_agent_provider)" || return 0
+  case "$provider" in
+    codex) printf '%s' "${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}" ;;
+    claude) printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" ;;
+    gemini) printf '%s' "${GEMINI_SESSION_ID:-}" ;;
+  esac
 }
 
 api_curl_ambient_headers() {

@@ -109,6 +109,7 @@ describe("auth request action schema", () => {
         "updated_at",
         "applied_at",
         "outcome_detail",
+        "replacement_action_id",
       ]);
       expect(tableColumns(db, "auth_requests")).toEqual(
         expect.arrayContaining([

@@ -2580,7 +2580,9 @@ describe('AuthQueueView', () => {
     expect(secondItem).toBeTruthy();
     fireEvent.click(secondItem as Element);
     await waitFor(() => expect(screen.getAllByText('Second auth').length).toBeGreaterThan(0));
-    expect(screen.getByText('Force Dismiss')).toBeTruthy();
+    expect(screen.queryByText('Force Dismiss')).toBeNull();
+    expect(screen.getByText('Approve')).toBeTruthy();
+    expect(screen.getByText('Reject')).toBeTruthy();
   });
 
   it('shows a clear diff empty state when diff stats exist without diff text', () => {
@@ -7049,7 +7051,7 @@ describe('conversation instruction message labels', () => {
 describe('SSE handling', () => {
   it('refetches canonical auth projections for every dependency transition event', () => {
     expect([
-      'auth:new', 'auth:updated', 'auth:merged', 'auth:resolved', 'auth:finalized', 'auth:deleted',
+      'auth:new', 'auth:updated', 'auth:merged', 'auth:resolved', 'auth:finalized', 'auth:lifecycle',
     ].every(authEventRequiresProjectionRefresh)).toBe(true);
     expect(authEventRequiresProjectionRefresh('auth:output')).toBe(false);
   });

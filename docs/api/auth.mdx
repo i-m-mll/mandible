@@ -6,7 +6,7 @@ The auth queue manages protected-branch merges and other authenticated actions. 
 
 Auth request types: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `data-delete`.
 
-Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `completed`, `rejected`, `expired`, `dismissed`.
+Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `completed`, `rejected`, `withdrawn`, `superseded`, `expired`, and legacy `dismissed`.
 
 ## Endpoints
 
@@ -72,6 +72,8 @@ Submit a new auth request.
 | `issues` | string[] | no | Legacy close-on-merge issue IDs; prefer `issue_closures` |
 | `depends_on_id` | string | no | Auth request ID that must complete first |
 | `execution_mode` | string | no | `daemon` or `remote` |
+| `supersedes_request_id` | string | no | Exact pending request to supersede atomically |
+| `superseded_action_dispositions` | object[] | no | `{ordinal, reason}` for each staged predecessor action not carried identically |
 
 **Response:** `201 Created`
 
@@ -128,7 +130,10 @@ Get details of a single auth request. Supports prefix matching on the ID.
   "issues": ["abc1234"],
   "depends_on_id": null,
   "depends_on_status": null,
-  "execution_mode": "daemon"
+  "execution_mode": "daemon",
+  "supersedes_request_id": null,
+  "superseded_by_request_id": null,
+  "lifecycle_events": []
 }
 ```
 
@@ -142,9 +147,9 @@ curl http://localhost:19420/api/auth/request/a1b2c3d4
 
 ### PUT /api/auth/request/:id
 
-Update a pending or failed auth request. Only specific fields can be updated.
+Revise a pending auth request. Terminal and executing requests are immutable; submit an explicit replacement for changed reviewed bytes.
 
-**Request body:** Any subset of the fields from POST (except `session_id`). Additionally accepts `status: "pending"` to reset a failed request.
+**Request body:** Any supported mutable metadata subset from POST (except requester identity and supersession fields).
 
 **Response:** `200 OK` with the updated request object.
 
@@ -162,25 +167,7 @@ curl -X PUT http://localhost:19420/api/auth/request/a1b2c3d4 \
 
 ### DELETE /api/auth/request/:id
 
-Delete an auth request. Requires a reason.
-
-**Request body:**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `reason` | string | yes | Reason for deletion |
-
-**Response:** `200 OK`
-
-```json
-{ "request_id": "a1b2c3d4-...", "deleted": true }
-```
-
-```bash
-curl -X DELETE http://localhost:19420/api/auth/request/a1b2c3d4 \
-  -H 'Content-Type: application/json' \
-  -d '{"reason": "Branch was rebased"}'
-```
+Retired. Returns `410 Gone` without changing durable request or lifecycle records.
 
 ### GET /api/auth/queue
 
@@ -270,7 +257,7 @@ the clearance, signer lease, requester credential, and snapshot digest.
 
 ### POST /api/auth/request/:id/reject
 
-Reject an auth request.
+Operator-only rejection of a pending request. This is distinct from requester withdrawal.
 
 **Request body:**
 
@@ -291,7 +278,7 @@ Skip an auth request (defer for later).
 **Response:** `200 OK`
 
 ```json
-{ "request_id": "...", "status": "dismissed" }
+{ "request_id": "...", "status": "pending" }
 ```
 
 ### POST /api/auth/request/:id/retry
@@ -314,15 +301,19 @@ Requeue an auth request.
 { "request_id": "...", "status": "pending" }
 ```
 
-### POST /api/auth/request/:id/dismiss
+### POST /api/auth/request/:id/withdraw
 
-Dismiss an auth request.
+Withdraw a pending request. The caller must be the recorded requester with the exact original API-token credential or session identity.
+
+**Request body:** `{ "reason": "required explanation", "session_id": "required for session-origin requests" }`
 
 **Response:** `200 OK`
 
 ```json
-{ "request_id": "...", "status": "dismissed" }
+{ "request_id": "...", "status": "withdrawn" }
 ```
+
+`POST /api/auth/request/:id/dismiss` is retired and returns `410 Gone`.
 
 ### POST /api/auth/request/:id/output
 

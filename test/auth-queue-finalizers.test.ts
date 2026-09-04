@@ -961,7 +961,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("does not auto-dismiss same-branch pending requests with a different recorded head", async () => {
+  it("does not supersede same-branch pending requests with a different recorded head", async () => {
     let now = 2000;
     const db = createMigratedDb();
     db.prepare(
@@ -993,7 +993,7 @@ describe("auth queue", () => {
     const queue = new AuthQueue({ db, now: () => now });
     try {
       // Issue 75f52ac — constructor sweep enqueues Stage 3 finalizers; drain
-      // before asserting finalized / auto-dismiss outcomes.
+      // before asserting finalized / sibling-supersession outcomes.
       await queue.drainFinalizers();
       const pending = queue.getRequest("pending-new-head");
       const completed = queue.getRequest("completed-old-head");
@@ -1006,7 +1006,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("auto-dismisses same-branch pending requests with the same recorded head", async () => {
+  it("supersedes same-branch pending requests with the same recorded head", async () => {
     let now = 2000;
     const db = createMigratedDb();
     db.prepare(
@@ -1037,11 +1037,12 @@ describe("auth queue", () => {
 
     const queue = new AuthQueue({ db, now: () => now });
     try {
-      // Issue 75f52ac — auto-dismiss is a Stage 3 finalizer; drain first.
+      // Issue 75f52ac — sibling supersession is a Stage 3 finalizer; drain first.
       await queue.drainFinalizers();
       const pending = queue.getRequest("pending-same-head");
-      expect(pending?.status).toBe("dismissed");
-      expect(pending?.error).toContain("Auto-dismissed");
+      expect(pending?.status).toBe("superseded");
+      expect(pending?.error).toContain("System supersession");
+      expect(pending?.superseded_by_request_id).toBe("completed-same-head");
     } finally {
       queue.dispose();
       db.close();

@@ -49,6 +49,19 @@ function setDependencyResult(
   ).run(values.status, values.exitCode, values.finalizedAt, id);
 }
 
+function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
+  const seed = queue.submit({ command: "echo ambiguous", title: "Ambiguous dependency seed" });
+  const columns = database.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
+  const names = columns.map(({ name }) => `"${name}"`);
+  const selections = columns.map(({ name }) => name === "id" ? "?" : `"${name}"`);
+  const clone = database.prepare(
+    `INSERT INTO auth_requests (${names.join(", ")}) SELECT ${selections.join(", ")} FROM auth_requests WHERE id = ?`,
+  );
+  clone.run("aaaabbbb-1111-4111-8111-111111111111", seed.id);
+  clone.run("aaaabbbb-2222-4222-8222-222222222222", seed.id);
+  return "aaaabbbb";
+}
+
 describe("auth dependency readiness", () => {
   it("classifies every durable dependency state and permits only finalized success", () => {
     const { db: database, queue } = setup();
@@ -82,15 +95,8 @@ describe("auth dependency readiness", () => {
 
     expect(queue.dependencyForRequest({ depends_on_id: "does-not-exist" })?.state).toBe("missing");
 
-    const first = queue.submit({ command: "echo first", title: "First ambiguous dependency" });
-    const second = queue.submit({ command: "echo second", title: "Second ambiguous dependency" });
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(
-      "aaaabbbb-1111-4111-8111-111111111111", first.id,
-    );
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(
-      "aaaabbbb-2222-4222-8222-222222222222", second.id,
-    );
-    expect(queue.dependencyForRequest({ depends_on_id: "aaaabbbb" })?.state).toBe("ambiguous");
+    const ambiguousPrefix = createAmbiguousRequestPrefix(database, queue);
+    expect(queue.dependencyForRequest({ depends_on_id: ambiguousPrefix })?.state).toBe("ambiguous");
     queue.dispose();
   });
 
@@ -139,16 +145,9 @@ describe("auth dependency readiness", () => {
       .run("missing-dependency", dependent.id);
     expect(() => queue.approve(dependent.id)).toThrow(/is missing/);
 
-    const first = queue.submit({ command: "echo first", title: "First ambiguous approval dependency" });
-    const second = queue.submit({ command: "echo second", title: "Second ambiguous approval dependency" });
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(
-      "ccccdddd-1111-4111-8111-111111111111", first.id,
-    );
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(
-      "ccccdddd-2222-4222-8222-222222222222", second.id,
-    );
+    const ambiguousPrefix = createAmbiguousRequestPrefix(database, queue);
     database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
-      .run("ccccdddd", dependent.id);
+      .run(ambiguousPrefix, dependent.id);
     expect(() => queue.approve(dependent.id)).toThrow(/is ambiguous/);
 
     database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")

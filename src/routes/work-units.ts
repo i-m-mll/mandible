@@ -13,6 +13,9 @@ import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
+import { isOperator } from "../client-auth/authz.js";
+import { resolveProjectRef } from "../ledger/project-registry.js";
+import { PermissionError, requireProjectAccess } from "../permissions/store.js";
 import {
   mapWorkUnitRow as mapRow,
   normalizeWorkUnitSessionId,
@@ -69,6 +72,12 @@ interface PatchInput {
   provider?: string | null;
   provider_session_id?: string | null;
   ambient_identity?: unknown;
+}
+
+interface CustodyAssumeInput {
+  expected_generation?: number;
+  reason?: string;
+  parent_role_checkpoint_id?: string | null;
 }
 
 const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
@@ -177,6 +186,7 @@ export function registerWorkUnitRoutes(
     const repoId = normalizeProjectRepoId(db, body.repo_id);
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
+    const now = Date.now();
     const existing = findExistingClaimWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
 
     if (existing) {
@@ -194,6 +204,14 @@ export function registerWorkUnitRoutes(
         updates.push("provider = ?", "provider_session_id = ?");
         params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
       }
+      const credential = durableCredential(req);
+      if (credential) {
+        const custody = assignInitialCustody(db, existing.id, credential.user_id, credential.credential_id, now);
+        if (!custody.ok) {
+          sendJson(res, 409, { error: custody.error, code: "work_unit_custody_conflict" });
+          return;
+        }
+      }
       if (updates.length > 0) {
         params.push(existing.id);
         db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
@@ -209,11 +227,11 @@ export function registerWorkUnitRoutes(
     }
 
     const id = randomUUID();
-    const now = Date.now();
     const kind = body.kind && ["solo", "partition", "integration"].includes(body.kind)
       ? body.kind
       : "solo";
-    const ownerUserId = resolveSessionOwnerUserId(
+    const credential = durableCredential(req);
+    const ownerUserId = credential?.user_id ?? resolveSessionOwnerUserId(
       db,
       {
         provider_session_envs: ambientIdentity
@@ -227,8 +245,8 @@ export function registerWorkUnitRoutes(
     db.prepare(
       `INSERT INTO work_units (
         id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
-        provider, provider_session_id, created_at, owner_user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
+        provider, provider_session_id, created_at, owner_user_id, owner_credential_id, custody_generation
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       body.issue_id,
@@ -241,7 +259,10 @@ export function registerWorkUnitRoutes(
       ambientIdentity?.provider_session_id ?? null,
       now,
       ownerUserId,
+      null,
+      0,
     );
+    if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
     const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
     sendJson(res, 201, { id, ...ledgerLinkFields(ledgerLink) });
@@ -278,6 +299,14 @@ export function registerWorkUnitRoutes(
     const existing = findExistingActivateWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
 
     if (existing) {
+      const credential = durableCredential(req);
+      if (credential) {
+        const custody = assignInitialCustody(db, existing.id, credential.user_id, credential.credential_id, now);
+        if (!custody.ok) {
+          sendJson(res, 409, { error: custody.error, code: "work_unit_custody_conflict" });
+          return;
+        }
+      }
       // Update to committed state, update timestamps
       const updates: string[] = ["state = 'committed'", "last_commit_at = ?"];
       const params: unknown[] = [now];
@@ -317,7 +346,8 @@ export function registerWorkUnitRoutes(
     } else {
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
-      const ownerUserId = resolveSessionOwnerUserId(
+      const credential = durableCredential(req);
+      const ownerUserId = credential?.user_id ?? resolveSessionOwnerUserId(
         db,
         {
           provider_session_envs: ambientIdentity
@@ -331,8 +361,8 @@ export function registerWorkUnitRoutes(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
           provider, provider_session_id, created_at, activated_at, last_commit_at,
-          owner_user_id, worker_provider_session_id
-        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?)`
+          owner_user_id, worker_provider_session_id, owner_credential_id, custody_generation
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
@@ -346,7 +376,10 @@ export function registerWorkUnitRoutes(
         now,
         ownerUserId,
         body.worker_owner === true ? ambientIdentity!.provider_session_id : null,
+        null,
+        0,
       );
+      if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
       const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
       sendJson(res, 201, { id, state: "committed", ...ledgerLinkFields(ledgerLink) });
@@ -424,6 +457,97 @@ export function registerWorkUnitRoutes(
     );
 
     sendJson(res, 200, { work_units: enriched });
+  }, { fileRpc: "allow" });
+
+  server.post("/api/work-units/:id/custody/assume", (req, res) => {
+    const identity = durableCredential(req);
+    if (!identity) {
+      sendJson(res, 401, { error: "Work-unit custody requires an authenticated durable client credential." });
+      return;
+    }
+    const body = readBody<CustodyAssumeInput>(req);
+    if (!Number.isInteger(body.expected_generation) || !body.reason?.trim()) {
+      sendJson(res, 400, { error: "expected_generation and a non-empty reason are required" });
+      return;
+    }
+    const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(req.params.id) as
+      (ExistingWorkUnit & { repo_id: string; kind: string; owner_user_id: string | null; owner_credential_id: string | null; custody_generation: number; auth_request_id: string | null }) | undefined;
+    if (!row) {
+      sendJson(res, 404, { error: "Work unit not found" });
+      return;
+    }
+    const project = resolveProjectRef(db, row.repo_id);
+    if (!project.ok || !project.project || project.ambiguous) {
+      sendJson(res, 409, { error: "Work-unit project identity is not unique." });
+      return;
+    }
+    try {
+      requireProjectAccess(db, req, project.project.id, "write");
+    } catch (error) {
+      if (error instanceof PermissionError) {
+        sendJson(res, error.status, { error: error.message, code: error.code });
+        return;
+      }
+      throw error;
+    }
+    const credential = db.prepare("SELECT status, user_id FROM user_credentials WHERE id = ?")
+      .get(identity.credential_id) as { status: string; user_id: string } | undefined;
+    if (!credential || credential.status !== "active" || credential.user_id !== identity.user_id) {
+      sendJson(res, 403, { error: "The authenticated credential is not active for this user." });
+      return;
+    }
+    if (row.owner_user_id === identity.user_id && row.owner_credential_id === identity.credential_id) {
+      sendJson(res, 200, { work_unit: mapRow(row as unknown as Record<string, unknown>), unchanged: true });
+      return;
+    }
+    const operatorRecovery = isOperator(db, req.client_identity!);
+    let checkpointId: string | null = null;
+    if (!operatorRecovery) {
+      if (row.kind !== "integration" || !row.ledger_issue_id || !body.parent_role_checkpoint_id) {
+        sendJson(res, 403, { error: "Cross-credential solo custody recovery is operator-only." });
+        return;
+      }
+      const checkpoint = db.prepare(
+        `SELECT id, payload_json FROM ledger_issue_checkpoints
+         WHERE id = ? AND issue_id = ? AND kind = 'parent-role'`,
+      ).get(body.parent_role_checkpoint_id, row.ledger_issue_id) as { id: string; payload_json: string } | undefined;
+      const payload = checkpoint ? JSON.parse(checkpoint.payload_json) as Record<string, unknown> : null;
+      if (!checkpoint || payload?.authenticated_user_id !== identity.user_id ||
+          payload?.authenticated_credential_id !== identity.credential_id) {
+        sendJson(res, 403, { error: "Integration custody transfer requires the caller's audited parent-role checkpoint." });
+        return;
+      }
+      checkpointId = checkpoint.id;
+    }
+    const nextGeneration = Number(row.custody_generation) + 1;
+    const reason = body.reason.trim();
+    try {
+      db.transaction(() => {
+        const changed = db.prepare(`UPDATE work_units
+          SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?
+          WHERE id = ? AND custody_generation = ? AND owner_user_id IS ? AND owner_credential_id IS ?`)
+          .run(identity.user_id, identity.credential_id, nextGeneration, row.id,
+            body.expected_generation, row.owner_user_id, row.owner_credential_id);
+        if (changed.changes !== 1) throw new Error("custody_generation_conflict");
+        db.prepare(`INSERT INTO work_unit_custody_events
+          (id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
+           prior_generation, new_generation, authority_path, parent_role_checkpoint_id,
+           operator_evidence_method, reason, occurred_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(randomUUID(), row.id, row.owner_user_id, row.owner_credential_id,
+            identity.user_id, identity.credential_id, row.custody_generation, nextGeneration,
+            operatorRecovery ? "operator_recovery" : "parent_role_handoff", checkpointId,
+            operatorRecovery ? req.client_identity!.source : null, reason, Date.now());
+      })();
+    } catch (error) {
+      if (error instanceof Error && error.message === "custody_generation_conflict") {
+        sendJson(res, 409, { error: "Work-unit custody changed; refresh and retry.", code: "custody_generation_conflict" });
+        return;
+      }
+      throw error;
+    }
+    const updated = db.prepare("SELECT * FROM work_units WHERE id = ?").get(row.id) as Record<string, unknown>;
+    sendJson(res, 200, { work_unit: mapRow(updated), authority_path: operatorRecovery ? "operator_recovery" : "parent_role_handoff" });
   }, { fileRpc: "allow" });
 
   // GET /api/work-units/:id — single work unit with liveness overlay
@@ -533,6 +657,42 @@ export function registerWorkUnitRoutes(
     const workUnit = mapRow(updatedRow);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
   }, { fileRpc: "allow" });
+}
+
+function durableCredential(req: RequestLike): { user_id: string; credential_id: string } | null {
+  const identity = req.client_identity;
+  return identity?.method === "api_token" && identity.credential_id
+    ? { user_id: identity.user_id, credential_id: identity.credential_id }
+    : null;
+}
+
+function assignInitialCustody(
+  db: ReturnType<typeof getDb>,
+  workUnitId: string,
+  userId: string,
+  credentialId: string,
+  now: number,
+): { ok: true } | { ok: false; error: string } {
+  const current = db.prepare(
+    "SELECT owner_user_id, owner_credential_id, custody_generation, auth_request_id FROM work_units WHERE id = ?",
+  ).get(workUnitId) as { owner_user_id: string | null; owner_credential_id: string | null; custody_generation: number; auth_request_id: string | null };
+  if (current.owner_credential_id === credentialId && current.owner_user_id === userId) return { ok: true };
+  if (current.owner_credential_id || current.auth_request_id) {
+    return { ok: false, error: "Work unit already has durable custody; use an audited custody transfer." };
+  }
+  const next = Number(current.custody_generation) + 1;
+  db.transaction(() => {
+    const changed = db.prepare(`UPDATE work_units SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?
+      WHERE id = ? AND owner_credential_id IS NULL AND auth_request_id IS NULL AND custody_generation = ?`)
+      .run(userId, credentialId, next, workUnitId, current.custody_generation);
+    if (changed.changes !== 1) throw new Error("work_unit_custody_conflict");
+    db.prepare(`INSERT INTO work_unit_custody_events
+      (id, work_unit_id, prior_user_id, prior_credential_id, new_user_id, new_credential_id,
+       prior_generation, new_generation, authority_path, reason, occurred_at)
+      VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'initial_assignment', 'Authenticated work-unit activation.', ?)`)
+      .run(randomUUID(), workUnitId, current.owner_user_id, userId, credentialId, current.custody_generation, next, now);
+  })();
+  return { ok: true };
 }
 
 function workUnitAmbientIdentity(

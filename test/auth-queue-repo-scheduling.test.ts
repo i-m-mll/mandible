@@ -220,7 +220,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     expect(await runFixture(false)).toBe("committed");
   });
 
-  it("auto-dismisses a duplicate sibling recorded under an aliased repo string", async () => {
+  it("supersedes a duplicate sibling recorded under an aliased repo string", async () => {
     let now = 0;
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
@@ -259,7 +259,10 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       queue.approve(completed.id);
       queue.setResult(completed.id, 0, "ok");
       await queue.drainFinalizers();
-      expect(queue.getRequest(sibling.id)?.status).toBe("dismissed");
+      expect(queue.getRequest(sibling.id)).toMatchObject({
+        status: "superseded",
+        superseded_by_request_id: completed.id,
+      });
       queue.dispose();
     } finally {
       db.close();

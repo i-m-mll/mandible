@@ -169,7 +169,7 @@ const AUTH_PROJECTION_EVENTS = new Set([
   'auth:merged',
   'auth:resolved',
   'auth:finalized',
-  'auth:deleted',
+  'auth:lifecycle',
 ]);
 
 export function authEventRequiresProjectionRefresh(type: string): boolean {
@@ -742,7 +742,7 @@ function loadCachedState(): Partial<AppState> {
       cached.authQueue = cached.authQueue.filter((item) => {
         const status = ((item.status || item.state || '') as string).toLowerCase();
         const isResolved =
-          status === 'dismissed' || status === 'rejected' || status === 'expired';
+          status === 'dismissed' || status === 'withdrawn' || status === 'superseded' || status === 'rejected' || status === 'expired';
         if (!isResolved) return true;
         const resolvedAt =
           typeof item.resolved_at === 'number'

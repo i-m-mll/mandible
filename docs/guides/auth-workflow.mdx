@@ -20,7 +20,7 @@ mandible auth request feature/add-dark-mode \
   --no-watch
 ```
 
-The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close.
+The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 
@@ -198,7 +198,7 @@ The auth queue broadcasts an `auth:resolved` SSE event.
 
 ### Auto-Dismiss Duplicates
 
-If there are other pending or failed requests targeting the same branch merge (retries, corrected resubmissions), they're automatically dismissed. The branch has been merged and deleted — approving stale duplicates would waste a YubiKey tap on a branch that no longer exists.
+Other requests are marked `superseded` only when Mandible can prove they identify the same canonical project, protected target, and reviewed head. The successful request is recorded as the explicit relationship target.
 
 ### Work Unit Resolution
 
@@ -266,4 +266,4 @@ curl -s http://localhost:19420/api/auth/queue
 curl -s http://localhost:19420/api/auth/history?limit=10
 ```
 
-The queue endpoint returns pending, approved, executing, needs-rebase, expired, failed, and recently resolved requests — everything the user might need to act on.
+The queue endpoint returns pending, approved, executing, needs-rebase, expired, failed, withdrawn, superseded, and recently resolved requests — everything the user might need to act on.

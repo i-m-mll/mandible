@@ -8,6 +8,7 @@ import { LedgerStore } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
+  isOperator,
   operatorOnlyManagedSessionRoute,
 } from "../client-auth/authz.js";
 import {
@@ -1449,6 +1450,7 @@ export function registerIssueRoutes(
       return;
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+    const identity = req.client_identity;
     const current = buildParentRoleStatus(db, resolved.issue_id);
     // Issue 5b2cdbf: refuse an id Mandible cannot verify. Recording one produced
     // a holder that every liveness check judged dead, so the next coordinator
@@ -1465,9 +1467,9 @@ export function registerIssueRoutes(
     // with its Mandible session id.
     const callerAliases = resolutionAliasIds(sessionId, resolution);
     const callerAlreadyHolds = [...holderAliasIds(liveHolder)].some((id) => callerAliases.has(id));
-    if (liveHolder && !callerAlreadyHolds && !override) {
+    if (liveHolder && !callerAlreadyHolds && (!override || !identity || !isOperator(db, identity))) {
       sendJson(res, 409, {
-        error: "parent role already held by a live session; pass override to retake",
+        error: "parent role already held by a live session; only the operator may displace it",
         live_holder: liveHolder,
         parent_role: current,
       });
@@ -1488,6 +1490,8 @@ export function registerIssueRoutes(
         assumed_at: now,
         override,
         previous_live_holder: liveHolder,
+        authenticated_user_id: identity?.method === "api_token" ? identity.user_id : null,
+        authenticated_credential_id: identity?.method === "api_token" ? identity.credential_id : null,
       },
       actor_type: "mandible_user",
       author_display: "Mandible",

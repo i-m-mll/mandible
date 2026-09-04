@@ -44,9 +44,10 @@ export type MandibleEventType =
   | "auth:output"
   | "auth:merged"
   | "auth:resolved"
+  | "auth:lifecycle"
   | "auth:finalized"
   | "auth:completed"
-  | "auth:deleted"
+  | "auth:lifecycle"
   | "auth:needs_rebase"
   | "channel:session:connected"
   | "channel:session:disconnected"
@@ -130,6 +131,8 @@ export type AuthRequestStatus =
   | "approved"
   | "needs_rebase"
   | "rejected"
+  | "withdrawn"
+  | "superseded"
   | "expired"
   | "completed"
   | "dismissed";
@@ -139,6 +142,8 @@ export type AuthRequestOutcome =
   | "failed"
   | "needs_rebase"
   | "rejected"
+  | "withdrawn"
+  | "superseded"
   | "dismissed"
   | "expired"
   | null;
@@ -189,6 +194,10 @@ export function computeAuthRequestOutcome(
   switch (status) {
     case "rejected":
       return "rejected";
+    case "withdrawn":
+      return "withdrawn";
+    case "superseded":
+      return "superseded";
     case "dismissed":
       return "dismissed";
     case "expired":
@@ -342,6 +351,9 @@ export type WorkUnit = {
   last_commit_at: number | null;
   resolved_at: number | null;
   auth_request_id: string | null;
+  owner_user_id: string | null;
+  owner_credential_id: string | null;
+  custody_generation: number;
 };
 
 export type WorkUnitLiveness = {

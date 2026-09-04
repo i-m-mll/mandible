@@ -685,12 +685,12 @@ describe("auth queue", () => {
         .toThrow(/Hierarchical merge commands cannot be verified/);
       expect(queue.getRequest(hierarchical.id)?.status).toBe("pending");
 
-      const dismissed = submit("dismissed");
-      const dismissedPin = dismissed.merge_candidate_pin_sha!;
-      queue.dismiss(dismissed.id);
-      expect(queue.getRequest(dismissed.id)?.merge_candidate_pin_sha).toBeNull();
-      expect(() => git(repo, ["cat-file", "-e", `${dismissedPin}^{commit}`])).not.toThrow();
-      expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${dismissed.id}`])).toThrow();
+      const rejected = submit("rejected");
+      const rejectedPin = rejected.merge_candidate_pin_sha!;
+      queue.reject(rejected.id);
+      expect(queue.getRequest(rejected.id)?.merge_candidate_pin_sha).toBeNull();
+      expect(() => git(repo, ["cat-file", "-e", `${rejectedPin}^{commit}`])).not.toThrow();
+      expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${rejected.id}`])).toThrow();
       queue.dispose();
     } finally {
       db.close();

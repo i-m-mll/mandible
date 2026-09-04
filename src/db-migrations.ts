@@ -4,6 +4,7 @@ import {
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
+import { createHash } from "node:crypto";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import {
@@ -779,6 +780,113 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE user_settings_v171",
     ],
   },
+  {
+    version: 173,
+    name: "auth_request_immutable_lifecycle",
+    statements: [
+      "ALTER TABLE auth_requests ADD COLUMN supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",
+      "ALTER TABLE auth_requests ADD COLUMN superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",
+      "ALTER TABLE auth_requests ADD COLUMN custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT",
+      "ALTER TABLE work_units ADD COLUMN owner_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT",
+      "ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)",
+      "ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT",
+      `CREATE TABLE auth_request_lifecycle_events (
+        id TEXT PRIMARY KEY,
+        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        event_type TEXT NOT NULL CHECK(event_type IN ('legacy_snapshot','submitted','revised','approved','executing','rejected','withdrawn','superseded','needs_rebase','expired','completed')),
+        prior_status TEXT,
+        next_status TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+        snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256) = 64 AND snapshot_sha256 NOT GLOB '*[^0-9a-f]*'),
+        prior_snapshot_json TEXT CHECK(prior_snapshot_json IS NULL OR json_valid(prior_snapshot_json)),
+        prior_snapshot_sha256 TEXT CHECK(prior_snapshot_sha256 IS NULL OR length(prior_snapshot_sha256) = 64),
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT,
+        evidence_id TEXT,
+        credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        reason TEXT,
+        related_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+        custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT,
+        custody_generation INTEGER,
+        authority_path TEXT CHECK(authority_path IN ('custodian','operator_recovery','system','legacy')),
+        occurred_at INTEGER NOT NULL,
+        UNIQUE(auth_request_id, revision)
+      )`,
+      "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
+      `CREATE TRIGGER auth_request_lifecycle_events_immutable_update
+        BEFORE UPDATE ON auth_request_lifecycle_events
+        BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END`,
+      `CREATE TRIGGER auth_request_lifecycle_events_immutable_delete
+        BEFORE DELETE ON auth_request_lifecycle_events
+        BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END`,
+      `CREATE TABLE work_unit_custody_events (
+        id TEXT PRIMARY KEY,
+        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE RESTRICT,
+        prior_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        prior_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        new_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        new_credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        prior_generation INTEGER NOT NULL,
+        new_generation INTEGER NOT NULL CHECK(new_generation = prior_generation + 1),
+        authority_path TEXT NOT NULL CHECK(authority_path IN ('initial_assignment','parent_role_handoff','operator_recovery')),
+        parent_role_checkpoint_id TEXT REFERENCES ledger_issue_checkpoints(id) ON DELETE RESTRICT,
+        operator_evidence_method TEXT,
+        reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+        occurred_at INTEGER NOT NULL,
+        UNIQUE(work_unit_id, new_generation)
+      )`,
+      `CREATE TRIGGER work_unit_custody_events_immutable_update
+        BEFORE UPDATE ON work_unit_custody_events
+        BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
+      `CREATE TRIGGER work_unit_custody_events_immutable_delete
+        BEFORE DELETE ON work_unit_custody_events
+        BEGIN SELECT RAISE(ABORT, 'work unit custody events are immutable'); END`,
+      `WITH snapshots AS (
+        SELECT ar.*,
+          json_object(
+            'request', json_object(
+              'id', ar.id, 'session_id', ar.session_id, 'requested_by_user_id', ar.requested_by_user_id,
+              'requester_evidence_method', ar.requester_evidence_method,
+              'requester_credential_id', ar.requester_credential_id, 'type', ar.type,
+              'command', ar.command, 'title', ar.title, 'cwd', ar.cwd, 'status', ar.status,
+              'repo', ar.repo, 'base_branch', ar.base_branch, 'head_branch', ar.head_branch,
+              'merge_head_sha', ar.merge_head_sha, 'issue_references', json(ar.issue_references),
+              'issue_closures', json(ar.issue_closures), 'created_at', ar.created_at,
+              'updated_at', ar.updated_at, 'approved_at', ar.approved_at, 'resolved_at', ar.resolved_at,
+              'expires_at', ar.expires_at, 'exit_code', ar.exit_code, 'error', ar.error
+            ),
+            'actions', json(COALESCE((
+              SELECT json_group_array(json(action_json)) FROM (
+                SELECT json_object(
+                  'id', action.id, 'ordinal', action.ordinal, 'kind', action.kind,
+                  'target_issue_ref', action.target_issue_ref, 'payload', json(action.payload),
+                  'state', action.state, 'target_digest', action.target_digest,
+                  'staged_at', action.staged_at, 'updated_at', action.updated_at,
+                  'applied_at', action.applied_at, 'outcome_detail', action.outcome_detail
+                ) AS action_json
+                FROM auth_request_actions action
+                WHERE action.auth_request_id = ar.id
+                ORDER BY action.ordinal, action.id
+              )
+            ), '[]'))
+          ) AS lifecycle_snapshot
+        FROM auth_requests ar
+      )
+      INSERT INTO auth_request_lifecycle_events (
+        id, auth_request_id, revision, event_type, prior_status, next_status,
+        snapshot_json, snapshot_sha256, actor_user_id, evidence_method,
+        credential_id, reason, custody_work_unit_id, custody_generation, authority_path, occurred_at
+      )
+      SELECT
+        lower(hex(randomblob(16))), id, 1, 'legacy_snapshot', NULL, status,
+        lifecycle_snapshot, mandible_sha256(lifecycle_snapshot),
+        NULL, NULL, NULL,
+        'Baseline captured during migration; earlier transition provenance is unknown.',
+        NULL, NULL, 'legacy', updated_at
+      FROM snapshots`,
+    ],
+  },
 ];
 
 /**
@@ -884,6 +992,8 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
 }
 
 export function migrate(db: Db): void {
+  db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+    createHash("sha256").update(String(value)).digest("hex"));
   assertMigrationSequence();
   if (BASELINE_SCHEMA_VERSION !== CURRENT_SCHEMA_VERSION) {
     throw new Error(

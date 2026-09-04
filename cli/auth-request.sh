@@ -57,6 +57,11 @@
 #   --cwd <path>            Override auto-detected protected branch worktree path
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Auth request ID that must complete before this one runs
+#   --supersedes <id>       Atomically replace this exact pending request
+#   --expected-revision <n> Required with --supersedes
+#   --expected-custody-generation <n> Required with --supersedes
+#   --drop-superseded-action <ordinal>:<reason>
+#                           Explicitly dispose one staged predecessor action
 #   --issue <id>            Issue ID to reference for context (repeatable; does not close)
 #   --ref-issue <id>        Alias for --issue
 #   --closes-issue <id>     Issue ID to close on successful merge (repeatable)
@@ -123,6 +128,10 @@ spec_inline_set=0
 spec_file_set=0
 post_merge_handoff=""
 depends_on_id=""
+supersedes_request_id=""
+expected_revision=""
+expected_custody_generation=""
+SUPERSEDED_ACTION_DISPOSITIONS=()
 ISSUE_REFERENCES=()
 ISSUE_CLOSURES=()
 repo=""
@@ -152,6 +161,11 @@ while [[ $# -gt 0 ]]; do
     --dirty-policy)   dirty_policy="$2"; shift 2 ;;
     --dirty-branch-prefix) dirty_branch_prefix="$2"; shift 2 ;;
     --depends-on)     depends_on_id="$2"; shift 2 ;;
+    --supersedes)     supersedes_request_id="$2"; shift 2 ;;
+    --expected-revision) expected_revision="$2"; shift 2 ;;
+    --expected-custody-generation) expected_custody_generation="$2"; shift 2 ;;
+    --drop-superseded-action)
+      SUPERSEDED_ACTION_DISPOSITIONS+=("$2"); shift 2 ;;
     --issue|--ref-issue|--references-issue) ISSUE_REFERENCES+=("$2"); shift 2 ;;
     --closes-issue|--close-issue) ISSUE_CLOSURES+=("$2"); shift 2 ;;
     --promote-briefing)
@@ -250,6 +264,26 @@ if [[ -n "$promote_briefing_group" && "$auth_type" != "merge" ]]; then
   echo "Error: --promote-briefing requires --type merge" >&2
   exit 2
 fi
+if [[ ${#SUPERSEDED_ACTION_DISPOSITIONS[@]} -gt 0 && -z "$supersedes_request_id" ]]; then
+  echo "Error: --drop-superseded-action requires --supersedes" >&2
+  exit 2
+fi
+if [[ -n "$supersedes_request_id" ]] && { [[ ! "$expected_revision" =~ ^[0-9]+$ ]] || [[ ! "$expected_custody_generation" =~ ^[0-9]+$ ]]; }; then
+  echo "Error: --supersedes requires --expected-revision and --expected-custody-generation" >&2
+  exit 2
+fi
+superseded_action_dispositions_json='[]'
+for disposition in ${SUPERSEDED_ACTION_DISPOSITIONS[@]+"${SUPERSEDED_ACTION_DISPOSITIONS[@]}"}; do
+  ordinal="${disposition%%:*}"
+  disposition_reason="${disposition#*:}"
+  if [[ "$ordinal" == "$disposition" || ! "$ordinal" =~ ^[1-9][0-9]*$ || -z "${disposition_reason//[[:space:]]/}" ]]; then
+    echo "Error: --drop-superseded-action must be <positive-ordinal>:<reason>" >&2
+    exit 2
+  fi
+  superseded_action_dispositions_json=$(jq -c \
+    --argjson ordinal "$ordinal" --arg reason "$disposition_reason" \
+    '. + [{ordinal: $ordinal, reason: $reason}]' <<<"$superseded_action_dispositions_json")
+done
 
 # --- Repo config helpers ---
 
@@ -957,6 +991,10 @@ payload=$(jq -nc \
   --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
+  --arg supersedes_request_id "$supersedes_request_id" \
+  --arg expected_revision "$expected_revision" \
+  --arg expected_custody_generation "$expected_custody_generation" \
+  --argjson superseded_action_dispositions "$superseded_action_dispositions_json" \
   --arg session_id "$requester_session_id" \
   --arg target_session_id "$target_session_id" \
   --arg target_repo_root "$target_repo_root" \
@@ -988,6 +1026,10 @@ payload=$(jq -nc \
     issues: $issue_closures,
     actions: $actions,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
+    supersedes_request_id: (if $supersedes_request_id == "" then null else $supersedes_request_id end),
+    expected_revision: (if $expected_revision == "" then null else ($expected_revision | tonumber) end),
+    expected_custody_generation: (if $expected_custody_generation == "" then null else ($expected_custody_generation | tonumber) end),
+    superseded_action_dispositions: $superseded_action_dispositions,
     session_id: (if $session_id == "" then null else $session_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
@@ -1149,7 +1191,7 @@ while IFS= read -r line; do
             printf 'ok' > "$tmp_sse_result"
             break
             ;;
-          rejected|expired|dismissed)
+          rejected|withdrawn|superseded|expired|dismissed)
             error=$(printf '%s' "$json" | jq -r '.data.error // "none"' 2>/dev/null)
             echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
             printf 'fail' > "$tmp_sse_result"
@@ -1186,7 +1228,7 @@ if [[ -n "$final" ]]; then
       echo "Auth request $(api_short_id "$request_id"): completed (exit ${exit_code_val})"
       exit 0
       ;;
-    rejected|expired|dismissed)
+    rejected|withdrawn|superseded|expired|dismissed)
       error=$(printf '%s' "$final" | jq -r '.error // "none"')
       echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
       exit 1

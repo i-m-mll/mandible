@@ -6,7 +6,7 @@ This decouples the agent's work from the moment of authentication. The agent sub
 
 ## Auth Request Types
 
-Every auth request carries a `type` field that describes what kind of operation is being requested. The queue supports seven types:
+Every auth request carries a `type` field that describes what kind of operation is being requested. The queue supports six types:
 
 | Type | Description |
 |------|-------------|
@@ -27,8 +27,9 @@ An auth request moves through a well-defined state machine:
 pending → executing → completed (exit_code 0 = success, non-zero = failure)
 pending → needs_rebase (post-merge revalidation found a new conflict)
 pending → rejected
+pending → withdrawn (exact requester credential or session)
+pending → superseded (one explicit atomic replacement)
 pending → expired (TTL exceeded, default 24 hours)
-pending → dismissed (manually dismissed by user or auto-dismissed after a sibling succeeds)
 completed (failed) → pending (via retry)
 expired → pending (via retry)
 needs_rebase → pending (via retry after rebasing or integration)
@@ -39,10 +40,13 @@ needs_rebase → pending (via retry after rebasing or integration)
 - **pending** — Waiting for the user to act. The request is visible in the dashboard queue.
 - **executing** — The user approved and the command is running. Output streams to the dashboard in real time.
 - **needs_rebase** — Another approved merge changed the target branch and this queued request now conflicts. Rebase or consolidate the branch, then retry the request.
-- **completed** — Execution finished. Check `exit_code`: 0 means success, anything else is a failure. Failed completions stay visible in the queue so the user can retry or dismiss them.
+- **completed** — Execution finished. Check `exit_code`: 0 means success, anything else is a failure. Completed requests are immutable history; a new attempt requires a new request.
 - **rejected** — The user explicitly declined the request.
 - **expired** — The request sat in `pending` for longer than the TTL (24 hours by default) without action. Expiry is checked every 30 seconds.
-- **dismissed** — Removed from the active queue without execution. This happens in two cases: the user manually dismisses it, or a sibling request for the same branch merge succeeded (auto-dismiss).
+- **withdrawn** — The exact original requester withdrew a still-pending request with a reason.
+- **superseded** — An explicit replacement atomically made this request inert, or a successful request proved an exact sibling obsolete.
+
+Every transition appends an immutable revision containing the resulting request/action snapshot, its SHA-256 digest, the prior snapshot when applicable, actor evidence, reason, related request, and timestamp. Migrated historical rows receive an honest baseline snapshot without invented provenance.
 
 ## Submitting Requests
 
@@ -57,7 +61,7 @@ Required fields:
 - `title` — A human-readable description shown in the dashboard.
 
 Key optional fields:
-- `type` — One of the seven auth request types. Defaults to `merge`.
+- `type` — One of the six auth request types. Defaults to `merge`.
 - `session_id` — Links the request to the agent session that submitted it.
 - `repo`, `base_branch`, `head_branch` — Branch metadata for merge requests.
 - `diff_summary` — A text summary of the changes being merged.
@@ -70,10 +74,12 @@ Key optional fields:
 - `issues` — Legacy close-on-merge issue list; prefer `issue_closures`.
 - `depends_on_id` — Another auth request ID that must complete first (dependency chaining).
 - `execution_mode` — `"daemon"` (default, Mandible executes locally) or `"remote"` (an external process manages execution).
+- `supersedes_request_id` — Exact pending predecessor replaced in the same transaction. The requester, canonical project, and protected target must match.
+- `superseded_action_dispositions` — One `{ordinal, reason}` entry for every predecessor action not carried with byte-equivalent semantics.
 
 ### Duplicate Detection
 
-The queue automatically detects duplicate submissions. If an agent accidentally submits the same request twice (retry logic, curl fallback, etc.), the API returns `409 Conflict` with the existing request's ID so the agent can update it via `PUT` instead of creating a duplicate.
+The queue automatically detects duplicate submissions. If an agent accidentally submits the same request twice, the API returns `409 Conflict` with the existing request's ID. A materially changed request must use explicit supersession; Mandible never infers replacement from branch or title similarity.
 
 Duplicates are detected by two signals:
 1. **Same branch pair** — If a pending/approved request already targets the same `head_branch` and `base_branch`, it's a duplicate regardless of which session submitted it.
@@ -113,11 +119,11 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 **Skip** (`POST /api/auth/request/:id/skip`) — Moves the request to the back of the queue without rejecting it. Useful when you want to approve a different request first.
 
-**Dismiss** (`POST /api/auth/request/:id/dismiss`) — Removes the request from the active queue. Unlike rejection, dismissal is silent — no inbox delivery. Used for cleaning up stale or superseded requests.
+**Withdraw** (`POST /api/auth/request/:id/withdraw`) — Lets the exact original requester withdraw its own pending request. A reason is required. API-token requests require the same credential; session requests require the same exact session.
 
 **Retry** (`POST /api/auth/request/:id/retry`) — Resets a failed or expired request back to `pending` with a fresh TTL. The user can then approve it again.
 
-**Delete** (`DELETE /api/auth/request/:id`) — Permanently removes the request from the database. Requires a reason. This is the nuclear option; prefer dismiss for most cases.
+Delete and dismiss are retired lifecycle operations. Their old endpoints return `410 Gone`; request rows and lifecycle receipts remain durable.
 
 ## Execution
 
@@ -258,9 +264,9 @@ Auth requests can declare a dependency on another request via `depends_on_id`. T
 
 Dependencies are informational — Mandible does not enforce ordering automatically. The user is responsible for approving requests in the correct order. However, the dashboard surfaces dependency status so this is straightforward in practice.
 
-## Auto-Dismiss on Success
+## Proven sibling supersession on success
 
-When a merge request completes successfully, Mandible automatically dismisses any other pending, expired, or failed requests targeting the same branch pair. These are stale duplicates — retries, corrected resubmissions — and approving them would waste a YubiKey tap on a branch that has already been merged and deleted. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and appear in the submitting session's inbox.
+When a merge request completes successfully, Mandible marks only proven same-project, same-target, same-head siblings `superseded` and links them to the successful request. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and appear in the submitting session's inbox.
 
 ## Work Unit Resolution
 
@@ -278,7 +284,7 @@ This ensures the queue never gets permanently stuck, even after unclean daemon r
 
 ## Result Delivery
 
-After an auth request resolves (completed, rejected, dismissed, expired), the result is broadcast via SSE (`auth:resolved` event) and delivered to the submitting agent's inbox. The next time the agent starts a session, the session-start hook picks up inbox items and surfaces the result.
+After an auth request resolves (completed, rejected, withdrawn, superseded, expired), the result is broadcast via SSE (`auth:resolved` event) and delivered to the submitting agent's inbox. The next time the agent starts a session, the session-start hook picks up inbox items and surfaces the result.
 
 ## SSE Events
 
@@ -289,5 +295,5 @@ The auth queue broadcasts these SSE event types:
 | `auth:new` | A new request is submitted or a failed request is retried. |
 | `auth:updated` | Request metadata is modified (title, diff, spec, etc.). |
 | `auth:output` | Execution output chunk (stdout/stderr). |
-| `auth:resolved` | Request reached a terminal state (completed, rejected, dismissed, expired). |
-| `auth:deleted` | Request was permanently deleted. |
+| `auth:resolved` | Request reached a terminal state (completed, rejected, withdrawn, superseded, expired). |
+| `auth:lifecycle` | An immutable lifecycle revision was appended. |
