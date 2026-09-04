@@ -16,7 +16,7 @@ import { createUser } from "../../src/users/store.js";
 import { broadcast } from "../../src/sse.js";
 import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings.js";
 import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
-import { createBriefingGroup } from "../../src/feedback/briefing-groups.js";
+import { bindBriefingDestinationOwner, createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 
@@ -89,11 +89,15 @@ describe("plural Briefing routes", () => {
       { artifact_id: string };
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, { name: "Digest Base", briefingRefs: [published.briefing_id], viewer }, 110);
-    const group = createBriefingGroup(db, { name: "Digest", currentBundleRef: bundle.id,
+    const group = createBriefingGroup(db, { key: "digest", name: "Digest", currentBundleRef: bundle.id,
       bundleRefs: [], viewer }, 120);
+    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/destinations`,
+      credential: "human", body: { logical_artifact_ref: logical.artifact_id } })).toMatchObject({
+      status: 201, body: { group: { destinations: [{ logical_artifact_id: logical.artifact_id }] } },
+    });
     const manifest = {
-      schema: "mandible-briefing-destination-routes@1",
-      routes: [{ route_key: "digest.since-last-review", group_ref: `briefing-group:${group.id}`,
+      schema: "mandible-briefing-destination-routes@2",
+      routes: [{ route_key: "digest.since-last-review",
         logical_artifact_ref: logical.artifact_id, heading: "Since last review",
         composer_kind: "agentic", template: { version: 1, contribution_template: "", slots: {} },
         limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 } }],
@@ -159,7 +163,7 @@ describe("plural Briefing routes", () => {
     }, 100);
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, { name: "Base", briefingRefs: [published.briefing_id], viewer }, 110);
-    const group = createBriefingGroup(db, { name: "Archive me", currentBundleRef: bundle.id,
+    const group = createBriefingGroup(db, { key: "archive-me", name: "Archive me", currentBundleRef: bundle.id,
       bundleRefs: [], viewer }, 120);
     expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
       credential: "session:agent-schedule", body: {} })).toMatchObject({ status: 403 });
@@ -372,7 +376,7 @@ describe("plural Briefing routes", () => {
       body: { name: "Configured empty", briefing_refs: [] } });
     const groupedId = (grouped.body as { bundle: { id: string } }).bundle.id;
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
-      body: { name: "Keeps bundle", current_bundle_ref: groupedId, bundle_refs: [] } })).toMatchObject({ status: 201 });
+      body: { key: "keeps-bundle", name: "Keeps bundle", current_bundle_ref: groupedId, bundle_refs: [] } })).toMatchObject({ status: 201 });
     expect(await router.invoke({ method: "DELETE", url: `/api/briefing-bundles/${groupedId}`,
       credential: "human" })).toMatchObject({
       status: 409, body: { code: "briefing_bundle_referenced", reference_kind: "group configuration" },
@@ -694,9 +698,11 @@ describe("plural Briefing routes", () => {
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, { name: "Project Base",
       briefingRefs: [published.briefing_id], viewer });
-    const group = createBriefingGroup(db, { name: "Project", currentBundleRef: bundle.id,
+    const group = createBriefingGroup(db, { key: "project", name: "Project", currentBundleRef: bundle.id,
       bundleRefs: [], viewer });
-    registerBriefingDestinationRoute(db, { route_key: "projects.example.maintenance", group_ref: group.id,
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: logical.artifact_id, groupRef: group.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer);
+    registerBriefingDestinationRoute(db, { route_key: "projects.example.maintenance",
       logical_artifact_id: logical.artifact_id, heading: "Maintenance", composer_kind: "deterministic",
       template_version: 1, contribution_template: "- {{summary}} ([evidence]({{evidence_ref}}))",
       slots: { summary: { type: "string", required: true, max_length: 200 } },
@@ -1063,13 +1069,13 @@ describe("plural Briefing routes", () => {
     expect(ungrouped.status).toBe(201);
 
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "session:agent-schedule",
-      body: { name: "Rejected", bundle_refs: [] } })).toMatchObject({
+      body: { key: "rejected", name: "Rejected", bundle_refs: [] } })).toMatchObject({
       status: 403, body: { code: "briefing_group_publisher_credential_required" },
     });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "agent-schedule",
-      body: { name: "Agent-created empty group", bundle_refs: [] } })).toMatchObject({ status: 201 });
+      body: { key: "agent-created", name: "Agent-created empty group", bundle_refs: [] } })).toMatchObject({ status: 201 });
     const createdGroup = await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
-      body: { name: "Sparse policy", bundle_refs: [bundleId],
+      body: { key: "sparse-policy", name: "Sparse policy", bundle_refs: [bundleId],
         sharing_reason: "Exercise explicit cross-collection group placement" } });
     expect(createdGroup).toMatchObject({ status: 201, body: { group: { name: "Sparse policy",
       updates: [{ id: bundleId, layout: expect.any(Array) }] } } });
@@ -1161,7 +1167,7 @@ describe("plural Briefing routes", () => {
         merge_head_sha: mergeHead,
       } })).toMatchObject({ status: 200, body: { changed: false } });
     const conflict = await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "human",
-      body: { name: "Other", bundle_refs: [bundleId] } });
+      body: { key: "other", name: "Other", bundle_refs: [bundleId] } });
     expect(conflict).toMatchObject({ status: 409, body: {
       code: "briefing_collection_placement_conflict",
       placement_candidates: expect.arrayContaining([expect.objectContaining({
@@ -1169,7 +1175,7 @@ describe("plural Briefing routes", () => {
       })]),
     } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-groups", credential: "session:human",
-      body: { name: "Other", bundle_refs: [bundleId], sharing_reason: "Ephemeral is not durable" } }))
+      body: { key: "other", name: "Other", bundle_refs: [bundleId], sharing_reason: "Ephemeral is not durable" } }))
       .toMatchObject({ status: 403, body: { code: "briefing_collection_sharing_credential_required" } });
     expect(db.prepare(`SELECT reason, actor_user_id, evidence_method FROM briefing_collection_sharing_receipts
       WHERE reason = 'Exercise explicit cross-collection group placement'`).get()).toEqual({

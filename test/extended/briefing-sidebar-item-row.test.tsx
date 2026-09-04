@@ -73,9 +73,11 @@ function Harness({
 
 const groupedUpdates: BriefingGroup = {
   id: '12345678-1234-4123-8123-123456789abc',
+  key: 'release-review',
   name: 'Release review',
   createdAt: 1,
   updatedAt: 2,
+  destinations: [],
   current: {
     id: '00000000-1234-4123-8123-123456789abc',
     name: 'Accepted layout',
@@ -179,7 +181,8 @@ describe('Briefing sidebar row actions', () => {
       id, title, latest_round_id: `round-${id}`, round_count: 1, created_at: 1, updated_at: 1,
     });
     const groups = normalizeBriefingGroups({ groups: [{
-      id: 'group-1', name: 'Review group', created_at: 1, updated_at: 2,
+      id: 'group-1', key: 'review-group', name: 'Review group', created_at: 1, updated_at: 2,
+      destinations: [],
       current: {
         id: 'current-1', name: 'Current', created_at: 1, updated_at: 2,
         layout: [{ kind: 'briefing', briefing: row('baseline', 'Baseline') }],
@@ -222,7 +225,7 @@ describe('Briefing sidebar row actions', () => {
     expect(screen.getByRole('heading', { name: 'Release review' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Base' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
-    expect(screen.getByText('12345678', { selector: '.detail-pane-header__display-ref' })).toBeTruthy();
+    expect(screen.getByText('release-review', { selector: '.detail-pane-header__display-ref' })).toBeTruthy();
     const currentLayout = screen.getByRole('button', { name: 'Show Base layout Accepted layout' });
     const proposedUpdates = screen.getByRole('heading', { name: 'Proposed updates' }).closest('section') as HTMLElement;
     expect(proposedUpdates.contains(currentLayout)).toBe(false);
@@ -288,6 +291,8 @@ describe('Briefing sidebar row actions', () => {
         ready: true,
         blockerCode: null,
         blockerMessage: null,
+        layoutChanged: false,
+        destinationChanges: [],
         items: [{
           position: 0,
           layoutPosition: 0,
@@ -379,6 +384,7 @@ describe('Briefing sidebar row actions', () => {
   it('fails closed across adjacent groups while stale proposal ownership reconciles', () => {
     const saraGroup: BriefingGroup = {
       id: 'aaaaaaaa-1234-4123-8123-123456789abc',
+      key: 'saras-skill-breakdown',
       name: "Sara's skill, breakdown",
       createdAt: 1,
       updatedAt: 2,
@@ -391,6 +397,7 @@ describe('Briefing sidebar row actions', () => {
         layout: [{ kind: 'briefing', briefing: collections[2] }],
       },
       updates: [],
+      destinations: [],
     };
     const selectedGroupUpdateIds = {
       [groupedUpdates.id]: groupedUpdates.updates[1].id,
@@ -451,6 +458,7 @@ describe('Briefing sidebar row actions', () => {
     ];
     const policyGroup: BriefingGroup = {
       id: 'sparse-policy-group',
+      key: 'sparse-testing-policy',
       name: 'Sparse testing policy',
       createdAt: 1,
       updatedAt: 1,
@@ -466,6 +474,7 @@ describe('Briefing sidebar row actions', () => {
         ],
       },
       updates: [],
+      destinations: [],
     };
 
     render(<Harness groups={[policyGroup]} initialViewState={{ pinnedCollectionIds: [] }} />);

@@ -60,8 +60,8 @@ export function briefingRoute(briefingId: string, roundId?: string | null): stri
   return `/#/briefing?${params.toString()}`;
 }
 
-export function briefingGroupRoute(groupId: string): string {
-  return `/#/briefing?${new URLSearchParams({ group: shortRouteId(groupId) }).toString()}`;
+export function briefingGroupRoute(groupKey: string): string {
+  return `/#/briefing?${new URLSearchParams({ group: groupKey }).toString()}`;
 }
 
 export function parseArtifactVersionParam(value: string | undefined): number | null {

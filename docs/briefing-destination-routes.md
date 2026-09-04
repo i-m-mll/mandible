@@ -1,19 +1,18 @@
 # Briefing destination route manifests
 
 Mandible owns recurring Briefing destination identity. An installed scheduler
-declares stable destination routes through the authenticated operator API; it
-does not create route rows, choose a group by title, or reuse a scheduler-owned
-group identifier.
+declares stable destination routes through the authenticated operator API. A
+route names a logical Artifact and section, never a layout. Mandible derives
+the active group from the Artifact's single destination-owner record.
 
 The manifest is JSON:
 
 ```json
 {
-  "schema": "mandible-briefing-destination-routes@1",
+  "schema": "mandible-briefing-destination-routes@2",
   "routes": [
     {
       "route_key": "projects.example.maintenance",
-      "group_ref": "briefing-group:01ABCDEF",
       "logical_artifact_ref": "artifact:01ABCDEFGH",
       "heading": "Maintenance",
       "composer_kind": "deterministic",
@@ -34,11 +33,11 @@ The manifest is JSON:
 }
 ```
 
-`group_ref` must resolve through Mandible's Briefing group identity. The group
-must be active and have a Base bundle containing exactly one active Briefing for
-the logical Artifact named by `logical_artifact_ref`. That Artifact ref must
-resolve as a logical `artifact:` identity; a version, blob, title, or external
-path is not accepted.
+`logical_artifact_ref` must resolve to one logical `artifact:` identity; a
+version, blob, title, or external path is not accepted. That Artifact must have
+one active destination owner, and the owner's Base must contain exactly one
+active Briefing for it. Archived groups never satisfy key or destination
+resolution.
 
 ## Bootstrap order
 
@@ -46,22 +45,29 @@ path is not accepted.
    is present.
 2. Provision the configured operator's durable API token.
 3. Register the destination Artifact, publish its exact initial version as a
-   Briefing, create the Base bundle, and create the Briefing group with that
-   bundle as Base. Retain the canonical refs returned by those commands.
-4. Put those refs in the installed route manifest. Check it without mutation:
+   Briefing, create the Base bundle, and create the Briefing group with an
+   immutable key and that bundle as Base.
+4. Bind the previously unowned Artifact to that group, then put only the
+   Artifact ref and route declaration in the installed manifest:
+
+   ```bash
+   mandible briefing group destination bind <group-key> <artifact-ref> --json
+   ```
+
+5. Check the manifest without mutation:
 
    ```bash
    mandible briefing route plan routes.json --json
    ```
 
-5. Apply the same manifest atomically, then inspect the stored result:
+6. Apply the same manifest atomically, then inspect the stored result:
 
    ```bash
    mandible briefing route apply routes.json --json
    mandible briefing route inspect --json
    ```
 
-6. Only after route installation succeeds, enable the scheduler. Runtime
+7. Only after route installation succeeds, enable the scheduler. Runtime
    publication remains `POST /api/briefings/runs`; there is no alternate or
    fallback publication path.
 
@@ -82,7 +88,9 @@ identity, is `update`. Install an upgrade in this order:
 4. only then deploy or enable scheduler behavior that depends on the new
    template version.
 
-A route key can never move to another group, logical Artifact, heading, or
-composer kind. A template version can never be changed in place, and the active
-version cannot move backwards. Any of those conditions fails the entire
-manifest transaction without partially installing other routes.
+A route key can never move to another logical Artifact, heading, or composer
+kind. The Artifact's destination group may move only inside the same guarded
+configured-human review transaction that accepts the new Base and full layout;
+the binding digest includes the expected owner and the receipt preserves the
+move. A template version can never be changed in place, and the active version
+cannot move backwards. Any conflict fails the transaction without partial work.

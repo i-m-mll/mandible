@@ -4454,12 +4454,14 @@ export type BriefingBundle = {
 
 export type BriefingGroup = {
   id: string;
+  key: string;
   name: string;
   createdAt: number;
   updatedAt: number;
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  destinations: Array<{ logicalArtifactId: string }>;
   reviewCandidates?: BriefingGroupReviewCandidate[];
   history?: BriefingGroupDisposition[];
 };
@@ -4488,6 +4490,12 @@ export type BriefingGroupReviewCandidate = {
   ready: boolean;
   blockerCode: string | null;
   blockerMessage: string | null;
+  layoutChanged: boolean;
+  destinationChanges: Array<{
+    logicalArtifactId: string;
+    expectedGroupId: string | null;
+    resultingGroupId: string;
+  }>;
   items: BriefingGroupReviewItem[];
 };
 
@@ -4571,6 +4579,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
   return rows.map((entry): BriefingGroup | null => {
     const group = briefingRecord(entry);
     const id = briefingString(group.id);
+    const key = briefingString(group.key);
     const name = briefingString(group.name);
     const current = group.current == null ? null : normalizeBriefingBundle(group.current);
     const updates = (Array.isArray(group.updates) ? group.updates : [])
@@ -4609,6 +4618,17 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
         const proposalBundleId = briefingString(row.proposal_bundle_id);
         const items = (Array.isArray(row.items) ? row.items : []).map(parseReviewItem)
           .filter((item): item is BriefingGroupReviewItem => item !== null);
+        const destinationChanges = (Array.isArray(row.destination_changes) ? row.destination_changes : [])
+          .map((entry) => {
+            const change = briefingRecord(entry);
+            const logicalArtifactId = briefingString(change.logical_artifact_id);
+            const resultingGroupId = briefingString(change.resulting_group_id);
+            return logicalArtifactId && resultingGroupId ? {
+              logicalArtifactId,
+              expectedGroupId: briefingOptionalString(change.expected_group_id),
+              resultingGroupId,
+            } : null;
+          }).filter((change): change is NonNullable<typeof change> => change !== null);
         return proposalBundleId ? {
           proposalBundleId,
           expectedBaseBundleId: briefingOptionalString(row.expected_base_bundle_id),
@@ -4617,6 +4637,8 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
           ready: row.ready === true,
           blockerCode: briefingOptionalString(row.blocker_code),
           blockerMessage: briefingOptionalString(row.blocker_message),
+          layoutChanged: row.layout_changed === true,
+          destinationChanges,
           items,
         } : null;
       }).filter((entry): entry is BriefingGroupReviewCandidate => entry !== null);
@@ -4644,14 +4666,20 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
         createdAt: briefingOptionalNumber(row.created_at) ?? 0,
       } : null;
     }).filter((entry): entry is BriefingGroupDisposition => entry !== null);
-    return id && name ? {
+    const destinations = (Array.isArray(group.destinations) ? group.destinations : [])
+      .map((entry) => briefingString(briefingRecord(entry).logical_artifact_id))
+      .filter(Boolean)
+      .map((logicalArtifactId) => ({ logicalArtifactId }));
+    return id && key && name ? {
       id,
+      key,
       name,
       createdAt: briefingOptionalNumber(group.created_at) ?? 0,
       updatedAt: briefingOptionalNumber(group.updated_at) ?? 0,
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      destinations,
       reviewCandidates,
       history,
     } : null;
