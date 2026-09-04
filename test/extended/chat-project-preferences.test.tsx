@@ -107,4 +107,13 @@ describe('Chat project preference migration', () => {
     expect(read).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('status').getAttribute('data-notice')).toContain('another Mandible window');
   });
+
+  it('retains preference read failures in diagnostic state', async () => {
+    vi.spyOn(api, 'getChatShownProjectsPreference').mockRejectedValue(new Error('offline'));
+
+    render(<Probe />);
+
+    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-notice')).toContain('unavailable'));
+    expect(screen.getByRole('status').getAttribute('data-ready')).toBe('false');
+  });
 });
