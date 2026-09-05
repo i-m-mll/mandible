@@ -793,9 +793,14 @@ describe("provider session registration upgrade", () => {
     });
   });
 
-  it("rejects registration when no ingested conversation validates the identity", async () => {
-    const { status } = await registerViaRoute();
-    expect(status).toBe(404);
+  it("returns typed retryable state when no ingested conversation validates the identity", async () => {
+    const { status, body } = await registerViaRoute();
+    expect(status).toBe(409);
+    expect(body).toMatchObject({
+      code: "provider_session_not_ingested",
+      status: "not_yet_ingested",
+      retryable: true,
+    });
     const count = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
     expect(count.n).toBe(0);
   });

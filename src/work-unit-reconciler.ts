@@ -1,6 +1,7 @@
-import { getDb } from "./db.js";
+import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
 import { canonicalRepoKeysForRef } from "./repo-identity.js";
+import { isSessionAliasLive } from "./session-liveness.js";
 import type { Logger } from "./types.js";
 
 /**
@@ -24,9 +25,14 @@ const RECONCILE_INTERVAL_MS = 60_000;
 export class WorkUnitReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: Logger;
+  private readonly sessionIsLive: (db: Db, sessionId: string) => boolean;
 
-  constructor(logger: Logger) {
+  constructor(
+    logger: Logger,
+    options: { sessionIsLive?: (db: Db, sessionId: string) => boolean } = {},
+  ) {
     this.logger = logger;
+    this.sessionIsLive = options.sessionIsLive ?? isSessionAliasLive;
   }
 
   start(): void {
@@ -114,12 +120,22 @@ export class WorkUnitReconciler {
       // Their branch may be temporarily missing (just merged and cleaned up).
       const committed = db
         .prepare(
-          `SELECT wu.id, wu.branch, wu.repo_id, wu.created_at FROM work_units wu
+          `SELECT wu.id, wu.branch, wu.repo_id, wu.created_at,
+                  wu.assigned_session_id, wu.worker_provider_session_id, wu.provider_session_id
+             FROM work_units wu
            WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
              AND wu.auth_request_id IS NULL
            ORDER BY wu.id`
         )
-        .all() as Array<{ id: string; branch: string; repo_id: string; created_at: number }>;
+        .all() as Array<{
+          id: string;
+          branch: string;
+          repo_id: string;
+          created_at: number;
+          assigned_session_id: string | null;
+          worker_provider_session_id: string | null;
+          provider_session_id: string | null;
+        }>;
 
       if (committed.length === 0) return 0;
 
@@ -141,6 +157,14 @@ export class WorkUnitReconciler {
       for (const row of committed) {
         const exists = checkBranch.get(row.branch) as unknown;
         if (!exists) {
+          const sessionId = row.assigned_session_id
+            ?? row.worker_provider_session_id
+            ?? row.provider_session_id;
+          // A scanner miss is not proof that a live task abandoned its work.
+          // The same canonical provider-session authority used by parent-role
+          // and work-unit reads gets first refusal over this destructive state
+          // transition; once the task stops, ordinary branch/auth proof applies.
+          if (sessionId && this.sessionIsLive(db, sessionId)) continue;
           // A branch may be deleted by auth-merge before the successful result
           // reaches Stage 2. Keep it committed while a same-repo request is
           // active, or resolve it here once that request proves success.

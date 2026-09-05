@@ -18,7 +18,14 @@ import type { WorkScanner } from "../work-scanner.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
 import { checkSessionIdentity } from "../identity/session-mismatch.js";
+import {
+  CONVERSATION_SOURCE_TO_PROVIDER,
+  PROVIDER_TO_CONVERSATION_SOURCE,
+  ensureProviderSessionRegistered,
+} from "../provider-session-ingestion.js";
 import { readBody, sendJson } from "./http.js";
+
+export { CONVERSATION_SOURCE_TO_PROVIDER, PROVIDER_TO_CONVERSATION_SOURCE };
 
 function linkSessionLedgerIssue(
   sessionId: string,
@@ -149,15 +156,6 @@ export type SessionResolveResult = {
 // claude, gemini); conversations.source is the ingestion vocabulary
 // (codex, claude_code, gemini). Every store narrowing and every provider
 // derivation goes through this mapping.
-export const PROVIDER_TO_CONVERSATION_SOURCE: Record<string, string> = {
-  codex: "codex",
-  claude: "claude_code",
-  gemini: "gemini",
-};
-export const CONVERSATION_SOURCE_TO_PROVIDER: Record<string, string> = Object.fromEntries(
-  Object.entries(PROVIDER_TO_CONVERSATION_SOURCE).map(([provider, source]) => [source, provider]),
-);
-
 // Minimum prefix length for expansion, matching the 8-char short-ID
 // convention. Shorter refs still resolve by exact match (console session ids
 // can legitimately be short strings) but are never expanded, so a degenerate
@@ -487,6 +485,57 @@ function resolveSessionId(id: string, res: ResponseLike): string | null {
   return null;
 }
 
+const PROVIDER_SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Resolve a link target, materializing an already-ingested provider identity when needed. */
+function resolveSessionIdForIssueLink(
+  id: string,
+  registry: SessionRegistry,
+  res: ResponseLike,
+): string | null {
+  const resolved = resolvePrefix(getDb(), "sessions", "id", id);
+  if (resolved.ok) return resolved.id;
+  if (resolved.error === "ambiguous") {
+    sendJson(res, 409, {
+      error: `Ambiguous prefix '${id}' — matches ${resolved.count} sessions. Use a longer prefix.`,
+      code: "session_ref_ambiguous",
+    });
+    return null;
+  }
+  if (!PROVIDER_SESSION_UUID.test(id)) {
+    sendJson(res, 404, { error: "Session not found", code: "session_not_found" });
+    return null;
+  }
+
+  const registration = ensureProviderSessionRegistered(getDb(), registry, id);
+  if (registration.status === "registered") return registration.session.id;
+  if (registration.status === "not_yet_ingested") {
+    sendJson(res, 409, {
+      error: "Provider session is known only to the caller and has not yet reached Mandible's normalized conversation index.",
+      code: "provider_session_not_ingested",
+      status: registration.status,
+      provider_session_id: id,
+      retryable: true,
+    });
+    return null;
+  }
+  if (registration.status === "ambiguous") {
+    sendJson(res, 409, {
+      error: "Provider session id is claimed by multiple providers.",
+      code: "provider_session_ambiguous",
+      provider_session_id: id,
+      sources: registration.sources,
+    });
+    return null;
+  }
+  sendJson(res, 422, {
+    error: `No provider mapping for conversation source '${registration.source}'`,
+    code: "provider_session_unsupported",
+    provider_session_id: id,
+  });
+  return null;
+}
+
 /**
  * The slice of the client-auth gate the session routes need: ending a session
  * must immediately kill the session-scoped tokens minted for it (issue 0b989d1).
@@ -540,46 +589,35 @@ export function registerSessionRoutes(
       sendJson(res, 400, { error: "Missing provider_session_id" });
       return;
     }
-    const db = getDb();
-    const rows = db.prepare(`
-      SELECT id, source, cwd, branch
-      FROM conversations
-      WHERE session_id = ?
-      ORDER BY updated_at DESC
-    `).all(providerSessionId) as Array<{
-      id: string;
-      source: string;
-      cwd: string | null;
-      branch: string | null;
-    }>;
-    if (rows.length === 0) {
-      sendJson(res, 404, {
-        error: "No ingested conversation for this provider session id — registration requires a validated transcript record.",
-      });
-      return;
-    }
-    const sources = new Set(rows.map((row) => row.source));
-    if (sources.size > 1) {
+    const result = ensureProviderSessionRegistered(getDb(), registry, providerSessionId);
+    if (result.status === "not_yet_ingested") {
       sendJson(res, 409, {
-        error: "Provider session id is claimed by conversations from multiple providers — cannot derive a single provider.",
+        error: "Provider session is not yet present in the normalized conversation index.",
+        code: "provider_session_not_ingested",
+        status: result.status,
+        provider_session_id: providerSessionId,
+        retryable: true,
       });
       return;
     }
-    const provider = CONVERSATION_SOURCE_TO_PROVIDER[rows[0].source];
-    if (!provider) {
-      sendJson(res, 422, { error: `No provider mapping for conversation source '${rows[0].source}'` });
+    if (result.status === "ambiguous") {
+      sendJson(res, 409, {
+        error: "Provider session id is claimed by multiple providers.",
+        code: "provider_session_ambiguous",
+        provider_session_id: providerSessionId,
+        sources: result.sources,
+      });
       return;
     }
-    const meta = rows.find((row) => row.cwd || row.branch) ?? rows[0];
-    // Deterministic id keeps repeat clicks idempotent (registerSession upserts).
-    const session = registry.registerSession({
-      id: `${provider}-${providerSessionId}`,
-      app: provider,
-      conversation_id: providerSessionId,
-      ...(meta.cwd ? { cwd: meta.cwd } : {}),
-      ...(meta.branch ? { branch: meta.branch } : {}),
-    });
-    sendJson(res, 200, { ...session, provider });
+    if (result.status === "unsupported") {
+      sendJson(res, 422, {
+        error: `No provider mapping for conversation source '${result.source}'`,
+        code: "provider_session_unsupported",
+        provider_session_id: providerSessionId,
+      });
+      return;
+    }
+    sendJson(res, 200, { ...result.session, provider: result.provider });
   }, { fileRpc: "deny" });
 
   server.patch("/api/sessions/:id", (req, res) => {
@@ -1228,7 +1266,7 @@ export function registerSessionRoutes(
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
-    const sessionId = resolveSessionId(rawSessionId, res);
+    const sessionId = resolveSessionIdForIssueLink(rawSessionId, registry, res);
     if (!sessionId) return;
     const body = readBody<{ issue_id?: string; repo_id?: string; repo_name?: string }>(req);
     if (!body.issue_id || !body.repo_id) {

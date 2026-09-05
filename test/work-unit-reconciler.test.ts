@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setDb, type Db } from "../src/db.js";
 import type { Logger } from "../src/types.js";
+import { computeWorkUnitLiveness, mapWorkUnitRow } from "../src/work-unit-utils.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 
 let db: Db;
@@ -23,6 +24,9 @@ beforeEach(() => {
       branch TEXT,
       state TEXT NOT NULL,
       assigned_session_id TEXT,
+      provider TEXT,
+      provider_session_id TEXT,
+      worker_provider_session_id TEXT,
       activated_at INTEGER,
       auth_request_id TEXT,
       resolved_at INTEGER,
@@ -121,6 +125,62 @@ describe("work unit reconciler", () => {
     });
     expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-auth")).toEqual({
       state: "committed",
+    });
+  });
+
+  it("does not abandon a missing branch while its exact provider task is live", () => {
+    db.prepare(
+      `INSERT INTO work_units (
+        id, state, branch, repo_id, provider, provider_session_id, worker_provider_session_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "wu-live-provider",
+      "committed",
+      "feature/not-yet-scanned",
+      "repo",
+      "codex",
+      "desktop-task",
+      "desktop-task",
+    );
+
+    new WorkUnitReconciler(() => undefined, {
+      sessionIsLive: (_database, id) => id === "desktop-task",
+    }).reconcile();
+
+    expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-live-provider"))
+      .toEqual({ state: "committed" });
+  });
+
+  it("projects work-unit liveness from the same exact provider identity", () => {
+    const workUnit = mapWorkUnitRow({
+      id: "wu-live-provider",
+      issue_id: "issue",
+      repo_id: "repo",
+      branch: "feature/provider",
+      kind: "solo",
+      state: "committed",
+      provider: "codex",
+      provider_session_id: "desktop-task",
+      worker_provider_session_id: "desktop-task",
+    });
+    const liveness = computeWorkUnitLiveness(db, workUnit, undefined, (_database, id) => ({
+      supplied_id: id,
+      mandible_session_id: null,
+      console_session_id: null,
+      provider_session_id: id,
+      provider: "codex",
+      mandible_status: null,
+      console_status: null,
+      last_activity: "2026-09-05T19:01:00Z",
+      has_live_agent: true,
+    }));
+
+    expect(liveness).toEqual({
+      has_live_agent: true,
+      agent_session_id: "desktop-task",
+      agent_status: "active",
+      is_processing: false,
+      last_activity: Date.parse("2026-09-05T19:01:00Z"),
     });
   });
 

@@ -364,12 +364,20 @@ function currentIssueBodyRevisionId(db: Db, issueId: string): string | null {
  * and meanings for existing readers; the resolved identities are added
  * alongside them.
  */
-function sessionLiveness(db: Db, sessionId: string | null): Record<string, unknown> {
-  const resolved = sessionId ? resolveSessionAlias(db, sessionId) : null;
+type SessionAliasResolver = (db: Db, sessionId: string) => SessionAliasResolution | null;
+
+function sessionLiveness(
+  db: Db,
+  sessionId: string | null,
+  resolver: SessionAliasResolver = resolveSessionAlias,
+): Record<string, unknown> {
+  const resolved = sessionId ? resolver(db, sessionId) : null;
   return {
     has_live_agent: resolved?.has_live_agent ?? false,
     agent_session_id: sessionId,
-    agent_status: resolved ? resolved.mandible_status ?? resolved.console_status ?? "unknown" : null,
+    agent_status: resolved
+      ? resolved.mandible_status ?? resolved.console_status ?? (resolved.has_live_agent ? "active" : "stopped")
+      : null,
     last_activity: resolved?.last_activity ?? null,
     resolved_session_id: resolved?.mandible_session_id ?? null,
     console_session_id: resolved?.console_session_id ?? null,
@@ -425,7 +433,7 @@ function resolutionAliasIds(
 function unregisteredSessionResponse(suppliedId: string): Record<string, unknown> {
   return {
     error: `unknown session id "${suppliedId}": Mandible has no session, console session, `
-      + "or provider session recorded under it, so a parent-role holder recorded under it "
+      + "provider session, or ingested provider conversation recorded under it, so a parent-role holder recorded under it "
       + "could never be verified. Assume the role from a session Mandible has registered, "
       + `or link this one first with \`mandible session link-issue ${suppliedId} `
       + "--issue <issue> --repo <repo>`, then retry.",
@@ -434,12 +442,17 @@ function unregisteredSessionResponse(suppliedId: string): Record<string, unknown
       "a Mandible session id (sessions.id)",
       "a console session id (console_sessions.id)",
       "a provider session or thread id (console_sessions.provider_session_id)",
+      "an exact provider task id in the normalized conversations index",
     ],
     repair_command: `mandible session link-issue ${suppliedId} --issue <issue> --repo <repo>`,
   };
 }
 
-function parentRoleHolders(db: Db, issueId: string): Array<Record<string, unknown>> {
+function parentRoleHolders(
+  db: Db,
+  issueId: string,
+  resolver: SessionAliasResolver = resolveSessionAlias,
+): Array<Record<string, unknown>> {
   const store = new LedgerStore(db);
   return store.listIssueCheckpoints(issueId, "parent-role")
     .map((row) => {
@@ -457,7 +470,7 @@ function parentRoleHolders(db: Db, issueId: string): Array<Record<string, unknow
         mechanism: typeof payloadRecord.mechanism === "string" ? payloadRecord.mechanism : null,
         assumed_at: typeof payloadRecord.assumed_at === "number" ? payloadRecord.assumed_at : row.created_at,
         created_at: row.created_at,
-        liveness: sessionLiveness(db, sessionId),
+        liveness: sessionLiveness(db, sessionId, resolver),
       };
     })
     .sort((a, b) =>
@@ -467,8 +480,12 @@ function parentRoleHolders(db: Db, issueId: string): Array<Record<string, unknow
     );
 }
 
-function buildParentRoleStatus(db: Db, issueId: string): Record<string, unknown> {
-  const holders = parentRoleHolders(db, issueId);
+function buildParentRoleStatus(
+  db: Db,
+  issueId: string,
+  resolver: SessionAliasResolver = resolveSessionAlias,
+): Record<string, unknown> {
+  const holders = parentRoleHolders(db, issueId, resolver);
   const liveHolder = holders.find((holder) =>
     Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
   ) ?? null;
@@ -1276,8 +1293,13 @@ function resolveIssueDetailForRoute(
 export function registerIssueRoutes(
   server: IssueServer,
   workScanner: WorkScanner,
-  deps?: { sessionRegistry?: import("../registry.js").SessionRegistry; sessionManager?: import("../session-manager.js").SessionManager },
+  deps?: {
+    sessionRegistry?: import("../registry.js").SessionRegistry;
+    sessionManager?: import("../session-manager.js").SessionManager;
+    sessionAliasResolver?: SessionAliasResolver;
+  },
 ): void {
+  const sessionAliasResolver = deps?.sessionAliasResolver ?? resolveSessionAlias;
 
   // GET /api/issues — list repo summaries with optional filtering
   server.get("/api/issues", (req, res) => {
@@ -1424,7 +1446,7 @@ export function registerIssueRoutes(
       return;
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
-    sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id));
+    sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver));
   }, { fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/parent-role", (req, res) => {
@@ -1451,12 +1473,12 @@ export function registerIssueRoutes(
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const identity = req.client_identity;
-    const current = buildParentRoleStatus(db, resolved.issue_id);
+    const current = buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver);
     // Issue 5b2cdbf: refuse an id Mandible cannot verify. Recording one produced
     // a holder that every liveness check judged dead, so the next coordinator
     // took the same umbrella without an override while both were told the lease
     // had succeeded.
-    const resolution = resolveSessionAlias(db, sessionId);
+    const resolution = sessionAliasResolver(db, sessionId);
     if (!resolution) {
       sendJson(res, 400, unregisteredSessionResponse(sessionId));
       return;
@@ -1502,7 +1524,7 @@ export function registerIssueRoutes(
     sendJson(res, 200, {
       ok: true,
       checkpoint: checkpointResponse(checkpoint),
-      parent_role: buildParentRoleStatus(db, resolved.issue_id),
+      parent_role: buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver),
       override_required: false,
     });
   }, { fileRpc: "allow" });
