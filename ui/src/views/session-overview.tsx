@@ -13,7 +13,6 @@ import {
   getProviderScopedOverview,
   getSessionOverview,
   getSessions,
-  registerProviderSession,
   resolveAgentSession,
   type ProviderScopedLinkedIssue,
   type ProviderScopedOverview,
@@ -316,8 +315,6 @@ export function SessionOverviewView({
   const [refreshToken, setRefreshToken] = useState(0);
   const [providerOverview, setProviderOverview] = useState<ProviderScopedOverview | null>(null);
   const [providerOverviewError, setProviderOverviewError] = useState<string | null>(null);
-  const [registering, setRegistering] = useState(false);
-  const [registerError, setRegisterError] = useState<string | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const scrollOwnerRef = useRef<HTMLDivElement>(null);
 
@@ -467,39 +464,6 @@ export function SessionOverviewView({
     };
   }, [binding.kind, providerScopedRef, providerScopedProvider, selectedSessionId, refreshToken]);
 
-  // Explicit, deliberate registration: creates a Mandible session row for the
-  // provider-known session, then re-resolves so the view upgrades in place to
-  // the fully bound state. Never automatic. Review S1 — the request carries
-  // ONLY the server-resolved full identity from the match record; the
-  // page-supplied binding is display-only and never becomes mutation input.
-  // Provider, cwd, and branch are derived server-side from the validated
-  // conversations record.
-  const handleRegister = useCallback(async () => {
-    if (binding.kind !== 'provider-scoped' || registering) return;
-    const registerRef = binding.match.matched_ref;
-    if (!registerRef) return;
-    setRegistering(true);
-    setRegisterError(null);
-    try {
-      await registerProviderSession({ provider_session_id: registerRef });
-      const result = await resolveAgentSession(registerRef);
-      const bindable = result.matches.filter((match) => match.mandible_session_id);
-      if (!result.truncated && result.matches.length === 1 && bindable.length === 1) {
-        setBinding({ kind: 'bound', match: bindable[0] });
-        setSelectedSessionId(bindable[0].mandible_session_id);
-        writeSessionParamToHash(bindable[0].mandible_session_id);
-      } else if (result.matches.length > 1 || result.truncated) {
-        setBinding({ kind: 'many', matches: result.matches, truncated: result.truncated });
-      } else {
-        setRegisterError('Registration succeeded but the session did not resolve as bindable.');
-      }
-    } catch (err: unknown) {
-      setRegisterError(err instanceof Error ? err.message : 'Registration failed');
-    } finally {
-      setRegistering(false);
-    }
-  }, [binding, registering]);
-
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);
     writeSessionParamToHash(sessionId);
@@ -568,7 +532,7 @@ export function SessionOverviewView({
         </dl>
       </DetailPaneModal>
 
-      {agentBinding && binding.kind !== 'bound' ? (
+      {agentBinding && binding.kind !== 'bound' && binding.kind !== 'provider-scoped' ? (
         <div className="session-overview__binding" role="status">
           {binding.kind === 'resolving' && (
             <span>Resolving agent session {shortUuid(agentBinding)}…</span>
@@ -577,25 +541,6 @@ export function SessionOverviewView({
             <span>
               No Mandible session matches agent session <code>{shortUuid(agentBinding)}</code>.
               Pick a session below.
-            </span>
-          )}
-          {binding.kind === 'provider-scoped' && !selectedSessionId && (
-            <span className="session-overview__provider-scoped-banner">
-              Agent session <code>{shortUuid(providerScopedRef ?? agentBinding)}</code> is known
-              via its ingested transcript but is not registered as a Mandible session. Showing
-              provider-scoped data (display-only).{' '}
-              <button
-                type="button"
-                disabled={registering}
-                onClick={() => {
-                  void handleRegister();
-                }}
-              >
-                {registering ? 'Registering…' : 'Register as Mandible session'}
-              </button>
-              {registerError ? (
-                <span className="session-overview__error"> {registerError}</span>
-              ) : null}
             </span>
           )}
           {binding.kind === 'many' && (
@@ -662,15 +607,7 @@ export function SessionOverviewView({
           {providerOverview ? (
             <>
               {embedded ? <section className="session-overview__section" aria-label="Session">
-                <h3>
-                  {shortUuid(providerOverview.binding.provider_session_id)}
-                  <span className="session-overview-badge session-overview-badge--unknown">
-                    unregistered
-                  </span>
-                </h3>
-                <p className="session-overview__unavailable">
-                  Unavailable: {providerOverview.session.reason}
-                </p>
+                <h3>{shortUuid(providerOverview.binding.provider_session_id)}</h3>
               </section> : null}
 
               <SectionTable

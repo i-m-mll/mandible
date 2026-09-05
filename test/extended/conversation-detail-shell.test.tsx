@@ -356,15 +356,16 @@ describe('compact detail pane shell', () => {
     expect(screen.queryByText('No chats')).toBeNull();
   });
 
-  it('separates deterministic title-authority gaps from transient failures', () => {
+  it('keeps legacy title-authority errors out of header presentation state', () => {
     const missing = conversationLoadFailure(new api.ApiError('raw code', 409, 'provider_metadata_missing'), true);
-    expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false, titleAuthorityDegraded: true });
+    expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false });
+    expect(missing).not.toHaveProperty('titleAuthorityDegraded');
     expect(missing.message).toContain('Transcript loaded');
     expect(missing.message).toContain('Retrying will not recreate');
     expect(missing.message).not.toContain('raw code');
 
     const unavailable = conversationLoadFailure(new api.ApiError('temporary', 503, 'provider_metadata_unavailable'), true);
-    expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true, titleAuthorityDegraded: true });
+    expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true });
     expect(unavailable.message).toContain('transcript is unchanged');
   });
 

@@ -123,11 +123,9 @@ export type ConversationLoadFailure = {
   code: string | null;
   message: string;
   retryable: boolean;
-  titleAuthorityDegraded: boolean;
 };
 
 const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error']);
-const DEGRADED_TITLE_CODES = new Set(['provider_metadata_missing', 'provider_metadata_mismatched', 'provider_metadata_stale']);
 
 export function conversationLoadFailure(error: unknown, transcriptLoaded: boolean): ConversationLoadFailure {
   const apiError = error instanceof ApiError ? error : null;
@@ -137,7 +135,6 @@ export function conversationLoadFailure(error: unknown, transcriptLoaded: boolea
       code,
       message: `${transcriptLoaded ? 'Transcript loaded, but ' : ''}Mandible cannot verify its current Codex title because the matching Codex task metadata is missing. Retrying will not recreate that metadata.`,
       retryable: false,
-      titleAuthorityDegraded: true,
     };
   }
   if (code === 'provider_metadata_unavailable') {
@@ -145,14 +142,12 @@ export function conversationLoadFailure(error: unknown, transcriptLoaded: boolea
       code,
       message: `Codex title metadata is temporarily unavailable.${transcriptLoaded ? ' The transcript is unchanged;' : ''} try again.`,
       retryable: true,
-      titleAuthorityDegraded: true,
     };
   }
   return {
     code,
     message: error instanceof Error ? error.message : String(error),
     retryable: code ? TRANSIENT_CONVERSATION_CODES.has(code) : apiError ? apiError.status >= 500 : true,
-    titleAuthorityDegraded: Boolean(code && DEGRADED_TITLE_CODES.has(code)),
   };
 }
 
@@ -1887,13 +1882,11 @@ function ConversationDetail({
 
   const handleOpenExternally = useCallback(async () => {
     if (!conversation?.external_navigation) return;
-    setContinueError(null);
-    setResumeErrorDetails(null);
     try {
       await openConversationExternally(conversation.id);
       setToast({ message: `${conversation.external_navigation.label} requested.`, type: 'info' });
     } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err));
+      setToast({ message: err instanceof Error ? err.message : String(err), type: 'error' });
     }
   }, [conversation?.external_navigation, conversation?.id]);
 
@@ -1915,15 +1908,10 @@ function ConversationDetail({
     <DetailPaneNotice
       severity="error"
       density="compact"
-      actions={(error.retryable || (error.titleAuthorityDegraded && conversation?.external_navigation)) ? (
+      actions={error.retryable ? (
         <>
           {error.retryable ? (
             <button type="button" className="btn btn--ghost btn--sm" disabled={loading} onClick={retryLoad}>Retry</button>
-          ) : null}
-          {error.titleAuthorityDegraded && conversation?.external_navigation ? (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void handleOpenExternally(); }}>
-              {conversation.external_navigation.label}
-            </button>
           ) : null}
         </>
       ) : undefined}
@@ -1992,7 +1980,6 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
-      supportingMetadata={error?.titleAuthorityDegraded ? 'Historical title — provider verification unavailable' : undefined}
       menuLabel="Conversation detail actions"
       menu={(
         <div className="conv-actions">
@@ -2359,7 +2346,11 @@ function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
-            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            emptyLabel={loading
+              ? 'Loading messages…'
+              : error
+                ? 'Conversation content unavailable.'
+                : 'No messages match the current filters.'}
             unmaterializedAfterCount={conversation.position_window.window.after_count}
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}

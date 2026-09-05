@@ -360,10 +360,12 @@ function convergeProviderMetadata(
     sourceMtimeMs: observedSourceMtimeMs,
   });
   if (authority.status !== "current") {
-    throw new ConversationFreshnessError(
-      `provider_metadata_${authority.status}` as ConversationFreshnessCode,
-      authority.message,
-    );
+    // The rollout is the content authority. Codex's task index is only a
+    // source of newer display metadata and can legitimately be absent for an
+    // archived, imported, or otherwise historical transcript. Keep the last
+    // indexed title when that optional authority is unavailable; title
+    // convergence must never make readable transcript bytes unreadable.
+    return false;
   }
   return persistExactCodexTitle(db, {
     conversationId: pinned.conversationId,
@@ -384,22 +386,38 @@ async function converge(
   if (!pinned.sourceId || !pinned.sourcePath) {
     return { conversationId: pinned.conversationId, sourceId: null, sourcePath: null, refreshed: false };
   }
+  let activePinned = pinned;
   let refreshed = false;
   for (let pass = 0; pass < 2; pass += 1) {
-    if (pinned.provider === "codex") {
+    if (activePinned.provider === "codex") {
       let extent: StableSourceExtentObservation;
       try {
-        extent = await observePinnedExtent(db, pinned, instrumentation);
+        extent = await observePinnedExtent(db, activePinned, instrumentation);
       } catch (error) {
+        if (
+          error instanceof ConversationFreshnessError
+          && error.code === "source_unavailable"
+          && pass === 0
+          && activePinned.sourcePath
+        ) {
+          // Codex archive/unarchive is an identity-preserving rename. The
+          // exact-path ingestion path already proves the native session before
+          // recording that relocation; invoke it here so a copied preview (or
+          // a reader racing the watcher) repairs its stale alias on demand.
+          await ingest(activePinned.sourcePath);
+          activePinned = resolveExactConversation(db, activePinned.conversationId);
+          refreshed = true;
+          continue;
+        }
         if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
         throw error;
       }
-      const extentFacts = currentFacts(db, pinned, extent.path);
+      const extentFacts = currentFacts(db, activePinned, extent.path);
       if (matchesIndexedExtent(extentFacts, extent)) {
-        const titleChanged = convergeProviderMetadata(db, pinned, extentFacts, extent.fileMtimeMs);
+        const titleChanged = convergeProviderMetadata(db, activePinned, extentFacts, extent.fileMtimeMs);
         return {
-          conversationId: pinned.conversationId,
-          sourceId: pinned.sourceId,
+          conversationId: activePinned.conversationId,
+          sourceId: activePinned.sourceId,
           sourcePath: extent.path,
           refreshed: refreshed || titleChanged,
         };
@@ -407,17 +425,17 @@ async function converge(
     }
     let before: StableSourceObservation;
     try {
-      before = await observePinned(db, pinned, instrumentation);
+      before = await observePinned(db, activePinned, instrumentation);
     } catch (error) {
       if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
       throw error;
     }
-    const beforeFacts = currentFacts(db, pinned, before.path);
+    const beforeFacts = currentFacts(db, activePinned, before.path);
     if (matchesIndexed(beforeFacts, before)) {
-      const titleChanged = convergeProviderMetadata(db, pinned, beforeFacts, before.fileMtimeMs);
+      const titleChanged = convergeProviderMetadata(db, activePinned, beforeFacts, before.fileMtimeMs);
       return {
-        conversationId: pinned.conversationId,
-        sourceId: pinned.sourceId,
+        conversationId: activePinned.conversationId,
+        sourceId: activePinned.sourceId,
         sourcePath: before.path,
         refreshed: refreshed || titleChanged,
       };
@@ -429,17 +447,17 @@ async function converge(
     refreshed = true;
     let after: StableSourceObservation;
     try {
-      after = await observePinned(db, pinned, instrumentation);
+      after = await observePinned(db, activePinned, instrumentation);
     } catch (error) {
       if (error instanceof ConversationFreshnessError && error.code === "source_changed" && pass === 0) continue;
       throw error;
     }
-    const afterFacts = currentFacts(db, pinned, after.path);
+    const afterFacts = currentFacts(db, activePinned, after.path);
     if (matchesIndexed(afterFacts, after)) {
-      const titleChanged = convergeProviderMetadata(db, pinned, afterFacts, after.fileMtimeMs);
+      const titleChanged = convergeProviderMetadata(db, activePinned, afterFacts, after.fileMtimeMs);
       return {
-        conversationId: pinned.conversationId,
-        sourceId: pinned.sourceId,
+        conversationId: activePinned.conversationId,
+        sourceId: activePinned.sourceId,
         sourcePath: after.path,
         refreshed: refreshed || titleChanged,
       };
