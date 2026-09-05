@@ -1124,8 +1124,22 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id)
         : null;
+      const retainedStructuralTotal = (db.prepare(`
+        SELECT COUNT(*) AS total FROM conversation_structural_blocks
+         WHERE conversation_id = ? AND status = 'current'
+      `).get(id) as { total: number }).total;
+      const retainedLegacyTotal = (db.prepare(`
+        SELECT COUNT(*) AS total FROM conversation_blocks
+         WHERE conversation_id = ? AND payload_state = 'legacy'
+      `).get(id) as { total: number }).total;
+      // A projected or retention-bounded database can preserve the conversation's
+      // logical block_count while retaining only a readable tail. Page offsets are
+      // ordinals within the retained representation, not global block positions.
+      const retainedTotal = Math.max(cachedTotal ?? 0, retainedStructuralTotal, retainedLegacyTotal);
       if (cachedTotal !== null) total = cachedTotal;
-      let anchorPosition = total > 0 ? total - 1 : null;
+      let anchorPosition = targetKind === "initial" || targetKind === "latest"
+        ? null
+        : total > 0 ? total - 1 : null;
       if (targetKind === "position") {
         anchorPosition = Number(requestedValue);
       } else if (targetKind === "block" || targetKind === "turn") {
@@ -1143,15 +1157,16 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
           : undefined;
         anchorPosition = sparsePosition ?? densePosition?.position ?? null;
       }
-      const emptyInitial = total === 0 && (targetKind === "initial" || targetKind === "latest");
-      if (!emptyInitial && (anchorPosition === null || anchorPosition < 0 || anchorPosition >= total)) {
+      const emptyInitial = retainedTotal === 0 && (targetKind === "initial" || targetKind === "latest");
+      if (!emptyInitial && targetKind !== "initial" && targetKind !== "latest"
+          && (anchorPosition === null || anchorPosition < 0 || anchorPosition >= total)) {
         sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
         return;
       }
       windowOffset = emptyInitial
         ? 0
         : targetKind === "initial" || targetKind === "latest"
-        ? Math.max(0, total - limit)
+        ? Math.max(0, retainedTotal - limit)
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
       const sourcePage = await sourceReader.readPage(id, { offset: windowOffset, limit });
       if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
@@ -1164,6 +1179,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       readableBlocks = sourcePage.value.blocks;
       bodySource = sourcePage.status;
       total = sourcePage.value.total;
+      if (targetKind === "initial" || targetKind === "latest") {
+        anchorPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
+      }
       resolvedBlock = anchorPosition === null
         ? null
         : readableBlocks.find((block) => block.position === anchorPosition) ?? null;

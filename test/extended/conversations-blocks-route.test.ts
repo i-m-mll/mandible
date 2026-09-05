@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ConversationSourceStore } from "../../src/conversations/source-store.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
 import { migrate, openDb, setDb, type Db } from "../../src/db.js";
 import { registerConversationRoutes } from "../../src/routes/conversations.js";
 import { Router } from "../../src/server.js";
@@ -121,6 +123,55 @@ describe("conversation blocks route pagination", () => {
 });
 
 describe("indexed conversation position window", () => {
+  it("loads the retained tail when a source-backed projection keeps sparse positions", async () => {
+    const now = "2026-07-08T12:00:00.000Z";
+    db.prepare(
+      `INSERT INTO conversations (
+        id, source, source_path, source_hash, source_mtime, title, started_at,
+        session_id, created_at, updated_at, block_count
+      ) VALUES ('conv-projected', 'codex', '/tmp/projected.jsonl', 'hash', 0,
+        'Projected conversation', ?, 'session-projected', ?, ?, 10000)`,
+    ).run(now, now, now);
+    const insert = db.prepare(
+      `INSERT INTO conversation_blocks (
+        id, conversation_id, type, role, content, compressed, position, timestamp,
+        metadata_json
+      ) VALUES (?, 'conv-projected', 'assistant_message', 'assistant', ?, 0, ?, ?, '{}')`,
+    );
+    for (let position = 9997; position <= 9999; position += 1) {
+      insert.run(`projected-${position}`, `content ${position}`, position, now);
+    }
+    const sourcePath = path.join(
+      tempDir,
+      ".codex/sessions/2026/07/08/rollout-2026-07-08T12-00-00-session-projected.jsonl",
+    );
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, "{}\n{}\n{}\n");
+    await new ConversationSourceStore(db).recordConversation({
+      conversationId: "conv-projected",
+      provider: "codex",
+      nativeSessionId: "session-projected",
+      filePath: sourcePath,
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const response = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/conv-projected?target=initial",
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({
+      body_source: "legacy",
+      total: 3,
+      target: { kind: "initial", position: 9999, block_id: "projected-9999" },
+      window: { start_position: 9997, end_position: 9999, has_after: false },
+    });
+    expect((response.body as { blocks: unknown[] }).blocks).toHaveLength(3);
+  });
+
   it("uses the block primary key and conversation-position index for exact resolution", () => {
     insertIndexedConversation(10_000);
     const blockPlan = db.prepare(
