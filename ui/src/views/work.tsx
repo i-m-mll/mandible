@@ -1290,9 +1290,6 @@ export function WorkOverviewView({
                   {repoSortDirection === 'asc' ? '\u2191' : '\u2193'}
                 </button>
               </div>
-              <button type="button" className="work-refresh-action" onClick={onRescan}>
-                Scan now
-              </button>
                 </>
               ),
             } : undefined}
