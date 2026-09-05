@@ -887,6 +887,31 @@ export const MIGRATIONS: readonly Migration[] = [
       FROM snapshots`,
     ],
   },
+  {
+    version: 174,
+    name: "backfill_canonical_artifact_parent_lineage",
+    statements: [
+      `UPDATE artifact_version AS child
+          SET source_locator_json = json_set(
+            child.source_locator_json,
+            '$.parent_version_id',
+            (SELECT parent.id
+               FROM artifact_version AS parent
+              WHERE parent.artifact_id = child.artifact_id
+                AND parent.version_no = child.version_no - 1)
+          )
+        WHERE child.version_no > 1
+          AND json_valid(child.source_locator_json)
+          AND (json_type(child.source_locator_json, '$.parent_version_id') IS NULL
+            OR json_type(child.source_locator_json, '$.parent_version_id') = 'null')
+          AND EXISTS (
+            SELECT 1
+              FROM artifact_version AS parent
+             WHERE parent.artifact_id = child.artifact_id
+               AND parent.version_no = child.version_no - 1
+          )`,
+    ],
+  },
 ];
 
 /**

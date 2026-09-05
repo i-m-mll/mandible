@@ -911,7 +911,7 @@ cmd_changed() {
   require_tools
   local checkpoint_tmp=""
   if [[ -n "$since_issue" ]]; then
-    local checkpoint_path checkpoint_response checkpoint_list_response checkpoint_created_at
+    local checkpoint_path checkpoint_response checkpoint_list_response checkpoint_created_at checkpoint_id
     if [[ -n "$checkpoint_ref" ]]; then
       checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints"
       if [[ -n "$kind" ]]; then
@@ -936,6 +936,9 @@ cmd_changed() {
     checkpoint_created_at=$(printf '%s\n' "$checkpoint_response" | jq -r '.created_at // empty')
     [[ -n "$checkpoint_created_at" ]] \
       || die "Checkpoint response must include created_at to compare the umbrella head." 2
+    checkpoint_id=$(printf '%s\n' "$checkpoint_response" | jq -r '.id // empty')
+    [[ -n "$checkpoint_id" ]] \
+      || die "Checkpoint response must include id to compare the umbrella head." 2
     # Baseline for the umbrella's own (self) entry:
     #
     # Post-upgrade checkpoints (written by refreshDelegationManifest since
@@ -1008,14 +1011,29 @@ cmd_changed() {
   #                     digests, so subtree drift cannot be determined
   # An empty expected subtree digest (pre-upgrade manifest) never falls through
   # to "unchanged"; it is reported as "unknown".
-  local issue expected expected_subtree response current current_subtree
-  local classification subtree_state target_file
-  while IFS=$'\t' read -r issue expected expected_subtree; do
+  local issue expected expected_subtree self_entry response current current_subtree
+  local classification subtree_state target_file head_ok
+  while IFS=$'\t' read -r issue expected self_entry expected_subtree; do
     if [[ -z "$issue" ]]; then
       rm -rf "$tmpdir"
       die "Manifest entries must include issue, short_id, or id." 2
     fi
-    if response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head"); then
+    # A post-upgrade self entry snapshots the umbrella immediately before its
+    # own manifest checkpoint is written. Exclude only that exact establishing
+    # checkpoint while comparing the pinned baseline. Normal head reads still
+    # include it, and all later umbrella and descendant events remain visible.
+    if [[ -n "$since_issue" && "$self_entry" == "true" ]]; then
+      if response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head?exclude_checkpoint=$(urlencode "$checkpoint_id")"); then
+        head_ok=true
+      else
+        head_ok=false
+      fi
+    elif response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head"); then
+      head_ok=true
+    else
+      head_ok=false
+    fi
+    if [[ "$head_ok" == "true" ]]; then
       current=$(printf '%s\n' "$response" | jq -r '.digest')
       current_subtree=$(printf '%s\n' "$response" | jq -r '.subtree_digest // ""')
       if [[ "$expected" != "$current" ]]; then
@@ -1059,7 +1077,7 @@ cmd_changed() {
     else
       jq -n --arg issue "$issue" '{issue: $issue}' >> "$missing_file"
     fi
-  done < <(jq -r '.[] | [(.issue // .short_id // .id // ""), (.digest // ""), (.subtree_digest // "")] | @tsv' "$manifest")
+  done < <(jq -r '.[] | [(.issue // .short_id // .id // ""), (.digest // ""), (.self == true), (.subtree_digest // "")] | @tsv' "$manifest")
 
   print_changed_result "$json" "$changed_file" "$subtree_changed_file" "$unchanged_file" "$unknown_file" "$missing_file"
   rm -rf "$tmpdir"

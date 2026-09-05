@@ -5086,7 +5086,6 @@ export function ensureArtifactSeries(
 export interface AppendArtifactVersionInput {
   series_id: string;
   artifact_id: string;
-  parent_version_id?: string | null;
   source_kind: ArtifactVersionSourceKind;
   content_hash: string;
   natural_key?: string;
@@ -5097,6 +5096,19 @@ export interface AppendArtifactVersionInput {
   label?: string;
   note?: string;
   metadata?: JsonRecord;
+}
+
+function canonicalParentVersionId(db: Db, artifactId: string, versionNo: number): string | null {
+  if (versionNo === 1) return null;
+  const parent = db.prepare(
+    "SELECT id FROM artifact_version WHERE artifact_id = ? AND version_no = ?",
+  ).get(artifactId, versionNo - 1) as { id: string } | undefined;
+  if (!parent) {
+    throw new Error(
+      `artifact version ${versionNo} requires canonical predecessor ${versionNo - 1} for ${artifactId}`,
+    );
+  }
+  return parent.id;
 }
 
 export function appendArtifactVersion(
@@ -5133,6 +5145,7 @@ export function appendArtifactVersion(
     const nextNo = Number((db.prepare(
       "SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_version WHERE artifact_id = ?",
     ).get(logicalId) as { n: number }).n) + 1;
+    const parentVersionId = canonicalParentVersionId(db, logicalId, nextNo);
     const result = db.prepare(
       `INSERT INTO artifact_version (
         id, artifact_id, version_no, blob_id, source_kind, content_hash,
@@ -5154,7 +5167,7 @@ export function appendArtifactVersion(
       repo_path: input.repo_path ?? null,
       commit_sha: input.commit_sha ?? null,
       observed_path: input.observed_path ?? null,
-      source_locator_json: jsonStringify({ parent_version_id: input.parent_version_id ?? null }),
+      source_locator_json: jsonStringify({ parent_version_id: parentVersionId }),
       custody_mode: input.custody_mode ?? null,
       label: input.label ?? null,
       note: input.note ?? null,
@@ -5219,7 +5232,6 @@ export interface RecordArtifactVersionInput {
   repo_id?: string;
   issue?: string;
   metadata?: JsonRecord;
-  parent_version_id?: string | null;
 }
 
 // Explicit version recording. This is the ONLY write path into the version
@@ -5298,7 +5310,6 @@ export function recordArtifactVersion(
       };
       versionInput = {
         artifact_id: artifact.id,
-        parent_version_id: input.parent_version_id ?? null,
         source_kind: "local_only",
         content_hash: artifact.content_hash,
         observed_path: plan.resolved_path,
@@ -5332,7 +5343,6 @@ export function recordArtifactVersion(
       };
       versionInput = {
         artifact_id: reg.artifact.id,
-        parent_version_id: input.parent_version_id ?? null,
         source_kind: "tracked_repo",
         content_hash: reg.artifact.content_hash,
         commit_sha: reg.git_state.commit ?? undefined,
@@ -5364,7 +5374,6 @@ export function recordArtifactVersion(
     };
     versionInput = {
       artifact_id: artifact.id,
-      parent_version_id: input.parent_version_id ?? null,
       source_kind: "local_only",
       content_hash: artifact.content_hash,
       observed_path: observedPath,
@@ -5434,7 +5443,6 @@ export function recordArtifactVersion(
     };
     versionInput = {
       artifact_id: artifact.id,
-      parent_version_id: input.parent_version_id ?? null,
       source_kind: "managed",
       content_hash: artifact.content_hash,
       // Records the managed intent of this version. The shared immutable content
@@ -5716,15 +5724,17 @@ export function publishArtifactDraft(
     "SELECT COALESCE(MAX(version_no), 0) + 1 AS n FROM artifact_version WHERE artifact_id = ?",
   ).get(logical.id) as { n: number }).n);
   if (!existing) {
+    const parentVersionId = canonicalParentVersionId(db, logical.id, nextNo);
     db.prepare(
       `INSERT INTO artifact_version (
         id, artifact_id, version_no, blob_id, source_kind, content_hash,
         source_project_id, source_repo_id, source_locator_json, custody_mode,
         label, note, metadata_json, created_at
-      ) VALUES (?, ?, ?, ?, 'managed', ?, ?, ?, '{}', 'managed', ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, 'managed', ?, ?, ?, ?, 'managed', ?, ?, ?, ?)`,
     ).run(
       versionId, logical.id, nextNo, blob.id, blob.content_hash,
       logical.source_project_id, logical.source_repo_id,
+      jsonStringify({ parent_version_id: parentVersionId }),
       input.label ?? draft.label ?? null, input.note ?? draft.note ?? null,
       jsonStringify(draft.metadata), now,
     );
@@ -5789,25 +5799,11 @@ function canonicalArtifactVersionHistory(
 ): ArtifactVersionHistory {
   const canonicalVersions = listCanonicalArtifactVersions(db, logical.id);
   const seriesId = legacySeriesIdFromCanonicalArtifact(logical.id);
-  const versions: ArtifactVersionRecord[] = canonicalVersions.map((version, index) => {
-    const blob = getArtifactBlob(db, version.blob_id);
-    return {
-      id: version.id,
-      series_id: seriesId,
-      artifact_id: blob ? compatibilityArtifactId(blob) : version.blob_id,
-      version_no: version.version_no,
-      parent_version_id: index > 0 ? canonicalVersions[index - 1].id : null,
-      source_kind: version.source_kind === "external" ? "managed" : version.source_kind,
-      content_hash: version.content_hash,
-      commit_sha: version.commit_sha,
-      repo_path: version.repo_path,
-      observed_path: version.observed_path,
-      custody_mode: version.custody_mode,
-      label: version.label,
-      note: version.note,
-      metadata: version.metadata,
-      created_at: version.created_at,
-    };
+  const versions = canonicalVersions.map((version) => {
+    const projected = projectCanonicalVersionRecord(db, version);
+    return version.source_kind === "external"
+      ? { ...projected, source_kind: "managed" as const }
+      : projected;
   });
   const series: ArtifactSeriesRecord = {
     id: seriesId,

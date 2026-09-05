@@ -170,6 +170,16 @@ describe("managed custody versions", () => {
     const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "m2\n", media_type: "text/plain", logical_name: "doc" }, 2000);
     expect(r1.series.id).toBe(r2.series.id);
     expect(getArtifactSeries(db, r1.series.id)?.version_count).toBe(2);
+    expect(r1.version.parent_version_id).toBeNull();
+    expect(r2.version.parent_version_id).toBe(r1.version.id);
+    expect(getArtifactVersion(db, r2.version.id)?.parent_version_id).toBe(r1.version.id);
+    expect(resolveArtifactVersionHistory(db, r1.series.id)?.versions.map((version) =>
+      version.parent_version_id)).toEqual([null, r1.version.id]);
+
+    const storedLocator = db.prepare(
+      "SELECT source_locator_json FROM artifact_version WHERE id = ?",
+    ).get(r2.version.id) as { source_locator_json: string };
+    expect(JSON.parse(storedLocator.source_locator_json).parent_version_id).toBe(r1.version.id);
 
     const c1 = getArtifactContent(db, r1.version.artifact_id);
     const c2 = getArtifactContent(db, r2.version.artifact_id);

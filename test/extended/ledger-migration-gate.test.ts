@@ -9,6 +9,7 @@ import {
   listLedgerIssueSummaries,
 } from "../../src/ledger/issue-projection.js";
 import { LedgerStore } from "../../src/ledger/store.js";
+import { getLedgerIssueHead } from "../../src/ledger/issue-heads.js";
 import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../../src/routes/issues.js";
 import { setupOperator } from "../../src/users/store.js";
 import type { RepoInfo } from "../../src/work-scanner.js";
@@ -767,6 +768,133 @@ describe("ledger issue routes", () => {
       { short_id: umbrella.short_id, self: true },
       { short_id: child.short_id },
     ]);
+  });
+
+  it("keeps a pinned refresh stable while preserving later own and descendant drift", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbstable",
+      title: "Stable manifest umbrella",
+      labels: ["umbrella"],
+    });
+    const child = store.createIssue({
+      ...SYSTEM_ACTOR,
+      project_id: umbrella.project_id,
+      title: "Stable manifest child",
+      body: "Child body",
+      kind: "umbrella",
+      labels: ["umbrella"],
+    });
+    const grandchild = store.createIssue({
+      ...SYSTEM_ACTOR,
+      project_id: umbrella.project_id,
+      title: "Stable manifest grandchild",
+      body: "Grandchild body",
+      kind: "feature",
+      labels: ["feature"],
+    });
+    let clock = Date.now() - 10_000;
+    store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
+      source_entity: { entity_type: "issue", entity_id: umbrella.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
+      provenance: "manual",
+      created_at: (clock += 1),
+    });
+    store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
+      source_entity: { entity_type: "issue", entity_id: child.id },
+      target_entities: [{ entity_type: "issue", entity_id: grandchild.id }],
+      link_type: "parent_child",
+      provenance: "manual",
+      created_at: (clock += 1),
+    });
+    const unrelatedCheckpoint = store.addIssueCheckpoint(umbrella.id, {
+      ...SYSTEM_ACTOR,
+      kind: "closeout",
+      payload: { worker_status: "done" },
+      actor_type: "agent",
+      created_at: (clock += 1),
+    });
+    const manifestWithoutSelf = store.addIssueCheckpoint(umbrella.id, {
+      ...SYSTEM_ACTOR,
+      kind: "delegation-manifest",
+      payload: [],
+      actor_type: "agent",
+      created_at: (clock += 1),
+    });
+
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    const refreshed = await server.invoke(
+      "POST",
+      "/api/ledger/issues/:issueId/umbrella-manifest-refresh",
+      { params: { issueId: "umbstable" } },
+    );
+    expect(refreshed.statusCode).toBe(200);
+    const checkpoint = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest")!;
+    clock = checkpoint.created_at;
+    const payload = JSON.parse(checkpoint.payload_json) as Array<{
+      issue_id: string;
+      digest: string;
+      subtree_digest: string;
+      self?: boolean;
+    }>;
+    const selfBaseline = payload.find((entry) => entry.self === true)!;
+    const childBaseline = payload.find((entry) => entry.issue_id === child.id)!;
+    expect(checkpoint.kind).toBe("delegation-manifest");
+    expect(selfBaseline.issue_id).toBe(umbrella.id);
+
+    const pinned = await server.invoke("GET", "/api/ledger/issues/:issueId/head", {
+      params: { issueId: "umbstable" },
+      query: { exclude_checkpoint: checkpoint.id },
+    });
+    expect(pinned.statusCode, JSON.stringify(pinned.body)).toBe(200);
+    expect(pinned.body).toMatchObject({
+      digest: selfBaseline.digest,
+      subtree_digest: selfBaseline.subtree_digest,
+    });
+    expect(getLedgerIssueHead(db, umbrella.id).digest).not.toBe(selfBaseline.digest);
+
+    for (const excludedId of [unrelatedCheckpoint.id, manifestWithoutSelf.id]) {
+      const rejected = await server.invoke("GET", "/api/ledger/issues/:issueId/head", {
+        params: { issueId: "umbstable" },
+        query: { exclude_checkpoint: excludedId },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.body).toEqual({
+        error: "exclude_checkpoint must name this issue's self-baselined delegation manifest",
+      });
+    }
+
+    store.addComment(grandchild.id, {
+      ...SYSTEM_ACTOR,
+      body: "Descendant drift after the pinned baseline",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (clock += 1),
+    });
+    const afterDescendant = getLedgerIssueHead(db, umbrella.id, {
+      excludeCheckpointId: checkpoint.id,
+    });
+    const childAfterDescendant = getLedgerIssueHead(db, child.id);
+    expect(afterDescendant.digest).toBe(selfBaseline.digest);
+    expect(afterDescendant.subtree_digest).not.toBe(selfBaseline.subtree_digest);
+    expect(childAfterDescendant.digest).toBe(childBaseline.digest);
+    expect(childAfterDescendant.subtree_digest).not.toBe(childBaseline.subtree_digest);
+
+    store.updateIssue(
+      umbrella.id,
+      { body: "Umbrella body drift after the pinned baseline" },
+      { ...SYSTEM_ACTOR, source: "mandible" },
+    );
+    const afterOwnDrift = getLedgerIssueHead(db, umbrella.id, {
+      excludeCheckpointId: checkpoint.id,
+    });
+    expect(afterOwnDrift.digest).not.toBe(selfBaseline.digest);
   });
 
   it("stores the self-baseline entry even for a zero-child manifest refresh", async () => {

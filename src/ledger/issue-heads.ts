@@ -14,6 +14,10 @@ export interface LedgerIssueHead {
 
 export interface LedgerIssueHeadOptions {
   at?: number;
+  // A manifest self-baseline is captured immediately before its own checkpoint
+  // event. Pinned comparisons may omit that one establishing event without
+  // changing the normal issue-head domain.
+  excludeCheckpointId?: string;
 }
 
 interface IssueHeadEventRow {
@@ -60,9 +64,14 @@ export function collectSubtreeIssueIds(db: Db, rootId: string): string[] {
   return rows.map((row) => row.issue_id);
 }
 
-function subtreeEventRows(db: Db, issueIds: string[], at: number | null): IssueHeadEventRow[] {
+function subtreeEventRows(
+  db: Db,
+  issueIds: string[],
+  at: number | null,
+  excludeCheckpointId: string | null,
+): IssueHeadEventRow[] {
   if (issueIds.length === 0) return [];
-  const params: Record<string, unknown> = { at };
+  const params: Record<string, unknown> = { at, excludeCheckpointId };
   const keys = issueIds.map((id, index) => {
     const key = `sid${index}`;
     params[key] = id;
@@ -73,6 +82,9 @@ function subtreeEventRows(db: Db, issueIds: string[], at: number | null): IssueH
     `SELECT id, event_type, entity_type, entity_id, payload_json, occurred_at, observed_at
        FROM ledger_events
       WHERE (@at IS NULL OR occurred_at <= @at)
+        AND (@excludeCheckpointId IS NULL
+          OR entity_type != 'issue_checkpoint'
+          OR entity_id != @excludeCheckpointId)
         AND (
           (entity_type = 'issue' AND entity_id IN (${inList}))
           OR (
@@ -121,10 +133,14 @@ export function getLedgerIssueHead(
   }
 
   const at = options.at ?? null;
+  const excludeCheckpointId = options.excludeCheckpointId ?? null;
   const events = db.prepare(
     `SELECT id, event_type, entity_type, entity_id, payload_json, occurred_at, observed_at
      FROM ledger_events
      WHERE (@at IS NULL OR occurred_at <= @at)
+       AND (@excludeCheckpointId IS NULL
+         OR entity_type != 'issue_checkpoint'
+         OR entity_id != @excludeCheckpointId)
        AND (
           (entity_type = 'issue' AND entity_id = @issueId)
           OR (
@@ -157,7 +173,7 @@ export function getLedgerIssueHead(
           )
        )
      ORDER BY occurred_at, observed_at, id`,
-  ).all({ issueId, at }) as IssueHeadEventRow[];
+  ).all({ issueId, at, excludeCheckpointId }) as IssueHeadEventRow[];
 
   const digest = createHash("sha256")
     .update(JSON.stringify(events))
@@ -170,7 +186,7 @@ export function getLedgerIssueHead(
   // subtree query returns the same rows as the own-head query above and
   // subtree_digest equals digest.
   const subtreeIds = collectSubtreeIssueIds(db, issue.id);
-  const subtreeEvents = subtreeEventRows(db, subtreeIds, at);
+  const subtreeEvents = subtreeEventRows(db, subtreeIds, at, excludeCheckpointId);
   const subtreeDigest = createHash("sha256")
     .update(JSON.stringify(subtreeEvents))
     .digest("hex");
