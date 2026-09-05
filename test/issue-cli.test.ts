@@ -15,6 +15,7 @@ let requestBodies: Array<{ path: string; method: string; body: unknown }> = [];
 let tempRoots: string[] = [];
 let issueHeads: Record<string, unknown> = {};
 let issueHeadsAt: Record<string, Record<string, unknown>> = {};
+let issueHeadsExcludingCheckpoint: Record<string, Record<string, unknown>> = {};
 let issueCheckpoints: Record<string, unknown[]> = {};
 
 const issueRevision = {
@@ -202,6 +203,7 @@ function listen(): Promise<number> {
       },
     },
   };
+  issueHeadsExcludingCheckpoint = {};
   issueCheckpoints = {
     abc: [
       {
@@ -256,7 +258,12 @@ function listen(): Promise<number> {
         const issueRef = decodeURIComponent(headMatch[1]);
         const params = new URLSearchParams(headMatch[2] ?? "");
         const at = params.get("at");
-        const head = at ? (issueHeadsAt[issueRef]?.[at] ?? issueHeads[issueRef]) : issueHeads[issueRef];
+        const excludeCheckpoint = params.get("exclude_checkpoint");
+        const head = at
+          ? (issueHeadsAt[issueRef]?.[at] ?? issueHeads[issueRef])
+          : excludeCheckpoint
+            ? (issueHeadsExcludingCheckpoint[issueRef]?.[excludeCheckpoint] ?? issueHeads[issueRef])
+            : issueHeads[issueRef];
         if (!head) {
           res.statusCode = 404;
           res.end(JSON.stringify({ error: "ledger issue not found" }));
@@ -1317,8 +1324,25 @@ describe("issue CLI body revisions", () => {
         created_at: 1_700_000_020_000,
       },
     ];
-    // Defaults: abc's current head is digest-before / subtree-abc-before, so
-    // both digests are stable against the stored baseline.
+    // The normal head includes the checkpoint event and therefore differs from
+    // the pre-checkpoint self baseline. The comparison must exclude only the
+    // exact checkpoint that established that baseline.
+    issueHeads.abc = {
+      ...(issueHeads.abc as Record<string, unknown>),
+      digest: "digest-after-checkpoint",
+      subtree_digest: "subtree-abc-after-checkpoint",
+      last_event_kind: "issue.checkpoint.created",
+      subtree_last_event_kind: "issue.checkpoint.created",
+    };
+    issueHeadsExcludingCheckpoint.abc = {
+      "checkpoint-zero-child": {
+        ...(issueHeads.abc as Record<string, unknown>),
+        digest: "digest-before",
+        subtree_digest: "subtree-abc-before",
+        last_event_kind: "issue.created",
+        subtree_last_event_kind: "issue.created",
+      },
+    };
 
     const result = await run([
       "issue",
@@ -1334,6 +1358,9 @@ describe("issue CLI body revisions", () => {
     expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual([]);
     expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
     expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(requestedPaths).toContain(
+      "/api/ledger/issues/abc/head?exclude_checkpoint=checkpoint-zero-child",
+    );
   });
 
   it("compares the stored self baseline directly for a post-upgrade checkpoint", async () => {
