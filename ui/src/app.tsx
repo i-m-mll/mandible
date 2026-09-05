@@ -11,6 +11,7 @@ import {
   getAuthQueue,
   getConsoleSessions,
   getDashboardBadges,
+  getAppThemePreference,
   getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
@@ -26,6 +27,7 @@ import {
   retryAuthRequest,
   scanIssues,
   updateAuthRequestField,
+  updateAppThemePreference,
   updateSetting,
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
@@ -83,6 +85,8 @@ import {
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from './app-shell';
+import { useAppRightSidebarState } from './right-sidebar-state';
+import { PreviewIcon } from './components/icons/TabIcons';
 import {
   AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING,
   AUTH_AUTO_SHOW_CONSOLE_SETTING,
@@ -582,6 +586,8 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [hostAppTheme, setHostAppTheme] = useState<'system' | 'light' | 'dark' | null>(null);
+  const hostAppThemeRevisionRef = useRef(0);
   const [railDrag, setRailDrag] = useState<AppRailDrag | null>(null);
   const railDragRef = useRef<AppRailDrag | null>(null);
   const [pendingRailOrder, setPendingRailOrder] = useState<AppRailPreviewOrder | null>(null);
@@ -656,7 +662,11 @@ function App(): JSX.Element {
   const leftShadowEnabled = false;
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
-  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [registeredRightSidebar, setRegisteredRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [fallbackRightSidebarState, updateFallbackRightSidebarState] = useAppRightSidebarState(
+    'app',
+    { open: false, width: 360 },
+  );
   const rightSidebarOwnerRef = useRef<string | null>(null);
   const [narrowRightSidebar, setNarrowRightSidebar] = useState(false);
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
@@ -680,13 +690,26 @@ function App(): JSX.Element {
     return () => {
       if (rightSidebarOwnerRef.current !== ownerId) return;
       rightSidebarOwnerRef.current = null;
-      setRightSidebar((current) => (current?.id === ownerId ? null : current));
+      setRegisteredRightSidebar((current) => (current?.id === ownerId ? null : current));
     };
   }, []);
   const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
     if (rightSidebarOwnerRef.current !== ownerId) return;
-    setRightSidebar((current) => current === descriptor ? current : descriptor);
+    setRegisteredRightSidebar((current) => current === descriptor ? current : descriptor);
   }, []);
+  const fallbackRightSidebar = useMemo<AppRightSidebarDescriptor>(() => ({
+    id: 'app-preview',
+    kind: 'panel',
+    title: 'Preview',
+    ariaLabel: 'Preview',
+    icon: <PreviewIcon size={18} />,
+    content: <p className="app-right-sidebar__empty">Select an item to preview it.</p>,
+    open: fallbackRightSidebarState.open,
+    width: fallbackRightSidebarState.width,
+    onOpenChange: (open) => updateFallbackRightSidebarState({ open }),
+    onWidthChange: (width) => updateFallbackRightSidebarState({ width }),
+  }), [fallbackRightSidebarState, updateFallbackRightSidebarState]);
+  const rightSidebar = registeredRightSidebar ?? fallbackRightSidebar;
   const setRightSidebarOpen = useCallback((open: boolean) => {
     if (!rightSidebar || rightSidebar.open === open) return;
     rightSidebarFocusTransferRef.current = true;
@@ -726,7 +749,28 @@ function App(): JSX.Element {
     return () => query.removeEventListener('change', update);
   }, []);
 
-  useEffect(() => updateRootAppTheme(state.settings), [state.settings]);
+  const effectiveSettings = useMemo(() => (
+    hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
+  ), [hostAppTheme, state.settings]);
+
+  useEffect(() => updateRootAppTheme(effectiveSettings), [effectiveSettings]);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      void getAppThemePreference().then((preference) => {
+        if (!active) return;
+        hostAppThemeRevisionRef.current = preference.revision;
+        setHostAppTheme(preference.value ?? normalizeAppThemeMode(state.settings.app_theme));
+      }).catch(() => undefined);
+    };
+    load();
+    window.addEventListener('focus', load);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', load);
+    };
+  }, []);
 
   useEffect(() => {
     const tab = route.tab;
@@ -1791,7 +1835,33 @@ function App(): JSX.Element {
     }
   };
 
+  const saveAppTheme = async (value: string) => {
+    const theme = normalizeAppThemeMode(value);
+    const previous = hostAppTheme ?? normalizeAppThemeMode(state.settings.app_theme);
+    setHostAppTheme(theme);
+    try {
+      let saved;
+      try {
+        saved = await updateAppThemePreference(theme, hostAppThemeRevisionRef.current);
+      } catch {
+        const current = await getAppThemePreference();
+        hostAppThemeRevisionRef.current = current.revision;
+        saved = await updateAppThemePreference(theme, current.revision);
+      }
+      hostAppThemeRevisionRef.current = saved.revision;
+      setHostAppTheme(saved.value ?? theme);
+      dispatch({ type: 'updateSetting', key: 'app_theme', value: theme });
+    } catch (error) {
+      setHostAppTheme(previous);
+      throw error;
+    }
+  };
+
   const handleSettingsSave = async (key: string, value: string) => {
+    if (key === 'app_theme') {
+      await saveAppTheme(value);
+      return;
+    }
     await updateSetting(key, value);
     dispatch({ type: 'updateSetting', key, value });
   };
@@ -2347,13 +2417,13 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const rightSidebarAvailable = rightSidebar !== null;
+  const rightSidebarAvailable = true;
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
-  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
+  const appThemeMode = normalizeAppThemeMode(effectiveSettings.app_theme);
   const nextAppThemeMode = appThemeMode === 'system' ? 'light' : appThemeMode === 'light' ? 'dark' : 'system';
   const appThemeLabel = appThemeMode === 'system' ? 'System' : appThemeMode === 'light' ? 'Light' : 'Dark';
   const nextAppThemeLabel = nextAppThemeMode === 'system' ? 'System' : nextAppThemeMode === 'light' ? 'Light' : 'Dark';
@@ -2471,7 +2541,7 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab} app-layout--right-sidebar-available${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
           style={rightSidebarOpen && rightSidebar ? {
             '--app-right-sidebar-width': `${rightSidebar.width}px`,
           } as JSX.CSSProperties : undefined}
@@ -2535,10 +2605,8 @@ function App(): JSX.Element {
                   className="app-rail__item app-rail__theme-toggle"
                   aria-label={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
                   title={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
-                  disabled={previewMutationsRejected}
                   onClick={() => {
-                    if (previewMutationsRejected) return;
-                    void handleSettingsSave('app_theme', nextAppThemeMode);
+                    void saveAppTheme(nextAppThemeMode);
                   }}
                 >
                   <span className="app-rail__icon">{appThemeIcon}</span>
@@ -2564,7 +2632,7 @@ function App(): JSX.Element {
           data-app-surface="main"
           inert={narrowRightSidebar && rightSidebarOpen}
         >
-        {rightSidebarAvailable && !rightSidebarOpen && rightSidebar?.togglePlacement !== 'detail-header' ? (
+        {rightSidebarAvailable && !rightSidebarOpen ? (
           <AppRightSidebarToggleButton
             descriptor={rightSidebar!}
             buttonRef={rightSidebarToggleRef}
@@ -2674,7 +2742,7 @@ function App(): JSX.Element {
         })())}
         {renderTabPanel('settings', (
           <LazySettingsView
-            settings={state.settings}
+            settings={effectiveSettings}
             onSave={handleSettingsSave}
             typography={typography}
             onTypographySave={handleTypographySave}

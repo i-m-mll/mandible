@@ -406,6 +406,22 @@ describe("exact conversation freshness", () => {
     `).get(seeded.id)).toEqual({ device: 1, inode: 1, ctime: 1 });
   });
 
+  it("repairs an exact Codex active-to-archive move on demand", async () => {
+    const seeded = await seed("archived-session");
+    const archivedDir = path.join(tempDir, "home", ".codex", "archived_sessions");
+    const archivedFile = path.join(archivedDir, path.basename(seeded.file));
+    await fsp.mkdir(archivedDir, { recursive: true });
+    await fsp.rename(seeded.file, archivedFile);
+
+    await expect(ensureExactConversationFresh(db, seeded.id)).resolves.toMatchObject({
+      conversationId: seeded.id,
+      sourcePath: archivedFile,
+      refreshed: true,
+    });
+    expect(db.prepare("SELECT source_path FROM conversations WHERE id = ?").get(seeded.id))
+      .toEqual({ source_path: archivedFile });
+  });
+
   it("reports unavailable sources explicitly without deleting normalized fallback bytes", async () => {
     const seeded = await seed("missing-session");
     const before = db.prepare("SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position").all(seeded.id);
@@ -453,6 +469,27 @@ describe("exact conversation freshness", () => {
     };
     await expect(ensureExactConversationFresh(db, seeded.id, { timeoutMs: 5, ingest: slowIngest })).rejects.toMatchObject({ code: "freshness_pending" });
     await expect(ensureExactConversationFresh(db, seeded.id, { timeoutMs: 500, ingest: slowIngest })).resolves.toMatchObject({ conversationId: seeded.id });
+    expect(ingests).toBe(1);
+  });
+
+  it("returns the indexed version immediately without starting read-triggered ingestion", async () => {
+    const seeded = await seed("background-refresh-session");
+    await appendAt(seeded.file, assistant("new tail", 3), 2);
+    let ingests = 0;
+    const ingest = async (file: string) => {
+      ingests += 1;
+      return triggerExactPathIngest(file);
+    };
+
+    await expect(ensureExactConversationFresh(db, seeded.id, {
+      ingest,
+      waitForFresh: false,
+    })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
+    expect(ingests).toBe(0);
+    await expect(ensureExactConversationFresh(db, seeded.id, { ingest })).resolves.toMatchObject({
+      conversationId: seeded.id,
+      refreshed: true,
+    });
     expect(ingests).toBe(1);
   });
 
@@ -563,22 +600,22 @@ describe("exact conversation freshness", () => {
       .toEqual({ title: "Sparse provider title" });
   });
 
-  it("fails closed with typed evidence for missing, mismatched, stale, and unreadable exact metadata", async () => {
+  it("keeps transcripts readable when optional Codex title metadata cannot converge", async () => {
     const missing = await seed("missing-metadata-session");
     deleteThread("missing-metadata-session");
-    await expect(ensureExactConversationFresh(db, missing.id)).rejects.toMatchObject({ code: "provider_metadata_missing" });
+    await expect(ensureExactConversationFresh(db, missing.id)).resolves.toMatchObject({ refreshed: false });
 
     const mismatched = await seed("mismatched-metadata-session");
     updateThread("mismatched-metadata-session", { rolloutPath: path.join(tempDir, "elsewhere", "other.jsonl") });
-    await expect(ensureExactConversationFresh(db, mismatched.id)).rejects.toMatchObject({ code: "provider_metadata_mismatched" });
+    await expect(ensureExactConversationFresh(db, mismatched.id)).resolves.toMatchObject({ refreshed: false });
 
     const stale = await seed("stale-metadata-session");
     updateThread("stale-metadata-session", { rolloutPath: stale.file, updatedAtMs: 1 });
-    await expect(ensureExactConversationFresh(db, stale.id)).rejects.toMatchObject({ code: "provider_metadata_stale" });
+    await expect(ensureExactConversationFresh(db, stale.id)).resolves.toMatchObject({ refreshed: false });
 
     const unreadable = await seed("unreadable-metadata-session");
     fs.rmSync(stateDbPath());
     fs.writeFileSync(stateDbPath(), "not sqlite");
-    await expect(ensureExactConversationFresh(db, unreadable.id)).rejects.toMatchObject({ code: "provider_metadata_unavailable" });
+    await expect(ensureExactConversationFresh(db, unreadable.id)).resolves.toMatchObject({ refreshed: false });
   });
 });

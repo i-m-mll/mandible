@@ -103,7 +103,7 @@ export function AttributionIdentity({
         onClick={() => setOpen((value) => !value)}
       >
         <span className="attribution-identity__name">{display}</span>
-        {resolvedUser?.kind && (
+        {resolvedUser?.kind === 'agent' && (
           <span className={`attribution-identity__kind attribution-identity__kind--${resolvedUser.kind}`}>
             {resolvedUser.kind}
           </span>

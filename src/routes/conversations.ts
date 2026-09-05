@@ -163,18 +163,22 @@ function mapSidebarConversation(
 const MAX_SIDEBAR_PROJECTS = 500;
 const MAX_SIDEBAR_PROJECT_IDS_LENGTH = 32_768;
 
-function parseSidebarProjectIds(raw: string | undefined): string[] {
+function parseSidebarIds(raw: string | undefined, name: string): string[] {
   if (raw === undefined || raw === "") return [];
   if (raw.length > MAX_SIDEBAR_PROJECT_IDS_LENGTH) {
-    throw new Error(`project_ids exceeds ${MAX_SIDEBAR_PROJECT_IDS_LENGTH} characters`);
+    throw new Error(`${name} exceeds ${MAX_SIDEBAR_PROJECT_IDS_LENGTH} characters`);
   }
   const values = raw.split(",").map((value) => value.trim());
-  if (values.some((value) => !value)) throw new Error("project_ids contains an empty id");
+  if (values.some((value) => !value)) throw new Error(`${name} contains an empty id`);
   const ids = [...new Set(values)];
   if (ids.length > MAX_SIDEBAR_PROJECTS) {
-    throw new Error(`project_ids accepts at most ${MAX_SIDEBAR_PROJECTS} ids`);
+    throw new Error(`${name} accepts at most ${MAX_SIDEBAR_PROJECTS} ids`);
   }
   return ids;
+}
+
+function parseSidebarProjectIds(raw: string | undefined): string[] {
+  return parseSidebarIds(raw, "project_ids");
 }
 
 function loadSidebarProjects(db: ReturnType<typeof getDb>): ConversationSidebarProject[] {
@@ -651,8 +655,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
   server.get("/api/conversations/sidebar", async (req, res) => {
     const query = req.query ?? {};
     let requestedProjectIds: string[];
+    let clientPinnedIds: string[];
     try {
       requestedProjectIds = parseSidebarProjectIds(query.project_ids);
+      clientPinnedIds = parseSidebarIds(query.pinned_ids, "pinned_ids");
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       return;
@@ -713,10 +719,13 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       min_blocks: Number.isFinite(minBlocks) && minBlocks > 0 ? minBlocks : null,
       exclude_subagents: excludeSubagents,
       project_ids: [...requestedProjectIds].sort(),
+      pinned_ids: [...clientPinnedIds].sort(),
       sort,
     })).digest("base64url");
 
-    let rows = db.prepare(`SELECT c.* FROM conversations c ${where}`).all(...params) as ConversationRow[];
+    const clientPinned = new Set(clientPinnedIds);
+    let rows = (db.prepare(`SELECT c.* FROM conversations c ${where}`).all(...params) as ConversationRow[])
+      .map((row) => clientPinned.has(row.id) ? { ...row, starred: 1 } : row);
     if (searchNeedle && fullTextSearch && rows.length > 0) {
       const searched = await getConversationSearchCache(db).search({
         conversationIds: rows.map((row) => row.id),
@@ -1050,7 +1059,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
 
     let id: string;
     try {
-      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+      id = (await ensureExactConversationFresh(db, requestedRef, { waitForFresh: false })).conversationId;
     } catch (error) {
       if (sendFreshnessError(res, error)) return;
       sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
@@ -1115,8 +1124,22 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id)
         : null;
+      const retainedStructuralTotal = (db.prepare(`
+        SELECT COUNT(*) AS total FROM conversation_structural_blocks
+         WHERE conversation_id = ? AND status = 'current'
+      `).get(id) as { total: number }).total;
+      const retainedLegacyTotal = (db.prepare(`
+        SELECT COUNT(*) AS total FROM conversation_blocks
+         WHERE conversation_id = ? AND payload_state = 'legacy'
+      `).get(id) as { total: number }).total;
+      // A projected or retention-bounded database can preserve the conversation's
+      // logical block_count while retaining only a readable tail. Page offsets are
+      // ordinals within the retained representation, not global block positions.
+      const retainedTotal = Math.max(cachedTotal ?? 0, retainedStructuralTotal, retainedLegacyTotal);
       if (cachedTotal !== null) total = cachedTotal;
-      let anchorPosition = total > 0 ? total - 1 : null;
+      let anchorPosition = targetKind === "initial" || targetKind === "latest"
+        ? null
+        : total > 0 ? total - 1 : null;
       if (targetKind === "position") {
         anchorPosition = Number(requestedValue);
       } else if (targetKind === "block" || targetKind === "turn") {
@@ -1134,15 +1157,16 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
           : undefined;
         anchorPosition = sparsePosition ?? densePosition?.position ?? null;
       }
-      const emptyInitial = total === 0 && (targetKind === "initial" || targetKind === "latest");
-      if (!emptyInitial && (anchorPosition === null || anchorPosition < 0 || anchorPosition >= total)) {
+      const emptyInitial = retainedTotal === 0 && (targetKind === "initial" || targetKind === "latest");
+      if (!emptyInitial && targetKind !== "initial" && targetKind !== "latest"
+          && (anchorPosition === null || anchorPosition < 0 || anchorPosition >= total)) {
         sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
         return;
       }
       windowOffset = emptyInitial
         ? 0
         : targetKind === "initial" || targetKind === "latest"
-        ? Math.max(0, total - limit)
+        ? Math.max(0, retainedTotal - limit)
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
       const sourcePage = await sourceReader.readPage(id, { offset: windowOffset, limit });
       if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
@@ -1155,6 +1179,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       readableBlocks = sourcePage.value.blocks;
       bodySource = sourcePage.status;
       total = sourcePage.value.total;
+      if (targetKind === "initial" || targetKind === "latest") {
+        anchorPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
+      }
       resolvedBlock = anchorPosition === null
         ? null
         : readableBlocks.find((block) => block.position === anchorPosition) ?? null;

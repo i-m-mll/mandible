@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // Previews stay in the disposable cache root: they are regenerable copies.
 const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
+const Database = require("better-sqlite3");
 
 const DEFAULT_PORT_START = 19421;
 const DEFAULT_PORT_END = 19499;
@@ -149,6 +150,16 @@ async function createOrReusePreview(options) {
   }
 
   const preview = previewPaths(branch);
+  // A dead preview is replaceable, but its port is browser identity: keeping
+  // it preserves origin-scoped UI state and lets the existing IAB tab recover
+  // on reload. Capture that identity before stale-cache cleanup removes bytes.
+  const priorMetadata = readJsonFile(preview.metadata);
+  const priorPort = priorMetadata?.branch === branch
+    && priorMetadata?.worktree
+    && canonicalPath(priorMetadata.worktree) === canonicalPath(worktree)
+    && Number.isInteger(priorMetadata.port)
+    ? priorMetadata.port
+    : null;
   const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
 
   if (options.dryRun) {
@@ -188,7 +199,11 @@ async function createOrReusePreview(options) {
     run("npm", ["run", "build"], { cwd: worktree });
   }
 
-  const port = options.port ?? await findFreePort(DEFAULT_PORT_START, DEFAULT_PORT_END);
+  const port = options.port ?? (
+    priorPort !== null && !await isPortOpen(priorPort)
+      ? priorPort
+      : await findFreePort(DEFAULT_PORT_START, DEFAULT_PORT_END)
+  );
   if (!fs.existsSync(sourceDb)) {
     throw new Error(`Source database does not exist: ${sourceDb}`);
   }
@@ -941,7 +956,13 @@ async function refreshExistingPreview(existing, details) {
     stderrLog: validated.stderrLog,
   });
 
-  const restartLifecycle = await restartPreviewProcess({
+  const stopped = await stopPreviewProcess(validated.pidFile);
+  const structureCache = await seedProjectedConversationStructureCache({
+    sourceCache: sourceConversationStructureCachePath(),
+    targetCache: validated.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB,
+    projectedDb: validated.dbCopy,
+  });
+  const started = await startPreviewProcess({
     runScript: validated.runScript,
     worktree: details.worktree,
     port: validated.port,
@@ -951,6 +972,7 @@ async function refreshExistingPreview(existing, details) {
     stdoutLog: validated.stdoutLog,
     stderrLog: validated.stderrLog,
   });
+  const restartLifecycle = { ...started, stopped };
 
   const health = await waitForPreviewReadiness(
     validated.port,
@@ -980,6 +1002,8 @@ async function refreshExistingPreview(existing, details) {
     stderrLog: validated.stderrLog,
     runScript: validated.runScript,
     instanceEnv: validated.instanceEnv,
+    projection: { ...existing.projection, structureCache },
+    structureCache,
     briefingDemo,
     restartLifecycle,
     health,
@@ -1431,13 +1455,78 @@ export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
       `Projected database extractor returned invalid JSON: ${error instanceof Error ? error.message : error}`,
     );
   }
+  const previewRoot = path.dirname(dbCopy);
+  const structureCache = await seedProjectedConversationStructureCache({
+    sourceCache: sourceConversationStructureCachePath(),
+    targetCache: previewIsolationEnv(previewRoot, sourceDb).MANDIBLE_CONVERSATION_STRUCTURE_DB,
+    projectedDb: dbCopy,
+  });
   const briefingDemo = await materializeProjectedBriefingDemo({
     worktree,
-    previewRoot: path.dirname(dbCopy),
+    previewRoot,
     db: dbCopy,
     sourceDb,
   });
-  return { ...projection, briefingDemo };
+  return { ...projection, structureCache, briefingDemo };
+}
+
+function sourceConversationStructureCachePath() {
+  const override = process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB?.trim();
+  return path.resolve(override || path.join(os.homedir(), ".cache", "mandible", "conversations", "structure.db"));
+}
+
+/**
+ * Copy the source daemon's derived coordinate index into preview custody.
+ *
+ * A dataful preview cannot rebuild this index on demand: reject-mode previews
+ * intentionally disable ingestion, and doing that work from a GET request
+ * blocks the daemon. SQLite backup includes the source WAL consistently. Rows
+ * are then restricted to exact conversation/source-version pairs in the
+ * projected ledger, so stale coordinates cannot be used with different bytes.
+ */
+export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb }) {
+  if (!fs.existsSync(sourceCache)) {
+    return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };
+  }
+  fs.mkdirSync(path.dirname(targetCache), { recursive: true });
+  for (const candidate of [targetCache, `${targetCache}-journal`, `${targetCache}-wal`, `${targetCache}-shm`]) {
+    fs.rmSync(candidate, { force: true });
+  }
+
+  const source = new Database(sourceCache, { readonly: true, fileMustExist: true });
+  try {
+    await source.backup(targetCache);
+  } finally {
+    source.close();
+  }
+
+  const target = new Database(targetCache);
+  try {
+    target.pragma("foreign_keys = ON");
+    target.prepare("ATTACH DATABASE ? AS projected").run(projectedDb);
+    target.prepare(`
+      DELETE FROM cache_conversations
+       WHERE NOT EXISTS (
+         SELECT 1
+           FROM projected.conversations conversation
+           JOIN projected.conversation_sources source
+             ON source.conversation_id = conversation.id
+          WHERE conversation.id = cache_conversations.conversation_id
+            AND source.current_version_id = cache_conversations.source_version_id
+       )
+    `).run();
+    target.prepare("DETACH DATABASE projected").run();
+    target.exec("VACUUM");
+    return {
+      status: "seeded",
+      source: sourceCache,
+      target: targetCache,
+      conversations: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_conversations").get().count),
+      blocks: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_blocks").get().count),
+    };
+  } finally {
+    target.close();
+  }
 }
 
 /**

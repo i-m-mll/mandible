@@ -935,7 +935,6 @@ export function InboxView({
   onAckAuthResult,
   onAckManagedReminderOccurrence,
   onAckAll,
-  onRefresh,
   mutationsAllowed = true,
 }: InboxViewProps): JSX.Element {
   const [chips, setChips] = useState<FilterChip[]>([]);
@@ -1059,17 +1058,6 @@ export function InboxView({
                       title={mutationsAllowed ? 'Acknowledge all inbox items' : 'Disabled on preview instances'}
                     >
                       Acknowledge All
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setActionsOpen(false);
-                        onRefresh();
-                      }}
-                      disabled={loading}
-                    >
-                      {loading ? 'Refreshing…' : 'Refresh'}
                     </button>
                   </div>
                 </>

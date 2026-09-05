@@ -16,12 +16,22 @@ export type ChatShownProjectsPreference = {
   revision: number;
 };
 
+export type HostAppTheme = "system" | "light" | "dark";
+
+export type AppThemePreference = {
+  version: 1;
+  key: "app_theme";
+  value: HostAppTheme | null;
+  revision: number;
+};
+
 type HostUserPreferencesFile = {
   version: 1;
   userId: string;
   revision: number;
   settings: {
     chatShownProjects: ChatShownProject[];
+    appTheme: HostAppTheme | null;
   };
 };
 
@@ -38,7 +48,7 @@ export class HostUserPreferencesError extends Error {
 export class HostUserPreferencesRevisionConflict extends Error {
   constructor(
     public readonly expectedRevision: number,
-    public readonly current: ChatShownProjectsPreference,
+    public readonly current: ChatShownProjectsPreference | AppThemePreference,
   ) {
     super(`Host preference revision conflict: expected ${expectedRevision}, found ${current.revision}`);
     this.name = "HostUserPreferencesRevisionConflict";
@@ -86,7 +96,7 @@ function emptyFile(userId: string): HostUserPreferencesFile {
     version: 1,
     userId,
     revision: 0,
-    settings: { chatShownProjects: [] },
+    settings: { chatShownProjects: [], appTheme: null },
   };
 }
 
@@ -104,12 +114,16 @@ function parseFile(raw: string, userId: string): HostUserPreferencesFile {
     ? record.settings as Record<string, unknown>
     : null;
   const shownProjects = normalizeChatShownProjects(settings?.chatShownProjects);
+  const appTheme = settings?.appTheme === undefined || settings.appTheme === null
+    ? null
+    : normalizeAppTheme(settings.appTheme);
   if (
     record?.version !== 1
     || record.userId !== userId
     || !Number.isSafeInteger(record.revision)
     || (record.revision as number) < 0
     || shownProjects === null
+    || (settings?.appTheme !== undefined && settings.appTheme !== null && appTheme === null)
   ) {
     throw new HostUserPreferencesError("invalid_file", "Host preference file does not match schema version 1.");
   }
@@ -117,8 +131,16 @@ function parseFile(raw: string, userId: string): HostUserPreferencesFile {
     version: 1,
     userId,
     revision: record.revision as number,
-    settings: { chatShownProjects: shownProjects },
+    settings: { chatShownProjects: shownProjects, appTheme },
   };
+}
+
+export function normalizeAppTheme(value: unknown): HostAppTheme | null {
+  return value === "system" || value === "light" || value === "dark" ? value : null;
+}
+
+function appThemeSnapshot(file: HostUserPreferencesFile): AppThemePreference {
+  return { version: 1, key: "app_theme", value: file.settings.appTheme, revision: file.revision };
 }
 
 function snapshot(file: HostUserPreferencesFile): ChatShownProjectsPreference {
@@ -234,6 +256,11 @@ export class HostUserPreferencesStore {
     return snapshot(await readFileOrDefault(this.filePath(safeId), safeId));
   }
 
+  async readAppTheme(userId: string): Promise<AppThemePreference> {
+    const safeId = safeUserId(userId);
+    return appThemeSnapshot(await readFileOrDefault(this.filePath(safeId), safeId));
+  }
+
   async writeChatShownProjects(
     userId: string,
     expectedRevision: number,
@@ -252,10 +279,38 @@ export class HostUserPreferencesStore {
         version: 1,
         userId: safeId,
         revision: current.revision + 1,
-        settings: { chatShownProjects: value },
+        settings: { ...current.settings, chatShownProjects: value },
       };
       await writeFileAtomically(filePath, next);
       return snapshot(next);
+    } finally {
+      await release();
+    }
+  }
+
+
+  async writeAppTheme(
+    userId: string,
+    expectedRevision: number,
+    value: HostAppTheme,
+  ): Promise<AppThemePreference> {
+    const safeId = safeUserId(userId);
+    const filePath = this.filePath(safeId);
+    await fs.promises.mkdir(this.root, { recursive: true, mode: 0o700 });
+    const release = await acquireLock(`${filePath}.lock`);
+    try {
+      const current = await readFileOrDefault(filePath, safeId);
+      if (current.revision !== expectedRevision) {
+        throw new HostUserPreferencesRevisionConflict(expectedRevision, appThemeSnapshot(current));
+      }
+      const next: HostUserPreferencesFile = {
+        version: 1,
+        userId: safeId,
+        revision: current.revision + 1,
+        settings: { ...current.settings, appTheme: value },
+      };
+      await writeFileAtomically(filePath, next);
+      return appThemeSnapshot(next);
     } finally {
       await release();
     }

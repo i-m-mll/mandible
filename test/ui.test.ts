@@ -1872,6 +1872,7 @@ describe('app shell', () => {
     };
     vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery));
     const savedModes: string[] = [];
+    let themeRevision = 0;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/settings' && init?.method !== 'PUT') {
@@ -1879,10 +1880,24 @@ describe('app shell', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (url === '/api/settings/app_theme' && init?.method === 'PUT') {
+      if (url === '/api/host-preferences/app-theme' && init?.method !== 'PUT') {
+        return new Response(JSON.stringify({
+          version: 1,
+          key: 'app_theme',
+          value: themeRevision === 0 ? null : storedTheme,
+          revision: themeRevision,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/host-preferences/app-theme' && init?.method === 'PUT') {
         storedTheme = (JSON.parse(String(init.body)) as { value: string }).value;
+        themeRevision += 1;
         savedModes.push(storedTheme);
-        return new Response('{}', { headers: { 'content-type': 'application/json' } });
+        return new Response(JSON.stringify({
+          version: 1,
+          key: 'app_theme',
+          value: storedTheme,
+          revision: themeRevision,
+        }), { headers: { 'content-type': 'application/json' } });
       }
       if (url === '/api/projects') {
         return new Response(JSON.stringify({ projects: [] }), {
@@ -3129,9 +3144,10 @@ describe('WorkOverviewView', () => {
 
     fireEvent.click(screen.getByLabelText('Advanced filters'));
     expect(screen.getByText('Show excluded')).toBeTruthy();
-    expect(screen.getByText('Refresh now')).toBeTruthy();
-    fireEvent.click(screen.getByText('Refresh now'));
-    expect(onRescan).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Refresh now')).toBeNull();
+    expect(screen.queryByText('Scan now')).toBeNull();
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(onRescan).toHaveBeenCalledTimes(1));
 
     changeSelect(screen.getByDisplayValue('Last activity'), 'name');
     fireEvent.click(screen.getByTitle('Reverse sort direction'));
@@ -3380,7 +3396,7 @@ describe('WorkOverviewView', () => {
     await screen.findByText('Safe candidates');
     const filter = screen.getByPlaceholderText('Filter branches...') as HTMLInputElement;
     fireEvent.input(filter, { target: { value: 'feature' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh audit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Run audit' }));
     await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(2));
     expect(filter.value).toBe('feature');
     expect(screen.getByRole('button', { name: /Branch audit/ }).getAttribute('aria-expanded')).toBe('true');

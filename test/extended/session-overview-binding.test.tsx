@@ -1,9 +1,8 @@
 // Issue f59b5bd (review S1/C4) — Session Overview page binding contract:
 // the page-supplied agent_session binding is display-only and must NEVER be
-// sent as mutation input. The "Register as Mandible session" action posts
-// only the server-resolved full identity from the match record, and a
-// truncated resolver result is never auto-bound as a unique match.
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+// sent as mutation input, and a truncated resolver result is never auto-bound
+// as a unique match.
+import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionOverviewView } from '../../ui/src/views/session-overview';
@@ -123,8 +122,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('SessionOverviewView register action (review S1)', () => {
-  it('sends only the server-resolved identity — never the page binding — as mutation input', async () => {
+describe('SessionOverviewView provider-scoped binding', () => {
+  it('renders useful provider data without asking the viewer to create a session row', async () => {
     const registered = { value: false };
     const { calls } = stubFetch({ registered });
 
@@ -135,36 +134,12 @@ describe('SessionOverviewView register action (review S1)', () => {
       />,
     );
 
-    const registerButton = await screen.findByRole('button', {
-      name: 'Register as Mandible session',
-    });
-    fireEvent.click(registerButton);
-
     await waitFor(() => {
-      expect(calls.some((call) => call.url === '/api/sessions/register-provider')).toBe(true);
+      expect(screen.getByText('Linked issues')).toBeTruthy();
     });
-
-    // The registration mutation carries ONLY the server-resolved full
-    // identity from the match record.
-    const registerCall = calls.find((call) => call.url === '/api/sessions/register-provider');
-    expect(registerCall?.method).toBe('POST');
-    expect(registerCall?.body).toEqual({ provider_session_id: FULL_ID });
-
-    // The forgeable page-binding value itself never appears as a field in ANY
-    // mutation request body (the full id legitimately shares its prefix; the
-    // exact-shape assertion above already pins the register payload).
-    for (const call of calls) {
-      if (call.method === 'GET') continue;
-      const values = call.body && typeof call.body === 'object'
-        ? Object.values(call.body as Record<string, unknown>)
-        : [call.body];
-      expect(values).not.toContain(PAGE_BINDING);
-    }
-
-    // The view upgrades in place to the bound state after registration.
-    await waitFor(() => {
-      expect(screen.getByText(/Bound to agent session/)).toBeTruthy();
-    });
+    expect(screen.queryByText(/not registered as a Mandible session/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Register as Mandible session' })).toBeNull();
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
   });
 });
 

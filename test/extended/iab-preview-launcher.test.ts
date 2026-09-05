@@ -177,7 +177,7 @@ function byteInventory(root: string): string[] {
   return entries.sort();
 }
 
-function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo" | "materializeProjectedAgentsReview", details: object) {
+function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo" | "materializeProjectedAgentsReview" | "seedProjectedConversationStructureCache", details: object) {
   const source = `
     const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
     const result = await launcher[${JSON.stringify(name)}](${JSON.stringify(details)});
@@ -886,6 +886,66 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
 }
 
 describe("iab-preview launcher", () => {
+  it("seeds only exact projected conversation versions into the isolated structure cache", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-structure-cache-"));
+    tempRoots.push(root);
+    const projectedDb = path.join(root, "preview.db");
+    const sourceCache = path.join(root, "source-structure.db");
+    const targetCache = path.join(root, "preview", "conversations", "structure.db");
+
+    const projected = new Database(projectedDb);
+    projected.exec(`
+      CREATE TABLE conversations (id TEXT PRIMARY KEY);
+      CREATE TABLE conversation_sources (
+        conversation_id TEXT NOT NULL,
+        current_version_id TEXT
+      );
+      INSERT INTO conversations VALUES ('kept');
+      INSERT INTO conversation_sources VALUES ('kept', 'version-current');
+    `);
+    projected.close();
+
+    const source = new Database(sourceCache);
+    source.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE cache_conversations (
+        cache_id INTEGER PRIMARY KEY,
+        conversation_id TEXT NOT NULL UNIQUE,
+        source_version_id TEXT NOT NULL
+      );
+      CREATE TABLE cache_blocks (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (cache_conversation_id, position)
+      );
+      INSERT INTO cache_conversations VALUES (1, 'kept', 'version-current');
+      INSERT INTO cache_conversations VALUES (2, 'stale', 'version-old');
+      INSERT INTO cache_blocks VALUES (1, 0);
+      INSERT INTO cache_blocks VALUES (2, 0);
+    `);
+    source.close();
+
+    const result = runLauncherExport("seedProjectedConversationStructureCache", {
+      sourceCache,
+      targetCache,
+      projectedDb,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "seeded",
+      source: sourceCache,
+      target: targetCache,
+      conversations: 1,
+      blocks: 1,
+    });
+    const seeded = new Database(targetCache, { readonly: true });
+    expect(seeded.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
+      .toEqual([{ conversation_id: "kept", source_version_id: "version-current" }]);
+    expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
+      .toEqual([{ cache_conversation_id: 1, position: 0 }]);
+    seeded.close();
+  });
+
   it("rejects malformed agents-review refs before touching the launcher-owned copy", () => {
     const fixture = createSeedFixture();
     const before = fs.readFileSync(fixture.db);

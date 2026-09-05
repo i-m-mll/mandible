@@ -138,7 +138,7 @@ describe("structured conversation controller adapters", () => {
 
     expect((await adapter.deliver(delivery("resume-provider-session", "turn-1", "hold"))).ok).toBe(true);
     expect((await adapter.deliver(delivery("steer", "steer-delivery", "redirect"))).ok).toBe(true);
-    await settle();
+    await waitUntil(() => events.some((event) => event.kind === "turn-completed" && event.turn_id === "turn-1"));
 
     expect(events.filter((event) => event.kind === "turn-started").map((event) => "turn_id" in event ? event.turn_id : null))
       .toEqual(["turn-1"]);
@@ -195,7 +195,14 @@ describe("structured conversation controller adapters", () => {
 
     expect((await claude.deliver(delivery("resume-provider-session", "claude-turn", "delta"))).ok).toBe(true);
     expect((await codex.deliver(delivery("resume-provider-session", "codex-turn", "delta"))).ok).toBe(true);
-    await settle();
+    await waitUntil(() => {
+      const hasFinalDelta = (events: ProviderAdapterEvent[], identity: string) => events.some((event) =>
+        event.kind === "provisional-content"
+        && event.identity === identity
+        && event.event.message?.content?.some((content) => content.type === "text" && content.text === "hello"));
+      return hasFinalDelta(claudeEvents, "message:claude-message-1")
+        && hasFinalDelta(codexEvents, "message:codex-message-1");
+    });
 
     expect(claudeEvents.filter((event) => event.kind === "provisional-content" && event.identity === "message:claude-message-1").at(-1)).toMatchObject({
       identity: "message:claude-message-1",

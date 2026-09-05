@@ -22,6 +22,7 @@ import {
   resolveBriefingGroupProjection,
 } from './feedback/briefing-group-projection';
 import { OperationalIncidentsRegion } from './operational-incidents';
+import { subscribeClientAuthSessionState } from '../client-auth-token';
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
@@ -82,7 +83,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     } catch (cause) {
       if (!signal.aborted && request === sequence.current) {
         setError(isApiErrorStatus(cause, 401) || isApiErrorStatus(cause, 403)
-          ? 'Authentication is required to load Briefings.'
+          ? null
           : cause instanceof Error ? cause.message : String(cause));
       }
     }
@@ -94,6 +95,23 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     void load(controller.signal);
     return () => controller.abort();
   }, [appShell.active, load, reloadNonce]);
+
+  useEffect(() => {
+    if (!appShell.active) return undefined;
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') setReloadNonce((value) => value + 1);
+    };
+    const unsubscribe = subscribeClientAuthSessionState((state) => {
+      if (state === 'enrolled') setReloadNonce((value) => value + 1);
+    });
+    window.addEventListener('focus', reloadWhenVisible);
+    document.addEventListener('visibilitychange', reloadWhenVisible);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', reloadWhenVisible);
+      document.removeEventListener('visibilitychange', reloadWhenVisible);
+    };
+  }, [appShell.active]);
 
   useEffect(() => {
     if (!appShell.active) return undefined;

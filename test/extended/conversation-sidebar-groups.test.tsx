@@ -135,7 +135,7 @@ describe('conversation sidebar groups', () => {
     expect(getConversationTitle(conversation('normal', 'Feedbax remediation'))).toBe('Feedbax remediation');
   });
 
-  it('presents an unavailable project selection without mechanism details or duplicate actions', async () => {
+  it('retries an unavailable project selection without exposing connectivity state', async () => {
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     vi.mocked(api.getChatShownProjectsPreference).mockRejectedValue(new Error('offline'));
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
@@ -153,7 +153,6 @@ describe('conversation sidebar groups', () => {
     expect(screen.queryByRole('button', { name: 'Add Project' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
     expect(document.querySelector('#chat-projects-body')?.contains(emptyState)).toBe(true);
-    expect(screen.getByText('No chats')).toBeTruthy();
   });
 
   it('sends bounded deduplicated full canonical project ids on the wire', async () => {

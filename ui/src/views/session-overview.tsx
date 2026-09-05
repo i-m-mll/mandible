@@ -8,12 +8,11 @@
 // else is shown honestly with the session picker as fallback. The binding is
 // display/navigation-only: it is never attached to a mutation request.
 import type { ComponentChildren } from 'preact';
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
   getProviderScopedOverview,
   getSessionOverview,
   getSessions,
-  registerProviderSession,
   resolveAgentSession,
   type ProviderScopedLinkedIssue,
   type ProviderScopedOverview,
@@ -27,6 +26,9 @@ import {
 import { shortRouteId } from '../routing';
 import { resourceRefHref } from '../resource-refs';
 import type { SessionRecord } from '../types/session';
+import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 
 type BindingState =
   | { kind: 'none' }
@@ -193,12 +195,14 @@ function SectionTable({
   unavailableReason?: string | null;
   children?: ComponentChildren;
 }): JSX.Element {
+  const [expanded, setExpanded] = useState(true);
   return (
-    <section className="session-overview__section" aria-label={label}>
-      <h3>
-        {label}
-        {count > 0 ? <span className="session-overview__count">{count}</span> : null}
-      </h3>
+    <CollapsiblePanel
+      className="session-overview__section"
+      title={label}
+      expanded={expanded}
+      onExpandedChange={setExpanded}
+    >
       {unavailableReason ? (
         <p className="session-overview__unavailable">Unavailable: {unavailableReason}</p>
       ) : count === 0 ? (
@@ -215,8 +219,18 @@ function SectionTable({
           </table>
         </div>
       )}
-    </section>
+    </CollapsiblePanel>
   );
+}
+
+function sessionDisplayName(session: Record<string, unknown> | null): string {
+  if (!session) return 'Session Overview';
+  const task = sessionText(session, 'task');
+  if (task) return task;
+  const cwd = sessionText(session, 'cwd');
+  if (cwd) return cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').at(-1) || 'Session';
+  const app = sessionText(session, 'app');
+  return app ? `${app.charAt(0).toUpperCase()}${app.slice(1)} session` : 'Session';
 }
 
 function ProviderIssueRow({ issue }: { issue: ProviderScopedLinkedIssue }): JSX.Element {
@@ -301,8 +315,8 @@ export function SessionOverviewView({
   const [refreshToken, setRefreshToken] = useState(0);
   const [providerOverview, setProviderOverview] = useState<ProviderScopedOverview | null>(null);
   const [providerOverviewError, setProviderOverviewError] = useState<string | null>(null);
-  const [registering, setRegistering] = useState(false);
-  const [registerError, setRegisterError] = useState<string | null>(null);
+  const [metadataOpen, setMetadataOpen] = useState(false);
+  const scrollOwnerRef = useRef<HTMLDivElement>(null);
 
   // Deep-link/param changes (e.g. clicking a child session row) win over the
   // in-memory selection.
@@ -370,14 +384,17 @@ export function SessionOverviewView({
     let cancelled = false;
     setOverviewLoading(true);
     setOverviewError(null);
-    getSessionOverview(selectedSessionId, agentBinding)
+    const matchingAgentBinding = binding.kind === 'bound'
+      && binding.match.mandible_session_id === selectedSessionId
+      ? agentBinding
+      : null;
+    getSessionOverview(selectedSessionId, matchingAgentBinding)
       .then((payload) => {
         if (cancelled) return;
         setOverview(payload);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setOverview(null);
         setOverviewError(err instanceof Error ? err.message : 'Failed to load overview');
       })
       .finally(() => {
@@ -386,7 +403,24 @@ export function SessionOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, agentBinding, refreshToken]);
+  }, [selectedSessionId, agentBinding, binding, refreshToken]);
+
+  // Local ledger state stays fresh without a user-operated refresh control.
+  // Keep the last good snapshot visible while a background reconciliation runs.
+  useEffect(() => {
+    if (embedded || typeof window === 'undefined') return undefined;
+    const refreshVisible = () => {
+      if (document.visibilityState === 'visible') setRefreshToken((token) => token + 1);
+    };
+    const interval = window.setInterval(refreshVisible, 15_000);
+    window.addEventListener('focus', refreshVisible);
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshVisible);
+      document.removeEventListener('visibilitychange', refreshVisible);
+    };
+  }, [embedded]);
 
   // Provider-scoped overview: loaded only for the conversation-only binding
   // state, keyed on the full identity and provider the (possibly short)
@@ -430,39 +464,6 @@ export function SessionOverviewView({
     };
   }, [binding.kind, providerScopedRef, providerScopedProvider, selectedSessionId, refreshToken]);
 
-  // Explicit, deliberate registration: creates a Mandible session row for the
-  // provider-known session, then re-resolves so the view upgrades in place to
-  // the fully bound state. Never automatic. Review S1 — the request carries
-  // ONLY the server-resolved full identity from the match record; the
-  // page-supplied binding is display-only and never becomes mutation input.
-  // Provider, cwd, and branch are derived server-side from the validated
-  // conversations record.
-  const handleRegister = useCallback(async () => {
-    if (binding.kind !== 'provider-scoped' || registering) return;
-    const registerRef = binding.match.matched_ref;
-    if (!registerRef) return;
-    setRegistering(true);
-    setRegisterError(null);
-    try {
-      await registerProviderSession({ provider_session_id: registerRef });
-      const result = await resolveAgentSession(registerRef);
-      const bindable = result.matches.filter((match) => match.mandible_session_id);
-      if (!result.truncated && result.matches.length === 1 && bindable.length === 1) {
-        setBinding({ kind: 'bound', match: bindable[0] });
-        setSelectedSessionId(bindable[0].mandible_session_id);
-        writeSessionParamToHash(bindable[0].mandible_session_id);
-      } else if (result.matches.length > 1 || result.truncated) {
-        setBinding({ kind: 'many', matches: result.matches, truncated: result.truncated });
-      } else {
-        setRegisterError('Registration succeeded but the session did not resolve as bindable.');
-      }
-    } catch (err: unknown) {
-      setRegisterError(err instanceof Error ? err.message : 'Registration failed');
-    } finally {
-      setRegistering(false);
-    }
-  }, [binding, registering]);
-
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);
     writeSessionParamToHash(sessionId);
@@ -474,69 +475,72 @@ export function SessionOverviewView({
   }, []);
 
   const session = overview?.session ?? null;
+  const sessionId = session ? String(session.id ?? selectedSessionId ?? '') : selectedSessionId ?? '';
+  const sharedHeader = !embedded && session ? (
+    <DetailPaneHeader
+      variant="standard"
+      identity={{
+        entityLabel: 'Session',
+        displayRef: sessionText(session, 'app') ?? 'registered',
+        canonicalRef: sessionId,
+        copyRef: sessionId,
+        copyLabel: 'Copy session id',
+      }}
+      title={sessionDisplayName(session)}
+      status={(
+        <span className={`session-overview-badge session-overview-badge--${String(session.status ?? 'unknown')}`}>
+          {String(session.status ?? 'unknown') === 'active' ? 'running' : String(session.status ?? 'unknown')}
+        </span>
+      )}
+      actions={(
+        <details className="session-overview__menu">
+          <summary aria-label="Session actions" title="Session actions">•••</summary>
+          <div role="menu" className="app-anchored-menu session-overview__menu-items">
+            <button type="button" role="menuitem" onClick={() => setMetadataOpen(true)}>Show metadata</button>
+            <button type="button" role="menuitem" onClick={handleClearSelection}>Change session</button>
+          </div>
+        </details>
+      )}
+      actionsLabel="Session actions"
+      secondaryMetadata={(
+        <dl className="session-overview__facts">
+          <div><dt>App</dt><dd>{sessionText(session, 'app') ?? '—'}</dd></div>
+          <div><dt>Branch</dt><dd>{sessionText(session, 'branch') ?? '—'}</dd></div>
+          <div><dt>Cwd</dt><dd className="session-overview__path">{sessionText(session, 'cwd') ?? '—'}</dd></div>
+          <div><dt>Created</dt><dd>{formatTimestamp(session.created_at)}</dd></div>
+          <div><dt>Last message</dt><dd>{formatTimestamp(session.last_active)}</dd></div>
+        </dl>
+      )}
+    />
+  ) : !embedded ? <DetailPaneHeader variant="compact" title="Session Overview" /> : null;
 
   return (
-    <div className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
-      {!embedded ? <div className="view-header session-overview__header">
-        <div>
-          <h2>Session Overview</h2>
-          <p className="text-muted">
-            Linked issues, work units, child sessions, and conversations for one agent session.
-          </p>
-        </div>
-        <div className="session-overview__toolbar">
-          {!selectedSessionId && binding.kind === 'provider-scoped' ? (
-            <button type="button" onClick={() => setRefreshToken((token) => token + 1)}>
-              Refresh
-            </button>
-          ) : null}
-          {selectedSessionId ? (
-            <>
-              <button type="button" onClick={() => setRefreshToken((token) => token + 1)}>
-                Refresh
-              </button>
-              <button type="button" onClick={handleClearSelection}>
-                Change session
-              </button>
-            </>
-          ) : null}
-        </div>
-      </div> : null}
+    <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
+      {sharedHeader}
+      <DetailPaneModal
+        open={!embedded && metadataOpen}
+        onClose={() => setMetadataOpen(false)}
+        titleId="session-overview-metadata-title"
+        title="Session metadata"
+        closeLabel="Close session metadata"
+        embeddedFallback={{ scrollOwnerRef }}
+      >
+        <dl className="session-overview__metadata">
+          <div><dt>Session id</dt><dd>{sessionId || '—'}</dd></div>
+          <div><dt>Agent binding</dt><dd>{agentBinding ?? '—'}</dd></div>
+          <div><dt>Provider session</dt><dd>{session ? sessionText(session, 'provider_session_id') ?? '—' : '—'}</dd></div>
+        </dl>
+      </DetailPaneModal>
 
-      {agentBinding ? (
+      {agentBinding && binding.kind !== 'bound' && binding.kind !== 'provider-scoped' ? (
         <div className="session-overview__binding" role="status">
           {binding.kind === 'resolving' && (
             <span>Resolving agent session {shortUuid(agentBinding)}…</span>
-          )}
-          {binding.kind === 'bound' && (
-            <span>
-              Bound to agent session <code>{shortUuid(agentBinding)}</code> (page-local,
-              display-only).
-            </span>
           )}
           {binding.kind === 'zero' && (
             <span>
               No Mandible session matches agent session <code>{shortUuid(agentBinding)}</code>.
               Pick a session below.
-            </span>
-          )}
-          {binding.kind === 'provider-scoped' && !selectedSessionId && (
-            <span className="session-overview__provider-scoped-banner">
-              Agent session <code>{shortUuid(providerScopedRef ?? agentBinding)}</code> is known
-              via its ingested transcript but is not registered as a Mandible session. Showing
-              provider-scoped data (display-only).{' '}
-              <button
-                type="button"
-                disabled={registering}
-                onClick={() => {
-                  void handleRegister();
-                }}
-              >
-                {registering ? 'Registering…' : 'Register as Mandible session'}
-              </button>
-              {registerError ? (
-                <span className="session-overview__error"> {registerError}</span>
-              ) : null}
             </span>
           )}
           {binding.kind === 'many' && (
@@ -602,20 +606,9 @@ export function SessionOverviewView({
           ) : null}
           {providerOverview ? (
             <>
-              <section className="session-overview__section" aria-label="Session">
-                <h3>
-                  {shortUuid(providerOverview.binding.provider_session_id)}
-                  <span className="session-overview-badge session-overview-badge--unknown">
-                    unregistered
-                  </span>
-                </h3>
-                <p className="session-overview__unavailable">
-                  Unavailable: {providerOverview.session.reason}
-                </p>
-                <p className="text-muted session-overview__as-of">
-                  As of {formatTimestamp(providerOverview.as_of)}
-                </p>
-              </section>
+              {embedded ? <section className="session-overview__section" aria-label="Session">
+                <h3>{shortUuid(providerOverview.binding.provider_session_id)}</h3>
+              </section> : null}
 
               <SectionTable
                 label="Linked issues"
@@ -670,7 +663,7 @@ export function SessionOverviewView({
           {overviewLoading && !overview ? <p className="text-muted">Loading overview…</p> : null}
           {session ? (
             <>
-              <section className="session-overview__section" aria-label="Session">
+              {embedded ? <section className="session-overview__section" aria-label="Session">
                 <h3>
                   {shortUuid(String(session.id ?? selectedSessionId))}
                   <span
@@ -697,8 +690,8 @@ export function SessionOverviewView({
                     <dd>{formatTimestamp(session.created_at)}</dd>
                   </div>
                   <div>
-                    <dt>Last active</dt>
-                    <dd>{formatTimestamp(session.last_active ?? session.updated_at)}</dd>
+                    <dt>Last message</dt>
+                    <dd>{formatTimestamp(session.last_active)}</dd>
                   </div>
                   {sessionText(session, 'task') ? (
                     <div className="session-overview__facts-wide">
@@ -707,12 +700,7 @@ export function SessionOverviewView({
                     </div>
                   ) : null}
                 </dl>
-                {overview ? (
-                  <p className="text-muted session-overview__as-of">
-                    As of {formatTimestamp(overview.as_of)}
-                  </p>
-                ) : null}
-              </section>
+              </section> : null}
 
               {overview ? (
                 <>

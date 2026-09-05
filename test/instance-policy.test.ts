@@ -544,6 +544,12 @@ describe("route mutation category table has one source", () => {
       url: "/api/host-preferences/chat-shown-projects",
       category: null,
     },
+    {
+      method: "PUT",
+      pattern: "/api/host-preferences/app-theme",
+      url: "/api/host-preferences/app-theme",
+      category: null,
+    },
     // Still an operational mutation: only the exact exempt route is exempt.
     { method: "POST", pattern: "/api/timeline/rows", url: "/api/timeline/rows", category: "timeline" },
     {

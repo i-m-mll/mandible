@@ -1120,7 +1120,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
               : 'On-demand mode starts Mandible automatically when the desktop shell opens and the daemon is absent.'}
           </div>
           <button type="button" className="btn btn--sm" onClick={refreshStatus} disabled={loading || action != null}>
-            Refresh status
+            Check status
           </button>
         </div>
       </div>

@@ -8,6 +8,7 @@ import {
   isApiErrorStatus,
   updateChatShownProjectsPreference,
 } from '../api';
+import { subscribeClientAuthSessionState } from '../client-auth-token';
 
 export const CHAT_VIEW_STATE_KEY = 'mandible.chat.viewState:v1';
 
@@ -162,38 +163,66 @@ export function useChatProjectSelection(): [
 
   useEffect(() => {
     activeRef.current = true;
-    void getChatShownProjectsPreference().then(async (snapshot) => {
-      let resolved = snapshot;
-      let importedLegacy = false;
-      if (snapshot.revision === 0 && legacyRef.current!.length > 0) {
-        try {
-          resolved = await updateChatShownProjectsPreference(legacyRef.current!, 0);
-          importedLegacy = true;
-        } catch (error) {
-          if (!isApiErrorStatus(error, 409)) throw error;
-          resolved = await getChatShownProjectsPreference();
+    let loading = false;
+    let retryTimer: number | null = null;
+    const scheduleRetry = () => {
+      if (!activeRef.current || retryTimer !== null) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void load();
+      }, 1500);
+    };
+    const load = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const snapshot = await getChatShownProjectsPreference();
+        let resolved = snapshot;
+        let importedLegacy = false;
+        if (snapshot.revision === 0 && legacyRef.current!.length > 0) {
+          try {
+            resolved = await updateChatShownProjectsPreference(legacyRef.current!, 0);
+            importedLegacy = true;
+          } catch (error) {
+            if (!isApiErrorStatus(error, 409)) throw error;
+            resolved = await getChatShownProjectsPreference();
+          }
         }
+        if (!activeRef.current) return;
+        desiredRef.current = resolved.value;
+        revisionRef.current = resolved.revision;
+        setShownProjects(resolved.value);
+        removeLegacyShownProjects();
+        setState({
+          ready: true,
+          notice: importedLegacy
+            ? 'Imported this browser’s saved project selection to the shared host preference.'
+            : null,
+        });
+      } catch {
+        if (!activeRef.current) return;
+        setState({ ready: false, notice: null });
+        scheduleRetry();
+      } finally {
+        loading = false;
       }
-      if (!activeRef.current) return;
-      desiredRef.current = resolved.value;
-      revisionRef.current = resolved.revision;
-      setShownProjects(resolved.value);
-      removeLegacyShownProjects();
-      setState({
-        ready: true,
-        notice: importedLegacy
-          ? 'Imported this browser’s saved project selection to the shared host preference.'
-          : null,
-      });
-    }).catch(() => {
-      if (!activeRef.current) return;
-      setShownProjects([]);
-      setState({
-        ready: false,
-        notice: 'Saved project selection is unavailable. No project preference was changed.',
-      });
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    const unsubscribeAuth = subscribeClientAuthSessionState((authState) => {
+      if (authState === 'enrolled') void load();
     });
-    return () => { activeRef.current = false; };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    void load();
+    return () => {
+      activeRef.current = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      unsubscribeAuth();
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
   }, []);
 
   const update = useCallback<Dispatch<StateUpdater<ShownChatProject[]>>>((next) => {
@@ -233,7 +262,7 @@ export function useChatProjectSelection(): [
         }
         setState({
           ready: false,
-          notice: 'Project selection could not be saved. Reload to recover the shared host preference.',
+          notice: 'Project selection could not be saved; it will retry when Mandible reconnects.',
         });
       }
     });

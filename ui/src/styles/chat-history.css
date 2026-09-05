@@ -42,6 +42,13 @@
   margin-bottom: 8px;
 }
 
+.chat-project-selection-notice {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .chat-project-chooser {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

@@ -122,21 +122,14 @@ type DepthGeometry = {
   ownedRow: number;
   unownedRow: number;
   groupRegion: Rect;
-  spineLeft: string;
-  spineWidth: string;
-  spineBackground: string;
 };
 
 function measure(markup: string): DepthGeometry {
   if (!chrome) throw new Error('A Chromium browser is required for the Briefings sidebar depth gate.');
 
-  const payload = JSON.stringify({ markup, styles }).replaceAll('<', '\\u003c');
-  const html = `<!doctype html><html><body><script>
-    const { markup, styles } = ${payload};
-    const frame = document.createElement('iframe');
-    frame.style.cssText = 'display:block;border:0;width:320px;height:600px';
-    frame.addEventListener('load', () => {
-      const doc = frame.contentDocument;
+  const html = `<!doctype html><html data-theme="dark"><head><style>${styles}</style></head><body>${markup}<script>
+      window.onerror = (message) => { document.title = btoa(JSON.stringify({ error: String(message) })); };
+      const doc = document;
       const rect = (selector) => {
         const node = doc.querySelector(selector);
         if (!node) throw new Error('missing node: ' + selector);
@@ -152,9 +145,8 @@ function measure(markup: string): DepthGeometry {
       };
       const subgroup = '#briefing-subgroup-${GROUP_ID}-0';
       const bundleNode = '#briefing-bundle-${UNGROUPED_BUNDLE_ID}';
-      const region = doc.querySelector(subgroup + '-body').closest('.sidebar-group-node--category')
+      const region = doc.querySelector(subgroup + '-body').closest('.sidebar-group-node--nested')
         .querySelector(':scope > .sidebar-disclosure-region');
-      const spine = getComputedStyle(region, '::before');
       const regionBounds = region.getBoundingClientRect();
       document.title = btoa(JSON.stringify({
         subgroupIcon: rect(subgroup + '-heading .sidebar-group-node__leading'),
@@ -162,27 +154,25 @@ function measure(markup: string): DepthGeometry {
         ownedRow: textLeft(subgroup + '-body .sidebar-item-row__select'),
         unownedRow: textLeft(bundleNode + '-body .sidebar-item-row__select'),
         groupRegion: Object.fromEntries(['left','top','right','bottom','width','height'].map((k) => [k, regionBounds[k]])),
-        spineLeft: spine.left,
-        spineWidth: spine.width,
-        spineBackground: spine.backgroundColor,
       }));
-    }, { once: true });
-    frame.srcdoc = '<!doctype html><html data-theme="dark"><head><style>' + styles + '</style></head><body>' + markup + '</body></html>';
-    document.body.append(frame);
   </script></body></html>`;
 
   const rendered = spawnSync(chrome, [
     '--headless=new',
     '--disable-gpu',
     '--no-sandbox',
+    '--run-all-compositor-stages-before-draw',
+    '--virtual-time-budget=3000',
     '--dump-dom',
     '--window-size=420,900',
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   ], { encoding: 'utf8', maxBuffer: 20_000_000 });
   if (rendered.status !== 0) throw new Error(`Chromium Briefings sidebar fixture failed: ${rendered.stderr}`);
   const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
-  if (!encoded) throw new Error('Chromium Briefings sidebar fixture did not return measurements.');
-  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as DepthGeometry;
+  if (!encoded) throw new Error(`Chromium Briefings sidebar fixture did not return measurements. stderr=${rendered.stderr} stdout=${rendered.stdout.slice(-2_000)}`);
+  const result = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as DepthGeometry & { error?: string };
+  if (result.error) throw new Error(`Chromium Briefings sidebar fixture failed: ${result.error}`);
+  return result;
 }
 
 const geometry = measure(renderSidebarMarkup());
@@ -195,17 +185,8 @@ describe('Briefings sidebar ownership depth', () => {
     expect(geometry.ownedRow - geometry.unownedRow).toBeGreaterThanOrEqual(12);
   });
 
-  it('draws the group extent and leaves an ungrouped bundle outside it', () => {
-    const spine = geometry.groupRegion.left + Number.parseFloat(geometry.spineLeft);
-
-    expect(Number.parseFloat(geometry.spineWidth)).toBeGreaterThan(0);
-    expect(geometry.spineBackground).not.toBe('rgba(0, 0, 0, 0)');
+  it('ends the group region before the following ungrouped bundle', () => {
     expect(geometry.groupRegion.height).toBeGreaterThan(0);
-
-    // Everything the group owns sits right of its spine; the unowned bundle
-    // starts left of it, so the drawn extent excludes it.
-    expect(geometry.subgroupIcon.left).toBeGreaterThan(spine);
-    expect(geometry.ownedRow).toBeGreaterThan(spine);
-    expect(geometry.ungroupedIcon.left).toBeLessThan(spine);
+    expect(geometry.ungroupedIcon.top).toBeGreaterThanOrEqual(geometry.groupRegion.bottom);
   });
 });

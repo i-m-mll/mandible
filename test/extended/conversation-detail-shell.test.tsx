@@ -263,6 +263,43 @@ function MountedRightSidebarShell({ children }: { children: ComponentChildren })
   );
 }
 
+function MountedConversationsApp({
+  onSidebarUpdate,
+}: {
+  onSidebarUpdate: () => void;
+}): JSX.Element {
+  const [sidebar, setSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const ownerRef = useRef<string | null>(null);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    ownerRef.current = ownerId;
+    return () => {
+      if (ownerRef.current === ownerId) ownerRef.current = null;
+      setSidebar((current) => current?.id === ownerId ? null : current);
+    };
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, next: AppRightSidebarDescriptor) => {
+    if (ownerRef.current !== ownerId) return;
+    onSidebarUpdate();
+    setSidebar((current) => current === next ? current : next);
+  }, [onSidebarUpdate]);
+  return (
+    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />
+      {sidebar?.open && sidebar.kind === 'tabs' ? (
+        <aside aria-label={sidebar.ariaLabel}>
+          {sidebar.tabs.find((tab) => tab.id === sidebar.activeTab)?.content}
+        </aside>
+      ) : null}
+    </AppShellProvider>
+  );
+}
+
 describe('compact detail pane shell', () => {
   it('shows the chat placeholder after a successful empty sidebar response', async () => {
     render(
@@ -319,15 +356,16 @@ describe('compact detail pane shell', () => {
     expect(screen.queryByText('No chats')).toBeNull();
   });
 
-  it('separates deterministic title-authority gaps from transient failures', () => {
+  it('keeps legacy title-authority errors out of header presentation state', () => {
     const missing = conversationLoadFailure(new api.ApiError('raw code', 409, 'provider_metadata_missing'), true);
-    expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false, titleAuthorityDegraded: true });
+    expect(missing).toMatchObject({ code: 'provider_metadata_missing', retryable: false });
+    expect(missing).not.toHaveProperty('titleAuthorityDegraded');
     expect(missing.message).toContain('Transcript loaded');
     expect(missing.message).toContain('Retrying will not recreate');
     expect(missing.message).not.toContain('raw code');
 
     const unavailable = conversationLoadFailure(new api.ApiError('temporary', 503, 'provider_metadata_unavailable'), true);
-    expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true, titleAuthorityDegraded: true });
+    expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true });
     expect(unavailable.message).toContain('transcript is unchanged');
   });
 
@@ -371,6 +409,35 @@ describe('compact detail pane shell', () => {
     fireEvent.click(await screen.findByRole('link', { name: /5096e37/ }));
     expect((await screen.findByRole('tab', { name: 'Preview' })).getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.stream-renderer__scroll')).toBe(scroll);
+  });
+
+  it('settles real app-shell registration after selecting a conversation', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    vi.mocked(api.getConversationSidebar).mockResolvedValue({
+      groups: [{
+        key: 'chats',
+        kind: 'chats',
+        label: 'Chats',
+        total: 1,
+        conversations: [scopedConversation],
+        next_cursor: null,
+      }],
+      limit: 50,
+    });
+    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+    const sidebarUpdates = vi.fn();
+    render(<MountedConversationsApp onSidebarUpdate={sidebarUpdates} />);
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: `Open conversation ${scopedConversation.title}`,
+    }));
+    expect(await screen.findByRole('heading', { name: scopedConversation.title! })).toBeTruthy();
+    await waitFor(() => expect(sidebarUpdates.mock.calls.length).toBeGreaterThan(0));
+    const settledUpdateCount = sidebarUpdates.mock.calls.length;
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(sidebarUpdates).toHaveBeenCalledTimes(settledUpdateCount);
+    expect(settledUpdateCount).toBeLessThanOrEqual(3);
   });
 
   it('routes every Chat detail state through one typed frame construction', () => {
@@ -675,7 +742,8 @@ describe('compact detail pane shell', () => {
     const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
     expect(tokensCss).toContain('--radius-chat-surface: 18px;');
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.conv-compose::before\s*\{[^}]*z-index:\s*-1;[^}]*top:\s*50%;[^}]*right:\s*0;[^}]*bottom:\s*-16px;[^}]*left:\s*-18px;[^}]*background:\s*var\(--surface-app\);/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*z-index:\s*0;[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*background:\s*var\(--surface-app\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;[^}]*max-width:\s*180px;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);

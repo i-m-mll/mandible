@@ -138,7 +138,6 @@ export function DetailPaneHeader({
   const automaticRightSidebarAction = active
     && rightSidebar
     && !rightSidebar.open
-    && rightSidebar.togglePlacement === 'detail-header'
     ? (
         <AppRightSidebarToggleButton
           descriptor={rightSidebar}
@@ -146,6 +145,14 @@ export function DetailPaneHeader({
           onOpenChange={setRightSidebarOpen ?? rightSidebar.onOpenChange}
         />
       )
+    : null;
+  const rightSidebarActionSlot = active && rightSidebar
+    ? automaticRightSidebarAction ?? (
+      <span
+        className="detail-pane-header__right-sidebar-action-slot"
+        aria-hidden="true"
+      />
+    )
     : null;
   if (variant === 'compact') {
     return (
@@ -188,14 +195,14 @@ export function DetailPaneHeader({
               )}
             </div>
           )}
-          {(actions !== undefined && actions !== null) || automaticRightSidebarAction ? (
+          {(actions !== undefined && actions !== null) || rightSidebarActionSlot ? (
             <div
               className="detail-pane-header__actions"
               role="group"
               aria-label={actionsLabel}
             >
               {actions}
-              {automaticRightSidebarAction}
+              {rightSidebarActionSlot}
             </div>
           ) : null}
         </div>
@@ -214,10 +221,10 @@ export function DetailPaneHeader({
       data-detail-pane-header-variant={variant}
     >
       <div className="detail-pane-header__main">
-        {(identity || (toplineState !== undefined && toplineState !== null) || selector) && (
+        {(identity || (toplineState !== undefined && toplineState !== null) || selector || rightSidebarActionSlot) && (
           <div className="detail-pane-header__topline">
             {identity && renderIdentity(identity)}
-            {((toplineState !== undefined && toplineState !== null) || selector) && (
+            {((toplineState !== undefined && toplineState !== null) || selector || rightSidebarActionSlot) && (
               <div className="detail-pane-header__topline-controls">
                 {toplineState !== undefined && toplineState !== null && (
                   <div
@@ -246,6 +253,7 @@ export function DetailPaneHeader({
                     />
                   </div>
                 )}
+                {rightSidebarActionSlot}
               </div>
             )}
           </div>
@@ -263,14 +271,13 @@ export function DetailPaneHeader({
               {title}
             </h2>
           )}
-          {(actions !== undefined && actions !== null) || automaticRightSidebarAction ? (
+          {actions !== undefined && actions !== null ? (
             <div
               className="detail-pane-header__actions"
               role="group"
               aria-label={actionsLabel}
             >
               {actions}
-              {automaticRightSidebarAction}
             </div>
           ) : null}
         </div>

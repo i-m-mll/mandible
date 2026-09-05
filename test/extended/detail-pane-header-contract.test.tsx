@@ -8,6 +8,7 @@ import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.
 import { EntityTimestamps } from '../../ui/src/components/shared/EntityTimestamps.js';
 import { CollapsiblePanel } from '../../ui/src/components/shared/CollapsiblePanel.js';
 import { shortIdentityRef } from '../../ui/src/identity-refs.js';
+import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
 
 afterEach(() => {
   cleanup();
@@ -17,6 +18,54 @@ afterEach(() => {
 });
 
 describe('canonical detail pane header', () => {
+  it.each(['standard', 'versioned', 'compact'] as const)(
+    'keeps the %s right-sidebar action slot stable while the sidebar moves between surfaces',
+    (variant) => {
+      const descriptor = (open: boolean): AppRightSidebarDescriptor => ({
+        id: 'test-preview',
+        kind: 'panel',
+        title: 'Preview',
+        ariaLabel: 'Preview',
+        content: null,
+        open,
+        width: 360,
+        onOpenChange: () => undefined,
+        onWidthChange: () => undefined,
+      });
+      const renderHeader = (open: boolean) => (
+        <AppShellProvider value={{
+          active: true,
+          rightSidebar: descriptor(open),
+          registerRightSidebar: () => () => undefined,
+          updateRightSidebar: () => undefined,
+          setRightSidebarOpen: () => undefined,
+          setViewSidebarWidth: () => undefined,
+        }}>
+          <DetailPaneHeader
+            variant={variant}
+            identity={{ entityLabel: 'Briefing group', displayRef: 'agent-policy', canonicalRef: 'agent-policy' }}
+            title="Agent policy"
+          />
+        </AppShellProvider>
+      );
+      const view = render(renderHeader(false));
+      const collapsed = document.querySelector('.detail-pane-header')!;
+      expect(within(collapsed as HTMLElement).getByRole('button', { name: 'Show Preview' })).toBeTruthy();
+      expect(collapsed.querySelector('.detail-pane-header__right-sidebar-action-slot')).toBeNull();
+
+      view.rerender(renderHeader(true));
+      const expanded = document.querySelector('.detail-pane-header')!;
+      expect(within(expanded as HTMLElement).queryByRole('button', { name: 'Show Preview' })).toBeNull();
+      expect(expanded.querySelector('.detail-pane-header__right-sidebar-action-slot')).toBeTruthy();
+      expect(expanded.querySelector(variant === 'compact'
+        ? '.detail-pane-header__actions'
+        : '.detail-pane-header__topline-controls')).toBeTruthy();
+
+      const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+      expect(css).toMatch(/\.detail-pane-header__right-sidebar-action-slot\s*\{[^}]*flex:\s*0 0 34px;[^}]*width:\s*34px;[^}]*height:\s*34px;[^}]*visibility:\s*hidden;/s);
+    },
+  );
+
   it('labels creation first and attributes only actors supplied for each event', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));

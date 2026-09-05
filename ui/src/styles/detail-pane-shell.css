@@ -146,7 +146,8 @@
 
 .detail-pane-header__topline {
   gap: 8px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .detail-pane-header__identity {
@@ -188,12 +189,22 @@
   display: contents;
 }
 
+/* The toggle moves into the open sidebar, but its shared-header slot remains
+ * geometrically present so opening the sidebar never reflows header rows. */
+.detail-pane-header__right-sidebar-action-slot {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  visibility: hidden;
+}
+
 .detail-pane-header--standard .detail-pane-header__topline-controls {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   margin-left: auto;
+  max-width: 100%;
 }
 
 .detail-pane-header--standard .detail-pane-header__selector {

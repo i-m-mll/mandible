@@ -390,16 +390,21 @@
 }
 
 /* The transcript remains the full-height scroll owner beneath the floating
- * composer. Mask only the lower-left area that the composer visually owns;
- * the right scrollbar gutter stays exposed and interactive. */
-.detail-pane-shell--overlay-control .conv-compose::before {
+ * composer. Paint the lower mask on the overlay host, behind the complete
+ * composer box, so it cannot cover any edge of the composer's own border. */
+.detail-pane-shell--overlay-control .detail-pane-shell__overlay-control {
+  isolation: isolate;
+  background: transparent;
+}
+
+.detail-pane-shell--overlay-control .detail-pane-shell__overlay-control::before {
   content: '';
   position: absolute;
-  z-index: -1;
-  top: 50%;
+  z-index: 0;
+  top: calc(50% - 8px);
   right: 0;
-  bottom: -16px;
-  left: -18px;
+  bottom: 0;
+  left: 0;
   background: var(--surface-app);
   pointer-events: none;
 }

@@ -589,7 +589,7 @@ function BranchAuditPanel({
           disabled={loadState.loading}
           onClick={onRefresh}
         >
-          {loadState.loading ? 'Auditing\u2026' : 'Refresh audit'}
+          {loadState.loading ? 'Auditing\u2026' : 'Run audit'}
         </button>
       )}
       persistentContent={notice ? (
@@ -1290,9 +1290,6 @@ export function WorkOverviewView({
                   {repoSortDirection === 'asc' ? '\u2191' : '\u2193'}
                 </button>
               </div>
-              <button type="button" className="work-refresh-action" onClick={onRescan}>
-                Refresh now
-              </button>
                 </>
               ),
             } : undefined}

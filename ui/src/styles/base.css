@@ -133,6 +133,19 @@ a {
   right: 8px;
 }
 
+/* A shared detail header owns the collapsed toggle when one is present; the
+ * app-level control remains the universal fallback for headerless states. */
+.app-content:has(> .app-tab-panel:not([hidden]) .detail-pane-header .app-right-sidebar-toggle)
+  > .app-content__right-sidebar-toggle {
+  display: none;
+}
+
+.app-right-sidebar__empty {
+  margin: 0;
+  padding: var(--space-4);
+  color: var(--text-muted);
+}
+
 .app-shell--view-sidebar-open .app-header {
   width: calc(var(--app-left-boundary-width) + var(--app-rail-width) + var(--app-view-sidebar-outer-width));
 }

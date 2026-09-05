@@ -111,6 +111,8 @@ import { mergeProviderLiveProjection } from '../../../src/conversation-control/p
 import { useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
+import { subscribeClientAuthSessionState } from '../client-auth-token';
+import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
 
 // ── Toast notification ──
 
@@ -122,11 +124,9 @@ export type ConversationLoadFailure = {
   code: string | null;
   message: string;
   retryable: boolean;
-  titleAuthorityDegraded: boolean;
 };
 
 const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error']);
-const DEGRADED_TITLE_CODES = new Set(['provider_metadata_missing', 'provider_metadata_mismatched', 'provider_metadata_stale']);
 
 export function conversationLoadFailure(error: unknown, transcriptLoaded: boolean): ConversationLoadFailure {
   const apiError = error instanceof ApiError ? error : null;
@@ -136,7 +136,6 @@ export function conversationLoadFailure(error: unknown, transcriptLoaded: boolea
       code,
       message: `${transcriptLoaded ? 'Transcript loaded, but ' : ''}Mandible cannot verify its current Codex title because the matching Codex task metadata is missing. Retrying will not recreate that metadata.`,
       retryable: false,
-      titleAuthorityDegraded: true,
     };
   }
   if (code === 'provider_metadata_unavailable') {
@@ -144,14 +143,12 @@ export function conversationLoadFailure(error: unknown, transcriptLoaded: boolea
       code,
       message: `Codex title metadata is temporarily unavailable.${transcriptLoaded ? ' The transcript is unchanged;' : ''} try again.`,
       retryable: true,
-      titleAuthorityDegraded: true,
     };
   }
   return {
     code,
     message: error instanceof Error ? error.message : String(error),
     retryable: code ? TRANSIENT_CONVERSATION_CODES.has(code) : apiError ? apiError.status >= 500 : true,
-    titleAuthorityDegraded: Boolean(code && DEGRADED_TITLE_CODES.has(code)),
   };
 }
 
@@ -1886,13 +1883,11 @@ function ConversationDetail({
 
   const handleOpenExternally = useCallback(async () => {
     if (!conversation?.external_navigation) return;
-    setContinueError(null);
-    setResumeErrorDetails(null);
     try {
       await openConversationExternally(conversation.id);
       setToast({ message: `${conversation.external_navigation.label} requested.`, type: 'info' });
     } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err));
+      setToast({ message: err instanceof Error ? err.message : String(err), type: 'error' });
     }
   }, [conversation?.external_navigation, conversation?.id]);
 
@@ -1914,15 +1909,10 @@ function ConversationDetail({
     <DetailPaneNotice
       severity="error"
       density="compact"
-      actions={(error.retryable || (error.titleAuthorityDegraded && conversation?.external_navigation)) ? (
+      actions={error.retryable ? (
         <>
           {error.retryable ? (
             <button type="button" className="btn btn--ghost btn--sm" disabled={loading} onClick={retryLoad}>Retry</button>
-          ) : null}
-          {error.titleAuthorityDegraded && conversation?.external_navigation ? (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void handleOpenExternally(); }}>
-              {conversation.external_navigation.label}
-            </button>
           ) : null}
         </>
       ) : undefined}
@@ -1991,7 +1981,6 @@ function ConversationDetail({
         </>
       )}
       titleTooltip={getConversationTitle(conversation)}
-      supportingMetadata={error?.titleAuthorityDegraded ? 'Historical title — provider verification unavailable' : undefined}
       menuLabel="Conversation detail actions"
       menu={(
         <div className="conv-actions">
@@ -2358,7 +2347,11 @@ function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
-            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            emptyLabel={loading
+              ? 'Loading messages…'
+              : error
+                ? 'Conversation content unavailable.'
+                : 'No messages match the current filters.'}
             unmaterializedAfterCount={conversation.position_window.window.after_count}
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}
@@ -2658,6 +2651,14 @@ export function ConversationsView({
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
+  const handleNavigateConversation = useCallback((conversationId: string) => {
+    setSelection({ type: 'conversation', id: conversationId });
+    const nextHash = hashWithAgentSession(
+      `#/console?conversation=${encodeURIComponent(conversationId)}`,
+      getAgentPageBinding(),
+    );
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
+  }, []);
   const detailPortalRef = useRef<HTMLDivElement>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
@@ -2676,6 +2677,7 @@ export function ConversationsView({
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
+  const [sidebarLoaded, setSidebarLoaded] = useState(false);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
   const [canonicalProjectsReady, setCanonicalProjectsReady] = useState(false);
   const [canonicalProjectsLoaded, setCanonicalProjectsLoaded] = useState(false);
@@ -2695,19 +2697,40 @@ export function ConversationsView({
 
   useEffect(() => {
     let active = true;
-    void listCanonicalProjects().then((projects) => {
-      if (active) {
+    let loadingProjects = false;
+    const loadProjects = async () => {
+      if (loadingProjects) return;
+      loadingProjects = true;
+      try {
+        const projects = await listCanonicalProjects();
+        if (!active) return;
         setCanonicalProjects(projects);
         setCanonicalProjectsLoaded(true);
         setCanonicalProjectsReady(true);
-      }
-    }).catch(() => {
-      if (active) {
-        setCanonicalProjects([]);
+      } catch {
+        if (!active) return;
+        // Keep the last good registry snapshot visible while authentication or
+        // the daemon reconnects; an empty response is not authoritative here.
         setCanonicalProjectsReady(true);
+      } finally {
+        loadingProjects = false;
       }
+    };
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') void loadProjects();
+    };
+    const unsubscribeAuth = subscribeClientAuthSessionState((state) => {
+      if (state === 'enrolled') void loadProjects();
     });
-    return () => { active = false; };
+    window.addEventListener('focus', reloadWhenVisible);
+    document.addEventListener('visibilitychange', reloadWhenVisible);
+    void loadProjects();
+    return () => {
+      active = false;
+      unsubscribeAuth();
+      window.removeEventListener('focus', reloadWhenVisible);
+      document.removeEventListener('visibilitychange', reloadWhenVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -2846,12 +2869,17 @@ export function ConversationsView({
       exclude_subagents: true,
       project_ids: projectIds,
     };
+    if (previewMutationsRejected) {
+      const pinnedIds = Object.entries(chatViewState.previewPinOverrides)
+        .flatMap(([id, pinned]) => pinned ? [id] : []);
+      if (pinnedIds.length > 0) params.pinned_ids = pinnedIds;
+    }
     if (sourceFilter !== 'all') params.source = sourceFilter;
     if (starredOnly) params.starred = true;
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [hideEmpty, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [chatViewState.previewPinOverrides, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
@@ -2882,6 +2910,7 @@ export function ConversationsView({
       }));
       if (generation !== fetchGenerationRef.current) return;
       setServerGroups(reconciled);
+      setSidebarLoaded(true);
       setVisibleTargets((current) => {
         const next = new Map(current);
         for (const group of reconciled) {
@@ -3196,6 +3225,11 @@ export function ConversationsView({
 
   const handleSelectSession = (sessionId: string) => {
     setSelection({ type: 'session', id: sessionId });
+    const nextHash = hashWithAgentSession(
+      `#/console?session=${encodeURIComponent(sessionId)}`,
+      getAgentPageBinding(),
+    );
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
     onSelectSession(sessionId);
   };
 
@@ -3376,6 +3410,13 @@ export function ConversationsView({
   };
 
   const addShownProject = () => {
+    if (!shownProjectsState.ready) {
+      setSidebarToast({
+        message: shownProjectsState.notice ?? 'Project selection is still reconnecting.',
+        type: 'error',
+      });
+      return;
+    }
     const project = registeredProjects.find((candidate) => (
       registeredProjectSelectionValue(candidate) === projectChooserSelection
     ));
@@ -3418,7 +3459,7 @@ export function ConversationsView({
         : undefined}
       onClick={() => {
         if (entry.kind === 'conversation' && entry.conversation) {
-          setSelection({ type: 'conversation', id: entry.conversation.id });
+          handleNavigateConversation(entry.conversation.id);
           return;
         }
         if (entry.session) {
@@ -3592,7 +3633,13 @@ export function ConversationsView({
                       </option>
                     ))}
                   </select>
-                  <button type="button" onClick={addShownProject} disabled={!projectChooserSelection}>Add</button>
+                  <button
+                    type="button"
+                    onClick={addShownProject}
+                    disabled={!projectChooserSelection || !shownProjectsState.ready}
+                  >
+                    {shownProjectsState.ready ? 'Add' : 'Connecting…'}
+                  </button>
                   <button type="button" onClick={() => setProjectChooserOpen(false)}>Cancel</button>
                 </div>
               ) : null}
@@ -3647,7 +3694,7 @@ export function ConversationsView({
                   onShowMore={() => { void showMore(group); }}
                 >
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
-                  {totalVisibleEntries === 0 && !loading ? (
+                  {totalVisibleEntries === 0 && sidebarLoaded && !loading ? (
                     <div className="sidebar-group-node__placeholder">No chats</div>
                   ) : null}
                 </SidebarGroupNode>
@@ -3665,7 +3712,7 @@ export function ConversationsView({
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
             anchor={conversationAnchorFromHash(window.location.hash)}
-            onNavigate={(id) => setSelection({ type: 'conversation', id })}
+            onNavigate={handleNavigateConversation}
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}

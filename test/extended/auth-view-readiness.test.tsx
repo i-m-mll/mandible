@@ -391,6 +391,34 @@ describe('AuthQueueView persisted action expansion', () => {
 });
 
 describe('AuthQueueView attribution', () => {
+  it('renders one outcome label for a completed merge request', () => {
+    const mergedRequest: AuthRequest = {
+      ...pendingRequest,
+      status: 'completed',
+      exit_code: 0,
+      convergence: { state: 'complete', hooks: [] },
+    };
+    render(
+      <AuthQueueView
+        queue={[]}
+        historyQueue={[mergedRequest]}
+        outputs={{}}
+        selectedAuthId="req-1"
+        daemonReady={true}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+        onRetry={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    );
+
+    const status = document.querySelector('.detail-pane-header__status');
+    expect(status?.textContent).toBe('Merged');
+    expect(screen.queryByText('Completed')).toBeNull();
+    expect(screen.queryByText('live')).toBeNull();
+    expect(screen.queryByText('branch merged')).toBeNull();
+  });
+
   it('attributes creation plainly while retaining approver credential verification', () => {
     const attributedRequest: AuthRequest = {
       ...pendingRequest,
@@ -421,7 +449,9 @@ describe('AuthQueueView attribution', () => {
     expect(screen.getByText(/created .* by Request Agent/)).toBeTruthy();
     expect(screen.queryByLabelText('Show attribution for Request Agent')).toBeNull();
     expect(screen.getByLabelText('Show attribution for Human Approver')).toBeTruthy();
-    expect(screen.getByText('Verified signature')).toBeTruthy();
+    expect(screen.getByText('verified')).toBeTruthy();
+    expect(screen.queryByText('Verified signature')).toBeNull();
+    expect(screen.queryByText('human')).toBeNull();
     fireEvent.click(screen.getByLabelText('Show attribution for Human Approver'));
     expect(screen.getByText('credential signature')).toBeTruthy();
     expect(screen.getByText('YubiKey signing key')).toBeTruthy();
