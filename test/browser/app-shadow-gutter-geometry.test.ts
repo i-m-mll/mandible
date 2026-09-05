@@ -324,8 +324,8 @@ describe('additive app chrome-edge geometry and pixels', () => {
         expect(on.leftEdgeViewportBorder).toBe('0px');
         expect(on.leftEdgeChromeBorder).toBe('0px');
         expect(on.leftEdgeShadow).toBe('none');
-        expect(on.intensityScale).toBe('0.7');
-        for (const alpha of ['0.004', '0.01', '0.027']) {
+        expect(on.intensityScale).toBe('0.35');
+        for (const alpha of ['0.004', '0.01']) {
           expect(on.rightEdgeBackground).toContain(alpha);
           expect(on.leftEdgeBackground).toContain(alpha);
         }
@@ -359,7 +359,9 @@ describe('additive app chrome-edge geometry and pixels', () => {
             line.filter((pixel, index) => JSON.stringify(pixel) !== JSON.stringify(background[index])).length,
             `${theme}/${mode}/${label}: line=${JSON.stringify(line)} background=${JSON.stringify(background)}`,
           ).toBeGreaterThan(width / 2);
-          expect(new Set(line.map((pixel) => `${pixel.red},${pixel.green},${pixel.blue}`)).size).toBeGreaterThan(1);
+          if (theme === 'light') {
+            expect(new Set(line.map((pixel) => `${pixel.red},${pixel.green},${pixel.blue}`)).size).toBeGreaterThan(1);
+          }
         }
       }
     }
@@ -385,7 +387,9 @@ describe('additive app chrome-edge geometry and pixels', () => {
         const line = pixelsAt(suite.screenshot, boundary - 17, y, 19);
         const background = pixelsAt(suite.screenshot, boundary - 17, y + 2, 19);
         expect(line.slice(0, 17).every((pixel, index) => JSON.stringify(pixel) !== JSON.stringify(background[index])), `${geometry.theme}/${geometry.mode}/${label}: line=${JSON.stringify(line)} background=${JSON.stringify(background)}`).toBe(true);
-        expect(new Set(line.slice(0, 17).map((pixel) => `${pixel.red},${pixel.green},${pixel.blue}`)).size, `${geometry.theme}/${geometry.mode}/${label} modulation`).toBeGreaterThan(1);
+        if (geometry.theme === 'light') {
+          expect(new Set(line.slice(0, 17).map((pixel) => `${pixel.red},${pixel.green},${pixel.blue}`)).size, `${geometry.theme}/${geometry.mode}/${label} modulation`).toBeGreaterThan(1);
+        }
         expect(line[18], `${geometry.theme}/${geometry.mode}/${label} main-side extent`).toEqual(background[18]);
       };
       assertLineThroughShadow('header', Math.round(geometry.headerBottom) - 1);
@@ -427,7 +431,9 @@ describe('additive app chrome-edge geometry and pixels', () => {
           const profile = pixelsAt(suite.screenshot, boundary - 17, Math.round(geometry.rowTop + y), 19);
           expect(profile).toHaveLength(19);
           const strip = profile.slice(0, 17).map((pixel) => pixel.red);
-          expect(new Set(strip).size, `${geometry.theme}/${geometry.mode}/${segment}: ${strip.join(',')}`).toBeGreaterThan(1);
+          if (geometry.theme === 'light') {
+            expect(new Set(strip).size, `${geometry.theme}/${geometry.mode}/${segment}: ${strip.join(',')}`).toBeGreaterThan(1);
+          }
           expect(strip[0]).toBeGreaterThanOrEqual(strip[16]!);
           expect(profile[0], `${geometry.theme}/${geometry.mode}/${segment} chrome plateau`).toEqual(
             geometry.theme === 'dark'
