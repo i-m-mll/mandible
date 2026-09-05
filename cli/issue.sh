@@ -1011,22 +1011,29 @@ cmd_changed() {
   #                     digests, so subtree drift cannot be determined
   # An empty expected subtree digest (pre-upgrade manifest) never falls through
   # to "unchanged"; it is reported as "unknown".
-  local issue expected expected_subtree self_entry response current current_subtree head_path
-  local classification subtree_state target_file
+  local issue expected expected_subtree self_entry response current current_subtree
+  local classification subtree_state target_file head_ok
   while IFS=$'\t' read -r issue expected self_entry expected_subtree; do
     if [[ -z "$issue" ]]; then
       rm -rf "$tmpdir"
       die "Manifest entries must include issue, short_id, or id." 2
     fi
-    head_path="/api/ledger/issues/$(urlencode "$issue")/head"
     # A post-upgrade self entry snapshots the umbrella immediately before its
     # own manifest checkpoint is written. Exclude only that exact establishing
     # checkpoint while comparing the pinned baseline. Normal head reads still
     # include it, and all later umbrella and descendant events remain visible.
     if [[ -n "$since_issue" && "$self_entry" == "true" ]]; then
-      head_path="${head_path}?exclude_checkpoint=$(urlencode "$checkpoint_id")"
+      if response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head?exclude_checkpoint=$(urlencode "$checkpoint_id")"); then
+        head_ok=true
+      else
+        head_ok=false
+      fi
+    elif response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head"); then
+      head_ok=true
+    else
+      head_ok=false
     fi
-    if response=$(api_get "$head_path"); then
+    if [[ "$head_ok" == "true" ]]; then
       current=$(printf '%s\n' "$response" | jq -r '.digest')
       current_subtree=$(printf '%s\n' "$response" | jq -r '.subtree_digest // ""')
       if [[ "$expected" != "$current" ]]; then
