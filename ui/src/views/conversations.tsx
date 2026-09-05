@@ -2659,6 +2659,9 @@ export function ConversationsView({
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
+  const handleNavigateConversation = useCallback((conversationId: string) => {
+    setSelection({ type: 'conversation', id: conversationId });
+  }, []);
   const detailPortalRef = useRef<HTMLDivElement>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
@@ -2677,6 +2680,7 @@ export function ConversationsView({
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
+  const [sidebarLoaded, setSidebarLoaded] = useState(false);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
   const [canonicalProjectsReady, setCanonicalProjectsReady] = useState(false);
   const [canonicalProjectsLoaded, setCanonicalProjectsLoaded] = useState(false);
@@ -2904,6 +2908,7 @@ export function ConversationsView({
       }));
       if (generation !== fetchGenerationRef.current) return;
       setServerGroups(reconciled);
+      setSidebarLoaded(true);
       setVisibleTargets((current) => {
         const next = new Map(current);
         for (const group of reconciled) {
@@ -3447,7 +3452,7 @@ export function ConversationsView({
         : undefined}
       onClick={() => {
         if (entry.kind === 'conversation' && entry.conversation) {
-          setSelection({ type: 'conversation', id: entry.conversation.id });
+          handleNavigateConversation(entry.conversation.id);
           return;
         }
         if (entry.session) {
@@ -3688,7 +3693,7 @@ export function ConversationsView({
                   onShowMore={() => { void showMore(group); }}
                 >
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
-                  {totalVisibleEntries === 0 && !loading ? (
+                  {totalVisibleEntries === 0 && sidebarLoaded && !loading ? (
                     <div className="sidebar-group-node__placeholder">No chats</div>
                   ) : null}
                 </SidebarGroupNode>
@@ -3706,7 +3711,7 @@ export function ConversationsView({
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
             anchor={conversationAnchorFromHash(window.location.hash)}
-            onNavigate={(id) => setSelection({ type: 'conversation', id })}
+            onNavigate={handleNavigateConversation}
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}

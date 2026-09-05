@@ -263,6 +263,43 @@ function MountedRightSidebarShell({ children }: { children: ComponentChildren })
   );
 }
 
+function MountedConversationsApp({
+  onSidebarUpdate,
+}: {
+  onSidebarUpdate: () => void;
+}): JSX.Element {
+  const [sidebar, setSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const ownerRef = useRef<string | null>(null);
+  const registerRightSidebar = useCallback((ownerId: string) => {
+    ownerRef.current = ownerId;
+    return () => {
+      if (ownerRef.current === ownerId) ownerRef.current = null;
+      setSidebar((current) => current?.id === ownerId ? null : current);
+    };
+  }, []);
+  const updateRightSidebar = useCallback((ownerId: string, next: AppRightSidebarDescriptor) => {
+    if (ownerRef.current !== ownerId) return;
+    onSidebarUpdate();
+    setSidebar((current) => current === next ? current : next);
+  }, [onSidebarUpdate]);
+  return (
+    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />
+      {sidebar?.open && sidebar.kind === 'tabs' ? (
+        <aside aria-label={sidebar.ariaLabel}>
+          {sidebar.tabs.find((tab) => tab.id === sidebar.activeTab)?.content}
+        </aside>
+      ) : null}
+    </AppShellProvider>
+  );
+}
+
 describe('compact detail pane shell', () => {
   it('shows the chat placeholder after a successful empty sidebar response', async () => {
     render(
@@ -371,6 +408,35 @@ describe('compact detail pane shell', () => {
     fireEvent.click(await screen.findByRole('link', { name: /5096e37/ }));
     expect((await screen.findByRole('tab', { name: 'Preview' })).getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.stream-renderer__scroll')).toBe(scroll);
+  });
+
+  it('settles real app-shell registration after selecting a conversation', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    vi.mocked(api.getConversationSidebar).mockResolvedValue({
+      groups: [{
+        key: 'chats',
+        kind: 'chats',
+        label: 'Chats',
+        total: 1,
+        conversations: [scopedConversation],
+        next_cursor: null,
+      }],
+      limit: 50,
+    });
+    vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
+    vi.spyOn(api, 'getSessions').mockResolvedValue([]);
+    const sidebarUpdates = vi.fn();
+    render(<MountedConversationsApp onSidebarUpdate={sidebarUpdates} />);
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: `Open conversation ${scopedConversation.title}`,
+    }));
+    expect(await screen.findByRole('heading', { name: scopedConversation.title! })).toBeTruthy();
+    await waitFor(() => expect(sidebarUpdates.mock.calls.length).toBeGreaterThan(0));
+    const settledUpdateCount = sidebarUpdates.mock.calls.length;
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(sidebarUpdates).toHaveBeenCalledTimes(settledUpdateCount);
+    expect(settledUpdateCount).toBeLessThanOrEqual(3);
   });
 
   it('routes every Chat detail state through one typed frame construction', () => {

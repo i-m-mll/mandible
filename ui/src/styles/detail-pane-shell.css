@@ -189,6 +189,15 @@
   display: contents;
 }
 
+/* The toggle moves into the open sidebar, but its shared-header slot remains
+ * geometrically present so opening the sidebar never reflows header rows. */
+.detail-pane-header__right-sidebar-action-slot {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  visibility: hidden;
+}
+
 .detail-pane-header--standard .detail-pane-header__topline-controls {
   display: flex;
   align-items: center;
