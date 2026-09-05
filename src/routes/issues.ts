@@ -1548,8 +1548,21 @@ export function registerIssueRoutes(
       return;
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+    const excludeCheckpointId = getQueryParam(req, "exclude_checkpoint");
+    if (excludeCheckpointId !== undefined) {
+      const checkpoint = db.prepare(
+        "SELECT 1 FROM ledger_issue_checkpoints WHERE id = ? AND issue_id = ?",
+      ).get(excludeCheckpointId, resolved.issue_id);
+      if (!checkpoint) {
+        sendJson(res, 400, { error: "exclude_checkpoint must name a checkpoint on this issue" });
+        return;
+      }
+    }
     try {
-      sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id, at === null ? {} : { at }));
+      sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id, {
+        ...(at === null ? {} : { at }),
+        ...(excludeCheckpointId === undefined ? {} : { excludeCheckpointId }),
+      }));
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
