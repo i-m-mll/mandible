@@ -477,6 +477,8 @@ export async function ensureExactConversationFresh(
   options: {
     timeoutMs?: number;
     ingest?: ExactIngest;
+    /** Start convergence but return the last complete indexed version immediately. */
+    waitForFresh?: boolean;
     /** Bounded observer instrumentation used by large-source regressions. */
     sourceReadInstrumentation?: SourceReadInstrumentation;
   } = {},
@@ -506,6 +508,18 @@ export async function ensureExactConversationFresh(
       })
       .finally(() => flights.delete(sourceId));
     flights.set(sourceId, flight);
+  }
+  if (options.waitForFresh === false) {
+    // Read views use stale-while-revalidate: the shared flight remains
+    // authoritative and ingestion events tell live clients to reconcile.
+    // Observe failure so background convergence cannot reject unhandled.
+    void flight.catch(() => undefined);
+    return {
+      conversationId: pinned.conversationId,
+      sourceId: pinned.sourceId,
+      sourcePath: pinned.sourcePath,
+      refreshed: false,
+    };
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let timer: NodeJS.Timeout | undefined;

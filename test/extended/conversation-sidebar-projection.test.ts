@@ -287,6 +287,23 @@ describe("conversation sidebar projection", () => {
       .toEqual(chatsGroup.conversations.map((row) => row.id));
   });
 
+  it("projects preview-local pins into the bounded Pinned group without mutating the row", async () => {
+    insertConversation({ id: "local-pin", starred: false });
+    insertConversation({ id: "ordinary", starred: false });
+    const router = new Router();
+    registerConversationRoutes(router);
+
+    const result = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=1&pinned_ids=local-pin",
+    });
+
+    expect(groupsOf(result).find((group) => group.kind === "pinned")?.conversations).toEqual([
+      expect.objectContaining({ id: "local-pin", starred: true }),
+    ]);
+    expect(db.prepare("SELECT starred FROM conversations WHERE id = 'local-pin'").get()).toEqual({ starred: 0 });
+  });
+
   it("continues the selected total order across date and block-count ties", async () => {
     insertConversation({
       id: "date-a",

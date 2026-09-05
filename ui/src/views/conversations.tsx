@@ -112,6 +112,7 @@ import { useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAuthSessionState } from '../client-auth-token';
+import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
 
 // ── Toast notification ──
 
@@ -2652,6 +2653,11 @@ export function ConversationsView({
   const [selection, setSelection] = useState<ChatSelection>(null);
   const handleNavigateConversation = useCallback((conversationId: string) => {
     setSelection({ type: 'conversation', id: conversationId });
+    const nextHash = hashWithAgentSession(
+      `#/console?conversation=${encodeURIComponent(conversationId)}`,
+      getAgentPageBinding(),
+    );
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
   }, []);
   const detailPortalRef = useRef<HTMLDivElement>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -2863,12 +2869,17 @@ export function ConversationsView({
       exclude_subagents: true,
       project_ids: projectIds,
     };
+    if (previewMutationsRejected) {
+      const pinnedIds = Object.entries(chatViewState.previewPinOverrides)
+        .flatMap(([id, pinned]) => pinned ? [id] : []);
+      if (pinnedIds.length > 0) params.pinned_ids = pinnedIds;
+    }
     if (sourceFilter !== 'all') params.source = sourceFilter;
     if (starredOnly) params.starred = true;
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [hideEmpty, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [chatViewState.previewPinOverrides, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
@@ -3214,6 +3225,11 @@ export function ConversationsView({
 
   const handleSelectSession = (sessionId: string) => {
     setSelection({ type: 'session', id: sessionId });
+    const nextHash = hashWithAgentSession(
+      `#/console?session=${encodeURIComponent(sessionId)}`,
+      getAgentPageBinding(),
+    );
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
     onSelectSession(sessionId);
   };
 
@@ -3573,12 +3589,6 @@ export function ConversationsView({
                 onPress={() => openNewSession()}
               />
             </div>
-
-            {shownProjectsState.notice ? (
-              <p className="chat-project-selection-notice" role="status">
-                {shownProjectsState.notice}
-              </p>
-            ) : null}
 
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;

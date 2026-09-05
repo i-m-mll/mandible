@@ -108,12 +108,20 @@ describe('Chat project preference migration', () => {
     expect(screen.getByRole('status').getAttribute('data-notice')).toContain('another Mandible window');
   });
 
-  it('retains preference read failures in diagnostic state', async () => {
-    vi.spyOn(api, 'getChatShownProjectsPreference').mockRejectedValue(new Error('offline'));
+  it('retries preference read failures silently and restores the saved selection', async () => {
+    vi.useFakeTimers();
+    const saved = [{ projectId: 'prj-shared', checkoutId: 'checkout-shared' }];
+    vi.spyOn(api, 'getChatShownProjectsPreference')
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ version: 1, key: 'chat_shown_projects', value: saved, revision: 4 });
 
     render(<Probe />);
 
-    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-notice')).toContain('unavailable'));
-    expect(screen.getByRole('status').getAttribute('data-ready')).toBe('false');
+    await vi.waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('false'));
+    expect(screen.getByRole('status').getAttribute('data-notice')).toBe('');
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('true'));
+    expect(JSON.parse(screen.getByRole('status').textContent ?? '[]')).toEqual(saved);
+    vi.useRealTimers();
   });
 });

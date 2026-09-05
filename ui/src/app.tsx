@@ -11,6 +11,7 @@ import {
   getAuthQueue,
   getConsoleSessions,
   getDashboardBadges,
+  getAppThemePreference,
   getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
@@ -26,6 +27,7 @@ import {
   retryAuthRequest,
   scanIssues,
   updateAuthRequestField,
+  updateAppThemePreference,
   updateSetting,
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
@@ -584,6 +586,8 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [hostAppTheme, setHostAppTheme] = useState<'system' | 'light' | 'dark' | null>(null);
+  const hostAppThemeRevisionRef = useRef(0);
   const [railDrag, setRailDrag] = useState<AppRailDrag | null>(null);
   const railDragRef = useRef<AppRailDrag | null>(null);
   const [pendingRailOrder, setPendingRailOrder] = useState<AppRailPreviewOrder | null>(null);
@@ -745,7 +749,28 @@ function App(): JSX.Element {
     return () => query.removeEventListener('change', update);
   }, []);
 
-  useEffect(() => updateRootAppTheme(state.settings), [state.settings]);
+  const effectiveSettings = useMemo(() => (
+    hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
+  ), [hostAppTheme, state.settings]);
+
+  useEffect(() => updateRootAppTheme(effectiveSettings), [effectiveSettings]);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      void getAppThemePreference().then((preference) => {
+        if (!active) return;
+        hostAppThemeRevisionRef.current = preference.revision;
+        setHostAppTheme(preference.value ?? normalizeAppThemeMode(state.settings.app_theme));
+      }).catch(() => undefined);
+    };
+    load();
+    window.addEventListener('focus', load);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', load);
+    };
+  }, []);
 
   useEffect(() => {
     const tab = route.tab;
@@ -1810,7 +1835,33 @@ function App(): JSX.Element {
     }
   };
 
+  const saveAppTheme = async (value: string) => {
+    const theme = normalizeAppThemeMode(value);
+    const previous = hostAppTheme ?? normalizeAppThemeMode(state.settings.app_theme);
+    setHostAppTheme(theme);
+    try {
+      let saved;
+      try {
+        saved = await updateAppThemePreference(theme, hostAppThemeRevisionRef.current);
+      } catch {
+        const current = await getAppThemePreference();
+        hostAppThemeRevisionRef.current = current.revision;
+        saved = await updateAppThemePreference(theme, current.revision);
+      }
+      hostAppThemeRevisionRef.current = saved.revision;
+      setHostAppTheme(saved.value ?? theme);
+      dispatch({ type: 'updateSetting', key: 'app_theme', value: theme });
+    } catch (error) {
+      setHostAppTheme(previous);
+      throw error;
+    }
+  };
+
   const handleSettingsSave = async (key: string, value: string) => {
+    if (key === 'app_theme') {
+      await saveAppTheme(value);
+      return;
+    }
     await updateSetting(key, value);
     dispatch({ type: 'updateSetting', key, value });
   };
@@ -2372,7 +2423,7 @@ function App(): JSX.Element {
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
-  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
+  const appThemeMode = normalizeAppThemeMode(effectiveSettings.app_theme);
   const nextAppThemeMode = appThemeMode === 'system' ? 'light' : appThemeMode === 'light' ? 'dark' : 'system';
   const appThemeLabel = appThemeMode === 'system' ? 'System' : appThemeMode === 'light' ? 'Light' : 'Dark';
   const nextAppThemeLabel = nextAppThemeMode === 'system' ? 'System' : nextAppThemeMode === 'light' ? 'Light' : 'Dark';
@@ -2554,10 +2605,8 @@ function App(): JSX.Element {
                   className="app-rail__item app-rail__theme-toggle"
                   aria-label={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
                   title={`App theme: ${appThemeLabel}. Switch to ${nextAppThemeLabel}`}
-                  disabled={previewMutationsRejected}
                   onClick={() => {
-                    if (previewMutationsRejected) return;
-                    void handleSettingsSave('app_theme', nextAppThemeMode);
+                    void saveAppTheme(nextAppThemeMode);
                   }}
                 >
                   <span className="app-rail__icon">{appThemeIcon}</span>
@@ -2693,7 +2742,7 @@ function App(): JSX.Element {
         })())}
         {renderTabPanel('settings', (
           <LazySettingsView
-            settings={state.settings}
+            settings={effectiveSettings}
             onSave={handleSettingsSave}
             typography={typography}
             onTypographySave={handleTypographySave}

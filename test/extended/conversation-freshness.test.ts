@@ -472,6 +472,29 @@ describe("exact conversation freshness", () => {
     expect(ingests).toBe(1);
   });
 
+  it("returns the indexed version immediately while source convergence continues", async () => {
+    const seeded = await seed("background-refresh-session");
+    await appendAt(seeded.file, assistant("new tail", 3), 2);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let ingests = 0;
+    const ingest = async (file: string) => {
+      ingests += 1;
+      await gate;
+      return triggerExactPathIngest(file);
+    };
+
+    await expect(ensureExactConversationFresh(db, seeded.id, {
+      ingest,
+      waitForFresh: false,
+    })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
+    release();
+    await expect(ensureExactConversationFresh(db, seeded.id, { ingest })).resolves.toMatchObject({
+      conversationId: seeded.id,
+    });
+    expect(ingests).toBe(1);
+  });
+
   it("refreshes one exact provider title, broadcasts once, and leaves an unchanged transcript bounded", async () => {
     const seeded = await seed("title-authority-session");
     updateThread("title-authority-session", { title: "Current provider title", rolloutPath: seeded.file });

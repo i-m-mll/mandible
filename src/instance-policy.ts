@@ -33,6 +33,7 @@ export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   // ledger and copied preview DB. Main and reject-mode previews deliberately
   // share this one revisioned authority.
   "PUT /api/host-preferences/chat-shown-projects",
+  "PUT /api/host-preferences/app-theme",
   "POST /api/briefing-destination-routes/plan",
   "POST /api/timeline/project",
 ]);

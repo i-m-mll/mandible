@@ -3,6 +3,7 @@ import {
   HostUserPreferencesError,
   HostUserPreferencesRevisionConflict,
   HostUserPreferencesStore,
+  normalizeAppTheme,
   normalizeChatShownProjects,
 } from "../host-user-preferences.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
@@ -65,6 +66,34 @@ export function registerHostUserPreferencesRoutes(
         body.expected_revision as number,
         value,
       ));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.get("/api/host-preferences/app-theme", async (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, await store.readAppTheme(identity.user_id));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.put("/api/host-preferences/app-theme", async (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      const body = bodyRecord(req);
+      const value = normalizeAppTheme(body.value);
+      if (!Number.isSafeInteger(body.expected_revision) || (body.expected_revision as number) < 0) {
+        sendJson(res, 400, { error: "Missing or invalid expected_revision", code: "invalid_preference_revision" });
+        return;
+      }
+      if (value === null) {
+        sendJson(res, 400, { error: "Invalid app theme", code: "invalid_app_theme" });
+        return;
+      }
+      sendJson(res, 200, await store.writeAppTheme(identity.user_id, body.expected_revision as number, value));
     } catch (error) {
       handleError(res, error);
     }

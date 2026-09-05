@@ -126,12 +126,6 @@
   font-size: 14px;
 }
 
-.session-overview__count {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-
 .session-overview__facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

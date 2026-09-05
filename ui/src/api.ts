@@ -1852,6 +1852,43 @@ export async function updateChatShownProjectsPreference(
   return parseChatShownProjectsPreference(await parseMaybeJson(response));
 }
 
+export type AppThemePreference = {
+  version: 1;
+  key: 'app_theme';
+  value: 'system' | 'light' | 'dark' | null;
+  revision: number;
+};
+
+function parseAppThemePreference(payload: unknown): AppThemePreference {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  if (
+    record?.version !== 1
+    || record.key !== 'app_theme'
+    || (record.value !== null && record.value !== 'system' && record.value !== 'light' && record.value !== 'dark')
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+  ) throw new Error('Invalid app-theme preference response');
+  return record as AppThemePreference;
+}
+
+export async function getAppThemePreference(): Promise<AppThemePreference> {
+  const response = await apiGet('/api/host-preferences/app-theme');
+  return parseAppThemePreference(await parseMaybeJson(response));
+}
+
+export async function updateAppThemePreference(
+  value: 'system' | 'light' | 'dark',
+  expectedRevision: number,
+): Promise<AppThemePreference> {
+  const response = await apiPut('/api/host-preferences/app-theme', {
+    value,
+    expected_revision: expectedRevision,
+  });
+  return parseAppThemePreference(await parseMaybeJson(response));
+}
+
 /**
  * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
  * (terminal driving) is local-only and off by default, and the gate is
@@ -2396,6 +2433,7 @@ export async function getConversationSidebar(params: {
   min_blocks?: number;
   exclude_subagents?: boolean;
   project_ids?: string[];
+  pinned_ids?: string[];
   limit: number;
   group_key?: string;
   cursor?: string;
@@ -2410,6 +2448,8 @@ export async function getConversationSidebar(params: {
   if (params.exclude_subagents) query.set('exclude_subagents', 'true');
   const projectIds = [...new Set((params.project_ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 500);
   if (projectIds.length > 0) query.set('project_ids', projectIds.join(','));
+  const pinnedIds = [...new Set((params.pinned_ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 500);
+  if (pinnedIds.length > 0) query.set('pinned_ids', pinnedIds.join(','));
   const limit = Math.min(50, Math.max(1, Math.trunc(Number.isFinite(params.limit) ? params.limit : 5)));
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);

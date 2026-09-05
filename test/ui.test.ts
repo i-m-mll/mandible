@@ -1872,6 +1872,7 @@ describe('app shell', () => {
     };
     vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery));
     const savedModes: string[] = [];
+    let themeRevision = 0;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/settings' && init?.method !== 'PUT') {
@@ -1879,10 +1880,24 @@ describe('app shell', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (url === '/api/settings/app_theme' && init?.method === 'PUT') {
+      if (url === '/api/host-preferences/app-theme' && init?.method !== 'PUT') {
+        return new Response(JSON.stringify({
+          version: 1,
+          key: 'app_theme',
+          value: themeRevision === 0 ? null : storedTheme,
+          revision: themeRevision,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/host-preferences/app-theme' && init?.method === 'PUT') {
         storedTheme = (JSON.parse(String(init.body)) as { value: string }).value;
+        themeRevision += 1;
         savedModes.push(storedTheme);
-        return new Response('{}', { headers: { 'content-type': 'application/json' } });
+        return new Response(JSON.stringify({
+          version: 1,
+          key: 'app_theme',
+          value: storedTheme,
+          revision: themeRevision,
+        }), { headers: { 'content-type': 'application/json' } });
       }
       if (url === '/api/projects') {
         return new Response(JSON.stringify({ projects: [] }), {

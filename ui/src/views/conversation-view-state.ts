@@ -164,6 +164,14 @@ export function useChatProjectSelection(): [
   useEffect(() => {
     activeRef.current = true;
     let loading = false;
+    let retryTimer: number | null = null;
+    const scheduleRetry = () => {
+      if (!activeRef.current || retryTimer !== null) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void load();
+      }, 1500);
+    };
     const load = async () => {
       if (loading) return;
       loading = true;
@@ -193,10 +201,8 @@ export function useChatProjectSelection(): [
         });
       } catch {
         if (!activeRef.current) return;
-        setState({
-          ready: false,
-          notice: 'Project selection is temporarily unavailable and reconnecting; no saved selection was changed.',
-        });
+        setState({ ready: false, notice: null });
+        scheduleRetry();
       } finally {
         loading = false;
       }
@@ -212,6 +218,7 @@ export function useChatProjectSelection(): [
     void load();
     return () => {
       activeRef.current = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       unsubscribeAuth();
       window.removeEventListener('focus', refreshWhenVisible);
       document.removeEventListener('visibilitychange', refreshWhenVisible);

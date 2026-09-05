@@ -742,7 +742,8 @@ describe('compact detail pane shell', () => {
     const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
     expect(tokensCss).toContain('--radius-chat-surface: 18px;');
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.conv-compose::before\s*\{[^}]*z-index:\s*-1;[^}]*top:\s*50%;[^}]*right:\s*0;[^}]*bottom:\s*-16px;[^}]*left:\s*-18px;[^}]*background:\s*var\(--surface-app\);/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*z-index:\s*0;[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*background:\s*var\(--surface-app\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;[^}]*max-width:\s*180px;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);

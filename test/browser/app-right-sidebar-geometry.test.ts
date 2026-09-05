@@ -81,9 +81,10 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         toggles()[0].click(); await wait(); await wait();
         const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0]};
         const chat=document.querySelector('.chat-detail-frame'); const composer=document.querySelector('.conv-compose'); const transcript=document.querySelector('.conv-transcript');
-        const composerStyle=composer?getComputedStyle(composer,'::before'):null; const composerRect=composer?rect(composer):null;
-        const mask=composerStyle&&composerRect?{left:composerRect.left+parseFloat(composerStyle.left),right:composerRect.right-parseFloat(composerStyle.right),
-          top:composerRect.top+parseFloat(composerStyle.top),bottom:composerRect.bottom-parseFloat(composerStyle.bottom),background:composerStyle.backgroundColor,zIndex:composerStyle.zIndex}:null;
+        const overlayControl=document.querySelector('.detail-pane-shell__overlay-control');
+        const maskStyle=overlayControl?getComputedStyle(overlayControl,'::before'):null; const overlayRect=overlayControl?rect(overlayControl):null; const composerRect=composer?rect(composer):null;
+        const mask=maskStyle&&overlayRect?{left:overlayRect.left+parseFloat(maskStyle.left),right:overlayRect.right-parseFloat(maskStyle.right),
+          top:overlayRect.top+parseFloat(maskStyle.top),bottom:overlayRect.bottom-parseFloat(maskStyle.bottom),background:maskStyle.backgroundColor,zIndex:maskStyle.zIndex}:null;
         const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
         const selectRects=Array.from(inline?.querySelectorAll('select')||[],rect);
         const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,triggerDisplay:getComputedStyle(trigger).display,
@@ -143,7 +144,7 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
         expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
         expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
-        expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
+        expect(geometry.mask.right).toBeCloseTo(geometry.overlayControl.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
         expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
         const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };

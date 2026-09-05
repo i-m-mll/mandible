@@ -21,11 +21,29 @@ class TestRoutes implements RouteRegistrar {
   put(routePath: string, handler: RouteHandler): void { this.handlers.set(`PUT ${routePath}`, handler); }
   patch(routePath: string, handler: RouteHandler): void { this.handlers.set(`PATCH ${routePath}`, handler); }
   delete(routePath: string, handler: RouteHandler): void { this.handlers.set(`DELETE ${routePath}`, handler); }
-  handler(method: string): RouteHandler {
-    const handler = this.handlers.get(`${method} /api/host-preferences/chat-shown-projects`);
+  handler(method: string, routePath = "/api/host-preferences/chat-shown-projects"): RouteHandler {
+    const handler = this.handlers.get(`${method} ${routePath}`);
     if (!handler) throw new Error(`Missing ${method} handler`);
     return handler;
   }
+}
+
+async function callTheme(
+  routes: TestRoutes,
+  method: "GET" | "PUT",
+  body?: unknown,
+) {
+  const res = response();
+  const routePath = "/api/host-preferences/app-theme";
+  await routes.handler(method, routePath)({
+    method,
+    url: routePath,
+    params: {},
+    query: {},
+    body,
+    client_identity: identity(),
+  }, res);
+  return { statusCode: res.statusCode, payload: res.payload };
 }
 
 function identity(userId = "user-stable-1"): ResolvedClientIdentity {
@@ -73,6 +91,21 @@ afterEach(() => {
 });
 
 describe("host user Chat project preferences", () => {
+  it("shares app theme through the same host/user authority", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-host-preferences-"));
+    roots.push(root);
+    const routes = new TestRoutes();
+    registerHostUserPreferencesRoutes(routes, new HostUserPreferencesStore(root));
+
+    expect(await callTheme(routes, "GET")).toMatchObject({
+      payload: { key: "app_theme", value: null, revision: 0 },
+    });
+    expect(await callTheme(routes, "PUT", { value: "dark", expected_revision: 0 })).toMatchObject({
+      payload: { key: "app_theme", value: "dark", revision: 1 },
+    });
+    expect(await call(routes, "GET")).toMatchObject({ payload: { value: [], revision: 1 } });
+  });
+
   it("shares one revisioned file across independently constructed daemon stores", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-host-preferences-"));
     roots.push(root);
@@ -101,7 +134,7 @@ describe("host user Chat project preferences", () => {
       version: 1,
       userId: "user-stable-1",
       revision: 1,
-      settings: { chatShownProjects: value },
+      settings: { chatShownProjects: value, appTheme: null },
     });
     expect(fs.statSync(path.join(root, "user-stable-1.json")).mode & 0o077).toBe(0);
   });

@@ -149,6 +149,16 @@ async function createOrReusePreview(options) {
   }
 
   const preview = previewPaths(branch);
+  // A dead preview is replaceable, but its port is browser identity: keeping
+  // it preserves origin-scoped UI state and lets the existing IAB tab recover
+  // on reload. Capture that identity before stale-cache cleanup removes bytes.
+  const priorMetadata = readJsonFile(preview.metadata);
+  const priorPort = priorMetadata?.branch === branch
+    && priorMetadata?.worktree
+    && canonicalPath(priorMetadata.worktree) === canonicalPath(worktree)
+    && Number.isInteger(priorMetadata.port)
+    ? priorMetadata.port
+    : null;
   const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
 
   if (options.dryRun) {
@@ -188,7 +198,11 @@ async function createOrReusePreview(options) {
     run("npm", ["run", "build"], { cwd: worktree });
   }
 
-  const port = options.port ?? await findFreePort(DEFAULT_PORT_START, DEFAULT_PORT_END);
+  const port = options.port ?? (
+    priorPort !== null && !await isPortOpen(priorPort)
+      ? priorPort
+      : await findFreePort(DEFAULT_PORT_START, DEFAULT_PORT_END)
+  );
   if (!fs.existsSync(sourceDb)) {
     throw new Error(`Source database does not exist: ${sourceDb}`);
   }

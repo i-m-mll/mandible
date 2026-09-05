@@ -199,7 +199,7 @@ function SectionTable({
   return (
     <CollapsiblePanel
       className="session-overview__section"
-      title={<>{label}{count > 0 ? <span className="session-overview__count">{count}</span> : null}</>}
+      title={label}
       expanded={expanded}
       onExpandedChange={setExpanded}
     >
