@@ -846,7 +846,7 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         }
         const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
           series_key: document.base.seriesKey, logical_name: document.base.logicalName, title: document.base.title,
-          role: "briefing-document", media_type: "text/markdown", parent_version_id: document.base.artifactVersionId,
+          role: "briefing-document", media_type: "text/markdown",
           metadata: { composer: BRIEFING_COMPOSITION_SCHEMA, base_artifact_version_id: document.base.artifactVersionId } }, now);
         const published = publishBriefingFromArtifactVersion(db, { briefing_key: `composition:${artifact.version.id}`,
           title: document.base.title, artifact_version_ref: artifact.version.id,

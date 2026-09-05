@@ -308,9 +308,6 @@ export function publishBriefingRun(
         role: "briefing-document",
         media_type: "text/markdown",
         metadata: { profile: BRIEFING_PROFILE, briefing_id: briefing.id },
-        parent_version_id: briefing.latest_round_id
-          ? (db.prepare("SELECT artifact_version_id FROM briefing_rounds WHERE id = ?").get(briefing.latest_round_id) as { artifact_version_id: string }).artifact_version_id
-          : null,
       }, now);
       artifactVersionId = artifact.version.id;
       const logicalArtifactId = logicalArtifactForVersion(db, artifactVersionId);

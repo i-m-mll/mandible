@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -151,6 +152,69 @@ describe.sequential("schema convergence", () => {
       expect(db.prepare("SELECT value FROM settings WHERE key = 'chat_entity_link_action'").get())
         .toEqual({ value: "open" });
       expect(db.prepare("SELECT 1 FROM user_settings WHERE key = 'chat_bottom_shelf'").get()).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills only missing canonical Artifact parent locators without changing identity", () => {
+    const dbPath = path.join(tempDir, "artifact-parent-lineage.db");
+    createFloorDatabase(dbPath);
+    const db = new Database(dbPath);
+    try {
+      db.function("mandible_sha256", (value: string) =>
+        crypto.createHash("sha256").update(value).digest("hex"));
+      migrateFixtureThrough(db, 173);
+      for (const [suffix, hash] of [["1", "1".repeat(64)], ["2", "2".repeat(64)], ["3", "3".repeat(64)], ["4", "4".repeat(64)]] as const) {
+        db.prepare(`INSERT INTO artifact_blob
+          (id, content_hash, size_bytes, metadata_json, custody_mode, availability,
+           retention_json, reference_json, created_at)
+          VALUES (?, ?, 1, '{}', 'managed', 'present', '{}', '{}', 1)`)
+          .run(`artifact-blob:${suffix}`, hash);
+      }
+      db.prepare(`INSERT INTO artifact
+        (id, identity_key, source_kind, latest_version_id, version_count, metadata_json, created_at, updated_at)
+        VALUES ('artifact:lineage', 'lineage', 'managed', 'artifact-version:4', 4, '{}', 1, 4)`).run();
+      const insertVersion = db.prepare(`INSERT INTO artifact_version
+        (id, artifact_id, version_no, blob_id, source_kind, content_hash,
+         source_locator_json, custody_mode, metadata_json, created_at)
+        VALUES (?, 'artifact:lineage', ?, ?, 'managed', ?, ?, 'managed', '{}', ?)`);
+      insertVersion.run("artifact-version:1", 1, "artifact-blob:1", "1".repeat(64), '{"parent_version_id":null}', 1);
+      insertVersion.run("artifact-version:2", 2, "artifact-blob:2", "2".repeat(64), '{}', 2);
+      insertVersion.run("artifact-version:3", 3, "artifact-blob:3", "3".repeat(64), '{"parent_version_id":"artifact-version:explicit"}', 3);
+      insertVersion.run("artifact-version:4", 4, "artifact-blob:4", "4".repeat(64), '{"parent_version_id":null}', 4);
+      db.prepare(`INSERT INTO briefings
+        (id, briefing_key, title, logical_artifact_id, latest_round_id, round_count, created_at, updated_at)
+        VALUES ('briefing:lineage', 'lineage', 'Lineage', 'artifact:lineage', 'round:lineage', 1, 1, 1)`).run();
+      db.prepare(`INSERT INTO briefing_rounds
+        (id, briefing_id, ordinal, artifact_version_id, profile, binding_digest, created_at)
+        VALUES ('round:lineage', 'briefing:lineage', 1, 'artifact-version:4',
+          'mandible-briefing.v3', ?, 1)`).run("a".repeat(64));
+
+      const migration = MIGRATIONS.find((candidate) => candidate.version === 174)!;
+      db.transaction(() => {
+        for (const statement of migration.statements) db.exec(statement);
+        db.prepare("UPDATE meta SET value = '174' WHERE key = 'schema_version'").run();
+      }).immediate();
+
+      const locators = db.prepare(
+        "SELECT id, source_locator_json FROM artifact_version ORDER BY version_no",
+      ).all().map((row) => ({
+        id: (row as { id: string }).id,
+        parent: JSON.parse((row as { source_locator_json: string }).source_locator_json).parent_version_id ?? null,
+      }));
+      expect(locators).toEqual([
+        { id: "artifact-version:1", parent: null },
+        { id: "artifact-version:2", parent: "artifact-version:1" },
+        { id: "artifact-version:3", parent: "artifact-version:explicit" },
+        { id: "artifact-version:4", parent: "artifact-version:3" },
+      ]);
+      expect(db.prepare(
+        "SELECT id, latest_version_id, version_count FROM artifact WHERE id = 'artifact:lineage'",
+      ).get()).toEqual({ id: "artifact:lineage", latest_version_id: "artifact-version:4", version_count: 4 });
+      expect(db.prepare(
+        "SELECT briefing_id, artifact_version_id FROM briefing_rounds WHERE id = 'round:lineage'",
+      ).get()).toEqual({ briefing_id: "briefing:lineage", artifact_version_id: "artifact-version:4" });
     } finally {
       db.close();
     }
