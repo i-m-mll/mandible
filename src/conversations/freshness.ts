@@ -477,7 +477,7 @@ export async function ensureExactConversationFresh(
   options: {
     timeoutMs?: number;
     ingest?: ExactIngest;
-    /** Start convergence but return the last complete indexed version immediately. */
+    /** Return the current indexed version; the daemon ingestion stream owns reconciliation. */
     waitForFresh?: boolean;
     /** Bounded observer instrumentation used by large-source regressions. */
     sourceReadInstrumentation?: SourceReadInstrumentation;
@@ -492,6 +492,19 @@ export async function ensureExactConversationFresh(
   }
   if (!pinned.sourceId) {
     return { conversationId: pinned.conversationId, sourceId: null, sourcePath: null, refreshed: false };
+  }
+  if (options.waitForFresh === false) {
+    // Interactive reads must stay bounded by the indexed snapshot. Starting
+    // exact ingestion here performs parser and database work on the daemon's
+    // request thread, which can visibly stall the whole app. The production
+    // ingestion stream already reconciles source changes and reject-mode
+    // previews deliberately keep their projected database immutable.
+    return {
+      conversationId: pinned.conversationId,
+      sourceId: pinned.sourceId,
+      sourcePath: pinned.sourcePath,
+      refreshed: false,
+    };
   }
   const sourceId = pinned.sourceId;
   let flight = flights.get(sourceId);
@@ -508,18 +521,6 @@ export async function ensureExactConversationFresh(
       })
       .finally(() => flights.delete(sourceId));
     flights.set(sourceId, flight);
-  }
-  if (options.waitForFresh === false) {
-    // Read views use stale-while-revalidate: the shared flight remains
-    // authoritative and ingestion events tell live clients to reconcile.
-    // Observe failure so background convergence cannot reject unhandled.
-    void flight.catch(() => undefined);
-    return {
-      conversationId: pinned.conversationId,
-      sourceId: pinned.sourceId,
-      sourcePath: pinned.sourcePath,
-      refreshed: false,
-    };
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let timer: NodeJS.Timeout | undefined;

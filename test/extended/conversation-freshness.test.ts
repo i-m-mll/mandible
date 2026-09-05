@@ -472,15 +472,12 @@ describe("exact conversation freshness", () => {
     expect(ingests).toBe(1);
   });
 
-  it("returns the indexed version immediately while source convergence continues", async () => {
+  it("returns the indexed version immediately without starting read-triggered ingestion", async () => {
     const seeded = await seed("background-refresh-session");
     await appendAt(seeded.file, assistant("new tail", 3), 2);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
     let ingests = 0;
     const ingest = async (file: string) => {
       ingests += 1;
-      await gate;
       return triggerExactPathIngest(file);
     };
 
@@ -488,9 +485,10 @@ describe("exact conversation freshness", () => {
       ingest,
       waitForFresh: false,
     })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
-    release();
+    expect(ingests).toBe(0);
     await expect(ensureExactConversationFresh(db, seeded.id, { ingest })).resolves.toMatchObject({
       conversationId: seeded.id,
+      refreshed: true,
     });
     expect(ingests).toBe(1);
   });
