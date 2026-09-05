@@ -1551,10 +1551,30 @@ export function registerIssueRoutes(
     const excludeCheckpointId = getQueryParam(req, "exclude_checkpoint");
     if (excludeCheckpointId !== undefined) {
       const checkpoint = db.prepare(
-        "SELECT 1 FROM ledger_issue_checkpoints WHERE id = ? AND issue_id = ?",
-      ).get(excludeCheckpointId, resolved.issue_id);
-      if (!checkpoint) {
-        sendJson(res, 400, { error: "exclude_checkpoint must name a checkpoint on this issue" });
+        `SELECT kind, payload_json
+           FROM ledger_issue_checkpoints
+          WHERE id = ? AND issue_id = ?`,
+      ).get(excludeCheckpointId, resolved.issue_id) as {
+        kind: string;
+        payload_json: string;
+      } | undefined;
+      let establishesSelfBaseline = false;
+      if (checkpoint?.kind === "delegation-manifest") {
+        try {
+          const payload = JSON.parse(checkpoint.payload_json) as unknown;
+          establishesSelfBaseline = Array.isArray(payload) && payload.some((entry) =>
+            entry !== null
+            && typeof entry === "object"
+            && (entry as Record<string, unknown>).self === true
+            && (entry as Record<string, unknown>).issue_id === resolved.issue_id);
+        } catch {
+          establishesSelfBaseline = false;
+        }
+      }
+      if (!establishesSelfBaseline) {
+        sendJson(res, 400, {
+          error: "exclude_checkpoint must name this issue's self-baselined delegation manifest",
+        });
         return;
       }
     }
